@@ -581,6 +581,33 @@ def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
     assert not any("bg:" in style for style, _text in segments)
 
 
+def test_uiprinter_highlights_generic_tool_arguments(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s))
+    line = runner.log_root('Search "done in" glob=*.py C=2')
+
+    assert line.syntax == "tool-args"
+    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([line]))
+    assert ("fg:#a5d6ff", '"done in"') in segments
+    assert ("fg:#79c0ff", "glob=") in segments
+    assert ("fg:#d2a8ff", "2") in segments
+
+
+def test_job_start_uses_bash_highlighting(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s))
+    start = n.ToolCall("j1", "Job", [{"action": "start", "command": "pytest -q"}])
+    wait = n.ToolCall("j2", "Job", [{"action": "wait", "job": "job.1"}])
+
+    start_line = runner.log_root(runner.short_call(start), call=start)
+    wait_line = runner.log_root(runner.short_call(wait), call=wait)
+
+    assert start_line.syntax == "bash"
+    assert wait_line.syntax == "tool-args"
+    wait_segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([wait_line]))
+    assert ("fg:#d2a8ff", "job.1") in wait_segments
+
+
 def test_log_block_aligns_multiline_tool_arguments():
     block = n.LogBlock.hierarchy(
         n.LogLine("Bash", 'git commit -m "title\nbody"', n.LogRole.TOOL, syntax="bash"),

@@ -1805,7 +1805,7 @@ class Tool:
     SKIP_DIRS: ClassVar[set[str]] = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
     MUTATES: ClassVar[bool] = False
     STORES_RESULT: ClassVar[bool] = True
-    LOG_LEXER: ClassVar[str] = ""
+    LOG_LEXER: ClassVar[str] = "tool-args"
 
     def __init__(self, session: Session, args: list[Any]):
         self.session = session
@@ -1837,6 +1837,10 @@ class Tool:
 
     def needs_confirmation(self) -> bool:
         return self.MUTATES
+
+    @classmethod
+    def log_lexer(cls, _args: list[Any]) -> str:
+        return cls.LOG_LEXER
 
     def single_dict_arg(self, message: str) -> Json:
         if len(self.args) != 1 or not isinstance(self.args[0], dict):
@@ -3124,6 +3128,11 @@ class JobTool(Tool):
         if action == "list":
             return ["list"]
         return [action, str(payload.get("job") or "")]
+
+    @classmethod
+    def log_lexer(cls, args: list[Any]) -> str:
+        payload = args[0] if len(args) == 1 and isinstance(args[0], dict) else {}
+        return "bash" if payload.get("action") == "start" else cls.LOG_LEXER
 
     def call(self) -> str:
         payload = self.payload()
@@ -5538,7 +5547,7 @@ class ToolRunner:
                 approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 if not nested_display:
-                    self.output_fn(LogBlock.hierarchy(self.log_root(display or self.short_call(call), batch_suffix=batch_suffix), []))
+                    self.output_fn(LogBlock.hierarchy(self.log_root(display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     nested_display = True
                 self.live_start()
             output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
@@ -5604,7 +5613,7 @@ class ToolRunner:
         # (rendered dim by UiPrinter) instead of the full red failed block. The model still receives
         # the complete error so it can correct the call.
         reason = self.oneline(output.removeprefix("ToolError:").strip(), 60)
-        return LogBlock.hierarchy(self.log_root((display or self.short_call(call)) + " · rejected: " + reason, LogRole.MUTED, batch_suffix), [])
+        return LogBlock.hierarchy(self.log_root((display or self.short_call(call)) + " · rejected: " + reason, LogRole.MUTED, batch_suffix, call), [])
 
     def finish(
         self,
@@ -5696,7 +5705,7 @@ class ToolRunner:
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
     ) -> LogBlock:
         role = LogRole.APPROVAL if status == "confirm" else LogRole.AUTO
-        root = self.log_root(self.short_call(call), role, batch_suffix)
+        root = self.log_root(self.short_call(call), role, batch_suffix, call)
         children = []
         if tool.NAME != "Edit":
             return LogBlock.hierarchy(root, children)
@@ -5726,7 +5735,7 @@ class ToolRunner:
         bash_live_preview_shown = bool(call.name == "Bash" and self.bash_live_preview_shown and self.bash_live_preview_shown())
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
         tree = nested_display or call.name == "Bash"
-        root = self.log_root(display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, batch_suffix)
+        root = self.log_root(display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, batch_suffix, call)
         children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
@@ -5748,10 +5757,14 @@ class ToolRunner:
             root = LogLine(root.label, root.text, root.role, meta=tail, syntax=root.syntax)
         return LogBlock.hierarchy(None if nested_display else root, children)
 
-    def log_root(self, display: str, role: LogRole = LogRole.TOOL, batch_suffix: str = "") -> LogLine:
+    def log_root(self, display: str, role: LogRole = LogRole.TOOL, batch_suffix: str = "", call: ToolCall | None = None) -> LogLine:
         name, _, args = self.with_batch_suffix(display, batch_suffix).partition(" ")
         tool_class = TOOL_REGISTRY.get(name)
-        syntax = tool_class.LOG_LEXER if tool_class is not None and role is not LogRole.MUTED else ""
+        syntax = ""
+        if tool_class is not None:
+            syntax = tool_class.log_lexer(call.args) if call is not None else tool_class.LOG_LEXER
+        if role is LogRole.MUTED:
+            syntax = ""
         return LogLine(name, args, role, syntax=syntax)
 
     def bash_result_preview(self, output: str) -> str:
@@ -6469,6 +6482,9 @@ class CommandCompleter(Completer):
 
 class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
+    TOOL_ARG_TOKEN: ClassVar[re.Pattern] = re.compile(
+        r'''\s+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*=|(?:tr|job)\.\d+|\d+(?::\d+)?|[;,]|[^\s;,]+'''
+    )
 
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
@@ -6625,6 +6641,8 @@ class UiPrinter:
 
     @classmethod
     def syntax_segments(cls, text: str, lexer_name: str, fallback_style: str) -> list[tuple[str, str]]:
+        if lexer_name == "tool-args":
+            return cls.tool_arg_segments(text, fallback_style)
         if pygments is None or not lexer_name:
             return [(fallback_style, text)]
         try:
@@ -6632,6 +6650,26 @@ class UiPrinter:
             return [(cls.pygments_style(token_type), value) for token_type, value in lexer.get_tokens(text) if value]
         except Exception:
             return [(fallback_style, text)]
+
+    @classmethod
+    def tool_arg_segments(cls, text: str, fallback_style: str) -> list[tuple[str, str]]:
+        segments = []
+        for match in cls.TOOL_ARG_TOKEN.finditer(text):
+            token = match.group(0)
+            if token.isspace():
+                style = fallback_style
+            elif token.endswith("="):
+                style = "fg:#79c0ff"
+            elif token.startswith(("\"", "'")):
+                style = "fg:#a5d6ff"
+            elif re.fullmatch(r"(?:tr|job)\.\d+|\d+(?::\d+)?", token):
+                style = "fg:#d2a8ff"
+            elif token in {";", ","}:
+                style = "ansibrightblack"
+            else:
+                style = "fg:#a5d6ff"
+            segments.append((style, token))
+        return segments or [(fallback_style, text)]
 
     def memory_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
