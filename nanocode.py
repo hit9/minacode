@@ -57,6 +57,7 @@ from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSe
 from prompt_toolkit.output import create_output
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar
 from rich.console import Console
 from rich.markdown import Markdown
@@ -6487,6 +6488,10 @@ class UiPrinter:
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
+        changed_width = min(
+            max((get_cwidth(line) for line in lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))), default=1),
+            max(1, shutil.get_terminal_size((120, 20)).columns - 15),
+        )
 
         # Determine the target file path from the diff header.  The `+++` line
         # names the resulting file; for created files `---` is /dev/null.
@@ -6543,7 +6548,8 @@ class UiPrinter:
             segments.append((styled(prefix_style), prefix))
             for style, piece in content_hl:
                 segments.append((styled(style), piece))
-            segments.append((background, suffix))
+            width = get_cwidth(prefix) + sum(get_cwidth(piece) for _style, piece in content_hl)
+            segments.append((background, (" " * max(0, changed_width - width) if background else "") + suffix))
 
         for index, line in enumerate(lines):
             suffix = "\n" if index < len(lines) - 1 else ""

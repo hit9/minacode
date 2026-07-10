@@ -158,6 +158,9 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     # Line-number gutters and context code remain unfilled.
     assert any("1" in text and "|" in text and "bg:" not in style for style, text in segments)
     assert any(text == "def" and "bg:" not in style for style, text in segments)
+    changed = [line for line in ui.segment_lines(segments) if any("bg:" in style for style, _text in line)]
+    widths = [sum(n.get_cwidth(text.rstrip("\n")) for style, text in line if "bg:" in style) for line in changed]
+    assert len(set(widths)) == 1
 
 
 def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
