@@ -281,11 +281,10 @@ class RuntimeSettings:
     max_parallel_tools: int = 4
     mcp_selector: str = ""
     yolo: bool = False
-    debug: bool = False
     tips: bool = True
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, mcp_selector: str = "") -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
@@ -297,7 +296,6 @@ class RuntimeSettings:
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
-            debug=debug or Config.bool(runtime, "debug", False),
             tips=Config.bool(runtime, "tips", True),
         )
 
@@ -534,6 +532,7 @@ class AgentState:
 
     def __post_init__(self) -> None:
         self.plan = self.plan_items(self.plan)
+        self.prefix_fingerprints = self.prefix_fingerprints[-3:]
 
     @classmethod
     def plan_items(cls, items: list[Any]) -> list[PlanItem]:
@@ -1204,8 +1203,8 @@ search, edit, run commands) and returns a short answer in your language.
 ## Context & caching
 Each request is a cache-stable prefix (system prompt, environment, SKILLS/MCP indexes, tool schemas)
 then the conversation and `Memory`. Tool outputs stay in the conversation and large outputs are bounded with Recall keys. Caching needs that
-prefix byte-identical; `/status` shows context %, cache hit rate, a `prefix churn` warning if it
-mutated mid-session (inspect via `--debug`, label `cache-prefix-drift`), and a compaction count. Long
+prefix byte-identical; `/status` shows context %, cache hit rate, a prefix-mismatch warning if it
+mutated mid-session (`/debug` shows the changed prefix regions), and a compaction count. Long
 chats compact automatically; `/compact` forces it. `/context` shows the frame (Environment / Memory).
 
 ## Sessions
@@ -1236,11 +1235,11 @@ only read-only subcommands auto-run; commit/add/push and branch changes still as
 
 ## Troubleshooting
 - "missing config": set `provider.url`/`key`/`model`.
-- Slow/costly or low cache hit: check `/status`; a `prefix churn` warning means the prefix changed
-  mid-session — see the `--debug` cache-prefix-drift diff.
+- Slow/costly or low cache hit: check `/status`; a prefix-mismatch warning means the prefix changed
+  mid-session — `/debug` shows the changed regions.
 - InspectCode stale/unavailable: `/index` to sync or rebuild.
 - Context full: compacts automatically; `/compact` forces it.
-- Command refused while the agent works unless read-only (`/help`, `/status`, `/context`, `/skills`,
+- Command refused while the agent works unless read-only (`/help`, `/status`, `/context`, `/skills`, `/debug`,
   read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
 
     def __init__(self, skills: dict[str, Skill]):
@@ -1476,6 +1475,8 @@ class Session:
     job_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
+    debug_records: list[Json] = field(default_factory=list)
+    prefix_mismatch_count: int = 0
     mcp: MCPManager | None = None
     skills: SkillLibrary | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
@@ -1483,7 +1484,8 @@ class Session:
     resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
     _active_turn_messages: list[Json] = field(default_factory=list)
-    _cache_prefix_text: str | None = None
+    _cache_prefix_regions: dict[str, Json] = field(default_factory=dict)
+    _cache_prefix_fingerprint: str = ""
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
@@ -1495,6 +1497,18 @@ class Session:
             self.mcp = MCPManager(self)
         if self.skills is None:
             self.skills = SkillLibrary.load(self)
+
+    def record_debug(self, kind: str, details: Json) -> None:
+        self.debug_records.append(
+            {
+                "kind": kind,
+                "call": self.usage.calls + 1,
+                "round": self.state.round_count,
+                "step": self.state.turn_step,
+                **details,
+            }
+        )
+        del self.debug_records[:-3]
 
     def store_turn_diff(
         self,
@@ -1513,9 +1527,9 @@ class Session:
             self.turn_diffs.pop(0)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, debug: bool = False, mcp_selector: str = "") -> "Session":
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, mcp_selector: str = "") -> "Session":
         data = ConfigFile.load(path)
-        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, debug=debug, mcp_selector=mcp_selector))
+        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, mcp_selector=mcp_selector))
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -3710,19 +3724,20 @@ class ContextManager:
     def has_skills(self) -> bool:
         return bool(self.session.skills and self.session.skills.skills)
 
+    def cache_prefix_regions(self, base_system: str, tools: list[Json] | None) -> list[tuple[str, str]]:
+        return [
+            ("system", base_system.strip()),
+            ("environment", "--- Environment ---\n" + (self.environment() or "(empty)")),
+            ("skills", self.skills_context()),
+            ("mcp-tools", self.mcp_tools_context() or ""),
+            ("tool-schemas", json.dumps(tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
+        ]
+
     def cache_prefix(self, base_system: str, tools: list[Json] | None) -> str:
         # Canonical text of the bytes a provider can cache: the stable head of every request.
         # Mirrors the leading blocks model_messages() emits (system + environment + mcp index)
         # plus the tool schemas. Everything mutable (history and memory) sits after it.
-        return "\x00".join(
-            [
-                base_system.strip(),
-                "--- Environment ---\n" + (self.environment() or "(empty)"),
-                self.skills_context(),
-                self.mcp_tools_context() or "",
-                json.dumps(tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-            ]
-        )
+        return "\x00".join(text for _name, text in self.cache_prefix_regions(base_system, tools))
 
     def tool_schemas(self) -> list[Json]:
         strict = self.session.config.provider.resolved_strict_tools()
@@ -3731,23 +3746,44 @@ class ContextManager:
         return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or self.has_skills()]
 
     def check_cache_prefix(self, base_system: str) -> None:
-        # Tripwire for silent cache breakage: fingerprint the stable prefix and flag drift.
-        # A healthy session keeps one fingerprint start to finish; a second one means the prefix
-        # mutated mid-session and every token from the change onward is a cache miss.
-        text = self.cache_prefix(base_system, self.tool_schemas())
-        fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        regions: dict[str, Json] = {}
+        prefix_hash = hashlib.sha256()
+        for index, (name, text) in enumerate(self.cache_prefix_regions(base_system, self.tool_schemas())):
+            encoded = text.encode("utf-8")
+            if index:
+                prefix_hash.update(b"\x00")
+            prefix_hash.update(encoded)
+            regions[name] = {"hash": hashlib.sha256(encoded).hexdigest(), "chars": len(text)}
+        fingerprint = prefix_hash.hexdigest()
+        previous_regions = self.session._cache_prefix_regions
+        previous_fingerprint = self.session._cache_prefix_fingerprint
+        if previous_fingerprint and fingerprint != previous_fingerprint:
+            changed = []
+            for name, current in regions.items():
+                previous = previous_regions.get(name, {"hash": "", "chars": 0})
+                if previous["hash"] != current["hash"]:
+                    changed.append(
+                        {
+                            "name": name,
+                            "expected": previous["hash"],
+                            "actual": current["hash"],
+                            "expected_chars": previous["chars"],
+                            "actual_chars": current["chars"],
+                        }
+                    )
+            self.session.prefix_mismatch_count += 1
+            self.session.record_debug(
+                "cache-prefix",
+                {"expected": previous_fingerprint, "actual": fingerprint, "regions": changed},
+            )
         state = self.session.state
-        if fingerprint in state.prefix_fingerprints:
-            self.session._cache_prefix_text = text
-            return
-        previous = self.session._cache_prefix_text
-        if state.prefix_fingerprint and previous is not None:
-            diff = "\n".join(list(difflib.unified_diff(previous.splitlines(), text.splitlines(), "cached-prefix", "current-prefix", lineterm=""))[:40])
-            DebugTrace.cache_drift(self.session, expected=state.prefix_fingerprint, actual=fingerprint, diff=diff)
         if not state.prefix_fingerprint:
             state.prefix_fingerprint = fingerprint
-        state.prefix_fingerprints.append(fingerprint)
-        self.session._cache_prefix_text = text
+        if fingerprint not in state.prefix_fingerprints:
+            state.prefix_fingerprints.append(fingerprint)
+            del state.prefix_fingerprints[:-3]
+        self.session._cache_prefix_regions = regions
+        self.session._cache_prefix_fingerprint = fingerprint
 
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
@@ -5401,16 +5437,14 @@ class ToolRunner:
         )
 
     def reject(self, call: ToolCall, output: str, *, elapsed: float | None = None, display: str | None = None, batch_suffix: str = "") -> str:
-        if self.session.settings.debug:
-            return self.finish(call, output, failed=True, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
         self.session.record_tool_error("-", call.name, call.args, output)
         self.output_fn(self.reject_display(call, output, display=display, batch_suffix=batch_suffix))
         return self.tool_message(call, "", output, failed=True, display=display)
 
     def reject_display(self, call: ToolCall, output: str, *, display: str | None = None, batch_suffix: str = "") -> str:
         # Argument/usage rejections are usually self-corrected on retry, so show a quiet one-liner
-        # (rendered dim by UiPrinter) instead of the full red failed block. Full error still goes to
-        # the model and to debug.
+        # (rendered dim by UiPrinter) instead of the full red failed block. The model still receives
+        # the complete error so it can correct the call.
         reason = self.oneline(output.removeprefix("ToolError:").strip(), 60)
         return self.with_batch_suffix("tool " + (display or self.short_call(call)) + " · rejected: " + reason, batch_suffix)
 
@@ -5641,75 +5675,6 @@ class ToolRunner:
         return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
 
-class DebugTrace:
-    STRING_LIMIT: ClassVar[int] = 20_000
-
-    @classmethod
-    def write(cls, session: Session, *, activity: str, label: str, payload: Any) -> str:
-        if not session.settings.debug:
-            return ""
-        directory = session.data_path("debug")
-        os.makedirs(directory, exist_ok=True)
-        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "event")
-        path = os.path.join(directory, f"last-{safe_label}.json")
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump({"activity": Text.clean(activity or "debug"), "label": safe_label, "payload": cls.value(payload)}, file, ensure_ascii=False, indent=2)
-            file.write("\n")
-        return path
-
-    @classmethod
-    def value(cls, value: Any) -> Any:
-        if hasattr(value, "model_dump"):
-            try:
-                value = value.model_dump(mode="json")
-            except TypeError:
-                value = value.model_dump()
-        if isinstance(value, dict):
-            return {str(key): cls.value(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [cls.value(item) for item in value]
-        if isinstance(value, str):
-            value = Text.clean(value)
-            return value if len(value) <= cls.STRING_LIMIT else value[: cls.STRING_LIMIT] + "...<truncated>"
-        if value is None or isinstance(value, (int, float, bool)):
-            return value
-        return Text.clean(str(value))
-
-    @classmethod
-    def prompt(cls, session: Session, *, activity: str, messages: list[Json]) -> None:
-        cls.write(session, activity=activity, label="prompt", payload={"messages": messages})
-
-    @classmethod
-    def model_request(cls, session: Session, *, activity: str, api: str, model: str, params: Json, tools: list[Json] | None) -> None:
-        payload = {"api": api, "model": model, "tool_names": cls.tool_names(tools), "param_keys": sorted(params), "params": cls.filtered_params(params)}
-        cls.write(session, activity=activity, label="model-request", payload=payload)
-
-    @classmethod
-    def model_response(cls, session: Session, *, activity: str, api: str, model: str, raw: Any, text: str, tool_names: list[str]) -> None:
-        payload = {"api": api, "model": model, "assistant_text_len": len(text), "tool_names": tool_names, "raw": raw}
-        cls.write(session, activity=activity, label="model-response", payload=payload)
-
-    @classmethod
-    def model_error(cls, session: Session, *, activity: str, api: str, model: str, params: Json, error: Exception | str) -> None:
-        payload = {"api": api, "model": model, "error": str(error), "param_keys": sorted(params), "params": cls.filtered_params(params)}
-        cls.write(session, activity=activity, label="model-error", payload=payload)
-
-    @classmethod
-    def cache_drift(cls, session: Session, *, expected: str, actual: str, diff: str) -> None:
-        cls.write(session, activity="agent", label="cache-prefix-drift", payload={"expected": expected, "actual": actual, "diff": diff})
-
-    @staticmethod
-    def filtered_params(params: Json) -> Json:
-        return {key: value for key, value in params.items() if key not in {"messages", "tools"}}
-
-    @staticmethod
-    def tool_names(tools: list[Json] | None) -> list[str]:
-        return [
-            str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)"))
-            for schema in tools or []
-        ]
-
-
 class ModelClient:
     def __init__(self, session: Session):
         self.session = session
@@ -5762,7 +5727,7 @@ class ModelClient:
             part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
         )
 
-    def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
+    def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
         provider = self.session.config.provider
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
@@ -5776,21 +5741,15 @@ class ModelClient:
         if prompt_cache_key:
             params["prompt_cache_key"] = prompt_cache_key
         self.apply_provider_params(params, provider)
-        DebugTrace.prompt(self.session, activity=activity, messages=messages)
-        DebugTrace.model_request(self.session, activity=activity, api="chat", model=provider.model, params=params, tools=tools)
         try:
             response = self.client().chat.completions.create(**params)
         except Exception as error:
-            DebugTrace.model_error(self.session, activity=activity, api="chat", model=provider.model, params=params, error=error)
             raise ModelError(str(error)) from error
         self.session.usage.add(getattr(response, "usage", None))
         message = response.choices[0].message
         assistant = self.assistant_message(message)
         calls = self.tool_calls(message)
         content = str(getattr(message, "content", None) or "")
-        DebugTrace.model_response(
-            self.session, activity=activity, api="chat", model=provider.model, raw=response, text=content, tool_names=[call.name for call in calls]
-        )
         return assistant, calls, content
 
     def compact(self, context: str) -> Json:
@@ -5803,11 +5762,7 @@ Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
-        _, _, content = (
-            self.anthropic_request(messages, None, activity="compact")
-            if self.session.config.provider.resolved_api() == "anthropic"
-            else self.chat_request(messages, None, activity="compact")
-        )
+        _, _, content = self.anthropic_request(messages, None) if self.session.config.provider.resolved_api() == "anthropic" else self.chat_request(messages, None)
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")
@@ -5865,27 +5820,26 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             "cwd": self.session.cwd,
             "host": provider.host(),
             "model": provider.model,
-            "tools": ",".join(sorted(DebugTrace.tool_names(tools))) or "(none)",
+            "tools": ",".join(
+                sorted(
+                    str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)"))
+                    for schema in tools or []
+                )
+            )
+            or "(none)",
         }
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "nanocode-" + digest[:24]
 
-    def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, activity: str = "agent") -> tuple[Json, list[ToolCall], str]:
+    def anthropic_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
-        provider = self.session.config.provider
         params = self.anthropic_params(messages, tools)
-        DebugTrace.prompt(self.session, activity=activity, messages=messages)
-        DebugTrace.model_request(self.session, activity=activity, api="anthropic", model=provider.model, params=params, tools=tools)
         try:
             result = self.anthropic_client().messages.create(**params)
         except Exception as error:
-            DebugTrace.model_error(self.session, activity=activity, api="anthropic", model=provider.model, params=params, error=error)
             raise ModelError(str(error)) from error
         self.session.usage.add(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result)
-        DebugTrace.model_response(
-            self.session, activity=activity, api="anthropic", model=provider.model, raw=result, text=content, tool_names=[call.name for call in calls]
-        )
         return assistant, calls, content
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
@@ -6300,7 +6254,6 @@ class CommandCompleter(Completer):
             return
         for command, values in (
             ("/api ", lambda: PROVIDER_API_CHOICES),
-            ("/debug ", lambda: ("on", "off")),
             ("/model ", self.models),
             ("/provider ", self.providers),
             ("/reason ", lambda: REASONING_CHOICES),
@@ -6851,7 +6804,7 @@ class StatusBar:
     SEP_STYLE: ClassVar[str] = "#4b5563"
     # fmt: off
     STYLES: ClassVar[dict[str, str]] = {
-        "provider": "#e6edf3", "reason": "#a5b4fc", "debug": "#64748b", "mcp": "#93c5fd", "ctx": "#facc15",
+        "provider": "#e6edf3", "reason": "#a5b4fc", "mcp": "#93c5fd", "ctx": "#facc15",
         "update": "#fb923c", "index": "#94a3b8", "warn": "#fb7185", "runtime": "#c084fc",
     }
     # fmt: on
@@ -6930,11 +6883,7 @@ class StatusBar:
         provider = self.session.config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         reason = provider.reasoning
-        if self.session.settings.debug:
-            reason += "/" + provider.resolved_chat_reasoning()
         parts = [(self.session.config.active_provider + "/" + model, "provider"), (reason, "reason")]
-        if self.session.settings.debug:
-            parts.append(("api " + provider.resolved_api(), "debug"))
 
         mcp_status = self.mcp_status()
         if mcp_status:
@@ -6946,8 +6895,6 @@ class StatusBar:
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
         parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
-        if self.session.settings.debug and self.session.usage.cached_prompt_tokens:
-            parts.append(("cache " + str(self.session.usage.cached_prompt_tokens), "debug"))
         update_status = self.update_status()
         if update_status:
             parts.append((update_status, "update"))
@@ -7127,7 +7074,7 @@ class CommandLoop:
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/diff", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -7168,7 +7115,7 @@ class CommandLoop:
         # Config & setup
         (ALWAYS, "`/config` opens your config; `/set KEY VALUE` changes settings live."),
         (ALWAYS, "Scaffold a fresh config with `nanocode --init-config`."),
-        (ALWAYS, "Launch with `--yolo` to skip confirmations, or `--debug` to record request traces."),
+        (ALWAYS, "Launch with `--yolo` to skip confirmations; `/debug` shows recent diagnostics."),
         (ALWAYS, 'Filter MCP servers at launch with `--mcp "name*,!exclude"`.'),
         (ALWAYS, "Silence these hints by setting `tips = false` under `[runtime]` in your config."),
     )
@@ -7190,7 +7137,7 @@ class CommandLoop:
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
   /api [NAME]        Show or set provider API format: auto, chat, anthropic.
-  /debug [on|off]    Toggle model I/O debug traces.
+  /debug             Show recent diagnostics.
   /compact           Compact context now.
   /index [force]      Sync or rebuild code symbol index.
   /provider [NAME]   Select or show the active provider.
@@ -7725,7 +7672,7 @@ Tools:
         errors = [(name, error) for name, error in sorted(self.session.mcp.server_errors.items()) if error and not error.startswith("oauth login required")]
         if not errors:
             return ""
-        shown = errors if self.session.settings.debug else errors[:3]
+        shown = errors[:3]
         lines = [f"mcp: {name}: {error}" for name, error in shown]
         if len(errors) > len(shown):
             lines.append(f"mcp: {len(errors) - len(shown)} more errors; run /mcp")
@@ -8007,7 +7954,7 @@ Tools:
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
         if output is not None:
-            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/context", "/skills", "/diff"} else self.emit)(output)
+            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/context", "/skills", "/debug", "/diff"} else self.emit)(output)
         return True, False
 
     def mcp_command(self, args: str) -> str:
@@ -8323,8 +8270,8 @@ Tools:
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
             ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
-            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)" + (f"; ⚠ prefix churn `{len(set(self.session.state.prefix_fingerprints))}` (cache broken; see debug cache-prefix-drift)" if len(set(self.session.state.prefix_fingerprints)) > 1 else "")),
-            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; debug `{'on' if self.session.settings.debug else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)" + (f"; prefix mismatches `{self.session.prefix_mismatch_count}`; see `/debug`" if self.session.prefix_mismatch_count else "")),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("jobs", f"running `{sum(1 for job in self.session.jobs.values() if job.status == 'running')}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
@@ -8684,7 +8631,6 @@ Tools:
                 f"runtime.update_check_interval_hours: {self.session.settings.update_check_interval_hours}",
                 f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
-                f"runtime.debug: {'on' if self.session.settings.debug else 'off'}",
             ]
         )
 
@@ -8699,19 +8645,28 @@ Tools:
         return "Set provider.api = " + value + "\nprovider.resolved_api: " + provider.resolved_api()
 
     def debug(self, args: str) -> str:
-        value = args.strip().lower()
-        if not value:
-            self.session.settings.debug = not self.session.settings.debug
-        elif value in {"on", "true", "yes", "1"}:
-            self.session.settings.debug = True
-        elif value in {"off", "false", "no", "0"}:
-            self.session.settings.debug = False
-        else:
-            return "Usage: /debug [on|off]"
-        status = "on" if self.session.settings.debug else "off"
-        lines = ["debug: " + status]
-        if self.session.settings.debug:
-            lines.append("debug_dir: " + self.session.data_path("debug"))
+        if args.strip():
+            return "Usage: /debug"
+        if not self.session.debug_records:
+            return "No debug records"
+        count = self.session.prefix_mismatch_count
+        lines = [f"### Debug · {count} cache-prefix {'mismatch' if count == 1 else 'mismatches'}"]
+        for index, record in enumerate(reversed(self.session.debug_records)):
+            label = "Latest" if index == 0 else "Previous " + str(index)
+            lines.extend(
+                [
+                    "",
+                    f"#### {label} · call {record['call']} · round {record['round']} · step {record['step']}",
+                    "",
+                    "| region | chars | fingerprint |",
+                    "| --- | ---: | --- |",
+                ]
+            )
+            for region in record.get("regions", []):
+                before = str(region.get("expected", ""))[:8] or "(none)"
+                after = str(region.get("actual", ""))[:8] or "(none)"
+                sizes = f"{region.get('expected_chars', 0):,} → {region.get('actual_chars', 0):,}"
+                lines.append(f"| {region.get('name', '(unknown)')} | {sizes} | `{before}` → `{after}` |")
         return "\n".join(lines)
 
     def compact(self, args: str) -> str:
@@ -8976,7 +8931,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
     parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
@@ -8997,10 +8951,10 @@ def main(argv: list[str] | None = None) -> int:
             session = Session.load_snapshot(
                 args.resume,
                 config=Config.from_dict(data),
-                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp),
+                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, mcp_selector=args.mcp),
             )
         else:
-            session = Session.from_config_file(path=args.config, yolo=args.yolo, debug=args.debug, mcp_selector=args.mcp)
+            session = Session.from_config_file(path=args.config, yolo=args.yolo, mcp_selector=args.mcp)
         try:
             return CommandLoop(Agent(session)).run()
         finally:

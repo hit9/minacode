@@ -65,7 +65,6 @@ Useful arguments:
 - `--resume [UID]`: resume a saved session; without `UID`, resumes `latest`.
 - `--yolo`: skip confirmations for mutating tools.
 - `--mcp <selector>`: choose which configured MCP servers to enable.
-- `--debug`: write model I/O debug traces.
 - `-v`, `--version`: show the version.
 - `update` / `upgrade`: update nanocode to the latest release, using the right installer (uv tool, pipx, or pip) for how it was installed.
 
@@ -100,7 +99,7 @@ Commands:
 - `/skills`: list installed skills (load with `Skill(name)` or reference inline with `$name`).
 - `/config`: show active config.
 - `/api [auto|chat|anthropic]`: show or set provider API format.
-- `/debug [on|off]`: toggle model I/O debug traces.
+- `/debug`: show the latest three in-memory diagnostics, currently cache-prefix mismatches.
 - `/compact`: compact context now.
 - `/index [force]`: sync or rebuild the code symbol index.
 - `/mcp [tools|login|logout|refresh] ...`: manage MCP servers and tools.
@@ -141,13 +140,13 @@ Main fields:
 - `[provider] active = "name"`
 - `[provider.<name>]`: `url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `max_tokens`, `strict_tools`, `timeout`
 - `[paths] data_dir`
-- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`, `tips`
+- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `tips`
 
 `api = "auto"` chooses between Chat Completions and Anthropic Messages using provider/model profiles. `prompt_cache_key = "auto"` derives a stable key from provider, model, workspace, and tool schema names.
 
 `strict_tools = true` (toggle with `/strict`) constrains tool-call arguments to each tool's JSON schema. It only takes effect on hosts that support it (OpenAI and DeepSeek) and on the Chat Completions path; it is a no-op elsewhere. For DeepSeek, enabling it routes requests to the `/beta` endpoint. Tools whose schemas can't be represented under strict function calling fall back to non-strict automatically.
 
-Runtime flags such as `--yolo`, `--debug`, and `--mcp` apply to resumed sessions too. Saved sessions do not carry their old runtime config forward.
+Runtime flags such as `--yolo` and `--mcp` apply to resumed sessions too. Saved sessions do not carry their old runtime config forward.
 
 ## MCP
 

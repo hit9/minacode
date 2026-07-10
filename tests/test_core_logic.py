@@ -239,33 +239,16 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.last_cached_prompt_tokens == 2
 
 
-def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
+def test_context_cleans_surrogate_text(tmp_path):
     bad = "bad \udce5 text"
     s = session(tmp_path)
     s.store_tool_result("Bash", [bad], bad)
     s.record_tool_error("tr.1", "Bash", [bad], bad)
 
     messages = n.ContextManager(s).model_messages("sys", [{"role": "user", "content": bad}])
-    debug_payload = n.DebugTrace.value({"messages": messages, "raw": bad})
 
     json.dumps(messages, ensure_ascii=False).encode("utf-8")
-    json.dumps(debug_payload, ensure_ascii=False).encode("utf-8")
     assert "\udce5" not in str(messages)
-    assert "\udce5" not in str(debug_payload)
-
-
-def test_debug_trace_overwrites_last_file(tmp_path):
-    s = data_session(tmp_path)
-    s.settings.debug = True
-
-    first = n.DebugTrace.write(s, activity="one", label="prompt", payload={"value": 1})
-    second = n.DebugTrace.write(s, activity="two", label="prompt", payload={"value": 2})
-    data = json.loads((tmp_path / ".data" / "debug" / "last-prompt.json").read_text(encoding="utf-8"))
-
-    assert first == second
-    assert first.endswith("debug/last-prompt.json")
-    assert data["activity"] == "two"
-    assert data["payload"] == {"value": 2}
 
 
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
@@ -443,18 +426,12 @@ def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch)
     assert seen == {"timeout": n.UpdateChecker.TIMEOUT, "user_agent": n.HTTP_USER_AGENT}
 
 
-def test_tool_runner_unknown_tool_debug_controls_result_storage(tmp_path):
-    off = session(tmp_path)
-    n.ToolRunner(off, n.ContextManager(off), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
-    assert off.tool_records == []
-    assert len(off.tool_errors) == 1
-
-    debug = session(tmp_path)
-    debug.settings.debug = True
-    n.ToolRunner(debug, n.ContextManager(debug), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
-    assert debug.tool_records == []
-    assert debug.tool_results == {}
-    assert len(debug.tool_errors) == 1
+def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
+    s = session(tmp_path)
+    n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
+    assert s.tool_records == []
+    assert s.tool_results == {}
+    assert len(s.tool_errors) == 1
 
 
 def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
@@ -513,3 +490,20 @@ def test_cache_prefix_drift_detected_when_system_prompt_changes(tmp_path):
     context.check_cache_prefix("different system prompt")
     assert s.state.prefix_fingerprint == first  # baseline pinned to first seen
     assert len(set(s.state.prefix_fingerprints)) == 2  # churn detected
+    assert s.prefix_mismatch_count == 1
+    assert len(s.debug_records) == 1
+    assert [region["name"] for region in s.debug_records[0]["regions"]] == ["system"]
+    assert "different system prompt" not in json.dumps(s.debug_records)
+
+
+def test_cache_prefix_debug_records_transitions_and_keeps_last_three(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    for prompt in ("a", "b", "a", "c", "d"):
+        context.check_cache_prefix(prompt)
+
+    assert s.prefix_mismatch_count == 4
+    assert len(s.debug_records) == 3
+    assert all(record["kind"] == "cache-prefix" for record in s.debug_records)
+    assert all([region["name"] for region in record["regions"]] == ["system"] for record in s.debug_records)

@@ -9,6 +9,7 @@
 - Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
 
 ### Changed
+- Replace the `--debug`/`runtime.debug` mode and `/debug on|off` toggle with an always-on, read-only `/debug` report. It keeps only the latest three cache-prefix mismatch records in memory, including changed region hashes and sizes, without retaining raw prompt content.
 - Replace blank Enter as the queued-input send-now shortcut with Ctrl-C. Enter queues a follow-up for the next model request; when follow-ups are queued, Ctrl-C interrupts the active request so they can be sent immediately. Queue guidance now appears as a contextual `+>` placeholder and disappears while typing.
 - Remove the synthesized FILE STATE context projection. `Read` and `Edit` outputs now remain as bounded, recallable conversation messages, and `/context` shows only Environment and Memory.
 - Show each Bash command once before execution, keep live output visible without repeating the command, and use a compact dimmed `stored tr.N` result marker after live runs.

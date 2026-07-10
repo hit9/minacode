@@ -65,7 +65,6 @@ nanocode
 - `--resume [UID]`：恢复已保存的 session；不传 `UID` 时恢复 `latest`。
 - `--yolo`：跳过会修改环境的工具确认。
 - `--mcp <selector>`：选择启用哪些已配置的 MCP 服务器。
-- `--debug`：写入模型 I/O debug trace。
 - `-v`, `--version`：显示版本。
 - `update` / `upgrade`：将 nanocode 更新到最新版本，并根据安装方式（uv tool、pipx 或 pip）选择正确的升级方式。
 
@@ -100,7 +99,7 @@ nanocode --resume last
 - `/skills`：列出已安装的 skills（用 `Skill(name)` 加载，或在消息中用 `$name` 引用）。
 - `/config`：显示当前配置。
 - `/api [auto|chat|anthropic]`：显示或设置 provider API 格式。
-- `/debug [on|off]`：切换模型 I/O debug trace。
+- `/debug`：显示最近三条内存诊断信息，目前记录 prompt cache prefix 不匹配。
 - `/compact`：立即压缩上下文。
 - `/index [force]`：同步或重建代码符号索引。
 - `/mcp [tools|login|logout|refresh] ...`：管理 MCP 服务器和工具。
@@ -141,13 +140,13 @@ nanocode --resume last
 - `[provider] active = "name"`
 - `[provider.<name>]`：`url`, `key`, `model`, `api`, `prompt_cache_key`, `available_models`, `reasoning`, `chat_reasoning`, `temperature`, `max_tokens`, `strict_tools`, `timeout`
 - `[paths] data_dir`
-- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `debug`, `tips`
+- `[runtime] shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `check_updates`, `update_check_interval_hours`, `session_retention_days`, `yolo`, `tips`
 
 `api = "auto"` 会根据 provider/model profile 在 Chat Completions 和 Anthropic Messages 之间选择。`prompt_cache_key = "auto"` 会根据 provider、model、workspace 和工具 schema 名称生成稳定 key。
 
 `strict_tools = true`（用 `/strict` 切换）会将工具调用参数约束到每个工具的 JSON schema。它仅在支持该特性的 host（OpenAI 和 DeepSeek）以及 Chat Completions 路径上生效，其他情况下为空操作。对 DeepSeek，启用后请求会路由到 `/beta` 端点。无法在严格函数调用下表示的工具 schema 会自动回退到非严格模式。
 
-`--yolo`、`--debug` 和 `--mcp` 等 runtime flags 对恢复的 session 同样生效。保存的 session 不会携带旧 runtime config。
+`--yolo` 和 `--mcp` 等 runtime flags 对恢复的 session 同样生效。保存的 session 不会携带旧 runtime config。
 
 ## MCP
 

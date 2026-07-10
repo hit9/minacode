@@ -533,7 +533,7 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     assert note == "Note goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
 
 
-def test_reject_collapses_display_in_non_debug(tmp_path):
+def test_reject_collapses_display(tmp_path):
     s = session(tmp_path)
     out = []
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=out.append)
@@ -545,18 +545,6 @@ def test_reject_collapses_display_in_non_debug(tmp_path):
     assert not any("[failed]" in t or t.startswith("  error ") for t in out)
     # model still receives the full error
     assert "Read requires non-empty ranges" in msg
-
-
-def test_reject_keeps_full_display_in_debug(tmp_path):
-    s = session(tmp_path)
-    s.settings.debug = True
-    out = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=out.append)
-
-    runner.reject(n.ToolCall("c", "Read", [{"path": "x"}]), "ToolError: bad args")
-
-    assert any("[failed]" in t for t in out)
-
 
 def test_uiprinter_renders_rejected_line_dim():
     ui = n.UiPrinter(output_fn=lambda text: None)
