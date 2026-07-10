@@ -6532,6 +6532,15 @@ class UiPrinter:
             console.print(Markdown(text))
         print_formatted_text(ANSI(capture.get()), end="", flush=True)
 
+    @staticmethod
+    def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
+        parts: list[tuple[str, str]] = []
+        for index, title in enumerate(titles):
+            parts.append(("class:tab.active" if index == active else "class:tab.inactive", f" {title} "))
+            if index < len(titles) - 1:
+                parts.append(("class:choice.disabled", " │ "))
+        return parts
+
     def segments(self, text: str) -> list[tuple[str, str]]:
         if text.startswith(("goal:", "check:", "plan:", "known:")):
             return self.memory_segments(text)
@@ -7268,6 +7277,113 @@ class QueuePlaceholder(Processor):
             return Transformation(ti.fragments)
         text = self.pending_text if self.has_pending() else self.empty_text
         return Transformation(ti.fragments + [("class:queue.hint", text)])
+
+
+@dataclass
+class TabbedViewState:
+    titles: tuple[str, ...]
+    tab: int = 0
+    scroll: int = 0
+
+    def switch(self, delta: int) -> None:
+        self.tab = (self.tab + delta) % len(self.titles)
+        self.scroll = 0
+
+    def select(self, index: int) -> None:
+        self.tab = index % len(self.titles)
+        self.scroll = 0
+
+    def scroll_by(self, delta: int) -> None:
+        self.scroll = max(0, self.scroll + delta)
+
+    def visible(self, lines: list[Any], height: int) -> list[Any]:
+        self.scroll = min(self.scroll, max(0, len(lines) - height))
+        return lines[self.scroll : self.scroll + height]
+
+@dataclass
+class DiffViewState:
+    class Mode(Enum):
+        LIST = auto()
+        FILE = auto()
+
+    view: TabbedViewState
+    mode: Mode = Mode.LIST
+    file: int = 0
+
+    def reset(self) -> None:
+        self.mode = self.Mode.LIST
+        self.file = 0
+        self.view.scroll = 0
+
+    def switch_tab(self, delta: int) -> None:
+        self.view.switch(delta)
+        self.reset()
+
+    def move_file(self, delta: int, count: int) -> None:
+        if count:
+            self.file = (self.file + delta) % count
+
+    def clamp_file(self, count: int) -> None:
+        self.file = self.file % count if count else 0
+
+    def open_file(self, count: int) -> None:
+        if self.mode is self.Mode.LIST and count:
+            self.mode = self.Mode.FILE
+            self.view.scroll = 0
+
+    def close_file(self) -> None:
+        if self.mode is self.Mode.FILE:
+            self.mode = self.Mode.LIST
+            self.view.scroll = 0
+
+
+@dataclass
+class ChoiceViewState:
+    choices: tuple[str, ...]
+    labels: dict[str, str]
+    disabled: set[str]
+    query: str = ""
+    selected: int = 0
+    searching: bool = False
+
+    def visible(self) -> tuple[str, ...]:
+        if not self.query:
+            return self.choices
+        needle = self.query.lower()
+        visible: list[str] = []
+        header = ""
+        section: list[str] = []
+        for choice in self.choices:
+            if choice in self.disabled:
+                if section:
+                    visible.extend(([header] if header else []) + section)
+                header, section = choice, []
+            elif needle in (choice + " " + self.labels.get(choice, choice)).lower():
+                section.append(choice)
+        if section:
+            visible.extend(([header] if header else []) + section)
+        return tuple(visible)
+
+    def enabled(self) -> tuple[str, ...]:
+        return tuple(choice for choice in self.visible() if choice not in self.disabled)
+
+    def clamp(self, options: tuple[str, ...] | None = None) -> tuple[str, ...]:
+        options = options if options is not None else self.enabled()
+        self.selected = min(max(self.selected, 0), len(options) - 1) if options else 0
+        return options
+
+    def move(self, delta: int) -> None:
+        options = self.enabled()
+        if options:
+            self.selected = min(max(self.selected + delta, 0), len(options) - 1)
+
+    def set_query(self, query: str) -> None:
+        self.query = query
+        self.selected = 0
+
+    def selected_choice(self) -> str | None:
+        options = self.clamp()
+        return options[self.selected] if options else None
 
 
 class CommandLoop:
@@ -8192,32 +8308,6 @@ Tools:
             return mcp.render_server_status()
         raise AssertionError("unreachable MCP subcommand")
 
-    def visible_choices(self, choices: tuple[str, ...], labels: dict[str, str], disabled: set[str], query: str) -> tuple[str, ...]:
-        if not query:
-            return choices
-        needle = query.lower()
-        visible: list[str] = []
-        header = ""
-        section: list[str] = []
-
-        def flush() -> None:
-            if section:
-                if header:
-                    visible.append(header)
-                visible.extend(section)
-            section.clear()
-
-        for choice in choices:
-            if choice in disabled:
-                flush()
-                header = choice
-                continue
-            text = (choice + " " + labels.get(choice, choice)).lower()
-            if needle in text:
-                section.append(choice)
-        flush()
-        return tuple(visible)
-
     def select_choice(
         self,
         title: str,
@@ -8251,35 +8341,24 @@ Tools:
         if free_text and self.interactive_input:
             choices = (*choices, FREE_TEXT)
             labels = {**labels, FREE_TEXT: "Type freely..."}
-        state = {"query": "", "selected": 0, "search": False}
-        searching = Condition(lambda: bool(state["search"]))
-
-        def enabled() -> tuple[str, ...]:
-            return tuple(choice for choice in self.visible_choices(choices, labels, disabled, str(state["query"])) if choice not in disabled)
-
-        def clamp() -> None:
-            options = enabled()
-            state["selected"] = min(max(int(state["selected"]), 0), len(options) - 1) if options else 0
+        state = ChoiceViewState(choices, labels, disabled)
+        searching = Condition(lambda: state.searching)
 
         def move(event, delta: int) -> None:
-            options = enabled()
-            if options:
-                state["selected"] = min(max(int(state["selected"]) + delta, 0), len(options) - 1)
+            state.move(delta)
             event.app.invalidate()
 
         def fragments():
-            query = str(state["query"])
-            visible = self.visible_choices(choices, labels, disabled, query)
-            options = enabled()
-            clamp()
-            suffix = (" /" + query) if query else ""
-            if query and not state["search"]:
+            visible = state.visible()
+            options = state.clamp()
+            suffix = (" /" + state.query) if state.query else ""
+            if state.query and not state.searching:
                 suffix += " (filtered)"
             parts: list[tuple[str, str]] = [
                 ("class:choice.title", title + suffix + "\n"),
                 ("class:choice.disabled", "  j/k move, / search, Esc back/cancel\n"),
             ]
-            if query and not options:
+            if state.query and not options:
                 parts.append(("class:choice.disabled", "  no matches\n"))
                 return parts
             number = 0
@@ -8289,20 +8368,19 @@ Tools:
                     parts.append(("class:choice.disabled", "  " + label + "\n"))
                     continue
                 number += 1
-                selected = number - 1 == int(state["selected"])
+                selected = number - 1 == state.selected
                 style = "class:choice.selected" if selected else ""
                 if selected:
                     parts.append(("[SetCursorPosition]", ""))
                 parts.append((style, ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
             if preview_fn and options:
-                sel = int(state["selected"])
-                preview_text = preview_fn(options[sel]).replace("\\n", "\n") if 0 <= sel < len(options) else ""
+                preview_text = preview_fn(options[state.selected]).replace("\\n", "\n")
                 if preview_text:
                     parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
                     for line in preview_text.splitlines():
                         parts.append(("class:choice.preview", "  │ " + line + "\n"))
-            if state["search"]:
-                parts.append(("", "/" + query))
+            if state.searching:
+                parts.append(("", "/" + state.query))
             return parts
 
         bindings = KeyBindings()
@@ -8319,40 +8397,36 @@ Tools:
 
         @bindings.add("/", eager=True)
         def _search(event):
-            state["search"] = True
-            state["query"] = ""
-            state["selected"] = 0
+            state.searching = True
+            state.set_query("")
             event.app.invalidate()
 
         @bindings.add("backspace", filter=searching, eager=True)
         @bindings.add("c-h", filter=searching, eager=True)
         def _backspace(event):
-            state["query"] = str(state["query"])[:-1]
-            state["selected"] = 0
+            state.set_query(state.query[:-1])
             event.app.invalidate()
 
         @bindings.add("escape", eager=True)
         def _escape(event):
-            if state["search"]:
-                state["search"] = False
+            if state.searching:
+                state.searching = False
                 event.app.invalidate()
                 return
-            if state["query"]:
-                state["query"] = ""
-                state["selected"] = 0
+            if state.query:
+                state.set_query("")
                 event.app.invalidate()
                 return
             event.app.exit(result=SELECTION_BACK)
 
         @bindings.add("enter", eager=True)
         def _enter(event):
-            if state["search"]:
-                state["search"] = False
+            if state.searching:
+                state.searching = False
                 event.app.invalidate()
                 return
-            options = enabled()
-            if options:
-                choice = options[int(state["selected"])]
+            choice = state.selected_choice()
+            if choice is not None:
                 event.app.exit(result=SELECTION_FREE_TEXT if choice == FREE_TEXT else choice)
 
         @bindings.add("c-c", eager=True)
@@ -8364,25 +8438,23 @@ Tools:
 
             @bindings.add(str(number), eager=True)
             def _digit(event, number=number):
-                if state["search"]:
-                    state["query"] = str(state["query"]) + event.data
-                    state["selected"] = 0
+                if state.searching:
+                    state.set_query(state.query + event.data)
                     event.app.invalidate()
                     return
-                options = enabled()
+                options = state.enabled()
                 if number <= len(options):
-                    state["selected"] = number - 1
+                    state.selected = number - 1
                     event.app.invalidate()
 
         @bindings.add(Keys.Any, filter=searching)
         def _typed(event):
             if event.data and event.data not in "\r\n":
-                state["query"] = str(state["query"]) + event.data
-                state["selected"] = 0
+                state.set_query(state.query + event.data)
                 event.app.invalidate()
 
-        options = enabled()
-        state["selected"] = options.index(current) if current in options else 0
+        options = state.enabled()
+        state.selected = options.index(current) if current in options else 0
         content = FormattedTextControl(fragments, focusable=True)
         choice_window = Window(content, wrap_lines=False)
         app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
@@ -8555,8 +8627,7 @@ Tools:
         Diff mode: ↑/↓ scroll one line, Ctrl-U/Ctrl-D half a page, PgUp/PgDn a page,
         Esc/← returns to list, r refreshes, q closes.
         """
-        tabs = ("Latest", "Session")
-        state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "scroll": 0}
+        state = DiffViewState(TabbedViewState(("Latest", "Session")))
 
         def build_model() -> list[list[tuple[str, str, str]]]:
             latest = self.agent.session.latest_round_diff_sections()
@@ -8568,7 +8639,7 @@ Tools:
             return max(3, shutil.get_terminal_size().lines - 7)
 
         def active_sections() -> list[tuple[str, str, str]]:
-            return model[int(state["tab"])]
+            return model[state.view.tab]
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
@@ -8576,7 +8647,7 @@ Tools:
             added_width = max(len(str(added)) for added, _removed in counts)
             removed_width = max(len(str(removed)) for _added, removed in counts)
             for index, ((_status, path, _diff), (added, removed)) in enumerate(zip(sections, counts)):
-                selected = index == state["file"]
+                selected = index == state.file
                 marker = "> " if selected else "  "
                 style = "ansicyan" if selected else "class:choice.disabled"
                 parts.extend(
@@ -8591,14 +8662,12 @@ Tools:
             parts.append(("", "\n"))
 
         def file_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
-            state["file"] = state["file"] % len(sections)
-            status, path, diff = sections[state["file"]]
+            state.clamp_file(len(sections))
+            status, path, diff = sections[state.file]
             parts.append(("", "\n"))
             parts.append(("ansicyan", f"  {status.title()} · {path}\n"))
             lines = self.ui.segment_lines(self.ui.diff_segments(diff))
-            height = viewport()
-            state["scroll"] = min(max(0, int(state["scroll"])), max(0, len(lines) - height))
-            visible = lines[state["scroll"] : state["scroll"] + height]
+            visible = state.view.visible(lines, viewport())
             for line in visible:
                 parts.extend(line)
             if not visible or not visible[-1] or not visible[-1][-1][1].endswith("\n"):
@@ -8606,80 +8675,70 @@ Tools:
 
         def fragments():
             parts: list[tuple[str, str]] = [("", "\n")]
-            for index, title in enumerate(tabs):
-                active = index == state["tab"]
-                parts.append(("class:tab.active" if active else "class:tab.inactive", f" {title} "))
-                if index < len(tabs) - 1:
-                    parts.append(("class:choice.disabled", " │ "))
+            parts.extend(self.ui.tab_segments(state.view.titles, state.view.tab))
             parts.append(("", "\n"))
 
             sections = active_sections()
             if not sections:
                 parts.append(("class:choice.disabled", "  No diffs\n"))
-            elif state["mode"] == "list":
+            elif state.mode is DiffViewState.Mode.LIST:
                 list_fragments(parts, sections)
             else:
                 file_fragments(parts, sections)
-            mode_hint = "list" if state["mode"] == "list" else "diff"
-            if state["mode"] == "list":
+            mode_hint = "list" if state.mode is DiffViewState.Mode.LIST else "diff"
+            if state.mode is DiffViewState.Mode.LIST:
                 hint = "↑/↓ or j/k move · ←/→ or h/l tab · Enter open · r refresh · Esc/q close"
-                position = f"{int(state['file']) + 1}/{len(sections) or 0}"
             else:
                 hint = "↑/↓ scroll · Ctrl-U/D half-page · PgUp/PgDn page · Esc/← back · r refresh · q close"
-                position = f"{int(state['file']) + 1}/{len(sections) or 0}"
+            position = f"{state.file + 1}/{len(sections) or 0}"
             parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{position}]\n"))
             return parts
 
         def switch_tab(event, delta: int) -> None:
-            state["tab"] = (int(state["tab"]) + delta) % len(tabs)
-            state["file"] = 0
-            state["scroll"] = 0
-            state["mode"] = "list"
+            state.switch_tab(delta)
             event.app.invalidate()
 
         def move(event, delta: int) -> None:
             sections = active_sections()
-            if sections and state["mode"] == "list":
-                state["file"] = (int(state["file"]) + delta) % len(sections)
+            if state.mode is DiffViewState.Mode.LIST:
+                state.move_file(delta, len(sections))
             elif sections:
-                state["scroll"] = max(0, int(state["scroll"]) + delta)
+                state.view.scroll_by(delta)
             event.app.invalidate()
 
         def page(event, delta: int, divisor: int = 1) -> None:
-            if state["mode"] == "file":
-                state["scroll"] = max(0, int(state["scroll"]) + delta * max(1, viewport() // divisor))
+            if state.mode is DiffViewState.Mode.FILE:
+                state.view.scroll_by(delta * max(1, viewport() // divisor))
                 event.app.invalidate()
 
         def open_file(event):
-            if state["mode"] == "list" and active_sections():
-                state["mode"] = "file"
-                state["scroll"] = 0
+            previous = state.mode
+            state.open_file(len(active_sections()))
+            if state.mode != previous:
                 event.app.invalidate()
 
         def back(event):
-            if state["mode"] == "file":
-                state["mode"] = "list"
-                state["scroll"] = 0
+            previous = state.mode
+            state.close_file()
+            if state.mode != previous:
                 event.app.invalidate()
 
         def refresh(event):
             nonlocal model
             model = build_model()
-            state["file"] = 0
-            state["scroll"] = 0
-            state["mode"] = "list"
+            state.reset()
             event.app.invalidate()
 
         bindings = KeyBindings()
 
         def _left(event):
-            if state["mode"] == "file":
+            if state.mode is DiffViewState.Mode.FILE:
                 back(event)
             else:
                 switch_tab(event, -1)
 
         def _right(event):
-            if state["mode"] == "list":
+            if state.mode is DiffViewState.Mode.LIST:
                 switch_tab(event, 1)
 
         bindings.add("right", eager=True)(_right)
@@ -8696,7 +8755,7 @@ Tools:
         bindings.add("c-d", eager=True)(lambda event: page(event, 1, 2))
         bindings.add("c-u", eager=True)(lambda event: page(event, -1, 2))
         bindings.add("enter", eager=True)(open_file)
-        bindings.add("escape", eager=True)(lambda event: back(event) if state["mode"] == "file" else event.app.exit(result=None))
+        bindings.add("escape", eager=True)(lambda event: back(event) if state.mode is DiffViewState.Mode.FILE else event.app.exit(result=None))
         bindings.add("q", eager=True)(lambda event: event.app.exit(result=None))
         bindings.add("c-c", eager=True)(lambda event: event.app.exit(result=None))
         bindings.add("r", eager=True)(refresh)
@@ -8717,7 +8776,7 @@ Tools:
         Renders a static snapshot; the transcript continues below once closed."""
         width = max(20, shutil.get_terminal_size().columns - 2)
         pages = [self.render_markdown_lines(getattr(context, method)(), width) for _, method in self.CONTEXT_TABS]
-        state = self.context_tab_state = {"tab": 0, "scroll": 0}
+        state = self.context_tab_state = TabbedViewState(tuple(name for name, _method in self.CONTEXT_TABS))
 
         def viewport() -> int:
             return max(3, shutil.get_terminal_size().lines - 5)
@@ -8725,20 +8784,15 @@ Tools:
         def fragments():
             # Blank line separates the viewer from the `nano> /context` input line above it.
             parts: list[tuple[str, str]] = [("", "\n")]
-            for index, (name, _) in enumerate(self.CONTEXT_TABS):
-                active = index == state["tab"]
-                parts.append(("class:tab.active" if active else "class:tab.inactive", f" {name} "))
-                if index < len(self.CONTEXT_TABS) - 1:
-                    parts.append(("class:choice.disabled", " │ "))
-            lines = pages[state["tab"]]
+            parts.extend(self.ui.tab_segments(state.titles, state.tab))
+            lines = pages[state.tab]
             height = viewport()
             scrollable = len(lines) > height
-            state["scroll"] = min(max(0, int(state["scroll"])), max(0, len(lines) - height))
-            visible = lines[state["scroll"] : state["scroll"] + height]
+            visible = state.visible(lines, height)
             parts.append(("", "\n"))
             scroll_hint = "↑/↓ scroll" if scrollable else "↑/↓ scroll (fits)"
             parts.append(
-                ("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state['scroll'] + 1}-{state['scroll'] + len(visible)}/{len(lines)}]\n")
+                ("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state.scroll + 1}-{state.scroll + len(visible)}/{len(lines)}]\n")
             )
             for line in visible:
                 parts.extend(line)
@@ -8746,12 +8800,11 @@ Tools:
             return parts
 
         def scroll(event, delta: int) -> None:
-            state["scroll"] = max(0, int(state["scroll"]) + delta)
+            state.scroll_by(delta)
             event.app.invalidate()
 
         def switch(event, delta: int) -> None:
-            state["tab"] = (int(state["tab"]) + delta) % len(self.CONTEXT_TABS)
-            state["scroll"] = 0
+            state.switch(delta)
             event.app.invalidate()
 
         bindings = KeyBindings()
@@ -8771,8 +8824,7 @@ Tools:
 
             @bindings.add(str(number), eager=True)
             def _jump(event, number=number):
-                state["tab"] = number - 1
-                state["scroll"] = 0
+                state.select(number - 1)
                 event.app.invalidate()
 
         @bindings.add("escape", eager=True)

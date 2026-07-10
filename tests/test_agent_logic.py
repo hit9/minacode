@@ -1134,10 +1134,10 @@ def _drive_context_tabs(tmp_path, keys, *, term=(80, 12)):
 
 def test_context_tabs_scroll_and_switch_keys(tmp_path):
     # j/down scroll the body; k/up scroll back; h/l switch tabs. 'q' closes.
-    assert _drive_context_tabs(tmp_path, "jjjq")["scroll"] == 3
-    assert _drive_context_tabs(tmp_path, "jjjkq")["scroll"] == 2
-    assert _drive_context_tabs(tmp_path, "llq")["tab"] == 0
-    assert _drive_context_tabs(tmp_path, "lhq")["tab"] == 0
+    assert _drive_context_tabs(tmp_path, "jjjq").scroll == 3
+    assert _drive_context_tabs(tmp_path, "jjjkq").scroll == 2
+    assert _drive_context_tabs(tmp_path, "llq").tab == 0
+    assert _drive_context_tabs(tmp_path, "lhq").tab == 0
 
 
 def test_exit_command_prints_resume_command(tmp_path):
