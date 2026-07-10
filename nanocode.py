@@ -6440,6 +6440,9 @@ class UiPrinter:
         Token.String: "ansigreen", Token.String.Affix: "ansimagenta", Token.String.Interpol: "ansiyellow", Token.Text: "ansiwhite",
     } if pygments is not None else {}
     # fmt: on
+    DIFF_ADDED_BG: ClassVar[str] = "bg:#003b00"
+    DIFF_REMOVED_BG: ClassVar[str] = "bg:#520000"
+
     @classmethod
     def _diff_hl_style(cls, token_type: Any) -> str:
         t: Any = token_type
@@ -6497,7 +6500,7 @@ class UiPrinter:
 
         # Collect lines that belong to the new file version: context lines and
         # added lines.  These are lexed together so the highlighted diff is
-        # syntactically coherent. Removed lines are left in plain diff red so
+        # syntactically coherent. Removed lines stay neutral on a red background so
         # the "before" state does not interfere with lexing the "after" state.
         new_code_lines: list[str] = []
         new_code_indices: list[int] = []
@@ -6533,11 +6536,14 @@ class UiPrinter:
             new_text = "" if new is None else str(new)
             segments.append(("ansibrightblack", f"{old_text:>4} {new_text:>4} | "))
 
-        def append_hl(prefix: str, prefix_style: str, content_hl: list[tuple[str, str]], suffix: str) -> None:
-            segments.append((prefix_style, prefix))
+        def append_hl(prefix: str, prefix_style: str, content_hl: list[tuple[str, str]], suffix: str, background: str = "") -> None:
+            def styled(style: str) -> str:
+                return (style + " " + background).strip()
+
+            segments.append((styled(prefix_style), prefix))
             for style, piece in content_hl:
-                segments.append((style, piece))
-            segments.append(("", suffix))
+                segments.append((styled(style), piece))
+            segments.append((background, suffix))
 
         for index, line in enumerate(lines):
             suffix = "\n" if index < len(lines) - 1 else ""
@@ -6554,11 +6560,11 @@ class UiPrinter:
             elif line.startswith("+"):
                 number(None, new_line)
                 content_hl = hl_by_index.get(index) or [("ansiwhite", line[1:])]
-                append_hl("+", "ansigreen", content_hl, suffix)
+                append_hl("+", "ansigreen", content_hl, suffix, self.DIFF_ADDED_BG)
                 new_line = None if new_line is None else new_line + 1
             elif line.startswith("-"):
                 number(old_line, None)
-                segments.append(("ansired", line + suffix))
+                append_hl("-", "ansired", [("ansiwhite", line[1:])], suffix, self.DIFF_REMOVED_BG)
                 old_line = None if old_line is None else old_line + 1
             elif line.startswith(" "):
                 number(old_line, new_line)

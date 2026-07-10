@@ -149,14 +149,15 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     diff = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42\n"
     segments = ui.diff_segments(diff)
 
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
-    assert any(t == "return" and s == "ansimagenta" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
+    assert any(t == "return" and s == "ansimagenta bg:#003b00" for s, t in segments)
 
-    assert any("pass" in t and s == "ansired" for s, t in segments)
-    assert not any("bg:" in style for style, _text in segments)
+    assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
+    assert any("pass" in t and s == "ansiwhite bg:#520000" for s, t in segments)
 
-    # Line numbers are preserved.
-    assert any("1" in t and "|" in t for s, t in segments)
+    # Line-number gutters and context code remain unfilled.
+    assert any("1" in text and "|" in text and "bg:" not in style for style, text in segments)
+    assert any(text == "def" and "bg:" not in style for style, text in segments)
 
 
 def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
@@ -164,8 +165,9 @@ def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
     diff = "--- foo.unknownxyz\n+++ foo.unknownxyz\n@@ -1,1 +1,1 @@\n- old\n+ new\n"
     segments = ui.diff_segments(diff)
 
-    assert any(t.startswith("- old") and s == "ansired" for s, t in segments)
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
+    assert any("old" in t and s == "ansiwhite bg:#520000" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
 
 
 def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
@@ -174,8 +176,8 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
     diff = "@@ -1,1 +1,1 @@\n- old\n+ new\n"
     segments = ui.diff_segments(diff)
 
-    assert any(t.startswith("- old") and s == "ansired" for s, t in segments)
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
 
 
 def test_approval_segments_highlight_inline_edit_preview():
@@ -185,9 +187,9 @@ def test_approval_segments_highlight_inline_edit_preview():
     )
     segments = n.UiPrinter().approval_segments(full)
 
-    assert any(style == "ansimagenta" and "return" in text for style, text in segments)
-    assert any(style == "ansigreen" and text == "+" for style, text in segments)
-    assert any(style == "ansired" and text.startswith("-    pass") for style, text in segments)
+    assert any(style == "ansimagenta bg:#003b00" and "return" in text for style, text in segments)
+    assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
+    assert any(style == "ansiwhite bg:#520000" and "pass" in text for style, text in segments)
 
 
 def test_edit_stale_anchor_reports_current_line(tmp_path):
