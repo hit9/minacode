@@ -1,24 +1,38 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+- Add `/diff`, a read-only viewer for edits made by nanocode. It shows the latest user round and the overall net session diff in `Latest` and `Session` tabs, supports keyboard navigation and paging, and persists edit snapshots across `--resume`.
+- Add a standalone animated progress row for manual `/compact` operations while keeping the normal status line visible.
+- Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
+
+### Changed
+- Replace blank Enter as the queued-input send-now shortcut with Ctrl-C. Enter queues a follow-up for the next model request; when follow-ups are queued, Ctrl-C interrupts the active request so they can be sent immediately. Queue guidance now appears as a contextual `+>` placeholder and disappears while typing.
+- Remove the synthesized FILE STATE context projection. `Read` and `Edit` outputs now remain as bounded, recallable conversation messages, and `/context` shows only Environment and Memory.
+- Show each Bash command once before execution, keep live output visible without repeating the command, and use a compact dimmed `stored tr.N` result marker after live runs.
+- Render `/ps` as a Markdown table and print resume commands on their own line for easier copying.
+
+### Fixed
+- Prioritize queued follow-ups when building the next model request.
+- Keep Bash preview colors consistent, preserve literal closing-tag text, and avoid duplicating output after an interactive live preview.
+- Reject directory paths passed to `Edit` with a tool error instead of crashing during edit planning.
+
 ## 0.9.1 - 2026-07-09
 
 ### Added
 - Add immediate queued-input flushing while the agent is waiting on a model request. Pressing Enter in the `+>` queue still records text for the next LLM request; pressing blank Enter with newly queued text interrupts the active model request and retries it with that queued input included.
-- Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
 
 ### Fixed
 - Harden queued-input flushing so stale SIGINT delivery cannot cancel the whole turn after a model request already returned.
 - Avoid needless duplicate retries when the active model request already contains the queued input, prevent repeated blank Enter from stacking retry counts, and clear whitespace-only queue input on Enter.
-- Move queue-input guidance into the `+>` placeholder, keep it contextual for empty versus queued states, and simplify the send-now shortcut to Ctrl-C for queued follow-ups.
-- Keep Bash preview output color consistent and avoid duplicating output after an interactive live preview.
 
 ## 0.9.0 - 2026-07-07
 
 ### Added
 - Syntax-highlight inline Edit diff previews with Pygments. Added and context lines (the "new" file version) are lexed together as one code block so multiline strings and indentation-sensitive languages highlight correctly; removed lines stay plain diff-red. Degrades gracefully to plain diff coloring when Pygments is unavailable, the file extension is unknown, or the lexer fails.
 - Add background jobs via a `Job` tool (`start`/`status`/`wait`/`list`/`kill`). Long-running or non-blocking work — dev servers, watchers, long builds and test suites — runs in its own process group without blocking the agent; output is buffered (capped per stream), drained non-blockingly on `status`, and returned as a tail. Concurrency is capped (`MAX_JOBS`), running jobs surface in the status bar (`jobs N`), the `/status` row, and a new read-only `/ps` command; `kill` sends SIGTERM then SIGKILL to the group. Jobs run until they exit or are killed (no foreground `shell_timeout` cap), and `Job(action="wait")` with no/zero timeout blocks until the process exits.
-- Add `/diff` command. Read-only slash command that shows latest edit diffs and `Session`, the overall net diff for files edited during the session, not a history list. At an interactive prompt it opens `Latest` and `Session` tabs. `←/→` or `h`/`l` switches tabs, `↑/↓` or `j`/`k` moves in lists, `Enter` opens a file diff, in the diff view `↑/↓` scrolls by line, `Ctrl-U`/`Ctrl-D` by half-page, and `PgUp`/`PgDn` by page; `Esc`/`←` returns to the list, `r` refreshes, and `q`/`Esc` closes from the list. Each successful `Edit` tool call is captured into `Session.turn_diffs` and persisted across `--resume`, with older snapshots recovered from saved `Edit` tool records when needed.
 
 ### Changed
 
