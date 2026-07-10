@@ -118,7 +118,12 @@ def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
     s.store_turn_diff("tr.1", 1, "a.py", "unused", before="old\n", after="new\nextra\n", round=1)
     lp = loop(s)
     rendered = []
-    lp.run_input_app = lambda app: rendered.extend(app.layout.current_control.text())
+
+    def render(app):
+        assert app.full_screen is True
+        rendered.extend(app.layout.current_control.text())
+
+    lp.run_input_app = render
 
     lp.diff_viewer()
 

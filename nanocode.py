@@ -7642,11 +7642,11 @@ Tools:
             dont_extend_height=True,
         )
 
-    def _make_app(self, layout: Layout, bindings: KeyBindings) -> Application:
+    def _make_app(self, layout: Layout, bindings: KeyBindings, *, full_screen: bool = False) -> Application:
         return Application(
             layout=layout,
             key_bindings=bindings,
-            full_screen=False,
+            full_screen=full_screen,
             style=self.style(),
             refresh_interval=StatusBar.INTERVAL,
             erase_when_done=True,
@@ -8429,7 +8429,7 @@ Tools:
 
         content = FormattedTextControl(fragments, focusable=True)
         window = Window(content, dont_extend_height=True, wrap_lines=False)
-        app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings)
+        app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings, full_screen=True)
         try:
             self.run_input_app(app)
         except KeyboardInterrupt:
