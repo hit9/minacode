@@ -17,6 +17,7 @@
 - Render `/ps` as a Markdown table and print resume commands on their own line for easier copying.
 
 ### Fixed
+- Prevent transient working dividers from leaking into CLI history during Bash previews and approval handoffs.
 - Prioritize queued follow-ups when building the next model request.
 - Keep Bash preview colors consistent, preserve literal closing-tag text, show bounded output when no live frame is available, and avoid repeating commands or output around live runs and failures.
 - Coalesce capped fallback edits into one `/diff` entry per file, count only real hunk changes, and report `No changes` when a round has no net effect.

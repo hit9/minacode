@@ -6653,9 +6653,6 @@ class BashLivePreview:
         self.started_at = 0.0
         self.lock = threading.Lock()
         self.timer: threading.Thread | None = None
-        # A standing divider row (raw-colour fragments) drawn above the frame so the boundary between
-        # the log and the running command stays put — the bottom UI does not look like it vanished.
-        self.divider: list[tuple[str, str]] = []
 
     def start(self) -> None:
         if not sys.stderr.isatty():
@@ -6686,12 +6683,6 @@ class BashLivePreview:
         with self.lock:
             if not self.active:
                 return
-            # The frozen frame stays in the scrollback (keep-output-visible), but the divider is only a
-            # live "working" marker — redraw once without it so the output shifts up over it and the
-            # divider does not linger in the log for every command.
-            if self.divider:
-                self.divider = []
-                self.render()
             self.active = False
         timer = self.timer
         if timer is not None:
@@ -6703,8 +6694,6 @@ class BashLivePreview:
         if not self.active:
             return
         rows: list[list[tuple[str, str]]] = [[("ansibrightblack", line)] for line in self.frame_lines()]
-        if self.divider:
-            rows = [self.divider, [("", "")], *rows]  # divider + a blank line, then the frame
         if rows == self.rendered_rows:
             return
         previous = self.rendered_lines
@@ -7244,9 +7233,18 @@ Tools:
             close()
 
     def queue_input_until(self, stop_event: threading.Event) -> None:
+        was_paused = False
         while not stop_event.is_set():
             if self.queue_input_paused.is_set():
+                was_paused = True
                 stop_event.wait(0.05)
+                continue
+            if was_paused:
+                # Avoid briefly rebuilding the queue UI between an approval prompt and the live UI
+                # of the approved tool, which would leave transient divider redraws in scrollback.
+                was_paused = False
+                if stop_event.wait(0.05):
+                    return
                 continue
             self.run_queue_input_app(stop_event)
 
@@ -7313,16 +7311,6 @@ Tools:
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
         return self.sweep_divider_fragments(self.divider_label(queued))
-
-    def bash_divider_fragments(self) -> list[tuple[str, str]]:
-        # A static divider for the BashLivePreview, which renders raw colour names (no style dict).
-        # Kept in sync with the divider.working style so it matches the prompt-toolkit dividers.
-        with self.session._queue_lock:
-            queued = len(self.session.pending_user_inputs)
-        label = self.divider_label(queued)
-        width = max(20, min(52, shutil.get_terminal_size((80, 20)).columns - 2))
-        lead, trail = 3, max(3, width - 3 - (len(label) + 2))
-        return [("ansibrightblack", "-" * lead + " "), ("ansimagenta bold", label), ("ansibrightblack", " " + "-" * trail)]
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         with self.session._queue_lock:
@@ -7931,7 +7919,6 @@ Tools:
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
             self.status_bar.stop()
-        self.live_preview.divider = self.bash_divider_fragments()
         self.live_preview.start()
         self.bash_live_preview_rendered = self.live_preview.active
 
@@ -7946,7 +7933,6 @@ Tools:
                 self.live_status_paused = self.status_bar.is_running()
                 if self.live_status_paused:
                     self.status_bar.stop()
-                self.live_preview.divider = self.bash_divider_fragments()
                 self.live_preview.start()
                 self.bash_live_preview_rendered = self.live_preview.active
             self.live_preview.update(text)

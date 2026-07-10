@@ -1243,37 +1243,6 @@ def test_tool_runner_bash_preview_does_not_omit_single_line(tmp_path):
     assert preview == lines
 
 
-def test_bash_live_preview_finish_erases_divider(monkeypatch):
-    # The frozen frame stays in scrollback (keep-output-visible), but the "working" divider is a live
-    # marker only — finish must redraw once without it so it does not linger in the log per command.
-    printed = []
-    monkeypatch.setattr(n, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
-
-    class FakeOut:
-        def write_raw(self, s=""):
-            pass
-
-        def erase_end_of_line(self):
-            pass
-
-        def flush(self):
-            pass
-
-    p = n.BashLivePreview()
-    p.output = FakeOut()
-    p.active = True
-    p.divider = [("ansimagenta bold", "--- working ---")]
-    p.text = "hi\n"
-    p.render()
-    assert any("working" in line for line in printed)  # divider is drawn while the command runs
-
-    before = len(printed)
-    p.finish()
-    assert p.divider == []  # cleared
-    finish_rows = printed[before:]
-    assert finish_rows and not any("working" in line for line in finish_rows)  # redrawn without it
-
-
 def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     printed = []
     now = [100.4]

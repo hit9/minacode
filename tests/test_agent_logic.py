@@ -802,6 +802,34 @@ def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeyp
     assert not loop.queue_input_active.is_set()
 
 
+def test_queue_input_does_not_restart_between_approval_and_live_tool(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.queue_input_paused.set()
+    rendered = []
+
+    class Stop:
+        stopped = False
+        waits = 0
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _timeout):
+            self.waits += 1
+            if self.waits == 1:
+                loop.queue_input_paused.clear()  # approval closed
+            elif self.waits == 2:
+                loop.queue_input_paused.set()  # approved tool acquired the live region
+            else:
+                self.stopped = True
+            return self.stopped
+
+    loop.run_queue_input_app = lambda _stop: rendered.append(True)
+    loop.queue_input_until(Stop())
+
+    assert rendered == []
+
+
 def test_flush_sigint_ignores_stale_retry_signal(tmp_path):
     s = session(tmp_path)
     shortcut = n.ModelRetryShortcut(s)
