@@ -650,27 +650,27 @@ def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
     assert loop.queue_input_text == ""
 
 
-def test_queue_acknowledges_duplicate_messages_by_id(tmp_path):
+def test_queue_acknowledges_only_claimed_duplicate_messages(tmp_path):
     s = session(tmp_path)
     queue(s, "same", "same")
     claimed = s.claim_user_inputs()
     s.enqueue_user_input("same")
 
-    s.acknowledge_user_inputs({item.id for item in claimed})
+    s.acknowledge_user_inputs(claimed)
 
     assert queued_texts(s) == ["same"]
-    assert s.pending_user_inputs[0].state == "queued"
+    assert not s.pending_user_inputs[0].inflight
 
 
 def test_queue_release_restores_interrupted_inputs(tmp_path):
     s = session(tmp_path)
-    queued = s.enqueue_user_input("ready")
-    assert queued is not None
+    s.enqueue_user_input("ready")
+    queued = s.pending_user_inputs[0]
 
-    assert [item.id for item in s.claim_user_inputs()] == [queued.id]
+    assert s.claim_user_inputs() == [queued]
     s.release_user_inputs()
 
-    assert queued.state == "queued"
+    assert not queued.inflight
 
 
 def test_queued_text_auto_submits_at_round_end(tmp_path):

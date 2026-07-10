@@ -1452,11 +1452,10 @@ class BackgroundJob:
         return stdout, stderr
 
 
-@dataclass
+@dataclass(eq=False)
 class QueuedInput:
-    id: int
     text: str
-    state: str = "queued"
+    inflight: bool = False
 
 
 @dataclass
@@ -1485,7 +1484,6 @@ class Session:
     _snapshot_saved: dict = field(default_factory=dict)
     _active_turn_messages: list[Json] = field(default_factory=list)
     _cache_prefix_text: str | None = None
-    _queue_counter: int = 0
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
@@ -1554,32 +1552,27 @@ class Session:
             self.tool_results.pop(old.key, None)
         return key
 
-    def enqueue_user_input(self, text: str) -> QueuedInput | None:
+    def enqueue_user_input(self, text: str) -> None:
         text = Text.clean(text.strip())
         if not text:
-            return None
+            return
         with self._queue_lock:
-            self._queue_counter += 1
-            item = QueuedInput(self._queue_counter, text)
-            self.pending_user_inputs.append(item)
-            return item
+            self.pending_user_inputs.append(QueuedInput(text))
 
     def claim_user_inputs(self) -> list[QueuedInput]:
         with self._queue_lock:
             for item in self.pending_user_inputs:
-                if item.state == "queued":
-                    item.state = "inflight"
-            return [item for item in self.pending_user_inputs if item.state == "inflight"]
+                item.inflight = True
+            return list(self.pending_user_inputs)
 
-    def acknowledge_user_inputs(self, ids: set[int]) -> None:
+    def acknowledge_user_inputs(self, inputs: list[QueuedInput]) -> None:
         with self._queue_lock:
-            self.pending_user_inputs = [item for item in self.pending_user_inputs if item.id not in ids]
+            self.pending_user_inputs = [item for item in self.pending_user_inputs if item not in inputs]
 
     def release_user_inputs(self) -> None:
         with self._queue_lock:
             for item in self.pending_user_inputs:
-                if item.state == "inflight":
-                    item.state = "queued"
+                item.inflight = False
 
     def latest_round_diffs(self) -> tuple[int, list[TurnDiff]] | None:
         if not self.turn_diffs:
@@ -6202,7 +6195,7 @@ FINAL:
             return
         texts = [item.text for item in pending]
         turn_messages.extend({"role": "user", "content": text} for text in texts)
-        self.session.acknowledge_user_inputs({item.id for item in pending})
+        self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:
             self.on_queue_flush(texts)
 
@@ -7338,9 +7331,9 @@ Tools:
         # above it, so it stays put even once the queue empties rather than vanishing.
         fragments = self.queue_divider_fragments(len(pending))
         for item in pending:
-            style = "class:choice.disabled" if item.state == "inflight" else ""
-            marker = "→ " if item.state == "inflight" else "+ "
-            for index, line in enumerate(Text.clean(item.text).splitlines() or [""]):
+            style = "class:choice.disabled" if item.inflight else ""
+            marker = "→ " if item.inflight else "+ "
+            for index, line in enumerate(item.text.splitlines()):
                 fragments.extend([(style, "\n"), ("class:prompt", marker if index == 0 else "  "), (style, line)])
         return fragments
 
@@ -7358,7 +7351,7 @@ Tools:
 
         def has_pending() -> bool:
             with self.session._queue_lock:
-                return any(item.state == "queued" for item in self.session.pending_user_inputs)
+                return any(not item.inflight for item in self.session.pending_user_inputs)
 
         buffer = Buffer(
             document=Document(self.queue_input_text),
@@ -7381,32 +7374,29 @@ Tools:
         input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
         bindings = KeyBindings()
 
-        def record(texts: list[str]) -> None:
-            texts = [Text.clean(text.strip()) for text in texts if text.strip()]
-            if not texts:
+        def record(text: str) -> None:
+            text = Text.clean(text.strip())
+            if not text:
                 return
-            queued = [text for text in texts if "\n" in text or not text.startswith("/")]
-            commands = [text for text in texts if "\n" not in text and text.startswith("/")]
+            if "\n" not in text and text.startswith("/"):
+                run_in_terminal(lambda: self.run_queued_command(text))
+                return
             # Queued messages live in the bottom region (below the sweep divider) until the turn
             # flushes them up into the log — they are not echoed to scrollback here.
-            for text in queued:
-                self.session.enqueue_user_input(text)
-            if queued and self.queue_input_app is not None:
+            self.session.enqueue_user_input(text)
+            if self.queue_input_app is not None:
                 self.queue_input_app.invalidate()
-            if commands:
-                run_in_terminal(lambda: [self.run_queued_command(text) for text in commands])
 
         def recall_latest() -> None:
             if buffer.text:
                 buffer.cursor_up()
                 return
             with self.session._queue_lock:
-                item = next((item for item in reversed(self.session.pending_user_inputs) if item.state == "queued"), None)
+                item = next((item for item in reversed(self.session.pending_user_inputs) if not item.inflight), None)
                 if item is None:
                     return
                 self.session.pending_user_inputs.remove(item)
                 text = item.text
-            self.queue_input_text = text
             buffer.reset(Document(text, cursor_position=len(text)))
             if self.queue_input_app is not None:
                 self.queue_input_app.invalidate()
@@ -7414,8 +7404,7 @@ Tools:
         @bindings.add("enter", eager=True)
         def _enter(event):
             if buffer.text.strip():
-                record([buffer.text])
-            self.queue_input_text = ""
+                record(buffer.text)
             buffer.reset(Document(""))
 
         @bindings.add("escape", "enter", eager=True)
@@ -7526,8 +7515,8 @@ Tools:
     def take_entered_inputs(self) -> list[str]:
         """Take Enter-committed queue items while preserving message boundaries."""
         with self.session._queue_lock:
-            texts = [item.text for item in self.session.pending_user_inputs if item.state == "queued" and item.text.strip()]
-            self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.state != "queued"]
+            texts = [item.text for item in self.session.pending_user_inputs if not item.inflight]
+            self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.inflight]
         return texts
 
     def take_typed_input(self) -> str:
