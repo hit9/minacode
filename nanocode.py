@@ -1539,18 +1539,11 @@ class Session:
             self.tool_results.pop(old.key, None)
         return key
 
-    def turn_diffs_by_round(self) -> dict[int, list[TurnDiff]]:
-        grouped: dict[int, list[TurnDiff]] = {}
-        for diff in self.turn_diffs:
-            grouped.setdefault(diff.round or diff.turn, []).append(diff)
-        return grouped
-
     def latest_round_diffs(self) -> tuple[int, list[TurnDiff]] | None:
-        grouped = self.turn_diffs_by_round()
-        if not grouped:
+        if not self.turn_diffs:
             return None
-        round = max(grouped)
-        return round, grouped[round]
+        round = max(diff.round or diff.turn for diff in self.turn_diffs)
+        return round, [diff for diff in self.turn_diffs if (diff.round or diff.turn) == round]
 
     @staticmethod
     def net_diff_section(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
@@ -8271,31 +8264,21 @@ Tools:
             return None
         return self._diff_text()
 
-    def _latest_round_diff_text(self) -> str:
-        latest = self.agent.session.latest_round_diff_sections()
-        if latest is None:
-            return ""
-        round, sections = latest
-        lines = [f"### Latest · Round {round}"]
-        for _status, path, diff in sections:
-            lines.append(f"#### {path}")
-            bounded, truncated = DiffText.bounded(diff)
-            lines.append(f"```diff\n{bounded}\n```")
-            if truncated:
-                lines.append("\n*Diff truncated. Full edit output is stored in the session.*")
-        return "\n".join(lines)
-
     def _diff_text(self) -> str:
-        latest = self._latest_round_diff_text()
+        latest = self.agent.session.latest_round_diff_sections()
         session = self.agent.session.session_diff_sections()
-        if not latest and not session:
+        groups: list[tuple[str, list[tuple[str, str, str]]]] = []
+        if latest is not None:
+            round, sections = latest
+            groups.append((f"Latest · Round {round}", sections))
+        if session:
+            groups.append(("Session", session))
+        if not groups:
             return "No changes"
         lines: list[str] = []
-        if latest:
-            lines.append(latest)
-        if session:
-            lines.append("### Session")
-            for _status, path, diff in session:
+        for title, sections in groups:
+            lines.append("### " + title)
+            for _status, path, diff in sections:
                 lines.append(f"#### {path}")
                 bounded, truncated = DiffText.bounded(diff)
                 lines.append(f"```diff\n{bounded}\n```")
@@ -8314,15 +8297,9 @@ Tools:
         tabs = ("Latest", "Session")
         state: dict[str, Any] = {"tab": 0, "mode": "list", "file": 0, "scroll": 0}
 
-        def build_latest_sections() -> list[tuple[str, str, str]]:
+        def build_model() -> list[list[tuple[str, str, str]]]:
             latest = self.agent.session.latest_round_diff_sections()
-            if latest is not None:
-                _round, sections = latest
-                return sections
-            return []
-
-        def build_model() -> dict[str, Any]:
-            return {"latest": build_latest_sections(), "session": self.agent.session.session_diff_sections()}
+            return [latest[1] if latest is not None else [], self.agent.session.session_diff_sections()]
 
         model = build_model()
 
@@ -8330,9 +8307,7 @@ Tools:
             return max(3, shutil.get_terminal_size().lines - 7)
 
         def active_sections() -> list[tuple[str, str, str]]:
-            if state["tab"] == 0:
-                return model["latest"]
-            return model["session"]
+            return model[int(state["tab"])]
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
@@ -8398,14 +8373,9 @@ Tools:
                 state["scroll"] = max(0, int(state["scroll"]) + delta)
             event.app.invalidate()
 
-        def page(event, delta: int) -> None:
+        def page(event, delta: int, divisor: int = 1) -> None:
             if state["mode"] == "file":
-                state["scroll"] = max(0, int(state["scroll"]) + delta * viewport())
-                event.app.invalidate()
-
-        def half_page(event, delta: int) -> None:
-            if state["mode"] == "file":
-                state["scroll"] = max(0, int(state["scroll"]) + delta * max(1, viewport() // 2))
+                state["scroll"] = max(0, int(state["scroll"]) + delta * max(1, viewport() // divisor))
                 event.app.invalidate()
 
         def open_file(event):
@@ -8451,8 +8421,8 @@ Tools:
         bindings.add("k", eager=True)(lambda event: move(event, -1))
         bindings.add("pagedown", eager=True)(lambda event: page(event, 1))
         bindings.add("pageup", eager=True)(lambda event: page(event, -1))
-        bindings.add("c-d", eager=True)(lambda event: half_page(event, 1))
-        bindings.add("c-u", eager=True)(lambda event: half_page(event, -1))
+        bindings.add("c-d", eager=True)(lambda event: page(event, 1, 2))
+        bindings.add("c-u", eager=True)(lambda event: page(event, -1, 2))
         bindings.add("enter", eager=True)(open_file)
         bindings.add("escape", eager=True)(lambda event: back(event) if state["mode"] == "file" else event.app.exit(result=None))
         bindings.add("q", eager=True)(lambda event: event.app.exit(result=None))
