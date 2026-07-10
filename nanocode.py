@@ -6451,8 +6451,8 @@ class UiPrinter:
         Token.String: "ansigreen", Token.String.Affix: "ansimagenta", Token.String.Interpol: "ansiyellow", Token.Text: "ansiwhite",
     } if pygments is not None else {}
     # fmt: on
-    DIFF_ADDED_BG: ClassVar[str] = "bg:ansigreen"
-    DIFF_REMOVED_BG: ClassVar[str] = "bg:ansired"
+    DIFF_ADDED_BG: ClassVar[str] = "bg:#225c2b"
+    DIFF_REMOVED_BG: ClassVar[str] = "bg:#7a2936"
 
     @classmethod
     def _diff_hl_style(cls, token_type: Any) -> str:
