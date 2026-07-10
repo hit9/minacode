@@ -388,6 +388,36 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert limited.messages[-1]["content"] == answer
 
 
+def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.skills = n.SkillLibrary({})
+    agent = n.Agent(s, output_fn=lambda text: None)
+
+    class InterruptingModel:
+        calls = 0
+
+        def request(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
+            raise KeyboardInterrupt
+
+    agent.model = InterruptingModel()
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("read file")
+
+    assert [message["role"] for message in s.messages] == ["user", "assistant", "tool"]
+    assert s._active_turn_messages == []
+    restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    messages = [message for message in restored.messages if not n.SessionSnapshotCodec.is_internal_message(message)]
+    assert [message["role"] for message in messages] == ["user", "assistant", "tool"]
+    assert messages[1]["tool_calls"][0]["id"] == "Read-id"
+    assert messages[2]["tool_call_id"] == "Read-id"
+    assert "<Read" in messages[2]["content"]
+    assert [record.name for record in restored.tool_records] == ["Read"]
+
+
 def test_agent_rejects_empty_final_response(tmp_path):
     agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
 

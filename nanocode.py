@@ -792,7 +792,7 @@ class SessionSnapshotCodec:
 
     @classmethod
     def marker(cls, session: "Session") -> Json:
-        messages = cls.persistable_messages(session.messages)
+        messages = cls.snapshot_messages(session)
         records = [cls.tool_record(record) for record in session.tool_records]
         errors = [cls.tool_error(error) for error in session.tool_errors]
         turn_diff_keys = [diff.key for diff in session.turn_diffs]
@@ -872,7 +872,7 @@ class SessionSnapshotCodec:
         state = session.state
         return any(
             (
-                bool(cls.persistable_messages(session.messages)),
+                bool(cls.snapshot_messages(session)),
                 bool(session.tool_records),
                 bool(session.tool_errors),
                 bool(session.turn_diffs),
@@ -887,6 +887,10 @@ class SessionSnapshotCodec:
     @classmethod
     def persistable_messages(cls, messages: list[Json]) -> list[Json]:
         return [message for message in messages if not cls.is_internal_message(message)]
+
+    @classmethod
+    def snapshot_messages(cls, session: "Session") -> list[Json]:
+        return cls.persistable_messages([*session.messages, *session._active_turn_messages])
 
     @staticmethod
     def state(state: AgentState) -> Json:
@@ -913,7 +917,7 @@ class SessionSnapshotCodec:
     def snapshot(cls, session: "Session") -> Json:
         # fmt: off
         return {
-            "uid": session.uid, "cwd": session.cwd, "messages": cls.persistable_messages(session.messages),
+            "uid": session.uid, "cwd": session.cwd, "messages": cls.snapshot_messages(session),
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
             "turn_diffs": [cls.turn_diff(diff) for diff in session.turn_diffs],
@@ -927,7 +931,7 @@ class SessionSnapshotCodec:
             "usage": cls.usage(session.usage),
             "state": cls.state(session.state),
         }
-        cls.add_sequence_delta(delta, "messages", cls.persistable_messages(session.messages), saved, "messages_len", "messages_digest")
+        cls.add_sequence_delta(delta, "messages", cls.snapshot_messages(session), saved, "messages_len", "messages_digest")
         cls.add_sequence_delta(
             delta,
             "tool_records",
@@ -1471,6 +1475,7 @@ class Session:
     uid: str = ""
     resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
+    _active_turn_messages: list[Json] = field(default_factory=list)
     _cache_prefix_text: str | None = None
 
     def __post_init__(self) -> None:
@@ -6128,37 +6133,53 @@ FINAL:
             skill_mentions = self.session.skills.resolve_mentions(user_input)
             if skill_mentions:
                 turn_messages.append({"role": "user", "content": skill_mentions})
-        for step in range(self.session.settings.max_steps):
-            self.session.state.turn_step = step + 1
-            while True:
-                try:
-                    messages, pending = self.messages(turn_messages)
-                    self.session.state.current_model_request_pending_inputs = pending
+        self.checkpoint_turn(turn_messages)
+        try:
+            for step in range(self.session.settings.max_steps):
+                self.session.state.turn_step = step + 1
+                while True:
                     try:
-                        assistant, tool_calls, content = self.model.request(messages)
-                    finally:
-                        self.session.state.current_model_request_pending_inputs = []
-                    self.accept_pending_inputs(turn_messages, pending)
-                    break
-                except ModelRequestRetry:
-                    continue
-            if not tool_calls:
-                if not content.strip():
-                    raise ModelError("empty final response")
-                answer = content.strip()
-                self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
-                self.session.state.turn_messages = 0
-                return answer
-            assistant = self.assistant_turn_message(assistant, tool_calls, content)
-            turn_messages.append(assistant)
-            if content.strip():
-                self.output_fn(content.strip())
-            tool_batches += 1
-            turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else ""))
-        stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
-        self.session.messages.extend([*turn_messages, {"role": "assistant", "content": stopped}])
+                        messages, pending = self.messages(turn_messages)
+                        self.session.state.current_model_request_pending_inputs = pending
+                        try:
+                            assistant, tool_calls, content = self.model.request(messages)
+                        finally:
+                            self.session.state.current_model_request_pending_inputs = []
+                        self.accept_pending_inputs(turn_messages, pending)
+                        break
+                    except ModelRequestRetry:
+                        continue
+                if not tool_calls:
+                    if not content.strip():
+                        raise ModelError("empty final response")
+                    answer = content.strip()
+                    self.finish_turn(turn_messages, answer)
+                    return answer
+                assistant = self.assistant_turn_message(assistant, tool_calls, content)
+                turn_messages.append(assistant)
+                if content.strip():
+                    self.output_fn(content.strip())
+                tool_batches += 1
+                turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else ""))
+                self.checkpoint_turn(turn_messages)
+            stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
+            self.finish_turn(turn_messages, stopped)
+            return stopped
+        except (Exception, KeyboardInterrupt):
+            self.session.messages.extend(self.session._active_turn_messages)
+            self.session._active_turn_messages.clear()
+            self.session.state.turn_messages = 0
+            self.session.save_snapshot()
+            raise
+
+    def checkpoint_turn(self, turn_messages: list[Json]) -> None:
+        self.session._active_turn_messages = list(turn_messages)
+        self.session.save_snapshot()
+
+    def finish_turn(self, turn_messages: list[Json], answer: str) -> None:
+        self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
+        self.session._active_turn_messages.clear()
         self.session.state.turn_messages = 0
-        return stopped
 
     def messages(self, turn_messages: list[Json]) -> tuple[list[Json], list[str]]:
         pending = [text for text in self.session.pending_user_inputs if text.strip()]
