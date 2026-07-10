@@ -6953,8 +6953,6 @@ class StatusBar:
 
 
 class CompactSpinner:
-    INTERVAL: ClassVar[float] = 0.12
-
     def __init__(self, loop: "CommandLoop"):
         self.loop = loop
         self.stop_event = threading.Event()
@@ -6972,28 +6970,20 @@ class CompactSpinner:
         window = Window(FormattedTextControl(self.fragments), height=1, dont_extend_height=True)
         app = self.loop._make_app(Layout(HSplit([window, self.loop.status_window()])), KeyBindings())
         self.app = app
-
-        def stop_when_needed() -> None:
-            self.stop_event.wait()
-            deadline = time.monotonic() + 2.0
-            while self.app is app and time.monotonic() < deadline:
-                self.loop.exit_app(app)
-                time.sleep(0.02)
-
-        threading.Thread(target=stop_when_needed, daemon=True).start()
         try:
             with patch_stdout():
-                app.run()
+                app.run(pre_run=lambda: self.loop.exit_app(app) if self.stop_event.is_set() else None)
         except (EOFError, KeyboardInterrupt, ValueError, OSError):
             pass
         finally:
-            if self.app is app:
-                self.app = None
+            self.app = None
 
     def stop(self) -> None:
         if self.thread is None:
             return
         self.stop_event.set()
+        if self.app is not None:
+            self.loop.exit_app(self.app)
         self.thread.join()
         self.thread = None
 
