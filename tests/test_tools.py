@@ -149,15 +149,13 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     diff = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42\n"
     segments = ui.diff_segments(diff)
 
-    # The added line starts with the green diff prefix and keyword `return` is
-    # highlighted as a keyword.
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
-    assert any(t == "return" and s == "ansimagenta" for s, t in segments)
+    # Diff state uses the background while Pygments keeps control of token foregrounds.
+    assert any(t == "+" and "ansigreen" in s and n.UiPrinter.DIFF_ADDED_BG in s for s, t in segments)
+    assert any(t == "return" and "ansimagenta" in s and n.UiPrinter.DIFF_ADDED_BG in s for s, t in segments)
 
-    # Removed lines are plain diff red; no syntax highlight tokens for the
-    # removed content.
-    removed_raw = [t for s, t in segments if s == "ansired"]
-    assert any("pass" in t for t in removed_raw)
+    # Removed content remains neutral and readable on a red background.
+    assert any(t == "-" and "ansired" in s and n.UiPrinter.DIFF_REMOVED_BG in s for s, t in segments)
+    assert any("pass" in t and "ansiwhite" in s and n.UiPrinter.DIFF_REMOVED_BG in s for s, t in segments)
 
     # Line numbers are preserved.
     assert any("1" in t and "|" in t for s, t in segments)
@@ -168,9 +166,9 @@ def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
     diff = "--- foo.unknownxyz\n+++ foo.unknownxyz\n@@ -1,1 +1,1 @@\n- old\n+ new\n"
     segments = ui.diff_segments(diff)
 
-    # Unknown extension should fall back to plain diff coloring.
-    assert any(s == "ansired" and "-" in t for s, t in segments)
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    # Unknown extensions still retain added/removed backgrounds.
+    assert any(t == "-" and n.UiPrinter.DIFF_REMOVED_BG in s for s, t in segments)
+    assert any(t == "+" and n.UiPrinter.DIFF_ADDED_BG in s for s, t in segments)
 
 
 def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
@@ -179,10 +177,10 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
     diff = "@@ -1,1 +1,1 @@\n- old\n+ new\n"
     segments = ui.diff_segments(diff)
 
-    # Should still render without crashing; removed line is red, added line is
-    # green even though no lexer could be selected.
-    assert any(t.startswith("- old") and s == "ansired" for s, t in segments)
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    # Should still render without crashing or losing diff backgrounds.
+    assert any(t == "-" and n.UiPrinter.DIFF_REMOVED_BG in s for s, t in segments)
+    assert any("old" in t and n.UiPrinter.DIFF_REMOVED_BG in s for s, t in segments)
+    assert any(t == "+" and n.UiPrinter.DIFF_ADDED_BG in s for s, t in segments)
 
 
 def test_approval_segments_highlight_inline_edit_preview():
@@ -192,9 +190,9 @@ def test_approval_segments_highlight_inline_edit_preview():
     )
     segments = n.UiPrinter().approval_segments(full)
 
-    assert any(style == "ansimagenta" and "return" in text for style, text in segments)
-    assert any(style == "ansigreen" and text == "+" for style, text in segments)
-    assert any(style == "ansired" and text.startswith("-    pass") for style, text in segments)
+    assert any("ansimagenta" in style and n.UiPrinter.DIFF_ADDED_BG in style and "return" in text for style, text in segments)
+    assert any("ansigreen" in style and n.UiPrinter.DIFF_ADDED_BG in style and text == "+" for style, text in segments)
+    assert any(n.UiPrinter.DIFF_REMOVED_BG in style and "pass" in text for style, text in segments)
 
 
 def test_edit_stale_anchor_reports_current_line(tmp_path):
