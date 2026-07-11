@@ -1,6 +1,6 @@
-# nanocode
+# nanocode-cli
 
-![nanocode demo](snapshots/nanocode1.gif)
+<img src="snapshots/nanocode1.gif" alt="nanocode demo" width="680">
 
 A coding agent that fits in one file. Describe a task — it reads, edits, runs commands, and reports back.
 
@@ -41,7 +41,7 @@ Common flags:
 
 **One file.** `nanocode.py` is the whole agent — readable, hackable, easy to vendor.
 
-![nanocode session](snapshots/nanocode2.gif)
+<img src="snapshots/nanocode2.gif" alt="nanocode session" width="680">
 
 ## At a glance
 
