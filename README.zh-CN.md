@@ -47,27 +47,29 @@ nanocode
 - `--mcp <selector>`：选择启用哪些 MCP 服务器
 - `--config <path>`：使用指定的 TOML 配置文件
 
-## 范围与取舍
+## 个人软件
 
-nanocode 是一个单文件终端编程代理，而不是一个极简代码示例。随着 session、MCP、skill、后台任务和交互式 CLI 的加入，实现规模已经增长，但这些功能仍集中在一个明确的 runtime 中，而不是分散到一套框架里。
+nanocode 是我为自己使用而构建的 coding agent。我不打算把它做成一个通用框架，也不追求覆盖所有工作流的完整产品。
 
-这样更容易把 nanocode 作为一个整体引入、搜索和修改。相应的取舍是：`nanocode.py` 本身并不小，项目也不提供大型 agent 平台那样清晰的模块边界或广泛集成。
+单文件不等于代码量小。把 agent loop、runtime 状态、工具、持久化和 CLI 放在一起，让我能直接看到它们如何交互，也能自由修改实现，而不必维护 plugin API 或框架抽象。
+
+只有真正改善我工作流的功能才会加入，我也不介意它们保持鲜明的个人取向。相应的取舍是：`nanocode.py` 文件较大、模块边界较少，也不承诺便于外部扩展。这是有意的选择：我更看重直接定制，而不是广泛复用。
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
 </p>
 <p align="center"><sub>恢复保存的 session，包括对话和工具调用历史。</sub></p>
 
-## 概览
+## 亮点
 
 | | |
 |---|---|
-| Provider | OpenAI, Anthropic, DeepSeek, OpenRouter, llama.cpp，以及任意 Chat-Completions 端点 |
-| 编辑 | 结构化 patch 操作（`replace`, `insert_before`, `insert_after`, …）配 `line:hash` 锚点 |
-| Session | 自动保存 JSONL 快照，支持 `--resume latest` / `--resume <id>` |
-| MCP | 远程（HTTP streamable）和本地（stdio）服务器，支持 OAuth |
-| Skills | 从项目和用户目录加载的可复用 Markdown 指令包 |
-| 架构 | Runtime 以单个 `nanocode.py` 模块分发 |
+| 实时 follow-up | Agent 工作时仍可输入；排队消息进入下一次模型请求，也可以中断当前请求立即发送 |
+| 锚点编辑 | 结构化编辑使用 `line:hash` 锚点，遇到过期文件内容时拒绝执行，而不是猜测 |
+| 可恢复 session | 对话、已完成的工具调用、diff 和工作记忆在中断后仍可通过 `--resume` 恢复 |
+| 内置 diff viewer | `/diff` 显示最新用户 round 的变更和整个 session 的净结果 |
+| Prompt-cache 友好 | 稳定的指令、环境信息和工具 schema 保持可复用的请求前缀 |
+| 开放集成 | 支持 OpenAI-compatible 或 Anthropic API、远程/本地 MCP server 和 Markdown skill |
 
 ## 常用命令
 

@@ -47,27 +47,29 @@ Common flags:
 - `--mcp <selector>`: choose which MCP servers to enable
 - `--config <path>`: use a specific TOML config file
 
-## Scope and tradeoffs
+## Personal software
 
-nanocode is a single-file terminal coding agent, not a minimal code sample. Its implementation has grown with sessions, MCP, skills, background jobs, and an interactive CLI, but keeps those features in one explicit runtime rather than distributing them across a framework.
+nanocode is the coding agent I built for my own use. I am not trying to make it a general framework or a comprehensive product for every workflow.
 
-This makes nanocode easier to vendor, search, and modify as a unit. The tradeoff is that `nanocode.py` is substantial, and the project does not provide the modular boundaries or broad integrations of a larger agent platform.
+Single-file does not mean small. Keeping the agent loop, runtime state, tools, persistence, and CLI together lets me see how they interact and change the implementation freely without preserving plugin APIs or framework abstractions.
+
+I add features when they improve my workflow, and I am comfortable keeping them opinionated. The tradeoff is a substantial `nanocode.py` file with fewer module boundaries and fewer guarantees for external extension. That is intentional: I optimize nanocode for direct customization, not broad reuse.
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
 </p>
 <p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
 
-## At a glance
+## Highlights
 
 | | |
 |---|---|
-| Providers | OpenAI, Anthropic, DeepSeek, OpenRouter, llama.cpp, and any Chat-Completions endpoint |
-| Editing | Structured patch ops (`replace`, `insert_before`, `insert_after`, …) with `line:hash` anchors |
-| Sessions | Auto-saved JSONL snapshots, `--resume latest` / `--resume <id>` |
-| MCP | Remote (HTTP streamable) and local (stdio) servers, with OAuth support |
-| Skills | Reusable Markdown instruction packs from project and user directories |
-| Architecture | The runtime is distributed as one `nanocode.py` module |
+| Live follow-ups | Type while the agent works; queued input joins the next model request or can interrupt the current one |
+| Anchored edits | Structured edits use `line:hash` anchors and reject stale file content instead of guessing |
+| Resumable sessions | Conversation, completed tool calls, diffs, and working memory survive interruption and `--resume` |
+| Built-in diff viewer | `/diff` shows changes from the latest user round and the net session result |
+| Prompt-cache aware | Stable instructions, environment, and tool schemas preserve reusable request prefixes |
+| Open integrations | Use OpenAI-compatible or Anthropic APIs, remote/local MCP servers, and Markdown skills |
 
 ## Common commands
 
