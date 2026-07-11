@@ -79,7 +79,7 @@ def test_prompt_output_disables_cpr_probe(monkeypatch):
     output = SimpleNamespace(enable_cpr=True)
     monkeypatch.setattr(n, "create_output", lambda: output)
 
-    assert n.create_prompt_output() is output
+    assert n.CommandLoop.prompt_output() is output
     assert output.enable_cpr is False
 
 
@@ -1321,10 +1321,10 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
 
 def test_elapsed_since_uses_whole_seconds(monkeypatch):
     monkeypatch.setattr(n.time, "monotonic", lambda: 104.9)
-    assert n.elapsed_since(100.0) == "4s"
+    assert n.Text.elapsed_since(100.0) == "4s"
 
     monkeypatch.setattr(n.time, "monotonic", lambda: 162.9)
-    assert n.elapsed_since(100.0) == "1m02s"
+    assert n.Text.elapsed_since(100.0) == "1m02s"
 
 
 def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):

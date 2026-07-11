@@ -80,21 +80,6 @@ __version__ = "0.9.1"
 Json = dict[str, Any]
 
 
-def create_prompt_output():
-    output = create_output()
-    if hasattr(output, "enable_cpr"):
-        output.enable_cpr = False
-    return output
-
-
-def elapsed_since(started_at: float) -> str:
-    elapsed = int(max(0.0, time.monotonic() - started_at)) if started_at else 0
-    if elapsed < 60:
-        return f"{elapsed}s"
-    minutes, seconds = divmod(elapsed, 60)
-    return f"{minutes}m{seconds:02d}s"
-
-
 HTTP_USER_AGENT = "nanocode/" + __version__
 logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
@@ -163,6 +148,14 @@ class Text:
         if isinstance(value, (list, tuple)):
             return [cls.value(item) for item in value]
         return value
+
+    @staticmethod
+    def elapsed_since(started_at: float) -> str:
+        elapsed = int(max(0.0, time.monotonic() - started_at)) if started_at else 0
+        if elapsed < 60:
+            return f"{elapsed}s"
+        minutes, seconds = divmod(elapsed, 60)
+        return f"{minutes}m{seconds:02d}s"
 
 
 @dataclass
@@ -7008,7 +7001,7 @@ class BashLivePreview:
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
-        label = elapsed_since(self.started_at)
+        label = Text.elapsed_since(self.started_at)
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
         limit = width - 5
@@ -7682,7 +7675,7 @@ Tools:
         ]
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
-        label = f"working ({elapsed_since(self.status_bar.started_at)})"
+        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})"
         return self.sweep_divider_fragments(f"{label} [ {queued} queued ]" if queued else label)
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
@@ -8115,8 +8108,17 @@ Tools:
             style=self.style(),
             refresh_interval=StatusBar.INTERVAL,
             erase_when_done=True,
-            output=create_prompt_output(),
+            output=self.prompt_output(),
         )
+
+    @staticmethod
+    def prompt_output():
+        # Suppress prompt-toolkit's cursor-position report probe; some terminals echo it back as
+        # visible input and the agent loop doesn't rely on the response anyway.
+        output = create_output()
+        if hasattr(output, "enable_cpr"):
+            output.enable_cpr = False
+        return output
 
     def run_input_app(self, app: Application) -> Any:
         self.pause_queue_input()
