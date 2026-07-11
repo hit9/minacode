@@ -1698,7 +1698,9 @@ class Session:
     def net_diff_for_path(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
         if before == after:
             return None
-        text = "".join(difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
+        text = "".join(
+            difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path)
+        )
         return (status, path, text) if text else None
 
     @classmethod
@@ -5699,11 +5701,7 @@ class ToolRunner:
         turn_diff_after: str = "",
     ) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
-        key = (
-            self.session.store_tool_result(call.name, call.args, output)
-            if not failed and store and (tool_class is None or tool_class.STORES_RESULT)
-            else ""
-        )
+        key = self.session.store_tool_result(call.name, call.args, output) if not failed and store and (tool_class is None or tool_class.STORES_RESULT) else ""
         if failed:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
@@ -6011,7 +6009,9 @@ Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
-        _, _, content = self.anthropic_request(messages, None) if self.session.config.provider.resolved_api() == "anthropic" else self.chat_request(messages, None)
+        _, _, content = (
+            self.anthropic_request(messages, None) if self.session.config.provider.resolved_api() == "anthropic" else self.chat_request(messages, None)
+        )
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")
@@ -6545,30 +6545,50 @@ class Theme:
     NO_COLOR: ClassVar[bool] = bool(os.environ.get("NO_COLOR"))
 
     DARK: ClassVar[dict[str, str]] = {
-        "diff.added.bg": "bg:#003b00", "diff.added.fg": "fg:default",
-        "diff.removed.bg": "bg:#520000", "diff.removed.fg": "fg:default",
-        "syntax.assign": "fg:#79c0ff", "syntax.string": "fg:#a5d6ff",
-        "syntax.number": "fg:#d2a8ff", "syntax.ident": "fg:#a5d6ff",
-        "syntax.builtin": "fg:#79c0ff", "syntax.default_hex": "e6edf3",
-        "status.base": "#e6edf3", "status.sep": "#4b5563",
-        "status.provider": "#e6edf3", "status.reason": "#a5b4fc",
-        "status.mcp": "#93c5fd", "status.ctx": "#facc15",
-        "status.update": "#fb923c", "status.index": "#94a3b8",
-        "status.warn": "#fb7185", "status.runtime": "#c084fc",
+        "diff.added.bg": "bg:#003b00",
+        "diff.added.fg": "fg:default",
+        "diff.removed.bg": "bg:#520000",
+        "diff.removed.fg": "fg:default",
+        "syntax.assign": "fg:#79c0ff",
+        "syntax.string": "fg:#a5d6ff",
+        "syntax.number": "fg:#d2a8ff",
+        "syntax.ident": "fg:#a5d6ff",
+        "syntax.builtin": "fg:#79c0ff",
+        "syntax.default_hex": "e6edf3",
+        "status.base": "#e6edf3",
+        "status.sep": "#4b5563",
+        "status.provider": "#e6edf3",
+        "status.reason": "#a5b4fc",
+        "status.mcp": "#93c5fd",
+        "status.ctx": "#facc15",
+        "status.update": "#fb923c",
+        "status.index": "#94a3b8",
+        "status.warn": "#fb7185",
+        "status.runtime": "#c084fc",
         "pygments": "github-dark",
     }
 
     LIGHT: ClassVar[dict[str, str]] = {
-        "diff.added.bg": "bg:#d1f0d1", "diff.added.fg": "fg:#003b00",
-        "diff.removed.bg": "bg:#f5c8c8", "diff.removed.fg": "fg:#520000",
-        "syntax.assign": "fg:#005cc5", "syntax.string": "fg:#032f62",
-        "syntax.number": "fg:#6f42c1", "syntax.ident": "fg:#032f62",
-        "syntax.builtin": "fg:#005cc5", "syntax.default_hex": "24292e",
-        "status.base": "#24292e", "status.sep": "#9ca3af",
-        "status.provider": "#24292e", "status.reason": "#5b21b6",
-        "status.mcp": "#1e40af", "status.ctx": "#a16207",
-        "status.update": "#9a3412", "status.index": "#475569",
-        "status.warn": "#b91c1c", "status.runtime": "#6b21a8",
+        "diff.added.bg": "bg:#d1f0d1",
+        "diff.added.fg": "fg:#003b00",
+        "diff.removed.bg": "bg:#f5c8c8",
+        "diff.removed.fg": "fg:#520000",
+        "syntax.assign": "fg:#005cc5",
+        "syntax.string": "fg:#032f62",
+        "syntax.number": "fg:#6f42c1",
+        "syntax.ident": "fg:#032f62",
+        "syntax.builtin": "fg:#005cc5",
+        "syntax.default_hex": "24292e",
+        "status.base": "#24292e",
+        "status.sep": "#9ca3af",
+        "status.provider": "#24292e",
+        "status.reason": "#5b21b6",
+        "status.mcp": "#1e40af",
+        "status.ctx": "#a16207",
+        "status.update": "#9a3412",
+        "status.index": "#475569",
+        "status.warn": "#b91c1c",
+        "status.runtime": "#6b21a8",
         "pygments": "default",
     }
 
@@ -6617,7 +6637,7 @@ class Theme:
 class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     TOOL_ARG_TOKEN: ClassVar[re.Pattern] = re.compile(
-        r'''\s+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*=|(?:tr|job)\.\d+|\d+(?::\d+)?|[;,]|[^\s;,]+'''
+        r"""\s+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*=|(?:tr|job)\.\d+|\d+(?::\d+)?|[;,]|[^\s;,]+"""
     )
 
     def __init__(self, output_fn=print):
@@ -6794,7 +6814,7 @@ class UiPrinter:
                 style = fallback_style
             elif token.endswith("="):
                 style = Theme.style("syntax.assign")
-            elif token.startswith(("\"", "'")):
+            elif token.startswith(('"', "'")):
                 style = Theme.style("syntax.string")
             elif re.fullmatch(r"(?:tr|job)\.\d+|\d+(?::\d+)?", token):
                 style = Theme.style("syntax.number")
@@ -6985,6 +7005,7 @@ class UiPrinter:
         if lines and not lines[-1]:
             lines.pop()
         return lines
+
 
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
@@ -7407,6 +7428,7 @@ class TabbedViewState:
     def visible(self, lines: list[Any], height: int) -> list[Any]:
         self.scroll = min(self.scroll, max(0, len(lines) - height))
         return lines[self.scroll : self.scroll + height]
+
 
 @dataclass
 class DiffViewState:
@@ -8920,7 +8942,6 @@ Tools:
         except KeyboardInterrupt:
             pass
 
-
     CONTEXT_TABS: ClassVar[tuple[tuple[str, str], ...]] = (("Environment", "environment_md"), ("Memory", "memory_md"))
 
     def context_tabs(self, context: "ContextManager") -> None:
@@ -9336,7 +9357,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
     parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
-    parser.add_argument("--theme", choices=["auto", "light", "dark"], default="", help="Color theme (defaults to runtime.theme, then auto-detect via COLORFGBG)")
+    parser.add_argument(
+        "--theme", choices=["auto", "light", "dark"], default="", help="Color theme (defaults to runtime.theme, then auto-detect via COLORFGBG)"
+    )
     parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     parser.add_argument("command", nargs="?", choices=["update", "upgrade"], help="Update nanocode to the latest version")
