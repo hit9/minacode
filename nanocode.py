@@ -3663,6 +3663,13 @@ TOOLS: tuple[type[Tool], ...] = (
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 
+def resolved_tool_schemas(session: Session) -> list[Json]:
+    strict = session.config.provider.resolved_strict_tools()
+    # Skill is conditional so a skill-free session keeps the same cache-stable tool prefix.
+    has_skills = bool(session.skills and session.skills.skills)
+    return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or has_skills]
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -3879,17 +3886,11 @@ class ContextManager:
             ("tool-schemas", json.dumps(tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
         ]
 
-    def tool_schemas(self) -> list[Json]:
-        strict = self.session.config.provider.resolved_strict_tools()
-        # The Skill tool only appears when at least one skill is installed, so a skill-free session
-        # keeps a byte-identical prefix to before skills existed.
-        has_skills = bool(self.session.skills and self.session.skills.skills)
-        return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or has_skills]
-
-    def check_cache_prefix(self, base_system: str) -> None:
+    def check_cache_prefix(self, base_system: str, tools: list[Json] | None = None) -> None:
+        tools = tools if tools is not None else resolved_tool_schemas(self.session)
         regions: dict[str, Json] = {}
         prefix_hash = hashlib.sha256()
-        for index, (name, text) in enumerate(self.cache_prefix_regions(base_system, self.tool_schemas())):
+        for index, (name, text) in enumerate(self.cache_prefix_regions(base_system, tools)):
             encoded = text.encode("utf-8")
             if index:
                 prefix_hash.update(b"\x00")
@@ -3931,25 +3932,26 @@ class ContextManager:
         self.session.state.context_percent = min(100, tokens * 100 // self.session.settings.max_context_tokens)
         return self.session.state.context_percent
 
-    def maybe_compact(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> None:
-        if not self.over_budget(base_system, turn_messages):
-            return
+    def prepare_messages(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
+        messages = self.model_messages(base_system, turn_messages)
+        if self.estimated_tokens(messages) < self.session.settings.max_context_tokens:
+            return messages
         compacted, keep = self.compaction_parts()
         if compacted:
             try:
                 self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
             except Exception:
                 self.apply_compaction_fallback(keep, turn_messages)
-        if turn_messages is not None and self.over_budget(base_system, turn_messages):
+            messages = self.model_messages(base_system, turn_messages)
+        if turn_messages is not None and self.estimated_tokens(messages) >= self.session.settings.max_context_tokens:
             compacted, keep = self.turn_compaction_parts(turn_messages)
             if compacted:
                 try:
                     self.apply_turn_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
                 except Exception:
                     self.apply_turn_compaction_fallback(keep, turn_messages)
-
-    def over_budget(self, base_system: str, turn_messages: list[Json] | None = None) -> bool:
-        return self.estimated_tokens(self.model_messages(base_system, turn_messages)) >= self.session.settings.max_context_tokens
+                messages = self.model_messages(base_system, turn_messages)
+        return messages
 
     def memory_context(self, *, with_date: bool = False) -> str:
         index_status = self.session.state.code_index_status or "missing"
@@ -5857,22 +5859,22 @@ class ToolRunner:
         return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
 
+@dataclass(frozen=True)
+class PreparedRequest:
+    messages: list[Json]
+    tools: list[Json]
+    pending: list[QueuedInput]
+
+
 class ModelClient:
     def __init__(self, session: Session):
         self.session = session
 
-    def tool_schemas(self) -> list[Json]:
-        provider = self.session.config.provider
-        # Keep in lockstep with ContextManager.tool_schemas: the Skill tool is only offered when a
-        # skill is installed, so the sent tools match the cache-prefix fingerprint.
-        has_skills = bool(self.session.skills and self.session.skills.skills)
-        return [tool.schema(provider.resolved_strict_tools()) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or has_skills]
-
-    def request(self, messages: list[Json]) -> tuple[Json, list[ToolCall], str]:
+    def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        tools = self.tool_schemas()
+        tools = tools if tools is not None else resolved_tool_schemas(self.session)
         for attempt in range(MODEL_REQUEST_RETRIES + 1):
             self.session.state.current_model_call_started_at = time.monotonic()
             try:
@@ -6309,9 +6311,9 @@ FINAL:
                 self.session.state.turn_step = step + 1
                 while True:
                     try:
-                        messages, pending = self.messages(turn_messages)
-                        assistant, tool_calls, content = self.model.request(messages)
-                        self.accept_pending_inputs(turn_messages, pending)
+                        request = self.prepare_request(turn_messages)
+                        assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                        self.accept_pending_inputs(turn_messages, request.pending)
                         break
                     except ModelRequestRetry:
                         continue
@@ -6348,15 +6350,15 @@ FINAL:
         self.session._active_turn_messages.clear()
         self.session.state.turn_messages = 0
 
-    def messages(self, turn_messages: list[Json]) -> tuple[list[Json], list[QueuedInput]]:
+    def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
         request_turn = [*turn_messages, *({"role": "user", "content": item.text} for item in pending)]
         self.session.state.turn_messages = len(request_turn)
-        self.context.maybe_compact(self.model, self.SYSTEM_PROMPT, request_turn)
-        messages = self.context.model_messages(self.SYSTEM_PROMPT, request_turn)
-        self.context.check_cache_prefix(self.SYSTEM_PROMPT)
+        messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn)
+        tools = resolved_tool_schemas(self.session)
+        self.context.check_cache_prefix(self.SYSTEM_PROMPT, tools)
         self.context.update_percent(messages)
-        return messages, pending
+        return PreparedRequest(messages, tools, pending)
 
     def accept_pending_inputs(self, turn_messages: list[Json], pending: list[QueuedInput]) -> None:
         if not pending:

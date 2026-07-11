@@ -161,7 +161,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
     model = FakeModel()
-    context.maybe_compact(model, "system", [{"role": "user", "content": "request"}])
+    context.prepare_messages(model, "system", [{"role": "user", "content": "request"}])
     assert model.input is not None
     assert "Older Messages:" in model.input
     assert "old answer" in model.input
@@ -222,7 +222,7 @@ def test_compaction_parts_for_uses_last_fixed_window(tmp_path):
     assert [message["content"] for message in recent] == [f"m{index}" for index in range(2, 10)]
 
 
-def test_maybe_compact_skips_when_context_under_budget(tmp_path):
+def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 999_999
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
@@ -231,9 +231,25 @@ def test_maybe_compact_skips_when_context_under_budget(tmp_path):
         def compact(self, text):
             raise AssertionError(text)
 
-    n.ContextManager(s).maybe_compact(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
+    n.ContextManager(s).prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
 
     assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
+
+
+def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch):
+    context = n.ContextManager(session(tmp_path))
+    calls = 0
+    original = context.model_messages
+
+    def model_messages(base_system, turn_messages=None):
+        nonlocal calls
+        calls += 1
+        return original(base_system, turn_messages)
+
+    monkeypatch.setattr(context, "model_messages", model_messages)
+    context.prepare_messages(object(), "system", [{"role": "user", "content": "request"}])
+
+    assert calls == 1
 
 
 def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
@@ -277,7 +293,7 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
         def compact(self, text):
             return {"summary": "summary"}
 
-    n.ContextManager(s).maybe_compact(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+    n.ContextManager(s).prepare_messages(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
 
     assert old_key not in s.tool_results
     assert current_key in s.tool_results
@@ -360,7 +376,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
@@ -387,7 +403,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     limited_agent = n.Agent(limited, output_fn=lambda text: None)
 
     class LoopingModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])], ""
 
     limited_agent.model = LoopingModel()
@@ -406,7 +422,7 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     class InterruptingModel:
         calls = 0
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.calls += 1
             if self.calls == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
@@ -431,7 +447,7 @@ def test_agent_rejects_empty_final_response(tmp_path):
     agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
 
     class EmptyModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": ""}, [], ""
 
     agent.model = EmptyModel()
@@ -448,7 +464,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 s.enqueue_user_input("second instruction")
@@ -472,6 +488,31 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[4]["content"] == "second instruction"
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
+
+
+def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    agent = n.Agent(s, output_fn=lambda text: None)
+    tools = [{"type": "function", "function": {"name": "Test", "parameters": {}}}]
+    resolved = []
+
+    def resolve(session):
+        resolved.append(session)
+        return tools
+
+    class FakeModel:
+        received_tools = None
+
+        def request(self, messages, request_tools=None):
+            self.received_tools = request_tools
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    monkeypatch.setattr(n, "resolved_tool_schemas", resolve)
+    agent.model = FakeModel()
+
+    assert agent.run("hello") == "done"
+    assert resolved == [s]
+    assert agent.model.received_tools is tools
 
 
 def test_startup_tip_respects_toggle_and_context(tmp_path):
@@ -674,7 +715,7 @@ def test_queued_text_auto_submits_at_round_end(tmp_path):
     s = session(tmp_path)
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -698,7 +739,7 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     queue(s, "leftover instruction")
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -853,7 +894,7 @@ def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
     queue(s, "first pending")
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -880,7 +921,7 @@ def test_queued_blank_text_is_cleared(tmp_path):
     s = session(tmp_path)
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -909,7 +950,7 @@ def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
     queue(s, "entered instruction", "second instruction")
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -1355,7 +1396,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], "I'll inspect that first."
@@ -1396,7 +1437,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
         def compact(self, text):
             raise n.ModelError("failed")
 
-    context.maybe_compact(FailingModel(), "system", [{"role": "user", "content": "request"}])
+    context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
     assert len(s.messages) == 2
     assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
@@ -1463,7 +1504,7 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Bash", [])], ""
@@ -1755,7 +1796,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     # With the built-in nanocode-help present, the Skill tool and SKILLS section are offered.
     withskill = n.ContextManager(session(tmp_path))
     assert "--- SKILLS ---" in withskill.skills_context()
-    assert any(t["function"]["name"] == "Skill" for t in withskill.tool_schemas())
+    assert any(t["function"]["name"] == "Skill" for t in n.resolved_tool_schemas(withskill.session))
     messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
     assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
 
@@ -1763,8 +1804,9 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     bare = n.ContextManager(session(tmp_path))
     bare.session.skills = n.SkillLibrary({})
     assert bare.skills_context() == ""
-    assert not any(t["function"]["name"] == "Skill" for t in bare.tool_schemas())
-    assert all("--- SKILLS ---" not in text for _name, text in bare.cache_prefix_regions(n.Agent.SYSTEM_PROMPT, bare.tool_schemas()))
+    tools = n.resolved_tool_schemas(bare.session)
+    assert not any(t["function"]["name"] == "Skill" for t in tools)
+    assert all("--- SKILLS ---" not in text for _name, text in bare.cache_prefix_regions(n.Agent.SYSTEM_PROMPT, tools))
 
 
 def test_skills_command_lists_builtin_and_installed(tmp_path):
