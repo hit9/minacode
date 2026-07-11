@@ -1,24 +1,40 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  <img src="snapshots/nanocode1.gif" alt="nanocode demo" width="600">
+  面向开发者的轻量、缓存友好、实现透明的 CLI 编程代理。
 </p>
 
-一个文件，一个编程代理。描述任务——它读取、编辑、运行命令，然后汇报结果。
+<p align="center">
+  <img src="snapshots/nanocode1.gif" alt="nanocode demo" width="600">
+</p>
+<p align="center"><sub>在一个交互式 session 中编辑代码并运行工具。</sub></p>
 
-[English](README.md)
+<p align="center"><a href="README.md">English</a></p>
 
 ## 安装
 
+需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
+
 ```sh
 uv tool install nanocode-cli
+nanocode --init-config
 ```
 
-创建配置，开始使用：
+编辑 `~/.nanocode/config.toml`，填入 OpenAI-compatible endpoint：
+
+```toml
+[provider]
+active = "default"
+
+[provider.default]
+url = "https://api.openai.com/v1"
+key = "YOUR_API_KEY"
+model = "gpt-5"
+```
+
+然后启动：
 
 ```sh
-nanocode --init-config
-# 编辑 ~/.nanocode/config.toml → 填写 provider.url, provider.key, provider.model
 nanocode
 ```
 
@@ -46,56 +62,39 @@ nanocode
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
 </p>
+<p align="center"><sub>恢复保存的 session，包括对话和工具调用历史。</sub></p>
 
 ## 概览
 
 | | |
 |---|---|
-| 工具 | Read, Search, Edit, Bash, InspectCode, Job, Recall, Note, Ask, MCP, Skill |
 | Provider | OpenAI, Anthropic, DeepSeek, OpenRouter, llama.cpp，以及任意 Chat-Completions 端点 |
-| MCP | 远程（HTTP streamable）和本地（stdio）服务器，支持 OAuth |
-| Skills | 可复用指令包（Markdown）；项目 `.nanocode/skills/` 和用户 `~/.nanocode/skills/` |
 | 编辑 | 结构化 patch 操作（`replace`, `insert_before`, `insert_after`, …）配 `line:hash` 锚点 |
 | Session | 自动保存 JSONL 快照，支持 `--resume latest` / `--resume <id>` |
-| 索引 | 代码符号索引——outline、references、implementors、call chains（`InspectCode`） |
-| 上下文 | cache-stable prefix + conversation + Memory（goal/plan/known/check）三段式结构 |
-| 配置 | TOML —— `~/.nanocode/config.toml` |
+| MCP | 远程（HTTP streamable）和本地（stdio）服务器，支持 OAuth |
+| Skills | 从项目和用户目录加载的可复用 Markdown 指令包 |
+| 架构 | 完整 agent 位于可直接阅读的 `nanocode.py` 模块中 |
 
-## 命令
+## 常用命令
 
 | 命令 | 用途 |
 |---|---|
-| `/help` | 显示命令和工具列表 |
+| `/help` | 显示完整命令和工具参考 |
 | `/status` | 运行状态：token 用量、context 占比、缓存命中率 |
 | `/context` | 模型上下文帧——环境、记忆（goal/plan/known/check） |
 | `/diff` | 最新编辑 diff 和 session 整体净 diff（交互式，支持标签切换） |
-| `/skills` | 列出已安装 skills |
-| `/config` | 显示当前配置 |
-| `/debug` | 最近三条内存诊断（cache-prefix 不匹配等） |
 | `/compact` | 立即压缩上下文 |
 | `/mcp` | 管理 MCP 服务器和工具 |
-| `/provider [NAME]` | 显示或切换 provider |
 | `/model [MODEL]` | 显示或切换模型 |
-| `/reason` | 调整 reasoning effort |
-| `/strict` | 切换严格工具调用 schema（OpenAI / DeepSeek） |
-| `/set KEY VALUE` | 在当前 session 中设置配置项 |
 | `/yolo` | 切换工具确认 |
-| `/exit`, `/quit` | 退出 |
 
-交互选择器支持 `j`/`k`、方向键、`/` 搜索、Enter、Esc。输入支持历史补全和 `Ctrl-R` 历史搜索。
+运行 `/help` 查看全部命令、工具和快捷键。交互选择器支持 `j`/`k`、方向键、`/` 搜索、Enter 和 Esc；输入支持历史补全和 `Ctrl-R` 历史搜索。
 
 ## 配置
 
 配置文件：`~/.nanocode/config.toml`
 
-核心段：
-
-- `[provider] active = "name"`
-- `[provider.<name>]`：`url`, `key`, `model`, `api`, `prompt_cache_key`, `reasoning`, `temperature`, `max_tokens`, `strict_tools`, `timeout`
-- `[paths] data_dir`
-- `[runtime]`：`shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `session_retention_days`, `yolo`, `tips`
-
-`api = "auto"` 会根据 provider/model profile 自动选择 Chat Completions 或 Anthropic Messages。`prompt_cache_key = "auto"` 根据 provider、model、workspace 和工具 schema 自动生成稳定 key。
+生成的配置文件会说明常用 provider 和 runtime 选项。可以定义多个 `[provider.<name>]`，再通过 `[provider] active = "name"` 选择。使用 `/config` 查看当前配置，使用 `/help` 查看运行时命令。
 
 ## MCP
 

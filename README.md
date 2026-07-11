@@ -1,24 +1,40 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  <img src="snapshots/nanocode1.gif" alt="nanocode demo" width="600">
+  A compact, cache-friendly coding agent for developers who want an inspectable CLI.
 </p>
 
-A coding agent that fits in one file. Describe a task — it reads, edits, runs commands, and reports back.
+<p align="center">
+  <img src="snapshots/nanocode1.gif" alt="nanocode demo" width="600">
+</p>
+<p align="center"><sub>Editing code and running tools in one interactive session.</sub></p>
 
-[中文](README.zh-CN.md)
+<p align="center"><a href="README.zh-CN.md">中文</a></p>
 
 ## Install
 
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
 ```sh
 uv tool install nanocode-cli
+nanocode --init-config
 ```
 
-Create your config and start:
+Edit `~/.nanocode/config.toml` with an OpenAI-compatible endpoint:
+
+```toml
+[provider]
+active = "default"
+
+[provider.default]
+url = "https://api.openai.com/v1"
+key = "YOUR_API_KEY"
+model = "gpt-5"
+```
+
+Then start:
 
 ```sh
-nanocode --init-config
-# edit ~/.nanocode/config.toml → set provider.url, provider.key, provider.model
 nanocode
 ```
 
@@ -46,56 +62,39 @@ Common flags:
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
 </p>
+<p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
 
 ## At a glance
 
 | | |
 |---|---|
-| Tools | Read, Search, Edit, Bash, InspectCode, Job, Recall, Note, Ask, MCP, Skill |
 | Providers | OpenAI, Anthropic, DeepSeek, OpenRouter, llama.cpp, and any Chat-Completions endpoint |
-| MCP | Remote (HTTP streamable) and local (stdio) servers, OAuth support |
-| Skills | Reusable instruction packs (Markdown); project `.nanocode/skills/` and user `~/.nanocode/skills/` |
 | Editing | Structured patch ops (`replace`, `insert_before`, `insert_after`, …) with `line:hash` anchors |
 | Sessions | Auto-saved JSONL snapshots, `--resume latest` / `--resume <id>` |
-| Index | Code symbol index — outline, references, implementors, call chains (`InspectCode`) |
-| Context | cache-stable prefix + conversation + Memory (goal/plan/known/check) three-part layout |
-| Config | TOML — `~/.nanocode/config.toml` |
+| MCP | Remote (HTTP streamable) and local (stdio) servers, with OAuth support |
+| Skills | Reusable Markdown instruction packs from project and user directories |
+| Architecture | The complete agent lives in the inspectable `nanocode.py` module |
 
-## Commands
+## Common commands
 
 | Command | Description |
 |---|---|
-| `/help` | Show commands and tools |
+| `/help` | Show the complete command and tool reference |
 | `/status` | Runtime status: token usage, context %, cache hit rate |
 | `/context` | Model context frame — environment and memory (goal/plan/known/check) |
 | `/diff` | Latest edit diffs and net session diff (interactive, tabbed) |
-| `/skills` | List installed skills |
-| `/config` | Show active config |
-| `/debug` | Last three in-memory diagnostics (cache-prefix mismatches, etc.) |
 | `/compact` | Compact context now |
 | `/mcp` | Manage MCP servers and tools |
-| `/provider [NAME]` | Show or switch provider |
 | `/model [MODEL]` | Show or switch model |
-| `/reason` | Adjust reasoning effort |
-| `/strict` | Toggle strict tool-call schemas (OpenAI / DeepSeek) |
-| `/set KEY VALUE` | Set a config value for this session |
 | `/yolo` | Toggle tool confirmations |
-| `/exit`, `/quit` | Exit |
 
-Interactive selectors support `j`/`k`, arrows, `/` search, Enter, Esc. Input supports history completion and `Ctrl-R` search.
+Run `/help` for every command, tool, and shortcut. Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc; input supports history completion and `Ctrl-R` search.
 
 ## Configuration
 
 Config file: `~/.nanocode/config.toml`
 
-Key sections:
-
-- `[provider] active = "name"`
-- `[provider.<name>]`: `url`, `key`, `model`, `api`, `prompt_cache_key`, `reasoning`, `temperature`, `max_tokens`, `strict_tools`, `timeout`
-- `[paths] data_dir`
-- `[runtime]`: `shell_timeout`, `max_agent_steps`, `max_context_tokens`, `max_parallel_tools`, `session_retention_days`, `yolo`, `tips`
-
-`api = "auto"` picks between Chat Completions and Anthropic Messages based on provider/model profiles. `prompt_cache_key = "auto"` derives a stable key from provider, model, workspace, and tool schema names.
+The generated file documents common provider and runtime options. Multiple `[provider.<name>]` sections are supported; select one with `[provider] active = "name"`. Use `/config` to inspect the active configuration and `/help` for runtime commands.
 
 ## MCP
 
