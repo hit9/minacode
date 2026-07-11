@@ -1616,35 +1616,17 @@ class Session:
                 if include_legacy:
                     legacy.setdefault(diff.path, []).append(diff.diff)
                 continue
-            if diff.path not in states:
-                states[diff.path] = (diff.before, diff.after)
-            else:
-                before, _after = states[diff.path]
-                states[diff.path] = (before, diff.after)
+            before, _ = states.get(diff.path, (diff.before, diff.after))
+            states[diff.path] = (before, diff.after)
 
-        # Bash can move a file between Edit calls. Join an unambiguous content boundary so the
-        # logical history follows the file to its final path. turn_diffs is capped at 100, so this
-        # deliberately favors clear reconstruction over a more complex indexed graph.
-        while True:
-            candidates = [
-                (source, target)
-                for source, (_before, after) in states.items()
-                for target, (before, _after) in states.items()
-                if source != target and after and after == before and source not in legacy and target not in legacy
-            ]
-            match = next(
-                (
-                    (source, target)
-                    for source, target in candidates
-                    if sum(item[0] == source for item in candidates) == 1 and sum(item[1] == target for item in candidates) == 1
-                ),
-                None,
-            )
-            if match is None:
-                break
-            source, target = match
+        # Bash can move a file between Edit calls. When one path's `.after` matches another path's
+        # `.before` uniquely on both sides, that's the boundary of a move: merge into the target so
+        # the logical history follows the file to its final path.
+        while (move := cls._find_unambiguous_move(states, legacy)) is not None:
+            source, target = move
             states[target] = (states[source][0], states[target][1])
             del states[source]
+
         sections = []
         for path in paths:
             chunks = []
@@ -1654,6 +1636,23 @@ class Session:
             if chunks:
                 sections.append((status, path, "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"))
         return sections
+
+    @staticmethod
+    def _find_unambiguous_move(states: dict[str, tuple[str, str]], legacy: dict[str, list[str]]) -> tuple[str, str] | None:
+        sources_by_after: dict[str, list[str]] = {}
+        targets_by_before: dict[str, list[str]] = {}
+        for path, (before, after) in states.items():
+            if path in legacy:
+                continue
+            if after:
+                sources_by_after.setdefault(after, []).append(path)
+            if before:
+                targets_by_before.setdefault(before, []).append(path)
+        for content, sources in sources_by_after.items():
+            targets = targets_by_before.get(content, [])
+            if len(sources) == 1 and len(targets) == 1 and sources[0] != targets[0]:
+                return sources[0], targets[0]
+        return None
 
     def latest_round_diff_sections(self) -> tuple[int, list[tuple[str, str, str]]] | None:
         if not self.turn_diffs:
