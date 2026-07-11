@@ -1,3 +1,6 @@
+import shlex
+import sys
+
 import pytest
 
 import nanocode as n
@@ -606,6 +609,70 @@ def test_job_start_uses_bash_highlighting(tmp_path):
     assert wait_line.syntax == "tool-args"
     wait_segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([wait_line]))
     assert ("fg:#d2a8ff", "job.1") in wait_segments
+
+
+def test_job_start_reclaims_finished_capacity(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    monkeypatch.setattr(n.JobTool, "MAX_JOBS", 1)
+    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    s.jobs["job.1"].process.wait(timeout=2)
+
+    result = n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+
+    assert result.startswith("Started job.2")
+    s.jobs["job.2"].process.wait(timeout=2)
+
+
+def test_ps_hides_jobs_that_finished_without_polling(tmp_path):
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    s.jobs["job.1"].process.wait(timeout=2)
+    command_loop = n.CommandLoop(n.Agent(s), input_fn=lambda prompt="": "", output_fn=lambda text: None)
+
+    assert command_loop.ps_command("") == "No active jobs (1 total)."
+
+
+def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    s.jobs["job.1"].process.wait(timeout=2)
+
+    result = n.JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+    assert "status=done" in result
+    assert "exit_code=0" in result
+
+
+def test_job_drains_large_output_without_polling(tmp_path):
+    s = session(tmp_path)
+    code = 'import sys; sys.stdout.write("x" * 1000000)'
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    n.JobTool(s, [{"action": "start", "command": command}]).call()
+    job = s.jobs["job.1"]
+
+    try:
+        job.process.wait(timeout=2)
+        job.drain(final=True)
+    finally:
+        if job.process.poll() is None:
+            job.kill(grace=0.1)
+
+    job.update_status()
+    assert job.status == "done"
+    assert job.exit_code == 0
+    assert job.tail(100)[0] == "..." + "x" * 97
+
+
+def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()
+    job = s.jobs["job.1"]
+    job.process.wait(timeout=2)
+    job.drain(final=True)
+
+    assert job.tail(1)[0] == "."
+    assert job.tail(2)[0] == ".."
+    assert job.tail(3)[0] == "..."
 
 
 def test_log_block_aligns_multiline_tool_arguments():

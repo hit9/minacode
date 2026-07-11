@@ -27,6 +27,7 @@ def test_theme_palettes_have_identical_complete_keys():
         ("light", "15;0", "light"),
         ("auto", "15;0", "dark"),
         ("auto", "0;7", "light"),
+        ("auto", "7;8", "dark"),
         ("auto", "0;;15", "light"),
         ("auto", "invalid", "dark"),
     ],
@@ -107,6 +108,33 @@ def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path, ui_harness):
 
     assert initial.text != scrolled.text
     assert "[diff]" in scrolled.text
+
+
+def test_empty_diff_viewer_reports_zero_position(tmp_path, ui_harness):
+    command_loop = loop(tmp_path)
+    run = ui_harness.run(command_loop, command_loop.diff_viewer, "q")
+
+    assert "No diffs" in run.text
+    assert "[0/0]" in run.text
+
+
+def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
+    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((20, 24)))
+    preview = n.BashLivePreview()
+    preview.active = True
+    preview.text = "界" * 20
+
+    assert all(get_cwidth(line) < 20 for line in preview.frame_lines())
+
+
+def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.config.provider.model = "模型" * 20
+    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((20, 24)))
+
+    fragments = n.StatusBar(s).fragments(0.0, sweep=False, show_elapsed=False)
+
+    assert get_cwidth("".join(text for _style, text in fragments)) < 20
 
 
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):

@@ -158,6 +158,23 @@ class Text:
         return f"{minutes}m{seconds:02d}s"
 
     @staticmethod
+    def clip_width(text: str, width: int) -> str:
+        width = max(0, width)
+        if get_cwidth(text) <= width:
+            return text
+        ellipsis = "." * min(3, width)
+        available = width - get_cwidth(ellipsis)
+        clipped = []
+        used = 0
+        for char in text:
+            char_width = max(0, get_cwidth(char))
+            if used + char_width > available:
+                break
+            clipped.append(char)
+            used += char_width
+        return "".join(clipped).rstrip() + ellipsis
+
+    @staticmethod
     def wrap_styled(
         prefix: list[tuple[str, str]],
         continuation: list[tuple[str, str]],
@@ -1407,13 +1424,41 @@ class BackgroundJob:
     stderr_buf: list[str] = field(default_factory=list)
     _stdout_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
     _stderr_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
+    _buffer_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _reader_thread: threading.Thread | None = field(default=None, repr=False)
 
     # Total characters kept per stream; older output is dropped when exceeded.
     BUFFER_CHARS: ClassVar[int] = 256 * 1024
 
+    def start_draining(self) -> None:
+        if self._reader_thread is not None:
+            return
+        self._reader_thread = threading.Thread(target=self._drain_loop, name=self.id + "-output", daemon=True)
+        self._reader_thread.start()
+
+    def _drain_loop(self) -> None:
+        if self.process.stdout is None or self.process.stderr is None:
+            return
+        selector = selectors.DefaultSelector()
+        try:
+            for stream, label in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
+                if not stream.closed:
+                    selector.register(stream, selectors.EVENT_READ, label)
+            while selector.get_map():
+                for key, _ in selector.select(0.2):
+                    self._read(selector, key)
+        finally:
+            selector.close()
+
     def drain(self, *, timeout: float = 0.0, final: bool = False) -> None:
         """Read available output. With final=True (or a positive timeout) block up to `timeout`
         seconds, draining until the streams reach EOF; otherwise read only what is ready now."""
+        if self._reader_thread is not None:
+            if final:
+                self._reader_thread.join()
+            elif timeout > 0:
+                self._reader_thread.join(timeout)
+            return
         if self.process.stdout is None or self.process.stderr is None:
             return
         blocking = final or timeout > 0
@@ -1444,16 +1489,21 @@ class BackgroundJob:
             data = b""
         text = (self._stdout_decoder if key.data == "stdout" else self._stderr_decoder).decode(data, final=not data)
         if text:
-            buf = self.stdout_buf if key.data == "stdout" else self.stderr_buf
-            buf.append(text)
-            # Drop oldest chunks to cap memory.
-            total = sum(len(part) for part in buf)
-            while total > self.BUFFER_CHARS and len(buf) > 1:
-                total -= len(buf.pop(0))
+            with self._buffer_lock:
+                buf = self.stdout_buf if key.data == "stdout" else self.stderr_buf
+                buf.append(text)
+                # Drop oldest chunks to cap memory.
+                total = sum(len(part) for part in buf)
+                while total > self.BUFFER_CHARS and len(buf) > 1:
+                    total -= len(buf.pop(0))
         if not data:
             try:
                 selector.unregister(key.fileobj)
             except Exception:
+                pass
+            try:
+                key.fileobj.close()
+            except OSError:
                 pass
 
     def update_status(self) -> None:
@@ -1490,13 +1540,15 @@ class BackgroundJob:
             self.exit_code = -1
 
     def tail(self, limit: int) -> tuple[str, str]:
-        stdout = "".join(self.stdout_buf)
-        stderr = "".join(self.stderr_buf)
-        if len(stdout) > limit:
-            stdout = "..." + stdout[-(limit - 3) :]
-        if len(stderr) > limit:
-            stderr = "..." + stderr[-(limit - 3) :]
-        return stdout, stderr
+        limit = max(0, limit)
+
+        def clip(text: str) -> str:
+            if len(text) <= limit:
+                return text
+            return "." * limit if limit <= 3 else "..." + text[-(limit - 3) :]
+
+        with self._buffer_lock:
+            return clip("".join(self.stdout_buf)), clip("".join(self.stderr_buf))
 
 
 @dataclass(eq=False)
@@ -1598,6 +1650,11 @@ class Session:
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)
         return os.path.abspath(os.path.join(root if os.path.isabs(root) else os.path.join(self.cwd, root), *parts))
+
+    def running_jobs(self) -> list[BackgroundJob]:
+        for job in self.jobs.values():
+            job.update_status()
+        return [job for job in self.jobs.values() if job.status == "running"]
 
     def missing_config(self) -> list[str]:
         provider = self.config.provider
@@ -3199,7 +3256,7 @@ class JobTool(Tool):
         command = str(payload.get("command") or "").strip()
         if not command:
             raise ToolError("start requires a non-empty command")
-        active = sum(1 for job in self.session.jobs.values() if job.status == "running")
+        active = len(self.session.running_jobs())
         if active >= self.MAX_JOBS:
             raise ToolError(f"too many active jobs ({active}/{self.MAX_JOBS}); kill or wait for one first")
         self.session.job_counter += 1
@@ -3215,6 +3272,7 @@ class JobTool(Tool):
         )
         job = BackgroundJob(id=job_id, command=command, process=proc, started_at=time.monotonic())
         self.session.jobs[job_id] = job
+        job.start_draining()
         return f"Started {job_id}: {command}"
 
     def _status(self, payload: Json) -> str:
@@ -3242,6 +3300,7 @@ class JobTool(Tool):
     def _list(self) -> str:
         if not self.session.jobs:
             return "No jobs."
+        self.session.running_jobs()
         rows = []
         for job in self.session.jobs.values():
             exit_code = job.exit_code if job.status != "running" else "-"
@@ -3260,10 +3319,11 @@ class JobTool(Tool):
         job = self.session.jobs.get(job_id)
         if job is None:
             raise ToolError(f"unknown job: {job_id!r}")
+        job.update_status()
         return job
 
     def _format(self, job: BackgroundJob, payload: Json) -> str:
-        limit = int(payload.get("limit") or self.DEFAULT_LIMIT)
+        limit = max(1, int(payload.get("limit") or self.DEFAULT_LIMIT))
         stdout, stderr = job.tail(limit)
         lines = [
             f"Job: {job.id}",
@@ -6520,12 +6580,13 @@ class Theme:
 
     @classmethod
     def detect(cls) -> str:
-        # COLORFGBG is "fg;bg" (rxvt/urxvt/Konsole) or "fg;;bg" (iTerm2). A high bg index (>=7) means a light background.
+        # COLORFGBG is "fg;bg" (rxvt/urxvt/Konsole) or "fg;;bg" (iTerm2). Only the standard
+        # white entries are reliably light; index 8 is bright black and must remain dark.
         fgbg = os.environ.get("COLORFGBG", "")
         if ";" in fgbg:
             try:
                 bg = int(fgbg.rsplit(";", 1)[1])
-                return "light" if 7 <= bg <= 15 else "dark"
+                return "light" if bg in {7, 15} else "dark"
             except ValueError:
                 pass
         return "dark"
@@ -7004,10 +7065,10 @@ class BashLivePreview:
         label = Text.elapsed_since(self.started_at)
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
-        limit = width - 5
+        limit = max(1, width - get_cwidth(LogBlock.prefix(2, LogEdge.CONTINUE)) - 1)
 
         def clip(line: str) -> str:
-            return line if len(line) <= limit else line[: max(0, limit - 3)] + "..."
+            return Text.clip_width(line, limit)
 
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
@@ -7161,8 +7222,8 @@ class StatusBar:
         entries = self.entries(elapsed, show_elapsed=show_elapsed)
         text = " | ".join(text for text, _ in entries)
         columns = shutil.get_terminal_size((120, 20)).columns
-        if len(text) >= columns:
-            text = text[: max(0, columns - 4)] + "..."
+        if get_cwidth(text) >= columns:
+            text = Text.clip_width(text, columns - 1)
             return self.sweep_fragments(text, elapsed) if sweep else [(Theme.style("status.base"), text)]
         return self.sweep_fragments(text, elapsed) if sweep else self.styled_fragments(entries)
 
@@ -7178,7 +7239,7 @@ class StatusBar:
         skill_count = len(self.session.skills.skills) if self.session.skills else 0
         if skill_count:
             parts.append((f"skills {skill_count}", "mcp"))
-        running_jobs = sum(1 for job in self.session.jobs.values() if job.status == "running")
+        running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
         parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
@@ -8631,7 +8692,7 @@ Tools:
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)" + (f"; prefix mismatches `{self.session.prefix_mismatch_count}`; see `/debug`" if self.session.prefix_mismatch_count else "")),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
-            ("jobs", f"running `{sum(1 for job in self.session.jobs.values() if job.status == 'running')}`; total `{len(self.session.jobs)}`"),
+            ("jobs", f"running `{len(self.session.running_jobs())}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
         ]
         # fmt: on
@@ -8657,7 +8718,7 @@ Tools:
     def ps_command(self, args: str) -> str:
         if args.strip():
             return "Usage: /ps"
-        running = [job for job in self.session.jobs.values() if job.status == "running"]
+        running = self.session.running_jobs()
         if not running:
             total = len(self.session.jobs)
             return f"No active jobs ({total} total)."
@@ -8775,7 +8836,7 @@ Tools:
                 hint = "↑/↓ or j/k move · ←/→ or h/l tab · Enter open · r refresh · Esc/q close"
             else:
                 hint = "↑/↓ scroll · Ctrl-U/D half-page · PgUp/PgDn page · Esc/← back · r refresh · q close"
-            position = f"{state.file + 1}/{len(sections) or 0}"
+            position = f"{state.file + 1 if sections else 0}/{len(sections)}"
             parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{position}]\n"))
             return parts
 

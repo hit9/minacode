@@ -541,7 +541,7 @@ def test_startup_tip_respects_toggle_and_context(tmp_path):
 
 def test_ps_command_uses_markdown_renderer(tmp_path):
     s = session(tmp_path)
-    s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7)
+    s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7, update_status=lambda: None)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     rendered = []
     plain = []
