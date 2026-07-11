@@ -20,16 +20,16 @@ uv tool install nanocode-cli
 nanocode --init-config
 ```
 
-Edit `~/.nanocode/config.toml` with an OpenAI-compatible endpoint:
+Edit `~/.nanocode/config.toml` to use [DeepSeek Flash](https://api-docs.deepseek.com/):
 
 ```toml
 [provider]
 active = "default"
 
 [provider.default]
-url = "https://api.openai.com/v1"
-key = "YOUR_API_KEY"
-model = "gpt-5"
+url = "https://api.deepseek.com"
+key = "YOUR_DEEPSEEK_API_KEY"
+model = "deepseek-v4-flash"
 ```
 
 Then start:
@@ -47,13 +47,11 @@ Common flags:
 - `--mcp <selector>`: choose which MCP servers to enable
 - `--config <path>`: use a specific TOML config file
 
-## Personal software
+## What it is
 
-nanocode is the coding agent I built for my own use. I am not trying to make it a general framework or a comprehensive product for every workflow.
+nanocode is the coding agent I use day to day. It runs in the terminal, handles the usual read-edit-run loop, and lives in a single Python file that I can change whenever I want the workflow to behave differently.
 
-Single-file does not mean small. Keeping the agent loop, runtime state, tools, persistence, and CLI together lets me see how they interact and change the implementation freely without preserving plugin APIs or framework abstractions.
-
-I add features when they improve my workflow, and I am comfortable keeping them opinionated. The tradeoff is a substantial `nanocode.py` file with fewer module boundaries and fewer guarantees for external extension. That is intentional: I optimize nanocode for direct customization, not broad reuse.
+It is not a minimal code sample, but the implementation stays direct: one agent loop, explicit state, plain tool calls, and no plugin framework at the center.
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
@@ -62,14 +60,12 @@ I add features when they improve my workflow, and I am comfortable keeping them 
 
 ## Highlights
 
-| | |
-|---|---|
-| Live follow-ups | Type while the agent works; queued input joins the next model request or can interrupt the current one |
-| Anchored edits | Structured edits use `line:hash` anchors and reject stale file content instead of guessing |
-| Resumable sessions | Conversation, completed tool calls, diffs, and working memory survive interruption and `--resume` |
-| Built-in diff viewer | `/diff` shows changes from the latest user round and the net session result |
-| Prompt-cache aware | Stable instructions, environment, and tool schemas preserve reusable request prefixes |
-| Open integrations | Use OpenAI-compatible or Anthropic APIs, remote/local MCP servers, and Markdown skills |
+- **Live follow-ups:** type while the agent works; queued input joins the next model request or can interrupt the current one.
+- **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content instead of guessing.
+- **Resumable sessions:** conversation, completed tool calls, diffs, and working memory survive interruption and `--resume`.
+- **Built-in diff viewer:** `/diff` shows changes from the latest user round and the net session result.
+- **Prompt-cache aware:** stable instructions, environment, and tool schemas preserve reusable request prefixes.
+- **Provider compatibility:** tested with DeepSeek, OpenCode, Alibaba Cloud, and ZenMux; other OpenAI-compatible endpoints should work in principle. Anthropic APIs, remote/local MCP servers, and Markdown skills are also supported.
 
 ## Common commands
 

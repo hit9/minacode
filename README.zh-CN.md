@@ -20,16 +20,16 @@ uv tool install nanocode-cli
 nanocode --init-config
 ```
 
-编辑 `~/.nanocode/config.toml`，填入 OpenAI-compatible endpoint：
+编辑 `~/.nanocode/config.toml`，使用 [DeepSeek Flash](https://api-docs.deepseek.com/)：
 
 ```toml
 [provider]
 active = "default"
 
 [provider.default]
-url = "https://api.openai.com/v1"
-key = "YOUR_API_KEY"
-model = "gpt-5"
+url = "https://api.deepseek.com"
+key = "YOUR_DEEPSEEK_API_KEY"
+model = "deepseek-v4-flash"
 ```
 
 然后启动：
@@ -47,13 +47,11 @@ nanocode
 - `--mcp <selector>`：选择启用哪些 MCP 服务器
 - `--config <path>`：使用指定的 TOML 配置文件
 
-## 个人软件
+## 它是什么
 
-nanocode 是我为自己使用而构建的 coding agent。我不打算把它做成一个通用框架，也不追求覆盖所有工作流的完整产品。
+nanocode 是我日常使用的 coding agent。它在终端里运行，完成常见的读取、编辑、执行流程，并集中在一个 Python 文件中；只要我想改变工作方式，就可以直接修改。
 
-单文件不等于代码量小。把 agent loop、runtime 状态、工具、持久化和 CLI 放在一起，让我能直接看到它们如何交互，也能自由修改实现，而不必维护 plugin API 或框架抽象。
-
-只有真正改善我工作流的功能才会加入，我也不介意它们保持鲜明的个人取向。相应的取舍是：`nanocode.py` 文件较大、模块边界较少，也不承诺便于外部扩展。这是有意的选择：我更看重直接定制，而不是广泛复用。
+它不是一个极简代码示例，但实现方式保持直接：一个 agent loop、明确的状态、朴素的工具调用，核心中没有 plugin framework。
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
@@ -62,14 +60,12 @@ nanocode 是我为自己使用而构建的 coding agent。我不打算把它做�
 
 ## 亮点
 
-| | |
-|---|---|
-| 实时 follow-up | Agent 工作时仍可输入；排队消息进入下一次模型请求，也可以中断当前请求立即发送 |
-| 锚点编辑 | 结构化编辑使用 `line:hash` 锚点，遇到过期文件内容时拒绝执行，而不是猜测 |
-| 可恢复 session | 对话、已完成的工具调用、diff 和工作记忆在中断后仍可通过 `--resume` 恢复 |
-| 内置 diff viewer | `/diff` 显示最新用户 round 的变更和整个 session 的净结果 |
-| Prompt-cache 友好 | 稳定的指令、环境信息和工具 schema 保持可复用的请求前缀 |
-| 开放集成 | 支持 OpenAI-compatible 或 Anthropic API、远程/本地 MCP server 和 Markdown skill |
+- **实时 follow-up：** Agent 工作时仍可输入；排队消息进入下一次模型请求，也可以中断当前请求立即发送。
+- **锚点编辑：** 结构化编辑使用 `line:hash` 锚点，遇到过期文件内容时拒绝执行，而不是猜测。
+- **可恢复 session：** 对话、已完成的工具调用、diff 和工作记忆在中断后仍可通过 `--resume` 恢复。
+- **内置 diff viewer：** `/diff` 显示最新用户 round 的变更和整个 session 的净结果。
+- **Prompt-cache 友好：** 稳定的指令、环境信息和工具 schema 保持可复用的请求前缀。
+- **Provider 兼容性：** 已测试 DeepSeek、OpenCode、阿里云和 ZenMux；理论上其他 OpenAI-compatible endpoint 也可以工作。此外还支持 Anthropic API、远程/本地 MCP server 和 Markdown skill。
 
 ## 常用命令
 
