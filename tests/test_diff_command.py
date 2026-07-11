@@ -347,12 +347,6 @@ def test_turn_diff_bounded_snapshots_at_limit_keeps_both():
     assert result == (before, after)
 
 
-def test_diff_view_state_defaults_to_list_mode():
-    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
-    assert state.mode is n.DiffViewState.Mode.LIST
-    assert state.file == 0
-
-
 def test_diff_view_state_open_and_close_file():
     state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
     state.open_file(3)

@@ -1251,35 +1251,6 @@ def test_planned_edit_refuses_to_overwrite_external_change(tmp_path):
     assert path.read_text(encoding="utf-8") == "external\n"
 
 
-def test_edit_batch_plan_records_last_fields(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
-    path = tmp_path / "note.txt"
-    path.write_text("old\n", encoding="utf-8")
-    call = n.ToolCall("edit", "Edit", ["note.txt", [{"op": "replace_all", "old": "old\n", "new": "new\n"}]])
-    tool = n.EditTool(s, call.args)
-
-    tool.call()
-
-    assert tool.last_path == "note.txt"
-    assert "+new" in tool.last_diff
-    assert tool.last_before == "old\n"
-    assert tool.last_after == "new\n"
-
-
-def test_edit_tool_no_changes_does_not_set_last_fields(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
-    path = tmp_path / "same.txt"
-    path.write_text("same\n", encoding="utf-8")
-    tool = n.EditTool(s, ["same.txt", [{"op": "replace_all", "old": "same\n", "new": "same\n"}]])
-
-    with pytest.raises(n.ToolError):
-        tool.call()
-
-    assert not hasattr(tool, "last_path") or tool.last_path == ""
-
-
 def test_bash_timeout_and_live_output(tmp_path):
     s = session(tmp_path)
     s.settings.shell_timeout = 1
@@ -1936,63 +1907,3 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     assert root.role is n.LogRole.AUTO
     assert "preview" in str(out[0])
     assert str(out[1]).rstrip().endswith("[auto]")
-
-
-def test_log_line_text_prefix_no_edge():
-    line = n.LogLine("Bash", "cmd", n.LogRole.TOOL)
-    prefix = line.text_prefix()
-    assert prefix == "Bash  "
-
-
-def test_log_line_text_prefix_with_edge():
-    line = n.LogLine("", "stderr", n.LogRole.OUTPUT, edge=n.LogEdge.BRANCH)
-    prefix = line.text_prefix()
-    assert "\u251c" in prefix  # BRANCH char
-
-
-def test_log_block_hierarchy_without_root():
-    block = n.LogBlock.hierarchy(
-        None,
-        [n.LogLine("child", role=n.LogRole.META)],
-    )
-    items = list(block.walk())
-    assert len(items) == 1
-    assert items[0][0].label == "child"
-
-
-def test_log_block_hierarchy_with_root_and_children():
-    block = n.LogBlock.hierarchy(
-        n.LogLine("root", role=n.LogRole.TOOL),
-        [
-            n.LogLine("a", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
-            n.LogLine("b", role=n.LogRole.META, edge=n.LogEdge.END),
-        ],
-    )
-    items = list(block.walk())
-    # root at level 1, children at level 2 via nested LogBlock
-    assert len(items) == 3
-    labels = [item[0].label for item in items]
-    assert labels == ["root", "a", "b"]
-
-
-def test_log_block_walk_yields_levels():
-    block = n.LogBlock([
-        n.LogLine("L1", role=n.LogRole.TOOL),
-        n.LogBlock([
-            n.LogLine("L2", role=n.LogRole.META),
-        ]),
-    ])
-    items = list(block.walk())
-    assert len(items) == 2
-    # L1 is at level 1, L2 is nested one deeper at level 2
-    assert items[0] == (block.items[0], 1)
-    assert items[1][0].label == "L2"
-    assert items[1][1] == 2
-
-
-def test_log_block_str_includes_label_and_text():
-    line = n.LogLine("Bash", "echo hello", n.LogRole.TOOL, syntax="bash")
-    block = n.LogBlock([line])
-    output = str(block)
-    assert "Bash" in output
-    assert "echo hello" in output

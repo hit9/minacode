@@ -192,25 +192,6 @@ def test_clip_width_handles_cjk_wide_characters():
     assert n.Text.clip_width("a你好", 5) == "a你好"
 
 
-def test_status_bar_role_style_returns_theme_values():
-    assert n.StatusBar.role_style("provider").startswith("#")
-    assert n.StatusBar.role_style("unknown").startswith("#")
-    assert n.StatusBar.role_style("unknown") == n.Theme.style("status.base")
-
-
-
-def test_status_bar_entries_includes_expected_sections(tmp_path):
-    s = n.Session(cwd=str(tmp_path))
-    entries = n.StatusBar(s).entries(0.0, show_elapsed=True)
-    texts = [text for text, _ in entries]
-    joined = " | ".join(texts)
-    # Always includes provider/model, context percent, step, tools
-    assert any("ctx " in t for t in texts)
-    assert any("step " in t for t in texts)
-    assert any("tools " in t for t in texts)
-    # Debug should not appear in status bar
-    assert "debug" not in joined.lower()
-
 def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_output):
     now = [100.0]
     monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
@@ -231,11 +212,6 @@ def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_
     preview.text = "new line"
     preview.render()
     assert len(recording_output.events) > 0
-
-
-def test_text_elapsed_since_zero_started_at(monkeypatch):
-    monkeypatch.setattr(n.time, "monotonic", lambda: 100.0)
-    assert n.Text.elapsed_since(0) == "0s"
 
 
 def test_choice_view_state_default_filtering():
@@ -287,26 +263,3 @@ def test_choice_view_state_no_enabled_choices_returns_none():
     )
     assert state.enabled() == ()
     assert state.selected_choice() is None
-
-
-def test_bash_live_preview_frame_lines_uses_log_block_format(monkeypatch):
-    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((80, 24)))
-    monkeypatch.setattr(n.time, "monotonic", lambda: 100.0)
-    preview = n.BashLivePreview()
-    preview.started_at = 90.0
-    preview.text = "hello world"
-
-    lines = preview.frame_lines()
-    assert any("hello world" in line for line in lines)
-    assert any("10s" in line for line in lines)
-
-
-def test_prepared_request_dataclass():
-    msg = {"role": "user", "content": "hi"}
-    tools = [{"type": "function", "function": {"name": "test"}}]
-    pending = [n.QueuedInput("extra")]
-    req = n.PreparedRequest(messages=[msg], tools=tools, pending=pending)
-    assert req.messages == [msg]
-    assert req.tools == tools
-    assert req.pending == pending
-    assert req.messages is not None

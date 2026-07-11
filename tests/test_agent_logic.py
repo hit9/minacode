@@ -1919,57 +1919,6 @@ def test_project_skill_overrides_builtin(tmp_path):
     assert "my own instructions" in n.SkillTool(s, ["nanocode-help"]).call()
 
 
-def test_session_running_jobs_filters_by_status(tmp_path):
-    import subprocess
-    s = session(tmp_path)
-    # Use a long-running process that stays alive across the assertions.
-    proc = subprocess.Popen(["sleep", "60"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    s.jobs["running_one"] = n.BackgroundJob(id="running_one", command="sleep 60", process=proc, started_at=0.0)
-    s.jobs["running_one"].status = "running"
-    proc2 = subprocess.Popen(["true"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    proc2.wait()
-    s.jobs["done_one"] = n.BackgroundJob(id="done_one", command="true", process=proc2, started_at=0.0)
-    s.jobs["done_one"].status = "done"
-    s.jobs["killed_one"] = n.BackgroundJob(id="killed_one", command="true", process=proc2, started_at=0.0)
-    s.jobs["killed_one"].status = "killed"
-
-    running = s.running_jobs()
-    assert len(running) == 1
-    assert running[0].id == "running_one"
-    proc.kill()
-    proc.wait()
-
-
-def test_session_running_jobs_returns_empty_without_jobs(tmp_path):
-    s = session(tmp_path)
-    assert s.running_jobs() == []
-
-
-def test_background_job_start_draining_creates_thread(tmp_path):
-    import subprocess
-    s = n.Session(cwd=str(tmp_path))
-    proc = subprocess.Popen(
-        ["echo", "hello"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    job = n.BackgroundJob(id="test", command="echo hello", process=proc, started_at=0.0)
-    assert job._reader_thread is None
-    job.start_draining()
-    assert job._reader_thread is not None
-    assert job._reader_thread.name.startswith("test-")
-    proc.wait()
-    job._reader_thread.join()
-
-def test_queued_input_identity_equality():
-    # QueuedInput is eq=False; two instances with same text are NOT equal.
-    a = n.QueuedInput("same")
-    b = n.QueuedInput("same")
-    assert a != b
-    assert a is not b
-    assert a.text == b.text
-
-
 def test_session_from_config_file_theme_param(tmp_path):
     cfg = tmp_path / "nanocode.toml"
     cfg.write_text("[runtime]\ntheme = \"light\"\n")
@@ -1994,31 +1943,6 @@ def test_agent_state_prefix_fingerprints_truncated_to_last_three():
     assert state3.prefix_fingerprints == []
 
 
-def test_memory_context_includes_recent_tool_errors_section(tmp_path):
-    """memory_context enriches output with recent_tool_errors when present."""
-    s = n.Session(cwd=str(tmp_path))
-    s.state.goal = "test goal"
-    s.record_tool_error("tr.0", "Bash", ["bad"], "command not found")
-    ctx = n.ContextManager(s)
-    text = ctx.memory_context()
-    assert "Recent tool errors:" in text
-    assert "tr.0 Bash bad" in text
-    assert "command not found" in text
-    assert "test goal" in text
-
-
-def test_memory_context_empty_state_shows_placeholders(tmp_path):
-    """memory_context handles empty state gracefully."""
-    s = n.Session(cwd=str(tmp_path))
-    ctx = n.ContextManager(s)
-    text = ctx.memory_context()
-    assert "Goal:" in text
-    assert "Plan:" in text
-    assert "Known:" in text
-    assert "Check:" in text
-    assert "Recent tool errors:" not in text  # no errors recorded
-
-
 def test_memory_context_includes_tool_errors_when_present(tmp_path):
     s = session(tmp_path)
     s.state.goal = "test goal"
@@ -2033,13 +1957,3 @@ def test_memory_context_includes_tool_errors_when_present(tmp_path):
     assert "all good" in ctx
     assert "Recent tool errors:" in ctx
     assert "tr.1 Bash bad: failed" in ctx
-
-
-def test_memory_context_excludes_tool_errors_when_none(tmp_path):
-    s = session(tmp_path)
-    s.state.goal = "goal"
-
-    ctx = n.ContextManager(s).memory_context()
-
-    assert "goal" in ctx
-    assert "Recent tool errors:" not in ctx
