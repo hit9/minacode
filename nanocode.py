@@ -4119,6 +4119,11 @@ class ContextManager:
 
     def compaction_parts_for(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
         cut = max(0, len(messages) - self.COMPACT_RECENT_MESSAGES)
+        if cut < len(messages) and messages[cut].get("role") == "tool":
+            while cut > 0 and messages[cut - 1].get("role") == "tool":
+                cut -= 1
+            if cut > 0 and messages[cut - 1].get("role") == "assistant" and messages[cut - 1].get("tool_calls"):
+                cut -= 1
         return messages[:cut], messages[cut:]
 
     def messages_text(self, messages: list[Json]) -> str:
