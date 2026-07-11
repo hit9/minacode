@@ -7,6 +7,7 @@
 - Add `/diff`, a read-only viewer for edits made by nanocode. It shows the latest user round and the overall net session diff in `Latest` and `Session` tabs, supports keyboard navigation and paging, and persists edit snapshots across `--resume`.
 - Add a standalone animated progress row for manual `/compact` operations while keeping the normal status line visible.
 - Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
+- Add light-terminal theme support with automatic `COLORFGBG` detection and a `runtime.theme` override.
 
 ### Changed
 - Use recursive internal layout boxes for turn hierarchy both live and after resume: user and final-assistant messages stay at column zero, intermediate-assistant messages and tool calls use two spaces, and tool details use four. Restored role labels share their message indentation, with a blank separator between turns.
@@ -18,6 +19,8 @@
 - Render changed diff code with equal-width saturated dark green/red backgrounds while leaving line-number gutters and context rows unfilled.
 - Keep multiline queue pastes as one message; Up recalls the newest queued follow-up for editing or deletion before the model claims it.
 - Render `/ps` as a Markdown table and print resume commands on their own line for easier copying.
+- Show per-file addition/deletion counts in `/diff`, restore the previous CLI view after closing it, and syntax-highlight non-Bash tool arguments as well as Bash and Job commands.
+- Refine the agent prompt around read-first engineering judgment, concise progress updates, review behavior, follow-up responsiveness, and using background jobs for potentially long-running work.
 
 ### Fixed
 - Keep transient approval state (`approval required` and `[Y/n or reason]`) out of terminal scrollback after a tool decision.
@@ -28,6 +31,10 @@
 - Coalesce capped fallback edits into one `/diff` entry per file, count only real hunk changes, and report `No changes` when a round has no net effect.
 - Reject directory paths passed to `Edit` with a tool error instead of crashing during edit planning.
 - Persist the safe prefix of an active turn before each model request so completed messages and tool calls survive interruption and `--resume`.
+- Drain background-job output continuously so pipe buffers cannot deadlock verbose commands, refresh completed job state before capacity and `/ps` checks, and keep bounded output tails correct for small limits.
+- Clip Bash previews and status lines by terminal display width, preventing CJK and emoji output from wrapping unexpectedly and desynchronizing live rendering.
+- Keep assistant tool-call messages together with their tool results when compacting context, preventing invalid orphaned `tool` messages from reaching model APIs.
+- Correct dark-terminal detection for ANSI bright-black backgrounds and keep the status line stable during manual compaction.
 
 ## 0.9.1 - 2026-07-09
 
