@@ -29,6 +29,25 @@ def test_runtime_settings_reads_limits_and_yolo_override():
     assert settings.yolo is True
 
 
+
+def test_runtime_settings_reads_theme_from_config():
+    settings = n.RuntimeSettings.from_dict(
+        {"runtime": {"theme": "light"}},
+    )
+    assert settings.theme == "light"
+
+    # default when not set
+    settings = n.RuntimeSettings.from_dict({})
+    assert settings.theme == "auto"
+
+    # override via keyword
+    settings = n.RuntimeSettings.from_dict({"runtime": {"theme": "light"}}, theme="dark")
+    assert settings.theme == "dark"
+
+    # keyword override even when config is absent
+    settings = n.RuntimeSettings.from_dict({}, theme="light")
+    assert settings.theme == "light"
+
 def test_config_validates_provider_selection_and_provider_fields():
     config = n.Config.from_dict(
         {
@@ -507,3 +526,20 @@ def test_cache_prefix_debug_records_transitions_and_keeps_last_three(tmp_path):
     assert len(s.debug_records) == 3
     assert all(record["kind"] == "cache-prefix" for record in s.debug_records)
     assert all([region["name"] for region in record["regions"]] == ["system"] for record in s.debug_records)
+
+
+def test_resolved_tool_schemas_excludes_skill_when_no_skills_installed(tmp_path):
+    s = n.Session(cwd=str(tmp_path))
+    s.skills = None
+    schemas = n.resolved_tool_schemas(s)
+    names = [sc["function"]["name"] for sc in schemas]
+    assert "Skill" not in names
+    assert "Read" in names  # non-conditional tools always present
+
+
+def test_resolved_tool_schemas_includes_skill_when_skills_present(tmp_path, monkeypatch):
+    s = n.Session(cwd=str(tmp_path))
+    s.skills = n.SkillLibrary(skills={"my-skill": n.Skill("my-skill", "desc", "body", "", "project")})
+    schemas = n.resolved_tool_schemas(s)
+    names = [sc["function"]["name"] for sc in schemas]
+    assert "Skill" in names

@@ -506,3 +506,60 @@ def test_chat_tool_calls_parse_multiline_commit_message():
     calls = n.ModelClient(s).tool_calls(_Msg())
     assert len(calls) == 1
     assert calls[0].args == ["printf 'subject\n\nbody line'"]
+
+
+def test_snapshot_messages_allows_system_user_assistant_tool_roles(tmp_path):
+    s = n.Session(cwd=str(tmp_path))
+    s.messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "tool", "content": "tool tr.1 done"},
+    ]
+    messages = n.SessionSnapshotCodec.snapshot_messages(s)
+    assert len(messages) >= 1
+    # At minimum the user message should be there
+    assert any(m["role"] == "user" and m["content"] == "hello" for m in messages)
+
+
+def test_snapshot_messages_strips_non_persistable_roles(tmp_path):
+    s = n.Session(cwd=str(tmp_path))
+    s.messages = [
+        {"role": "system", "content": "[Session resumed: old-session-id]"},
+        {"role": "user", "content": "hello"},
+    ]
+    messages = n.SessionSnapshotCodec.snapshot_messages(s)
+    # Internal resume marker is stripped; user message is kept.
+    roles = [m["role"] for m in messages]
+    assert "system" not in roles
+    assert "user" in roles
+    assert len(messages) == 1
+
+
+def test_turn_diffs_from_tool_records_parses_edit_output(tmp_path):
+    output = "\n".join(
+        [
+            '<Edit path="x.py">',
+            "--- x.py",
+            "+++ x.py",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            "<invalidate>0:1</invalidate>",
+            "</Edit>",
+        ]
+    )
+    records = [n.ToolResultRecord("tr.1", "Edit", ["x.py"], output, "")]
+    diffs = n.SessionSnapshotCodec.turn_diffs_from_tool_records(records)
+    assert len(diffs) == 1
+    assert diffs[0].key == "tr.1"
+    assert diffs[0].path == "x.py"
+
+
+def test_turn_diffs_from_tool_records_skips_non_edit(tmp_path):
+    records = [
+        n.ToolResultRecord("tr.1", "Read", ["a.txt"], "output", ""),
+        n.ToolResultRecord("tr.2", "Bash", ["ls"], "out", ""),
+    ]
+    diffs = n.SessionSnapshotCodec.turn_diffs_from_tool_records(records)
+    assert diffs == []

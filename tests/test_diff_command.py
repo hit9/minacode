@@ -326,3 +326,117 @@ def test_resume_recovers_latest_round_diff_from_old_edit_records(tmp_path):
 
 def test_edit_diff_recovery_ignores_malformed_output():
     assert n.SessionSnapshotCodec.edit_diff_from_output("<Edit path=bad />") == ("", "")
+
+
+def test_turn_diff_bounded_snapshots_under_limit():
+    assert n.TurnDiff.bounded_snapshots("a", "b") == ("a", "b")
+    assert n.TurnDiff.bounded_snapshots("", "") == ("", "")
+
+
+def test_turn_diff_bounded_snapshots_over_limit_drops_both():
+    limit = n.TurnDiff.SNAPSHOT_CHAR_LIMIT
+    large = "x" * (limit // 2 + 1)
+    assert n.TurnDiff.bounded_snapshots(large, large) == ("", "")
+
+
+def test_turn_diff_bounded_snapshots_at_limit_keeps_both():
+    limit = n.TurnDiff.SNAPSHOT_CHAR_LIMIT
+    before = "x" * (limit // 2)
+    after = "y" * (limit // 2)
+    result = n.TurnDiff.bounded_snapshots(before, after)
+    assert result == (before, after)
+
+
+def test_diff_view_state_defaults_to_list_mode():
+    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
+    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.file == 0
+
+
+def test_diff_view_state_open_and_close_file():
+    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
+    state.open_file(3)
+    assert state.mode is n.DiffViewState.Mode.FILE
+    assert state.file == 0
+    state.file = 1
+    state.close_file()
+    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.view.scroll == 0
+
+
+def test_diff_view_state_move_and_clamp_file():
+    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
+    state.move_file(1, 3)
+    assert state.file == 1
+    state.move_file(2, 3)
+    assert state.file == 0
+    state.move_file(-1, 3)
+    assert state.file == 2
+    state.move_file(1, 0)  # no-op when count is zero
+    assert state.file == 2
+
+
+def test_diff_view_state_reset_clears_mode_and_scroll():
+    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
+    state.open_file(2)
+    state.file = 1
+    state.view.scroll = 10
+    state.reset()
+    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.file == 0
+    assert state.view.scroll == 0
+
+
+def test_diff_view_state_switch_tab_calls_reset():
+    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session", "Latest")))
+    state.open_file(2)
+    state.file = 1
+    state.switch_tab(1)
+    assert state.view.tab == 1
+    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.file == 0
+
+
+def test_net_diff_for_path_returns_none_when_unchanged():
+    assert n.Session.net_diff_for_path("edit", "a.py", "same\n", "same\n") is None
+
+
+def test_net_diff_for_path_returns_unified_diff():
+    result = n.Session.net_diff_for_path("edit", "a.py", "old\n", "new\n")
+    assert result is not None
+    status, path, diff = result
+    assert status == "edit"
+    assert path == "a.py"
+    assert "@@" in diff or "-old" in diff
+
+
+def test_net_diff_for_path_uses_dev_null_for_created_files():
+    result = n.Session.net_diff_for_path("edit", "new.py", "", "new content\n")
+    assert result is not None
+    _, _, diff = result
+    assert "/dev/null" in diff
+
+
+def test_find_unambiguous_move_returns_none_without_states():
+    assert n.Session._find_unambiguous_move({}, {}) is None
+
+
+def test_find_unambiguous_move_detects_single_match():
+    states = {"old.py": ("content", "moved_content"), "new.py": ("moved_content", "final")}
+    assert n.Session._find_unambiguous_move(states, {}) == ("old.py", "new.py")
+
+
+def test_find_unambiguous_move_ignores_ambiguous():
+    states = {"a.py": ("c", "x"), "b.py": ("c", "x")}
+    assert n.Session._find_unambiguous_move(states, {}) is None
+
+
+def test_find_unambiguous_move_skips_self_loop():
+    states = {"a.py": ("c", "c")}
+    assert n.Session._find_unambiguous_move(states, {}) is None
+
+
+def test_find_unambiguous_move_skips_legacy_paths():
+    states = {"old.py": ("c", "x"), "new.py": ("x", "c")}
+    legacy = {"old.py": ["-- a\n++ b"]}
+    assert n.Session._find_unambiguous_move(states, legacy) is None

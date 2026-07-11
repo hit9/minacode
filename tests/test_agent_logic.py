@@ -252,6 +252,31 @@ def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch
     assert calls == 1
 
 
+def test_compaction_keeps_assistant_with_tool_results(tmp_path):
+    context = n.ContextManager(session(tmp_path))
+    messages = [
+        *({"role": "user", "content": f"old {index}"} for index in range(3)),
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "tc.1", "type": "function", "function": {"name": "Read", "arguments": "{}"}},
+                {"id": "tc.2", "type": "function", "function": {"name": "Read", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc.1", "content": "one"},
+        {"role": "tool", "tool_call_id": "tc.2", "content": "two"},
+        *({"role": "user", "content": f"recent {index}"} for index in range(6)),
+    ]
+
+    compacted, keep = context.compaction_parts_for(messages)
+
+    assert compacted == messages[:3]
+    assert keep == messages[3:]
+    assert keep[0]["role"] == "assistant"
+    assert [message["role"] for message in keep[1:3]] == ["tool", "tool"]
+
+
 def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
     s = session(tmp_path)
     context = n.ContextManager(s)
@@ -1275,6 +1300,22 @@ def test_turn_box_groups_followup_users_until_final_assistant():
     assert [len(box.messages) for box in boxes] == [4, 1]
 
 
+def test_turn_box_groups_tool_results_with_calling_assistant():
+    # Tool results (role="tool") are kept in the same TurnBox as the
+    # assistant that issued the tool_calls, not split prematurely.
+    messages = [
+        {"role": "user", "content": "read a.py"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "tr.1", "function": {"name": "Read"}}]},
+        {"role": "tool", "tool_call_id": "tr.1", "content": "# file content"},
+        {"role": "assistant", "content": "done"},
+    ]
+    boxes = n.TurnBox.group(messages)
+    assert len(boxes) == 1
+    assert len(boxes[0].messages) == 4
+    roles = [m["role"] for m in boxes[0].messages]
+    assert roles == ["user", "assistant", "tool", "assistant"]
+
+
 def test_eof_exit_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
@@ -1876,3 +1917,129 @@ def test_project_skill_overrides_builtin(tmp_path):
     skill = s.skills.get("nanocode-help")
     assert skill.source == "project"
     assert "my own instructions" in n.SkillTool(s, ["nanocode-help"]).call()
+
+
+def test_session_running_jobs_filters_by_status(tmp_path):
+    import subprocess
+    s = session(tmp_path)
+    # Use a long-running process that stays alive across the assertions.
+    proc = subprocess.Popen(["sleep", "60"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    s.jobs["running_one"] = n.BackgroundJob(id="running_one", command="sleep 60", process=proc, started_at=0.0)
+    s.jobs["running_one"].status = "running"
+    proc2 = subprocess.Popen(["true"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc2.wait()
+    s.jobs["done_one"] = n.BackgroundJob(id="done_one", command="true", process=proc2, started_at=0.0)
+    s.jobs["done_one"].status = "done"
+    s.jobs["killed_one"] = n.BackgroundJob(id="killed_one", command="true", process=proc2, started_at=0.0)
+    s.jobs["killed_one"].status = "killed"
+
+    running = s.running_jobs()
+    assert len(running) == 1
+    assert running[0].id == "running_one"
+    proc.kill()
+    proc.wait()
+
+
+def test_session_running_jobs_returns_empty_without_jobs(tmp_path):
+    s = session(tmp_path)
+    assert s.running_jobs() == []
+
+
+def test_background_job_start_draining_creates_thread(tmp_path):
+    import subprocess
+    s = n.Session(cwd=str(tmp_path))
+    proc = subprocess.Popen(
+        ["echo", "hello"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    job = n.BackgroundJob(id="test", command="echo hello", process=proc, started_at=0.0)
+    assert job._reader_thread is None
+    job.start_draining()
+    assert job._reader_thread is not None
+    assert job._reader_thread.name.startswith("test-")
+    proc.wait()
+    job._reader_thread.join()
+
+def test_queued_input_identity_equality():
+    # QueuedInput is eq=False; two instances with same text are NOT equal.
+    a = n.QueuedInput("same")
+    b = n.QueuedInput("same")
+    assert a != b
+    assert a is not b
+    assert a.text == b.text
+
+
+def test_session_from_config_file_theme_param(tmp_path):
+    cfg = tmp_path / "nanocode.toml"
+    cfg.write_text("[runtime]\ntheme = \"light\"\n")
+    s = n.Session.from_config_file(path=str(cfg), theme="dark")
+    assert s.settings.theme == "dark"
+
+    s2 = n.Session.from_config_file(path=str(cfg))
+    assert s2.settings.theme == "light"
+
+    s3 = n.Session.from_config_file(path=str(cfg), theme="")
+    assert s3.settings.theme == "light"
+
+
+def test_agent_state_prefix_fingerprints_truncated_to_last_three():
+    state = n.AgentState(prefix_fingerprints=["a", "b", "c", "d", "e"])
+    assert state.prefix_fingerprints == ["c", "d", "e"]
+
+    state2 = n.AgentState(prefix_fingerprints=["x"])
+    assert state2.prefix_fingerprints == ["x"]
+
+    state3 = n.AgentState(prefix_fingerprints=[])
+    assert state3.prefix_fingerprints == []
+
+
+def test_memory_context_includes_recent_tool_errors_section(tmp_path):
+    """memory_context enriches output with recent_tool_errors when present."""
+    s = n.Session(cwd=str(tmp_path))
+    s.state.goal = "test goal"
+    s.record_tool_error("tr.0", "Bash", ["bad"], "command not found")
+    ctx = n.ContextManager(s)
+    text = ctx.memory_context()
+    assert "Recent tool errors:" in text
+    assert "tr.0 Bash bad" in text
+    assert "command not found" in text
+    assert "test goal" in text
+
+
+def test_memory_context_empty_state_shows_placeholders(tmp_path):
+    """memory_context handles empty state gracefully."""
+    s = n.Session(cwd=str(tmp_path))
+    ctx = n.ContextManager(s)
+    text = ctx.memory_context()
+    assert "Goal:" in text
+    assert "Plan:" in text
+    assert "Known:" in text
+    assert "Check:" in text
+    assert "Recent tool errors:" not in text  # no errors recorded
+
+
+def test_memory_context_includes_tool_errors_when_present(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "test goal"
+    s.state.check = "all good"
+    s.record_tool_error("tr.1", "Bash", ["bad"], "failed")
+
+    ctx = n.ContextManager(s).memory_context()
+
+    assert "Goal:" in ctx
+    assert "test goal" in ctx
+    assert "Check:" in ctx
+    assert "all good" in ctx
+    assert "Recent tool errors:" in ctx
+    assert "tr.1 Bash bad: failed" in ctx
+
+
+def test_memory_context_excludes_tool_errors_when_none(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "goal"
+
+    ctx = n.ContextManager(s).memory_context()
+
+    assert "goal" in ctx
+    assert "Recent tool errors:" not in ctx
