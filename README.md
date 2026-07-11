@@ -1,7 +1,7 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  A single-file terminal coding agent with explicit control flow and cache-aware sessions.
+  A coding agent I use, maintain, and customize in one Python file.
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@ uv tool install nanocode-cli
 nanocode --init-config
 ```
 
-Edit `~/.nanocode/config.toml` to use [DeepSeek Flash](https://api-docs.deepseek.com/):
+Configure any OpenAI-compatible provider in `~/.nanocode/config.toml`. For example, [DeepSeek Flash](https://api-docs.deepseek.com/):
 
 ```toml
 [provider]
@@ -28,9 +28,11 @@ active = "default"
 
 [provider.default]
 url = "https://api.deepseek.com"
-key = "YOUR_DEEPSEEK_API_KEY"
+key = "API_KEY"
 model = "deepseek-v4-flash"
 ```
+
+Replace `url`, `key`, and `model` with the values from your provider.
 
 Then start:
 
@@ -38,7 +40,7 @@ Then start:
 nanocode
 ```
 
-Upgrade: `uv tool upgrade nanocode-cli`
+Upgrade: `nanocode upgrade`
 
 Common flags:
 
@@ -47,11 +49,11 @@ Common flags:
 - `--mcp <selector>`: choose which MCP servers to enable
 - `--config <path>`: use a specific TOML config file
 
-## What it is
+## A working personal agent
 
-nanocode is the coding agent I use day to day. It runs in the terminal, handles the usual read-edit-run loop, and lives in a single Python file that I can change whenever I want the workflow to behave differently.
+nanocode does not introduce a new kind of coding agent. It combines familiar features—reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills—into a tool I use personally.
 
-It is not a minimal code sample, but the implementation stays direct: one agent loop, explicit state, plain tool calls, and no plugin framework at the center.
+It works on real repositories, including its own: I use nanocode to build and maintain nanocode. Everything ships in one Python module, so I can change the behavior directly whenever I want the workflow to work differently.
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">

@@ -1,7 +1,7 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  单文件终端编程代理：控制流明确，session 设计对 prompt cache 友好。
+  一个由我使用、维护和定制的 coding agent，集中在一个 Python 文件中。
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@ uv tool install nanocode-cli
 nanocode --init-config
 ```
 
-编辑 `~/.nanocode/config.toml`，使用 [DeepSeek Flash](https://api-docs.deepseek.com/)：
+在 `~/.nanocode/config.toml` 中配置任意 OpenAI-compatible provider。例如使用 [DeepSeek Flash](https://api-docs.deepseek.com/)：
 
 ```toml
 [provider]
@@ -28,9 +28,11 @@ active = "default"
 
 [provider.default]
 url = "https://api.deepseek.com"
-key = "YOUR_DEEPSEEK_API_KEY"
+key = "API_KEY"
 model = "deepseek-v4-flash"
 ```
+
+将 `url`、`key` 和 `model` 替换为你的 provider 所提供的值。
 
 然后启动：
 
@@ -38,7 +40,7 @@ model = "deepseek-v4-flash"
 nanocode
 ```
 
-升级：`uv tool upgrade nanocode-cli`
+升级：`nanocode upgrade`
 
 常用参数：
 
@@ -47,11 +49,11 @@ nanocode
 - `--mcp <selector>`：选择启用哪些 MCP 服务器
 - `--config <path>`：使用指定的 TOML 配置文件
 
-## 它是什么
+## 一个能实际工作的个人 Agent
 
-nanocode 是我日常使用的 coding agent。它在终端里运行，完成常见的读取、编辑、执行流程，并集中在一个 Python 文件中；只要我想改变工作方式，就可以直接修改。
+nanocode 并没有发明一种新的 coding agent。它把读取和编辑文件、运行命令、follow-up、session、diff、MCP 和 skill 这些常见能力组合成一个我个人使用的工具。
 
-它不是一个极简代码示例，但实现方式保持直接：一个 agent loop、明确的状态、朴素的工具调用，核心中没有 plugin framework。
+它可以在真实代码仓库中工作，也包括它自己的仓库：我正在用 nanocode 构建和维护 nanocode。所有实现都集中在一个 Python 模块中，所以只要我想改变工作方式，就可以直接修改它的行为。
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
