@@ -29,6 +29,25 @@ def test_runtime_settings_reads_limits_and_yolo_override():
     assert settings.yolo is True
 
 
+
+def test_runtime_settings_reads_theme_from_config():
+    settings = n.RuntimeSettings.from_dict(
+        {"runtime": {"theme": "light"}},
+    )
+    assert settings.theme == "light"
+
+    # default when not set
+    settings = n.RuntimeSettings.from_dict({})
+    assert settings.theme == "auto"
+
+    # override via keyword
+    settings = n.RuntimeSettings.from_dict({"runtime": {"theme": "light"}}, theme="dark")
+    assert settings.theme == "dark"
+
+    # keyword override even when config is absent
+    settings = n.RuntimeSettings.from_dict({}, theme="light")
+    assert settings.theme == "light"
+
 def test_config_validates_provider_selection_and_provider_fields():
     config = n.Config.from_dict(
         {
@@ -149,7 +168,7 @@ def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
             _strict_check(function["parameters"], name)
         else:
             # Only free-form schemas (open objects) may skip strict; they stay untransformed.
-            assert n.strictifiable(tool.params_schema()) is False, name
+            assert n.Tool._strictifiable(tool.params_schema()) is False, name
             assert function["parameters"] == tool.params_schema()
     after = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     assert before == after  # deepcopy keeps shared ClassVar schemas intact
@@ -165,8 +184,8 @@ def test_strict_tools_skips_free_form_object_schemas():
     # MCP.arguments is a free-form object; strict cannot close it, so MCP stays non-strict.
     mcp = n.TOOL_REGISTRY["MCP"].schema(True)["function"]
     assert "strict" not in mcp
-    assert n.strictifiable(n.TOOL_REGISTRY["MCP"].params_schema()) is False
-    assert n.strictifiable(n.TOOL_REGISTRY["Read"].params_schema()) is True
+    assert n.Tool._strictifiable(n.TOOL_REGISTRY["MCP"].params_schema()) is False
+    assert n.Tool._strictifiable(n.TOOL_REGISTRY["Read"].params_schema()) is True
 
 
 def test_drop_nulls_strips_omitted_strict_arguments():
@@ -239,33 +258,16 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.last_cached_prompt_tokens == 2
 
 
-def test_context_and_debug_trace_clean_surrogate_text(tmp_path):
+def test_context_cleans_surrogate_text(tmp_path):
     bad = "bad \udce5 text"
     s = session(tmp_path)
     s.store_tool_result("Bash", [bad], bad)
     s.record_tool_error("tr.1", "Bash", [bad], bad)
 
     messages = n.ContextManager(s).model_messages("sys", [{"role": "user", "content": bad}])
-    debug_payload = n.DebugTrace.value({"messages": messages, "raw": bad})
 
     json.dumps(messages, ensure_ascii=False).encode("utf-8")
-    json.dumps(debug_payload, ensure_ascii=False).encode("utf-8")
     assert "\udce5" not in str(messages)
-    assert "\udce5" not in str(debug_payload)
-
-
-def test_debug_trace_overwrites_last_file(tmp_path):
-    s = data_session(tmp_path)
-    s.settings.debug = True
-
-    first = n.DebugTrace.write(s, activity="one", label="prompt", payload={"value": 1})
-    second = n.DebugTrace.write(s, activity="two", label="prompt", payload={"value": 2})
-    data = json.loads((tmp_path / ".data" / "debug" / "last-prompt.json").read_text(encoding="utf-8"))
-
-    assert first == second
-    assert first.endswith("debug/last-prompt.json")
-    assert data["activity"] == "two"
-    assert data["payload"] == {"value": 2}
 
 
 def test_code_index_update_paths_only_keeps_workspace_files(tmp_path):
@@ -443,18 +445,12 @@ def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch)
     assert seen == {"timeout": n.UpdateChecker.TIMEOUT, "user_agent": n.HTTP_USER_AGENT}
 
 
-def test_tool_runner_unknown_tool_debug_controls_result_storage(tmp_path):
-    off = session(tmp_path)
-    n.ToolRunner(off, n.ContextManager(off), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
-    assert off.tool_records == []
-    assert len(off.tool_errors) == 1
-
-    debug = session(tmp_path)
-    debug.settings.debug = True
-    n.ToolRunner(debug, n.ContextManager(debug), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
-    assert debug.tool_records == []
-    assert debug.tool_results == {}
-    assert len(debug.tool_errors) == 1
+def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
+    s = session(tmp_path)
+    n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
+    assert s.tool_records == []
+    assert s.tool_results == {}
+    assert len(s.tool_errors) == 1
 
 
 def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
@@ -467,39 +463,6 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1
     assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "ok\n"
-
-
-def test_file_context_handles_deleted_files_and_newer_reads_overwrite_old_reads(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("first\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    first_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call()
-    first_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], first_output)
-    assert "| first" in context.file_context()
-
-    path.unlink()
-    deleted = context.file_context()
-    assert "| first" not in deleted
-    assert first_key in deleted
-
-    path.write_text("first\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
-    path.write_text("second\n", encoding="utf-8")
-    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
-
-    rendered = context.file_context()
-    assert "| second" in rendered
-    assert "| first" not in rendered
-    assert f"source={new_key} tool=Read" in rendered
-    assert "Read/Edit outputs update this section." in rendered
-    assert "- a.txt 0:1" in rendered
-    assert "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors." in rendered
-    assert f"@@ a.txt 0:1 current source={new_key} tool=Read" in rendered
-    assert old_key in rendered
 
 
 def test_cache_prefix_fingerprint_stable_across_history_growth(tmp_path):
@@ -517,6 +480,27 @@ def test_cache_prefix_fingerprint_stable_across_history_growth(tmp_path):
     assert len(set(s.state.prefix_fingerprints)) == 1
 
 
+def test_cache_prefix_fingerprint_stable_across_read_edit_history(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    context = n.ContextManager(s)
+    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "a.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    context.check_cache_prefix("sys")
+    baseline = s.state.prefix_fingerprint
+    runner = n.ToolRunner(s, context, output_fn=lambda text: None)
+    read = n.ToolCall("read", "Read", [{"path": "a.txt", "ranges": [[0, 1]]}])
+    edit = n.ToolCall("edit", "Edit", ["a.txt", [{"op": "replace", "start": "0:" + n.ReadTool.line_hash("old\n"), "end": "0:" + n.ReadTool.line_hash("old\n"), "content": "new\n"}]])
+    s.messages.extend(runner.run([read, edit]))
+
+    context.check_cache_prefix("sys")
+
+    assert s.state.prefix_fingerprints == [baseline]
+    assert len(set(s.state.prefix_fingerprints)) == 1
+
+
 def test_cache_prefix_drift_detected_when_system_prompt_changes(tmp_path):
     s = session(tmp_path)
     context = n.ContextManager(s)
@@ -525,3 +509,20 @@ def test_cache_prefix_drift_detected_when_system_prompt_changes(tmp_path):
     context.check_cache_prefix("different system prompt")
     assert s.state.prefix_fingerprint == first  # baseline pinned to first seen
     assert len(set(s.state.prefix_fingerprints)) == 2  # churn detected
+    assert s.prefix_mismatch_count == 1
+    assert len(s.debug_records) == 1
+    assert [region["name"] for region in s.debug_records[0]["regions"]] == ["system"]
+    assert "different system prompt" not in json.dumps(s.debug_records)
+
+
+def test_cache_prefix_debug_records_transitions_and_keeps_last_three(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    for prompt in ("a", "b", "a", "c", "d"):
+        context.check_cache_prefix(prompt)
+
+    assert s.prefix_mismatch_count == 4
+    assert len(s.debug_records) == 3
+    assert all(record["kind"] == "cache-prefix" for record in s.debug_records)
+    assert all([region["name"] for region in record["regions"]] == ["system"] for record in s.debug_records)

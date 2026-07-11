@@ -1,17 +1,42 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+- Add `/diff`, a read-only viewer for edits made by nanocode. It shows the latest user round and the overall net session diff in `Latest` and `Session` tabs, supports keyboard navigation and paging, and persists edit snapshots across `--resume`.
+- Add a standalone animated progress row for manual `/compact` operations while keeping the normal status line visible.
+- Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
+
+### Changed
+- Use recursive internal layout boxes for turn hierarchy both live and after resume: user and final-assistant messages stay at column zero, intermediate-assistant messages and tool calls use two spaces, and tool details use four. Restored role labels share their message indentation, with a blank separator between turns.
+- Add two-level hierarchy to CLI tool logs: indented tool calls are root events, approvals/output/errors/stored results use dim tree guides, Bash commands use a background-neutral GitHub Dark syntax palette, commands are shown once, compact tools remain single-line leaves, and flushed follow-ups use a `nano+` prompt.
+- Replace the `--debug`/`runtime.debug` mode and `/debug on|off` toggle with an always-on, read-only `/debug` report. It keeps only the latest three cache-prefix mismatch records in memory, including changed region hashes and sizes, without retaining raw prompt content.
+- Replace blank Enter as the queued-input send-now shortcut with Ctrl-C. Enter queues a follow-up for the next model request; when follow-ups are queued, Ctrl-C interrupts the active request so they can be sent immediately. Queue guidance now appears as a contextual `+>` placeholder and disappears while typing.
+- Remove the synthesized FILE STATE context projection. `Read` and `Edit` outputs now remain as bounded, recallable conversation messages, and `/context` shows only Environment and Memory.
+- Show each Bash command once before execution, keep live output visible without repeating the command, and use a compact dimmed `stored tr.N` result marker after live runs.
+- Render changed diff code with equal-width saturated dark green/red backgrounds while leaving line-number gutters and context rows unfilled.
+- Keep multiline queue pastes as one message; Up recalls the newest queued follow-up for editing or deletion before the model claims it.
+- Render `/ps` as a Markdown table and print resume commands on their own line for easier copying.
+
+### Fixed
+- Keep transient approval state (`approval required` and `[Y/n or reason]`) out of terminal scrollback after a tool decision.
+- Follow edited files across unambiguous Bash moves so `/diff` reports their final paths and logical net changes.
+- Prevent transient working dividers from leaking into CLI history during Bash previews and approval handoffs.
+- Prioritize queued follow-ups when building the next model request.
+- Keep Bash preview colors consistent, preserve literal closing-tag text, show bounded output when no live frame is available, and avoid repeating commands or output around live runs and failures.
+- Coalesce capped fallback edits into one `/diff` entry per file, count only real hunk changes, and report `No changes` when a round has no net effect.
+- Reject directory paths passed to `Edit` with a tool error instead of crashing during edit planning.
+- Persist the safe prefix of an active turn before each model request so completed messages and tool calls survive interruption and `--resume`.
+
 ## 0.9.1 - 2026-07-09
 
 ### Added
 - Add immediate queued-input flushing while the agent is waiting on a model request. Pressing Enter in the `+>` queue still records text for the next LLM request; pressing blank Enter with newly queued text interrupts the active model request and retries it with that queued input included.
-- Show a bounded Bash stdout/stderr preview in finished tool summaries when no live preview was already kept visible.
 
 ### Fixed
 - Harden queued-input flushing so stale SIGINT delivery cannot cancel the whole turn after a model request already returned.
 - Avoid needless duplicate retries when the active model request already contains the queued input, prevent repeated blank Enter from stacking retry counts, and clear whitespace-only queue input on Enter.
-- Move queue-input guidance into the `+>` placeholder, keep it contextual for empty versus queued states, and simplify the send-now shortcut to Ctrl-C for queued follow-ups.
-- Keep Bash preview output color consistent and avoid duplicating output after an interactive live preview.
 
 ## 0.9.0 - 2026-07-07
 

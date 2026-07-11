@@ -892,7 +892,7 @@ class TestMCPContextBlocks:
         assert "tr.1" in msg
 
     def test_mcp_in_context_order(self):
-        """MCP TOOLS appears after Environment and before FILE STATE; no separate details block."""
+        """MCP TOOLS appears after Environment and before Memory; no separate details block."""
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
 
@@ -902,10 +902,11 @@ class TestMCPContextBlocks:
 
         env_idx = next(i for i, t in enumerate(texts) if t.startswith("--- Environment ---"))
         mcp_tools_idx = next(i for i, t in enumerate(texts) if t.startswith("--- MCP TOOLS ---"))
-        file_state_idx = next(i for i, t in enumerate(texts) if t.startswith("--- FILE STATE ---"))
+        memory_idx = next(i for i, t in enumerate(texts) if t.startswith("--- Memory ---"))
 
-        assert env_idx < mcp_tools_idx < file_state_idx
+        assert env_idx < mcp_tools_idx < memory_idx
         assert not any(t.startswith("--- MCP TOOL DETAILS ---") for t in texts)
+        assert not any(t.startswith("--- FILE STATE ---") for t in texts)
 
     @staticmethod
     def _describe_msg(call_id: str, key: str, tool: str, body: str) -> dict:

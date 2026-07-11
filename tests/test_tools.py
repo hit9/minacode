@@ -1,5 +1,5 @@
-import shutil
-import subprocess
+import shlex
+import sys
 
 import pytest
 
@@ -152,18 +152,18 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     diff = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42\n"
     segments = ui.diff_segments(diff)
 
-    # The added line starts with the green diff prefix and keyword `return` is
-    # highlighted as a keyword.
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
-    assert any(t == "return" and s == "ansimagenta" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
+    assert any(t == "return" and s == "fg:#ff7b72 bg:#003b00" for s, t in segments)
 
-    # Removed lines are plain diff red; no syntax highlight tokens for the
-    # removed content.
-    removed_raw = [t for s, t in segments if s == "ansired"]
-    assert any("pass" in t for t in removed_raw)
+    assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
+    assert any("pass" in t and s == "fg:default bg:#520000" for s, t in segments)
 
-    # Line numbers are preserved.
-    assert any("1" in t and "|" in t for s, t in segments)
+    # Line-number gutters and context code remain unfilled.
+    assert any("1" in text and "|" in text and "bg:" not in style for style, text in segments)
+    assert any(text == "def" and "bg:" not in style for style, text in segments)
+    changed = [line for line in ui.segment_lines(segments) if any("bg:" in style for style, _text in line)]
+    widths = [sum(n.get_cwidth(text.rstrip("\n")) for style, text in line if "bg:" in style) for line in changed]
+    assert len(set(widths)) == 1
 
 
 def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
@@ -171,9 +171,9 @@ def test_diff_segments_gracefully_degrades_without_lexer(tmp_path):
     diff = "--- foo.unknownxyz\n+++ foo.unknownxyz\n@@ -1,1 +1,1 @@\n- old\n+ new\n"
     segments = ui.diff_segments(diff)
 
-    # Unknown extension should fall back to plain diff coloring.
-    assert any(s == "ansired" and "-" in t for s, t in segments)
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
+    assert any("old" in t and s == "fg:default bg:#520000" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
 
 
 def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
@@ -182,22 +182,26 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
     diff = "@@ -1,1 +1,1 @@\n- old\n+ new\n"
     segments = ui.diff_segments(diff)
 
-    # Should still render without crashing; removed line is red, added line is
-    # green even though no lexer could be selected.
-    assert any(t.startswith("- old") and s == "ansired" for s, t in segments)
-    assert any(t == "+" and s == "ansigreen" for s, t in segments)
+    assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
+    assert any(t == "+" and s == "ansigreen bg:#003b00" for s, t in segments)
 
 
 def test_approval_segments_highlight_inline_edit_preview():
-    full = (
-        "approve Edit foo.py\n  preview\n"
-        "  --- foo.py\n  +++ foo.py\n  @@ -1,2 +1,2 @@\n   def hello():\n  -    pass\n  +    return 42\n"
+    preview = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42"
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Edit", "foo.py", n.LogRole.APPROVAL),
+        [
+            n.LogLine("preview", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
+            *(n.LogLine("", line, n.LogRole.DIFF, n.LogEdge.CONTINUE) for line in preview.splitlines()),
+        ],
     )
-    segments = n.UiPrinter().approval_segments(full)
+    segments = n.UiPrinter().log_segments(block)
+    rendered = "".join(text for _style, text in segments)
 
-    assert any(style == "ansimagenta" and "return" in text for style, text in segments)
-    assert any(style == "ansigreen" and text == "+" for style, text in segments)
-    assert any(style == "ansired" and text.startswith("-    pass") for style, text in segments)
+    assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
+    assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
+    assert any(style == "fg:default bg:#520000" and "pass" in text for style, text in segments)
+    assert "\n\n" not in rendered
 
 
 def test_edit_stale_anchor_reports_current_line(tmp_path):
@@ -538,10 +542,10 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     assert note == "Note goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
 
 
-def test_reject_collapses_display_in_non_debug(tmp_path):
+def test_reject_collapses_display(tmp_path):
     s = session(tmp_path)
     out = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=out.append)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(str(text)))
 
     msg = runner.reject(n.ToolCall("c", "Read", [{"path": "x"}]), "ToolError: Read requires non-empty ranges")
 
@@ -551,24 +555,171 @@ def test_reject_collapses_display_in_non_debug(tmp_path):
     # model still receives the full error
     assert "Read requires non-empty ranges" in msg
 
-
-def test_reject_keeps_full_display_in_debug(tmp_path):
-    s = session(tmp_path)
-    s.settings.debug = True
-    out = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=out.append)
-
-    runner.reject(n.ToolCall("c", "Read", [{"path": "x"}]), "ToolError: bad args")
-
-    assert any("[failed]" in t for t in out)
-
-
 def test_uiprinter_renders_rejected_line_dim():
     ui = n.UiPrinter(output_fn=lambda text: None)
-    segs = ui.tool_segments("tool Read · rejected: needs ranges")
+    segs = ui.log_segments(n.LogBlock([n.LogLine("Read", "· rejected: needs ranges", n.LogRole.MUTED)]))
 
     assert any(style == "ansibrightblack" and "rejected" in text for style, text in segs)
     assert not any(style in ("ansired", "ansigreen") for style, text in segs)
+
+
+def test_tool_runner_reject_records_error_and_returns_failed_message(tmp_path):
+    s = n.Session(cwd=str(tmp_path))
+    runner = n.ToolRunner(s, n.ContextManager(s))
+    call = n.ToolCall("e1", "Bash", ["bad cmd"])
+    out = []
+    runner.output_fn = out.append
+    result = runner.reject(call, "ToolError: command not found")
+    assert len(out) == 1
+    assert isinstance(out[0], n.LogBlock)
+    assert "command not found" in str(out[0])
+    # Should record the error
+    assert len(s.tool_errors) == 1
+    assert s.tool_errors[0].name == "Bash"
+    assert "command not found" in s.tool_errors[0].error
+    # reject returns a plain-text tool-message representation
+    assert "failed" in result.lower()
+    assert "command not found" in result
+
+
+def test_uiprinter_renders_tool_root_without_generic_prefix():
+    block = n.LogBlock([n.LogLine("Read", "nanocode.py 0:100 → tr.6 [auto]", n.LogRole.TOOL)])
+    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(block)
+    text = "".join(value for _style, value in segments)
+
+    assert text == "  Read  nanocode.py 0:100 → tr.6 [auto]\n"
+    assert any(style == "fg:default" and "nanocode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
+
+
+def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
+    s = session(tmp_path)
+    line = n.ToolRunner(s, n.ContextManager(s)).log_root("Bash cd /tmp && printf '%s\\n' value")
+
+    assert line.syntax == "bash"
+    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([line]))
+    assert ("fg:#79c0ff", "cd") in segments
+    assert ("fg:#79c0ff", "printf") in segments
+    assert ("fg:#a5d6ff", "'%s\\n'") in segments
+    assert not any("bg:" in style for style, _text in segments)
+
+
+def test_uiprinter_highlights_generic_tool_arguments(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s))
+    line = runner.log_root('Search "done in" glob=*.py C=2')
+
+    assert line.syntax == "tool-args"
+    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([line]))
+    assert ("fg:#a5d6ff", '"done in"') in segments
+    assert ("fg:#79c0ff", "glob=") in segments
+    assert ("fg:#d2a8ff", "2") in segments
+
+
+def test_job_start_uses_bash_highlighting(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s))
+    start = n.ToolCall("j1", "Job", [{"action": "start", "command": "pytest -q"}])
+    wait = n.ToolCall("j2", "Job", [{"action": "wait", "job": "job.1"}])
+
+    start_line = runner.log_root(runner.short_call(start), call=start)
+    wait_line = runner.log_root(runner.short_call(wait), call=wait)
+
+    assert start_line.syntax == "bash"
+    assert wait_line.syntax == "tool-args"
+    wait_segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([wait_line]))
+    assert ("fg:#d2a8ff", "job.1") in wait_segments
+
+
+def test_job_start_reclaims_finished_capacity(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    monkeypatch.setattr(n.JobTool, "MAX_JOBS", 1)
+    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    s.jobs["job.1"].process.wait(timeout=2)
+
+    result = n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+
+    assert result.startswith("Started job.2")
+    s.jobs["job.2"].process.wait(timeout=2)
+
+
+def test_ps_hides_jobs_that_finished_without_polling(tmp_path):
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    s.jobs["job.1"].process.wait(timeout=2)
+    command_loop = n.CommandLoop(n.Agent(s), input_fn=lambda prompt="": "", output_fn=lambda text: None)
+
+    assert command_loop.ps_command("") == "No active jobs (1 total)."
+
+
+def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    s.jobs["job.1"].process.wait(timeout=2)
+
+    result = n.JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+    assert "status=done" in result
+    assert "exit_code=0" in result
+
+
+def test_job_drains_large_output_without_polling(tmp_path):
+    s = session(tmp_path)
+    code = 'import sys; sys.stdout.write("x" * 1000000)'
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    n.JobTool(s, [{"action": "start", "command": command}]).call()
+    job = s.jobs["job.1"]
+
+    try:
+        job.process.wait(timeout=2)
+        job.drain(final=True)
+    finally:
+        if job.process.poll() is None:
+            job.kill(grace=0.1)
+
+    job.update_status()
+    assert job.status == "done"
+    assert job.exit_code == 0
+    assert job.tail(100)[0] == "..." + "x" * 97
+
+
+def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()
+    job = s.jobs["job.1"]
+    job.process.wait(timeout=2)
+    job.drain(final=True)
+
+    assert job.tail(1)[0] == "."
+    assert job.tail(2)[0] == ".."
+    assert job.tail(3)[0] == "..."
+
+
+def test_log_block_aligns_multiline_tool_arguments():
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Bash", 'git commit -m "title\nbody"', n.LogRole.TOOL, syntax="bash"),
+        [n.LogLine("done", role=n.LogRole.META, edge=n.LogEdge.END)],
+    )
+    expected = '  Bash  git commit -m "title\n        body"\n    └ done'
+
+    assert str(block) == expected
+    rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+    assert rendered == expected + "\n"
+
+
+def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
+    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda fallback: n.os.terminal_size((40, 24)))
+    command = 'git commit -m "system prompt: enhance with attitude, updates, review mode, and tooling rules"'
+    block = n.LogBlock([n.LogLine("Bash", command, n.LogRole.TOOL, syntax="bash")])
+
+    rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+
+    assert rendered.splitlines() == [
+        '  Bash  git commit -m "system prompt:',
+        "        enhance with attitude,",
+        "        updates, review mode, and",
+        '        tooling rules"',
+    ]
+    assert all(len(line) < 40 for line in rendered.splitlines())
 
 
 def test_uiprinter_renders_note_memory_status_colors():
@@ -585,13 +736,34 @@ def test_uiprinter_renders_note_memory_status_colors():
 
 def test_uiprinter_keeps_bash_preview_output_white():
     ui = n.UiPrinter(output_fn=lambda text: None)
-    segs = ui.tool_segments("tool Bash cmd -> tr.1\n  stderr:\n    Traceback\n      File x\n    AttributeError")
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Bash", "cmd", n.LogRole.TOOL),
+        [
+            n.LogLine("", "stderr:", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
+            n.LogLine("", "  Traceback", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
+            n.LogLine("", "    File x", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
+            n.LogLine("", "  AttributeError", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
+        ],
+    )
+    segs = ui.log_segments(block)
 
-    assert ("ansiwhite", "  stderr:") in segs
-    assert ("ansiwhite", "    Traceback") in segs
-    assert ("ansiwhite", "      File x") in segs
-    assert ("ansiwhite", "    AttributeError") in segs
-    assert not any(style == "ansibrightblack" and text in {"  stderr", "    Trac", "      Fi", "    Attr"} for style, text in segs)
+    assert ("fg:default", "stderr:") in segs
+    assert ("fg:default", "  Traceback") in segs
+    assert ("fg:default", "    File x") in segs
+    assert ("fg:default", "  AttributeError") in segs
+
+
+def test_uiprinter_renders_stored_result_dim():
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    block = n.LogBlock.hierarchy(None, [n.LogLine("stored", "tr.50 [approved]", n.LogRole.META, n.LogEdge.END)])
+
+    assert ui.log_segments(block) == [
+        ("", "    "),
+        ("ansibrightblack", "└ "),
+        ("ansibrightblack", "stored"),
+        ("ansibrightblack", " tr.50 [approved]"),
+        ("", "\n"),
+    ]
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
@@ -1095,19 +1267,67 @@ def test_bash_timeout_and_live_output(tmp_path):
     assert events[-1] == ("", "")
 
 
+def test_bash_timeout_applies_after_output_streams_close(tmp_path):
+    s = session(tmp_path)
+    s.settings.shell_timeout = 0.05
+
+    output = n.BashTool(s, ["exec 1>&- 2>&-; sleep 1"]).call()
+
+    assert "* exit_code: -1" in output
+    assert "timeout" in output
+
+
 def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True
     events = []
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
-    runner.live_start = lambda command="": events.append(("start", command))
+    runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
 
-    assert events[0] == ("start", "printf live")
+    assert events[0] == ("start", "")
     assert ("stdout", "live") in events
     assert events[-1] == ("", "")
+
+
+def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
+    s = session(tmp_path)
+    events = []
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: events.append(("display", str(text))))
+    runner.live_start = lambda: events.append(("start", ""))
+    runner.live_output = lambda stream, text: events.append((stream, text))
+    runner.bash_live_preview_shown = lambda: True
+
+    runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
+
+    assert events[0] == ("display", "  Bash  printf live")
+    assert events[1] == ("start", "")
+    assert ("stdout", "live") in events
+    assert events[-1][0] == "display"
+    assert events[-1][1].startswith("    └ stored tr.")
+    assert sum("printf live" in text for kind, text in events if kind == "display") == 1
+    assert sum("Bash" in text for kind, text in events if kind == "display") == 1
+
+
+def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
+    s = session(tmp_path)
+    events = []
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: events.append(("display", str(text))))
+    runner.live_start = lambda: events.append(("start", ""))
+    runner.live_output = lambda stream, text: events.append((stream, text))
+    runner.bash_live_preview_shown = lambda: True
+
+    runner.run([n.ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
+
+    display = [text for kind, text in events if kind == "display"]
+    assert display[0].startswith("  Bash  ")
+    assert "approval required" not in display[0]
+    assert display[-1].startswith("    └ stored tr.")
+    assert display[-1].endswith("[approved]")
+    assert sum(text.startswith("  Bash  ") for text in display) == 1
+    assert sum("printf approved" in text for text in display) == 1
 
 
 def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
@@ -1116,15 +1336,17 @@ def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
     stdout = "\n".join(f"out {index}" for index in range(20))
     output = n.Tool.process_result("BashToolResult", 0, stdout, "err")
 
-    display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False)
+    display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
 
-    assert "tool Bash printf lots -> tr.1" in display
-    assert "  stdout:" in display
-    assert "    out 0" in display
-    assert "    ... 8 lines omitted ..." in display
-    assert "    out 19" in display
-    assert "  stderr:" in display
-    assert "    err" in display
+    assert display.startswith("  Bash  printf lots\n")
+    assert "    ├ output" in display
+    assert "    │ stdout:" in display
+    assert "    │   out 0" in display
+    assert "    │   ... 8 lines omitted ..." in display
+    assert "    │   out 19" in display
+    assert "    │ stderr:" in display
+    assert "    │   err" in display
+    assert display.endswith("    └ stored tr.1")
 
 
 def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_path):
@@ -1133,9 +1355,44 @@ def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_pa
     runner.bash_live_preview_shown = lambda: True
     output = n.Tool.process_result("BashToolResult", 0, "live output", "")
 
-    display = runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False)
+    display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
 
-    assert display == "tool Bash printf live -> tr.1"
+    assert display == "  Bash  printf live\n    └ stored tr.1"
+
+
+def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner.bash_live_preview_shown = lambda: False
+    output = n.Tool.process_result("BashToolResult", 0, "visible output", "")
+
+    display = str(runner.finish_display(
+        n.ToolCall("bash", "Bash", ["printf visible"]),
+        "tr.1",
+        output,
+        failed=False,
+        nested_display=True,
+    ))
+
+    assert display.startswith("    ├ output")
+    assert "stdout:" in display
+    assert "visible output" in display
+
+
+def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    output = []
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: output.append(str(text)))
+    runner.live_start = lambda: None
+    runner.live_output = lambda _stream, _text: None
+    monkeypatch.setattr(n.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
+
+    runner.run([n.ToolCall("bash", "Bash", ["printf duplicate"])])
+
+    assert output[0] == "  Bash  printf duplicate"
+    assert output[1].startswith("    └ error ")
+    assert "printf duplicate" not in output[1]
+    assert "spawn failed" in output[1]
 
 
 def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
@@ -1159,10 +1416,10 @@ def test_tool_runner_bash_preview_does_not_omit_single_line(tmp_path):
     assert preview == lines
 
 
-def test_bash_live_preview_finish_erases_divider(monkeypatch):
-    # The frozen frame stays in scrollback (keep-output-visible), but the "working" divider is a live
-    # marker only — finish must redraw once without it so it does not linger in the log per command.
+def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     printed = []
+    now = [100.4]
+    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(n, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
 
     class FakeOut:
@@ -1178,17 +1435,17 @@ def test_bash_live_preview_finish_erases_divider(monkeypatch):
     p = n.BashLivePreview()
     p.output = FakeOut()
     p.active = True
-    p.divider = [("ansimagenta bold", "--- working ---")]
-    p.command = "echo hi"
-    p.text = "hi\n"
-    p.render()
-    assert any("working" in line for line in printed)  # divider is drawn while the command runs
+    p.started_at = 100.0
 
-    before = len(printed)
-    p.finish()
-    assert p.divider == []  # cleared
-    finish_rows = printed[before:]
-    assert finish_rows and not any("working" in line for line in finish_rows)  # redrawn without it
+    p.render()
+    first = len(printed)
+    p.render()
+    assert len(printed) == first
+
+    now[0] = 101.1
+    p.render()
+    assert len(printed) > first
+    assert any("  ├ running… 1s" in line for line in printed[first:])
 
 
 def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
@@ -1627,24 +1884,26 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True
     out = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(text))
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(str(text)))
     runner.run([n.ToolCall("b0", "Bash", [":"])])
     assert len(out) == 1
-    assert out[0].startswith("tool Bash")
+    assert out[0].startswith("  Bash  ")
     assert out[0].rstrip().endswith("[auto]")
-    assert not any(line.startswith("auto Bash") for line in out)
+    assert sum(line.startswith("  Bash  ") for line in out) == 1
 
 
 def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
-    # Edit's "auto …" pre-line carries the full diff preview, which the result line (-> FILE STATE)
-    # omits, so it must still be surfaced; the result line is tagged [auto].
+    # Edit's "auto …" pre-line carries the approval preview; the result line is tagged [auto].
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
     (tmp_path / "a.txt").write_text("hello\nworld\n", encoding="utf-8")
     out = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(text))
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=out.append)
     runner.run([n.ToolCall("e0", "Edit", ["a.txt", [{"op": "insert_after", "start": anchor(0, "hello\n"), "content": "NEW\n"}]])])
     assert len(out) == 2
-    assert out[0].startswith("auto Edit") and "preview" in out[0]
-    assert out[1].rstrip().endswith("[auto]")
+    assert isinstance(out[0], n.LogBlock)
+    root, _level = next(out[0].walk())
+    assert root.role is n.LogRole.AUTO
+    assert "preview" in str(out[0])
+    assert str(out[1]).rstrip().endswith("[auto]")

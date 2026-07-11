@@ -104,6 +104,23 @@ def test_delta_omits_tool_records_when_nothing_new(tmp_path):
     assert "tool_results" not in delta
 
 
+def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, monkeypatch):
+    s = session_with_data_dir(tmp_path)
+    s.store_turn_diff("tr.1", 1, "large.py", "-old\n+new\n", before="old\n" * 1000, after="new\n" * 1000, round=1)
+    s.save_snapshot()  # init
+
+    def fail_turn_diff(_diff):
+        raise AssertionError("unchanged turn diffs should not be serialized")
+
+    monkeypatch.setattr(n.SessionSnapshotCodec, "turn_diff", fail_turn_diff)
+    s.messages.append({"role": "user", "content": "next"})
+    s.save_snapshot()  # delta
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert "turn_diffs" not in lines[1]
+    assert "turn_diffs_replace" not in lines[1]
+
+
 def test_load_merges_init_and_deltas(tmp_path):
     """load_snapshot reads and merges all lines, returning the full session state."""
     s = session_with_data_dir(tmp_path)
@@ -327,6 +344,7 @@ def test_agent_state_roundtrip(tmp_path):
     s.state.known = ["file at src/a.py"]
     s.state.check = "assert x == 1"
     s.state.summary = "working on it"
+    s.state.round_count = 7
     s.save_snapshot()
 
     s2 = n.Session.load_snapshot(s.uid, config=s.config)
@@ -335,6 +353,7 @@ def test_agent_state_roundtrip(tmp_path):
     assert s2.state.known == ["file at src/a.py"]
     assert s2.state.check == "assert x == 1"
     assert s2.state.summary == "working on it"
+    assert s2.state.round_count == 7
 
 def test_multiple_deltas_accumulate_correctly(tmp_path):
     """Multiple delta saves accumulate data correctly."""
@@ -487,3 +506,17 @@ def test_chat_tool_calls_parse_multiline_commit_message():
     calls = n.ModelClient(s).tool_calls(_Msg())
     assert len(calls) == 1
     assert calls[0].args == ["printf 'subject\n\nbody line'"]
+
+
+def test_snapshot_messages_strips_non_persistable_roles(tmp_path):
+    s = n.Session(cwd=str(tmp_path))
+    s.messages = [
+        {"role": "system", "content": "[Session resumed: old-session-id]"},
+        {"role": "user", "content": "hello"},
+    ]
+    messages = n.SessionSnapshotCodec.snapshot_messages(s)
+    # Internal resume marker is stripped; user message is kept.
+    roles = [m["role"] for m in messages]
+    assert "system" not in roles
+    assert "user" in roles
+    assert len(messages) == 1

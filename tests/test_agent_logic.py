@@ -20,6 +20,15 @@ def call(name, args):
     return n.ToolCall(name + "-id", name, args)
 
 
+def queue(s, *texts):
+    for text in texts:
+        s.enqueue_user_input(text)
+
+
+def queued_texts(s):
+    return [item.text for item in s.pending_user_inputs]
+
+
 def test_model_messages_are_ordered_context_messages(tmp_path):
     s = session(tmp_path)
     s.skills = n.SkillLibrary({})  # no skills: assert the base frame ordering
@@ -31,19 +40,14 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     ]
     messages = n.ContextManager(s).model_messages(" system ", turn)
 
-    assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user", "user", "user"]
+    assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user", "user"]
     assert messages[0]["content"] == "system"
     assert messages[1]["content"].startswith("--- Environment ---")
     assert "- cwd: " + str(tmp_path) in messages[1]["content"]
     assert [message["content"] for message in messages[2:7]] == ["old request", "old answer", "current request", "extra one", "extra two"]
-    assert messages[-2]["content"].startswith("--- Memory ---")
-    assert "Date:" in messages[-2]["content"]
-    assert messages[-1]["content"].startswith("--- FILE STATE ---")
-
-
-
-def test_empty_file_context_is_empty(tmp_path):
-    assert n.ContextManager(session(tmp_path)).file_context() == ""
+    assert messages[-1]["content"].startswith("--- Memory ---")
+    assert "Date:" in messages[-1]["content"]
+    assert not any("FILE STATE" in message["content"] for message in messages)
 
 
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
@@ -75,7 +79,7 @@ def test_prompt_output_disables_cpr_probe(monkeypatch):
     output = SimpleNamespace(enable_cpr=True)
     monkeypatch.setattr(n, "create_output", lambda: output)
 
-    assert n.create_prompt_output() is output
+    assert n.CommandLoop.prompt_output() is output
     assert output.enable_cpr is False
 
 
@@ -103,230 +107,22 @@ def test_bounded_output_marks_recall_key(tmp_path):
     assert 'recall="tr.large"' in bounded
 
 
-def test_file_context_tracks_edits_and_omits_stale_reads(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("old\nkeep\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-    s.state.plan = ["inspect", "patch"]
-
-    read_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 2]]}]).call()
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 2]]}], read_output)
-    assert "| old" in context.file_context()
-
-    path.write_text("changed\nkeep\n", encoding="utf-8")
-    stale = context.file_context()
-    assert "| old" not in stale
-    assert read_key in stale
-
-    path.write_text("old\nkeep\n", encoding="utf-8")
-    edit_output = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "0:" + n.ReadTool.line_hash("old\n"), "end": "0:" + n.ReadTool.line_hash("old\n"), "content": "new\n"}]],
-    ).call()
-    edit_key = s.store_tool_result("Edit", ["a.txt"], edit_output)
-
-    rendered = context.file_context()
-    assert edit_key in rendered
-    assert "Current focus: inspect" in rendered
-    assert f"source={edit_key} tool=Edit" in rendered
-    assert "Files:\n- a.txt 0:2" in rendered
-    assert "Read/Edit outputs update this section." in rendered
-    assert f"Recent file events:\n- {read_key} Read" in rendered
-    assert "Format: anchor=line:hash | text, where hash = hash(line_content). Use the full line:hash value as Edit anchors." in rendered
-    assert f"@@ a.txt 0:1 current source={edit_key} tool=Edit" in rendered
-    assert "| new" in rendered
-    assert "| old" not in rendered
-
-
-def test_empty_files_overview(tmp_path):
-    assert n.ContextManager(session(tmp_path)).files_overview() == "#### File State\n(no files in context)"
-
-
-def test_files_overview_and_detail(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("old\nkeep\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-    s.state.plan = ["inspect", "patch"]
-
-    read_output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 2]]}]).call()
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 2]]}], read_output)
-
-    overview = context.files_overview()
-    assert "#### File State  ·  focus: inspect" in overview
-    # markdown table row for the file, with a source column
-    assert f"| `a.txt` | 0:2 | 2 | {read_key} Read |" in overview
-    assert f"**Recent events**\n- {read_key} Read" in overview
-    # overview omits the full anchored content dump
-    assert "| old" not in overview
-    assert "```" not in overview
-
-    detail = context.file_detail("a.txt")
-    assert detail.startswith("**a.txt** — current, 2 lines")
-    assert "```" in detail
-    assert f"@@ 0:2  {read_key} Read" in detail
-    assert "| old" in detail
-
-    # basename resolves the same file; unknown path lists what is available
-    assert context.file_detail("a.txt") == detail
-    missing = context.file_detail("nope.txt")
-    assert "No in-context content for `nope.txt`" in missing
-    assert "- `a.txt`" in missing
-
-
-def test_file_context_marks_full_file_reads(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("one\ntwo\n", encoding="utf-8")
-    s = session(tmp_path)
-    output = n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call()
-    s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], output, n.ToolRunner(s, n.ContextManager(s)).tool_note(call("Read", []), output))
-
-    rendered = n.ContextManager(s).file_context()
-    assert "- a.txt 0:2 current" in rendered
-    assert "| one" in rendered
-    assert "| two" in rendered
-
-
-def test_file_context_keeps_current_lines_without_local_budget(tmp_path):
-    old_path = tmp_path / "old.txt"
-    new_path = tmp_path / "new.txt"
-    old_path.write_text("old-0\n" + "".join(f"old-{index}\n" for index in range(1, 80)), encoding="utf-8")
-    new_path.write_text("new-0\n" + "".join(f"new-{index}\n" for index in range(1, 80)), encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    s.store_tool_result("Read", [{"path": "old.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "old.txt", "ranges": [[0, 0]]}]).call())
-    new_key = s.store_tool_result(
-        "Read", [{"path": "new.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "new.txt", "ranges": [[0, 0]]}]).call()
-    )
-
-    rendered = context.file_context()
-    assert f"source={new_key} tool=Read" in rendered
-    assert "| old-70" in rendered
-    assert "| new-" in rendered
-
-
-def test_file_context_edit_invalidate_replaces_only_changed_range(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    edit_output = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n"), "content": "B\n"}]],
-    ).call()
-    edit_key = s.store_tool_result("Edit", ["a.txt"], edit_output)
-
-    rendered = context.file_context()
-    assert "| a" in rendered
-    assert "| B" in rendered
-    assert "| c" in rendered
-    assert "| b" not in rendered
-    assert f"@@ a.txt 1:2 current source={edit_key} tool=Edit" in rendered
-    assert f"source={read_key} tool=Read" in rendered
-
-
-def test_file_context_drops_drifted_old_lines_instead_of_guessing(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    n.EditTool(s, ["a.txt", [{"op": "insert_before", "start": "0:" + n.ReadTool.line_hash("a\n"), "content": "x\n"}]]).call()
-
-    rendered = context.file_context()
-    assert "| a" not in rendered
-    assert "| b" not in rendered
-    assert "| c" not in rendered
-    assert f"{read_key}" in rendered
-    assert "Omitted content:" in rendered
-
-
-def test_file_context_uses_raw_current_lines_not_bounded_middle(tmp_path):
+def test_read_tool_message_inlines_bounded_output(tmp_path):
     path = tmp_path / "large.txt"
-    path.write_text("first\n" + "".join(f"middle-{index}\n" for index in range(80)) + "last\n", encoding="utf-8")
+    path.write_text("first\n" + "\n".join(f"middle-{index}" for index in range(20000)) + "\nlast\n", encoding="utf-8")
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    call_obj = call("Read", [{"path": "large.txt", "ranges": [[0, 0]]}])
+    output = n.ReadTool(s, call_obj.args).call()
+    key = s.store_tool_result("Read", call_obj.args, output)
 
-    key = s.store_tool_result("Read", [{"path": "large.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "large.txt", "ranges": [[0, 0]]}]).call())
+    message = runner.tool_message(call_obj, key, output)
 
-    rendered = context.file_context()
-    assert f"source={key} tool=Read" in rendered
-    assert "| first" in rendered
-    assert "| middle-40" in rendered
-    assert "| last" in rendered
-    assert "<bounded_output" not in rendered
-
-
-def test_file_context_merges_current_ranges_within_same_file(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    old_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 1]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 1]]}]).call())
-    new_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[2, 3]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[2, 3]]}]).call())
-
-    rendered = context.file_context()
-    assert f"source={old_key} tool=Read" in rendered
-    assert f"source={new_key} tool=Read" in rendered
-    assert "| a" in rendered
-    assert "| c" in rendered
-
-
-def test_file_context_edit_read_edit_keeps_final_state(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    edit1 = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "0:" + n.ReadTool.line_hash("a\n"), "end": "0:" + n.ReadTool.line_hash("a\n"), "content": "A\n"}]],
-    ).call()
-    s.store_tool_result("Edit", ["a.txt"], edit1)
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    edit2 = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "2:" + n.ReadTool.line_hash("c\n"), "end": "2:" + n.ReadTool.line_hash("c\n"), "content": "C\n"}]],
-    ).call()
-    edit2_key = s.store_tool_result("Edit", ["a.txt"], edit2)
-
-    rendered = context.file_context()
-    assert "| A" in rendered
-    assert "| b" in rendered
-    assert "| C" in rendered
-    assert "| a" not in rendered
-    assert "| c" not in rendered
-    assert f"@@ a.txt 0:2 current source={read_key} tool=Read" in rendered
-    assert f"@@ a.txt 2:3 current source={edit2_key} tool=Edit" in rendered
-
-
-def test_file_context_read_edit_read_uses_latest_read(tmp_path):
-    path = tmp_path / "a.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
-    s = session(tmp_path)
-    context = n.ContextManager(s)
-
-    read1_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-    edit = n.EditTool(
-        s,
-        ["a.txt", [{"op": "replace", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n"), "content": "B\n"}]],
-    ).call()
-    s.store_tool_result("Edit", ["a.txt"], edit)
-    read2_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
-
-    rendered = context.file_context()
-    assert "| a" in rendered
-    assert "| B" in rendered
-    assert "| c" in rendered
-    assert "| b" not in rendered
-    assert f"@@ a.txt 0:3 current source={read2_key} tool=Read" in rendered
-    assert f"source={read1_key} tool=Read" not in rendered
+    assert message.startswith("tool tr.1 Read large.txt 0:0\noutput:\n")
+    assert "<Read" in message
+    assert "<bounded_output" in message
+    assert 'recall="tr.1"' in message
+    assert "-> FILE STATE" not in message
 
 
 def test_tool_error_records_keep_recent_failures(tmp_path):
@@ -365,7 +161,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
     model = FakeModel()
-    context.maybe_compact(model, "system", [{"role": "user", "content": "request"}])
+    context.prepare_messages(model, "system", [{"role": "user", "content": "request"}])
     assert model.input is not None
     assert "Older Messages:" in model.input
     assert "old answer" in model.input
@@ -426,7 +222,7 @@ def test_compaction_parts_for_uses_last_fixed_window(tmp_path):
     assert [message["content"] for message in recent] == [f"m{index}" for index in range(2, 10)]
 
 
-def test_maybe_compact_skips_when_context_under_budget(tmp_path):
+def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 999_999
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
@@ -435,9 +231,50 @@ def test_maybe_compact_skips_when_context_under_budget(tmp_path):
         def compact(self, text):
             raise AssertionError(text)
 
-    n.ContextManager(s).maybe_compact(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
+    n.ContextManager(s).prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
 
     assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
+
+
+def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch):
+    context = n.ContextManager(session(tmp_path))
+    calls = 0
+    original = context.model_messages
+
+    def model_messages(base_system, turn_messages=None):
+        nonlocal calls
+        calls += 1
+        return original(base_system, turn_messages)
+
+    monkeypatch.setattr(context, "model_messages", model_messages)
+    context.prepare_messages(object(), "system", [{"role": "user", "content": "request"}])
+
+    assert calls == 1
+
+
+def test_compaction_keeps_assistant_with_tool_results(tmp_path):
+    context = n.ContextManager(session(tmp_path))
+    messages = [
+        *({"role": "user", "content": f"old {index}"} for index in range(3)),
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "tc.1", "type": "function", "function": {"name": "Read", "arguments": "{}"}},
+                {"id": "tc.2", "type": "function", "function": {"name": "Read", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc.1", "content": "one"},
+        {"role": "tool", "tool_call_id": "tc.2", "content": "two"},
+        *({"role": "user", "content": f"recent {index}"} for index in range(6)),
+    ]
+
+    compacted, keep = context.compaction_parts_for(messages)
+
+    assert compacted == messages[:3]
+    assert keep == messages[3:]
+    assert keep[0]["role"] == "assistant"
+    assert [message["role"] for message in keep[1:3]] == ["tool", "tool"]
 
 
 def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
@@ -453,7 +290,7 @@ def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
     assert [record.key for record in s.tool_records] == [kept]
 
 
-def test_compaction_prunes_old_non_file_tool_records(tmp_path):
+def test_compaction_prunes_unreferenced_tool_records(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("one\n", encoding="utf-8")
     s = session(tmp_path)
@@ -465,9 +302,9 @@ def test_compaction_prunes_old_non_file_tool_records(tmp_path):
     context.apply_compaction({"summary": "summary"}, [{"role": "tool", "content": f"tool {current_key} Bash current"}])
 
     assert old_key not in s.tool_results
-    assert {record.key for record in s.tool_records} == {read_key, current_key}
-    assert set(s.tool_results) == {read_key, current_key}
-    assert "| one" in context.file_context()
+    assert read_key not in s.tool_results
+    assert {record.key for record in s.tool_records} == {current_key}
+    assert set(s.tool_results) == {current_key}
 
 
 def test_compaction_keeps_current_turn_tool_records(tmp_path):
@@ -481,14 +318,14 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
         def compact(self, text):
             return {"summary": "summary"}
 
-    n.ContextManager(s).maybe_compact(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+    n.ContextManager(s).prepare_messages(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
 
     assert old_key not in s.tool_results
     assert current_key in s.tool_results
     assert [record.key for record in s.tool_records] == [current_key]
 
 
-def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
+def test_compaction_drops_unreferenced_read_edit_records(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     s = session(tmp_path)
@@ -502,11 +339,9 @@ def test_compaction_keeps_edit_invalidations_needed_for_file_state(tmp_path):
 
     context.apply_compaction({"summary": "summary"}, [])
 
-    rendered = context.file_context()
-    assert {record.key for record in s.tool_records} == {read_key, edit_key}
-    assert "| a" in rendered
-    assert "| b" not in rendered
-    assert "Omitted content:" in rendered
+    assert read_key not in s.tool_results
+    assert edit_key not in s.tool_results
+    assert s.tool_records == []
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -521,10 +356,10 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
 
     outputs = []
     bad = session(tmp_path)
-    n.ToolRunner(bad, n.ContextManager(bad), output_fn=outputs.append).run([call("Bash", [])])
+    n.ToolRunner(bad, n.ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
-    assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line in non-debug
+    assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line
 
 
 def test_tool_runner_refuses_without_reason_on_n(tmp_path):
@@ -566,7 +401,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
@@ -575,13 +410,14 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     agent.model = FakeModel()
     assert agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
-    assert [len(messages) for messages in agent.model.messages] == [5, 7]
+    assert [len(messages) for messages in agent.model.messages] == [4, 6]
     assert agent.model.messages[1][3]["role"] == "assistant"
     assert agent.model.messages[1][3]["tool_calls"][0]["id"] == "Read-id"
     assert agent.model.messages[1][4]["role"] == "tool"
     assert agent.model.messages[1][4]["tool_call_id"] == "Read-id"
     assert any("tool tr.1 Read a.txt 0:1" in (message.get("content") or "") for message in agent.model.messages[1])
-    assert any(message["role"] == "tool" and "-> FILE STATE" in message["content"] for message in agent.model.messages[1])
+    assert any(message["role"] == "tool" and "<Read" in message["content"] for message in agent.model.messages[1])
+    assert not any("FILE STATE" in (message.get("content") or "") for message in agent.model.messages[1])
     assert len(s.tool_records) == 1
     assert s.messages[-1]["content"] == "done"
     assert s.state.goal == ""
@@ -592,7 +428,7 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     limited_agent = n.Agent(limited, output_fn=lambda text: None)
 
     class LoopingModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 0]]}])], ""
 
     limited_agent.model = LoopingModel()
@@ -602,11 +438,41 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert limited.messages[-1]["content"] == answer
 
 
+def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.skills = n.SkillLibrary({})
+    agent = n.Agent(s, output_fn=lambda text: None)
+
+    class InterruptingModel:
+        calls = 0
+
+        def request(self, messages, tools=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
+            raise KeyboardInterrupt
+
+    agent.model = InterruptingModel()
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("read file")
+
+    assert [message["role"] for message in s.messages] == ["user", "assistant", "tool"]
+    assert s._active_turn_messages == []
+    restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    messages = [message for message in restored.messages if not n.SessionSnapshotCodec.is_internal_message(message)]
+    assert [message["role"] for message in messages] == ["user", "assistant", "tool"]
+    assert messages[1]["tool_calls"][0]["id"] == "Read-id"
+    assert messages[2]["tool_call_id"] == "Read-id"
+    assert "<Read" in messages[2]["content"]
+    assert [record.name for record in restored.tool_records] == ["Read"]
+
+
 def test_agent_rejects_empty_final_response(tmp_path):
     agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
 
     class EmptyModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": ""}, [], ""
 
     agent.model = EmptyModel()
@@ -616,19 +482,17 @@ def test_agent_rejects_empty_final_response(tmp_path):
 
 def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)
-    s.pending_user_inputs.append("extra instruction")
+    queue(s, "extra instruction")
     agent = n.Agent(s, output_fn=lambda text: None)
 
     class FakeModel:
         def __init__(self):
             self.messages = []
-            self.pending_snapshots = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
-            self.pending_snapshots.append(list(s.state.current_model_request_pending_inputs))
             if len(self.messages) == 1:
-                s.pending_user_inputs.append("second instruction")
+                s.enqueue_user_input("second instruction")
                 return {}, [call("Bash", ["wc -l missing.txt"])], "checking"
             return {"role": "assistant", "content": "done"}, [], "done"
 
@@ -649,8 +513,31 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[4]["content"] == "second instruction"
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
-    assert s.state.current_model_request_pending_inputs == []
-    assert agent.model.pending_snapshots == [["extra instruction"], ["second instruction"]]
+
+
+def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    agent = n.Agent(s, output_fn=lambda text: None)
+    tools = [{"type": "function", "function": {"name": "Test", "parameters": {}}}]
+    resolved = []
+
+    def resolve(session):
+        resolved.append(session)
+        return tools
+
+    class FakeModel:
+        received_tools = None
+
+        def request(self, messages, request_tools=None):
+            self.received_tools = request_tools
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    monkeypatch.setattr(n, "resolved_tool_schemas", resolve)
+    agent.model = FakeModel()
+
+    assert agent.run("hello") == "done"
+    assert resolved == [s]
+    assert agent.model.received_tools is tools
 
 
 def test_startup_tip_respects_toggle_and_context(tmp_path):
@@ -677,6 +564,23 @@ def test_startup_tip_respects_toggle_and_context(tmp_path):
     assert strict_tip in [tip for predicate, tip in n.CommandLoop.TIPS if predicate(s)]
 
 
+def test_ps_command_uses_markdown_renderer(tmp_path):
+    s = session(tmp_path)
+    s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7, update_status=lambda: None)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    rendered = []
+    plain = []
+    loop.ui.emit_answer = rendered.append
+    loop.emit = plain.append
+
+    assert loop.command("/ps") == (True, False)
+
+    assert plain == []
+    assert len(rendered) == 1
+    assert rendered[0].startswith("### Active jobs")
+    assert "| id | status | elapsed | command |" in rendered[0]
+
+
 def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
     read_fd, write_fd = os.pipe()
     reader = os.fdopen(read_fd, encoding="utf-8")
@@ -697,7 +601,7 @@ def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
         deadline = time.monotonic() + 1
         while not s.pending_user_inputs and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert s.pending_user_inputs == ["later"]
+        assert queued_texts(s) == ["later"]
     finally:
         stop.set()
         writer.close()
@@ -709,7 +613,9 @@ def test_queue_input_closed_stdin_does_not_escape_thread(tmp_path):
         def __init__(self):
             self.loop = None
 
-        def run(self):
+        def run(self, pre_run=None):
+            if pre_run:
+                pre_run()
             raise ValueError("I/O operation on closed file")
 
         def exit(self, result=None):
@@ -724,13 +630,117 @@ def test_queue_input_closed_stdin_does_not_escape_thread(tmp_path):
     assert not loop.queue_input_active.is_set()
 
 
+def drive_queue_app(loop, actions):
+    stop = threading.Event()
+
+    class App:
+        loop = None
+
+        def __init__(self, layout, bindings):
+            self.layout = layout
+            self.bindings = bindings
+
+        def invalidate(self):
+            pass
+
+        def exit(self, result=None):
+            stop.set()
+
+        def run(self, pre_run=None):
+            if pre_run:
+                pre_run()
+            event = SimpleNamespace(app=self, data="")
+            for action in actions:
+                if callable(action):
+                    action(self.layout.current_buffer)
+                    continue
+                key, event.data = action
+                keys = key if isinstance(key, tuple) else (key,)
+                self.bindings.get_bindings_for_keys(keys)[-1].handler(event)
+            stop.set()
+
+    loop._make_app = lambda layout, bindings, **kwargs: App(layout, bindings)
+    loop.run_queue_input_app(stop)
+
+
+def test_multiline_paste_queues_one_message_on_enter(tmp_path):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    def still_draft(_buffer):
+        assert s.pending_user_inputs == []
+
+    drive_queue_app(loop, [(n.Keys.BracketedPaste, "first\nsecond\nthird"), still_draft, (n.Keys.ControlM, "")])
+
+    assert queued_texts(s) == ["first\nsecond\nthird"]
+    rendered = "".join(text for _style, text in loop.queue_region_fragments())
+    assert "+ first\n  second\n  third" in rendered
+
+    drive_queue_app(
+        loop,
+        [lambda buffer: buffer.insert_text("typed"), ((n.Keys.Escape, n.Keys.ControlM), ""), lambda buffer: buffer.insert_text("line"), (n.Keys.ControlM, "")],
+    )
+    assert queued_texts(s)[-1] == "typed\nline"
+
+
+def test_up_recalls_latest_queued_message_for_editing(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first", "second")
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    drive_queue_app(loop, [(n.Keys.Up, "")])
+
+    assert queued_texts(s) == ["first"]
+    assert loop.queue_input_text == "second"
+
+    drive_queue_app(
+        loop,
+        [lambda buffer: buffer.reset(n.Document("second edited")), (n.Keys.ControlM, "")],
+    )
+    assert queued_texts(s) == ["first", "second edited"]
+    assert loop.queue_input_text == ""
+
+
+def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first", "delete me")
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    drive_queue_app(loop, [(n.Keys.Up, ""), lambda buffer: buffer.reset(n.Document(""))])
+
+    assert queued_texts(s) == ["first"]
+    assert loop.queue_input_text == ""
+
+
+def test_queue_acknowledges_only_claimed_duplicate_messages(tmp_path):
+    s = session(tmp_path)
+    queue(s, "same", "same")
+    claimed = s.claim_user_inputs()
+    s.enqueue_user_input("same")
+
+    s.acknowledge_user_inputs(claimed)
+
+    assert queued_texts(s) == ["same"]
+    assert not s.pending_user_inputs[0].inflight
+
+
+def test_queue_release_restores_interrupted_inputs(tmp_path):
+    s = session(tmp_path)
+    s.enqueue_user_input("ready")
+    queued = s.pending_user_inputs[0]
+
+    assert s.claim_user_inputs() == [queued]
+    s.release_user_inputs()
+
+    assert not queued.inflight
+
 
 def test_queued_text_auto_submits_at_round_end(tmp_path):
     """queue_input_text set during agent run is auto-submitted as next input."""
     s = session(tmp_path)
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -751,10 +761,10 @@ def test_queued_text_auto_submits_at_round_end(tmp_path):
 def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     """Unconsumed pending_user_inputs are auto-submitted as next input."""
     s = session(tmp_path)
-    s.pending_user_inputs.append("leftover instruction")
+    queue(s, "leftover instruction")
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -774,7 +784,7 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
 def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    s.pending_user_inputs = ["run tests", "then push"]
+    queue(s, "run tests", "then push")
 
     text = "".join(t for _, t in loop.queue_region_fragments())
     assert "2 queued" in text and "working" in text  # "--- working [ 2 queued ] ---" (no idle state)
@@ -830,13 +840,10 @@ def test_queue_flush_moves_messages_into_log(tmp_path):
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
     loop.flush_queued_to_log(["do a thing", "  "])
-    assert out == ["+ do a thing"]  # non-empty messages emitted, blank ones skipped
+    assert out == ["nano+ do a thing"]  # non-empty messages emitted, blank ones skipped
 
 
-def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
-    # A single app.exit() can be lost if it fires before app.run() starts its event loop, which used
-    # to leave the queue app running behind the next prompt and spam the animated divider. pause must
-    # keep re-issuing the exit until the app has actually torn down (queue_input_active clears).
+def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     loop.queue_input_active.set()
@@ -845,8 +852,7 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
 
     def fake_exit(app):
         calls["n"] += 1
-        if calls["n"] >= 3:  # the first couple of exits are "lost"; a later one lands
-            loop.queue_input_active.clear()
+        loop.queue_input_active.clear()
 
     monkeypatch.setattr(loop, "exit_app", fake_exit)
     monkeypatch.setattr(n.time, "sleep", lambda *_: None)
@@ -854,8 +860,36 @@ def test_pause_queue_input_retries_exit_until_torn_down(tmp_path, monkeypatch):
     loop.pause_queue_input()
 
     assert loop.queue_input_paused.is_set()
-    assert calls["n"] >= 3  # retried past the lost exits instead of giving up after one
+    assert calls["n"] == 1
     assert not loop.queue_input_active.is_set()
+
+
+def test_queue_input_does_not_restart_between_approval_and_live_tool(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.queue_input_paused.set()
+    rendered = []
+
+    class Stop:
+        stopped = False
+        waits = 0
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _timeout):
+            self.waits += 1
+            if self.waits == 1:
+                loop.queue_input_paused.clear()  # approval closed
+            elif self.waits == 2:
+                loop.queue_input_paused.set()  # approved tool acquired the live region
+            else:
+                self.stopped = True
+            return self.stopped
+
+    loop.run_queue_input_app = lambda _stop: rendered.append(True)
+    loop.queue_input_until(Stop())
+
+    assert rendered == []
 
 
 def test_flush_sigint_ignores_stale_retry_signal(tmp_path):
@@ -882,10 +916,10 @@ def test_flush_sigint_still_interrupts_active_retry_request(tmp_path):
 def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
     """pending_user_inputs comes first, then queue_input_text."""
     s = session(tmp_path)
-    s.pending_user_inputs.append("first pending")
+    queue(s, "first pending")
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -912,7 +946,7 @@ def test_queued_blank_text_is_cleared(tmp_path):
     s = session(tmp_path)
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -938,10 +972,10 @@ def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
     """In interactive mode, Enter-committed queue input auto-submits as the next turn (no second
     Enter) and half-typed text is carried back to the box instead of blocking the submit."""
     s = session(tmp_path)
-    s.pending_user_inputs.append("entered instruction")
+    queue(s, "entered instruction", "second instruction")
 
     class FakeModel:
-        def request(self, messages):
+        def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = n.Agent(s, output_fn=lambda text: None)
@@ -962,6 +996,7 @@ def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
 
     # entered input was auto-submitted without ever going through the editable read prompt
     assert any("entered instruction" in msg.get("content", "") for msg in s.messages)
+    assert [msg.get("content") for msg in s.messages if msg.get("role") == "user"][:2] == ["entered instruction", "second instruction"]
     assert s.pending_user_inputs == []
     # the only read prompt was for the leftover half-typed text, pre-filled for review (not auto-sent)
     assert reads == ["half typed"]
@@ -1020,8 +1055,8 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
     calls = []
 
-    def fake_read(prompt, *, multiline=False, submit_on_enter=False, prompt_style="class:prompt"):
-        calls.append((prompt, multiline, submit_on_enter, prompt_style))
+    def fake_read(prompt, *, multiline=False, submit_on_enter=False, prompt_style="class:prompt", replay=True):
+        calls.append((prompt, multiline, submit_on_enter, prompt_style, replay))
         return ""
 
     loop.interactive_input = True
@@ -1030,7 +1065,21 @@ def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
 
     loop.tool_input("[Y/n or reason] ")
 
-    assert calls == [("[Y/n or reason] ", True, True, "class:approval")]
+    assert calls == [("[Y/n or reason] ", True, True, "class:approval", False)]
+
+
+def test_read_input_does_not_replay_transient_approval(tmp_path, monkeypatch):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.input_history = n.FileHistory(str(tmp_path / "history"))
+    loop.run_input_app = lambda app: "y"
+    printed = []
+    monkeypatch.setattr(n, "print_formatted_text", lambda *args, **kwargs: printed.append(args))
+
+    assert loop.read_input("[Y/n] ", prompt_style="class:approval", replay=False) == "y"
+    assert printed == []
+
+    assert loop.read_input("nano> ") == "y"
+    assert len(printed) == 1
 
 
 def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
@@ -1040,6 +1089,12 @@ def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
     fragments = loop.input_prompt_fragments("[Y/n] ", "class:approval")
 
     assert fragments == [("class:approval", "[Y/n] "), ("class:approval.wait", "/ ")]
+    connector = n.LogBlock.prefix(2, n.LogEdge.CONTINUE)
+    assert loop.input_prompt_fragments(connector + "[Y/n] ", "class:approval") == [
+        ("ansibrightblack", connector),
+        ("class:approval", "[Y/n] "),
+        ("class:approval.wait", "/ "),
+    ]
     assert loop.input_prompt_fragments("nano> ", "class:prompt") == [("class:prompt", "nano> ")]
 
 
@@ -1047,12 +1102,12 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
     s = session(tmp_path)
     outputs = []
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=outputs.append)
+    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
     content = "".join(f"line {index}\n" for index in range(50))
 
     runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
 
-    assert outputs[0].startswith("approve Edit new.txt\n  preview")
+    assert outputs[0].startswith("  Edit  new.txt\n    ├ preview")
     assert "+line 49" in outputs[0]
     assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)
@@ -1067,11 +1122,11 @@ def test_context_command_shows_context_frame(tmp_path):
 
     output = loop.context_view("")
 
-    # unified markdown frame: environment, memory, and file state sections
+    # unified markdown frame: environment and memory sections
     assert "### Context" in output
     assert "#### Environment" in output
     assert "#### Memory" in output
-    assert "#### File State" in output
+    assert "#### File State" not in output
     assert "| goal | ship |" in output
     assert "- [ ] inspect" in output
     assert "- pytest" in output
@@ -1114,37 +1169,21 @@ def test_render_markdown_lines_splits_per_line(tmp_path):
     assert loop.render_markdown_lines("alpha\nbeta", 60) == [[("", "alpha")], [("", "beta")]]
 
 
-def _drive_context_tabs(tmp_path, keys, *, term=(80, 12)):
-    import shutil
-
-    from prompt_toolkit.input import create_pipe_input
-    from prompt_toolkit.output import DummyOutput
-
+def _drive_context_tabs(tmp_path, ui_harness, keys, *, term=(80, 12)):
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=lambda text: None)
     loop.ui.color = True
     # Force a tall page so scrolling has room, and a short viewport.
     loop.render_markdown_lines = lambda markdown, width: [[("", f"line{i}")] for i in range(100)]
-    original_size = shutil.get_terminal_size
-    shutil.get_terminal_size = lambda *a: os.terminal_size(term)
-    with create_pipe_input() as pipe:
-        real_app = n.Application
-        n.Application = lambda **kw: real_app(**{**kw, "input": pipe, "output": DummyOutput()})
-        loop.run_input_app = lambda app: app.run()
-        try:
-            pipe.send_text(keys)
-            loop.context_tabs(loop.agent.context)
-        finally:
-            n.Application = real_app
-            shutil.get_terminal_size = original_size
+    ui_harness.run(loop, lambda: loop.context_tabs(loop.agent.context), keys, size=term)
     return loop.context_tab_state
 
 
-def test_context_tabs_scroll_and_switch_keys(tmp_path):
+def test_context_tabs_scroll_and_switch_keys(tmp_path, ui_harness):
     # j/down scroll the body; k/up scroll back; h/l switch tabs. 'q' closes.
-    assert _drive_context_tabs(tmp_path, "jjjq")["scroll"] == 3
-    assert _drive_context_tabs(tmp_path, "jjjkq")["scroll"] == 2
-    assert _drive_context_tabs(tmp_path, "llq")["tab"] == 2
-    assert _drive_context_tabs(tmp_path, "lhq")["tab"] == 0
+    assert _drive_context_tabs(tmp_path, ui_harness, "jjjq").scroll == 3
+    assert _drive_context_tabs(tmp_path, ui_harness, "jjjkq").scroll == 2
+    assert _drive_context_tabs(tmp_path, ui_harness, "llq").tab == 0
+    assert _drive_context_tabs(tmp_path, ui_harness, "lhq").tab == 0
 
 
 def test_exit_command_prints_resume_command(tmp_path):
@@ -1156,7 +1195,7 @@ def test_exit_command_prints_resume_command(tmp_path):
     handled, exit_now = loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
-    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
     assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
 
 
@@ -1197,9 +1236,9 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     text = "\n".join(output)
     assert s.resumed is False
     assert f"Restored session: {s.uid}" in text
-    assert "hello" in text
-    assert "need tool" in text
-    assert "tool Read a.py 0:1 -> tr.1" in text
+    assert "user:\nhello" in text
+    assert "  assistant:\n  need tool" in text
+    assert "Read  a.py 0:1 → tr.1" in text
     assert "tool:" not in text
     assert "raw tool result" not in text
 
@@ -1210,7 +1249,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     s.messages.extend(
         [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "compacted answer"},
+            {"role": "assistant", "content": "compacted answer\nfinal detail"},
         ]
     )
     s.tool_records.append(
@@ -1223,9 +1262,58 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
 
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
-    assert "compacted answer" in text
-    assert "tool Bash wc -l nanocode.py -> tr.1" in text
+    assert "assistant:\ncompacted answer\nfinal detail" in text
+    assert "  Bash  wc -l nanocode.py\n    └ stored tr.1" in text
     assert "999 nanocode.py" not in text
+
+
+def test_resumed_session_separates_turn_boxes(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+        ]
+    )
+    output = []
+    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    assert "assistant:\none\n\nuser:\nsecond" in "\n".join(output)
+
+
+def test_turn_box_groups_followup_users_until_final_assistant():
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "working", "tool_calls": [{"id": "one"}]},
+        {"role": "user", "content": "follow-up"},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "next"},
+    ]
+
+    boxes = n.TurnBox.group(messages)
+
+    assert [len(box.messages) for box in boxes] == [4, 1]
+
+
+def test_turn_box_groups_tool_results_with_calling_assistant():
+    # Tool results (role="tool") are kept in the same TurnBox as the
+    # assistant that issued the tool_calls, not split prematurely.
+    messages = [
+        {"role": "user", "content": "read a.py"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "tr.1", "function": {"name": "Read"}}]},
+        {"role": "tool", "tool_call_id": "tr.1", "content": "# file content"},
+        {"role": "assistant", "content": "done"},
+    ]
+    boxes = n.TurnBox.group(messages)
+    assert len(boxes) == 1
+    assert len(boxes[0].messages) == 4
+    roles = [m["role"] for m in boxes[0].messages]
+    assert roles == ["user", "assistant", "tool", "assistant"]
 
 
 def test_eof_exit_prints_resume_command(tmp_path):
@@ -1236,7 +1324,7 @@ def test_eof_exit_prints_resume_command(tmp_path):
 
     assert loop.run() == 0
 
-    assert output[-1] == f"Resume with: nanocode --resume {s.uid}"
+    assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
     assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
 
 
@@ -1297,26 +1385,19 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     assert emitted[-1] == ""
 
 
-def test_turn_elapsed_label_uses_whole_seconds(tmp_path, monkeypatch):
-    loop = n.CommandLoop(
-        n.Agent(session(tmp_path), output_fn=lambda text: None),
-        input_fn=lambda prompt="": "",
-        output_fn=lambda text: None,
-    )
-    loop.status_bar.started_at = 100.0
-
+def test_elapsed_since_uses_whole_seconds(monkeypatch):
     monkeypatch.setattr(n.time, "monotonic", lambda: 104.9)
-    assert loop.turn_elapsed_label() == "4s"
+    assert n.Text.elapsed_since(100.0) == "4s"
 
     monkeypatch.setattr(n.time, "monotonic", lambda: 162.9)
-    assert loop.turn_elapsed_label() == "1m02s"
+    assert n.Text.elapsed_since(100.0) == "1m02s"
 
 
 def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     loop.ui.color = True
     loop.interactive_input = True
-    loop.live_preview.start = lambda command="": setattr(loop.live_preview, "active", True)
+    loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
 
     loop.tool_live_start()
     assert loop.queue_input_paused.is_set()
@@ -1340,7 +1421,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], "I'll inspect that first."
@@ -1349,14 +1430,25 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     agent.model = TalkingModel()
     assert agent.run("read file") == "done"
     assert output[0] == "I'll inspect that first."
-    assert any(line.startswith("tool Read") for line in output)
+    assert any(isinstance(line, n.LogBlock) and str(line).startswith("  Read  ") for line in output)
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."
     assert s.messages[2]["content"].startswith("tool tr.1 Read a.txt 0:1")
-    assert "-> FILE STATE" in s.messages[2]["content"]
+    assert "<Read" in s.messages[2]["content"]
+    assert "-> FILE STATE" not in s.messages[2]["content"]
     assert s.messages[3]["content"] == "done"
     assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
+
+
+def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
+    output = []
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
+
+    loop.emit_agent_output("First line.\nSecond line.")
+    loop.ui.emit_answer("Done.\nFinal detail.")
+
+    assert output == ["  First line.\n  Second line.", "Done.\nFinal detail."]
 
 
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
@@ -1370,7 +1462,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
         def compact(self, text):
             raise n.ModelError("failed")
 
-    context.maybe_compact(FailingModel(), "system", [{"role": "user", "content": "request"}])
+    context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
     assert len(s.messages) == 2
     assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
@@ -1378,14 +1470,32 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     assert s.messages[1]["content"] == "9"
 
 
-def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
+def test_manual_compact_inserts_summary_before_latest_user(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "old answer"}, {"role": "user", "content": "latest"}, {"role": "tool", "content": "tool kept"}]
     s.state.context_percent = 80
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    spinners = []
+
+    class FakeSpinner:
+        def __init__(self, command_loop):
+            self.command_loop = command_loop
+            self.started = False
+            self.stopped = False
+            spinners.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(n, "CompactSpinner", FakeSpinner)
 
     class FakeModel:
         def compact(self, text):
+            assert spinners and spinners[0].started
+            assert not spinners[0].stopped
             return {"summary": "summary", "plan": ["next"], "known": ["fact"]}
 
     loop.agent.model = FakeModel()
@@ -1396,8 +1506,19 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
     assert s.state.summary == "summary"
+    assert spinners[0].command_loop is loop
+    assert spinners[0].stopped is True
     assert "messages 4 -> 3" in result
     assert "prior summary inserted" in result
+
+
+def test_compact_spinner_uses_standalone_divider(tmp_path, monkeypatch):
+    loop = n.CommandLoop(n.Agent(session(tmp_path)))
+    monkeypatch.setattr(n.time, "monotonic", lambda: 0.0)
+    fragments = n.CompactSpinner(loop).fragments()
+
+    assert "compacting context" in "".join(text for _, text in fragments)
+    assert any(style == "class:divider.working" and text == "compacting context" for style, text in fragments)
 
 
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
@@ -1408,7 +1529,7 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
         def __init__(self):
             self.messages = []
 
-        def request(self, messages):
+        def request(self, messages, tools=None):
             self.messages.append(messages)
             if len(self.messages) == 1:
                 return {}, [call("Bash", [])], ""
@@ -1700,7 +1821,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     # With the built-in nanocode-help present, the Skill tool and SKILLS section are offered.
     withskill = n.ContextManager(session(tmp_path))
     assert "--- SKILLS ---" in withskill.skills_context()
-    assert any(t["function"]["name"] == "Skill" for t in withskill.tool_schemas())
+    assert any(t["function"]["name"] == "Skill" for t in n.resolved_tool_schemas(withskill.session))
     messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
     assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
 
@@ -1708,8 +1829,9 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     bare = n.ContextManager(session(tmp_path))
     bare.session.skills = n.SkillLibrary({})
     assert bare.skills_context() == ""
-    assert not any(t["function"]["name"] == "Skill" for t in bare.tool_schemas())
-    assert "--- SKILLS ---" not in bare.cache_prefix(n.Agent.SYSTEM_PROMPT, bare.tool_schemas())
+    tools = n.resolved_tool_schemas(bare.session)
+    assert not any(t["function"]["name"] == "Skill" for t in tools)
+    assert all("--- SKILLS ---" not in text for _name, text in bare.cache_prefix_regions(n.Agent.SYSTEM_PROMPT, tools))
 
 
 def test_skills_command_lists_builtin_and_installed(tmp_path):
@@ -1758,6 +1880,22 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"skills {count}" in bar_text
 
 
+def test_debug_command_shows_bounded_cache_prefix_records(tmp_path):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.agent.context.check_cache_prefix("first")
+    loop.agent.context.check_cache_prefix("second")
+
+    output = loop.debug("")
+
+    assert "### Debug · 1 cache-prefix mismatch" in output
+    assert "#### Latest · call 1 · round 0 · step 0" in output
+    assert "| system |" in output
+    assert "first" not in output and "second" not in output
+    assert "prefix mismatches `1`; see `/debug`" in loop.status("")
+    assert loop.debug("on") == "Usage: /debug"
+
+
 def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     s = session(tmp_path)
     skill = s.skills.get("nanocode-help")
@@ -1765,7 +1903,7 @@ def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     body = n.SkillTool(s, ["nanocode-help"]).call()
     # Authored manual prose so how-to / feature / troubleshooting questions need no source read.
     assert "## How it works" in body and "## Troubleshooting" in body
-    assert "prefix churn" in body  # a concept /help does not explain
+    assert "prefix-mismatch" in body  # a concept /help does not explain
     # Plus lists assembled from in-code constants (so they cannot drift).
     assert "/context" in body and "/skills" in body  # command list (from /help)
     assert "InspectCode:" in body  # tool details (from DESCRIPTIONs)
@@ -1779,3 +1917,43 @@ def test_project_skill_overrides_builtin(tmp_path):
     skill = s.skills.get("nanocode-help")
     assert skill.source == "project"
     assert "my own instructions" in n.SkillTool(s, ["nanocode-help"]).call()
+
+
+def test_session_from_config_file_theme_param(tmp_path):
+    cfg = tmp_path / "nanocode.toml"
+    cfg.write_text("[runtime]\ntheme = \"light\"\n")
+    s = n.Session.from_config_file(path=str(cfg), theme="dark")
+    assert s.settings.theme == "dark"
+
+    s2 = n.Session.from_config_file(path=str(cfg))
+    assert s2.settings.theme == "light"
+
+    s3 = n.Session.from_config_file(path=str(cfg), theme="")
+    assert s3.settings.theme == "light"
+
+
+def test_agent_state_prefix_fingerprints_truncated_to_last_three():
+    state = n.AgentState(prefix_fingerprints=["a", "b", "c", "d", "e"])
+    assert state.prefix_fingerprints == ["c", "d", "e"]
+
+    state2 = n.AgentState(prefix_fingerprints=["x"])
+    assert state2.prefix_fingerprints == ["x"]
+
+    state3 = n.AgentState(prefix_fingerprints=[])
+    assert state3.prefix_fingerprints == []
+
+
+def test_memory_context_includes_tool_errors_when_present(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "test goal"
+    s.state.check = "all good"
+    s.record_tool_error("tr.1", "Bash", ["bad"], "failed")
+
+    ctx = n.ContextManager(s).memory_context()
+
+    assert "Goal:" in ctx
+    assert "test goal" in ctx
+    assert "Check:" in ctx
+    assert "all good" in ctx
+    assert "Recent tool errors:" in ctx
+    assert "tr.1 Bash bad: failed" in ctx
