@@ -1,4 +1,4 @@
-# nanocode-cli
+<h1 align="center">nanocode-cli</h1>
 
 <p align="center">
   <img src="snapshots/nanocode1.gif" alt="nanocode demo" width="600">
