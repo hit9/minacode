@@ -218,7 +218,7 @@ def test_session_diff_sections_ignore_legacy_diffs_without_before_after(tmp_path
 
 def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
     s = session(tmp_path)
-    large = "x" * (n.TURN_DIFF_SNAPSHOT_CHAR_LIMIT + 1)
+    large = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
     s.store_turn_diff("tr.1", 1, "large.py", "-old\n+new\n", before=large, after="new\n", round=1)
 
     diff = s.turn_diffs[0]
@@ -233,7 +233,7 @@ def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
 
 def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):
     s = session(tmp_path)
-    large = "x" * (n.TURN_DIFF_SNAPSHOT_CHAR_LIMIT + 1)
+    large = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
     first = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-old\n+large\n"
     second = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-large\n+new\n"
     s.store_turn_diff("tr.1", 1, "a.py", first, before="old\n", after=large, round=1)
