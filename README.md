@@ -1,7 +1,7 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  A compact, cache-friendly coding agent for developers who want an inspectable CLI.
+  A single-file terminal coding agent with explicit control flow and cache-aware sessions.
 </p>
 
 <p align="center">
@@ -47,19 +47,11 @@ Common flags:
 - `--mcp <selector>`: choose which MCP servers to enable
 - `--config <path>`: use a specific TOML config file
 
-## Why nanocode
+## Scope and tradeoffs
 
-nanocode keeps the agent loop small enough to understand while retaining the workflows needed for real repository work.
+nanocode is a single-file terminal coding agent, not a minimal code sample. Its implementation has grown with sessions, MCP, skills, background jobs, and an interactive CLI, but keeps those features in one explicit runtime rather than distributing them across a framework.
 
-**Inspectable by design.** The complete agent lives in `nanocode.py`. You can read how prompts, tools, approvals, persistence, and model requests work without tracing a framework.
-
-**Changes fail safely.** Edits use `line:hash` anchors. If a file changes after it was read, the edit is rejected instead of being applied to stale content.
-
-**Keep steering while it works.** Type follow-ups during a running turn. They queue for the next model request, so you can refine direction without waiting for the entire task to finish.
-
-**Resume without losing the thread.** Sessions persist conversation, completed tool calls, diffs, and working memory. Stop at any time and continue with `nanocode --resume`.
-
-**Built for prompt caching.** Stable instructions, environment data, and tool schemas remain byte-identical across requests, improving cache reuse on providers that support it.
+This makes nanocode easier to vendor, search, and modify as a unit. The tradeoff is that `nanocode.py` is substantial, and the project does not provide the modular boundaries or broad integrations of a larger agent platform.
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
@@ -75,7 +67,7 @@ nanocode keeps the agent loop small enough to understand while retaining the wor
 | Sessions | Auto-saved JSONL snapshots, `--resume latest` / `--resume <id>` |
 | MCP | Remote (HTTP streamable) and local (stdio) servers, with OAuth support |
 | Skills | Reusable Markdown instruction packs from project and user directories |
-| Architecture | The complete agent lives in the inspectable `nanocode.py` module |
+| Architecture | The runtime is distributed as one `nanocode.py` module |
 
 ## Common commands
 
