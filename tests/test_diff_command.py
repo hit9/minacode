@@ -118,7 +118,7 @@ def test_ui_segment_lines_keeps_styled_diff_lines_together():
 def test_diff_counts_only_hunk_changes():
     diff = "--- a.py\n+++ a.py\n@@ -1 +1,2 @@\n-old\n+++heading\n+new\n"
 
-    assert n.diff_counts(diff) == (2, 1)
+    assert n.CommandLoop.diff_counts(diff) == (2, 1)
 
 
 def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
@@ -195,9 +195,9 @@ def test_diff_sections_follow_file_across_unambiguous_moves(tmp_path):
 
     assert latest is not None
     assert [path for _status, path, _diff in latest[1]] == ["skill/SKILL.md"]
-    assert n.diff_counts(latest[1][0][2]) == (2, 2)
+    assert n.CommandLoop.diff_counts(latest[1][0][2]) == (2, 2)
     assert [path for _status, path, _diff in session_sections] == ["skill/SKILL.md"]
-    assert n.diff_counts(session_sections[0][2]) == (3, 0)
+    assert n.CommandLoop.diff_counts(session_sections[0][2]) == (3, 0)
 
 
 def test_diff_sections_do_not_guess_ambiguous_moves(tmp_path):
@@ -246,7 +246,7 @@ def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):
     assert latest[1][0][:2] == ("edit", "a.py")
     assert first in latest[1][0][2]
     assert second in latest[1][0][2]
-    assert n.diff_counts(latest[1][0][2]) == (2, 2)
+    assert n.CommandLoop.diff_counts(latest[1][0][2]) == (2, 2)
 
 
 def test_latest_round_diffs_include_all_steps_in_round(tmp_path):

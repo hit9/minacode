@@ -149,7 +149,7 @@ def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
             _strict_check(function["parameters"], name)
         else:
             # Only free-form schemas (open objects) may skip strict; they stay untransformed.
-            assert n.strictifiable(tool.params_schema()) is False, name
+            assert n.Tool._strictifiable(tool.params_schema()) is False, name
             assert function["parameters"] == tool.params_schema()
     after = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     assert before == after  # deepcopy keeps shared ClassVar schemas intact
@@ -165,8 +165,8 @@ def test_strict_tools_skips_free_form_object_schemas():
     # MCP.arguments is a free-form object; strict cannot close it, so MCP stays non-strict.
     mcp = n.TOOL_REGISTRY["MCP"].schema(True)["function"]
     assert "strict" not in mcp
-    assert n.strictifiable(n.TOOL_REGISTRY["MCP"].params_schema()) is False
-    assert n.strictifiable(n.TOOL_REGISTRY["Read"].params_schema()) is True
+    assert n.Tool._strictifiable(n.TOOL_REGISTRY["MCP"].params_schema()) is False
+    assert n.Tool._strictifiable(n.TOOL_REGISTRY["Read"].params_schema()) is True
 
 
 def test_drop_nulls_strips_omitted_strict_arguments():

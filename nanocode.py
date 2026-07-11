@@ -157,6 +157,54 @@ class Text:
         minutes, seconds = divmod(elapsed, 60)
         return f"{minutes}m{seconds:02d}s"
 
+    @staticmethod
+    def wrap_styled(
+        prefix: list[tuple[str, str]],
+        continuation: list[tuple[str, str]],
+        content: list[tuple[str, str]],
+        width: int | None = None,
+    ) -> list[list[tuple[str, str]]]:
+        logical_lines: list[list[tuple[str, str, int]]] = [[]]
+        for style, text in content:
+            for char in text:
+                if char == "\n":
+                    logical_lines.append([])
+                else:
+                    logical_lines[-1].append((style, char, get_cwidth(char)))
+
+        def row_segments(row_prefix: list[tuple[str, str]], cells: list[tuple[str, str, int]]) -> list[tuple[str, str]]:
+            row = list(row_prefix)
+            for style, char, _char_width in cells:
+                if row and row[-1][0] == style:
+                    row[-1] = (style, row[-1][1] + char)
+                else:
+                    row.append((style, char))
+            return row
+
+        rows: list[list[tuple[str, str]]] = []
+        row_prefix = prefix
+        for logical in logical_lines:
+            remaining = logical
+            while True:
+                prefix_width = sum(get_cwidth(text) for _style, text in row_prefix)
+                available = max(1, width - prefix_width) if width else None
+                if available is None or sum(cell_width for _style, _char, cell_width in remaining) <= available:
+                    rows.append(row_segments(row_prefix, remaining))
+                    break
+                used = 0
+                fit = 0
+                while fit < len(remaining) and used + remaining[fit][2] <= available:
+                    used += remaining[fit][2]
+                    fit += 1
+                fit = max(1, fit)
+                whitespace = max((index for index in range(fit) if remaining[index][1].isspace()), default=-1)
+                cut = whitespace if whitespace > 0 else fit
+                rows.append(row_segments(row_prefix, remaining[:cut]))
+                remaining = remaining[cut + 1 :] if whitespace > 0 else remaining[cut:]
+                row_prefix = continuation
+            row_prefix = continuation
+        return rows
+
 
 @dataclass
 class ProviderConfig:
@@ -1742,59 +1790,6 @@ class UpdateChecker:
         return "update: current" if update.latest else "update: unknown"
 
 
-def strict_tool_schema(schema: Json) -> Json:
-    """Rewrite a JSON Schema to satisfy strict function-calling (OpenAI / DeepSeek beta):
-    every object property becomes required (genuine optionals turned nullable),
-    additionalProperties is forced false, and unsupported keywords are dropped."""
-
-    def transform(node: Any) -> Any:
-        if isinstance(node, list):
-            return [transform(item) for item in node]
-        if not isinstance(node, dict):
-            return node
-        node = {key: transform(value) for key, value in node.items() if key not in ("minItems", "maxItems", "minLength", "maxLength")}
-        if isinstance(node.get("properties"), dict):
-            required = set(node.get("required") or [])
-            for key, sub in node["properties"].items():
-                if key not in required and isinstance(sub, dict):
-                    node["properties"][key] = nullable(sub)
-            node["required"] = list(node["properties"].keys())
-            node["additionalProperties"] = False
-        return node
-
-    # Strict validators only allow scalar types in a `type` union; object/array nullability
-    # must be expressed with anyOf instead (e.g. {"anyOf": [<array schema>, {"type": "null"}]}).
-    scalars = ("string", "number", "integer", "boolean")
-
-    def nullable(sub: Json) -> Json:
-        kind = sub.get("type")
-        if isinstance(kind, str) and kind in scalars:
-            sub["type"] = [kind, "null"]
-        elif isinstance(kind, list) and all(item in (*scalars, "null") for item in kind):
-            if "null" not in kind:
-                sub["type"] = [*kind, "null"]
-        else:
-            return {"anyOf": [sub, {"type": "null"}]}
-        # An enum must accept null too, otherwise strict validation rejects the "omitted" value.
-        if isinstance(sub.get("enum"), list) and None not in sub["enum"]:
-            sub["enum"] = [*sub["enum"], None]
-        return sub
-
-    return transform(copy.deepcopy(schema))
-
-
-def strictifiable(schema: Any) -> bool:
-    """False if the schema contains a free-form object (an `object` with no `properties`),
-    which strict function calling cannot represent — such tools fall back to non-strict."""
-    if isinstance(schema, dict):
-        if schema.get("type") == "object" and "properties" not in schema:
-            return False
-        return all(strictifiable(value) for value in schema.values())
-    if isinstance(schema, list):
-        return all(strictifiable(item) for item in schema)
-    return True
-
-
 class Tool:
     NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[str] = ""
@@ -1814,10 +1809,62 @@ class Tool:
     def schema(cls, strict: bool = False) -> Json:
         description = "\n".join([cls.DESCRIPTION, "Signature: " + cls.SIGNATURE, *(("- " + item) for item in cls.EXAMPLE if item)])
         function: Json = {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}
-        if strict and strictifiable(function["parameters"]):
-            function["parameters"] = strict_tool_schema(function["parameters"])
+        if strict and cls._strictifiable(function["parameters"]):
+            function["parameters"] = cls._strict_schema(function["parameters"])
             function["strict"] = True
         return {"type": "function", "function": function}
+
+    @staticmethod
+    def _strictifiable(schema: Any) -> bool:
+        """False if the schema contains a free-form object (an `object` with no `properties`),
+        which strict function calling cannot represent — such tools fall back to non-strict."""
+        if isinstance(schema, dict):
+            if schema.get("type") == "object" and "properties" not in schema:
+                return False
+            return all(Tool._strictifiable(value) for value in schema.values())
+        if isinstance(schema, list):
+            return all(Tool._strictifiable(item) for item in schema)
+        return True
+
+    @staticmethod
+    def _strict_schema(schema: Json) -> Json:
+        """Rewrite a JSON Schema to satisfy strict function-calling (OpenAI / DeepSeek beta):
+        every object property becomes required (genuine optionals turned nullable),
+        additionalProperties is forced false, and unsupported keywords are dropped."""
+        # Strict validators only allow scalar types in a `type` union; object/array nullability
+        # must be expressed with anyOf instead (e.g. {"anyOf": [<array schema>, {"type": "null"}]}).
+        scalars = ("string", "number", "integer", "boolean")
+
+        def nullable(sub: Json) -> Json:
+            kind = sub.get("type")
+            if isinstance(kind, str) and kind in scalars:
+                sub["type"] = [kind, "null"]
+            elif isinstance(kind, list) and all(item in (*scalars, "null") for item in kind):
+                if "null" not in kind:
+                    sub["type"] = [*kind, "null"]
+            else:
+                return {"anyOf": [sub, {"type": "null"}]}
+            # An enum must accept null too, otherwise strict validation rejects the "omitted" value.
+            if isinstance(sub.get("enum"), list) and None not in sub["enum"]:
+                sub["enum"] = [*sub["enum"], None]
+            return sub
+
+        def transform(node: Any) -> Any:
+            if isinstance(node, list):
+                return [transform(item) for item in node]
+            if not isinstance(node, dict):
+                return node
+            node = {key: transform(value) for key, value in node.items() if key not in ("minItems", "maxItems", "minLength", "maxLength")}
+            if isinstance(node.get("properties"), dict):
+                required = set(node.get("required") or [])
+                for key, sub in node["properties"].items():
+                    if key not in required and isinstance(sub, dict):
+                        node["properties"][key] = nullable(sub)
+                node["required"] = list(node["properties"].keys())
+                node["additionalProperties"] = False
+            return node
+
+        return transform(copy.deepcopy(schema))
 
     @staticmethod
     def object_schema(properties: Json, required: list[str] | None = None) -> Json:
@@ -3644,54 +3691,6 @@ class LogRole(Enum):
     DIFF = auto()
 
 
-def wrap_styled_line(
-    prefix: list[tuple[str, str]],
-    continuation: list[tuple[str, str]],
-    content: list[tuple[str, str]],
-    width: int | None = None,
-) -> list[list[tuple[str, str]]]:
-    logical_lines: list[list[tuple[str, str, int]]] = [[]]
-    for style, text in content:
-        for char in text:
-            if char == "\n":
-                logical_lines.append([])
-            else:
-                logical_lines[-1].append((style, char, get_cwidth(char)))
-
-    def row_segments(row_prefix: list[tuple[str, str]], cells: list[tuple[str, str, int]]) -> list[tuple[str, str]]:
-        row = list(row_prefix)
-        for style, char, _char_width in cells:
-            if row and row[-1][0] == style:
-                row[-1] = (style, row[-1][1] + char)
-            else:
-                row.append((style, char))
-        return row
-
-    rows: list[list[tuple[str, str]]] = []
-    row_prefix = prefix
-    for logical in logical_lines:
-        remaining = logical
-        while True:
-            prefix_width = sum(get_cwidth(text) for _style, text in row_prefix)
-            available = max(1, width - prefix_width) if width else None
-            if available is None or sum(cell_width for _style, _char, cell_width in remaining) <= available:
-                rows.append(row_segments(row_prefix, remaining))
-                break
-            used = 0
-            fit = 0
-            while fit < len(remaining) and used + remaining[fit][2] <= available:
-                used += remaining[fit][2]
-                fit += 1
-            fit = max(1, fit)
-            whitespace = max((index for index in range(fit) if remaining[index][1].isspace()), default=-1)
-            cut = whitespace if whitespace > 0 else fit
-            rows.append(row_segments(row_prefix, remaining[:cut]))
-            remaining = remaining[cut + 1 :] if whitespace > 0 else remaining[cut:]
-            row_prefix = continuation
-        row_prefix = continuation
-    return rows
-
-
 @dataclass(frozen=True)
 class LogLine:
     label: str
@@ -3744,7 +3743,7 @@ class LogBlock:
         for line, level in self.walk():
             prefix = self.margin(level) + line.text_prefix()
             continuation = self.margin(level) + " " * get_cwidth(line.text_prefix())
-            rows.extend(wrap_styled_line([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
+            rows.extend(Text.wrap_styled([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
         return "\n".join("".join(text for _style, text in row) for row in rows)
 
 
@@ -6671,7 +6670,7 @@ class UiPrinter:
                 for item, rendered in zip(diff_lines, highlighted):
                     prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
-                    for row in wrap_styled_line(prefix, prefix, rendered, width):
+                    for row in Text.wrap_styled(prefix, prefix, rendered, width):
                         segments.extend([*row, ("", "\n")])
                 index = end
                 continue
@@ -6687,7 +6686,7 @@ class UiPrinter:
             if line.meta:
                 content.append(("ansired" if line.role is LogRole.ERROR else "ansibrightblack", line.meta))
             continuation = [("", block.margin(level) + " " * get_cwidth(line.text_prefix()))]
-            for row in wrap_styled_line(prefix, continuation, content, width):
+            for row in Text.wrap_styled(prefix, continuation, content, width):
                 segments.extend([*row, ("", "\n")])
             index += 1
         return segments
@@ -7306,40 +7305,6 @@ class CompactSpinner:
         return self.loop.sweep_divider_fragments("compacting context")
 
 
-def bounded_diff(text: str) -> tuple[str, bool]:
-    if len(text.encode("utf-8")) <= 50_000 and text.count("\n") <= 1_200:
-        return text, False
-    clipped: list[str] = []
-    length = 0
-    for line in text.splitlines():
-        line_bytes = len(line.encode("utf-8")) + 1
-        if length + line_bytes > 50_000 or len(clipped) >= 1_200:
-            break
-        clipped.append(line)
-        length += line_bytes
-    return "\n".join(clipped), True
-
-
-def diff_counts(text: str) -> tuple[int, int]:
-    added = removed = 0
-    old_remaining = new_remaining = 0
-    hunk_header = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
-    for line in text.splitlines():
-        if match := hunk_header.match(line):
-            old_remaining = int(match.group(1) or 1)
-            new_remaining = int(match.group(2) or 1)
-        elif line.startswith("+") and new_remaining:
-            added += 1
-            new_remaining -= 1
-        elif line.startswith("-") and old_remaining:
-            removed += 1
-            old_remaining -= 1
-        elif line.startswith(" "):
-            old_remaining = max(0, old_remaining - 1)
-            new_remaining = max(0, new_remaining - 1)
-    return added, removed
-
-
 class QueuePlaceholder(Processor):
     def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
         self.empty_text = empty_text
@@ -7555,6 +7520,43 @@ Tools:
   Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
   Skill(name) loads a skill's full instructions on demand (see the SKILLS section / $skill).
 """
+
+    DIFF_MAX_BYTES: ClassVar[int] = 50_000
+    DIFF_MAX_LINES: ClassVar[int] = 1_200
+
+    @classmethod
+    def bounded_diff(cls, text: str) -> tuple[str, bool]:
+        if len(text.encode("utf-8")) <= cls.DIFF_MAX_BYTES and text.count("\n") <= cls.DIFF_MAX_LINES:
+            return text, False
+        clipped: list[str] = []
+        length = 0
+        for line in text.splitlines():
+            line_bytes = len(line.encode("utf-8")) + 1
+            if length + line_bytes > cls.DIFF_MAX_BYTES or len(clipped) >= cls.DIFF_MAX_LINES:
+                break
+            clipped.append(line)
+            length += line_bytes
+        return "\n".join(clipped), True
+
+    @staticmethod
+    def diff_counts(text: str) -> tuple[int, int]:
+        added = removed = 0
+        old_remaining = new_remaining = 0
+        hunk_header = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+        for line in text.splitlines():
+            if match := hunk_header.match(line):
+                old_remaining = int(match.group(1) or 1)
+                new_remaining = int(match.group(2) or 1)
+            elif line.startswith("+") and new_remaining:
+                added += 1
+                new_remaining -= 1
+            elif line.startswith("-") and old_remaining:
+                removed += 1
+                old_remaining -= 1
+            elif line.startswith(" "):
+                old_remaining = max(0, old_remaining - 1)
+                new_remaining = max(0, new_remaining - 1)
+        return added, removed
 
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
         self.agent = agent
@@ -8694,7 +8696,7 @@ Tools:
             lines.append("### " + title)
             for _status, path, diff in sections:
                 lines.append(f"#### {path}")
-                bounded, truncated = bounded_diff(diff)
+                bounded, truncated = CommandLoop.bounded_diff(diff)
                 lines.append(f"```diff\n{bounded}\n```")
                 if truncated:
                     lines.append("\n*Diff truncated. Full edit output is stored in the session.*")
@@ -8724,7 +8726,7 @@ Tools:
 
         def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
-            counts = [diff_counts(diff) for _status, _path, diff in sections]
+            counts = [CommandLoop.diff_counts(diff) for _status, _path, diff in sections]
             added_width = max(len(str(added)) for added, _removed in counts)
             removed_width = max(len(str(removed)) for _added, removed in counts)
             for index, ((_status, path, _diff), (added, removed)) in enumerate(zip(sections, counts)):
