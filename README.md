@@ -49,15 +49,17 @@ Common flags:
 
 ## Why nanocode
 
-**Live typing.** Keep giving input while the agent is still working — your next message queues up instead of blocking the turn.
+nanocode keeps the agent loop small enough to understand while retaining the workflows needed for real repository work.
 
-**Edits that don't drift.** Every edit carries a `line:hash` anchor. If the code changes underneath, the edit is rejected — no silent corruption.
+**Inspectable by design.** The complete agent lives in `nanocode.py`. You can read how prompts, tools, approvals, persistence, and model requests work without tracing a framework.
 
-**Sessions survive.** Exit anytime and resume later with `nanocode --resume`. Conversation, tool results, and working memory come back.
+**Changes fail safely.** Edits use `line:hash` anchors. If a file changes after it was read, the edit is rejected instead of being applied to stale content.
 
-**Prompt-cache friendly.** Stable context (system prompt, environment, tool schemas) stays byte-identical across turns so providers that cache prompts reuse them, saving cost and latency.
+**Keep steering while it works.** Type follow-ups during a running turn. They queue for the next model request, so you can refine direction without waiting for the entire task to finish.
 
-**One file.** `nanocode.py` is the whole agent — readable, hackable, easy to vendor.
+**Resume without losing the thread.** Sessions persist conversation, completed tool calls, diffs, and working memory. Stop at any time and continue with `nanocode --resume`.
+
+**Built for prompt caching.** Stable instructions, environment data, and tool schemas remain byte-identical across requests, improving cache reuse on providers that support it.
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">

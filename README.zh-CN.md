@@ -49,15 +49,17 @@ nanocode
 
 ## 为什么选 nanocode
 
-**实时输入。** 代理还在工作时就能继续打字。下一条消息排队等待，不打断当前回合。
+nanocode 在保持 agent loop 足够小、足够容易理解的同时，提供完成真实代码仓库任务所需的工作流。
 
-**编辑不乱漂。** 每次编辑都携带 `line:hash` 锚点。代码在底层变了，编辑就被拒绝——不会悄悄损坏文件。
+**实现透明。** 完整 agent 位于 `nanocode.py`。Prompt、工具、审批、持久化和模型请求如何工作，都能直接阅读，不需要在框架中层层追踪。
 
-**Session 随时恢复。** 随时退出，`nanocode --resume` 恢复。对话、工具结果、工作记忆全部还原。
+**变更安全失败。** 编辑使用 `line:hash` 锚点。如果文件在读取后发生变化，编辑会被拒绝，而不是应用到已经过期的内容上。
 
-**Prompt-cache 友好。** 稳定上下文（system prompt、环境、工具 schema）字节级一致，支持 prompt cache 的 provider 直接复用，节省费用和延迟。
+**工作中也能继续引导。** Agent 运行时仍可输入 follow-up。消息会排队进入下一次模型请求，无需等整个任务结束后再调整方向。
 
-**只有一个文件。** `nanocode.py` 就是整个 agent——可读、可改、可直接 vendoring。
+**随时停止，接着继续。** Session 会保存对话、已完成的工具调用、diff 和工作记忆。任何时候退出，都可以通过 `nanocode --resume` 继续。
+
+**为 Prompt Cache 设计。** 稳定的指令、环境信息和工具 schema 在请求之间保持字节级一致，让支持 prompt cache 的 provider 获得更高的缓存复用率。
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
