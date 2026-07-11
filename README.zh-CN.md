@@ -1,6 +1,8 @@
 # nanocode-cli
 
-<img src="snapshots/nanocode1.gif" alt="nanocode demo" width="680">
+<p align="center">
+  <img src="snapshots/nanocode1.gif" alt="nanocode demo" width="600">
+</p>
 
 一个文件，一个编程代理。描述任务——它读取、编辑、运行命令，然后汇报结果。
 
@@ -41,7 +43,9 @@ nanocode
 
 **只有一个文件。** `nanocode.py` 就是整个 agent——可读、可改、可直接 vendoring。
 
-<img src="snapshots/nanocode2.gif" alt="nanocode session" width="680">
+<p align="center">
+  <img src="snapshots/nanocode2.gif" alt="nanocode session" width="600">
+</p>
 
 ## 概览
 
