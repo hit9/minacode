@@ -1144,37 +1144,21 @@ def test_render_markdown_lines_splits_per_line(tmp_path):
     assert loop.render_markdown_lines("alpha\nbeta", 60) == [[("", "alpha")], [("", "beta")]]
 
 
-def _drive_context_tabs(tmp_path, keys, *, term=(80, 12)):
-    import shutil
-
-    from prompt_toolkit.input import create_pipe_input
-    from prompt_toolkit.output import DummyOutput
-
+def _drive_context_tabs(tmp_path, ui_harness, keys, *, term=(80, 12)):
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=lambda text: None)
     loop.ui.color = True
     # Force a tall page so scrolling has room, and a short viewport.
     loop.render_markdown_lines = lambda markdown, width: [[("", f"line{i}")] for i in range(100)]
-    original_size = shutil.get_terminal_size
-    shutil.get_terminal_size = lambda *a: os.terminal_size(term)
-    with create_pipe_input() as pipe:
-        real_app = n.Application
-        n.Application = lambda **kw: real_app(**{**kw, "input": pipe, "output": DummyOutput()})
-        loop.run_input_app = lambda app: app.run()
-        try:
-            pipe.send_text(keys)
-            loop.context_tabs(loop.agent.context)
-        finally:
-            n.Application = real_app
-            shutil.get_terminal_size = original_size
+    ui_harness.run(loop, lambda: loop.context_tabs(loop.agent.context), keys, size=term)
     return loop.context_tab_state
 
 
-def test_context_tabs_scroll_and_switch_keys(tmp_path):
+def test_context_tabs_scroll_and_switch_keys(tmp_path, ui_harness):
     # j/down scroll the body; k/up scroll back; h/l switch tabs. 'q' closes.
-    assert _drive_context_tabs(tmp_path, "jjjq").scroll == 3
-    assert _drive_context_tabs(tmp_path, "jjjkq").scroll == 2
-    assert _drive_context_tabs(tmp_path, "llq").tab == 0
-    assert _drive_context_tabs(tmp_path, "lhq").tab == 0
+    assert _drive_context_tabs(tmp_path, ui_harness, "jjjq").scroll == 3
+    assert _drive_context_tabs(tmp_path, ui_harness, "jjjkq").scroll == 2
+    assert _drive_context_tabs(tmp_path, ui_harness, "llq").tab == 0
+    assert _drive_context_tabs(tmp_path, ui_harness, "lhq").tab == 0
 
 
 def test_exit_command_prints_resume_command(tmp_path):
