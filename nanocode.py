@@ -6797,10 +6797,14 @@ class UiPrinter:
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
-        changed_width = min(
-            max((get_cwidth(line) for line in lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))), default=1),
-            max(1, shutil.get_terminal_size((120, 20)).columns - 15),
+        natural_changed_width = max(
+            (get_cwidth(line) for line in lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))),
+            default=1,
         )
+        available_changed_width = max(1, shutil.get_terminal_size((120, 20)).columns - 15)
+        # Pane-width padding becomes stale terminal scrollback after a resize. Keep rectangular
+        # highlighting only when its width comes entirely from the diff content.
+        changed_width = natural_changed_width if natural_changed_width <= available_changed_width else None
 
         # Determine the target file path from the diff header.  The `+++` line
         # names the resulting file; for created files `---` is /dev/null.
@@ -6858,7 +6862,8 @@ class UiPrinter:
             for style, piece in content_hl:
                 segments.append((styled(style), piece))
             width = get_cwidth(prefix) + sum(get_cwidth(piece) for _style, piece in content_hl)
-            segments.append((background, (" " * max(0, changed_width - width) if background else "") + suffix))
+            padding = " " * max(0, changed_width - width) if background and changed_width is not None else ""
+            segments.append((background if padding else "", padding + suffix))
 
         for index, line in enumerate(lines):
             suffix = "\n" if index < len(lines) - 1 else ""
