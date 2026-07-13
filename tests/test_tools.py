@@ -933,6 +933,80 @@ def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
     assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
 
 
+@pytest.mark.parametrize(
+    ("original", "raw_edits"),
+    [
+        ("", [{"op": "create", "content": "a\nb"}]),
+        ("aba\n", [{"op": "replace_all", "old": "a", "new": "A"}]),
+        (
+            "a\nb\nc\n",
+            [
+                {"op": "replace", "start": anchor(0, "a\n"), "end": anchor(0, "a\n"), "content": "A\n"},
+                {"op": "insert_after", "start": anchor(1, "b\n"), "content": "x\n"},
+                {"op": "delete", "start": anchor(2, "c\n"), "end": anchor(2, "c\n")},
+            ],
+        ),
+        ("a\nb\n", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "inserted"}]),
+        ("a\nb", [{"op": "delete", "start": anchor(1, "b"), "end": anchor(1, "b")}]),
+    ],
+)
+def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, raw_edits):
+    tool = n.EditTool(session(tmp_path), ["code.txt", raw_edits])
+    _path, edits = tool.parse()
+    single = tool.apply(original, edits)
+    original_lines = n.ReadTool.split_lines(original)
+    plan = n.EditBatchPlan(tool.session)
+    state = plan.FileState(
+        "code.txt",
+        [plan.Line(line, index) for index, line in enumerate(original_lines)],
+        original_lines,
+        edits[0].op != "create",
+    )
+
+    batch = plan.apply(tool, state, edits)
+
+    assert "".join(line.text for line in batch.lines) == single.content
+    assert batch.changes == single.changes
+    assert batch.replacements == single.replacements
+    assert batch.replace_all == single.replace_all
+
+
+@pytest.mark.parametrize(
+    ("original", "raw_edits"),
+    [
+        (
+            "a\nb\nc\n",
+            [
+                {"op": "replace", "start": anchor(0, "a\n"), "end": anchor(1, "b\n"), "content": "x\n"},
+                {"op": "delete", "start": anchor(1, "b\n"), "end": anchor(1, "b\n")},
+            ],
+        ),
+        (
+            "a\nb\n",
+            [
+                {"op": "replace_all", "old": "a", "new": "A"},
+                {"op": "insert_before", "start": anchor(1, "b\n"), "content": "x\n"},
+            ],
+        ),
+        ("a\n", [{"op": "replace_all", "old": "", "new": "x"}]),
+        ("a\nb\n", [{"op": "delete", "start": anchor(1, "b\n"), "end": anchor(0, "a\n")}]),
+    ],
+)
+def test_single_and_batch_edit_application_raise_the_same_error(tmp_path, original, raw_edits):
+    tool = n.EditTool(session(tmp_path), ["code.txt", raw_edits])
+    _path, edits = tool.parse()
+    original_lines = n.ReadTool.split_lines(original)
+    plan = n.EditBatchPlan(tool.session)
+    state = plan.FileState("code.txt", [plan.Line(line, index) for index, line in enumerate(original_lines)], original_lines, True)
+
+    with pytest.raises(n.ToolError) as single_error:
+        tool.apply(original, edits)
+    with pytest.raises(n.ToolError) as batch_error:
+        plan.apply(tool, state, edits)
+
+    assert str(batch_error.value) == str(single_error.value)
+
+
 def test_edit_inserts_before_existing_line_with_needed_newline(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "code.txt"

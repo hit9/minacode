@@ -2777,7 +2777,7 @@ class EditTool(Tool):
         result = self.apply(original, edits)
         return path, original, created, result
 
-    def apply(self, original: str, edits: list[Edit]) -> EditApplyResult:
+    def apply(self, original: str, edits: list[Edit], anchor_resolver: Callable[[str], int] | None = None) -> EditApplyResult:
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
             return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [])
@@ -2793,11 +2793,12 @@ class EditTool(Tool):
                 content = content.replace(edit.old, edit.new)
             return EditApplyResult(content, [(0, 0, 0, len(ReadTool.split_lines(content)))], [], True)
         lines = ReadTool.split_lines(original)
+        resolve_anchor = anchor_resolver or (lambda anchor: self.resolve_anchor(lines, anchor))
         replacements = []
         for edit in edits:
-            start = self.resolve_anchor(lines, edit.start)
+            start = resolve_anchor(edit.start)
             if edit.op in {"replace", "delete"}:
-                end = self.resolve_anchor(lines, edit.end)
+                end = resolve_anchor(edit.end)
                 if end < start:
                     raise ToolError("end anchor is before start anchor")
                 replacement = [] if edit.op == "delete" else self.content_lines(edit.content, end + 1 < len(lines))
@@ -4288,66 +4289,17 @@ class EditBatchPlan:
         return state
 
     def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> ApplyResult:
-        if edits[0].op == "create":
-            lines = self.new_lines(tool.content_lines(edits[0].content, False))
-            return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [])
-        if any(edit.op == "replace_all" for edit in edits):
-            if any(edit.op != "replace_all" for edit in edits):
-                raise ToolError("replace_all cannot be mixed with anchored edits")
-            content = state.text()
-            for edit in edits:
-                if not edit.old and content:
-                    raise ToolError("replace_all requires old")
-                if edit.old and edit.old not in content:
-                    raise ToolError("replace_all old text not found")
-                content = content.replace(edit.old, edit.new)
-            lines = [self.Line(line, None) for line in ReadTool.split_lines(content)]
-            return self.ApplyResult(lines, [(0, 0, 0, len(lines))], [], True)
-
-        replacements: list[tuple[int, int, list[EditBatchPlan.Line]]] = []
-        target_replacements: list[tuple[int, int, list[str]]] = []
-        for edit in edits:
-            start = self.resolve_anchor(state, edit.start)
-            if edit.op in {"replace", "delete"}:
-                end = self.resolve_anchor(state, edit.end)
-                if end < start:
-                    raise ToolError("end anchor is before start anchor")
-                replacement_text = [] if edit.op == "delete" else tool.content_lines(edit.content, end + 1 < len(state.lines))
-                replacements.append((start, end + 1, self.new_lines(replacement_text)))
-                target_replacements.append((start, end + 1, replacement_text))
-            elif edit.op in {"insert_before", "insert_after"}:
-                index = start if edit.op == "insert_before" else start + 1
-                replacement_text = tool.content_lines(edit.content, index < len(state.lines))
-                replacements.append((index, index, self.new_lines(replacement_text)))
-                target_replacements.append((index, index, replacement_text))
-            else:
-                raise ToolError("unknown edit op")
-
-        previous = None
-        for start, end, _replacement in sorted(replacements):
-            if previous and (start < previous[1] or (start == previous[0] and end == previous[1])):
-                raise ToolError(f"edits overlap or share an insertion point: {previous[0]}:{previous[1]} and {start}:{end}")
-            previous = (start, end)
-
+        result = tool.apply(state.text(), edits, lambda anchor: self.resolve_anchor(state, anchor))
+        if edits[0].op == "create" or result.replace_all:
+            return self.ApplyResult(self.new_lines(ReadTool.split_lines(result.content)), result.changes, result.replacements, result.replace_all)
         lines = list(state.lines)
-        for start, end, replacement in sorted(replacements, reverse=True):
-            lines[start:end] = replacement
-        return self.ApplyResult(lines, self.changes(replacements), target_replacements)
+        for start, end, replacement in sorted(result.replacements, reverse=True):
+            lines[start:end] = self.new_lines(replacement)
+        return self.ApplyResult(lines, result.changes, result.replacements)
 
     @staticmethod
     def new_lines(lines: list[str]) -> list[Line]:
         return [EditBatchPlan.Line(line, None) for line in lines]
-
-    @staticmethod
-    def changes(replacements: list[tuple[int, int, list[Line]]]) -> list[tuple[int, int, int, int]]:
-        changes, delta = [], 0
-        for start, end, replacement in sorted(replacements):
-            new_start = start + delta
-            new_end = new_start + len(replacement)
-            clear_end = 0 if len(replacement) != end - start else new_start + (end - start)
-            changes.append((new_start, clear_end, new_start, new_end))
-            delta += len(replacement) - (end - start)
-        return changes
 
     def resolve_anchor(self, state: FileState, anchor: str) -> int:
         parsed = ReadTool.parse_anchor(anchor)
