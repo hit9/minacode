@@ -551,16 +551,11 @@ def test_startup_tip_respects_toggle_and_context(tmp_path, monkeypatch):
     # Force startup_tip to always pick the last candidate so we can check what's in the pool.
     monkeypatch.setattr(n.random, "choice", lambda seq: seq[-1])
 
-    # Unknown host + no MCP: strict/MCP tips are absent from the pool.
+    # No MCP: MCP tips are absent from the pool.
     tip = loop.startup_tip()
-    assert not tip.startswith("`/strict`")
     assert "@server.tool" not in tip
 
-    # DeepSeek provider unlocks the strict tip; appended last, so with the seeded random.choice it wins.
-    s.config.providers["default"].url = "https://api.deepseek.com"
-    assert loop.startup_tip().startswith("`/strict`")
-
-    # Enabling MCP appends the MCP tips after the strict one, so with the same seeded choice the last MCP tip wins.
+    # Enabling MCP appends the MCP tip; with the seeded random.choice the last MCP tip wins.
     s.config.mcp["example"] = {"url": "http://x"}
     assert "`/mcp`" in loop.startup_tip()
 

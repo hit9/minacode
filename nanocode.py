@@ -1258,7 +1258,7 @@ Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
 
 ## Providers & reasoning
 Set `provider.*` per provider. `/reason` sets effort; `provider.max_tokens`, `provider.temperature`,
-`provider.api` (auto/chat/anthropic) tune requests. `/strict` (or `provider.strict_tools`) constrains
+`provider.api` (auto/chat/anthropic) tune requests. `provider.strict_tools` constrains
 tool-call args to each tool's schema where supported (OpenAI, DeepSeek). Native thinking modes drop
 `temperature` automatically.
 
@@ -6349,8 +6349,8 @@ FINAL:
 class CommandCompleter(Completer):
     # fmt: off
     COMMANDS = (
-        "/help", "/ps", "/status", "/context", "/skills", "/config", "/api", "/debug", "/diff",
-        "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/strict", "/exit", "/quit",
+        "/help", "/ps", "/status", "/context", "/skills", "/config", "/debug", "/diff",
+        "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/exit", "/quit",
     )
     # fmt: on
     # fmt: off
@@ -6397,7 +6397,6 @@ class CommandCompleter(Completer):
             yield from self.matches(self.SET_VALUES.get(key, ()), value)
             return
         for command, values in (
-            ("/api ", lambda: PROVIDER_API_CHOICES),
             ("/model ", self.models),
             ("/provider ", self.providers),
             ("/reason ", lambda: REASONING_CHOICES),
@@ -7441,7 +7440,7 @@ class CommandLoop:
         "`/model` switches model and `/reason` sets reasoning effort on the fly.",
         "`/set provider.reasoning high` digs deeper on hard tasks; `off` is fastest.",
         "`/set provider.max_tokens N` caps the model's output length.",
-        "`/api` shows or switches the API protocol (auto / chat / anthropic).",
+        "`/set provider.api auto|chat|anthropic` switches the API protocol.",
         # Tools & navigation
         "`/index` manages the code symbol index for fast symbol navigation.",
         "`/yolo` skips tool confirmations when you want to move fast.",
@@ -7462,8 +7461,6 @@ class CommandLoop:
         config = self.session.config
         if len(config.providers) > 1:
             tips.append("`/provider` switches between your configured providers.")
-        if config.provider.supports_strict_tools():
-            tips.append("`/strict` constrains tool-call arguments to each tool's schema (OpenAI / DeepSeek).")
         if config.mcp:
             tips.append("Mention an MCP tool inline with `@server.tool` to pull in its schema.")
             tips.append("`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow.")
@@ -7479,7 +7476,6 @@ class CommandLoop:
   /diff              Show latest edits and overall session diff.
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
-  /api [NAME]        Show or set provider API format: auto, chat, anthropic.
   /debug             Show recent diagnostics.
   /compact           Compact context now.
   /index [force]      Sync or rebuild code symbol index.
@@ -7488,7 +7484,6 @@ class CommandLoop:
   /reason            Select reasoning effort.
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
-  /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
   /mcp               Show MCP server status.
   /mcp tools [NAME]   List MCP tools.
   /mcp login NAME     Start OAuth login for a server.
@@ -8326,9 +8321,9 @@ Tools:
         # fmt: off
         handlers = {
             "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/context": self.context_view, "/diff": self.diff_command,
-            "/skills": self.skills_command, "/config": self.config, "/api": self.api, "/debug": self.debug,
+            "/skills": self.skills_command, "/config": self.config, "/debug": self.debug,
             "/compact": self.compact, "/index": self.index, "/provider": self.provider, "/model": self.model,
-            "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo, "/strict": self.strict,
+            "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo,
             "/mcp": self.mcp_command,
         }
         # fmt: on
@@ -8945,17 +8940,6 @@ Tools:
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
             ]
         )
-
-    def api(self, args: str) -> str:
-        value = args.strip()
-        provider = self.session.config.provider
-        if not value:
-            return "provider.api: " + provider.api + "\nprovider.resolved_api: " + provider.resolved_api()
-        if value not in PROVIDER_API_CHOICES:
-            return "Usage: /api auto|chat|anthropic"
-        provider.api = value
-        return "Set provider.api = " + value + "\nprovider.resolved_api: " + provider.resolved_api()
-
     def debug(self, args: str) -> str:
         if args.strip():
             return "Usage: /debug"
@@ -9118,17 +9102,6 @@ Tools:
     def yolo(self, args: str) -> str:
         self.session.settings.yolo = not self.session.settings.yolo
         return "yolo: " + ("on" if self.session.settings.yolo else "off")
-
-    def strict(self, args: str) -> str:
-        if args:
-            return "Usage: /strict"
-        provider = self.session.config.provider
-        provider.strict_tools = not provider.strict_tools
-        state = "on" if provider.strict_tools else "off"
-        if provider.strict_tools and not provider.resolved_strict_tools():
-            return f"strict_tools: {state} (inactive: {provider.host() or 'this provider'} does not support strict tool calling)"
-        return f"strict_tools: {state}"
-
     def set_value(self, args: str) -> str:
         key, _, value = args.partition(" ")
         if not key or not value:
