@@ -1842,13 +1842,18 @@ class Session:
 
 class UpdateChecker:
     PYPI_URL = "https://pypi.org/pypi/nanocode-cli/json"
+    CACHE_FILE = "update.json"
     TIMEOUT = 5
+    INTERVAL_SECONDS = 24 * 3600
 
     def __init__(self, session: Session):
         self.session = session
+        self.cache_path = session.data_path(self.CACHE_FILE)
 
     def start(self) -> None:
-        if self.session.update.checking:
+        cached_at, cached_latest = self._load()
+        self.session.update.latest = cached_latest
+        if self.session.update.checking or time.time() - cached_at < self.INTERVAL_SECONDS:
             return
         self.session.update.checking = True
         threading.Thread(target=self.check, daemon=True).start()
@@ -1861,6 +1866,22 @@ class UpdateChecker:
             self.session.update.error = Text.clean(str(error))
         finally:
             self.session.update.checking = False
+            self._save()
+
+    def _load(self) -> tuple[float, str]:
+        with contextlib.suppress(Exception):
+            with open(self.cache_path, encoding="utf-8") as file:
+                data = json.load(file)
+            latest = str(data.get("latest") or "")
+            if UpdateStatus.version_tuple(latest):
+                return float(data.get("checked_at") or 0), latest
+        return 0.0, ""
+
+    def _save(self) -> None:
+        with contextlib.suppress(Exception):
+            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+            with open(self.cache_path, "w", encoding="utf-8") as file:
+                json.dump({"checked_at": time.time(), "latest": self.session.update.latest}, file)
 
     def fetch_latest(self) -> str:
         request = Request(self.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
