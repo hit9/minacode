@@ -895,7 +895,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path):
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
     loop.flush_queued_to_log(["do a thing", "  "])
-    assert out == ["> do a thing"]  # non-empty messages emitted, blank ones skipped
+    assert out == ["• do a thing"]  # non-empty messages emitted, blank ones skipped
 
 
 def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeypatch):

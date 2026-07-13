@@ -6549,8 +6549,8 @@ class UiPrinter:
     def segments(self, text: str) -> list[tuple[str, str]]:
         if text.startswith(("goal:", "check:", "plan:", "known:")):
             return self.memory_segments(text)
-        if text.startswith("> "):
-            return [("class:prompt", "> "), ("ansicyan", text[2:] + "\n")]
+        if text.startswith("• "):
+            return [("class:prompt", "• "), ("ansicyan", text[2:] + "\n")]
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
         if text.startswith("[done in "):
@@ -7566,7 +7566,7 @@ Tools:
         # emitted lines above the still-running queue-input app.
         for text in texts:
             if text.strip():
-                self.emit("> " + text)
+                self.emit("• " + text)
         if self.queue_input_app is not None:
             self.queue_input_app.invalidate()
 
@@ -7812,7 +7812,7 @@ Tools:
                     # no second Enter. Any half-typed text goes back to the box for the following prompt.
                     if typed:
                         self.queue_input_text = typed
-                    print_formatted_text(FormattedText([("class:prompt", "> "), ("", entered[0])]), style=self.style())
+                    print_formatted_text(FormattedText([("class:prompt", "• "), ("", entered[0])]), style=self.style())
                     user_input = entered[0]
                     for text in entered[1:]:
                         self.session.enqueue_user_input(text)
