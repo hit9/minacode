@@ -1237,7 +1237,7 @@ search, edit, run commands) and returns a short answer in your language.
 ## Getting started
 - Config: `~/.nanocode/config.toml` — set at least `provider.url`, `provider.key`, `provider.model`
   (`/status` and startup warn if missing). `/config` views it; `/set KEY VALUE` changes most values
-  for the session; `/provider`, `/model`, `/reason` switch provider/model/effort at runtime.
+  for the session; `/provider`, `/model`, `/reason` switch provider/model/reasoning at runtime.
 
 ## How it works
 - Acts when the task is clear, loops until done or blocked (up to `runtime.max_agent_steps`), and
@@ -1257,9 +1257,8 @@ chats compact automatically; `/compact` forces it. `/context` shows the frame (E
 Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
 
 ## Providers & reasoning
-Set `provider.*` per provider. `/reason` sets effort; `provider.max_tokens`, `provider.temperature`,
-`provider.api` (auto/chat/anthropic) tune requests. `provider.strict_tools` constrains
-tool-call args to each tool's schema where supported (OpenAI, DeepSeek). Native thinking modes drop
+Set `provider.*` per provider. `/reason` sets reasoning effort; `/model` sets the model.
+`provider.max_tokens`, `provider.temperature`, `provider.timeout` tune requests. Native thinking modes drop
 `temperature` automatically.
 
 ## MCP
@@ -6349,27 +6348,29 @@ FINAL:
         return Text.value(message)
 
 
+
 class CommandCompleter(Completer):
     # fmt: off
     COMMANDS = (
         "/help", "/ps", "/status", "/context", "/skills", "/config", "/debug", "/diff",
-        "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/exit", "/quit",
+        "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/strict", "/exit", "/quit",
     )
     # fmt: on
     # fmt: off
-    SET_KEYS = (
-        "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
-        "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature",
-        "provider.max_tokens", "provider.strict_tools", "provider.timeout", "runtime.yolo", "runtime.max_agent_steps",
-        "runtime.max_context_tokens", "runtime.max_parallel_tools", "runtime.shell_timeout",
-    )
+    SET_HANDLERS: ClassVar[dict[str, tuple[str, str, Callable[[str], Any] | None]]] = {
+        "provider.temperature": ("provider", "temperature", lambda v: None if v == "off" else float(v)),
+        "provider.max_tokens": ("provider", "max_tokens", lambda v: max(0, int(v))),
+        "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
+        "runtime.max_agent_steps": ("settings", "max_steps", lambda v: max(1, int(v))),
+        "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
+        "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
+        "runtime.shell_timeout": ("settings", "shell_timeout", lambda v: max(1, int(v))),
+    }
+    SET_KEYS: ClassVar[tuple[str, ...]] = tuple(SET_HANDLERS)
     # fmt: on
     # fmt: off
-    SET_VALUES = {
-        "provider.api": PROVIDER_API_CHOICES, "provider.prompt_cache_key": ("auto", "off"),
-        "provider.reasoning": REASONING_CHOICES, "provider.chat_reasoning": CHAT_REASONING_CHOICES,
-        "provider.temperature": ("off",), "provider.strict_tools": ("on", "off", "true", "false"),
-        "runtime.yolo": ("on", "off", "true", "false"),
+    SET_VALUES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "provider.temperature": ("off",),
     }
     # fmt: on
 
@@ -6403,6 +6404,7 @@ class CommandCompleter(Completer):
             ("/model ", self.models),
             ("/provider ", self.providers),
             ("/reason ", lambda: REASONING_CHOICES),
+            ("/strict ", lambda: ("on", "off")),
         ):
             if text.startswith(command):
                 yield from self.matches(values(), text[len(command) :])
@@ -7441,9 +7443,9 @@ class CommandLoop:
         "Stable context is kept early so the prompt cache is reused — cheaper, faster turns.",
         # Model & reasoning
         "`/model` switches model and `/reason` sets reasoning effort on the fly.",
-        "`/set provider.reasoning high` digs deeper on hard tasks; `off` is fastest.",
+        "`/reason high` digs deeper on hard tasks; `off` is fastest.",
         "`/set provider.max_tokens N` caps the model's output length.",
-        "`/set provider.api auto|chat|anthropic` switches the API protocol.",
+        "`/strict` toggles strict tool-call schemas where supported.",
         # Tools & navigation
         "`/index` manages the code symbol index for fast symbol navigation.",
         "`/yolo` skips tool confirmations when you want to move fast.",
@@ -7484,9 +7486,10 @@ class CommandLoop:
   /index [force]      Sync or rebuild code symbol index.
   /provider [NAME]   Select or show the active provider.
   /model [MODEL]     Select or set the active model.
-  /reason            Select reasoning effort.
+  /reason [EFFORT]   Select or set reasoning effort.
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
+  /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
   /mcp               Show MCP server status.
   /mcp tools [NAME]   List MCP tools.
   /mcp login NAME     Start OAuth login for a server.
@@ -8326,7 +8329,7 @@ Tools:
             "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/context": self.context_view, "/diff": self.diff_command,
             "/skills": self.skills_command, "/config": self.config, "/debug": self.debug,
             "/compact": self.compact, "/index": self.index, "/provider": self.provider, "/model": self.model,
-            "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo,
+            "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo, "/strict": self.strict,
             "/mcp": self.mcp_command,
         }
         # fmt: on
@@ -9094,8 +9097,12 @@ Tools:
         return "\n".join(lines)
 
     def reason(self, args: str) -> str:
-        if args:
-            return "Usage: /reason"
+        value = args.strip()
+        if value:
+            if value not in REASONING_CHOICES:
+                return "Usage: /reason " + "|".join(REASONING_CHOICES)
+            self.session.config.provider.reasoning = value
+            return "Set provider.reasoning = " + value
         choice = self.select_reasoning()
         if isinstance(choice, str):
             self.session.config.provider.reasoning = choice
@@ -9105,44 +9112,30 @@ Tools:
     def yolo(self, args: str) -> str:
         self.session.settings.yolo = not self.session.settings.yolo
         return "yolo: " + ("on" if self.session.settings.yolo else "off")
+
+    def strict(self, args: str) -> str:
+        if args:
+            return "Usage: /strict"
+        provider = self.session.config.provider
+        provider.strict_tools = not provider.strict_tools
+        state = "on" if provider.strict_tools else "off"
+        if provider.strict_tools and not provider.resolved_strict_tools():
+            return f"strict_tools: {state} (inactive: {provider.host() or 'this provider'} does not support strict tool calling)"
+        return f"strict_tools: {state}"
+
     def set_value(self, args: str) -> str:
         key, _, value = args.partition(" ")
         if not key or not value:
             return "Usage: /set KEY VALUE"
-        provider = self.session.config.provider
-        runtime = self.session.settings
-        choice_fields = {"provider.api": PROVIDER_API_CHOICES, "provider.reasoning": REASONING_CHOICES, "provider.chat_reasoning": CHAT_REASONING_CHOICES}
+        handler = CommandCompleter.SET_HANDLERS.get(key)
+        if handler is None:
+            return "Unknown config key: " + key
+        target_name, attr, coerce = handler
+        obj = self.session.config.provider if target_name == "provider" else self.session.settings
         try:
-            if key in {"provider.model", "provider.url", "provider.key"}:
-                setattr(provider, key.split(".", 1)[1], value)
-            elif key in choice_fields:
-                if value not in choice_fields[key]:
-                    return "Invalid value for " + key
-                setattr(provider, key.split(".", 1)[1], value)
-            elif key == "provider.prompt_cache_key":
-                provider.prompt_cache_key = ProviderConfig.clean_prompt_cache_key(value)
-            elif key == "provider.available_models":
-                provider.available_models = tuple(item.strip() for item in value.split(",") if item.strip())
-            elif key == "provider.temperature":
-                provider.temperature = None if value == "off" else float(value)
-            elif key == "provider.max_tokens":
-                provider.max_tokens = max(0, int(value))
-            elif key == "provider.strict_tools":
-                provider.strict_tools = Config.bool({key: value}, key)
-            elif key == "provider.timeout":
-                provider.timeout = max(1, int(value))
-            elif key == "runtime.yolo":
-                runtime.yolo = value.lower() in {"on", "true", "yes", "1"}
-            elif key == "runtime.max_agent_steps":
-                runtime.max_steps = max(1, int(value))
-            elif key == "runtime.max_context_tokens":
-                runtime.max_context_tokens = max(1, int(value))
-            elif key == "runtime.shell_timeout":
-                runtime.shell_timeout = max(1, int(value))
-            elif key == "runtime.max_parallel_tools":
-                runtime.max_parallel_tools = max(1, int(value))
-            else:
-                return "Unknown config key: " + key
+            if coerce is not None:
+                value = coerce(value)
+            setattr(obj, attr, value)
         except (ConfigError, ValueError):
             return "Invalid value for " + key
         return "Set " + key
