@@ -1877,23 +1877,19 @@ class UpdateChecker:
         return version
 
     def load_cache(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             with open(self.session.data_path(self.CACHE_FILE), encoding="utf-8") as file:
                 data = json.load(file)
             latest = str(data.get("latest") or "")
             self.session.update.latest = latest if UpdateStatus.version_tuple(latest) else ""
             self.session.update.checked_at = float(data.get("checked_at") or 0)
-        except Exception:
-            pass
 
     def save_cache(self) -> None:
         path = self.session.data_path(self.CACHE_FILE)
-        try:
+        with contextlib.suppress(Exception):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as file:
                 json.dump({"checked_at": self.session.update.checked_at, "latest": self.session.update.latest}, file)
-        except Exception:
-            pass
 
     def status_line(self) -> str:
         update = self.session.update
@@ -3700,10 +3696,7 @@ class MCPTool(Tool):
         action = self.resolved_action(payload)
         server = str(payload.get("server") or "")
         tool_name = str(payload.get("tool") or "")
-        if action == "read_resource":
-            target = (server + " " + str(payload.get("uri") or "")).strip()
-        else:
-            target = (server + "." + tool_name).strip(".")
+        target = (server + " " + str(payload.get("uri") or "")).strip() if action == "read_resource" else (server + "." + tool_name).strip(".")
         parts = [part for part in (action, target) if part]
         arguments = payload.get("arguments")
         if action == "call" and isinstance(arguments, dict) and arguments:
@@ -6018,11 +6011,9 @@ class ModelClient:
     def retryable_error(error: Exception) -> bool:
         status = getattr(error.__cause__, "status_code", None) or getattr(error.__cause__, "code", None)
         text = str(error).lower()
-        try:
+        with contextlib.suppress(Exception):
             if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
                 return True
-        except Exception:
-            pass
         if re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b", text):
             return True
         return any(
@@ -6664,11 +6655,9 @@ class Theme:
         # white entries are reliably light; index 8 is bright black and must remain dark.
         fgbg = os.environ.get("COLORFGBG", "")
         if ";" in fgbg:
-            try:
+            with contextlib.suppress(ValueError):
                 bg = int(fgbg.rsplit(";", 1)[1])
                 return "light" if bg in {7, 15} else "dark"
-            except ValueError:
-                pass
         return "dark"
 
     @classmethod
