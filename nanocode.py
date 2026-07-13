@@ -7712,24 +7712,7 @@ Tools:
         def _ctrl_g(event):
             self.retry_current_model_request()
 
-        @bindings.add("tab")
-        def _tab(event):
-            if buffer.complete_state:
-                buffer.complete_next()
-                return
-            completions = list(self.input_completer.get_completions(buffer.document, CompleteEvent(completion_requested=True)))
-            if len(completions) == 1:
-                buffer.apply_completion(completions[0])
-            else:
-                buffer.start_completion(select_first=False)
-
-        @bindings.add("s-tab")
-        def _shift_tab(event):
-            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
-
-        @bindings.add(Keys.BracketedPaste)
-        def _paste(event):
-            buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
+        self._add_completion_bindings(bindings, buffer)
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
         # Live region above the +> input: a sweep divider plus the still-pending queued messages.
@@ -8058,6 +8041,28 @@ Tools:
         finally:
             self.queue_input_paused.clear()
 
+    def _add_completion_bindings(self, bindings: KeyBindings, buffer: Buffer, *, invalidate_on_paste: bool = False) -> None:
+        @bindings.add("tab")
+        def _tab(event):
+            if buffer.complete_state:
+                buffer.complete_next()
+                return
+            completions = list(self.input_completer.get_completions(buffer.document, CompleteEvent(completion_requested=True)))
+            if len(completions) == 1:
+                buffer.apply_completion(completions[0])
+            else:
+                buffer.start_completion(select_first=False)
+
+        @bindings.add("s-tab")
+        def _shift_tab(event):
+            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
+
+        @bindings.add(Keys.BracketedPaste)
+        def _paste(event):
+            buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
+            if invalidate_on_paste:
+                event.app.invalidate()
+
     def input_prompt_fragments(self, prompt_text: str, prompt_style: str) -> list[tuple[str, str]]:
         if prompt_style != "class:approval" or not prompt_text:
             return [(prompt_style, prompt_text)]
@@ -8138,25 +8143,7 @@ Tools:
             else:
                 pt_search.start_search(direction=direction)
 
-        @bindings.add("tab")
-        def _tab(event):
-            if buffer.complete_state:
-                buffer.complete_next()
-                return
-            completions = list(self.input_completer.get_completions(buffer.document, CompleteEvent(completion_requested=True)))
-            if len(completions) == 1:
-                buffer.apply_completion(completions[0])
-            else:
-                buffer.start_completion(select_first=False)
-
-        @bindings.add("s-tab")
-        def _shift_tab(event):
-            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
-
-        @bindings.add(Keys.BracketedPaste)
-        def _paste(event):
-            buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
-            event.app.invalidate()
+        self._add_completion_bindings(bindings, buffer, invalidate_on_paste=True)
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
         # The idle nano> prompt shows no divider (the divider is a working-state marker only); keep a

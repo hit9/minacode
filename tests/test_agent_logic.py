@@ -675,6 +675,69 @@ def test_multiline_paste_queues_one_message_on_enter(tmp_path):
     assert queued_texts(s)[-1] == "typed\nline"
 
 
+def test_shared_completion_bindings_apply_completion_and_normalize_paste(tmp_path):
+    class OneCompletion(n.Completer):
+        def get_completions(self, document, _complete_event):
+            yield n.Completion("hello", start_position=-len(document.text))
+
+    class App:
+        invalidations = 0
+
+        def invalidate(self):
+            self.invalidations += 1
+
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.input_completer = OneCompletion()
+    buffer = n.Buffer(document=n.Document("he"), completer=loop.input_completer)
+    bindings = n.KeyBindings()
+    loop._add_completion_bindings(bindings, buffer, invalidate_on_paste=True)
+    event = SimpleNamespace(app=App(), data="")
+
+    bindings.get_bindings_for_keys((n.Keys.Tab,))[-1].handler(event)
+    assert buffer.text == "hello"
+
+    event.data = "\r\nworld\rend"
+    bindings.get_bindings_for_keys((n.Keys.BracketedPaste,))[-1].handler(event)
+    assert buffer.text == "hello\nworld\nend"
+    assert event.app.invalidations == 1
+
+    queue_buffer = n.Buffer()
+    queue_bindings = n.KeyBindings()
+    loop._add_completion_bindings(queue_bindings, queue_buffer)
+    event.data = "queued\rtext"
+    queue_bindings.get_bindings_for_keys((n.Keys.BracketedPaste,))[-1].handler(event)
+    assert queue_buffer.text == "queued\ntext"
+    assert event.app.invalidations == 1
+
+
+def test_shared_completion_bindings_start_and_cycle_multiple_completions(tmp_path):
+    class MultipleCompletions(n.Completer):
+        def get_completions(self, document, _complete_event):
+            yield n.Completion("alpha", start_position=-len(document.text))
+            yield n.Completion("alpine", start_position=-len(document.text))
+
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.input_completer = MultipleCompletions()
+    buffer = n.Buffer(document=n.Document("al"), completer=loop.input_completer)
+    bindings = n.KeyBindings()
+    loop._add_completion_bindings(bindings, buffer)
+    event = SimpleNamespace()
+    started = []
+    buffer.start_completion = lambda **kwargs: started.append(kwargs)
+
+    bindings.get_bindings_for_keys((n.Keys.Tab,))[-1].handler(event)
+    assert started == [{"select_first": False}]
+
+    completions = list(loop.input_completer.get_completions(buffer.document, n.CompleteEvent()))
+    buffer._set_completions(completions)
+    bindings.get_bindings_for_keys((n.Keys.Tab,))[-1].handler(event)
+    assert buffer.text == "alpha"
+    bindings.get_bindings_for_keys((n.Keys.BackTab,))[-1].handler(event)
+    assert buffer.text == "al"
+    bindings.get_bindings_for_keys((n.Keys.BackTab,))[-1].handler(event)
+    assert buffer.text == "alpine"
+
+
 def test_up_recalls_latest_queued_message_for_editing(tmp_path):
     s = session(tmp_path)
     queue(s, "first", "second")
