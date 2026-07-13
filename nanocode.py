@@ -1408,6 +1408,22 @@ only read-only subcommands auto-run; commit/add/push and branch changes still as
         return "\n".join(header + blocks).strip()
 
 
+def _read_and_release(selector: selectors.BaseSelector, key: selectors.SelectorKey) -> tuple[bytes, bool]:
+    """Read up to 4KB from a selector-registered stream. On EOF, unregister and close it.
+    Returns (bytes, eof). Callers do their own decoding and buffer bookkeeping."""
+    try:
+        data = os.read(key.fileobj.fileno(), 4096)
+    except OSError:
+        data = b""
+    eof = not data
+    if eof:
+        with contextlib.suppress(Exception):
+            selector.unregister(key.fileobj)
+        with contextlib.suppress(Exception):
+            key.fileobj.close()
+    return data, eof
+
+
 @dataclass
 class BackgroundJob:
     """A non-blocking shell process tracked by the session."""
@@ -1481,11 +1497,8 @@ class BackgroundJob:
             selector.close()
 
     def _read(self, selector: selectors.BaseSelector, key: selectors.SelectorKey) -> None:
-        try:
-            data = os.read(key.fileobj.fileno(), 4096)
-        except OSError:
-            data = b""
-        text = (self._stdout_decoder if key.data == "stdout" else self._stderr_decoder).decode(data, final=not data)
+        data, eof = _read_and_release(selector, key)
+        text = (self._stdout_decoder if key.data == "stdout" else self._stderr_decoder).decode(data, final=eof)
         if text:
             with self._buffer_lock:
                 buf = self.stdout_buf if key.data == "stdout" else self.stderr_buf
@@ -1494,11 +1507,6 @@ class BackgroundJob:
                 total = sum(len(part) for part in buf)
                 while total > self.BUFFER_CHARS and len(buf) > 1:
                     total -= len(buf.pop(0))
-        if not data:
-            with contextlib.suppress(Exception):
-                selector.unregister(key.fileobj)
-            with contextlib.suppress(OSError):
-                key.fileobj.close()
 
     def update_status(self) -> None:
         if self.status != "running":
@@ -3210,24 +3218,15 @@ class BashTool(Tool):
         stdout_parts: list[str],
         stderr_parts: list[str],
     ) -> bool:
-        try:
-            data = os.read(key.fileobj.fileno(), 4096)
-        except OSError:
-            data = b""
+        data, eof = _read_and_release(selector, key)
         # final=True on EOF flushes any bytes still buffered in the decoder (e.g. a truncated
         # trailing character) so they are not silently dropped.
-        text = self._decoders[key.data].decode(data, final=not data)
+        text = self._decoders[key.data].decode(data, final=eof)
         if text:
             (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
             if self.live_output is not None:
                 self.live_output(str(key.data), text)
-        if not data:
-            with contextlib.suppress(Exception):
-                selector.unregister(key.fileobj)
-            with contextlib.suppress(Exception):
-                key.fileobj.close()
-            return False
-        return True
+        return not eof
 
     @staticmethod
     def kill_process_group(proc: subprocess.Popen[Any]) -> None:
