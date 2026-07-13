@@ -233,6 +233,57 @@ def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
     assert s.session_diff_sections() == [("overall", "large.py", "-old\n+new\n")]
 
 
+def test_legacy_diff_reconstructed_from_disk(tmp_path):
+    import difflib
+
+    fpath = tmp_path / "big.py"
+    original = "line1\nline2\nline3\nline4\nline5\n"
+    v1 = "line1\nlineTWO\nline3\nline4\nline5\n"
+    v2 = "line1\nlineTWO\nline3\nlineFOUR\nline5\n"
+    v3 = "lineONE\nlineTWO\nline3\nlineFOUR\nline5\n"
+    fpath.write_text(v3)  # disk matches the last tracked edit
+
+    s = session(tmp_path)
+    s.cwd = str(tmp_path)
+    def unified(before: str, after: str) -> str:
+        return "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile="big.py", tofile="big.py"))
+    s.store_turn_diff("t1", 1, "big.py", unified(original, v1), round=1)
+    s.store_turn_diff("t2", 2, "big.py", unified(v1, v2), round=1)
+    s.store_turn_diff("t3", 3, "big.py", unified(v2, v3), round=1)
+
+    sections = s.session_diff_sections()
+    assert len(sections) == 1
+    _, path, diff = sections[0]
+    assert path == "big.py"
+    # Reconstruction folds the three per-Edit hunks into one clean unified diff — one header,
+    # aggregate net changes only (no intermediate lineTWO/lineFOUR churn from earlier steps).
+    assert diff.count("--- big.py") == 1
+    assert "+lineONE" in diff and "-line1" in diff
+    assert "+lineTWO" in diff and "-line2" in diff
+    assert "+lineFOUR" in diff and "-line4" in diff
+
+
+def test_legacy_diff_falls_back_when_disk_drifted(tmp_path):
+    import difflib
+
+    fpath = tmp_path / "a.py"
+    original = "one\ntwo\nthree\n"
+    edited = "one\nTWO\nthree\n"
+    fpath.write_text("something else entirely\n")  # disk doesn't match — reconstruction must bail
+
+    s = session(tmp_path)
+    s.cwd = str(tmp_path)
+    diff_text = "".join(difflib.unified_diff(original.splitlines(True), edited.splitlines(True), fromfile="a.py", tofile="a.py"))
+    s.store_turn_diff("t1", 1, "a.py", diff_text, round=1)
+
+    sections = s.session_diff_sections()
+    assert len(sections) == 1
+    _, _, diff = sections[0]
+    # Reconstruction bailed; concatenated raw hunks still show so nothing is silently dropped.
+    assert "-two" in diff
+    assert "+TWO" in diff
+
+
 def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):
     s = session(tmp_path)
     large = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)

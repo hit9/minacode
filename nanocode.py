@@ -1704,7 +1704,7 @@ class Session:
         return (status, path, text) if text else None
 
     @classmethod
-    def net_diff_sections(cls, diffs: list[TurnDiff], status: str) -> list[tuple[str, str, str]]:
+    def net_diff_sections(cls, diffs: list[TurnDiff], status: str, *, cwd: str = "") -> list[tuple[str, str, str]]:
         states: dict[str, tuple[str, str]] = {}
         legacy: dict[str, list[str]] = {}
         paths: list[str] = []
@@ -1730,10 +1730,78 @@ class Session:
             chunks = []
             if path in states and (section := cls.net_diff_for_path(status, path, *states[path])):
                 chunks.append(section[2])
-            chunks.extend(legacy.get(path, []))
+            legacy_chunks = legacy.get(path, [])
+            if legacy_chunks:
+                # No snapshots for this file (oversized). Best effort: reconstruct the pre-edit content
+                # by reverse-applying the recorded per-Edit hunks to the file's current on-disk state,
+                # then emit one clean synthesized diff. Falls back to the raw per-Edit hunks concatenated
+                # when reconstruction can't uniquely locate a hunk (e.g. the file was mutated outside Edit).
+                reconstructed = cls._reconstruct_legacy_diff(cwd, path, legacy_chunks, status) if cwd else None
+                chunks.append(reconstructed if reconstructed is not None else "\n".join(chunk.rstrip("\n") for chunk in legacy_chunks))
             if chunks:
                 sections.append((status, path, "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"))
         return sections
+
+    _HUNK_RE: ClassVar[re.Pattern[str]] = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
+
+    @classmethod
+    def _reconstruct_legacy_diff(cls, cwd: str, path: str, chunks: list[str], status: str) -> str | None:
+        abspath = path if os.path.isabs(path) else os.path.join(cwd, path)
+        if not os.path.isfile(abspath):
+            return None
+        try:
+            with open(abspath, encoding="utf-8") as file:
+                final = file.read()
+        except (OSError, UnicodeDecodeError):
+            return None
+        hunk_pairs: list[tuple[str, str]] = []
+        for chunk in chunks:
+            pairs = cls._split_hunks(chunk)
+            if pairs is None:
+                return None
+            hunk_pairs.extend(pairs)
+        # Reverse-apply each hunk in reverse chronological order so `current` walks back to the state
+        # before the first tracked edit. Each hunk's after-text must occur uniquely in the buffer; if
+        # not (external mutation, ambiguous context), give up and let the caller fall back.
+        current = final
+        for after_text, before_text in reversed(hunk_pairs):
+            if not after_text or not before_text:
+                return None
+            if current.count(after_text) != 1:
+                return None
+            current = current.replace(after_text, before_text, 1)
+        section = cls.net_diff_for_path(status, path, current, final)
+        return section[2] if section else ""
+
+    @classmethod
+    def _split_hunks(cls, chunk: str) -> list[tuple[str, str]] | None:
+        pairs: list[tuple[str, str]] = []
+        before_lines: list[str] | None = None
+        after_lines: list[str] | None = None
+        for line in chunk.splitlines():
+            if line.startswith(("--- ", "+++ ")):
+                continue
+            if cls._HUNK_RE.match(line):
+                if before_lines is not None and after_lines is not None:
+                    pairs.append(("\n".join(after_lines), "\n".join(before_lines)))
+                before_lines, after_lines = [], []
+                continue
+            if before_lines is None or after_lines is None:
+                return None
+            if line.startswith("+"):
+                after_lines.append(line[1:])
+            elif line.startswith("-"):
+                before_lines.append(line[1:])
+            elif line.startswith(" "):
+                before_lines.append(line[1:])
+                after_lines.append(line[1:])
+            elif line == "\\ No newline at end of file":
+                continue
+            else:
+                return None
+        if before_lines is not None and after_lines is not None:
+            pairs.append(("\n".join(after_lines), "\n".join(before_lines)))
+        return pairs
 
     @staticmethod
     def _find_unambiguous_move(states: dict[str, tuple[str, str]], legacy: dict[str, list[str]]) -> tuple[str, str] | None:
@@ -1757,10 +1825,10 @@ class Session:
             return None
         round = max(diff.round or diff.turn for diff in self.turn_diffs)
         diffs = [diff for diff in self.turn_diffs if (diff.round or diff.turn) == round]
-        return round, self.net_diff_sections(diffs, "edit")
+        return round, self.net_diff_sections(diffs, "edit", cwd=self.cwd)
 
     def session_diff_sections(self) -> list[tuple[str, str, str]]:
-        return self.net_diff_sections(self.turn_diffs, "overall")
+        return self.net_diff_sections(self.turn_diffs, "overall", cwd=self.cwd)
 
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
