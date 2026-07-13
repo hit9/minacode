@@ -895,7 +895,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path):
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
     loop.flush_queued_to_log(["do a thing", "  "])
-    assert out == ["nano+ do a thing"]  # non-empty messages emitted, blank ones skipped
+    assert out == ["> do a thing"]  # non-empty messages emitted, blank ones skipped
 
 
 def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeypatch):
@@ -1042,7 +1042,7 @@ def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
 
     reads = []
 
-    def fake_read_input(prompt_text="nano> ", *, initial_text="", **kw):
+    def fake_read_input(prompt_text="> ", *, initial_text="", **kw):
         reads.append(initial_text)
         raise EOFError()
 
@@ -1133,7 +1133,7 @@ def test_read_input_does_not_replay_transient_approval(tmp_path, monkeypatch):
     assert loop.read_input("[Y/n] ", prompt_style="class:approval", replay=False) == "y"
     assert printed == []
 
-    assert loop.read_input("nano> ") == "y"
+    assert loop.read_input("> ") == "y"
     assert len(printed) == 1
 
 
@@ -1150,7 +1150,7 @@ def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
         ("class:approval", "[Y/n] "),
         ("class:approval.wait", "/ "),
     ]
-    assert loop.input_prompt_fragments("nano> ", "class:prompt") == [("class:prompt", "nano> ")]
+    assert loop.input_prompt_fragments("> ", "class:prompt") == [("class:prompt", "> ")]
 
 
 def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
@@ -1354,7 +1354,7 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     loop.emit = emitted.append
     loop.choice_application = lambda *args, **kwargs: n.SELECTION_FREE_TEXT
 
-    def fake_read_input(prompt_text="nano> ", **kwargs):
+    def fake_read_input(prompt_text="> ", **kwargs):
         prompts.append(prompt_text)
         return "typed answer"
 

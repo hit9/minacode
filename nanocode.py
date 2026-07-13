@@ -6549,8 +6549,8 @@ class UiPrinter:
     def segments(self, text: str) -> list[tuple[str, str]]:
         if text.startswith(("goal:", "check:", "plan:", "known:")):
             return self.memory_segments(text)
-        if text.startswith("nano+ "):
-            return [("class:prompt", "nano+ "), ("fg:default", text[6:] + "\n")]
+        if text.startswith("> "):
+            return [("class:prompt", "> "), ("ansicyan", text[2:] + "\n")]
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
         if text.startswith("[done in "):
@@ -7566,7 +7566,7 @@ Tools:
         # emitted lines above the still-running queue-input app.
         for text in texts:
             if text.strip():
-                self.emit("nano+ " + text)
+                self.emit("> " + text)
         if self.queue_input_app is not None:
             self.queue_input_app.invalidate()
 
@@ -7652,7 +7652,7 @@ Tools:
         control = BufferControl(
             buffer=buffer,
             input_processors=[
-                BeforeInput(FormattedText([("class:prompt", "+> ")])),
+                BeforeInput(FormattedText([("class:prompt", "> ")])),
                 QueuePlaceholder(
                     self.QUEUE_EMPTY_HINT,
                     self.QUEUE_PENDING_HINT,
@@ -7801,18 +7801,18 @@ Tools:
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
-        # Async MCP discovery — show nano> immediately, discover in background
+        # Async MCP discovery — show > immediately, discover in background
         threading.Thread(target=self.discover_mcp, daemon=True).start()
         UpdateChecker(self.session).start()
         while True:
             try:
                 entered, typed = self.take_queue_input()
                 if entered and self.interactive_input:
-                    # Input you already pressed Enter on in the +> queue auto-submits as the next turn —
+                    # Input you already pressed Enter on in the > queue auto-submits as the next turn —
                     # no second Enter. Any half-typed text goes back to the box for the following prompt.
                     if typed:
                         self.queue_input_text = typed
-                    print_formatted_text(FormattedText([("class:prompt", "nano> "), ("", entered[0])]), style=self.style())
+                    print_formatted_text(FormattedText([("class:prompt", "> "), ("", entered[0])]), style=self.style())
                     user_input = entered[0]
                     for text in entered[1:]:
                         self.session.enqueue_user_input(text)
@@ -8082,7 +8082,7 @@ Tools:
 
     def read_input(
         self,
-        prompt_text: str = "nano> ",
+        prompt_text: str = "> ",
         *,
         multiline: bool = False,
         submit_on_enter: bool = False,
@@ -8151,7 +8151,7 @@ Tools:
         self._add_completion_bindings(bindings, buffer, invalidate_on_paste=True)
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # The idle nano> prompt shows no divider (the divider is a working-state marker only); keep a
+        # The idle > prompt shows no divider (the divider is a working-state marker only); keep a
         # blank line above and below the input so it is not crowded against the log or status bar.
         top: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
         bottom: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
