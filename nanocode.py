@@ -344,8 +344,6 @@ class RuntimeSettings:
     shell_timeout: int = 60
     max_steps: int = 200
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
-    check_updates: bool = True
-    update_check_interval_hours: int = 24
     session_retention_days: int = 7
     # Max read-only tool calls from one model batch to execute concurrently; 1 disables parallelism.
     max_parallel_tools: int = 4
@@ -362,8 +360,6 @@ class RuntimeSettings:
             max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
-            check_updates=Config.bool(runtime, "check_updates", True),
-            update_check_interval_hours=max(1, Config.int(runtime, "update_check_interval_hours", 24)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
@@ -634,7 +630,6 @@ class AgentState:
 @dataclass
 class UpdateStatus:
     latest: str = ""
-    checked_at: float = 0.0
     checking: bool = False
     error: str = ""
 
@@ -1847,19 +1842,13 @@ class Session:
 
 class UpdateChecker:
     PYPI_URL = "https://pypi.org/pypi/nanocode-cli/json"
-    CACHE_FILE = "update.json"
     TIMEOUT = 5
 
     def __init__(self, session: Session):
         self.session = session
 
     def start(self) -> None:
-        self.load_cache()
-        if (
-            not self.session.settings.check_updates
-            or self.session.update.checking
-            or time.time() - self.session.update.checked_at < self.session.settings.update_check_interval_hours * 3600
-        ):
+        if self.session.update.checking:
             return
         self.session.update.checking = True
         threading.Thread(target=self.check, daemon=True).start()
@@ -1871,9 +1860,7 @@ class UpdateChecker:
         except Exception as error:
             self.session.update.error = Text.clean(str(error))
         finally:
-            self.session.update.checked_at = time.time()
             self.session.update.checking = False
-            self.save_cache()
 
     def fetch_latest(self) -> str:
         request = Request(self.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
@@ -1884,31 +1871,12 @@ class UpdateChecker:
             raise NanocodeError("invalid PyPI version response")
         return version
 
-    def load_cache(self) -> None:
-        with contextlib.suppress(Exception):
-            with open(self.session.data_path(self.CACHE_FILE), encoding="utf-8") as file:
-                data = json.load(file)
-            latest = str(data.get("latest") or "")
-            self.session.update.latest = latest if UpdateStatus.version_tuple(latest) else ""
-            self.session.update.checked_at = float(data.get("checked_at") or 0)
-
-    def save_cache(self) -> None:
-        path = self.session.data_path(self.CACHE_FILE)
-        with contextlib.suppress(Exception):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as file:
-                json.dump({"checked_at": self.session.update.checked_at, "latest": self.session.update.latest}, file)
-
     def status_line(self) -> str:
         update = self.session.update
-        if not self.session.settings.check_updates:
-            return "update: off"
         if update.checking:
             return "update: checking"
         if update.newer_than(__version__):
-            _, command = Updater().detect()
-            how = " ".join(command) if command else "reinstall the way you installed it"
-            return f"update: {__version__} -> {update.latest} ({how})"
+            return f"update: {__version__} -> {update.latest}"
         if update.error:
             return "update: error"
         return "update: current" if update.latest else "update: unknown"
@@ -6504,7 +6472,7 @@ class CommandCompleter(Completer):
         "provider.model", "provider.url", "provider.key", "provider.api", "provider.prompt_cache_key",
         "provider.reasoning", "provider.chat_reasoning", "provider.available_models", "provider.temperature",
         "provider.max_tokens", "provider.strict_tools", "provider.timeout", "runtime.yolo", "runtime.max_agent_steps",
-        "runtime.max_context_tokens", "runtime.max_parallel_tools", "runtime.shell_timeout", "runtime.check_updates",
+        "runtime.max_context_tokens", "runtime.max_parallel_tools", "runtime.shell_timeout",
     )
     # fmt: on
     # fmt: off
@@ -6512,7 +6480,7 @@ class CommandCompleter(Completer):
         "provider.api": PROVIDER_API_CHOICES, "provider.prompt_cache_key": ("auto", "off"),
         "provider.reasoning": REASONING_CHOICES, "provider.chat_reasoning": CHAT_REASONING_CHOICES,
         "provider.temperature": ("off",), "provider.strict_tools": ("on", "off", "true", "false"),
-        "runtime.yolo": ("on", "off", "true", "false"), "runtime.check_updates": ("on", "off", "true", "false"),
+        "runtime.yolo": ("on", "off", "true", "false"),
     }
     # fmt: on
 
@@ -7371,8 +7339,6 @@ class StatusBar:
         return CodeIndex.label(self.session.state.code_index_status)
 
     def update_status(self) -> str:
-        if not self.session.settings.check_updates:
-            return ""
         update = self.session.update
         if update.checking:
             return "update..."
@@ -9087,8 +9053,6 @@ Tools:
                 f"runtime.max_agent_steps: {self.session.settings.max_steps}",
                 f"runtime.max_context_tokens: {self.session.settings.max_context_tokens}",
                 f"runtime.max_parallel_tools: {self.session.settings.max_parallel_tools}",
-                f"runtime.check_updates: {'on' if self.session.settings.check_updates else 'off'}",
-                f"runtime.update_check_interval_hours: {self.session.settings.update_check_interval_hours}",
                 f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
             ]
@@ -9305,10 +9269,6 @@ Tools:
                 provider.timeout = max(1, int(value))
             elif key == "runtime.yolo":
                 runtime.yolo = value.lower() in {"on", "true", "yes", "1"}
-            elif key == "runtime.check_updates":
-                runtime.check_updates = Config.bool({key: value}, key)
-                if runtime.check_updates:
-                    UpdateChecker(self.session).start()
             elif key == "runtime.max_agent_steps":
                 runtime.max_steps = max(1, int(value))
             elif key == "runtime.max_context_tokens":
@@ -9324,68 +9284,6 @@ Tools:
         return "Set " + key
 
 
-class Updater:
-    """Upgrade nanocode in place, choosing the command that matches how it was installed."""
-
-    PACKAGE = "nanocode-cli"
-
-    def run(self) -> int:
-        try:
-            latest = self.fetch_latest()
-        except Exception as error:
-            print("Error: failed to check latest version: " + Text.clean(str(error)), file=sys.stderr)
-            return 1
-        if not UpdateStatus(latest=latest).newer_than(__version__):
-            print(f"nanocode {__version__} is already up to date (latest: {latest}).")
-            return 0
-        method, command = self.detect()
-        if command is None:
-            print(f"nanocode {__version__} -> {latest} available, but this is an {method} install.", file=sys.stderr)
-            print("Update it the same way you installed it (e.g. git pull, or reinstall).", file=sys.stderr)
-            return 1
-        print(f"Updating nanocode {__version__} -> {latest} ({method}): {' '.join(command)}")
-        try:
-            result = subprocess.run(command)
-        except Exception as error:
-            print("Error: upgrade command failed: " + Text.clean(str(error)), file=sys.stderr)
-            return 1
-        if result.returncode != 0:
-            print("Error: upgrade command exited with status " + str(result.returncode), file=sys.stderr)
-            return result.returncode
-        print(f"Updated nanocode to {latest}.")
-        return 0
-
-    def fetch_latest(self) -> str:
-        request = Request(UpdateChecker.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
-        with urlopen(request, timeout=UpdateChecker.TIMEOUT) as response:
-            data = json.loads(response.read().decode("utf-8", "replace"))
-        version = data.get("info", {}).get("version") if isinstance(data, dict) else ""
-        if not isinstance(version, str) or not UpdateStatus.version_tuple(version):
-            raise NanocodeError("invalid PyPI version response")
-        return version
-
-    def detect(self) -> tuple[str, list[str] | None]:
-        """Return (method label, upgrade command). command is None when we cannot self-update."""
-        if self.is_editable():
-            return "editable", None
-        location = os.path.realpath(os.path.dirname(__file__))
-        if os.sep + "uv" + os.sep + "tools" + os.sep in location + os.sep and shutil.which("uv"):
-            return "uv tool", ["uv", "tool", "upgrade", self.PACKAGE]
-        if os.sep + "pipx" + os.sep in location + os.sep and shutil.which("pipx"):
-            return "pipx", ["pipx", "upgrade", self.PACKAGE]
-        return "pip", [sys.executable, "-m", "pip", "install", "--upgrade", self.PACKAGE]
-
-    @staticmethod
-    def is_editable() -> bool:
-        try:
-            import importlib.metadata as metadata
-
-            raw = metadata.distribution(Updater.PACKAGE).read_text("direct_url.json")
-            return bool(raw) and json.loads(raw).get("dir_info", {}).get("editable", False)
-        except Exception:
-            return False
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nanocode")
     parser.add_argument("--config", default=None, help="Path to config TOML")
@@ -9397,13 +9295,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
-    parser.add_argument("command", nargs="?", choices=["update", "upgrade"], help="Update nanocode to the latest version")
     args = parser.parse_args(argv)
     if args.version:
         print(__version__)
         return 0
-    if args.command in ("update", "upgrade"):
-        return Updater().run()
     try:
         if args.init_config:
             path, created = ConfigFile.init(args.config)

@@ -17,15 +17,13 @@ def data_session(tmp_path):
 
 def test_runtime_settings_reads_limits_and_yolo_override():
     settings = n.RuntimeSettings.from_dict(
-        {"runtime": {"shell_timeout": 7, "max_agent_steps": 0, "max_context_tokens": 0, "check_updates": False, "update_check_interval_hours": 0, "yolo": False}},
+        {"runtime": {"shell_timeout": 7, "max_agent_steps": 0, "max_context_tokens": 0, "yolo": False}},
         yolo=True,
     )
 
     assert settings.shell_timeout == 7
     assert settings.max_steps == 1
     assert settings.max_context_tokens == 1
-    assert settings.check_updates is False
-    assert settings.update_check_interval_hours == 1
     assert settings.yolo is True
 
 
@@ -375,24 +373,7 @@ def test_status_bar_animates_refreshing_code_index(tmp_path, monkeypatch):
     assert second in n.StatusBar.INDEX_SPINNER
 
 
-def test_update_checker_version_cache_and_status_signal(tmp_path):
-    s = data_session(tmp_path)
-    checker = n.UpdateChecker(s)
-
-    s.update.latest = "99.0.0"
-    s.update.checked_at = 123
-    checker.save_cache()
-    s.update.latest = ""
-    s.update.checked_at = 0
-    checker.load_cache()
-
-    assert n.UpdateStatus.version_tuple("1.2") == (1, 2, 0)
-    assert s.update.newer_than(n.__version__)
-    assert s.update.latest in n.StatusBar(s).update_status()
-    assert s.update.checked_at == 123
-
-
-def test_update_checker_start_respects_switch_and_interval(tmp_path, monkeypatch):
+def test_update_checker_start_spawns_daemon_thread(tmp_path, monkeypatch):
     started = []
 
     class FakeThread:
@@ -406,19 +387,22 @@ def test_update_checker_start_respects_switch_and_interval(tmp_path, monkeypatch
     s = data_session(tmp_path)
     monkeypatch.setattr(n.threading, "Thread", FakeThread)
 
-    s.settings.check_updates = False
-    n.UpdateChecker(s).start()
-    assert started == []
-
-    s.settings.check_updates = True
-    s.update.checked_at = time.time()
-    n.UpdateChecker(s).start()
-    assert started == []
-
-    s.update.checked_at = 0
     n.UpdateChecker(s).start()
     assert len(started) == 1
+    assert started[0][1] is True  # daemon
     assert s.update.checking is True
+
+    # start() is a no-op while a check is already in flight so we don't stack duplicates.
+    n.UpdateChecker(s).start()
+    assert len(started) == 1
+
+
+def test_update_status_signals_newer_version_in_status_bar(tmp_path):
+    s = data_session(tmp_path)
+    s.update.latest = "99.0.0"
+    assert n.UpdateStatus.version_tuple("1.2") == (1, 2, 0)
+    assert s.update.newer_than(n.__version__)
+    assert s.update.latest in n.StatusBar(s).update_status()
 
 
 def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch):
