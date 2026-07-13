@@ -105,11 +105,11 @@ SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"
 
 
-class NanocodeError(Exception): pass
-class ConfigError(NanocodeError): pass
-class ModelError(NanocodeError): pass
-class ModelRequestRetry(NanocodeError): pass
-class ToolError(NanocodeError): pass
+class NanocodeError(Exception): ...
+class ConfigError(NanocodeError): ...
+class ModelError(NanocodeError): ...
+class ModelRequestRetry(NanocodeError): ...
+class ToolError(NanocodeError): ...
 
 
 class Text:
