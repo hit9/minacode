@@ -65,7 +65,9 @@ def test_diff_shows_latest_round(tmp_path):
     assert "### Latest · Round 2" in result
     assert "#### new.py" in result
     assert "+new" in result
-    assert "old.py" not in result
+    latest, _, session_section = result.partition("### Session")
+    assert "old.py" not in latest
+    assert "#### old.py" in session_section
 
 
 def test_diff_shows_latest_round_outside_git_repo(tmp_path):
@@ -209,11 +211,11 @@ def test_diff_sections_do_not_guess_ambiguous_moves(tmp_path):
     assert [path for _status, path, _diff in s.session_diff_sections()] == ["source.md", "first.md", "second.md"]
 
 
-def test_session_diff_sections_ignore_legacy_diffs_without_before_after(tmp_path):
+def test_session_diff_sections_fall_back_to_legacy_diffs(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "a.py", "-old\n+new\n")
 
-    assert s.session_diff_sections() == []
+    assert s.session_diff_sections() == [("overall", "a.py", "-old\n+new\n")]
 
 
 def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
@@ -228,7 +230,7 @@ def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
     latest = s.latest_round_diff_sections()
     assert latest is not None
     assert latest[1] == [("edit", "large.py", "-old\n+new\n")]
-    assert s.session_diff_sections() == []
+    assert s.session_diff_sections() == [("overall", "large.py", "-old\n+new\n")]
 
 
 def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):

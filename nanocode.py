@@ -1704,7 +1704,7 @@ class Session:
         return (status, path, text) if text else None
 
     @classmethod
-    def net_diff_sections(cls, diffs: list[TurnDiff], status: str, *, include_legacy: bool = True) -> list[tuple[str, str, str]]:
+    def net_diff_sections(cls, diffs: list[TurnDiff], status: str) -> list[tuple[str, str, str]]:
         states: dict[str, tuple[str, str]] = {}
         legacy: dict[str, list[str]] = {}
         paths: list[str] = []
@@ -1712,8 +1712,7 @@ class Session:
             if diff.path not in paths:
                 paths.append(diff.path)
             if not diff.before and not diff.after:
-                if include_legacy:
-                    legacy.setdefault(diff.path, []).append(diff.diff)
+                legacy.setdefault(diff.path, []).append(diff.diff)
                 continue
             before, _ = states.get(diff.path, (diff.before, diff.after))
             states[diff.path] = (before, diff.after)
@@ -1761,7 +1760,7 @@ class Session:
         return round, self.net_diff_sections(diffs, "edit")
 
     def session_diff_sections(self) -> list[tuple[str, str, str]]:
-        return self.net_diff_sections(self.turn_diffs, "overall", include_legacy=False)
+        return self.net_diff_sections(self.turn_diffs, "overall")
 
     def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
