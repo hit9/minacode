@@ -785,36 +785,26 @@ class MCPFileTokenStore:
     def save(self, data: dict[str, dict[str, Json]]) -> None:
         directory = os.path.dirname(self.path)
         os.makedirs(directory, mode=0o700, exist_ok=True)
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(directory, 0o700)
-        except OSError:
-            pass
         tmp = self.path + ".tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            file = os.fdopen(fd, "w", encoding="utf-8")
-        except Exception:
-            # os.fdopen doesn't close fd on failure; do it ourselves so the descriptor doesn't leak.
-            os.close(fd)
             try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        try:
+                file = os.fdopen(fd, "w", encoding="utf-8")
+            except Exception:
+                # os.fdopen doesn't close fd on failure; do it ourselves so the descriptor doesn't leak.
+                os.close(fd)
+                raise
             with file:
                 json.dump(data, file, ensure_ascii=False, sort_keys=True)
         except Exception:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            except OSError:
-                pass
             raise
         os.replace(tmp, self.path)
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(self.path, 0o600)
-        except OSError:
-            pass
 
 
 @dataclass
