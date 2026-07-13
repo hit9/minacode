@@ -540,14 +540,10 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     assert agent.model.received_tools is tools
 
 
-def test_startup_tip_respects_toggle_and_context(tmp_path, monkeypatch):
+def test_startup_tip_respects_context(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    s.settings.tips = False
-    assert loop.startup_tip() == ""
-
-    s.settings.tips = True
     # Force startup_tip to always pick the last candidate so we can check what's in the pool.
     monkeypatch.setattr(n.random, "choice", lambda seq: seq[-1])
 

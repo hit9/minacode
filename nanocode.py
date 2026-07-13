@@ -337,7 +337,6 @@ class RuntimeSettings:
     max_parallel_tools: int = 4
     mcp_selector: str = ""
     yolo: bool = False
-    tips: bool = True
     theme: str = "auto"
 
     @classmethod
@@ -351,7 +350,6 @@ class RuntimeSettings:
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
-            tips=Config.bool(runtime, "tips", True),
             theme=theme or Config.str(runtime, "theme", "auto"),
         )
 
@@ -7460,12 +7458,9 @@ class CommandLoop:
         "Scaffold a fresh config with `nanocode --init-config`.",
         "Launch with `--yolo` to skip confirmations; `/debug` shows recent diagnostics.",
         'Filter MCP servers at launch with `--mcp "name*,!exclude"`.',
-        "Silence these hints by setting `tips = false` under `[runtime]` in your config.",
     )
 
     def startup_tip(self) -> str:
-        if not self.session.settings.tips:
-            return ""
         tips = list(self.TIPS)
         config = self.session.config
         if len(config.providers) > 1:
