@@ -661,6 +661,15 @@ def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
     assert "status=done" in result
     assert "exit_code=0" in result
 
+def test_job_status_accepts_bare_numeric_id(tmp_path):
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    s.jobs["job.1"].process.wait(timeout=2)
+
+    result = n.JobTool(s, [{"action": "status", "job": "1"}]).call()
+
+    assert "Status: done" in result
+    assert "Exit code: 0" in result
 
 def test_job_captures_large_output_via_log_file(tmp_path):
     s = session(tmp_path)

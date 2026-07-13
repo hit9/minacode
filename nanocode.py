@@ -3279,6 +3279,9 @@ class JobTool(Tool):
         job_id = str(payload.get("job") or "").strip()
         if not job_id:
             raise ToolError("job id required")
+        # Allow bare numeric IDs as a shorthand for the canonical "job.N" form.
+        if job_id not in self.session.jobs and not job_id.startswith("job.") and job_id.isdigit():
+            job_id = f"job.{job_id}"
         job = self.session.jobs.get(job_id)
         if job is None:
             raise ToolError(f"unknown job: {job_id!r}")
