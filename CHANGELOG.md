@@ -11,7 +11,6 @@
 - Keep nanocode's interactive theme active when the parent environment exports `NO_COLOR`; redirected and headless output remains plain.
 - Add a separate `replay_prefix` to `read_input` so the main user message is echoed with `•` while the live prompt stays `>`.
 - Drop the gray `inflight` styling from queued follow-up messages so they keep a consistent user color while pending.
-- Move the working timer into the status row and remove its transient divider, preventing stale dividers in tmux scrollback after pane resize or zoom.
 - Update the system prompt to first acknowledge or briefly answer follow-ups before carrying out the request.
 
 ## 0.9.2 - 2026-07-13

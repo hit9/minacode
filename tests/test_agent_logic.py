@@ -836,22 +836,29 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
 
 
-def test_queue_live_region_shows_pending_and_moves_working_timer_to_status(tmp_path, monkeypatch):
+def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     queue(s, "run tests", "then push")
 
     text = "".join(t for _, t in loop.queue_region_fragments())
+    assert "2 queued" in text and "working" in text
     assert "+ run tests" in text and "+ then push" in text
-    assert "working" not in text
 
-    loop.status_bar.started_at = 100.0
-    monkeypatch.setattr(n.time, "monotonic", lambda: 107.0)
-    status = "".join(t for _, t in loop.status_bar.display_fragments(active=True))
-    assert "working 7s" in status
+    # The divider animates a comet head across the dashes while its label remains stable.
+    with pytest.MonkeyPatch.context() as mp:
+        seen_head = False
+        for tick in range(200):
+            mp.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
+            fragments = loop.queue_divider_fragments()
+            seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
+            assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
+            assert all(not style.startswith("class:divider.glow") or text == "-" for style, text in fragments)
+        assert seen_head
 
     s.pending_user_inputs = []
-    assert loop.queue_region_fragments() == []
+    empty = "".join(t for _, t in loop.queue_region_fragments())
+    assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
 
 def test_queue_placeholder_shows_contextual_hint_only_when_input_empty():

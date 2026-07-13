@@ -7143,7 +7143,6 @@ class StatusBar:
         if show_elapsed:
             parts.extend(
                 [
-                    ("working " + Text.elapsed_since(self.started_at), "runtime"),
                     ("step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "runtime"),
                     ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
                 ]
@@ -7629,10 +7628,16 @@ Tools:
             *dashes(lead, trail),
         ]
 
+    def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
+        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})"
+        return self.sweep_divider_fragments(f"{label} [ {queued} queued ]" if queued else label)
+
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         with self.session._queue_lock:
             pending = list(self.session.pending_user_inputs)
-        fragments: list[tuple[str, str]] = []
+        # The divider is a standing boundary for the whole turn: flushed messages move up into the log
+        # above it, so it stays put even once the queue empties rather than vanishing.
+        fragments = self.queue_divider_fragments(len(pending))
         for item in pending:
             marker = "→ " if item.inflight else "+ "
             for index, line in enumerate(item.text.splitlines()):
@@ -7733,12 +7738,11 @@ Tools:
         self._add_completion_bindings(bindings, buffer)
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # Live region above the +> input contains only queued messages. The working state lives in the
-        # bottom status row; putting it above the prompt leaks stale copies into tmux scrollback when a
-        # non-fullscreen prompt_toolkit app redraws after a pane resize.
+        # Live region above the +> input: a sweep divider plus the still-pending queued messages.
+        # The divider persists for the whole turn; queued messages flush up into the scrollback log.
         queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
-        # Blank lines around the queued region keep the +> prompt clear of pending messages and the
-        # scrollback log above.
+        # Blank lines above the divider and below the queued region, so the +> prompt is not crowded
+        # against the divider and the log above.
         root = FloatContainer(
             HSplit(
                 [
