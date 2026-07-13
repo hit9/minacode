@@ -104,24 +104,11 @@ SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"
 
 
-class NanocodeError(Exception):
-    pass
-
-
-class ConfigError(NanocodeError):
-    pass
-
-
-class ModelError(NanocodeError):
-    pass
-
-
-class ModelRequestRetry(NanocodeError):
-    pass
-
-
-class ToolError(NanocodeError):
-    pass
+class NanocodeError(Exception): pass
+class ConfigError(NanocodeError): pass
+class ModelError(NanocodeError): pass
+class ModelRequestRetry(NanocodeError): pass
+class ToolError(NanocodeError): pass
 
 
 class Text:
@@ -7507,47 +7494,49 @@ class CommandLoop:
         "logout": (1, 1, "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"),
         "refresh": (0, 1, "Usage: /mcp refresh [server]"),
     }
-    # (predicate, tip): predicate gates a tip to contexts where it is actually useful.
-    ALWAYS = staticmethod(lambda s: True)
-    TIPS: ClassVar[tuple[tuple[Callable[["Session"], bool], str], ...]] = (
+    TIPS: ClassVar[tuple[str, ...]] = (
         # Sessions & input
-        (ALWAYS, "Resume your last session anytime with `nanocode --resume`."),
-        (ALWAYS, "Keep typing while the agent works — your input is picked up at the next step."),
-        (ALWAYS, "Press Ctrl+C to cancel the current input or interrupt a running turn."),
-        (ALWAYS, "Search your input history with Ctrl+R."),
-        (ALWAYS, "Tab completes commands, file paths, and mentions."),
+        "Resume your last session anytime with `nanocode --resume`.",
+        "Keep typing while the agent works — your input is picked up at the next step.",
+        "Press Ctrl+C to cancel the current input or interrupt a running turn.",
+        "Search your input history with Ctrl+R.",
+        "Tab completes commands, file paths, and mentions.",
         # Context & memory
-        (ALWAYS, "`/compact` summarizes a long conversation to reclaim context."),
-        (ALWAYS, "`/context` shows the model's context frame: environment and memory (goal/plan/known)."),
-        (ALWAYS, "`/status` shows token usage, context %, and prompt-cache hit rate."),
-        (ALWAYS, "Stable context is kept early so the prompt cache is reused — cheaper, faster turns."),
+        "`/compact` summarizes a long conversation to reclaim context.",
+        "`/context` shows the model's context frame: environment and memory (goal/plan/known).",
+        "`/status` shows token usage, context %, and prompt-cache hit rate.",
+        "Stable context is kept early so the prompt cache is reused — cheaper, faster turns.",
         # Model & reasoning
-        (ALWAYS, "`/model` switches model and `/reason` sets reasoning effort on the fly."),
-        (ALWAYS, "`/set provider.reasoning high` digs deeper on hard tasks; `off` is fastest."),
-        (ALWAYS, "`/set provider.max_tokens N` caps the model's output length."),
-        (ALWAYS, "`/api` shows or switches the API protocol (auto / chat / anthropic)."),
-        (lambda s: len(s.config.providers) > 1, "`/provider` switches between your configured providers."),
-        (lambda s: s.config.provider.supports_strict_tools(), "`/strict` constrains tool-call arguments to each tool's schema (OpenAI / DeepSeek)."),
+        "`/model` switches model and `/reason` sets reasoning effort on the fly.",
+        "`/set provider.reasoning high` digs deeper on hard tasks; `off` is fastest.",
+        "`/set provider.max_tokens N` caps the model's output length.",
+        "`/api` shows or switches the API protocol (auto / chat / anthropic).",
         # Tools & navigation
-        (ALWAYS, "`/index` manages the code symbol index for fast symbol navigation."),
-        (ALWAYS, "`/yolo` skips tool confirmations when you want to move fast."),
-        (ALWAYS, "`/set runtime.max_parallel_tools N` tunes how many reads run at once."),
-        (ALWAYS, "`/ps` shows active background jobs started with the Job tool."),
-        (lambda s: bool(s.config.mcp), "Mention an MCP tool inline with `@server.tool` to pull in its schema."),
-        (lambda s: bool(s.config.mcp), "`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow."),
+        "`/index` manages the code symbol index for fast symbol navigation.",
+        "`/yolo` skips tool confirmations when you want to move fast.",
+        "`/set runtime.max_parallel_tools N` tunes how many reads run at once.",
+        "`/ps` shows active background jobs started with the Job tool.",
         # Config & setup
-        (ALWAYS, "`/config` opens your config; `/set KEY VALUE` changes settings live."),
-        (ALWAYS, "Scaffold a fresh config with `nanocode --init-config`."),
-        (ALWAYS, "Launch with `--yolo` to skip confirmations; `/debug` shows recent diagnostics."),
-        (ALWAYS, 'Filter MCP servers at launch with `--mcp "name*,!exclude"`.'),
-        (ALWAYS, "Silence these hints by setting `tips = false` under `[runtime]` in your config."),
+        "`/config` opens your config; `/set KEY VALUE` changes settings live.",
+        "Scaffold a fresh config with `nanocode --init-config`.",
+        "Launch with `--yolo` to skip confirmations; `/debug` shows recent diagnostics.",
+        'Filter MCP servers at launch with `--mcp "name*,!exclude"`.',
+        "Silence these hints by setting `tips = false` under `[runtime]` in your config.",
     )
 
     def startup_tip(self) -> str:
         if not self.session.settings.tips:
             return ""
-        eligible = [tip for predicate, tip in self.TIPS if predicate(self.session)]
-        return random.choice(eligible) if eligible else ""
+        tips = list(self.TIPS)
+        config = self.session.config
+        if len(config.providers) > 1:
+            tips.append("`/provider` switches between your configured providers.")
+        if config.provider.supports_strict_tools():
+            tips.append("`/strict` constrains tool-call arguments to each tool's schema (OpenAI / DeepSeek).")
+        if config.mcp:
+            tips.append("Mention an MCP tool inline with `@server.tool` to pull in its schema.")
+            tips.append("`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow.")
+        return random.choice(tips)
 
     MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 

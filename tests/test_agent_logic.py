@@ -540,7 +540,7 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     assert agent.model.received_tools is tools
 
 
-def test_startup_tip_respects_toggle_and_context(tmp_path):
+def test_startup_tip_respects_toggle_and_context(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
@@ -548,20 +548,21 @@ def test_startup_tip_respects_toggle_and_context(tmp_path):
     assert loop.startup_tip() == ""
 
     s.settings.tips = True
-    all_tips = [tip for _, tip in n.CommandLoop.TIPS]
-    eligible = [tip for predicate, tip in n.CommandLoop.TIPS if predicate(s)]
-    strict_tip = next(tip for tip in all_tips if tip.startswith("`/strict`"))
-    mcp_tip = next(tip for tip in all_tips if "@server.tool" in tip)
+    # Force startup_tip to always pick the last candidate so we can check what's in the pool.
+    monkeypatch.setattr(n.random, "choice", lambda seq: seq[-1])
 
-    # Unknown host + no MCP: strict and MCP tips are filtered out, but a tip is still shown.
-    assert strict_tip not in eligible
-    assert mcp_tip not in eligible
-    for _ in range(20):
-        assert loop.startup_tip() in eligible
+    # Unknown host + no MCP: strict/MCP tips are absent from the pool.
+    tip = loop.startup_tip()
+    assert not tip.startswith("`/strict`")
+    assert "@server.tool" not in tip
 
-    # DeepSeek provider unlocks the strict tip.
+    # DeepSeek provider unlocks the strict tip; appended last, so with the seeded random.choice it wins.
     s.config.providers["default"].url = "https://api.deepseek.com"
-    assert strict_tip in [tip for predicate, tip in n.CommandLoop.TIPS if predicate(s)]
+    assert loop.startup_tip().startswith("`/strict`")
+
+    # Enabling MCP appends the MCP tips after the strict one, so with the same seeded choice the last MCP tip wins.
+    s.config.mcp["example"] = {"url": "http://x"}
+    assert "`/mcp`" in loop.startup_tip()
 
 
 def test_ps_command_uses_markdown_renderer(tmp_path):
