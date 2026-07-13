@@ -46,7 +46,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
-from prompt_toolkit.formatted_text import ANSI, FormattedText, to_formatted_text
+from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -1243,7 +1243,7 @@ search, edit, run commands) and returns a short answer in your language.
 - Acts when the task is clear, loops until done or blocked (up to `runtime.max_agent_steps`), and
   self-corrects on tool errors (never repeats a failed call unchanged).
 - Read-only tools in one batch run concurrently (`runtime.max_parallel_tools`); edits/shell run
-  serially. Working notes (goal/plan/known/check) via `Note`, shown in `/context`. Answers concisely
+  serially. Working notes (goal/plan/known/check) via `Note`. Answers concisely
   and notes changed files and checks run.
 
 ## Context & caching
@@ -1251,7 +1251,7 @@ Each request is a cache-stable prefix (system prompt, environment, SKILLS/MCP in
 then the conversation and `Memory`. Tool outputs stay in the conversation and large outputs are bounded with Recall keys. Caching needs that
 prefix byte-identical; `/status` shows context %, cache hit rate, a prefix-mismatch warning if it
 mutated mid-session (`/debug` shows the changed prefix regions), and a compaction count. Long
-chats compact automatically; `/compact` forces it. `/context` shows the frame (Environment / Memory).
+chats compact automatically; `/compact` forces it.
 
 ## Sessions
 Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
@@ -1284,7 +1284,7 @@ only read-only subcommands auto-run; commit/add/push and branch changes still as
   mid-session — `/debug` shows the changed regions.
 - InspectCode stale/unavailable: `/index` to sync or rebuild.
 - Context full: compacts automatically; `/compact` forces it.
-- Command refused while the agent works unless read-only (`/help`, `/status`, `/context`, `/skills`, `/debug`,
+- Command refused while the agent works unless read-only (`/help`, `/status`, `/skills`, `/debug`,
   read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
 
     def __init__(self, skills: dict[str, Skill]):
@@ -6352,7 +6352,7 @@ FINAL:
 class CommandCompleter(Completer):
     # fmt: off
     COMMANDS = (
-        "/help", "/ps", "/status", "/context", "/skills", "/config", "/debug", "/diff",
+        "/help", "/ps", "/status", "/skills", "/config", "/debug", "/diff",
         "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/strict", "/exit", "/quit",
     )
     # fmt: on
@@ -7419,7 +7419,7 @@ class CommandLoop:
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/context", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -7438,7 +7438,6 @@ class CommandLoop:
         "Tab completes commands, file paths, and mentions.",
         # Context & memory
         "`/compact` summarizes a long conversation to reclaim context.",
-        "`/context` shows the model's context frame: environment and memory (goal/plan/known).",
         "`/status` shows token usage, context %, and prompt-cache hit rate.",
         "Stable context is kept early so the prompt cache is reused — cheaper, faster turns.",
         # Model & reasoning
@@ -7477,7 +7476,6 @@ class CommandLoop:
   /help              Show this help.
   /status            Show runtime status.
   /ps                Show active background jobs.
-  /context           Show the model's context frame (environment and memory).
   /diff              Show latest edits and overall session diff.
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
@@ -8326,7 +8324,7 @@ Tools:
         name, _, args = text.partition(" ")
         # fmt: off
         handlers = {
-            "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/context": self.context_view, "/diff": self.diff_command,
+            "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/diff": self.diff_command,
             "/skills": self.skills_command, "/config": self.config, "/debug": self.debug,
             "/compact": self.compact, "/index": self.index, "/provider": self.provider, "/model": self.model,
             "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo, "/strict": self.strict,
@@ -8335,9 +8333,9 @@ Tools:
         # fmt: on
         handler = handlers.get(name)
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
-        # A None result means the handler already rendered its own UI (e.g. /context's tab viewer).
+        # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
-            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/context", "/skills", "/debug", "/diff"} else self.emit)(output)
+            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/skills", "/debug", "/diff"} else self.emit)(output)
         return True, False
 
     def mcp_command(self, args: str) -> str:
@@ -8647,18 +8645,6 @@ Tools:
         table = ContextManager.md_table(["id", "status", "elapsed", "command"], rows)
         return f"### Active jobs · {len(running)}\n\n{table}"
 
-    def context_view(self, args: str) -> str | None:
-        if args.strip():
-            return "Usage: /context"
-        context = self.agent.context
-        context.update_percent(context.model_messages(self.agent.SYSTEM_PROMPT))
-        # At the idle prompt on a real terminal, open the interactive tabbed viewer; while the agent
-        # is working (queue path sets capture_ansi) or without a TTY, fall back to the static dump.
-        if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
-            self.context_tabs(context)
-            return None
-        return context.context_overview()
-
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
@@ -8833,89 +8819,6 @@ Tools:
         app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings, full_screen=True)
         with contextlib.suppress(KeyboardInterrupt):
             self.run_input_app(app)
-
-    CONTEXT_TABS: ClassVar[tuple[tuple[str, str], ...]] = (("Environment", "environment_md"), ("Memory", "memory_md"))
-
-    def context_tabs(self, context: "ContextManager") -> None:
-        """Interactive tabbed viewer for the context frame: ←/→ switch tabs, ↑/↓ scroll, Esc close.
-        Renders a static snapshot; the transcript continues below once closed."""
-        width = max(20, shutil.get_terminal_size().columns - 2)
-        pages = [self.render_markdown_lines(getattr(context, method)(), width) for _, method in self.CONTEXT_TABS]
-        # Kept as an observable test seam for interactive navigation; it is not persisted session state.
-        state = self.context_tab_state = TabbedViewState(tuple(name for name, _method in self.CONTEXT_TABS))
-
-        def viewport() -> int:
-            return max(3, shutil.get_terminal_size().lines - 5)
-
-        def fragments():
-            # Blank line separates the viewer from the `nano> /context` input line above it.
-            parts: list[tuple[str, str]] = [("", "\n")]
-            parts.extend(self.ui.tab_segments(state.titles, state.tab))
-            lines = pages[state.tab]
-            height = viewport()
-            scrollable = len(lines) > height
-            visible = state.visible(lines, height)
-            parts.append(("", "\n"))
-            scroll_hint = "↑/↓ scroll" if scrollable else "↑/↓ scroll (fits)"
-            parts.append(
-                ("class:choice.disabled", f"  ←/→ switch · {scroll_hint} · Esc close  [{state.scroll + 1}-{state.scroll + len(visible)}/{len(lines)}]\n")
-            )
-            for line in visible:
-                parts.extend(line)
-                parts.append(("", "\n"))
-            return parts
-
-        def scroll(event, delta: int) -> None:
-            state.scroll_by(delta)
-            event.app.invalidate()
-
-        def switch(event, delta: int) -> None:
-            state.switch(delta)
-            event.app.invalidate()
-
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-        bindings.add("right", eager=True)(lambda event: switch(event, 1))
-        bindings.add("l", eager=True)(lambda event: switch(event, 1))
-        bindings.add("left", eager=True)(lambda event: switch(event, -1))
-        bindings.add("h", eager=True)(lambda event: switch(event, -1))
-        bindings.add("tab", eager=True)(lambda event: switch(event, 1))
-        bindings.add("down", eager=True)(lambda event: scroll(event, 1))
-        bindings.add("j", eager=True)(lambda event: scroll(event, 1))
-        bindings.add("up", eager=True)(lambda event: scroll(event, -1))
-        bindings.add("k", eager=True)(lambda event: scroll(event, -1))
-        bindings.add("pagedown", eager=True)(lambda event: scroll(event, viewport()))
-        bindings.add("pageup", eager=True)(lambda event: scroll(event, -viewport()))
-
-        for number in range(1, len(self.CONTEXT_TABS) + 1):
-
-            @bindings.add(str(number), eager=True)
-            def _jump(event, number=number):
-                state.select(number - 1)
-                event.app.invalidate()
-
-        @bindings.add("escape", eager=True)
-        @bindings.add("q", eager=True)
-        @bindings.add("c-c", eager=True)
-        @bindings.add("<sigint>", eager=True)
-        def _close(event):
-            event.app.exit(result=None)
-
-        content = FormattedTextControl(fragments, focusable=True)
-        window = Window(content, dont_extend_height=True, wrap_lines=False)
-        app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings)
-        with contextlib.suppress(KeyboardInterrupt):
-            self.run_input_app(app)
-
-    def render_markdown_lines(self, markdown: str, width: int) -> list[Any]:
-        """Render Markdown to per-line prompt_toolkit fragments via Rich, so the tab body keeps its
-        table/heading styling inside the interactive viewer."""
-        if not self.ui.color:
-            return [[("", line)] for line in markdown.splitlines()]
-        console = Console(force_terminal=True, width=width)
-        with console.capture() as capture:
-            console.print(Markdown(markdown))
-        return [to_formatted_text(ANSI(line)) for line in capture.get().splitlines()]
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider

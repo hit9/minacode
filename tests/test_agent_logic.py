@@ -1004,7 +1004,7 @@ def test_queue_command_runs_readonly(tmp_path):
     out = []
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    loop.run_queued_command("/context")
+    loop.run_queued_command("/status")
 
     assert s.pending_user_inputs == []
     assert out and not any("unavailable" in t for t in out)
@@ -1107,80 +1107,6 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
     assert "+line 49" in outputs[0]
     assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)
-
-
-def test_context_command_shows_context_frame(tmp_path):
-    s = session(tmp_path)
-    s.state.goal = "ship"
-    s.state.plan = ["inspect"]
-    s.state.known = ["pytest"]
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
-
-    output = loop.context_view("")
-
-    # unified markdown frame: environment and memory sections
-    assert "### Context" in output
-    assert "#### Environment" in output
-    assert "#### Memory" in output
-    assert "#### File State" not in output
-    assert "| goal | ship |" in output
-    assert "- [ ] inspect" in output
-    assert "- pytest" in output
-    # memory section is the model-facing one, so it never shows summary
-    assert "summary" not in output
-
-
-def test_context_command_renders_plan_item_objects(tmp_path):
-    s = session(tmp_path)
-    s.state.plan = [n.PlanItem("done", "设置 goal 和 plan")]
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
-
-    output = loop.context_view("")
-
-    assert "设置 goal 和 plan" in output
-    assert "PlanItem(" not in output
-
-
-def test_context_view_opens_tabs_when_interactive(tmp_path):
-    """At an interactive prompt the bare /context launches the tab viewer and emits nothing inline."""
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
-    loop.interactive_input = True
-    loop.ui.color = True
-    loop.ui.capture_ansi = False
-    opened = []
-    loop.context_tabs = lambda context: opened.append(context)
-
-    assert loop.context_view("") is None
-    assert opened == [loop.agent.context]
-
-    # while the agent works (queue path sets capture_ansi) it falls back to the static dump
-    loop.ui.capture_ansi = True
-    assert loop.context_view("").startswith("### Context")
-
-
-def test_render_markdown_lines_splits_per_line(tmp_path):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
-    loop.ui.color = False
-    assert loop.render_markdown_lines("alpha\nbeta", 60) == [[("", "alpha")], [("", "beta")]]
-
-
-def _drive_context_tabs(tmp_path, ui_harness, keys, *, term=(80, 12)):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=lambda text: None)
-    loop.ui.color = True
-    # Force a tall page so scrolling has room, and a short viewport.
-    loop.render_markdown_lines = lambda markdown, width: [[("", f"line{i}")] for i in range(100)]
-    ui_harness.run(loop, lambda: loop.context_tabs(loop.agent.context), keys, size=term)
-    return loop.context_tab_state
-
-
-def test_context_tabs_scroll_and_switch_keys(tmp_path, ui_harness):
-    # j/down scroll the body; k/up scroll back; h/l switch tabs. 'q' closes.
-    assert _drive_context_tabs(tmp_path, ui_harness, "jjjq").scroll == 3
-    assert _drive_context_tabs(tmp_path, ui_harness, "jjjkq").scroll == 2
-    assert _drive_context_tabs(tmp_path, ui_harness, "llq").tab == 0
-    assert _drive_context_tabs(tmp_path, ui_harness, "lhq").tab == 0
-
 
 def test_exit_command_prints_resume_command(tmp_path):
     s = session(tmp_path)
@@ -1901,7 +1827,7 @@ def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     assert "## How it works" in body and "## Troubleshooting" in body
     assert "prefix-mismatch" in body  # a concept /help does not explain
     # Plus lists assembled from in-code constants (so they cannot drift).
-    assert "/context" in body and "/skills" in body  # command list (from /help)
+    assert "/strict" in body and "/skills" in body  # command list (from /help)
     assert "InspectCode:" in body  # tool details (from DESCRIPTIONs)
     assert "provider.model" in body and "runtime.max_agent_steps" in body  # settable keys
     assert os.path.abspath(n.__file__) in body  # source named only as a last-resort fallback
