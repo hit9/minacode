@@ -106,9 +106,17 @@ DISMISSED = "(The user dismissed the question without answering.)"
 
 
 class NanocodeError(Exception): ...
+
+
 class ConfigError(NanocodeError): ...
+
+
 class ModelError(NanocodeError): ...
+
+
 class ModelRequestRetry(NanocodeError): ...
+
+
 class ToolError(NanocodeError): ...
 
 
@@ -6293,7 +6301,6 @@ FINAL:
         return Text.value(message)
 
 
-
 class CommandCompleter(Completer):
     # fmt: on
     # fmt: off
@@ -6483,6 +6490,7 @@ class UiPrinter:
     @classmethod
     def user_log_style(cls) -> str:
         return Theme.style("user.log")
+
     TOOL_ARG_TOKEN: ClassVar[re.Pattern] = re.compile(
         r"""\s+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*=|(?:tr|job)\.\d+|\d+(?::\d+)?|[;,]|[^\s;,]+"""
     )
@@ -6568,7 +6576,7 @@ class UiPrinter:
         if text.startswith(("goal:", "check:", "plan:", "known:")):
             return self.memory_segments(text)
         if text.startswith(self.USER_LOG_PREFIX):
-            prefix, content = self.USER_LOG_PREFIX, text[len(self.USER_LOG_PREFIX):]
+            prefix, content = self.USER_LOG_PREFIX, text[len(self.USER_LOG_PREFIX) :]
             return [(self.user_log_style(), prefix + content + "\n")]
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
@@ -7839,7 +7847,9 @@ Tools:
                 else:
                     # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
                     # text into the prompt for review/edit.
-                    user_input = self.read_input(initial_text="\n".join([*entered, *([typed] if typed else [])]), replay_prefix=UiPrinter.USER_LOG_PREFIX, pad=True)
+                    user_input = self.read_input(
+                        initial_text="\n".join([*entered, *([typed] if typed else [])]), replay_prefix=UiPrinter.USER_LOG_PREFIX, pad=True
+                    )
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
@@ -8801,6 +8811,7 @@ Tools:
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
             ]
         )
+
     def debug(self, args: str) -> str:
         if args.strip():
             return "Usage: /debug"
