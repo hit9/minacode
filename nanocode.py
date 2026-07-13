@@ -6295,11 +6295,6 @@ FINAL:
 
 
 class CommandCompleter(Completer):
-    # fmt: off
-    COMMANDS = (
-        "/help", "/ps", "/status", "/skills", "/config", "/debug", "/diff",
-        "/compact", "/index", "/model", "/provider", "/reason", "/set", "/yolo", "/strict", "/exit", "/quit",
-    )
     # fmt: on
     # fmt: off
     SET_HANDLERS: ClassVar[dict[str, tuple[str, str, Callable[[str], Any] | None]]] = {
@@ -6382,7 +6377,7 @@ class CommandCompleter(Completer):
             return
 
         if text.startswith("/") and " " not in text:
-            yield from self.matches(self.COMMANDS, text)
+            yield from self.matches(CommandLoop.COMMANDS, text)
 
     @staticmethod
     def matches(values, prefix: str):
@@ -7367,6 +7362,26 @@ class CommandLoop:
     QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT: ClassVar[str] = "↑ recalls queued · Ctrl-C sends now"
 
+    COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
+        "/help": "help",
+        "/status": "status",
+        "/ps": "ps_command",
+        "/diff": "diff_command",
+        "/skills": "skills_command",
+        "/config": "config",
+        "/debug": "debug",
+        "/compact": "compact",
+        "/index": "index",
+        "/provider": "provider",
+        "/model": "model",
+        "/reason": "reason",
+        "/set": "set_value",
+        "/yolo": "yolo",
+        "/strict": "strict",
+        "/mcp": "mcp_command",
+    }
+    COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
+
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
     QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
@@ -8256,16 +8271,8 @@ Tools:
         if not text.startswith("/"):
             return False, False
         name, _, args = text.partition(" ")
-        # fmt: off
-        handlers = {
-            "/help": self.help, "/status": self.status, "/ps": self.ps_command, "/diff": self.diff_command,
-            "/skills": self.skills_command, "/config": self.config, "/debug": self.debug,
-            "/compact": self.compact, "/index": self.index, "/provider": self.provider, "/model": self.model,
-            "/reason": self.reason, "/set": self.set_value, "/yolo": self.yolo, "/strict": self.strict,
-            "/mcp": self.mcp_command,
-        }
-        # fmt: on
-        handler = handlers.get(name)
+        method_name = self.COMMAND_HANDLERS.get(name)
+        handler = getattr(self, method_name, None) if method_name else None
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:

@@ -20,7 +20,7 @@ def git_init(path):
 
 
 def test_diff_is_in_completer_commands():
-    assert "/diff" in n.CommandCompleter.COMMANDS
+    assert "/diff" in n.CommandLoop.COMMANDS
 
 
 def test_diff_appears_in_help():
