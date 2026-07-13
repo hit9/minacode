@@ -7361,26 +7361,16 @@ class ChoiceViewState:
 class CommandLoop:
     QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT: ClassVar[str] = "↑ recalls queued · Ctrl-C sends now"
-
+    # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
-        "/help": "help",
-        "/status": "status",
-        "/ps": "ps_command",
-        "/diff": "diff_command",
-        "/skills": "skills_command",
-        "/config": "config",
-        "/debug": "debug",
-        "/compact": "compact",
-        "/index": "index",
-        "/provider": "provider",
-        "/model": "model",
-        "/reason": "reason",
-        "/set": "set_value",
-        "/yolo": "yolo",
-        "/strict": "strict",
+        "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
+        "/skills": "skills_command", "/config": "config", "/debug": "debug",
+        "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
+        "/reason": "reason", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
         "/mcp": "mcp_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
+    # fmt: on
 
     # Commands safe to run from the background queue-input thread while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
