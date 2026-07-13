@@ -662,7 +662,7 @@ def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
     assert "exit_code=0" in result
 
 
-def test_job_drains_large_output_without_polling(tmp_path):
+def test_job_captures_large_output_via_log_file(tmp_path):
     s = session(tmp_path)
     code = 'import sys; sys.stdout.write("x" * 1000000)'
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
@@ -671,7 +671,6 @@ def test_job_drains_large_output_without_polling(tmp_path):
 
     try:
         job.process.wait(timeout=2)
-        job.drain(final=True)
     finally:
         if job.process.poll() is None:
             job.kill(grace=0.1)
@@ -679,7 +678,7 @@ def test_job_drains_large_output_without_polling(tmp_path):
     job.update_status()
     assert job.status == "done"
     assert job.exit_code == 0
-    assert job.tail(100)[0] == "..." + "x" * 97
+    assert job.tail(100) == "..." + "x" * 97
 
 
 def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
@@ -687,11 +686,10 @@ def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
     n.JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()
     job = s.jobs["job.1"]
     job.process.wait(timeout=2)
-    job.drain(final=True)
 
-    assert job.tail(1)[0] == "."
-    assert job.tail(2)[0] == ".."
-    assert job.tail(3)[0] == "..."
+    assert job.tail(1) == "."
+    assert job.tail(2) == ".."
+    assert job.tail(3) == "..."
 
 
 def test_log_block_aligns_multiline_tool_arguments():

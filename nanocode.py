@@ -22,6 +22,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -1408,87 +1409,16 @@ def _read_and_release(selector: selectors.BaseSelector, key: selectors.SelectorK
 
 @dataclass
 class BackgroundJob:
-    """A non-blocking shell process tracked by the session."""
+    """A non-blocking shell process tracked by the session. Output is redirected to a log file
+    on disk (stderr merged into stdout) so we don't need a threaded stream drainer."""
 
     id: str
     command: str
     process: subprocess.Popen[bytes]
+    log_path: str
     started_at: float
     status: str = "running"
     exit_code: int | None = None
-    stdout_buf: list[str] = field(default_factory=list)
-    stderr_buf: list[str] = field(default_factory=list)
-    _stdout_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
-    _stderr_decoder: codecs.IncrementalDecoder = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")("replace"))
-    _buffer_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _reader_thread: threading.Thread | None = field(default=None, repr=False)
-
-    # Total characters kept per stream; older output is dropped when exceeded.
-    BUFFER_CHARS: ClassVar[int] = 256 * 1024
-
-    def start_draining(self) -> None:
-        if self._reader_thread is not None:
-            return
-        self._reader_thread = threading.Thread(target=self._drain_loop, name=self.id + "-output", daemon=True)
-        self._reader_thread.start()
-
-    def _drain_loop(self) -> None:
-        if self.process.stdout is None or self.process.stderr is None:
-            return
-        selector = selectors.DefaultSelector()
-        try:
-            for stream, label in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
-                if not stream.closed:
-                    selector.register(stream, selectors.EVENT_READ, label)
-            while selector.get_map():
-                for key, _ in selector.select(0.2):
-                    self._read(selector, key)
-        finally:
-            selector.close()
-
-    def drain(self, *, timeout: float = 0.0, final: bool = False) -> None:
-        """Read available output. With final=True (or a positive timeout) block up to `timeout`
-        seconds, draining until the streams reach EOF; otherwise read only what is ready now."""
-        if self._reader_thread is not None:
-            if final:
-                self._reader_thread.join()
-            elif timeout > 0:
-                self._reader_thread.join(timeout)
-            return
-        if self.process.stdout is None or self.process.stderr is None:
-            return
-        blocking = final or timeout > 0
-        selector = selectors.DefaultSelector()
-        try:
-            for stream, label in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
-                if not stream.closed:
-                    selector.register(stream, selectors.EVENT_READ, label)
-            deadline = time.monotonic() + max(0.0, timeout)
-            while selector.get_map():
-                remaining = deadline - time.monotonic()
-                events = selector.select(max(0.0, remaining) if blocking else 0.0)
-                if not events:
-                    # Nothing ready: keep waiting only while a positive budget remains; a
-                    # non-blocking drain returns immediately instead of spinning until EOF.
-                    if blocking and remaining > 0:
-                        continue
-                    break
-                for key, _ in events:
-                    self._read(selector, key)
-        finally:
-            selector.close()
-
-    def _read(self, selector: selectors.BaseSelector, key: selectors.SelectorKey) -> None:
-        data, eof = _read_and_release(selector, key)
-        text = (self._stdout_decoder if key.data == "stdout" else self._stderr_decoder).decode(data, final=eof)
-        if text:
-            with self._buffer_lock:
-                buf = self.stdout_buf if key.data == "stdout" else self.stderr_buf
-                buf.append(text)
-                # Drop oldest chunks to cap memory.
-                total = sum(len(part) for part in buf)
-                while total > self.BUFFER_CHARS and len(buf) > 1:
-                    total -= len(buf.pop(0))
 
     def update_status(self) -> None:
         if self.status != "running":
@@ -1502,37 +1432,44 @@ class BackgroundJob:
         return time.monotonic() - self.started_at
 
     def kill(self, grace: float = 3.0) -> None:
-        """SIGTERM, wait grace seconds, then SIGKILL if still running."""
-        if self.status != "running":
-            return
-        try:
-            os.killpg(self.process.pid, signal.SIGTERM)
-        except OSError:
-            self.process.terminate()
-        try:
-            self.process.wait(timeout=grace)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(self.process.pid, signal.SIGKILL)
-            except OSError:
-                self.process.kill()
-            self.process.wait()
-        self.drain(final=True)
-        self.update_status()
+        """SIGTERM, wait grace seconds, then SIGKILL if still running. Removes the log file."""
         if self.status == "running":
-            self.status = "killed"
-            self.exit_code = -1
+            try:
+                os.killpg(self.process.pid, signal.SIGTERM)
+            except OSError:
+                self.process.terminate()
+            try:
+                self.process.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except OSError:
+                    self.process.kill()
+                self.process.wait()
+            self.update_status()
+            if self.status == "running":
+                self.status = "killed"
+                self.exit_code = -1
+        with contextlib.suppress(OSError):
+            os.unlink(self.log_path)
 
-    def tail(self, limit: int) -> tuple[str, str]:
+    def tail(self, limit: int) -> str:
+        """Return the last `limit` chars from the merged stdout+stderr log."""
         limit = max(0, limit)
-
-        def clip(text: str) -> str:
-            if len(text) <= limit:
-                return text
-            return "." * limit if limit <= 3 else "..." + text[-(limit - 3) :]
-
-        with self._buffer_lock:
-            return clip("".join(self.stdout_buf)), clip("".join(self.stderr_buf))
+        try:
+            with open(self.log_path, "rb") as file:
+                file.seek(0, 2)
+                size = file.tell()
+                # UTF-8 is up to 4 bytes/char; read a little extra so decoding produces at least `limit` chars.
+                file.seek(max(0, size - limit * 4), 0)
+                text = file.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return "." * limit
+        return "..." + text[-(limit - 3) :]
 
 
 @dataclass(eq=False)
@@ -3291,39 +3228,35 @@ class JobTool(Tool):
             raise ToolError(f"too many active jobs ({active}/{self.MAX_JOBS}); kill or wait for one first")
         self.session.job_counter += 1
         job_id = f"job.{self.session.job_counter}"
+        # Log to disk (stdout+stderr merged) so we don't need a threaded drainer to keep the
+        # subprocess's OS-level pipe buffers from filling. `exec` replaces the shell with the
+        # user's command so signals sent to the process group reach the actual process.
+        fd, log_path = tempfile.mkstemp(prefix=f"nc-{job_id}-", suffix=".log")
+        os.close(fd)
         proc = subprocess.Popen(
-            ["bash", "-lc", command],
+            ["bash", "-lc", f"exec {command} > {shlex.quote(log_path)} 2>&1"],
             cwd=self.session.cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
-            bufsize=0,
         )
-        job = BackgroundJob(id=job_id, command=command, process=proc, started_at=time.monotonic())
-        self.session.jobs[job_id] = job
-        job.start_draining()
+        self.session.jobs[job_id] = BackgroundJob(id=job_id, command=command, process=proc, log_path=log_path, started_at=time.monotonic())
         return f"Started {job_id}: {command}"
 
     def _status(self, payload: Json) -> str:
         job = self._resolve_job(payload)
         timeout = int(payload.get("timeout") or 0)
-        job.drain(timeout=timeout)
+        if timeout > 0:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                job.process.wait(timeout=timeout)
         job.update_status()
         return self._format(job, payload)
 
     def _wait(self, payload: Json) -> str:
         job = self._resolve_job(payload)
         timeout = payload.get("timeout")
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             # timeout omitted or 0 means block until the process exits (per the schema).
-            if not timeout:
-                job.process.wait()
-            else:
-                job.process.wait(timeout=max(1, int(timeout)))
-            job.drain(final=True)
-        except subprocess.TimeoutExpired:
-            job.drain()
+            job.process.wait(timeout=None if not timeout else max(1, int(timeout)))
         job.update_status()
         return self._format(job, payload)
 
@@ -3354,7 +3287,7 @@ class JobTool(Tool):
 
     def _format(self, job: BackgroundJob, payload: Json) -> str:
         limit = max(1, int(payload.get("limit") or self.DEFAULT_LIMIT))
-        stdout, stderr = job.tail(limit)
+        output = job.tail(limit)
         lines = [
             f"Job: {job.id}",
             f"Status: {job.status}",
@@ -3363,10 +3296,8 @@ class JobTool(Tool):
         ]
         if job.exit_code is not None:
             lines.append(f"Exit code: {job.exit_code}")
-        if stdout:
-            lines.extend(["--- stdout ---", stdout])
-        if stderr:
-            lines.extend(["--- stderr ---", stderr])
+        if output:
+            lines.extend(["--- output ---", output])
         return "\n".join(lines)
 
 
