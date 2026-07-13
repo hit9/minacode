@@ -6162,7 +6162,7 @@ FLOW:
 - Act when clear. Unless the user explicitly asks for a plan, a question about the code, or brainstorming, assume they want implementation and the tools run to solve the problem. Carry the work through implementation, verification, and a clear outcome; do not stop at analysis or half-finished fixes.
 - BATCH BY DEFAULT: issue every independent call in ONE parallel request — the moment you know two or more files/symbols/paths, read/search them together, never one per turn. Serialize only when a call truly needs a prior call's output. Never repeat a failed call unchanged — diagnose, then adjust.
 - You may be in a dirty git worktree. NEVER revert changes you did not make unless explicitly requested. Ignore unrelated changes; work with changes that affect your task. Never use destructive commands like `git reset --hard` or `git checkout --` unless the user clearly asked. Do not create/delete/switch branches or commit/push unless asked; before committing, check the branch and stop if it changed since task start. Prefer non-interactive git commands.
-- Treat later user messages in the same turn as live follow-ups: if they conflict, let the newest one steer; if not, honor every request since your last turn. After a resume, interruption, or context compaction, do a quick sanity check that your final answer and tool actions answer the newest request, not an older ghost.
+- Treat later user messages in the same turn as live follow-ups: answer each follow-up directly and never ignore or skip it. If messages conflict, let the newest one steer; if not, honor every request since your last turn. After a resume, interruption, or context compaction, do a quick sanity check that your final answer and tool actions answer the newest request, not an older ghost.
 - Keep changes small/local/reversible; never overwrite unrelated work. Confirm before irreversible or outward-facing actions unless already authorized.
 - Report faithfully: if a check failed, was skipped, or was not run, say so; do not overstate confidence.
 - Decline clearly malicious code; help with defensive and legitimate security work.
@@ -7822,7 +7822,7 @@ Tools:
                 else:
                     # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
                     # text into the prompt for review/edit.
-                    user_input = self.read_input(initial_text="\n".join([*entered, *([typed] if typed else [])]), pad=True)
+                    user_input = self.read_input(initial_text="\n".join([*entered, *([typed] if typed else [])]), replay_prefix=UiPrinter.USER_LOG_PREFIX, pad=True)
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
@@ -7982,6 +7982,7 @@ Tools:
     def style(self) -> Style:
         return Style.from_dict(
             {
+                "": "#fb923c",
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
                 "queue.hint": "ansibrightblack",
@@ -8090,6 +8091,7 @@ Tools:
         multiline: bool = False,
         submit_on_enter: bool = False,
         prompt_style: str = "class:prompt",
+        replay_prefix: str | None = None,
         initial_text: str = "",
         pad: bool = False,
         replay: bool = True,
@@ -8165,7 +8167,7 @@ Tools:
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
         if replay:
-            print_formatted_text(FormattedText([(prompt_style, prompt_text), ("", text)]), style=self.style())
+            print_formatted_text(FormattedText([(prompt_style, replay_prefix or prompt_text), (UiPrinter.USER_LOG_STYLE, text)]), style=self.style())
         return text
 
     def emit(self, text: str | LogBlock = "") -> None:

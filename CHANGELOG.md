@@ -1,6 +1,15 @@
 # Changelog
 
 
+## Unreleased
+
+### Changed
+- Unify the live input prompt prefix to `>` and historical/queued user message prefix to `•`, extracting both as `UiPrinter` constants.
+- Render user input text (live prompt and historical log lines) in orange (`#fb923c`) via a shared `UiPrinter.USER_LOG_STYLE` constant.
+- Add a separate `replay_prefix` to `read_input` so the main user message is echoed with `•` while the live prompt stays `>`.
+- Drop the gray `inflight` styling from queued follow-up messages so they keep a consistent user color while pending.
+- Strengthen the system prompt to answer each follow-up message directly and never ignore or skip it.
+
 ## 0.9.2 - 2026-07-13
 
 ### Added
