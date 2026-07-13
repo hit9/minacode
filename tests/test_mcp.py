@@ -1099,10 +1099,10 @@ class TestMCPCommands:
         raw = mcp_cfg(auth="oauth")
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
 
-        async def fake_login(config, headers, *, interactive=False, notify=None):
+        async def fake_login(config, headers, operation, *, long_timeout=False, interactive=False, notify=None):
             raise RuntimeError("Unexpected content type: text/html")
 
-        monkeypatch.setattr(s.mcp, "_list_oauth_tools", fake_login)
+        monkeypatch.setattr(s.mcp, "_run_op", fake_login)
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("login test")
 

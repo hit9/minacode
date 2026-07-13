@@ -4641,9 +4641,8 @@ class MCPManager:
 
     async def _gather_assets(self, config: MCPServerConfig, headers: dict[str, str]) -> tuple[Any, list[Any]]:
         """Fetch tools and resources concurrently. Tool failure aborts discovery; resources are best-effort."""
-        oauth = config.auth == "oauth"
-        tools_co = self._list_oauth_tools(config, headers) if oauth else self._list_tools(config, headers)
-        resources_co = self._list_oauth_resources(config, headers) if oauth else self._list_resources(config, headers)
+        tools_co = self._list_tools(config, headers)
+        resources_co = self._list_resources(config, headers)
         tools, resources = await asyncio.gather(tools_co, resources_co, return_exceptions=True)
         if isinstance(tools, BaseException):
             raise tools
@@ -4811,32 +4810,35 @@ class MCPManager:
             return StdioTransport(command=config.command, args=list(config.args), env=env)
         return StreamableHttpTransport(config.url, headers=headers)
 
-    async def _list_tools(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
-        from fastmcp.client import Client
-
-        timeout = self.discovery_timeout()
-        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
-            return await asyncio.wait_for(client.list_tools(), timeout=timeout)
-
-    async def _list_oauth_tools(
+    async def _run_op(
         self,
         config: MCPServerConfig,
         headers: dict[str, str],
+        operation: Callable[[Any], Any],
         *,
+        long_timeout: bool = False,
         interactive: bool = False,
         notify: Callable[[str], None] | None = None,
-    ) -> list[Any]:
+    ) -> Any:
+        """Enter a fastmcp Client (with OAuth if config.auth=='oauth') and await one operation."""
         from fastmcp.client import Client
-        from fastmcp.client.transports import StreamableHttpTransport
 
-        timeout = self.call_timeout() if interactive else self.discovery_timeout()
-        async with Client(
-            StreamableHttpTransport(config.url, headers=headers),
-            auth=self.oauth_client(config, interactive=interactive, notify=notify),
-            timeout=timeout,
-            init_timeout=timeout,
-        ) as client:
-            return await asyncio.wait_for(client.list_tools(), timeout=timeout)
+        timeout = self.call_timeout() if long_timeout or interactive else self.discovery_timeout()
+        auth = self.oauth_client(config, interactive=interactive, notify=notify) if config.auth == "oauth" else None
+        async with Client(self._transport(config, headers), auth=auth, timeout=timeout, init_timeout=timeout) as client:
+            return await asyncio.wait_for(operation(client), timeout=timeout)
+
+    async def _list_tools(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
+        return await self._run_op(config, headers, lambda c: c.list_tools())
+
+    async def _list_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
+        return await self._run_op(config, headers, lambda c: c.list_resources())
+
+    async def _call_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
+        return await self._run_op(config, headers, lambda c: c.call_tool(name, arguments), long_timeout=True)
+
+    async def _read_resource(self, config: MCPServerConfig, headers: dict[str, str], uri: str) -> Any:
+        return await self._run_op(config, headers, lambda c: c.read_resource(uri), long_timeout=True)
 
     def _build_mcp_headers(self, config: MCPServerConfig) -> dict[str, str] | str:
         headers: dict[str, str] = {}
@@ -4877,11 +4879,7 @@ class MCPManager:
             raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
 
         try:
-            result = self.run_async(
-                self._call_oauth_tool(config, headers, tool_name, arguments)
-                if config.auth == "oauth"
-                else self._call_tool(config, headers, tool_name, arguments)
-            )
+            result = self.run_async(self._call_tool(config, headers, tool_name, arguments))
         except Exception as e:
             raise ToolError("MCP call failed: " + self.error_text(e))
 
@@ -4921,7 +4919,7 @@ class MCPManager:
             raise ToolError("MCP read_resource requires a uri")
         config, headers = self._resource_preamble(server)
         try:
-            result = self.run_async(self._read_oauth_resource(config, headers, uri) if config.auth == "oauth" else self._read_resource(config, headers, uri))
+            result = self.run_async(self._read_resource(config, headers, uri))
         except Exception as e:
             raise ToolError("MCP resource read failed: " + self.error_text(e))
         text = self.normalize_resource(result)
@@ -5020,57 +5018,6 @@ class MCPManager:
             text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
         return text
 
-    async def _call_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
-        from fastmcp.client import Client
-
-        timeout = self.call_timeout()
-        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
-            return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
-
-    async def _list_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
-        from fastmcp.client import Client
-
-        timeout = self.discovery_timeout()
-        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
-            return await asyncio.wait_for(client.list_resources(), timeout=timeout)
-
-    async def _list_oauth_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
-        from fastmcp.client import Client
-        from fastmcp.client.transports import StreamableHttpTransport
-
-        timeout = self.discovery_timeout()
-        async with Client(
-            StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout
-        ) as client:
-            return await asyncio.wait_for(client.list_resources(), timeout=timeout)
-
-    async def _read_resource(self, config: MCPServerConfig, headers: dict[str, str], uri: str) -> Any:
-        from fastmcp.client import Client
-
-        timeout = self.call_timeout()
-        async with Client(self._transport(config, headers), timeout=timeout, init_timeout=timeout) as client:
-            return await asyncio.wait_for(client.read_resource(uri), timeout=timeout)
-
-    async def _read_oauth_resource(self, config: MCPServerConfig, headers: dict[str, str], uri: str) -> Any:
-        from fastmcp.client import Client
-        from fastmcp.client.transports import StreamableHttpTransport
-
-        timeout = self.call_timeout()
-        async with Client(
-            StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout
-        ) as client:
-            return await asyncio.wait_for(client.read_resource(uri), timeout=timeout)
-
-    async def _call_oauth_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
-        from fastmcp.client import Client
-        from fastmcp.client.transports import StreamableHttpTransport
-
-        timeout = self.call_timeout()
-        async with Client(
-            StreamableHttpTransport(config.url, headers=headers), auth=self.oauth_client(config), timeout=timeout, init_timeout=timeout
-        ) as client:
-            return await asyncio.wait_for(client.call_tool(name, arguments), timeout=timeout)
-
     def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
         config = self.find_config(name)
         if config is None:
@@ -5089,7 +5036,7 @@ class MCPManager:
         # client registered against an earlier random port yields invalid_request.
         self.oauth_token_store().clear_client_info(config.url)
         try:
-            tools = self.run_async(self._list_oauth_tools(config, headers, interactive=True, notify=notify))
+            tools = self.run_async(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
         except Exception as error:
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(name, text)
