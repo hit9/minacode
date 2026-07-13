@@ -1151,10 +1151,8 @@ class SessionSnapshotStore:
 
     @classmethod
     def clear_latest(cls, data_dir: str) -> None:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(cls.path_for(data_dir, "latest"))
-        except OSError:
-            pass
 
     @classmethod
     def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
@@ -1497,14 +1495,10 @@ class BackgroundJob:
                 while total > self.BUFFER_CHARS and len(buf) > 1:
                     total -= len(buf.pop(0))
         if not data:
-            try:
+            with contextlib.suppress(Exception):
                 selector.unregister(key.fileobj)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(OSError):
                 key.fileobj.close()
-            except OSError:
-                pass
 
     def update_status(self) -> None:
         if self.status != "running":
@@ -3232,14 +3226,10 @@ class BashTool(Tool):
             if self.live_output is not None:
                 self.live_output(str(key.data), text)
         if not data:
-            try:
+            with contextlib.suppress(Exception):
                 selector.unregister(key.fileobj)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 key.fileobj.close()
-            except Exception:
-                pass
             return False
         return True
 
@@ -5812,10 +5802,8 @@ class ToolRunner:
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
         for match in re.finditer(r'<Edit\s+path=(".*?")', output):
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 paths.append(str(json.loads(match.group(1))))
-            except json.JSONDecodeError:
-                pass
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
@@ -7205,10 +7193,8 @@ class ModelRetryShortcut:
 
     def __exit__(self, *args) -> None:
         if self.previous_sigint_handler is not None:
-            try:
+            with contextlib.suppress(Exception):
                 signal.signal(signal.SIGINT, self.previous_sigint_handler)
-            except Exception:
-                pass
         try:
             import termios
 
@@ -7756,10 +7742,8 @@ Tools:
     @staticmethod
     def exit_app(app: Application) -> None:
         def close() -> None:
-            try:
+            with contextlib.suppress(Exception):
                 app.exit(result=None)
-            except Exception:
-                pass
 
         loop = getattr(app, "loop", None)
         if loop is not None and not loop.is_closed():
@@ -9004,10 +8988,8 @@ Tools:
         content = FormattedTextControl(fragments, focusable=True)
         window = Window(content, dont_extend_height=True, wrap_lines=False)
         app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings, full_screen=True)
-        try:
+        with contextlib.suppress(KeyboardInterrupt):
             self.run_input_app(app)
-        except KeyboardInterrupt:
-            pass
 
     CONTEXT_TABS: ClassVar[tuple[tuple[str, str], ...]] = (("Environment", "environment_md"), ("Memory", "memory_md"))
 
@@ -9079,10 +9061,8 @@ Tools:
         content = FormattedTextControl(fragments, focusable=True)
         window = Window(content, dont_extend_height=True, wrap_lines=False)
         app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings)
-        try:
+        with contextlib.suppress(KeyboardInterrupt):
             self.run_input_app(app)
-        except KeyboardInterrupt:
-            pass
 
     def render_markdown_lines(self, markdown: str, width: int) -> list[Any]:
         """Render Markdown to per-line prompt_toolkit fragments via Rich, so the tab body keeps its
