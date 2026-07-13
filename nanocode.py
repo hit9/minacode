@@ -6162,7 +6162,7 @@ FLOW:
 - Act when clear. Unless the user explicitly asks for a plan, a question about the code, or brainstorming, assume they want implementation and the tools run to solve the problem. Carry the work through implementation, verification, and a clear outcome; do not stop at analysis or half-finished fixes.
 - BATCH BY DEFAULT: issue every independent call in ONE parallel request — the moment you know two or more files/symbols/paths, read/search them together, never one per turn. Serialize only when a call truly needs a prior call's output. Never repeat a failed call unchanged — diagnose, then adjust.
 - You may be in a dirty git worktree. NEVER revert changes you did not make unless explicitly requested. Ignore unrelated changes; work with changes that affect your task. Never use destructive commands like `git reset --hard` or `git checkout --` unless the user clearly asked. Do not create/delete/switch branches or commit/push unless asked; before committing, check the branch and stop if it changed since task start. Prefer non-interactive git commands.
-- Treat later user messages in the same turn as live follow-ups: answer each follow-up directly and never ignore or skip it. If messages conflict, let the newest one steer; if not, honor every request since your last turn. After a resume, interruption, or context compaction, do a quick sanity check that your final answer and tool actions answer the newest request, not an older ghost.
+- Treat later user messages in the same turn as live follow-ups: first acknowledge or briefly answer each follow-up so the user knows you heard it, then carry out the request. Never ignore or skip a follow-up. If messages conflict, let the newest one steer; if not, honor every request since your last turn. After a resume, interruption, or context compaction, do a quick sanity check that your final answer and tool actions answer the newest request, not an older ghost.
 - Keep changes small/local/reversible; never overwrite unrelated work. Confirm before irreversible or outward-facing actions unless already authorized.
 - Report faithfully: if a check failed, was skipped, or was not run, say so; do not overstate confidence.
 - Decline clearly malicious code; help with defensive and legitimate security work.
@@ -6408,6 +6408,7 @@ class Theme:
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
         "status.runtime": "#c084fc",
+        "user.log": "#fb923c",
         "pygments": "github-dark",
     }
 
@@ -6432,6 +6433,7 @@ class Theme:
         "status.index": "#475569",
         "status.warn": "#b91c1c",
         "status.runtime": "#6b21a8",
+        "user.log": "#9a3412",
         "pygments": "default",
     }
 
@@ -6479,7 +6481,10 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
-    USER_LOG_STYLE: ClassVar[str] = "#fb923c"
+
+    @classmethod
+    def user_log_style(cls) -> str:
+        return Theme.style("user.log")
     TOOL_ARG_TOKEN: ClassVar[re.Pattern] = re.compile(
         r"""\s+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*=|(?:tr|job)\.\d+|\d+(?::\d+)?|[;,]|[^\s;,]+"""
     )
@@ -6522,11 +6527,19 @@ class UiPrinter:
         error = text.startswith(("Error:", "ConfigError:", "Unknown command:"))
         if rule and not error:
             console.print(Rule(style="bright_black", characters="─"))
-        if role:
-            label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
-            console.print(Padding(label, (0, 0, 0, len(LogBlock.margin(indent)))))
-        content = RichText(text, style="red") if error else Markdown(text)
-        console.print(Padding(content, (0, 0, 0, len(LogBlock.margin(indent)))))
+        margin = LogBlock.margin(indent)
+        if role == "user":
+            console.print("")
+            console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style=self.user_log_style()), (0, 0, 0, len(margin))))
+        elif role == "assistant":
+            content = RichText(text, style="red") if error else Markdown(text)
+            console.print(Padding(content, (0, 0, 0, len(margin))))
+        else:
+            if role:
+                label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
+                console.print(Padding(label, (0, 0, 0, len(margin))))
+            content = RichText(text, style="red") if error else Markdown(text)
+            console.print(Padding(content, (0, 0, 0, len(margin))))
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
@@ -6554,7 +6567,7 @@ class UiPrinter:
             return self.memory_segments(text)
         if text.startswith(self.USER_LOG_PREFIX):
             prefix, content = self.USER_LOG_PREFIX, text[len(self.USER_LOG_PREFIX):]
-            return [("class:prompt", prefix), (self.USER_LOG_STYLE, content + "\n")]
+            return [(self.user_log_style(), prefix + content + "\n")]
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
         if text.startswith("[done in "):
@@ -7626,7 +7639,7 @@ Tools:
         for item in pending:
             marker = "→ " if item.inflight else "+ "
             for index, line in enumerate(item.text.splitlines()):
-                fragments.extend([("", "\n"), ("class:prompt", marker if index == 0 else "  "), (UiPrinter.USER_LOG_STYLE, line)])
+                fragments.extend([("", "\n"), (UiPrinter.user_log_style(), (marker if index == 0 else "  ") + line)])
         return fragments
 
     def retry_current_model_request(self) -> bool:
@@ -7982,7 +7995,7 @@ Tools:
     def style(self) -> Style:
         return Style.from_dict(
             {
-                "": "#fb923c",
+                "": Theme.style("user.log"),
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
                 "queue.hint": "ansibrightblack",
@@ -8167,7 +8180,7 @@ Tools:
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
         if replay:
-            print_formatted_text(FormattedText([(prompt_style, replay_prefix or prompt_text), (UiPrinter.USER_LOG_STYLE, text)]), style=self.style())
+            print_formatted_text(FormattedText([(prompt_style, replay_prefix or prompt_text), (UiPrinter.user_log_style(), text)]), style=self.style())
         return text
 
     def emit(self, text: str | LogBlock = "") -> None:

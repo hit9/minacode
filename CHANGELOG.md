@@ -5,10 +5,12 @@
 
 ### Changed
 - Unify the live input prompt prefix to `>` and historical/queued user message prefix to `•`, extracting both as `UiPrinter` constants.
-- Render user input text (live prompt and historical log lines) in orange (`#fb923c`) via a shared `UiPrinter.USER_LOG_STYLE` constant.
+- Add a `Theme.user.log` color key (orange for dark terminals, darker orange for light terminals) and make `UiPrinter.USER_LOG_STYLE` resolve through the active theme.
+- Render resumed user messages with a `•` prefix and theme-aware orange text, add a blank line above each user message, and drop the `user:` role label.
+- Render resumed assistant messages without a role label or prefix.
 - Add a separate `replay_prefix` to `read_input` so the main user message is echoed with `•` while the live prompt stays `>`.
 - Drop the gray `inflight` styling from queued follow-up messages so they keep a consistent user color while pending.
-- Strengthen the system prompt to answer each follow-up message directly and never ignore or skip it.
+- Update the system prompt to first acknowledge or briefly answer follow-ups before carrying out the request.
 
 ## 0.9.2 - 2026-07-13
 
