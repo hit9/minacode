@@ -283,6 +283,33 @@ class TestMCPManagerDiscovery:
 
         assert asyncio.run(roundtrip()) == {"v": 1}
 
+    def test_save_closes_fd_when_fdopen_fails(self, tmp_path, monkeypatch):
+        """os.fdopen doesn't close its fd on failure — save() must close it or the descriptor leaks."""
+        import os
+
+        store = n.MCPFileTokenStore(str(tmp_path / "tokens.json"))
+        closed: list[int] = []
+        real_close = os.close
+
+        def track_close(fd: int) -> None:
+            closed.append(fd)
+            real_close(fd)
+
+        def fdopen_raises(*args, **kwargs):
+            raise OSError("simulated fdopen failure")
+
+        monkeypatch.setattr(os, "fdopen", fdopen_raises)
+        monkeypatch.setattr(os, "close", track_close)
+
+        try:
+            store.save({"c": {"k": {"value": {"v": 1}}}})
+            raised = False
+        except OSError:
+            raised = True
+
+        assert raised, "save should propagate fdopen failure"
+        assert closed, "fd must be closed when fdopen raises, otherwise it leaks"
+
     def test_clear_client_info_removes_stored_registration(self, tmp_path):
         """clear_client_info must target the same collection/key the client info is stored under."""
         store = n.MCPFileTokenStore(str(tmp_path / "tokens.json"))
