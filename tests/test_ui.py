@@ -20,6 +20,26 @@ def test_theme_palettes_have_identical_complete_keys():
     assert all(n.Theme.LIGHT.values())
 
 
+def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):
+        monkeypatch.setattr(n.Theme, "_mode", mode)
+        assert n.UiPrinter.user_log_style() == expected
+        assert command_loop.style().get_attrs_for_style_str("").color == ""
+
+
+@pytest.mark.parametrize(("mode", "rgb"), [("dark", "224;169;109"), ("light", "154;91;46")])
+def test_resumed_user_rendering_emits_desert_truecolor(mode, rgb, monkeypatch):
+    monkeypatch.setattr(n.Theme, "_mode", mode)
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    console = n.Console(force_terminal=True, color_system="truecolor", no_color=False, width=40)
+
+    with console.capture() as capture:
+        ui.render_message(console, "hello", "user", False, 0)
+
+    assert f"\x1b[38;2;{rgb}m• hello\x1b[0m" in capture.get()
+
+
 @pytest.mark.parametrize(
     ("configured", "colorfgbg", "expected"),
     [
@@ -51,11 +71,14 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
     assert rendered[0][1] != rendered[1][1]
 
 
-def test_no_color_disables_terminal_renderer(monkeypatch):
-    monkeypatch.setattr(n.Theme, "NO_COLOR", True)
+def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
 
-    assert not n.UiPrinter().color
+    ui = n.UiPrinter()
+    assert ui.color
+    assert ui.console is not None and ui.console.no_color is False
+    assert ui.console.color_system == "truecolor"
 
 
 @pytest.mark.parametrize("width", [20, 40, 80])

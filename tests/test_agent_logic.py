@@ -836,33 +836,22 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
 
 
-def test_queue_live_region_shows_divider_and_pending(tmp_path):
+def test_queue_live_region_shows_pending_and_moves_working_timer_to_status(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     queue(s, "run tests", "then push")
 
     text = "".join(t for _, t in loop.queue_region_fragments())
-    assert "2 queued" in text and "working" in text  # "--- working [ 2 queued ] ---" (no idle state)
     assert "+ run tests" in text and "+ then push" in text
+    assert "working" not in text
 
-    # The divider animates a comet head (glow0) across the dashes only; the label remains stable.
-    with pytest.MonkeyPatch.context() as mp:
-        seen_head = False
-        for tick in range(200):
-            mp.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
-            fragments = loop.queue_divider_fragments()
-            seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
-            assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
-            assert all(not style.startswith("class:divider.glow") or text == "-" for style, text in fragments)
-        assert seen_head
+    loop.status_bar.started_at = 100.0
+    monkeypatch.setattr(n.time, "monotonic", lambda: 107.0)
+    status = "".join(t for _, t in loop.status_bar.display_fragments(active=True))
+    assert "working 7s" in status
 
-    # The divider is a standing boundary: it persists even once the queue empties, so flushed
-    # messages can move up into the log above it.
     s.pending_user_inputs = []
-    empty = "".join(t for _, t in loop.queue_region_fragments())
-    # Bare rule with just the state word, no count, and no queued messages.
-    assert "working" in empty and "queued" not in empty and "run tests" not in empty
-    assert "Enter queues follow-up" not in empty
+    assert loop.queue_region_fragments() == []
 
 
 def test_queue_placeholder_shows_contextual_hint_only_when_input_empty():
@@ -1135,6 +1124,7 @@ def test_read_input_does_not_replay_transient_approval(tmp_path, monkeypatch):
 
     assert loop.read_input("> ") == "y"
     assert len(printed) == 1
+    assert list(printed[0][0]) == [("class:prompt", "> "), (n.UiPrinter.user_log_style(), "y")]
 
 
 def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
@@ -1217,8 +1207,9 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     text = "\n".join(output)
     assert s.resumed is False
     assert f"Restored session: {s.uid}" in text
-    assert "user:\nhello" in text
-    assert "  assistant:\n  need tool" in text
+    assert "• hello" in text
+    assert "  need tool" in text
+    assert "user:" not in text and "assistant:" not in text
     assert "Read  a.py 0:1 → tr.1" in text
     assert "tool:" not in text
     assert "raw tool result" not in text
@@ -1243,7 +1234,8 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
 
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
-    assert "assistant:\ncompacted answer\nfinal detail" in text
+    assert "compacted answer\nfinal detail" in text
+    assert "user:" not in text and "assistant:" not in text
     assert "  Bash  wc -l nanocode.py\n    └ stored tr.1" in text
     assert "999 nanocode.py" not in text
 
@@ -1264,7 +1256,7 @@ def test_resumed_session_separates_turn_boxes(tmp_path):
 
     loop.render_resumed_session()
 
-    assert "assistant:\none\n\nuser:\nsecond" in "\n".join(output)
+    assert output[1:] == ["\n• first", "one", "", "\n• second", "two"]
 
 
 def test_turn_box_groups_followup_users_until_final_assistant():

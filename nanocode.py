@@ -6385,8 +6385,6 @@ class CommandCompleter(Completer):
 
 
 class Theme:
-    NO_COLOR: ClassVar[bool] = bool(os.environ.get("NO_COLOR"))
-
     DARK: ClassVar[dict[str, str]] = {
         "diff.added.bg": "bg:#003b00",
         "diff.added.fg": "fg:default",
@@ -6408,7 +6406,7 @@ class Theme:
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
         "status.runtime": "#c084fc",
-        "user.log": "#fb923c",
+        "user.log": "#e0a96d",
         "pygments": "github-dark",
     }
 
@@ -6433,7 +6431,7 @@ class Theme:
         "status.index": "#475569",
         "status.warn": "#b91c1c",
         "status.runtime": "#6b21a8",
-        "user.log": "#9a3412",
+        "user.log": "#9a5b2e",
         "pygments": "default",
     }
 
@@ -6491,8 +6489,8 @@ class UiPrinter:
 
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
-        self.color = output_fn is print and sys.stdout.isatty() and not Theme.NO_COLOR
-        self.console = Console() if self.color else None
+        self.color = output_fn is print and sys.stdout.isatty()
+        self.console = Console(color_system="truecolor", no_color=False) if self.color else None
         # When set, render Rich answers to an ANSI string and emit via prompt_toolkit, so
         # answers printed from inside a running prompt app (queue input) aren't mangled by patch_stdout.
         self.capture_ansi = False
@@ -6506,6 +6504,10 @@ class UiPrinter:
 
     def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0) -> None:
         if not self.color:
+            if role == "user":
+                text, role = "\n" + self.USER_LOG_PREFIX + text, ""
+            elif role == "assistant":
+                role = ""
             self.output_fn(self.indent_message(text, role, indent))
             return
         console = self.console
@@ -7055,7 +7057,7 @@ class StatusBar:
         self.retry_notice_until = 0.0
 
     def start(self, *, reset: bool = True) -> None:
-        if self.thread is not None or not sys.stderr.isatty() or Theme.NO_COLOR:
+        if self.thread is not None or not sys.stderr.isatty():
             return
         self.begin(reset=reset)
         self.stop_event.clear()
@@ -7141,6 +7143,7 @@ class StatusBar:
         if show_elapsed:
             parts.extend(
                 [
+                    ("working " + Text.elapsed_since(self.started_at), "runtime"),
                     ("step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "runtime"),
                     ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
                 ]
@@ -7626,16 +7629,10 @@ Tools:
             *dashes(lead, trail),
         ]
 
-    def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
-        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})"
-        return self.sweep_divider_fragments(f"{label} [ {queued} queued ]" if queued else label)
-
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         with self.session._queue_lock:
             pending = list(self.session.pending_user_inputs)
-        # The divider is a standing boundary for the whole turn: flushed messages move up into the log
-        # above it, so it stays put even once the queue empties rather than vanishing.
-        fragments = self.queue_divider_fragments(len(pending))
+        fragments: list[tuple[str, str]] = []
         for item in pending:
             marker = "→ " if item.inflight else "+ "
             for index, line in enumerate(item.text.splitlines()):
@@ -7676,7 +7673,7 @@ Tools:
                 ),
             ],
         )
-        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
+        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True, style=UiPrinter.user_log_style())
         # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
         bindings = KeyBindings()
 
@@ -7736,11 +7733,12 @@ Tools:
         self._add_completion_bindings(bindings, buffer)
 
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # Live region above the +> input: a sweep divider plus the still-pending queued messages.
-        # The divider persists for the whole turn; queued messages flush up into the scrollback log.
+        # Live region above the +> input contains only queued messages. The working state lives in the
+        # bottom status row; putting it above the prompt leaks stale copies into tmux scrollback when a
+        # non-fullscreen prompt_toolkit app redraws after a pane resize.
         queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
-        # Blank lines above the divider and below the queued region, so the +> prompt is not crowded
-        # against the divider and the log above.
+        # Blank lines around the queued region keep the +> prompt clear of pending messages and the
+        # scrollback log above.
         root = FloatContainer(
             HSplit(
                 [
@@ -7828,7 +7826,9 @@ Tools:
                     # no second Enter. Any half-typed text goes back to the box for the following prompt.
                     if typed:
                         self.queue_input_text = typed
-                    print_formatted_text(FormattedText([("class:prompt", UiPrinter.USER_LOG_PREFIX), ("", entered[0])]), style=self.style())
+                    print_formatted_text(
+                        FormattedText([("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), entered[0])]), style=self.style()
+                    )
                     user_input = entered[0]
                     for text in entered[1:]:
                         self.session.enqueue_user_input(text)
@@ -7995,7 +7995,6 @@ Tools:
     def style(self) -> Style:
         return Style.from_dict(
             {
-                "": Theme.style("user.log"),
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
                 "queue.hint": "ansibrightblack",
@@ -8132,7 +8131,7 @@ Tools:
             search_buffer_control=search_toolbar.control,
             preview_search=True,
         )
-        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True)
+        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True, style=UiPrinter.user_log_style())
         # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
         bindings = KeyBindings()
 

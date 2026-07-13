@@ -5,11 +5,13 @@
 
 ### Changed
 - Unify the live input prompt prefix to `>` and historical/queued user message prefix to `•`, extracting both as `UiPrinter` constants.
-- Add a `Theme.user.log` color key (orange for dark terminals, darker orange for light terminals) and make `UiPrinter.USER_LOG_STYLE` resolve through the active theme.
+- Add a `Theme.user.log` color key with a muted desert-orange palette and resolve it through `UiPrinter.user_log_style()`.
 - Render resumed user messages with a `•` prefix and theme-aware orange text, add a blank line above each user message, and drop the `user:` role label.
 - Render resumed assistant messages without a role label or prefix.
+- Keep nanocode's interactive theme active when the parent environment exports `NO_COLOR`; redirected and headless output remains plain.
 - Add a separate `replay_prefix` to `read_input` so the main user message is echoed with `•` while the live prompt stays `>`.
 - Drop the gray `inflight` styling from queued follow-up messages so they keep a consistent user color while pending.
+- Move the working timer into the status row and remove its transient divider, preventing stale dividers in tmux scrollback after pane resize or zoom.
 - Update the system prompt to first acknowledge or briefly answer follow-ups before carrying out the request.
 
 ## 0.9.2 - 2026-07-13
