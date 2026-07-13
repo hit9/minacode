@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.9.2 - 2026-07-13
 
 ### Added
 - Add `/diff`, a read-only viewer for edits made by nanocode. It shows the latest user round and the overall net session diff in `Latest` and `Session` tabs, supports keyboard navigation and paging, and persists edit snapshots across `--resume`.
@@ -35,6 +35,10 @@
 - Clip Bash previews and status lines by terminal display width, preventing CJK and emoji output from wrapping unexpectedly and desynchronizing live rendering.
 - Keep assistant tool-call messages together with their tool results when compacting context, preventing invalid orphaned `tool` messages from reaching model APIs.
 - Correct dark-terminal detection for ANSI bright-black backgrounds and keep the status line stable during manual compaction.
+- Stop dropping files with oversized edit snapshots from the `/diff` Session view; fall back to the recorded per-turn diffs so the file still appears.
+- Raise `TurnDiff.SNAPSHOT_CHAR_LIMIT` from 200KB to 1MB so typical large source files (including nanocode.py itself) keep their before/after snapshots and render as one clean unified diff instead of the concatenated per-Edit fallback.
+- Reconstruct legacy `/diff` for oversized-snapshot files by reverse-applying stored per-Edit hunks against the on-disk content; produces one clean unified diff when disk still matches the last tracked edit, otherwise falls back to the raw hunks.
+- Close the raw file descriptor if `os.fdopen` fails inside `MCPFileTokenStore.save`, preventing a descriptor leak on token-store write errors.
 
 ## 0.9.1 - 2026-07-09
 
