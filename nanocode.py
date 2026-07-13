@@ -3830,19 +3830,46 @@ class ContextManager:
         repeated schema tokens. Only ever collapses the newer occurrence, never an earlier (cached) one;
         if the first occurrence is later compacted away, the next one is promoted to full on its own.
         """
-        seen: dict[tuple[str, str], str] = {}
+        return self._dedup_tool_blocks(
+            messages,
+            self.MCP_DESCRIBE_BLOCK,
+            lambda match: (str(json.loads(match.group(1))), str(json.loads(match.group(2)))),
+            lambda identity, key: f"(repeat describe of {identity[0]}.{identity[1]}; schema shown earlier at {key}, unchanged)",
+        )
+
+    def dedup_skill_loads(self, messages: list[Json]) -> list[Json]:
+        """Collapse repeated Skill(name) loads to a pointer, keeping the first full body per skill.
+
+        Same send-time transform as dedup_mcp_describes: a re-load of an already-shown skill shrinks to
+        a one-line marker so the instructions are not re-billed, while the first (cached) copy is left
+        untouched. If that first copy is later compacted away, the next occurrence stands on its own."""
+        return self._dedup_tool_blocks(
+            messages,
+            self.SKILL_BLOCK,
+            lambda match: str(json.loads(match.group(1))),
+            lambda name, key: f"(repeat load of skill {name}; instructions shown earlier at {key}, unchanged)",
+        )
+
+    @staticmethod
+    def _dedup_tool_blocks(
+        messages: list[Json],
+        block: re.Pattern,
+        identity_from: Callable[[re.Match], Any],
+        marker_for: Callable[[Any, str], str],
+    ) -> list[Json]:
+        seen: dict[Any, str] = {}
         result: list[Json] = []
         for message in messages:
             content = message.get("content")
             if message.get("role") != "tool" or not isinstance(content, str):
                 result.append(message)
                 continue
-            match = self.MCP_DESCRIBE_BLOCK.search(content)
+            match = block.search(content)
             if match is None:
                 result.append(message)
                 continue
             try:
-                identity = (str(json.loads(match.group(1))), str(json.loads(match.group(2))))
+                identity = identity_from(match)
             except (json.JSONDecodeError, ValueError):
                 result.append(message)
                 continue
@@ -3852,40 +3879,8 @@ class ContextManager:
                 seen[identity] = key.group(0) if key else "above"
                 result.append(message)
                 continue
-            marker = f"(repeat describe of {identity[0]}.{identity[1]}; schema shown earlier at {first_key}, unchanged)"
-            result.append({**message, "content": self.MCP_DESCRIBE_BLOCK.sub(lambda _: marker, content)})
-        return result
-
-    def dedup_skill_loads(self, messages: list[Json]) -> list[Json]:
-        """Collapse repeated Skill(name) loads to a pointer, keeping the first full body per skill.
-
-        Same send-time transform as dedup_mcp_describes: a re-load of an already-shown skill shrinks to
-        a one-line marker so the instructions are not re-billed, while the first (cached) copy is left
-        untouched. If that first copy is later compacted away, the next occurrence stands on its own."""
-        seen: dict[str, str] = {}
-        result: list[Json] = []
-        for message in messages:
-            content = message.get("content")
-            if message.get("role") != "tool" or not isinstance(content, str):
-                result.append(message)
-                continue
-            match = self.SKILL_BLOCK.search(content)
-            if match is None:
-                result.append(message)
-                continue
-            try:
-                name = str(json.loads(match.group(1)))
-            except (json.JSONDecodeError, ValueError):
-                result.append(message)
-                continue
-            first_key = seen.get(name)
-            if first_key is None:
-                key = re.search(r"\btr\.\d+\b", content)
-                seen[name] = key.group(0) if key else "above"
-                result.append(message)
-                continue
-            marker = f"(repeat load of skill {name}; instructions shown earlier at {first_key}, unchanged)"
-            result.append({**message, "content": self.SKILL_BLOCK.sub(lambda _: marker, content)})
+            marker = marker_for(identity, first_key)
+            result.append({**message, "content": block.sub(lambda _: marker, content)})
         return result
 
     def mcp_tools_context(self) -> str:
