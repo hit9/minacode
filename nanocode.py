@@ -668,7 +668,7 @@ class ToolErrorRecord:
 
 @dataclass
 class TurnDiff:
-    SNAPSHOT_CHAR_LIMIT: ClassVar[int] = 200_000
+    SNAPSHOT_CHAR_LIMIT: ClassVar[int] = 1_000_000
 
     key: str
     turn: int
