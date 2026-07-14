@@ -6614,6 +6614,18 @@ class LogBuffer:
                 observer()
 
 
+def _raise_in_thread(thread_id: int | None, exc_type: type[BaseException]) -> None:
+    """Best-effort inject `exc_type` into another Python thread via CPython's PyThreadState API.
+    Used by TuiApp's Ctrl-C to interrupt a bg agent turn without exiting the process. If the
+    thread has no id or the runtime rejects the injection, silently no-op — the user can retry."""
+    if thread_id is None:
+        return
+    import ctypes as _ctypes
+
+    with contextlib.suppress(Exception):
+        _ctypes.pythonapi.PyThreadState_SetAsyncExc(_ctypes.c_ulong(thread_id), _ctypes.py_object(exc_type))
+
+
 class TuiApp:
     """The full-screen interactive shell. One pt Application drives the entire session:
 
@@ -6642,10 +6654,18 @@ class TuiApp:
         *,
         on_chat_submit: Callable[[str], None] | None = None,
         on_exit_request: Callable[[], None] | None = None,
+        on_interrupt: Callable[[], None] | None = None,
+        status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self.log_buffer = log_buffer
         self.on_chat_submit = on_chat_submit or (lambda _text: None)
         self.on_exit_request = on_exit_request or (lambda: None)
+        # Fired on Ctrl-C when there is running work to interrupt (agent turn, approval prompt);
+        # typically the CommandLoop uses this to raise KeyboardInterrupt on its worker thread.
+        self.on_interrupt = on_interrupt or (lambda: None)
+        # Called each frame to render the bottom status line (provider, model, ctx, mcp, etc.).
+        # None → empty status.
+        self.status_fragments_fn = status_fragments_fn or (lambda: [])
         self.input_buffer = Buffer(multiline=False, accept_handler=self._accept)
         self.app: Application | None = None
         # Input mode + approval bridge
@@ -6721,27 +6741,47 @@ class TuiApp:
             wrap_lines=True,
             get_vertical_scroll=lambda w: max(0, w.render_info.content_height - w.render_info.window_height) if w.render_info else 0,
         )
-        status = Window(FormattedTextControl(self.status_fragments), height=1, dont_extend_height=True)
+        # Prompt symbol and input cursor live on the SAME physical row via BeforeInput; the row
+        # dynamically switches between the `>` chat prompt, the approval prompt, and a working
+        # divider when the agent is running. dynamic() so the prefix updates when input_mode does.
         input_window = Window(
-            BufferControl(buffer=self.input_buffer),
+            BufferControl(
+                buffer=self.input_buffer,
+                input_processors=[BeforeInput(self.status_fragments)],
+            ),
             height=1,
             dont_extend_height=True,
         )
-        return Layout(HSplit([viewport, status, input_window]), focused_element=input_window)
+        # Bottom status bar (provider / model / mcp / ctx / index / etc.) rendered from the caller-
+        # supplied fragments callable so pt repaints pick up live state changes.
+        status_bar = Window(
+            FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
+            style="class:bottom-toolbar",
+            height=1,
+            dont_extend_height=True,
+        )
+        return Layout(HSplit([viewport, input_window, status_bar]), focused_element=input_window)
 
     def make_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
 
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event):  # pragma: no cover — interactive path
-            # If a bg-thread is blocked on request_input, unblock it with the empty string so the
-            # caller can interpret Ctrl-C as "cancel this prompt". Otherwise ask the app to exit.
+            # Never quit on Ctrl-C. Instead:
+            #   * approval mode → cancel this specific prompt (empty reply back to the agent).
+            #   * chat with typed input → clear the input.
+            #   * agent running (disabled input) → interrupt the running turn.
+            #   * idle chat with empty input → no-op.
+            # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
             if self.input_mode == "approval" and self._input_pending is not None:
                 self._input_result = ""
                 self._input_pending.set()
                 return
-            self.on_exit_request()
-            event.app.exit()
+            if self.input_mode == "chat" and self.input_buffer.text:
+                self.input_buffer.reset(Document(""))
+                return
+            if self.input_mode == "disabled":
+                self.on_interrupt()
 
         @bindings.add("c-d", eager=True)
         def _ctrl_d(event):  # pragma: no cover — interactive path
@@ -8354,10 +8394,23 @@ Tools:
 
         pending: queue.Queue[str] = queue.Queue()
         stop = threading.Event()
+        self.worker_thread: threading.Thread | None = None
+
+        def interrupt() -> None:
+            # Ctrl-C in the TUI: forward as a KeyboardInterrupt to the worker thread so the running
+            # agent turn unwinds through its existing interrupt handlers, matching the pre-TUI
+            # "Ctrl-C cancels the current turn" UX.
+            worker = self.worker_thread
+            if worker is not None and worker.is_alive():
+                with contextlib.suppress(Exception):
+                    _raise_in_thread(worker.ident, KeyboardInterrupt)
+
         self.tui = TuiApp(
             buffer,
             on_chat_submit=lambda text: pending.put(text) if text.strip() else None,
             on_exit_request=stop.set,
+            on_interrupt=interrupt,
+            status_fragments_fn=lambda: self.status_bar.display_fragments(active=True),
         )
 
         def worker() -> None:
@@ -8394,13 +8447,15 @@ Tools:
                 self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
                 self.session.save_snapshot()
 
-        worker_thread = threading.Thread(target=worker, daemon=True)
-        worker_thread.start()
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
         try:
             self.tui.run(style=self.style())
         finally:
             stop.set()
-            worker_thread.join(timeout=1.0)
+            if self.worker_thread is not None:
+                self.worker_thread.join(timeout=1.0)
+            self.worker_thread = None
             self.tui = None
         return 0
 
@@ -9124,7 +9179,12 @@ Tools:
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
-        if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
+        # The interactive full-screen /diff viewer opens its own pt Application, which cannot
+        # nest inside the TUI's already-running pt Application (pt is not reentrant, and doing
+        # so from the worker thread produces the "ESC does not work" hang you saw). While the
+        # TUI is active, fall through to the text-based renderer below so /diff still works,
+        # just as scrollable log entries instead of a full-screen modal.
+        if self.tui is None and self.interactive_input and self.ui.color and not self.ui.capture_ansi:
             self.diff_viewer()
             return None
         latest = self.agent.session.latest_round_diff_sections()
