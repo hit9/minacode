@@ -6803,30 +6803,14 @@ class UiPrinter:
         return lines
 
     def diff_segments(self, text: str) -> list[tuple[str, str]]:
-        return self._diff_segments(text, live=False)
-
-    def diff_segments_live(self, text: str) -> list[tuple[str, str]]:
-        """Same as diff_segments, but pads bg fill to the terminal width. Only for live full-screen
-        renderers that repaint on resize (e.g. the /diff viewer) — never for scrollback output."""
-        return self._diff_segments(text, live=True)
-
-    def _diff_segments(self, text: str, *, live: bool) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
-        natural_changed_width = max(
-            (get_cwidth(line) for line in lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))),
-            default=1,
-        )
-        available_changed_width = max(1, shutil.get_terminal_size((120, 20)).columns - 15)
-        # Scrollback path: pane-width padding becomes stale after a resize, so cap the bg band at the
-        # natural content width (and drop it entirely if that already exceeds the pane). Live path:
-        # the caller repaints on resize, so fill edge-to-edge with the current pane width.
-        if live:
-            changed_width = available_changed_width
-        else:
-            changed_width = natural_changed_width if natural_changed_width <= available_changed_width else None
+        # Pad the bg band to the current pane width for a solid edge-to-edge look. Scrollback bakes
+        # the width in, so a later resize can zigzag — same tradeoff we already accept for Rich
+        # syntax-highlighted code blocks that come out of the strip_trailing_pad path.
+        changed_width = max(1, shutil.get_terminal_size((120, 20)).columns - 15)
 
         # Determine the target file path from the diff header.  The `+++` line
         # names the resulting file; for created files `---` is /dev/null.
@@ -6884,7 +6868,7 @@ class UiPrinter:
             for style, piece in content_hl:
                 segments.append((styled(style), piece))
             width = get_cwidth(prefix) + sum(get_cwidth(piece) for _style, piece in content_hl)
-            padding = " " * max(0, changed_width - width) if background and changed_width is not None else ""
+            padding = " " * max(0, changed_width - width) if background else ""
             segments.append((background if padding else "", padding + suffix))
 
         for index, line in enumerate(lines):
@@ -8774,7 +8758,7 @@ Tools:
             status, path, diff = sections[state.file]
             parts.append(("", "\n"))
             parts.append(("ansicyan", f"  {status.title()} · {path}\n"))
-            lines = self.ui.segment_lines(self.ui.diff_segments_live(diff))
+            lines = self.ui.segment_lines(self.ui.diff_segments(diff))
             visible = state.view.visible(lines, viewport())
             for line in visible:
                 parts.extend(line)
