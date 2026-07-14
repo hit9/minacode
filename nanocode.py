@@ -6578,6 +6578,48 @@ class Theme:
         return cls._pygments_cache[name]
 
 
+@dataclass
+class LogEntry:
+    """One append-only entry in the TUI-mode LogBuffer.
+
+    `fragments` is the same shape UiPrinter already produces for print_formatted_text: a list of
+    (style, text) pairs where `text` may contain embedded newlines. Kept opaque here so styling
+    logic stays in UiPrinter and this stays a plain data record."""
+
+    fragments: list[tuple[str, str]]
+
+
+class LogBuffer:
+    """In-memory ring of LogEntry, the source of truth for the TUI viewport (Phase 2+).
+
+    Entries are appended in emit order; observers (a pt Application, once wired) are invalidated
+    after each append so the viewport repaints. Bounded so a long-running session cannot grow
+    unbounded — old entries drop off the front once the cap is hit. Phase 1 introduces the class
+    without any producer or consumer wired up yet; enabling `NANOCODE_TUI=1` currently only opts
+    into constructing an (unused) LogBuffer on the UiPrinter."""
+
+    LIMIT: ClassVar[int] = 20_000
+
+    def __init__(self) -> None:
+        self.entries: list[LogEntry] = []
+        self.observers: list[Callable[[], None]] = []
+
+    def append(self, fragments: list[tuple[str, str]]) -> None:
+        self.entries.append(LogEntry(fragments))
+        if len(self.entries) > self.LIMIT:
+            del self.entries[: len(self.entries) - self.LIMIT]
+        for observer in list(self.observers):
+            with contextlib.suppress(Exception):
+                observer()
+
+
+def nanocode_tui_enabled() -> bool:
+    """Opt-in flag for the in-progress full-screen TUI mode. Off by default; setting
+    NANOCODE_TUI=1 will (once wired) route emit/emit_answer into a LogBuffer instead of the
+    scrollback-based print_formatted_text path."""
+    return os.environ.get("NANOCODE_TUI") == "1"
+
+
 class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
@@ -6597,6 +6639,9 @@ class UiPrinter:
         # When set, callers know a Rich render is happening inside a running prompt app; TUI-only
         # commands like /diff refuse to launch a full-screen viewer in that context.
         self.capture_ansi = False
+        # Populated when NANOCODE_TUI=1: source of truth for the full-screen viewport. Phase 1
+        # allocates it; producers/consumers are wired in later phases.
+        self.log_buffer: LogBuffer | None = LogBuffer() if nanocode_tui_enabled() else None
 
     def emit(self, text: str | LogBlock = "") -> None:
         if not self.color:
