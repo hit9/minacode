@@ -59,7 +59,6 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.output import create_output
-from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar
@@ -7422,8 +7421,8 @@ class UiPrinter:
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
-        # while a prompt app is running (e.g. the Ask selector) lets patch_stdout mangle the ANSI
-        # into raw escapes; capturing first and emitting as ANSI avoids that.
+        # while the TUI is running can interleave raw escapes with its renderer; capturing first and
+        # emitting as ANSI keeps all terminal output inside the shared application.
         if not self.color:
             self.emit(text)
             return
@@ -8615,7 +8614,7 @@ Tools:
         while True:
             try:
                 entered = self.take_pending_inputs()
-                user_input = self.read_input(initial_text="\n".join(entered), replay_prefix=UiPrinter.USER_LOG_PREFIX, pad=True)
+                user_input = self.read_input(initial_text="\n".join(entered))
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
@@ -8990,150 +8989,14 @@ Tools:
             }
         )
 
-    def status_window(self) -> Window:
-        return Window(
-            FormattedTextControl(lambda: self.status_bar.display_fragments(active=False), style="class:bottom-toolbar.text"),
-            style="class:bottom-toolbar",
-            height=1,
-            dont_extend_height=True,
-        )
-
-    def _make_app(self, layout: Layout, bindings: KeyBindings) -> Application:
-        return Application(
-            layout=layout,
-            key_bindings=bindings,
-            full_screen=False,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-            output=self.prompt_output(),
-        )
-
-    @staticmethod
-    def prompt_output():
-        # Suppress prompt-toolkit's cursor-position report probe; some terminals echo it back as
-        # visible input and the agent loop doesn't rely on the response anyway.
-        output = create_output()
-        if hasattr(output, "enable_cpr"):
-            output.enable_cpr = False
-        return output
-
-    def run_input_app(self, app: Application) -> Any:
-        with patch_stdout():
-            return app.run()
-
-    def _add_completion_bindings(self, bindings: KeyBindings, buffer: Buffer, *, invalidate_on_paste: bool = False) -> None:
-        @bindings.add("tab")
-        def _tab(_event):
-            TuiApp.complete_input(buffer)
-
-        @bindings.add("s-tab")
-        def _shift_tab(_event):
-            TuiApp.complete_input(buffer, reverse=True)
-
-        @bindings.add(Keys.BracketedPaste)
-        def _paste(event):
-            buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
-            if invalidate_on_paste:
-                event.app.invalidate()
-
-    def input_prompt_fragments(self, prompt_text: str, prompt_style: str) -> list[tuple[str, str]]:
-        if prompt_style != "class:approval" or not prompt_text:
-            return [(prompt_style, prompt_text)]
-        frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
-        connector = LogBlock.prefix(2, LogEdge.CONTINUE)
-        prompt = (
-            [("ansibrightblack", connector), ("class:approval", prompt_text[len(connector) :])]
-            if prompt_text.startswith(connector)
-            else [("class:approval", prompt_text)]
-        )
-        return [*prompt, ("class:approval.wait", frame + " ")]
-
     def read_input(
         self,
         prompt_text: str = UiPrinter.PROMPT_PREFIX,
         *,
-        multiline: bool = False,
-        submit_on_enter: bool = False,
-        prompt_style: str = "class:prompt",
-        replay_prefix: str | None = None,
         initial_text: str = "",
-        pad: bool = False,
-        replay: bool = True,
     ) -> str:
-        if self.input_history is None:
-            return initial_text or self.input_fn(prompt_text)
-
-        def accept(buffer: Buffer) -> bool:
-            app.exit(result=buffer.text)
-            return True
-
-        buffer = Buffer(
-            history=self.input_history,
-            completer=self.input_completer,
-            complete_while_typing=False,
-            enable_history_search=True,
-            multiline=multiline,
-            accept_handler=accept,
-            document=Document(initial_text, cursor_position=len(initial_text)),
-        )
-        search_toolbar = SearchToolbar()
-        control = BufferControl(
-            buffer=buffer,
-            input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(lambda: self.input_prompt_fragments(prompt_text, prompt_style))],
-            search_buffer_control=search_toolbar.control,
-            preview_search=True,
-        )
-        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True, style=UiPrinter.user_log_style())
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-
-        @bindings.add("c-c", eager=True)
-        @bindings.add("<sigint>", eager=True)
-        def _ctrl_c(event):
-            event.app.exit(exception=KeyboardInterrupt())
-
-        @bindings.add("c-d", eager=True)
-        def _ctrl_d(event):
-            if multiline:
-                event.app.exit(result=buffer.text)
-            elif buffer.text:
-                buffer.delete()
-            else:
-                event.app.exit(exception=EOFError())
-
-        @bindings.add("escape", "enter", filter=Condition(lambda: multiline), eager=True)
-        def _escape_enter(event):
-            event.app.exit(result=buffer.text)
-
-        @bindings.add("enter", filter=Condition(lambda: submit_on_enter), eager=True)
-        def _enter(event):
-            event.app.exit(result=buffer.text)
-
-        @bindings.add("c-r", eager=True)
-        def _ctrl_r(event):
-            direction = pt_search.SearchDirection.BACKWARD
-            if event.app.layout.current_control is search_toolbar.control:
-                pt_search.do_incremental_search(direction, count=event.arg)
-            else:
-                pt_search.start_search(direction=direction)
-
-        self._add_completion_bindings(bindings, buffer, invalidate_on_paste=True)
-
-        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # The idle > prompt shows no divider (the divider is a working-state marker only); keep a
-        # blank line above and below the input so it is not crowded against the log or status bar.
-        top: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
-        bottom: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
-        root = FloatContainer(
-            HSplit([*top, input_window, completion_space, search_toolbar, *bottom, self.status_window()]),
-            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
-        )
-        app = self._make_app(Layout(root, focused_element=input_window), bindings)
-        text = self.run_input_app(app)
-        if replay:
-            self.echo_user_input(replay_prefix or prompt_text, text, prefix_style=prompt_style)
-        return text
+        """Read from the injected/non-TTY input path; interactive terminals use TuiApp."""
+        return initial_text or self.input_fn(prompt_text)
 
     def emit(self, text: str | LogBlock = "") -> None:
         self.ui.emit(text)
@@ -9163,14 +9026,7 @@ Tools:
         if self.tui is not None:
             return self.tui.request_input(prompt)
 
-        def read() -> str:
-            return (
-                self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval", replay=False)
-                if self.interactive_input
-                else self.input_fn(prompt)
-            )
-
-        return self.with_status_paused(read)
+        return self.with_status_paused(lambda: self.input_fn(prompt))
 
     def emit_agent_output(self, text: str) -> None:
         if self.ui.color and text.strip():
@@ -9401,7 +9257,9 @@ Tools:
         # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
         # markdown — no separate styled line, hence no ANSI escapes to mangle.
         prompt = f"({position}) {spec.question}" if position else spec.question
-        if not choices or not self.interactive_input:
+        if not choices:
+            return self.tui.request_input("\n" + prompt) if self.tui is not None else self.read_input("\n" + prompt)
+        if not self.interactive_input:
             return self.read_input("\n" + prompt)
 
         # Blank separator line before each question so multi-question prompts don't run together.

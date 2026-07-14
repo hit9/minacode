@@ -75,14 +75,6 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     assert "- detected_commands (available via Bash): bash, rg, sed" in second
 
 
-def test_prompt_output_disables_cpr_probe(monkeypatch):
-    output = SimpleNamespace(enable_cpr=True)
-    monkeypatch.setattr(n, "create_output", lambda: output)
-
-    assert n.CommandLoop.prompt_output() is output
-    assert output.enable_cpr is False
-
-
 def test_session_tool_result_store_prunes_old_records(tmp_path):
     s = session(tmp_path)
     for index in range(405):
@@ -643,66 +635,37 @@ def test_ps_command_uses_markdown_renderer(tmp_path):
     assert "| id | status | elapsed | command |" in rendered[0]
 
 
-def test_shared_completion_bindings_apply_completion_and_normalize_paste(tmp_path):
+def test_tui_completion_applies_single_match():
     class OneCompletion(n.Completer):
         def get_completions(self, document, _complete_event):
             yield n.Completion("hello", start_position=-len(document.text))
 
-    class App:
-        invalidations = 0
-
-        def invalidate(self):
-            self.invalidations += 1
-
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    loop.input_completer = OneCompletion()
-    buffer = n.Buffer(document=n.Document("he"), completer=loop.input_completer)
-    bindings = n.KeyBindings()
-    loop._add_completion_bindings(bindings, buffer, invalidate_on_paste=True)
-    event = SimpleNamespace(app=App(), data="")
-
-    bindings.get_bindings_for_keys((n.Keys.Tab,))[-1].handler(event)
+    buffer = n.Buffer(document=n.Document("he"), completer=OneCompletion())
+    n.TuiApp.complete_input(buffer)
     assert buffer.text == "hello"
 
-    event.data = "\r\nworld\rend"
-    bindings.get_bindings_for_keys((n.Keys.BracketedPaste,))[-1].handler(event)
-    assert buffer.text == "hello\nworld\nend"
-    assert event.app.invalidations == 1
 
-    queue_buffer = n.Buffer()
-    queue_bindings = n.KeyBindings()
-    loop._add_completion_bindings(queue_bindings, queue_buffer)
-    event.data = "queued\rtext"
-    queue_bindings.get_bindings_for_keys((n.Keys.BracketedPaste,))[-1].handler(event)
-    assert queue_buffer.text == "queued\ntext"
-    assert event.app.invalidations == 1
-
-
-def test_shared_completion_bindings_start_and_cycle_multiple_completions(tmp_path):
+def test_tui_completion_starts_and_cycles_multiple_matches():
     class MultipleCompletions(n.Completer):
         def get_completions(self, document, _complete_event):
             yield n.Completion("alpha", start_position=-len(document.text))
             yield n.Completion("alpine", start_position=-len(document.text))
 
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    loop.input_completer = MultipleCompletions()
-    buffer = n.Buffer(document=n.Document("al"), completer=loop.input_completer)
-    bindings = n.KeyBindings()
-    loop._add_completion_bindings(bindings, buffer)
-    event = SimpleNamespace()
+    completer = MultipleCompletions()
+    buffer = n.Buffer(document=n.Document("al"), completer=completer)
     started = []
     buffer.start_completion = lambda **kwargs: started.append(kwargs)
 
-    bindings.get_bindings_for_keys((n.Keys.Tab,))[-1].handler(event)
+    n.TuiApp.complete_input(buffer)
     assert started == [{"select_first": False}]
 
-    completions = list(loop.input_completer.get_completions(buffer.document, n.CompleteEvent()))
+    completions = list(completer.get_completions(buffer.document, n.CompleteEvent()))
     buffer._set_completions(completions)
-    bindings.get_bindings_for_keys((n.Keys.Tab,))[-1].handler(event)
+    n.TuiApp.complete_input(buffer)
     assert buffer.text == "alpha"
-    bindings.get_bindings_for_keys((n.Keys.BackTab,))[-1].handler(event)
+    n.TuiApp.complete_input(buffer, reverse=True)
     assert buffer.text == "al"
-    bindings.get_bindings_for_keys((n.Keys.BackTab,))[-1].handler(event)
+    n.TuiApp.complete_input(buffer, reverse=True)
     assert buffer.text == "alpine"
 
 
@@ -879,54 +842,18 @@ def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
     assert any("read-only /mcp" in t for t in out)
 
 
-def test_tool_input_uses_multiline_approval(tmp_path, monkeypatch):
+def test_tool_input_without_tui_uses_injected_input(tmp_path):
     s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
     calls = []
+    loop = n.CommandLoop(
+        n.Agent(s, output_fn=lambda text: None),
+        input_fn=lambda prompt: calls.append(prompt) or "y",
+        output_fn=lambda text: None,
+    )
 
-    def fake_read(prompt, *, multiline=False, submit_on_enter=False, prompt_style="class:prompt", replay=True):
-        calls.append((prompt, multiline, submit_on_enter, prompt_style, replay))
-        return ""
+    assert loop.tool_input("[Y/n or reason] ") == "y"
 
-    loop.interactive_input = True
-    monkeypatch.setattr(n.sys.stdout, "isatty", lambda: False)
-    monkeypatch.setattr(loop, "read_input", fake_read)
-
-    loop.tool_input("[Y/n or reason] ")
-
-    assert calls == [("[Y/n or reason] ", True, True, "class:approval", False)]
-
-
-def test_read_input_does_not_replay_transient_approval(tmp_path, monkeypatch):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
-    loop.input_history = n.FileHistory(str(tmp_path / "history"))
-    loop.run_input_app = lambda app: "y"
-    printed = []
-    monkeypatch.setattr(n, "print_formatted_text", lambda *args, **kwargs: printed.append(args))
-
-    assert loop.read_input("[Y/n] ", prompt_style="class:approval", replay=False) == "y"
-    assert printed == []
-
-    assert loop.read_input("> ") == "y"
-    assert len(printed) == 1
-    # echo_user_input prepends a blank line so successive echoes breathe in the log.
-    assert list(printed[0][0]) == [("", "\n"), ("class:prompt", "> "), (n.UiPrinter.user_log_style(), "y")]
-
-
-def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
-    monkeypatch.setattr(n.time, "monotonic", lambda: 0.2)
-
-    fragments = loop.input_prompt_fragments("[Y/n] ", "class:approval")
-
-    assert fragments == [("class:approval", "[Y/n] "), ("class:approval.wait", "/ ")]
-    connector = n.LogBlock.prefix(2, n.LogEdge.CONTINUE)
-    assert loop.input_prompt_fragments(connector + "[Y/n] ", "class:approval") == [
-        ("ansibrightblack", connector),
-        ("class:approval", "[Y/n] "),
-        ("class:approval.wait", "/ "),
-    ]
-    assert loop.input_prompt_fragments("> ", "class:prompt") == [("class:prompt", "> ")]
+    assert calls == ["[Y/n or reason] "]
 
 
 def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
@@ -1143,6 +1070,15 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     assert prompts == ["> "]
     assert all(not prompt.startswith("\n") for prompt in prompts)
     assert emitted[-1] == ""
+
+
+def test_ask_without_choices_uses_shared_tui_input(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
+    prompts = []
+    loop.tui = SimpleNamespace(request_input=lambda prompt: prompts.append(prompt) or "typed answer")
+
+    assert loop.question_application(n.AskSpec("Explain the issue")) == "typed answer"
+    assert prompts == ["\nExplain the issue"]
 
 
 def test_elapsed_since_uses_whole_seconds(monkeypatch):
