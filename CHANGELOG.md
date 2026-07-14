@@ -1,6 +1,11 @@
 # Changelog
 
 
+## 0.9.6 - 2026-07-14
+
+### Changed
+- Revert unified diff background fill: the live `/diff` viewer spans the pane width, while scrollback output keeps its natural width.
+
 ## 0.9.5 - 2026-07-14
 
 ### Changed
