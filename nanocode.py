@@ -3210,8 +3210,10 @@ class BashTool(Tool):
         threading.Thread(target=drain_pipe, args=(stderr_pipe,), daemon=True).start()
         partial_stdout = "".join(stdout_parts)
         partial_stderr = "".join(stderr_parts)
-        note = f"backgrounded after {self.session.settings.bash_wait_timeout}s; still running as {job_id}. Use Job(action=\"wait\"|\"status\"|\"kill\", job=\"{job_id}\")."
-        partial_stderr = (partial_stderr + ("\n" if partial_stderr else "") + note)
+        note = (
+            f'backgrounded after {self.session.settings.bash_wait_timeout}s; still running as {job_id}. Use Job(action="wait"|"status"|"kill", job="{job_id}").'
+        )
+        partial_stderr = partial_stderr + ("\n" if partial_stderr else "") + note
         return self.process_result("BashToolResult", -1, partial_stdout, partial_stderr)
 
     def drain_selector(self, selector: selectors.BaseSelector, stdout_parts: list[str], stderr_parts: list[str]) -> None:
@@ -7789,9 +7791,7 @@ Tools:
         "class:divider.glow4",
     )
 
-    def sweep_divider_fragments(
-        self, label: str, width: int | None = None, prefix: list[tuple[str, str]] | None = None
-    ) -> list[tuple[str, str]]:
+    def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
         prefix = prefix or []
         prefix_len = sum(len(text) for _style, text in prefix)
         cols = shutil.get_terminal_size((80, 20)).columns
