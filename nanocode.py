@@ -6720,6 +6720,31 @@ class TuiApp:
         # `disabled` swallows the keystroke silently.
         return False
 
+    def run_terminal(self, action: Callable[[], Any]) -> Any:
+        """Suspend this TUI while a blocking prompt-toolkit application owns the terminal."""
+        app = self.app
+        if app is None or app.context is None:
+            return action()
+        result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+        def completed(future) -> None:
+            try:
+                result.put((True, future.result()))
+            except BaseException as error:
+                result.put((False, error))
+
+        def schedule() -> None:
+            try:
+                run_in_terminal(action, in_executor=True).add_done_callback(completed)
+            except BaseException as error:
+                result.put((False, error))
+
+        app.loop.call_soon_threadsafe(app.context.copy().run, schedule)
+        succeeded, value = result.get()
+        if succeeded:
+            return value
+        raise value
+
     def viewport_fragments(self) -> list[tuple[str, str]]:
         fragments: list[tuple[str, str]] = []
         for index, entry in enumerate(self.log_buffer.entries):
@@ -8410,7 +8435,9 @@ Tools:
             on_chat_submit=lambda text: pending.put(text) if text.strip() else None,
             on_exit_request=stop.set,
             on_interrupt=interrupt,
-            status_fragments_fn=lambda: self.status_bar.display_fragments(active=True),
+            status_fragments_fn=lambda: self.status_bar.display_fragments(
+                active=self.tui is not None and self.tui.input_mode == "disabled"
+            ),
         )
 
         def worker() -> None:
@@ -8428,6 +8455,7 @@ Tools:
                     return
                 if handled:
                     continue
+                self.status_bar.begin()
                 self.tui.set_running("working")
                 started = time.monotonic()
                 try:
@@ -8632,6 +8660,8 @@ Tools:
         return output
 
     def run_input_app(self, app: Application) -> Any:
+        if self.tui is not None:
+            return self.tui.run_terminal(app.run)
         self.pause_queue_input()
         try:
             with patch_stdout():
@@ -9179,12 +9209,7 @@ Tools:
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
-        # The interactive full-screen /diff viewer opens its own pt Application, which cannot
-        # nest inside the TUI's already-running pt Application (pt is not reentrant, and doing
-        # so from the worker thread produces the "ESC does not work" hang you saw). While the
-        # TUI is active, fall through to the text-based renderer below so /diff still works,
-        # just as scrollable log entries instead of a full-screen modal.
-        if self.tui is None and self.interactive_input and self.ui.color and not self.ui.capture_ansi:
+        if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
             self.diff_viewer()
             return None
         latest = self.agent.session.latest_round_diff_sections()
