@@ -6671,6 +6671,21 @@ class UiPrinter:
         body = "\n".join(LogBlock.margin(indent) + line for line in text.splitlines() or [""])
         return f"{LogBlock.margin(indent)}{role}:\n{body}" if role else body
 
+    # Markdown link syntax `[text](url)` — captured for stripping in terminal output.
+    #
+    # In this pipeline the URL half is dead weight: OSC 8 clickability can't survive
+    # prompt_toolkit's ANSI parser (see the hyperlinks=False fallback), so all we can render is
+    # `text (url)`. In dense lists that becomes 80% URL / 20% content and drowns the labels; the
+    # terminal's own bare-URL auto-detection is a poor substitute for reading. Strip the URL, keep
+    # the label. Tolerates the optional `[text](url "title")` form and skips escaped brackets and
+    # image links (`![alt](url)` — preserved as plain `[alt](url)` after `!` strip? no, images are
+    # rare in assistant output and stripping them would silently drop the src; leave them alone).
+    MARKDOWN_LINK_RE: ClassVar[re.Pattern[str]] = re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+    @classmethod
+    def strip_markdown_link_urls(cls, text: str) -> str:
+        return cls.MARKDOWN_LINK_RE.sub(r"\1", text)
+
     def render_message(self, console: Console, text: str, role: str, rule: bool, indent: int) -> None:
         error = text.startswith(("Error:", "ConfigError:", "Unknown command:"))
         if rule and not error:
@@ -6680,13 +6695,13 @@ class UiPrinter:
             console.print("")
             console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style=self.user_log_style()), (0, 0, 0, len(margin))))
         elif role == "assistant":
-            content = RichText(text, style="red") if error else Markdown(text, hyperlinks=False)
+            content = RichText(text, style="red") if error else Markdown(self.strip_markdown_link_urls(text), hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
         else:
             if role:
                 label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
                 console.print(Padding(label, (0, 0, 0, len(margin))))
-            content = RichText(text, style="red") if error else Markdown(text, hyperlinks=False)
+            content = RichText(text, style="red") if error else Markdown(self.strip_markdown_link_urls(text), hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
 
     def emit_markdown(self, text: str) -> None:
@@ -6698,7 +6713,7 @@ class UiPrinter:
             return
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
-            console.print(Markdown(text, hyperlinks=False))
+            console.print(Markdown(self.strip_markdown_link_urls(text), hyperlinks=False))
         print_formatted_text(ANSI(self.strip_trailing_pad(capture.get())), end="", flush=True)
 
     @staticmethod
