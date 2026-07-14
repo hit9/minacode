@@ -6720,6 +6720,14 @@ class TuiApp:
             with contextlib.suppress(ValueError):
                 self.log_buffer.observers.remove(invalidate)
             self.app = None
+        # Alt-screen wipes its contents on exit; dump the LogBuffer to normal stdout so the session
+        # history lands in the shell's scrollback the user returns to, instead of vanishing.
+        self.dump_to_scrollback()
+
+    def dump_to_scrollback(self) -> None:  # pragma: no cover — writes to real stdout
+        for entry in self.log_buffer.entries:
+            print_formatted_text(FormattedText(entry.fragments), end="", flush=True)
+            print()
 
 
 class UiPrinter:
@@ -8192,7 +8200,7 @@ Tools:
         return texts, typed
 
     def run(self) -> int:
-        if nanocode_tui_enabled() and self.ui.log_buffer is not None and sys.stdout.isatty():
+        if nanocode_tui_enabled() and self.ui.log_buffer is not None:
             return self.run_tui()
         self.emit(f"nanocode {__version__}. /help for commands.")
         if tip := self.startup_tip():
