@@ -7601,9 +7601,14 @@ Tools:
         # Move flushed queued messages from the live bottom region up into the scrollback log, then
         # refresh so the region drops them. Runs on the agent (main) thread; patch_stdout places the
         # emitted lines above the still-running queue-input app.
+        flushed = False
         for text in texts:
             if text.strip():
-                self.emit(UiPrinter.USER_LOG_PREFIX + text)
+                self.echo_user_input(UiPrinter.USER_LOG_PREFIX, text)
+                flushed = True
+        if flushed:
+            # Mid-turn flushes land between tool-log lines; give the next line breathing room too.
+            self.emit("")
         if self.queue_input_app is not None:
             self.queue_input_app.invalidate()
 
