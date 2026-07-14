@@ -146,11 +146,11 @@ class Text:
         return value
 
     @staticmethod
-    def elapsed_since(started_at: float) -> str:
-        elapsed = int(max(0.0, time.monotonic() - started_at)) if started_at else 0
-        if elapsed < 60:
-            return f"{elapsed}s"
-        minutes, seconds = divmod(elapsed, 60)
+    def elapsed_since(started_at: float, *, precise: bool = False) -> str:
+        raw = max(0.0, time.monotonic() - started_at) if started_at else 0.0
+        if raw < 60:
+            return f"{raw:.1f}s" if precise else f"{int(raw)}s"
+        minutes, seconds = divmod(int(raw), 60)
         return f"{minutes}m{seconds:02d}s"
 
     @staticmethod
@@ -7105,7 +7105,7 @@ class BashLivePreview:
     def frame_lines(self) -> list[str]:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
-        label = Text.elapsed_since(self.started_at)
+        label = Text.elapsed_since(self.started_at, precise=True)
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
         limit = max(1, width - get_cwidth(LogBlock.prefix(2, LogEdge.CONTINUE)) - 1)

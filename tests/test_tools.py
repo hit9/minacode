@@ -1595,7 +1595,8 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     now[0] = 101.1
     p.render()
     assert len(printed) > first
-    assert any("  ├ running… 1s" in line for line in printed[first:])
+    # BashLivePreview uses sub-second precision (`1.1s`) so the ticker feels live.
+    assert any("  ├ running… 1.1s" in line for line in printed[first:])
 
 
 def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
