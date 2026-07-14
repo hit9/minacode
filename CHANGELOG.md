@@ -1,6 +1,32 @@
 # Changelog
 
 
+## 0.9.5 - 2026-07-14
+
+### Changed
+- Disable Rich Markdown hyperlinks so OSC 8 terminal escape sequences don't leak as visible text.
+- Strip Markdown link URLs from assistant output for cleaner scrollback; revert and re-apply with narrower scope.
+- Defensively strip unknown terminal escapes from assistant output and add a tip about hyperlink behavior.
+- Update the system prompt to note that Markdown links won't render as hyperlinks in this terminal.
+
+### Fixed
+- Prevent OSC 8 payload from leaking as visible text in assistant Markdown output.
+
+## 0.9.4 - 2026-07-14
+
+### Added
+- Auto-promote long-running Bash commands to background jobs after a configurable timeout.
+
+### Changed
+- Show sub-second precision in the Bash live-preview `running…` label.
+- Color the `·N` batch counter gray via `LogLine.meta` instead of syntax-highlighted arguments.
+- Pad diff backgrounds to pane width everywhere for solid Edit previews and a full-width live `/diff` viewer.
+- Add breathing room to queued-message flushes so they match interactive echo spacing.
+
+### Fixed
+- Size diff background bands to the width after the outer log prefix so indented diffs render cleanly.
+- Preserve background-colored padding when stripping Rich's line-fill whitespace on pane resize.
+
 ## 0.9.3 - 2026-07-13
 
 ### Changed

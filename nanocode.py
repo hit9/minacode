@@ -76,7 +76,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"
 
 Json = dict[str, Any]
 
