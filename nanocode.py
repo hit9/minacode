@@ -5673,18 +5673,21 @@ class ToolRunner:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree:
             tail = ((" → " + key) if key else "") + tag
-            root = LogLine(root.label, root.text, root.role, meta=tail, syntax=root.syntax)
+            root = LogLine(root.label, root.text, root.role, meta=root.meta + tail, syntax=root.syntax)
         return LogBlock.hierarchy(None if nested_display else root, children)
 
     def log_root(self, display: str, role: LogRole = LogRole.TOOL, batch_suffix: str = "", call: ToolCall | None = None) -> LogLine:
-        name, _, args = self.with_batch_suffix(display, batch_suffix).partition(" ")
+        name, _, args = display.partition(" ")
         tool_class = TOOL_REGISTRY.get(name)
         syntax = ""
         if tool_class is not None:
             syntax = tool_class.log_lexer(call.args) if call is not None else tool_class.LOG_LEXER
         if role is LogRole.MUTED:
             syntax = ""
-        return LogLine(name, args, role, syntax=syntax)
+        # The batch counter goes into `meta` (rendered gray) instead of `args` (syntax-highlighted),
+        # so it reads as a subdued tag on the same line rather than another highlighted token.
+        meta = ("  " + batch_suffix) if batch_suffix else ""
+        return LogLine(name, args, role, meta=meta, syntax=syntax)
 
     def bash_result_preview(self, output: str) -> str:
         sections = []
