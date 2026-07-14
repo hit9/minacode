@@ -7244,10 +7244,7 @@ class CompactSpinner:
         app = self.loop._make_app(Layout(HSplit([window, self.loop.status_window()])), KeyBindings())
         self.app = app
         try:
-            with patch_stdout():
-                app.run(pre_run=lambda: self.loop.exit_app(app) if self.stop_event.is_set() else None)
-        except (EOFError, KeyboardInterrupt, ValueError, OSError):
-            pass
+            self.loop.run_background_app(app, self.stop_event.is_set)
         finally:
             self.app = None
 
@@ -7587,6 +7584,13 @@ Tools:
                 continue
             self.run_queue_input_app(stop_event)
 
+    def run_background_app(self, app: Application, should_exit: Callable[[], bool]) -> None:
+        try:
+            with patch_stdout():
+                app.run(pre_run=lambda: self.exit_app(app) if should_exit() else None)
+        except (EOFError, KeyboardInterrupt, ValueError, OSError):
+            pass
+
     def echo_user_input(self, prefix: str, body: str, *, prefix_style: str = "class:prompt") -> None:
         print_formatted_text(
             FormattedText([("", "\n"), (prefix_style, prefix), (UiPrinter.user_log_style(), body)]),
@@ -7809,10 +7813,7 @@ Tools:
 
         threading.Thread(target=stop_when_needed, daemon=True).start()
         try:
-            with patch_stdout():
-                app.run(pre_run=lambda: self.exit_app(app) if stop_event.is_set() or self.queue_input_paused.is_set() else None)
-        except (EOFError, KeyboardInterrupt, ValueError, OSError):
-            pass
+            self.run_background_app(app, lambda: stop_event.is_set() or self.queue_input_paused.is_set())
         finally:
             self.queue_input_text = buffer.text
             self.queue_input_active.clear()
