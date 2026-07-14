@@ -7597,6 +7597,28 @@ Tools:
         if self.queue_input_app is not None:
             self.queue_input_app.invalidate()
 
+    # Breathing green dot shown on the working divider while a model request is in flight — it sits
+    # just before the "working (…)" label and vanishes as soon as the response returns (non-streaming
+    # client, so response return is the analogue of "first token arrives"). Palette dim → bright green.
+    WAITING_PULSE_STYLES: ClassVar[tuple[str, ...]] = (
+        "fg:#0a3d0a",
+        "fg:#146114",
+        "fg:#1f8a1f",
+        "fg:#2dbf2d bold",
+        "fg:#43e043 bold",
+        "fg:#7bff7b bold",
+    )
+    WAITING_PULSE_PERIOD: ClassVar[float] = 1.6
+
+    def waiting_pulse_fragments(self) -> list[tuple[str, str]]:
+        if self.session.state.current_model_call_started_at <= 0:
+            return []
+        # Triangular breath: 0 → 1 → 0 over WAITING_PULSE_PERIOD seconds, mapped onto the palette.
+        phase = (time.monotonic() % self.WAITING_PULSE_PERIOD) / self.WAITING_PULSE_PERIOD
+        intensity = 1.0 - abs(2.0 * phase - 1.0)
+        idx = min(len(self.WAITING_PULSE_STYLES) - 1, int(intensity * len(self.WAITING_PULSE_STYLES)))
+        return [(self.WAITING_PULSE_STYLES[idx], "● ")]
+
     QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 34.0
     # A comet: a bright head with a fading tail, by distance from the head. Beyond the tail the dash
     # falls back to the dim rule. The divider is only ever drawn while working, so there is no idle look.
@@ -7608,10 +7630,14 @@ Tools:
         "class:divider.glow4",
     )
 
-    def sweep_divider_fragments(self, label: str, width: int | None = None) -> list[tuple[str, str]]:
+    def sweep_divider_fragments(
+        self, label: str, width: int | None = None, prefix: list[tuple[str, str]] | None = None
+    ) -> list[tuple[str, str]]:
+        prefix = prefix or []
+        prefix_len = sum(len(text) for _style, text in prefix)
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
-        body_len = len(label) + 2  # " label "
+        body_len = prefix_len + len(label) + 2  # prefix + " label "
         lead = 3
         trail = max(3, width - lead - body_len)
         dash_count = lead + trail
@@ -7631,6 +7657,7 @@ Tools:
         return [
             *dashes(0, lead),
             ("class:queue.rule", " "),
+            *prefix,
             ("class:divider.working", label),
             ("class:queue.rule", " "),
             *dashes(lead, trail),
@@ -7638,7 +7665,8 @@ Tools:
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
         label = f"working ({Text.elapsed_since(self.status_bar.started_at)})"
-        return self.sweep_divider_fragments(f"{label} [ {queued} queued ]" if queued else label)
+        label = f"{label} [ {queued} queued ]" if queued else label
+        return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
         with self.session._queue_lock:
@@ -7839,7 +7867,8 @@ Tools:
                     if typed:
                         self.queue_input_text = typed
                     print_formatted_text(
-                        FormattedText([("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), entered[0])]), style=self.style()
+                        FormattedText([("", "\n"), ("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), entered[0])]),
+                        style=self.style(),
                     )
                     user_input = entered[0]
                     for text in entered[1:]:
@@ -8193,7 +8222,10 @@ Tools:
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
         if replay:
-            print_formatted_text(FormattedText([(prompt_style, replay_prefix or prompt_text), (UiPrinter.user_log_style(), text)]), style=self.style())
+            print_formatted_text(
+                FormattedText([("", "\n"), (prompt_style, replay_prefix or prompt_text), (UiPrinter.user_log_style(), text)]),
+                style=self.style(),
+            )
         return text
 
     def emit(self, text: str | LogBlock = "") -> None:
