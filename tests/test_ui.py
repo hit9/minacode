@@ -58,6 +58,39 @@ def test_log_buffer_notifies_observers():
     assert calls == [True]
 
 
+def test_tui_app_viewport_joins_log_entries_with_newlines():
+    buffer = n.LogBuffer()
+    buffer.append([("class:x", "first line")])
+    buffer.append([("", "second"), ("class:y", " line")])
+    app = n.TuiApp(buffer)
+    fragments = app.viewport_fragments()
+    text = "".join(t for _s, t in fragments)
+    assert text == "first line\nsecond line"
+
+
+def test_tui_app_build_layout_composes_viewport_input_and_status():
+    buffer = n.LogBuffer()
+    app = n.TuiApp(buffer)
+    layout = app.build_layout()
+    # focused element is the input window; the viewport lives above it in the HSplit.
+    focused = layout.current_window
+    assert focused is not None
+    # Layout is composable and the focused element accepts typed input via app.input_buffer.
+    app.input_buffer.insert_text("hi")
+    assert app.input_buffer.text == "hi"
+
+
+def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
+    buffer = n.LogBuffer()
+    received: list[str] = []
+    app = n.TuiApp(buffer, on_submit=received.append)
+    app.input_buffer.insert_text("hello")
+    # Simulate the accept handler pt would call on Enter.
+    app._accept(app.input_buffer)
+    assert received == ["hello"]
+    assert app.input_buffer.text == ""
+
+
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):

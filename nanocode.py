@@ -6620,6 +6620,108 @@ def nanocode_tui_enabled() -> bool:
     return os.environ.get("NANOCODE_TUI") == "1"
 
 
+class TuiApp:
+    """Full-screen pt Application that renders a LogBuffer as a scrolling viewport with an input
+    box below. Phase 3 introduces the class shape and standalone run/smoke path; Phase 4 wires it
+    into CommandLoop.run so the real REPL uses it. Deliberately kept independent for now so the
+    default REPL path is untouched.
+
+    Layout (top → bottom):
+      * viewport: renders the last N LogEntry fragments that fit in the available height.
+      * input: single-line placeholder buffer (real input widget in Phase 4).
+      * status: reuses CommandLoop.status_window() when a loop is passed; else empty spacer.
+
+    Design notes we can revisit:
+      * Uses full_screen=True → enters alt-screen; shell scrollback is not accumulated.
+      * LogBuffer observers list is used to invalidate the Application on new output.
+      * No in-app scrollback yet (Phase 5); viewport is always tail-anchored.
+    """
+
+    def __init__(self, log_buffer: LogBuffer, on_submit: Callable[[str], None] | None = None) -> None:
+        self.log_buffer = log_buffer
+        self.on_submit = on_submit or (lambda _text: None)
+        self.input_buffer = Buffer(multiline=False, accept_handler=self._accept)
+        self.app: Application | None = None
+
+    def _accept(self, buffer: Buffer) -> bool:
+        text = buffer.text
+        buffer.reset(Document(""))
+        # Fire user callback in a way that lets the caller decide whether to exit or keep going;
+        # returning False keeps the app alive after the submit.
+        self.on_submit(text)
+        return False
+
+    def viewport_fragments(self) -> list[tuple[str, str]]:
+        # Concatenate LogBuffer entries into a single fragment list, joined by newlines. pt's
+        # Window/FormattedTextControl handles wrapping and scroll offset from there. Tail-anchored:
+        # if content is taller than the window, the last lines win (Window(scroll_offsets=0) with
+        # allow_scroll_beyond_bottom=False).
+        fragments: list[tuple[str, str]] = []
+        for index, entry in enumerate(self.log_buffer.entries):
+            if index:
+                fragments.append(("", "\n"))
+            fragments.extend(entry.fragments)
+        return fragments
+
+    def build_layout(self, status_window: Window | None = None) -> Layout:
+        viewport = Window(
+            FormattedTextControl(self.viewport_fragments),
+            wrap_lines=True,
+            # Anchor the viewport to the bottom so new output stays visible without manual scroll.
+            get_vertical_scroll=lambda w: max(0, w.render_info.content_height - w.render_info.window_height) if w.render_info else 0,
+        )
+        input_window = Window(
+            BufferControl(
+                buffer=self.input_buffer,
+                input_processors=[BeforeInput(FormattedText([("class:prompt", UiPrinter.PROMPT_PREFIX)]))],
+            ),
+            height=1,
+            dont_extend_height=True,
+        )
+        rows: list[Any] = [viewport, input_window]
+        if status_window is not None:
+            rows.append(status_window)
+        return Layout(HSplit(rows), focused_element=input_window)
+
+    def make_bindings(self) -> KeyBindings:
+        bindings = KeyBindings()
+
+        @bindings.add("c-c", eager=True)
+        def _ctrl_c(event):  # pragma: no cover — interactive path
+            event.app.exit()
+
+        @bindings.add("c-d", eager=True)
+        def _ctrl_d(event):  # pragma: no cover — interactive path
+            if not self.input_buffer.text:
+                event.app.exit()
+
+        return bindings
+
+    def run(self, status_window: Window | None = None) -> None:  # pragma: no cover — interactive
+        """Blocking full-screen run. Phase 3 exposes this for a standalone smoke test; the main
+        REPL keeps its current run loop until Phase 4 swaps it."""
+        app = Application(
+            layout=self.build_layout(status_window),
+            key_bindings=self.make_bindings(),
+            full_screen=True,
+            mouse_support=False,
+            refresh_interval=0.2,
+        )
+        self.app = app
+
+        def invalidate() -> None:
+            if self.app is not None:
+                self.app.invalidate()
+
+        self.log_buffer.observers.append(invalidate)
+        try:
+            app.run()
+        finally:
+            with contextlib.suppress(ValueError):
+                self.log_buffer.observers.remove(invalidate)
+            self.app = None
+
+
 class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
