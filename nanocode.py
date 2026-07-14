@@ -8192,6 +8192,8 @@ Tools:
         return texts, typed
 
     def run(self) -> int:
+        if nanocode_tui_enabled() and self.ui.log_buffer is not None and sys.stdout.isatty():
+            return self.run_tui()
         self.emit(f"nanocode {__version__}. /help for commands.")
         if tip := self.startup_tip():
             self.emit("tip: " + tip)
@@ -8264,6 +8266,33 @@ Tools:
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
             self.session.save_snapshot()
+
+    def run_tui(self) -> int:
+        """Phase 4 minimal entry: enter the full-TUI shell with a banner in the viewport and an
+        echo-on-submit input. NO AGENT INTEGRATION YET — this is a smoke-test scaffold to verify
+        alt-screen / viewport / resize / input behavior interactively before the agent's approval
+        prompts, tool output streaming, and status/queue coupling are migrated in a later phase.
+
+        Known limitations of this phase (deliberate, will be lifted incrementally):
+          * Submitting input just echoes it back into the viewport; the agent does not run.
+          * No scrollback keys (PgUp/PgDn/Home/End) yet.
+          * No working divider, status bar, or bash live preview in the layout.
+          * `/help`, `/status`, and other slash commands are inert here.
+        Exit with Ctrl-C or Ctrl-D (on empty input).
+        """
+        assert self.ui.log_buffer is not None
+        buffer = self.ui.log_buffer
+        buffer.append([("class:prompt", "> "), (UiPrinter.user_log_style(), f"nanocode {__version__} · TUI mode (phase 4 preview)")])
+        buffer.append([("", "Type below and press Enter to echo into the viewport. Ctrl-C or Ctrl-D exits.")])
+
+        def echo(text: str) -> None:
+            text = text.strip()
+            if not text:
+                return
+            buffer.append([("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), text)])
+
+        TuiApp(buffer, on_submit=echo).run()
+        return 0
 
     def render_resumed_session(self) -> None:
         # Transcript reconstruction owns historical call/result matching and ordering invariants.
