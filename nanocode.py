@@ -6611,6 +6611,20 @@ class UiPrinter:
     # as a solid band. We track the SGR bg state per token and only strip whitespace rendered with
     # bg off.
     SGR_RE: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[([0-9;]*)m")
+    # OSC / APC / DCS / SOS / PM sequences are terminal control strings that prompt_toolkit's ANSI
+    # parser doesn't recognize. When they slip through Rich's output (OSC 8 hyperlinks were the
+    # historical culprit, iTerm image escapes / Kitty graphics / shell-integration marks are
+    # potential future ones), pt eats the ESC framing but leaks the payload as visible garbage
+    # (e.g. `8;id=…;https://…;;` for OSC 8). Strip these up front so pt only ever sees CSI escapes.
+    # The trade is that any legitimate uses of these (clickable hyperlinks, inline images) never
+    # reach the terminal — but they weren't working through pt anyway; better clean than garbled.
+    NON_CSI_ESCAPE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"\x1b[\]_PX^][^\x07\x1b]*(?:\x07|\x1b\\)"
+    )
+
+    @classmethod
+    def strip_unknown_escapes(cls, text: str) -> str:
+        return cls.NON_CSI_ESCAPE_RE.sub("", text)
 
     @classmethod
     def strip_trailing_pad(cls, text: str) -> str:
@@ -6664,7 +6678,7 @@ class UiPrinter:
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
-        print_formatted_text(ANSI(self.strip_trailing_pad(capture.get())), end="", flush=True)
+        print_formatted_text(ANSI(self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
@@ -6699,7 +6713,7 @@ class UiPrinter:
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
-        print_formatted_text(ANSI(self.strip_trailing_pad(capture.get())), end="", flush=True)
+        print_formatted_text(ANSI(self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))), end="", flush=True)
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
@@ -7580,6 +7594,8 @@ class CommandLoop:
         "Scaffold a fresh config with `nanocode --init-config`.",
         "Launch with `--yolo` to skip confirmations; `/debug` shows recent diagnostics.",
         'Filter MCP servers at launch with `--mcp "name*,!exclude"`.',
+        # Rendering behavior
+        "Markdown links render as `text (url)` — clickable hyperlinks are disabled so the URL stays visible; most terminals auto-link the bare URL.",
     )
 
     def startup_tip(self) -> str:
