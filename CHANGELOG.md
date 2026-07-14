@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.9.3 - 2026-07-13
 
 ### Changed
 - Unify the live input prompt prefix to `>` and historical/queued user message prefix to `•`, extracting both as `UiPrinter` constants.
