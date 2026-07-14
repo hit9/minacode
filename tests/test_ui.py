@@ -20,19 +20,18 @@ def test_theme_palettes_have_identical_complete_keys():
     assert all(n.Theme.LIGHT.values())
 
 
-def test_log_buffer_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("NANOCODE_TUI", raising=False)
+def test_log_buffer_always_allocated():
     ui = n.UiPrinter(output_fn=lambda text: None)
-    assert ui.log_buffer is None
+    assert ui.log_buffer is not None
+    assert ui.log_buffer.entries == []
 
 
-def test_log_buffer_captures_emit_when_tui_enabled(monkeypatch):
-    monkeypatch.setenv("NANOCODE_TUI", "1")
+def test_log_buffer_captures_emit_when_color_active(monkeypatch):
     monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
     ui = n.UiPrinter()
     assert ui.log_buffer is not None
-    # emit() should mirror its styled segments into the LogBuffer even while it still prints via
-    # print_formatted_text (Phase 2 keeps both paths active).
+    # emit() mirrors its styled segments into the LogBuffer while also printing via
+    # print_formatted_text (viewport gets the same content the scrollback would).
     monkeypatch.setattr(n, "print_formatted_text", lambda *a, **kw: None)
     ui.emit("hello")
     assert ui.log_buffer.entries
@@ -83,12 +82,41 @@ def test_tui_app_build_layout_composes_viewport_input_and_status():
 def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
     buffer = n.LogBuffer()
     received: list[str] = []
-    app = n.TuiApp(buffer, on_submit=received.append)
+    app = n.TuiApp(buffer, on_chat_submit=received.append)
     app.input_buffer.insert_text("hello")
-    # Simulate the accept handler pt would call on Enter.
+    # Simulate the accept handler pt would call on Enter in chat mode.
     app._accept(app.input_buffer)
     assert received == ["hello"]
     assert app.input_buffer.text == ""
+
+
+def test_tui_app_approval_mode_resolves_bridge_event():
+    import threading as _threading
+
+    buffer = n.LogBuffer()
+    app = n.TuiApp(buffer)
+    result: list[str] = []
+    ready = _threading.Event()
+
+    def waiter():
+        result.append(app.request_input("[Y/n] "))
+        ready.set()
+
+    thread = _threading.Thread(target=waiter, daemon=True)
+    thread.start()
+    # Wait until the bg thread has switched us into approval mode.
+    for _ in range(200):
+        if app.input_mode == "approval":
+            break
+        import time as _time
+
+        _time.sleep(0.005)
+    assert app.input_mode == "approval"
+    app.input_buffer.insert_text("y")
+    app._accept(app.input_buffer)
+    ready.wait(timeout=1.0)
+    assert result == ["y"]
+    assert app.input_mode == "chat"
 
 
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):

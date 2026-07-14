@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import queue
 import random
 import re
 import selectors
@@ -6613,49 +6614,93 @@ class LogBuffer:
                 observer()
 
 
-def nanocode_tui_enabled() -> bool:
-    """Opt-in flag for the in-progress full-screen TUI mode. Off by default; setting
-    NANOCODE_TUI=1 will (once wired) route emit/emit_answer into a LogBuffer instead of the
-    scrollback-based print_formatted_text path."""
-    return os.environ.get("NANOCODE_TUI") == "1"
-
-
 class TuiApp:
-    """Full-screen pt Application that renders a LogBuffer as a scrolling viewport with an input
-    box below. Phase 3 introduces the class shape and standalone run/smoke path; Phase 4 wires it
-    into CommandLoop.run so the real REPL uses it. Deliberately kept independent for now so the
-    default REPL path is untouched.
+    """The full-screen interactive shell. One pt Application drives the entire session:
 
     Layout (top → bottom):
-      * viewport: renders the last N LogEntry fragments that fit in the available height.
-      * input: single-line placeholder buffer (real input widget in Phase 4).
-      * status: reuses CommandLoop.status_window() when a loop is passed; else empty spacer.
+      * viewport — renders the LogBuffer as scrolling styled fragments (tail-anchored).
+      * status line — shows the current phase (idle `>`, running with elapsed timer, or an
+        approval prompt); the input widget sits inside this line.
 
-    Design notes we can revisit:
-      * Uses full_screen=True → enters alt-screen; shell scrollback is not accumulated.
-      * LogBuffer observers list is used to invalidate the Application on new output.
-      * No in-app scrollback yet (Phase 5); viewport is always tail-anchored.
-    """
+    Input widget is state-driven:
+      * `chat`      — Enter submits to `on_chat_submit` (starts an agent turn).
+      * `approval`  — Enter resolves `_input_pending` (unblocks a bg-thread waiter).
+      * `disabled`  — keystrokes ignored; agent is running with no active prompt.
 
-    def __init__(self, log_buffer: LogBuffer, on_submit: Callable[[str], None] | None = None) -> None:
+    Cross-thread coordination:
+      * The agent runs on a bg thread. Every LogBuffer.append fires an observer that invalidates
+        the pt app so the viewport repaints live.
+      * Approval prompts from the agent thread call `request_input(prompt)` which switches the
+        widget to `approval` mode and blocks until the user submits, using a threading.Event.
+
+    On exit, alt-screen tears down and the LogBuffer contents are dumped to normal stdout so the
+    session history lands in the shell's scrollback."""
+
+    def __init__(
+        self,
+        log_buffer: LogBuffer,
+        *,
+        on_chat_submit: Callable[[str], None] | None = None,
+        on_exit_request: Callable[[], None] | None = None,
+    ) -> None:
         self.log_buffer = log_buffer
-        self.on_submit = on_submit or (lambda _text: None)
+        self.on_chat_submit = on_chat_submit or (lambda _text: None)
+        self.on_exit_request = on_exit_request or (lambda: None)
         self.input_buffer = Buffer(multiline=False, accept_handler=self._accept)
         self.app: Application | None = None
+        # Input mode + approval bridge
+        self.input_mode = "chat"  # "chat" | "approval" | "disabled"
+        self.input_prompt = UiPrinter.PROMPT_PREFIX
+        self._input_pending: threading.Event | None = None
+        self._input_result: str = ""
+        # Progress label shown in the status line while the agent is running (set by run_agent_turn)
+        self.status_label: str = ""
+        self.started_at: float = 0.0
+
+    def request_input(self, prompt: str) -> str:
+        """Called from the agent (bg) thread to get a line of user input inline (approval prompts,
+        Ask tool, etc.). Blocks until the main thread's pt widget submits. If the app has exited
+        before submission, returns "" so the caller unwinds cleanly."""
+        event = threading.Event()
+        self._input_pending = event
+        self._input_result = ""
+        self._set_mode("approval", prompt)
+        try:
+            event.wait()
+        finally:
+            self._input_pending = None
+            self._set_mode("chat", UiPrinter.PROMPT_PREFIX)
+        return self._input_result
+
+    def set_running(self, label: str) -> None:
+        self.status_label = label
+        self.started_at = time.monotonic()
+        self._set_mode("disabled", "")
+
+    def set_idle(self) -> None:
+        self.status_label = ""
+        self.started_at = 0.0
+        self._set_mode("chat", UiPrinter.PROMPT_PREFIX)
+
+    def _set_mode(self, mode: str, prompt: str) -> None:
+        self.input_mode = mode
+        self.input_prompt = prompt
+        if self.app is not None:
+            self.app.invalidate()
 
     def _accept(self, buffer: Buffer) -> bool:
         text = buffer.text
         buffer.reset(Document(""))
-        # Fire user callback in a way that lets the caller decide whether to exit or keep going;
-        # returning False keeps the app alive after the submit.
-        self.on_submit(text)
+        if self.input_mode == "approval" and self._input_pending is not None:
+            self._input_result = text
+            self._input_pending.set()
+            return False
+        if self.input_mode == "chat":
+            self.on_chat_submit(text)
+        # `disabled` swallows the keystroke silently.
         return False
 
     def viewport_fragments(self) -> list[tuple[str, str]]:
-        # Concatenate LogBuffer entries into a single fragment list, joined by newlines. pt's
-        # Window/FormattedTextControl handles wrapping and scroll offset from there. Tail-anchored:
-        # if content is taller than the window, the last lines win (Window(scroll_offsets=0) with
-        # allow_scroll_beyond_bottom=False).
         fragments: list[tuple[str, str]] = []
         for index, entry in enumerate(self.log_buffer.entries):
             if index:
@@ -6663,49 +6708,57 @@ class TuiApp:
             fragments.extend(entry.fragments)
         return fragments
 
-    def build_layout(self, status_window: Window | None = None) -> Layout:
+    def status_fragments(self) -> list[tuple[str, str]]:
+        if self.input_mode == "disabled" and self.status_label:
+            elapsed = Text.elapsed_since(self.started_at, precise=True) if self.started_at else ""
+            body = f"{self.status_label} ({elapsed})" if elapsed else self.status_label
+            return [("class:divider.working", body)]
+        return [("class:prompt", self.input_prompt)]
+
+    def build_layout(self) -> Layout:
         viewport = Window(
             FormattedTextControl(self.viewport_fragments),
             wrap_lines=True,
-            # Anchor the viewport to the bottom so new output stays visible without manual scroll.
             get_vertical_scroll=lambda w: max(0, w.render_info.content_height - w.render_info.window_height) if w.render_info else 0,
         )
+        status = Window(FormattedTextControl(self.status_fragments), height=1, dont_extend_height=True)
         input_window = Window(
-            BufferControl(
-                buffer=self.input_buffer,
-                input_processors=[BeforeInput(FormattedText([("class:prompt", UiPrinter.PROMPT_PREFIX)]))],
-            ),
+            BufferControl(buffer=self.input_buffer),
             height=1,
             dont_extend_height=True,
         )
-        rows: list[Any] = [viewport, input_window]
-        if status_window is not None:
-            rows.append(status_window)
-        return Layout(HSplit(rows), focused_element=input_window)
+        return Layout(HSplit([viewport, status, input_window]), focused_element=input_window)
 
     def make_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
 
         @bindings.add("c-c", eager=True)
         def _ctrl_c(event):  # pragma: no cover — interactive path
+            # If a bg-thread is blocked on request_input, unblock it with the empty string so the
+            # caller can interpret Ctrl-C as "cancel this prompt". Otherwise ask the app to exit.
+            if self.input_mode == "approval" and self._input_pending is not None:
+                self._input_result = ""
+                self._input_pending.set()
+                return
+            self.on_exit_request()
             event.app.exit()
 
         @bindings.add("c-d", eager=True)
         def _ctrl_d(event):  # pragma: no cover — interactive path
-            if not self.input_buffer.text:
+            if not self.input_buffer.text and self.input_mode == "chat":
+                self.on_exit_request()
                 event.app.exit()
 
         return bindings
 
-    def run(self, status_window: Window | None = None) -> None:  # pragma: no cover — interactive
-        """Blocking full-screen run. Phase 3 exposes this for a standalone smoke test; the main
-        REPL keeps its current run loop until Phase 4 swaps it."""
+    def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = Application(
-            layout=self.build_layout(status_window),
+            layout=self.build_layout(),
             key_bindings=self.make_bindings(),
             full_screen=True,
             mouse_support=False,
             refresh_interval=0.2,
+            style=style,
         )
         self.app = app
 
@@ -6720,8 +6773,11 @@ class TuiApp:
             with contextlib.suppress(ValueError):
                 self.log_buffer.observers.remove(invalidate)
             self.app = None
-        # Alt-screen wipes its contents on exit; dump the LogBuffer to normal stdout so the session
-        # history lands in the shell's scrollback the user returns to, instead of vanishing.
+            # If a bg-thread waiter is still parked in request_input at exit, unblock it so its
+            # frame unwinds instead of leaking a thread.
+            if self._input_pending is not None:
+                self._input_result = ""
+                self._input_pending.set()
         self.dump_to_scrollback()
 
     def dump_to_scrollback(self) -> None:  # pragma: no cover — writes to real stdout
@@ -6749,9 +6805,10 @@ class UiPrinter:
         # When set, callers know a Rich render is happening inside a running prompt app; TUI-only
         # commands like /diff refuse to launch a full-screen viewer in that context.
         self.capture_ansi = False
-        # Populated when NANOCODE_TUI=1: source of truth for the full-screen viewport. Phase 1
-        # allocates it; producers/consumers are wired in later phases.
-        self.log_buffer: LogBuffer | None = LogBuffer() if nanocode_tui_enabled() else None
+        # The source of truth for the full-screen viewport. Always allocated so tools/tests that
+        # inspect it don't have to null-check; the run loop only enters TUI mode in interactive
+        # TTY sessions (see CommandLoop.run).
+        self.log_buffer: LogBuffer = LogBuffer()
 
     def emit(self, text: str | LogBlock = "") -> None:
         if not self.color:
@@ -7874,6 +7931,9 @@ Tools:
         self.queue_input_active = threading.Event()
         self.queue_input_app: Application | None = None
         self.queue_input_text = ""
+        # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
+        # bg-thread approval prompts land in the same input widget the user is already typing in.
+        self.tui: TuiApp | None = None
         if self.interactive_input:
             history_path = self.session.data_path("history.txt")
             os.makedirs(os.path.dirname(history_path), exist_ok=True)
@@ -8200,7 +8260,9 @@ Tools:
         return texts, typed
 
     def run(self) -> int:
-        if nanocode_tui_enabled() and self.ui.log_buffer is not None:
+        # In interactive TTY mode, run the full-TUI shell. Only headless callers (output_fn ≠ print)
+        # keep the legacy scrollback REPL below.
+        if self.interactive_input:
             return self.run_tui()
         self.emit(f"nanocode {__version__}. /help for commands.")
         if tip := self.startup_tip():
@@ -8276,30 +8338,70 @@ Tools:
             self.session.save_snapshot()
 
     def run_tui(self) -> int:
-        """Phase 4 minimal entry: enter the full-TUI shell with a banner in the viewport and an
-        echo-on-submit input. NO AGENT INTEGRATION YET — this is a smoke-test scaffold to verify
-        alt-screen / viewport / resize / input behavior interactively before the agent's approval
-        prompts, tool output streaming, and status/queue coupling are migrated in a later phase.
-
-        Known limitations of this phase (deliberate, will be lifted incrementally):
-          * Submitting input just echoes it back into the viewport; the agent does not run.
-          * No scrollback keys (PgUp/PgDn/Home/End) yet.
-          * No working divider, status bar, or bash live preview in the layout.
-          * `/help`, `/status`, and other slash commands are inert here.
-        Exit with Ctrl-C or Ctrl-D (on empty input).
-        """
-        assert self.ui.log_buffer is not None
+        """Full-TUI REPL. Owns the pt Application on the main thread; the agent runs on a bg
+        thread so the viewport keeps repainting while tools execute. Approval prompts from the
+        agent thread route through TuiApp.request_input, which reuses the same input widget so
+        the user answers inline without leaving the shell."""
         buffer = self.ui.log_buffer
-        buffer.append([("class:prompt", "> "), (UiPrinter.user_log_style(), f"nanocode {__version__} · TUI mode (phase 4 preview)")])
-        buffer.append([("", "Type below and press Enter to echo into the viewport. Ctrl-C or Ctrl-D exits.")])
+        self.emit(f"nanocode {__version__}. /help for commands.")
+        if tip := self.startup_tip():
+            self.emit("tip: " + tip)
+        SessionSnapshotStore.clean_expired(self.session)
+        self.render_resumed_session()
+        CodeIndex(self.session).refresh_existing_async()
+        threading.Thread(target=self.discover_mcp, daemon=True).start()
+        UpdateChecker(self.session).start()
 
-        def echo(text: str) -> None:
-            text = text.strip()
-            if not text:
-                return
-            buffer.append([("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), text)])
+        pending: queue.Queue[str] = queue.Queue()
+        stop = threading.Event()
+        self.tui = TuiApp(
+            buffer,
+            on_chat_submit=lambda text: pending.put(text) if text.strip() else None,
+            on_exit_request=stop.set,
+        )
 
-        TuiApp(buffer, on_submit=echo).run()
+        def worker() -> None:
+            while not stop.is_set():
+                try:
+                    user_input = pending.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                self.echo_user_input(UiPrinter.USER_LOG_PREFIX, user_input)
+                handled, exit_now = self.command(user_input)
+                if exit_now:
+                    stop.set()
+                    if self.tui is not None and self.tui.app is not None:
+                        self.tui.app.exit()
+                    return
+                if handled:
+                    continue
+                self.tui.set_running("working")
+                started = time.monotonic()
+                try:
+                    with ModelRetryShortcut(self.session):
+                        answer = self.agent.run(user_input)
+                except KeyboardInterrupt:
+                    self.emit("Cancelled")
+                    continue
+                except NanocodeError as error:
+                    answer = f"Error: {error}"
+                finally:
+                    self.tui.set_idle()
+                    self.session.state.manual_model_retry_requested = False
+                    CodeIndex(self.session).update_pending_async()
+                elapsed = time.monotonic() - started
+                self.ui.emit_answer(answer)
+                self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+                self.session.save_snapshot()
+
+        worker_thread = threading.Thread(target=worker, daemon=True)
+        worker_thread.start()
+        try:
+            self.tui.run(style=self.style())
+        finally:
+            stop.set()
+            worker_thread.join(timeout=1.0)
+            self.tui = None
         return 0
 
     def render_resumed_session(self) -> None:
@@ -8626,6 +8728,12 @@ Tools:
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def tool_input(self, prompt: str = "") -> str:
+        # When the TUI is running (bg-thread agent asking for approval), route through TuiApp's
+        # own input widget so the user answers inline in the full-screen shell instead of a
+        # separate pt Application (which would fail because pt does not nest).
+        if self.tui is not None:
+            return self.tui.request_input(prompt)
+
         def read() -> str:
             return (
                 self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval", replay=False)
