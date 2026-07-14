@@ -57,6 +57,39 @@ def test_log_buffer_notifies_observers():
     assert calls == [True]
 
 
+def test_tui_edit_preview_fills_width_and_reflows_on_resize(monkeypatch):
+    preview = "--- foo.py\n+++ foo.py\n@@ -0,0 +1 @@\n+return 42"
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Edit", "foo.py", n.LogRole.TOOL),
+        [
+            n.LogLine("preview", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
+            *(n.LogLine("", line, n.LogRole.DIFF, n.LogEdge.CONTINUE) for line in preview.splitlines()),
+        ],
+    )
+    ui = n.UiPrinter(output_fn=lambda _text: None)
+    ui.color = True
+    ui.full_screen = True
+    monkeypatch.setattr(n, "print_formatted_text", lambda *args, **kwargs: None)
+    terminal_width = {"columns": 80}
+    monkeypatch.setattr(
+        n.shutil,
+        "get_terminal_size",
+        lambda *args: n.os.terminal_size((terminal_width["columns"], 24)),
+    )
+
+    ui.emit(block)
+    entry = ui.log_buffer.entries[-1]
+
+    normal_changed = next(line for line in ui.segment_lines(entry.fragments) if any("bg:" in style for style, _text in line))
+    live_changed = next(line for line in ui.segment_lines(entry.render()) if any("bg:" in style for style, _text in line))
+    assert sum(n.get_cwidth(text.rstrip("\n")) for _style, text in normal_changed) < 79
+    assert sum(n.get_cwidth(text.rstrip("\n")) for _style, text in live_changed) == 79
+
+    terminal_width["columns"] = 100
+    resized_changed = next(line for line in ui.segment_lines(entry.render()) if any("bg:" in style for style, _text in line))
+    assert sum(n.get_cwidth(text.rstrip("\n")) for _style, text in resized_changed) == 99
+
+
 def test_tui_app_viewport_joins_log_entries_with_newlines():
     buffer = n.LogBuffer()
     buffer.append([("class:x", "first line")])
@@ -65,6 +98,21 @@ def test_tui_app_viewport_joins_log_entries_with_newlines():
     fragments = app.viewport_fragments()
     text = "".join(t for _s, t in fragments)
     assert text == "first line\nsecond line"
+
+
+def test_tui_viewport_initially_anchors_to_latest_history(monkeypatch):
+    buffer = n.LogBuffer()
+    for index in range(40):
+        buffer.append([("", f"line {index}")])
+    app = n.TuiApp(buffer)
+    app.build_layout()
+    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((80, 10)))
+
+    scroll = app.vertical_scroll(app.viewport_window)
+    content = app.viewport_window.content.create_content(width=80, height=8)
+
+    assert content.cursor_position.y == content.line_count - 1
+    assert scroll == app.viewport_line_count() - 8
 
 
 def test_tui_app_build_layout_composes_viewport_input_and_status():
@@ -88,6 +136,73 @@ def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
     app._accept(app.input_buffer)
     assert received == ["hello"]
     assert app.input_buffer.text == ""
+
+
+def test_tui_running_input_queues_one_multiline_message():
+    received: list[str] = []
+    app = n.TuiApp(n.LogBuffer(), on_running_submit=received.append)
+    app.set_running("working")
+    app.input_buffer.insert_text("first\nsecond\nthird")
+
+    app._accept(app.input_buffer)
+
+    assert received == ["first\nsecond\nthird"]
+    assert app.input_buffer.text == ""
+
+
+def test_tui_running_input_shows_contextual_placeholder():
+    hint = {"text": "Enter queues follow-up"}
+    placeholder = n.CallbackPlaceholder(lambda: hint["text"])
+
+    def transform(text):
+        document = n.Document(text)
+        ti = type(
+            "TransformationInput",
+            (),
+            {
+                "buffer_control": type("Control", (), {"buffer": type("Buffer", (), {"text": text})()})(),
+                "document": document,
+                "lineno": document.line_count - 1,
+                "fragments": [],
+            },
+        )()
+        return placeholder.apply_transformation(ti).fragments
+
+    assert transform("") == [("class:queue.hint", "Enter queues follow-up")]
+    assert transform("draft") == []
+
+
+def test_tui_sigint_interrupts_dispatch_and_running_modes():
+    interrupted = []
+    app = n.TuiApp(n.LogBuffer(), on_interrupt=lambda: interrupted.append(True))
+    bindings = app.make_bindings()
+    handler = next(binding.handler for binding in bindings.bindings if binding.keys == (n.Keys.SIGINT,))
+    event = type("Event", (), {})()
+
+    app.set_dispatching()
+    handler(event)
+    app.set_running("working")
+    handler(event)
+
+    assert interrupted == [True, True]
+
+
+def test_tui_running_recall_removes_latest_pending_message():
+    pending = ["first", "second"]
+
+    def recall():
+        return pending.pop() if pending else ""
+
+    app = n.TuiApp(n.LogBuffer(), on_recall=recall)
+    app.set_running("working")
+    bindings = app.make_bindings()
+    event = type("Event", (), {"current_buffer": app.input_buffer})()
+    handler = next(binding.handler for binding in reversed(bindings.bindings) if binding.keys == (n.Keys.Up,) and binding.filter())
+
+    handler(event)
+
+    assert pending == ["first"]
+    assert app.input_buffer.text == "second"
 
 
 def test_tui_app_approval_mode_resolves_bridge_event():
@@ -117,6 +232,26 @@ def test_tui_app_approval_mode_resolves_bridge_event():
     ready.wait(timeout=1.0)
     assert result == ["y"]
     assert app.input_mode == "chat"
+
+
+def test_resume_history_is_buffered_before_tui_starts(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.session.resumed = True
+    command_loop.session.messages.extend(
+        [
+            {"role": "user", "content": "most recent question"},
+            {"role": "assistant", "content": "most recent answer"},
+        ]
+    )
+    command_loop.ui.color = True
+    command_loop.ui.full_screen = True
+    monkeypatch.setattr(n, "print_formatted_text", lambda *args, **kwargs: None)
+
+    command_loop.render_resumed_session()
+
+    text = "".join(fragment for entry in command_loop.ui.log_buffer.entries for _style, fragment in entry.fragments)
+    assert "most recent question" in text
+    assert "most recent answer" in text
 
 
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
@@ -192,16 +327,53 @@ def test_styled_wrapping_respects_terminal_width_for_unicode(width):
     assert "".join(text for row in rows for _style, text in row).replace("  Read  ", "", 1).replace("        ", "") == content_text
 
 
-def test_choice_navigation_uses_real_key_bindings(tmp_path, ui_harness):
-    command_loop = loop(tmp_path)
-    run = ui_harness.run(
-        command_loop,
-        lambda: command_loop.choice_application("Pick", ("a", "b", "c"), {"a": "Alpha", "b": "Beta", "c": "Gamma"}, "", set()),
-        "j\r",
-    )
+class ModalHarness:
+    def __init__(self, keys):
+        self.keys = keys
+        self.frames = []
 
-    assert run.result == "b"
-    assert "Beta" in run.text
+    def show_modal(self, fragments_fn, key_fn):
+        self.frames.append(fragments_fn())
+        result = n.TUI_MODAL_PENDING
+        for key in self.keys:
+            result = key_fn(key, key if len(key) == 1 else "")
+            self.frames.append(fragments_fn())
+            if result is not n.TUI_MODAL_PENDING:
+                return result
+        return None
+
+
+def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
+    command_loop = loop(tmp_path)
+    modal = ModalHarness(["j", "enter"])
+    command_loop.tui = modal
+    result = command_loop.choice_application("Pick", ("a", "b", "c"), {"a": "Alpha", "b": "Beta", "c": "Gamma"}, "", set())
+
+    assert result == "b"
+    assert "Beta" in "".join(text for frame in modal.frames for _style, text in frame)
+
+
+def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    command_loop.session.config.providers["other"] = n.ProviderConfig(model="model-b", available_models=("model-b",), reasoning="low")
+    selected = iter(["other", "model-b", "high"])
+    titles = []
+
+    def select(title, *_args, **_kwargs):
+        titles.append(title)
+        return next(selected)
+
+    command_loop.select_choice = select
+    command_loop.remote_models = lambda _provider: (_ for _ in ()).throw(AssertionError("remote discovery must be lazy"))
+
+    result = command_loop.provider("")
+
+    assert titles == ["Provider", "Model", "Reasoning effort"]
+    assert command_loop.session.config.active_provider == "other"
+    assert command_loop.session.config.provider.model == "model-b"
+    assert command_loop.session.config.provider.reasoning == "high"
+    assert "Set provider.model = model-b" in result
 
 
 def diff_loop(tmp_path):
@@ -213,31 +385,45 @@ def diff_loop(tmp_path):
     return command_loop
 
 
-def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path, ui_harness):
+def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path):
     command_loop = diff_loop(tmp_path)
-    switched = ui_harness.run(command_loop, command_loop.diff_viewer, "lq", size=(80, 12))
-    opened = ui_harness.run(command_loop, command_loop.diff_viewer, "j\rq", size=(80, 12))
+    switched = ModalHarness(["l", "q"])
+    command_loop.tui = switched
+    command_loop.diff_viewer()
+    opened = ModalHarness(["j", "enter", "q"])
+    command_loop.tui = opened
+    command_loop.diff_viewer()
 
-    assert ("class:tab.active", " Session ") in switched.fragments
-    assert "Edit · b.py" in opened.text
-    assert "[diff]" in opened.text
+    assert any(("class:tab.active", " Session ") in frame for frame in switched.frames)
+    text = "".join(text for frame in opened.frames for _style, text in frame)
+    assert "Edit · b.py" in text
+    assert "[diff]" in text
 
 
-def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path, ui_harness):
+def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path):
     command_loop = diff_loop(tmp_path)
-    initial = ui_harness.run(command_loop, command_loop.diff_viewer, "\rq", size=(80, 12))
-    scrolled = ui_harness.run(command_loop, command_loop.diff_viewer, "\r\x04\x04q", size=(80, 12))
+    initial = ModalHarness(["enter", "q"])
+    command_loop.tui = initial
+    command_loop.diff_viewer()
+    scrolled = ModalHarness(["enter", "c-d", "c-d", "q"])
+    command_loop.tui = scrolled
+    command_loop.diff_viewer()
 
-    assert initial.text != scrolled.text
-    assert "[diff]" in scrolled.text
+    initial_text = "".join(text for frame in initial.frames for _style, text in frame)
+    scrolled_text = "".join(text for frame in scrolled.frames for _style, text in frame)
+    assert initial_text != scrolled_text
+    assert "[diff]" in scrolled_text
 
 
-def test_empty_diff_viewer_reports_zero_position(tmp_path, ui_harness):
+def test_empty_diff_viewer_reports_zero_position(tmp_path):
     command_loop = loop(tmp_path)
-    run = ui_harness.run(command_loop, command_loop.diff_viewer, "q")
+    modal = ModalHarness(["q"])
+    command_loop.tui = modal
+    command_loop.diff_viewer()
+    text = "".join(text for frame in modal.frames for _style, text in frame)
 
-    assert "No diffs" in run.text
-    assert "[0/0]" in run.text
+    assert "No diffs" in text
+    assert "[0/0]" in text
 
 
 def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):

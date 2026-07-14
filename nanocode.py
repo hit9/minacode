@@ -42,12 +42,13 @@ from anthropic import Anthropic
 from json_repair import repair_json
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
-from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
 from prompt_toolkit.formatted_text import ANSI, FormattedText, to_formatted_text
+from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -3808,7 +3809,6 @@ class LogEdge(Enum):
 
 class LogRole(Enum):
     TOOL = auto()
-    APPROVAL = auto()
     AUTO = auto()
     META = auto()
     OUTPUT = auto()
@@ -5715,7 +5715,7 @@ class ToolRunner:
         batch_suffix: str = "",
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
     ) -> LogBlock:
-        role = LogRole.APPROVAL if status == "confirm" else LogRole.AUTO
+        role = LogRole.TOOL if status == "confirm" else LogRole.AUTO
         root = self.log_root(self.short_call(call), role, batch_suffix, call)
         children = []
         if tool.NAME != "Edit":
@@ -5883,11 +5883,34 @@ class PreparedRequest:
 class ModelClient:
     def __init__(self, session: Session):
         self.session = session
+        self.cancel_requested = threading.Event()
+        self.active_client_lock = threading.Lock()
+        self.active_client: Any = None
+
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+        with self.active_client_lock:
+            client = self.active_client
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+
+    def activate_client(self, client: Any) -> None:
+        with self.active_client_lock:
+            self.active_client = client
+
+    def deactivate_client(self, client: Any) -> None:
+        with self.active_client_lock:
+            if self.active_client is client:
+                self.active_client = None
+        with contextlib.suppress(Exception):
+            client.close()
 
     def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
+        self.cancel_requested.clear()
         tools = tools if tools is not None else resolved_tool_schemas(self.session)
         for attempt in range(MODEL_REQUEST_RETRIES + 1):
             self.session.state.current_model_call_started_at = time.monotonic()
@@ -5937,10 +5960,18 @@ class ModelClient:
         if prompt_cache_key:
             params["prompt_cache_key"] = prompt_cache_key
         self.apply_provider_params(params, provider)
+        client = self.client()
+        self.activate_client(client)
         try:
-            response = self.client().chat.completions.create(**params)
+            response = client.chat.completions.create(**params)
+            if self.cancel_requested.is_set():
+                raise KeyboardInterrupt
         except Exception as error:
+            if self.cancel_requested.is_set():
+                raise KeyboardInterrupt from None
             raise ModelError(str(error)) from error
+        finally:
+            self.deactivate_client(client)
         self.session.usage.add(getattr(response, "usage", None))
         message = response.choices[0].message
         assistant = self.assistant_message(message)
@@ -5949,6 +5980,7 @@ class ModelClient:
         return assistant, calls, content
 
     def compact(self, context: str) -> Json:
+        self.cancel_requested.clear()
         prompt = """
 Compact the nanocode working context.
 Return one JSON object only. No markdown, prose, code fences, or comments.
@@ -6032,10 +6064,18 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
         params = self.anthropic_params(messages, tools)
+        client = self.anthropic_client()
+        self.activate_client(client)
         try:
-            result = self.anthropic_client().messages.create(**params)
+            result = client.messages.create(**params)
+            if self.cancel_requested.is_set():
+                raise KeyboardInterrupt
         except Exception as error:
+            if self.cancel_requested.is_set():
+                raise KeyboardInterrupt from None
             raise ModelError(str(error)) from error
+        finally:
+            self.deactivate_client(client)
         self.session.usage.add(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result)
         return assistant, calls, content
@@ -6588,16 +6628,22 @@ class LogEntry:
     logic stays in UiPrinter and this stays a plain data record."""
 
     fragments: list[tuple[str, str]]
+    live_renderer: Callable[[int], list[tuple[str, str]]] | None = None
+    live_width: int = 0
+    live_fragments: list[tuple[str, str]] | None = None
+
+    def render(self) -> list[tuple[str, str]]:
+        if self.live_renderer is None:
+            return self.fragments
+        width = shutil.get_terminal_size((120, 20)).columns
+        if self.live_fragments is None or self.live_width != width:
+            self.live_width = width
+            self.live_fragments = self.live_renderer(width)
+        return self.live_fragments
 
 
 class LogBuffer:
-    """In-memory ring of LogEntry, the source of truth for the TUI viewport (Phase 2+).
-
-    Entries are appended in emit order; observers (a pt Application, once wired) are invalidated
-    after each append so the viewport repaints. Bounded so a long-running session cannot grow
-    unbounded — old entries drop off the front once the cap is hit. Phase 1 introduces the class
-    without any producer or consumer wired up yet; enabling `NANOCODE_TUI=1` currently only opts
-    into constructing an (unused) LogBuffer on the UiPrinter."""
+    """Bounded append-only source of styled entries for the full-screen viewport."""
 
     LIMIT: ClassVar[int] = 20_000
 
@@ -6605,8 +6651,12 @@ class LogBuffer:
         self.entries: list[LogEntry] = []
         self.observers: list[Callable[[], None]] = []
 
-    def append(self, fragments: list[tuple[str, str]]) -> None:
-        self.entries.append(LogEntry(fragments))
+    def append(
+        self,
+        fragments: list[tuple[str, str]],
+        live_renderer: Callable[[int], list[tuple[str, str]]] | None = None,
+    ) -> None:
+        self.entries.append(LogEntry(fragments, live_renderer))
         if len(self.entries) > self.LIMIT:
             del self.entries[: len(self.entries) - self.LIMIT]
         for observer in list(self.observers):
@@ -6614,16 +6664,27 @@ class LogBuffer:
                 observer()
 
 
-def _raise_in_thread(thread_id: int | None, exc_type: type[BaseException]) -> None:
-    """Best-effort inject `exc_type` into another Python thread via CPython's PyThreadState API.
-    Used by TuiApp's Ctrl-C to interrupt a bg agent turn without exiting the process. If the
-    thread has no id or the runtime rejects the injection, silently no-op — the user can retry."""
-    if thread_id is None:
-        return
-    import ctypes as _ctypes
+TUI_MODAL_PENDING = object()
 
-    with contextlib.suppress(Exception):
-        _ctypes.pythonapi.PyThreadState_SetAsyncExc(_ctypes.c_ulong(thread_id), _ctypes.py_object(exc_type))
+
+@dataclass
+class TuiModal:
+    fragments_fn: Callable[[], list[tuple[str, str]]]
+    key_fn: Callable[[str, str], Any]
+    done: threading.Event = field(default_factory=threading.Event)
+    result: Any = None
+
+
+class CallbackPlaceholder(Processor):
+    def __init__(self, text_fn: Callable[[], str]):
+        self.text_fn = text_fn
+
+    def apply_transformation(self, ti) -> Transformation:
+        text = self.text_fn()
+        buffer = ti.buffer_control.buffer
+        if not text or buffer is None or buffer.text or ti.lineno != ti.document.line_count - 1:
+            return Transformation(ti.fragments)
+        return Transformation([*ti.fragments, ("class:queue.hint", text)])
 
 
 class TuiApp:
@@ -6631,13 +6692,15 @@ class TuiApp:
 
     Layout (top → bottom):
       * viewport — renders the LogBuffer as scrolling styled fragments (tail-anchored).
-      * status line — shows the current phase (idle `>`, running with elapsed timer, or an
-        approval prompt); the input widget sits inside this line.
+      * activity — queued input and live tool output while a turn is running.
+      * input — chat, queued follow-up, or approval input depending on the current mode.
+      * status — provider/model/context and runtime state.
 
     Input widget is state-driven:
       * `chat`      — Enter submits to `on_chat_submit` (starts an agent turn).
       * `approval`  — Enter resolves `_input_pending` (unblocks a bg-thread waiter).
-      * `disabled`  — keystrokes ignored; agent is running with no active prompt.
+      * `dispatch`  — command is being routed; input is temporarily ignored.
+      * `running`   — Enter queues a follow-up for the active turn.
 
     Cross-thread coordination:
       * The agent runs on a bg thread. Every LogBuffer.append fires an observer that invalidates
@@ -6653,35 +6716,61 @@ class TuiApp:
         log_buffer: LogBuffer,
         *,
         on_chat_submit: Callable[[str], None] | None = None,
+        on_running_submit: Callable[[str], None] | None = None,
         on_exit_request: Callable[[], None] | None = None,
         on_interrupt: Callable[[], None] | None = None,
+        on_retry: Callable[[], None] | None = None,
+        on_recall: Callable[[], str] | None = None,
         status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
+        activity_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
+        input_hint_fn: Callable[[], str] | None = None,
+        history: FileHistory | None = None,
+        completer: Completer | None = None,
     ) -> None:
         self.log_buffer = log_buffer
         self.on_chat_submit = on_chat_submit or (lambda _text: None)
+        self.on_running_submit = on_running_submit or (lambda _text: None)
         self.on_exit_request = on_exit_request or (lambda: None)
-        # Fired on Ctrl-C when there is running work to interrupt (agent turn, approval prompt);
-        # typically the CommandLoop uses this to raise KeyboardInterrupt on its worker thread.
         self.on_interrupt = on_interrupt or (lambda: None)
-        # Called each frame to render the bottom status line (provider, model, ctx, mcp, etc.).
-        # None → empty status.
+        self.on_retry = on_retry or (lambda: None)
+        self.on_recall = on_recall or (lambda: "")
         self.status_fragments_fn = status_fragments_fn or (lambda: [])
-        self.input_buffer = Buffer(multiline=False, accept_handler=self._accept)
+        self.activity_fragments_fn = activity_fragments_fn or (lambda: [])
+        self.input_hint_fn = input_hint_fn or (lambda: "")
+        self.input_buffer = Buffer(
+            history=history,
+            completer=completer,
+            complete_while_typing=False,
+            enable_history_search=True,
+            multiline=True,
+            accept_handler=self._accept,
+        )
+        self.search_toolbar = SearchToolbar()
         self.app: Application | None = None
-        # Input mode + approval bridge
-        self.input_mode = "chat"  # "chat" | "approval" | "disabled"
+        self.input_mode = "chat"  # chat | dispatch | running | approval
         self.input_prompt = UiPrinter.PROMPT_PREFIX
         self._input_pending: threading.Event | None = None
         self._input_result: str = ""
-        # Progress label shown in the status line while the agent is running (set by run_agent_turn)
         self.status_label: str = ""
         self.started_at: float = 0.0
+        self.modal: TuiModal | None = None
+        self.modal_lock = threading.Lock()
+        self.follow_tail = True
+        self.viewport_scroll = 0
+        self.input_window: Window | None = None
+        self.viewport_window: Window | None = None
+        self.modal_window: Window | None = None
 
     def request_input(self, prompt: str) -> str:
         """Called from the agent (bg) thread to get a line of user input inline (approval prompts,
         Ask tool, etc.). Blocks until the main thread's pt widget submits. If the app has exited
         before submission, returns "" so the caller unwinds cleanly."""
+        # A tool approval must not replace an already-visible selector. Wait for that selector to
+        # close, then reuse the shared input row.
+        with self.modal_lock:
+            pass
         event = threading.Event()
+        previous_mode, previous_prompt = self.input_mode, self.input_prompt
         self._input_pending = event
         self._input_result = ""
         self._set_mode("approval", prompt)
@@ -6689,17 +6778,21 @@ class TuiApp:
             event.wait()
         finally:
             self._input_pending = None
-            self._set_mode("chat", UiPrinter.PROMPT_PREFIX)
+            self._set_mode(previous_mode, previous_prompt)
         return self._input_result
 
     def set_running(self, label: str) -> None:
         self.status_label = label
         self.started_at = time.monotonic()
-        self._set_mode("disabled", "")
+        self._set_mode("running", "+> ")
+
+    def set_dispatching(self) -> None:
+        self._set_mode("dispatch", "")
 
     def set_idle(self) -> None:
         self.status_label = ""
         self.started_at = 0.0
+        self.dismiss_resolved_modal()
         self._set_mode("chat", UiPrinter.PROMPT_PREFIX)
 
     def _set_mode(self, mode: str, prompt: str) -> None:
@@ -6715,89 +6808,234 @@ class TuiApp:
             self._input_result = text
             self._input_pending.set()
             return False
+        if self.input_mode == "running":
+            if text.strip():
+                self.on_running_submit(text)
+            return False
         if self.input_mode == "chat":
+            if not text.strip():
+                return False
+            self.set_dispatching()
             self.on_chat_submit(text)
-        # `disabled` swallows the keystroke silently.
         return False
 
-    def run_terminal(self, action: Callable[[], Any]) -> Any:
-        """Suspend this TUI while a blocking prompt-toolkit application owns the terminal."""
-        app = self.app
-        if app is None or app.context is None:
-            return action()
-        result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+    def show_modal(self, fragments_fn: Callable[[], list[tuple[str, str]]], key_fn: Callable[[str, str], Any]) -> Any:
+        """Show a modal inside this Application and block the calling worker until it closes."""
+        with self.modal_lock:
+            app = self.app
+            if app is None or self.modal_window is None:
+                return None
+            modal = TuiModal(fragments_fn, key_fn)
 
-        def completed(future) -> None:
-            try:
-                result.put((True, future.result()))
-            except BaseException as error:
-                result.put((False, error))
+            def activate() -> None:
+                self.modal = modal
+                app.layout.focus(self.modal_window)
+                app.invalidate()
 
-        def schedule() -> None:
-            try:
-                run_in_terminal(action, in_executor=True).add_done_callback(completed)
-            except BaseException as error:
-                result.put((False, error))
+            app.loop.call_soon_threadsafe(activate)
+            modal.done.wait()
+            return modal.result
 
-        app.loop.call_soon_threadsafe(app.context.copy().run, schedule)
-        succeeded, value = result.get()
-        if succeeded:
-            return value
-        raise value
+    def close_modal(self, result: Any = None) -> None:
+        modal = self.modal
+        if modal is None:
+            return
+        modal.result = result
+        modal.done.set()
+
+    def dismiss_resolved_modal(self) -> None:
+        modal, app = self.modal, self.app
+        if modal is None or not modal.done.is_set() or app is None:
+            return
+
+        def dismiss() -> None:
+            if self.modal is modal:
+                self.modal = None
+                if self.input_window is not None:
+                    app.layout.focus(self.input_window)
+                app.invalidate()
+
+        app.loop.call_soon_threadsafe(dismiss)
+
+    def modal_fragments(self) -> list[tuple[str, str]]:
+        return self.modal.fragments_fn() if self.modal is not None else []
+
+    def dispatch_modal_key(self, key: str, data: str = "") -> None:
+        if self.modal is None:
+            return
+        result = self.modal.key_fn(key, data)
+        if result is not TUI_MODAL_PENDING:
+            self.close_modal(result)
+        elif self.app is not None:
+            self.app.invalidate()
 
     def viewport_fragments(self) -> list[tuple[str, str]]:
         fragments: list[tuple[str, str]] = []
         for index, entry in enumerate(self.log_buffer.entries):
             if index:
                 fragments.append(("", "\n"))
-            fragments.extend(entry.fragments)
-        return fragments
+            fragments.extend(entry.render())
+        lines = list(split_lines(fragments)) or [[]]
+        cursor_line = len(lines) - 1 if self.follow_tail else min(self.viewport_scroll, len(lines) - 1)
+        lines[cursor_line] = [("[SetCursorPosition]", ""), *lines[cursor_line]]
+        rendered: list[tuple[str, str]] = []
+        for index, line in enumerate(lines):
+            if index:
+                rendered.append(("", "\n"))
+            rendered.extend((style, text) for style, text, *_rest in line)
+        return rendered
+
+    def viewport_line_count(self) -> int:
+        return max(1, sum(1 for _line in split_lines(self.viewport_fragments())))
 
     def status_fragments(self) -> list[tuple[str, str]]:
-        if self.input_mode == "disabled" and self.status_label:
-            elapsed = Text.elapsed_since(self.started_at, precise=True) if self.started_at else ""
-            body = f"{self.status_label} ({elapsed})" if elapsed else self.status_label
-            return [("class:divider.working", body)]
         return [("class:prompt", self.input_prompt)]
 
+    def vertical_scroll(self, window: Window) -> int:
+        if self.follow_tail:
+            content_height = window.render_info.content_height if window.render_info is not None else self.viewport_line_count()
+            window_height = window.render_info.window_height if window.render_info is not None else max(1, shutil.get_terminal_size().lines - 2)
+            self.viewport_scroll = max(0, content_height - window_height)
+        return self.viewport_scroll
+
+    def scroll_viewport(self, delta: int) -> None:
+        window = self.viewport_window
+        if window is None or window.render_info is None:
+            return
+        maximum = max(0, window.render_info.content_height - window.render_info.window_height)
+        self.viewport_scroll = min(maximum, max(0, self.viewport_scroll + delta))
+        self.follow_tail = self.viewport_scroll >= maximum
+        if self.app is not None:
+            self.app.invalidate()
+
     def build_layout(self) -> Layout:
-        viewport = Window(
-            FormattedTextControl(self.viewport_fragments),
+        self.viewport_window = Window(
+            FormattedTextControl(self.viewport_fragments, show_cursor=False),
             wrap_lines=True,
-            get_vertical_scroll=lambda w: max(0, w.render_info.content_height - w.render_info.window_height) if w.render_info else 0,
+            get_vertical_scroll=self.vertical_scroll,
         )
-        # Prompt symbol and input cursor live on the SAME physical row via BeforeInput; the row
-        # dynamically switches between the `>` chat prompt, the approval prompt, and a working
-        # divider when the agent is running. dynamic() so the prefix updates when input_mode does.
-        input_window = Window(
+        self.input_window = Window(
             BufferControl(
                 buffer=self.input_buffer,
-                input_processors=[BeforeInput(self.status_fragments)],
+                input_processors=[
+                    HighlightIncrementalSearchProcessor(),
+                    BeforeInput(self.status_fragments),
+                    CallbackPlaceholder(self.input_hint_fn),
+                ],
+                search_buffer_control=self.search_toolbar.control,
+                preview_search=True,
             ),
-            height=1,
+            height=Dimension(min=1, max=6),
             dont_extend_height=True,
+            wrap_lines=True,
+            style=UiPrinter.user_log_style(),
         )
-        # Bottom status bar (provider / model / mcp / ctx / index / etc.) rendered from the caller-
-        # supplied fragments callable so pt repaints pick up live state changes.
+        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        activity = ConditionalContainer(
+            Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True),
+            filter=Condition(lambda: self.input_mode == "running"),
+        )
+        self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
+        body = FloatContainer(
+            HSplit([self.viewport_window, activity, self.input_window, completion_space, self.search_toolbar]),
+            [
+                Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True),
+                Float(
+                    ConditionalContainer(self.modal_window, filter=Condition(lambda: self.modal is not None)),
+                    left=0,
+                    right=0,
+                    bottom=0,
+                ),
+            ],
+        )
         status_bar = Window(
             FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
             style="class:bottom-toolbar",
             height=1,
             dont_extend_height=True,
         )
-        return Layout(HSplit([viewport, input_window, status_bar]), focused_element=input_window)
+        return Layout(HSplit([body, status_bar]), focused_element=self.input_window)
 
     def make_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
+        modal = Condition(lambda: self.modal is not None)
+        running = Condition(lambda: self.input_mode == "running" and self.modal is None)
+
+        for key in ("j", "k", "h", "l", "up", "down", "left", "right", "tab", "enter", "escape", "q", "r", "pagedown", "pageup", "c-d", "c-u", "backspace", "c-h", "/"):
+            bindings.add(key, filter=modal, eager=True)(lambda event, key=key: self.dispatch_modal_key(key, event.data))
+        for number in range(1, 10):
+            bindings.add(str(number), filter=modal, eager=True)(lambda event, number=number: self.dispatch_modal_key(str(number), event.data))
+        bindings.add(Keys.Any, filter=modal)(lambda event: self.dispatch_modal_key("any", event.data))
+
+        @bindings.add("enter", filter=~modal, eager=True)
+        def _enter(event):
+            event.current_buffer.validate_and_handle()
+
+        @bindings.add("escape", "enter", filter=~modal, eager=True)
+        def _alt_enter(event):
+            event.current_buffer.insert_text("\n")
+
+        @bindings.add("tab", filter=~modal)
+        def _tab(event):
+            buffer = event.current_buffer
+            if buffer.complete_state:
+                buffer.complete_next()
+            else:
+                buffer.start_completion(select_first=False)
+
+        @bindings.add("s-tab", filter=~modal)
+        def _shift_tab(event):
+            buffer = event.current_buffer
+            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
+
+        @bindings.add(Keys.BracketedPaste, filter=~modal)
+        def _paste(event):
+            event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
+
+        @bindings.add("c-r", filter=~modal, eager=True)
+        def _history_search(event):
+            direction = pt_search.SearchDirection.BACKWARD
+            if event.app.layout.current_control is self.search_toolbar.control:
+                pt_search.do_incremental_search(direction, count=event.arg)
+            else:
+                pt_search.start_search(direction=direction)
+
+        @bindings.add("up", filter=running, eager=True)
+        def _recall(event):
+            if self.input_buffer.text:
+                self.input_buffer.cursor_up()
+                return
+            text = self.on_recall()
+            if text:
+                self.input_buffer.reset(Document(text, cursor_position=len(text)))
+
+        @bindings.add("c-g", filter=running, eager=True)
+        def _retry(_event):
+            self.on_retry()
+
+        @bindings.add("pageup", filter=~modal, eager=True)
+        def _page_up(_event):
+            height = self.viewport_window.render_info.window_height if self.viewport_window and self.viewport_window.render_info else 10
+            self.scroll_viewport(-max(1, height - 2))
+
+        @bindings.add("pagedown", filter=~modal, eager=True)
+        def _page_down(_event):
+            height = self.viewport_window.render_info.window_height if self.viewport_window and self.viewport_window.render_info else 10
+            self.scroll_viewport(max(1, height - 2))
 
         @bindings.add("c-c", eager=True)
+        @bindings.add("<sigint>", eager=True)
         def _ctrl_c(event):  # pragma: no cover — interactive path
             # Never quit on Ctrl-C. Instead:
             #   * approval mode → cancel this specific prompt (empty reply back to the agent).
             #   * chat with typed input → clear the input.
-            #   * agent running (disabled input) → interrupt the running turn.
+            #   * agent running → interrupt the running turn.
             #   * idle chat with empty input → no-op.
             # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
+            if self.modal is not None:
+                self.close_modal(None)
+                self.modal = None
+                return
             if self.input_mode == "approval" and self._input_pending is not None:
                 self._input_result = ""
                 self._input_pending.set()
@@ -6805,12 +7043,12 @@ class TuiApp:
             if self.input_mode == "chat" and self.input_buffer.text:
                 self.input_buffer.reset(Document(""))
                 return
-            if self.input_mode == "disabled":
+            if self.input_mode in {"dispatch", "running"}:
                 self.on_interrupt()
 
-        @bindings.add("c-d", eager=True)
+        @bindings.add("c-d", filter=~modal, eager=True)
         def _ctrl_d(event):  # pragma: no cover — interactive path
-            if not self.input_buffer.text and self.input_mode == "chat":
+            if not self.input_buffer.text and self.input_mode == "chat" and self.modal is None:
                 self.on_exit_request()
                 event.app.exit()
 
@@ -6843,6 +7081,8 @@ class TuiApp:
             if self._input_pending is not None:
                 self._input_result = ""
                 self._input_pending.set()
+            if self.modal is not None:
+                self.close_modal(None)
         self.dump_to_scrollback()
 
     def dump_to_scrollback(self) -> None:  # pragma: no cover — writes to real stdout
@@ -6867,22 +7107,22 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
-        # When set, callers know a Rich render is happening inside a running prompt app; TUI-only
-        # commands like /diff refuse to launch a full-screen viewer in that context.
-        self.capture_ansi = False
         # The source of truth for the full-screen viewport. Always allocated so tools/tests that
         # inspect it don't have to null-check; the run loop only enters TUI mode in interactive
         # TTY sessions (see CommandLoop.run).
         self.log_buffer: LogBuffer = LogBuffer()
+        self.full_screen = False
 
     def emit(self, text: str | LogBlock = "") -> None:
         if not self.color:
             self.output_fn(str(text))
             return
-        segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
-        if self.log_buffer is not None:
-            self.log_buffer.append(segments)
-        print_formatted_text(FormattedText(segments), end="", flush=True)
+        is_log_block = isinstance(text, LogBlock)
+        segments = self.log_segments(text) if is_log_block else self.segments(text)
+        live_renderer = (lambda width: self.log_segments(text, live=True, columns=width)) if is_log_block and self.full_screen else None
+        self.log_buffer.append(segments, live_renderer)
+        if not self.full_screen:
+            print_formatted_text(FormattedText(segments), end="", flush=True)
 
     # Rich right-pads every rendered line with spaces up to the console width so backgrounds and
     # padding can fill the row. Uncolored padding gets baked into scrollback and turns into wrap
@@ -6957,12 +7197,9 @@ class UiPrinter:
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
-        if self.log_buffer is not None:
-            # Rich output is ANSI bytes; parse it back into pt fragments so the TUI viewport can
-            # render it uniformly with emit() output. `to_formatted_text(ANSI(...))` is the same
-            # conversion print_formatted_text does internally on the next line.
-            self.log_buffer.append(list(to_formatted_text(ANSI(cleaned))))
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        self.log_buffer.append(list(to_formatted_text(ANSI(cleaned))))
+        if not self.full_screen:
+            print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
@@ -6997,7 +7234,10 @@ class UiPrinter:
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
-        print_formatted_text(ANSI(self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))), end="", flush=True)
+        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        self.log_buffer.append(list(to_formatted_text(ANSI(cleaned))))
+        if not self.full_screen:
+            print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
@@ -7037,7 +7277,6 @@ class UiPrinter:
 
     LOG_STYLES: ClassVar[dict[LogRole, tuple[str, str]]] = {
         LogRole.TOOL: ("ansigreen", "fg:default"),
-        LogRole.APPROVAL: ("ansiyellow", "fg:default"),
         LogRole.AUTO: ("ansiblue", "fg:default"),
         LogRole.META: ("ansibrightblack", "ansibrightblack"),
         LogRole.OUTPUT: ("fg:default", "fg:default"),
@@ -7046,9 +7285,9 @@ class UiPrinter:
         LogRole.DIFF: ("fg:default", "fg:default"),
     }
 
-    def log_segments(self, block: LogBlock) -> list[tuple[str, str]]:
+    def log_segments(self, block: LogBlock, *, live: bool = False, columns: int | None = None) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
-        width = max(1, shutil.get_terminal_size((120, 20)).columns - 1)
+        width = max(1, (columns if columns is not None else shutil.get_terminal_size((120, 20)).columns) - 1)
         entries = list(block.walk())
         index = 0
         while index < len(entries):
@@ -7063,7 +7302,10 @@ class UiPrinter:
                 sample_prefix = [("", block.margin(level)), *self.edge_segments(diff_lines[0].edge)]
                 sample_prefix_width = sum(get_cwidth(text) for _style, text in sample_prefix)
                 diff_row_width = max(1, width - sample_prefix_width)
-                highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in diff_lines), diff_row_width))
+                diff_text = "\n".join(item.text for item in diff_lines)
+                highlighted = self.segment_lines(
+                    self.diff_segments_live(diff_text, diff_row_width) if live else self.diff_segments(diff_text, diff_row_width)
+                )
                 for item, rendered in zip(diff_lines, highlighted):
                     prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
@@ -7360,6 +7602,10 @@ class BashLivePreview:
         self.timer: threading.Thread | None = None
 
     def start(self) -> None:
+        if self.loop.tui is not None:
+            self.loop.status_bar.begin()
+            self.loop.tui.set_running("compacting context")
+            return
         if not sys.stderr.isatty():
             return
         with self.lock:
@@ -7690,49 +7936,19 @@ class StatusBar:
 class CompactSpinner:
     def __init__(self, loop: "CommandLoop"):
         self.loop = loop
-        self.stop_event = threading.Event()
-        self.thread: threading.Thread | None = None
-        self.app: Application | None = None
 
     def start(self) -> None:
-        if not sys.stderr.isatty():
+        self.loop.status_bar.begin()
+        if self.loop.tui is not None:
+            self.loop.tui.set_running("compacting context")
             return
-        self.thread = threading.Thread(target=self.run, daemon=True)
-        self.thread.start()
-
-    def run(self) -> None:
-        window = Window(FormattedTextControl(self.fragments), height=1, dont_extend_height=True)
-        app = self.loop._make_app(Layout(HSplit([window, self.loop.status_window()])), KeyBindings())
-        self.app = app
-        try:
-            self.loop.run_background_app(app, self.stop_event.is_set)
-        finally:
-            self.app = None
+        self.loop.status_bar.start(reset=False)
 
     def stop(self) -> None:
-        if self.thread is None:
+        if self.loop.tui is not None:
+            self.loop.tui.set_dispatching()
             return
-        self.stop_event.set()
-        if self.app is not None:
-            self.loop.exit_app(self.app)
-        self.thread.join()
-
-    def fragments(self) -> list[tuple[str, str]]:
-        return self.loop.sweep_divider_fragments("compacting context")
-
-
-class QueuePlaceholder(Processor):
-    def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
-        self.empty_text = empty_text
-        self.pending_text = pending_text
-        self.has_pending = has_pending
-
-    def apply_transformation(self, ti):
-        buffer = ti.buffer_control.buffer
-        if ti.lineno != ti.document.line_count - 1 or buffer is None or buffer.text:
-            return Transformation(ti.fragments)
-        text = self.pending_text if self.has_pending() else self.empty_text
-        return Transformation(ti.fragments + [("class:queue.hint", text)])
+        self.loop.status_bar.stop()
 
 
 @dataclass
@@ -7844,8 +8060,8 @@ class ChoiceViewState:
 
 
 class CommandLoop:
-    QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues follow-up · Ctrl-C interrupts"
-    QUEUE_PENDING_HINT: ClassVar[str] = "↑ recalls queued · Ctrl-C sends now"
+    QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
+    QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
@@ -7857,11 +8073,12 @@ class CommandLoop:
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
 
-    # Commands safe to run from the background queue-input thread while the agent works: read-only
+    # Commands safe to run from the follow-up input while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
     QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
+    MODEL_DISCOVER_ACTION = "Discover remote models…"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
     MCP_COMMANDS: ClassVar[dict[str, tuple[int, int, str]]] = {
         "tools": (0, 1, "Usage: /mcp tools [server]"),
@@ -7990,12 +8207,7 @@ Tools:
         self.live_preview = BashLivePreview()
         self.bash_live_preview_rendered = False
         self.live_status_paused = False
-        self.live_queue_paused = False
         self.interactive_input = input_fn is input and sys.stdin.isatty()
-        self.queue_input_paused = threading.Event()
-        self.queue_input_active = threading.Event()
-        self.queue_input_app: Application | None = None
-        self.queue_input_text = ""
         # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
         # bg-thread approval prompts land in the same input widget the user is already typing in.
         self.tui: TuiApp | None = None
@@ -8034,29 +8246,6 @@ Tools:
         else:
             close()
 
-    def queue_input_until(self, stop_event: threading.Event) -> None:
-        was_paused = False
-        while not stop_event.is_set():
-            if self.queue_input_paused.is_set():
-                was_paused = True
-                stop_event.wait(0.05)
-                continue
-            if was_paused:
-                # Avoid briefly rebuilding the queue UI between an approval prompt and the live UI
-                # of the approved tool, which would leave transient divider redraws in scrollback.
-                was_paused = False
-                if stop_event.wait(0.05):
-                    return
-                continue
-            self.run_queue_input_app(stop_event)
-
-    def run_background_app(self, app: Application, should_exit: Callable[[], bool]) -> None:
-        try:
-            with patch_stdout():
-                app.run(pre_run=lambda: self.exit_app(app) if should_exit() else None)
-        except (EOFError, KeyboardInterrupt, ValueError, OSError):
-            pass
-
     def echo_user_input(self, prefix: str, body: str, *, prefix_style: str = "class:prompt") -> None:
         print_formatted_text(
             FormattedText([("", "\n"), (prefix_style, prefix), (UiPrinter.user_log_style(), body)]),
@@ -8064,19 +8253,18 @@ Tools:
         )
 
     def flush_queued_to_log(self, texts: list[str]) -> None:
-        # Move flushed queued messages from the live bottom region up into the scrollback log, then
-        # refresh so the region drops them. Runs on the agent (main) thread; patch_stdout places the
-        # emitted lines above the still-running queue-input app.
+        # Move flushed queued messages from the live activity region into the viewport log.
         flushed = False
         for text in texts:
             if text.strip():
-                self.echo_user_input(UiPrinter.USER_LOG_PREFIX, text)
+                if self.tui is not None:
+                    self.ui.emit(UiPrinter.USER_LOG_PREFIX + text)
+                else:
+                    self.echo_user_input(UiPrinter.USER_LOG_PREFIX, text)
                 flushed = True
         if flushed:
             # Mid-turn flushes land between tool-log lines; give the next line breathing room too.
             self.emit("")
-        if self.queue_input_app is not None:
-            self.queue_input_app.invalidate()
 
     # Breathing green dot shown on the working divider while a model request is in flight — it sits
     # just before the "working (…)" label and vanishes as soon as the response returns (non-streaming
@@ -8159,139 +8347,23 @@ Tools:
                 fragments.extend([("", "\n"), (UiPrinter.user_log_style(), (marker if index == 0 else "  ") + line)])
         return fragments
 
-    def retry_current_model_request(self) -> bool:
-        if self.session.state.current_model_call_started_at <= 0 or self.session.state.manual_model_retry_requested:
-            return False
-        self.session.state.manual_model_retry_requested = True
-        self.session.state.model_retry_count += 1
-        os.kill(os.getpid(), signal.SIGINT)
-        return True
+    def tui_activity_fragments(self) -> list[tuple[str, str]]:
+        fragments = self.queue_region_fragments()
+        with self.live_preview.lock:
+            lines = self.live_preview.frame_lines() if self.live_preview.active else []
+        for line in lines:
+            fragments.extend([("", "\n"), ("ansibrightblack", line)])
+        return fragments
 
-    def run_queue_input_app(self, stop_event: threading.Event) -> None:
-        def changed(buffer: Buffer) -> None:
-            self.queue_input_text = buffer.text
-
-        def has_pending() -> bool:
-            with self.session._queue_lock:
-                return any(not item.inflight for item in self.session.pending_user_inputs)
-
-        buffer = Buffer(
-            document=Document(self.queue_input_text),
-            multiline=True,
-            on_text_changed=changed,
-            completer=self.input_completer,
-            complete_while_typing=False,
-        )
-        control = BufferControl(
-            buffer=buffer,
-            input_processors=[
-                BeforeInput(FormattedText([("class:prompt", UiPrinter.PROMPT_PREFIX)])),
-                QueuePlaceholder(
-                    self.QUEUE_EMPTY_HINT,
-                    self.QUEUE_PENDING_HINT,
-                    has_pending,
-                ),
-            ],
-        )
-        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True, style=UiPrinter.user_log_style())
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-
-        def record(text: str) -> None:
-            text = Text.clean(text.strip())
-            if not text:
-                return
-            if "\n" not in text and text.startswith("/"):
-                run_in_terminal(lambda: self.run_queued_command(text))
-                return
-            # Queued messages live in the bottom region (below the sweep divider) until the turn
-            # flushes them up into the log — they are not echoed to scrollback here.
-            self.session.enqueue_user_input(text)
-            if self.queue_input_app is not None:
-                self.queue_input_app.invalidate()
-
-        def recall_latest() -> None:
-            if buffer.text:
-                buffer.cursor_up()
-                return
-            with self.session._queue_lock:
-                item = next((item for item in reversed(self.session.pending_user_inputs) if not item.inflight), None)
-                if item is None:
-                    return
-                self.session.pending_user_inputs.remove(item)
-                text = item.text
-            buffer.reset(Document(text, cursor_position=len(text)))
-            if self.queue_input_app is not None:
-                self.queue_input_app.invalidate()
-
-        @bindings.add("enter", eager=True)
-        def _enter(event):
-            if buffer.text.strip():
-                record(buffer.text)
-            buffer.reset(Document(""))
-
-        @bindings.add("escape", "enter", eager=True)
-        def _alt_enter(event):
-            buffer.insert_text("\n")
-
-        @bindings.add("up", eager=True)
-        def _up(event):
-            recall_latest()
-
-        @bindings.add("down", eager=True)
-        def _down(event):
-            buffer.cursor_down()
-
-        @bindings.add("c-c", eager=True)
-        def _ctrl_c(event):
-            os.kill(os.getpid(), signal.SIGINT)
-
-        @bindings.add("c-g", eager=True)
-        def _ctrl_g(event):
-            self.retry_current_model_request()
-
-        self._add_completion_bindings(bindings, buffer)
-
-        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # Live region above the +> input: a sweep divider plus the still-pending queued messages.
-        # The divider persists for the whole turn; queued messages flush up into the scrollback log.
-        queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
-        # Blank lines above the divider and below the queued region, so the +> prompt is not crowded
-        # against the divider and the log above.
-        root = FloatContainer(
-            HSplit(
-                [
-                    Window(height=1, dont_extend_height=True),
-                    queued_region,
-                    Window(height=1, dont_extend_height=True),
-                    input_window,
-                    completion_space,
-                    self.status_window(active=True),
-                ]
-            ),
-            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
-        )
-        app = self._make_app(Layout(root, focused_element=input_window), bindings)
-        self.queue_input_app = app
-        self.queue_input_active.set()
-
-        def stop_when_needed() -> None:
-            while not stop_event.is_set() and not self.queue_input_paused.is_set():
-                stop_event.wait(0.05)
-            self.exit_app(app)
-
-        threading.Thread(target=stop_when_needed, daemon=True).start()
-        try:
-            self.run_background_app(app, lambda: stop_event.is_set() or self.queue_input_paused.is_set())
-        finally:
-            self.queue_input_text = buffer.text
-            self.queue_input_active.clear()
-            if self.queue_input_app is app:
-                self.queue_input_app = None
+    def tui_input_hint(self) -> str:
+        if self.tui is None or self.tui.input_mode != "running":
+            return ""
+        with self.session._queue_lock:
+            has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
+        return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
 
     def run_queued_command(self, text: str) -> None:
-        """Dispatch a slash command typed in the queue input. Only read-only commands run while the
-        agent is working; mutating/control commands would race the in-flight turn, so they are refused."""
+        """Dispatch a read-only slash command while an agent turn is running."""
         name = text.partition(" ")[0]
         if name not in self.QUEUE_RUN_COMMANDS:
             self.emit(f"{name} is unavailable while the agent is working; press Ctrl-C to run it.")
@@ -8301,32 +8373,36 @@ Tools:
             if sub and sub[0] != "tools":
                 self.emit("Only read-only /mcp (status, tools) is available while the agent is working.")
                 return
-        self.ui.capture_ansi = True
         try:
             self.command(text)
         finally:
-            self.ui.capture_ansi = False
+            if self.tui is not None:
+                self.tui.dismiss_resolved_modal()
 
-    def pause_queue_input(self) -> None:
-        self.queue_input_paused.set()
-        if self.queue_input_app is not None:
-            self.exit_app(self.queue_input_app)
-        deadline = time.monotonic() + 1.5
-        while self.queue_input_active.is_set() and time.monotonic() < deadline:
-            time.sleep(0.02)
-
-    def take_queue_input(self) -> tuple[list[str], str]:
-        """Take committed queue items and clear any uncommitted text."""
+    def take_pending_inputs(self) -> list[str]:
+        """Remove and return queued inputs that are not currently being flushed."""
         with self.session._queue_lock:
             texts = [item.text for item in self.session.pending_user_inputs if not item.inflight]
             self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.inflight]
-        typed = self.queue_input_text if self.queue_input_text.strip() else ""
-        self.queue_input_text = ""
-        return texts, typed
+        return texts
+
+    def recall_pending_input(self, on_inflight: Callable[[], None]) -> str:
+        """Move the newest queued input back to the editor, retrying if it was already claimed."""
+        with self.session._queue_lock:
+            item = next(reversed(self.session.pending_user_inputs), None)
+            if item is None:
+                return ""
+            self.session.pending_user_inputs.remove(item)
+            was_inflight = item.inflight
+            if was_inflight:
+                for pending_item in self.session.pending_user_inputs:
+                    pending_item.inflight = False
+        if was_inflight:
+            on_inflight()
+        return item.text
 
     def run(self) -> int:
-        # In interactive TTY mode, run the full-TUI shell. Only headless callers (output_fn ≠ print)
-        # keep the legacy scrollback REPL below.
+        # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
         if self.interactive_input:
             return self.run_tui()
         self.emit(f"nanocode {__version__}. /help for commands.")
@@ -8340,22 +8416,8 @@ Tools:
         UpdateChecker(self.session).start()
         while True:
             try:
-                entered, typed = self.take_queue_input()
-                if entered and self.interactive_input:
-                    # Input you already pressed Enter on in the > queue auto-submits as the next turn —
-                    # no second Enter. Any half-typed text goes back to the box for the following prompt.
-                    if typed:
-                        self.queue_input_text = typed
-                    self.echo_user_input(UiPrinter.USER_LOG_PREFIX, entered[0])
-                    user_input = entered[0]
-                    for text in entered[1:]:
-                        self.session.enqueue_user_input(text)
-                else:
-                    # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
-                    # text into the prompt for review/edit.
-                    user_input = self.read_input(
-                        initial_text="\n".join([*entered, *([typed] if typed else [])]), replay_prefix=UiPrinter.USER_LOG_PREFIX, pad=True
-                    )
+                entered = self.take_pending_inputs()
+                user_input = self.read_input(initial_text="\n".join(entered), replay_prefix=UiPrinter.USER_LOG_PREFIX, pad=True)
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
@@ -8372,14 +8434,8 @@ Tools:
                 continue
             self.emit("")
             started = time.monotonic()
-            stop_input = threading.Event()
-            watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
             try:
-                if watcher:
-                    self.status_bar.begin()
-                    watcher.start()
-                else:
-                    self.status_bar.start()
+                self.status_bar.start()
                 try:
                     with ModelRetryShortcut(self.session):
                         answer = self.agent.run(user_input)
@@ -8389,11 +8445,6 @@ Tools:
                 except NanocodeError as error:
                     answer = f"Error: {error}"
             finally:
-                stop_input.set()
-                self.pause_queue_input()
-                if watcher:
-                    watcher.join(timeout=1.0)
-                self.queue_input_paused.clear()
                 self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
@@ -8408,6 +8459,7 @@ Tools:
         agent thread route through TuiApp.request_input, which reuses the same input widget so
         the user answers inline without leaving the shell."""
         buffer = self.ui.log_buffer
+        self.ui.full_screen = True
         self.emit(f"nanocode {__version__}. /help for commands.")
         if tip := self.startup_tip():
             self.emit("tip: " + tip)
@@ -8421,23 +8473,71 @@ Tools:
         stop = threading.Event()
         self.worker_thread: threading.Thread | None = None
 
-        def interrupt() -> None:
-            # Ctrl-C in the TUI: forward as a KeyboardInterrupt to the worker thread so the running
-            # agent turn unwinds through its existing interrupt handlers, matching the pre-TUI
-            # "Ctrl-C cancels the current turn" UX.
+        def raise_worker(exc_type: type[BaseException]) -> None:
             worker = self.worker_thread
-            if worker is not None and worker.is_alive():
-                with contextlib.suppress(Exception):
-                    _raise_in_thread(worker.ident, KeyboardInterrupt)
+            if worker is None or not worker.is_alive() or worker.ident is None:
+                return
+            import ctypes
+
+            result = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(worker.ident), ctypes.py_object(exc_type))
+            if result > 1:
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(worker.ident), None)
+
+        def interrupt(message: str = "Cancelling…") -> None:
+            self.emit(message)
+            cancel = getattr(self.agent.model, "cancel", None)
+            if callable(cancel):
+                threading.Thread(target=cancel, daemon=True).start()
+            with contextlib.suppress(Exception):
+                raise_worker(KeyboardInterrupt)
+
+        def retry() -> None:
+            if self.session.state.current_model_call_started_at <= 0 or self.session.state.manual_model_retry_requested:
+                return
+            self.session.state.manual_model_retry_requested = True
+            self.session.state.model_retry_count += 1
+            interrupt("Retrying…")
+
+        def submit_running(text: str) -> None:
+            text = Text.clean(text.strip())
+            if not text:
+                return
+            if "\n" not in text and text.startswith("/"):
+                threading.Thread(target=self.run_queued_command, args=(text,), daemon=True).start()
+            else:
+                self.session.enqueue_user_input(text)
+            if self.tui is not None and self.tui.app is not None:
+                self.tui.app.invalidate()
+
+        def recall() -> str:
+            def retry_inflight() -> None:
+                if self.session.state.current_model_call_started_at <= 0:
+                    return
+                self.session.state.manual_model_retry_requested = True
+                self.session.state.model_retry_count += 1
+                interrupt("Revising queued input…")
+
+            return self.recall_pending_input(retry_inflight)
+
+        def request_exit() -> None:
+            stop.set()
+            self.session.save_snapshot()
 
         self.tui = TuiApp(
             buffer,
             on_chat_submit=lambda text: pending.put(text) if text.strip() else None,
-            on_exit_request=stop.set,
+            on_running_submit=submit_running,
+            on_exit_request=request_exit,
             on_interrupt=interrupt,
+            on_retry=retry,
+            on_recall=recall,
             status_fragments_fn=lambda: self.status_bar.display_fragments(
-                active=self.tui is not None and self.tui.input_mode == "disabled"
+                active=self.tui is not None and self.tui.input_mode == "running"
             ),
+            activity_fragments_fn=self.tui_activity_fragments,
+            input_hint_fn=self.tui_input_hint,
+            history=self.input_history,
+            completer=self.input_completer,
         )
 
         def worker() -> None:
@@ -8446,21 +8546,26 @@ Tools:
                     user_input = pending.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                self.echo_user_input(UiPrinter.USER_LOG_PREFIX, user_input)
-                handled, exit_now = self.command(user_input)
+                self.ui.emit(UiPrinter.USER_LOG_PREFIX + user_input)
+                try:
+                    handled, exit_now = self.command(user_input)
+                except (KeyboardInterrupt, NanocodeError) as error:
+                    self.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
+                    self.tui.set_idle()
+                    continue
                 if exit_now:
                     stop.set()
                     if self.tui is not None and self.tui.app is not None:
-                        self.tui.app.exit()
+                        self.exit_app(self.tui.app)
                     return
                 if handled:
+                    self.tui.set_idle()
                     continue
                 self.status_bar.begin()
                 self.tui.set_running("working")
                 started = time.monotonic()
                 try:
-                    with ModelRetryShortcut(self.session):
-                        answer = self.agent.run(user_input)
+                    answer = self.agent.run(user_input)
                 except KeyboardInterrupt:
                     self.emit("Cancelled")
                     continue
@@ -8474,6 +8579,11 @@ Tools:
                 self.ui.emit_answer(answer)
                 self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
                 self.session.save_snapshot()
+                entered = self.take_pending_inputs()
+                if entered:
+                    pending.put(entered[0])
+                    for text in entered[1:]:
+                        self.session.enqueue_user_input(text)
 
         self.worker_thread = threading.Thread(target=worker, daemon=True)
         self.worker_thread.start()
@@ -8485,6 +8595,7 @@ Tools:
                 self.worker_thread.join(timeout=1.0)
             self.worker_thread = None
             self.tui = None
+            self.ui.full_screen = False
         return 0
 
     def render_resumed_session(self) -> None:
@@ -8631,19 +8742,19 @@ Tools:
             }
         )
 
-    def status_window(self, *, active: bool = False) -> Window:
+    def status_window(self) -> Window:
         return Window(
-            FormattedTextControl(lambda: self.status_bar.display_fragments(active=active), style="class:bottom-toolbar.text"),
+            FormattedTextControl(lambda: self.status_bar.display_fragments(active=False), style="class:bottom-toolbar.text"),
             style="class:bottom-toolbar",
             height=1,
             dont_extend_height=True,
         )
 
-    def _make_app(self, layout: Layout, bindings: KeyBindings, *, full_screen: bool = False) -> Application:
+    def _make_app(self, layout: Layout, bindings: KeyBindings) -> Application:
         return Application(
             layout=layout,
             key_bindings=bindings,
-            full_screen=full_screen,
+            full_screen=False,
             style=self.style(),
             refresh_interval=StatusBar.INTERVAL,
             erase_when_done=True,
@@ -8660,14 +8771,8 @@ Tools:
         return output
 
     def run_input_app(self, app: Application) -> Any:
-        if self.tui is not None:
-            return self.tui.run_terminal(app.run)
-        self.pause_queue_input()
-        try:
-            with patch_stdout():
-                return app.run()
-        finally:
-            self.queue_input_paused.clear()
+        with patch_stdout():
+            return app.run()
 
     def _add_completion_bindings(self, bindings: KeyBindings, buffer: Buffer, *, invalidate_on_paste: bool = False) -> None:
         @bindings.add("tab")
@@ -8793,10 +8898,8 @@ Tools:
         self.ui.emit(text)
 
     def with_status_paused(self, action):
-        # Only quiet the standalone status-bar thread (headless turns). We deliberately do NOT tear
-        # down the queue-input app here: while it runs, patch_stdout already places emitted log lines
-        # cleanly above it, so pausing per line just flickered the whole bottom region. The one caller
-        # that needs the queue app down — the approval prompt — pauses it itself via run_input_app.
+        # Only quiet the standalone status-bar thread used by the simple/non-TTY path. The full TUI
+        # renders status and output together, so it never needs this terminal-level coordination.
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.stop()
@@ -8831,13 +8934,7 @@ Tools:
     def emit_agent_output(self, text: str) -> None:
         if self.ui.color and text.strip():
             self.emit()
-            capture = self.queue_input_active.is_set()
-            previous_capture = self.ui.capture_ansi
-            self.ui.capture_ansi = previous_capture or capture
-            try:
-                self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
-            finally:
-                self.ui.capture_ansi = previous_capture
+            self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
             self.emit()
             return
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
@@ -8846,9 +8943,15 @@ Tools:
         self.bash_live_preview_rendered = False
         if not self.ui.color:
             return
-        self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
-        if self.live_queue_paused or self.queue_input_active.is_set():
-            self.pause_queue_input()
+        if self.tui is not None:
+            with self.live_preview.lock:
+                self.live_preview.active = True
+                self.live_preview.text = ""
+                self.live_preview.started_at = time.monotonic()
+            self.bash_live_preview_rendered = True
+            if self.tui.app is not None:
+                self.tui.app.invalidate()
+            return
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
             self.status_bar.stop()
@@ -8858,11 +8961,19 @@ Tools:
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
             return
+        if self.tui is not None:
+            with self.live_preview.lock:
+                if text:
+                    self.live_preview.active = True
+                    self.live_preview.text = (self.live_preview.text + text)[-self.live_preview.MAX_CHARS :]
+                else:
+                    self.live_preview.active = False
+                    self.live_preview.text = ""
+            if self.tui.app is not None:
+                self.tui.app.invalidate()
+            return
         if text:
             if not self.live_preview.active:
-                self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
-                if self.live_queue_paused or self.queue_input_active.is_set():
-                    self.pause_queue_input()
                 self.live_status_paused = self.status_bar.is_running()
                 if self.live_status_paused:
                     self.status_bar.stop()
@@ -8875,9 +8986,6 @@ Tools:
         if self.live_status_paused:
             self.status_bar.start(reset=False)
             self.live_status_paused = False
-        if self.live_queue_paused:
-            self.queue_input_paused.clear()
-            self.live_queue_paused = False
 
     def consume_bash_live_preview_rendered(self) -> bool:
         rendered = self.bash_live_preview_rendered
@@ -8967,11 +9075,8 @@ Tools:
             choices = (*choices, FREE_TEXT)
             labels = {**labels, FREE_TEXT: "Type freely..."}
         state = ChoiceViewState(choices, labels, disabled)
-        searching = Condition(lambda: state.searching)
-
-        def move(event, delta: int) -> None:
-            state.move(delta)
-            event.app.invalidate()
+        options = state.enabled()
+        state.selected = options.index(current) if current in options else 0
 
         def fragments():
             visible = state.visible()
@@ -9008,83 +9113,43 @@ Tools:
                 parts.append(("", "/" + state.query))
             return parts
 
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
+        if self.tui is None:
+            return None
 
-        @bindings.add("j", filter=~searching, eager=True)
-        @bindings.add("down", eager=True)
-        def _j(event):
-            move(event, 1)
-
-        @bindings.add("k", filter=~searching, eager=True)
-        @bindings.add("up", eager=True)
-        def _k(event):
-            move(event, -1)
-
-        @bindings.add("/", eager=True)
-        def _search(event):
-            state.searching = True
-            state.set_query("")
-            event.app.invalidate()
-
-        @bindings.add("backspace", filter=searching, eager=True)
-        @bindings.add("c-h", filter=searching, eager=True)
-        def _backspace(event):
-            state.set_query(state.query[:-1])
-            event.app.invalidate()
-
-        @bindings.add("escape", eager=True)
-        def _escape(event):
-            if state.searching:
-                state.searching = False
-                event.app.invalidate()
-                return
-            if state.query:
+        def modal_key(key: str, data: str) -> Any:
+            if state.searching and key not in {"enter", "escape", "backspace", "c-h"}:
+                text = data if key == "any" else key
+                if len(text) == 1 and text not in "\r\n":
+                    state.set_query(state.query + text)
+            elif key in {"j", "down"} and not state.searching:
+                state.move(1)
+            elif key in {"k", "up"} and not state.searching:
+                state.move(-1)
+            elif key == "/":
+                state.searching = True
                 state.set_query("")
-                event.app.invalidate()
-                return
-            event.app.exit(result=SELECTION_BACK)
-
-        @bindings.add("enter", eager=True)
-        def _enter(event):
-            if state.searching:
-                state.searching = False
-                event.app.invalidate()
-                return
-            choice = state.selected_choice()
-            if choice is not None:
-                event.app.exit(result=SELECTION_FREE_TEXT if choice == FREE_TEXT else choice)
-
-        @bindings.add("c-c", eager=True)
-        @bindings.add("<sigint>", eager=True)
-        def _ctrl_c(event):
-            event.app.exit(exception=KeyboardInterrupt())
-
-        for number in range(1, 10):
-
-            @bindings.add(str(number), eager=True)
-            def _digit(event, number=number):
+            elif key in {"backspace", "c-h"} and state.searching:
+                state.set_query(state.query[:-1])
+            elif key == "escape":
                 if state.searching:
-                    state.set_query(state.query + event.data)
-                    event.app.invalidate()
-                    return
+                    state.searching = False
+                elif state.query:
+                    state.set_query("")
+                else:
+                    return SELECTION_BACK
+            elif key == "enter":
+                if state.searching:
+                    state.searching = False
+                elif (choice := state.selected_choice()) is not None:
+                    return SELECTION_FREE_TEXT if choice == FREE_TEXT else choice
+            elif key.isdigit() and not state.searching:
+                number = int(key)
                 options = state.enabled()
-                if number <= len(options):
+                if 1 <= number <= len(options):
                     state.selected = number - 1
-                    event.app.invalidate()
+            return TUI_MODAL_PENDING
 
-        @bindings.add(Keys.Any, filter=searching)
-        def _typed(event):
-            if event.data and event.data not in "\r\n":
-                state.set_query(state.query + event.data)
-                event.app.invalidate()
-
-        options = state.enabled()
-        state.selected = options.index(current) if current in options else 0
-        content = FormattedTextControl(fragments, focusable=True)
-        choice_window = Window(content, wrap_lines=False)
-        app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
-        return self.run_input_app(app)
+        return self.tui.show_modal(fragments, modal_key)
 
     def question_application(self, spec: AskSpec, position: str = "") -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
@@ -9123,7 +9188,7 @@ Tools:
             # The question was already rendered before the choice selector; do not repeat a long
             # raw prompt when the user switches to free text.
             self.emit("")
-            return self.read_input("> ")
+            return self.tui.request_input("> ") if self.tui is not None else self.read_input("> ")
         if isinstance(result, str):
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
@@ -9209,7 +9274,7 @@ Tools:
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
-        if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
+        if self.interactive_input and self.ui.color:
             self.diff_viewer()
             return None
         latest = self.agent.session.latest_round_diff_sections()
@@ -9308,78 +9373,43 @@ Tools:
             parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{position}]\n"))
             return parts
 
-        def switch_tab(event, delta: int) -> None:
-            state.switch_tab(delta)
-            event.app.invalidate()
+        if self.tui is None:
+            return
 
-        def move(event, delta: int) -> None:
-            sections = active_sections()
-            if state.mode is DiffViewState.Mode.LIST:
-                state.move_file(delta, len(sections))
-            elif sections:
-                state.view.scroll_by(delta)
-            event.app.invalidate()
-
-        def page(event, delta: int, divisor: int = 1) -> None:
-            if state.mode is DiffViewState.Mode.FILE:
-                state.view.scroll_by(delta * max(1, viewport() // divisor))
-                event.app.invalidate()
-
-        def open_file(event):
-            previous = state.mode
-            state.open_file(len(active_sections()))
-            if state.mode != previous:
-                event.app.invalidate()
-
-        def back(event):
-            previous = state.mode
-            state.close_file()
-            if state.mode != previous:
-                event.app.invalidate()
-
-        def refresh(event):
+        def modal_key(key: str, _data: str) -> Any:
             nonlocal model
-            model = build_model()
-            state.reset()
-            event.app.invalidate()
+            sections = active_sections()
+            if key in {"q", "c-c"}:
+                return None
+            if key == "escape":
+                if state.mode is DiffViewState.Mode.FILE:
+                    state.close_file()
+                    return TUI_MODAL_PENDING
+                return None
+            if key in {"down", "j"}:
+                state.move_file(1, len(sections)) if state.mode is DiffViewState.Mode.LIST else state.view.scroll_by(1)
+            elif key in {"up", "k"}:
+                state.move_file(-1, len(sections)) if state.mode is DiffViewState.Mode.LIST else state.view.scroll_by(-1)
+            elif key in {"right", "l", "tab"} and state.mode is DiffViewState.Mode.LIST:
+                state.switch_tab(1)
+            elif key in {"left", "h"}:
+                state.close_file() if state.mode is DiffViewState.Mode.FILE else state.switch_tab(-1)
+            elif key == "enter":
+                state.open_file(len(sections))
+            elif key == "pagedown" and state.mode is DiffViewState.Mode.FILE:
+                state.view.scroll_by(max(1, viewport()))
+            elif key == "pageup" and state.mode is DiffViewState.Mode.FILE:
+                state.view.scroll_by(-max(1, viewport()))
+            elif key == "c-d" and state.mode is DiffViewState.Mode.FILE:
+                state.view.scroll_by(max(1, viewport() // 2))
+            elif key == "c-u" and state.mode is DiffViewState.Mode.FILE:
+                state.view.scroll_by(-max(1, viewport() // 2))
+            elif key == "r":
+                model = build_model()
+                state.reset()
+            return TUI_MODAL_PENDING
 
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-
-        def _left(event):
-            if state.mode is DiffViewState.Mode.FILE:
-                back(event)
-            else:
-                switch_tab(event, -1)
-
-        def _right(event):
-            if state.mode is DiffViewState.Mode.LIST:
-                switch_tab(event, 1)
-
-        bindings.add("right", eager=True)(_right)
-        bindings.add("left", eager=True)(_left)
-        bindings.add("l", eager=True)(lambda event: switch_tab(event, 1))
-        bindings.add("h", eager=True)(lambda event: switch_tab(event, -1))
-        bindings.add("tab", eager=True)(lambda event: switch_tab(event, 1))
-        bindings.add("down", eager=True)(lambda event: move(event, 1))
-        bindings.add("j", eager=True)(lambda event: move(event, 1))
-        bindings.add("up", eager=True)(lambda event: move(event, -1))
-        bindings.add("k", eager=True)(lambda event: move(event, -1))
-        bindings.add("pagedown", eager=True)(lambda event: page(event, 1))
-        bindings.add("pageup", eager=True)(lambda event: page(event, -1))
-        bindings.add("c-d", eager=True)(lambda event: page(event, 1, 2))
-        bindings.add("c-u", eager=True)(lambda event: page(event, -1, 2))
-        bindings.add("enter", eager=True)(open_file)
-        bindings.add("escape", eager=True)(lambda event: back(event) if state.mode is DiffViewState.Mode.FILE else event.app.exit(result=None))
-        bindings.add("q", eager=True)(lambda event: event.app.exit(result=None))
-        bindings.add("c-c", eager=True)(lambda event: event.app.exit(result=None))
-        bindings.add("r", eager=True)(refresh)
-
-        content = FormattedTextControl(fragments, focusable=True)
-        window = Window(content, dont_extend_height=True, wrap_lines=False)
-        app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings, full_screen=True)
-        with contextlib.suppress(KeyboardInterrupt):
-            self.run_input_app(app)
+        self.tui.show_modal(fragments, modal_key)
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
@@ -9487,7 +9517,11 @@ Tools:
             return summary
         current = self.session.config.active_provider
         choice = self.select_choice("Provider", choices, labels={current: current + " (current)"}, current=current)
-        return self.set_provider(choice) if isinstance(choice, str) else ("No change" if choice is SELECTION_BACK else summary)
+        if not isinstance(choice, str):
+            return "No change" if choice is SELECTION_BACK else summary
+        provider_result = self.set_provider(choice)
+        model_result = self.model("")
+        return provider_result + ("\n" + model_result if model_result else "")
 
     def set_provider(self, name: str) -> str:
         if name not in self.session.config.providers:
@@ -9503,26 +9537,35 @@ Tools:
             result = self.set_model(parts[0])
             return "No change" if result is SELECTION_BACK else str(result)
         provider = self.session.config.provider
-        configured = tuple(dict.fromkeys(provider.available_models))
-        remote = tuple(model for model in self.remote_models(provider) if model not in configured)
-        choices: list[str] = []
-        if configured:
-            choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
-        if remote:
-            choices.extend((self.MODEL_DISCOVERED_LABEL, *remote))
-        choices = tuple(choices)
-        if not choices:
+        configured = tuple(dict.fromkeys((*provider.available_models, *([provider.model] if provider.model else []))))
+        can_discover = bool(provider.url and provider.key)
+        if not configured and not can_discover:
             return "Current provider.model is " + (self.session.config.provider.model or "(empty)")
+        remote: tuple[str, ...] = ()
         while True:
+            choices: list[str] = []
+            if configured:
+                choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
+            if remote:
+                choices.extend((self.MODEL_DISCOVERED_LABEL, *remote))
+            elif can_discover:
+                choices.append(self.MODEL_DISCOVER_ACTION)
+            choice_values = tuple(choices)
             current = self.session.config.provider.model
-            labels = {label: label for label in self.MODEL_LABELS if label in choices}
-            labels.update({current: current + " (current)"} if current in choices else {})
-            choice = self.select_choice("Model", choices, labels=labels, current=current, disabled=self.MODEL_LABELS)
+            labels = {label: label for label in self.MODEL_LABELS if label in choice_values}
+            labels.update({current: current + " (current)"} if current in choice_values else {})
+            choice = self.select_choice("Model", choice_values, labels=labels, current=current, disabled=self.MODEL_LABELS)
             if choice is SELECTION_BACK:
                 return "No change"
             if not isinstance(choice, str):
                 return "Current provider.model is " + (self.session.config.provider.model or "(empty)")
             if choice in self.MODEL_LABELS:
+                continue
+            if choice == self.MODEL_DISCOVER_ACTION:
+                remote = tuple(model for model in self.remote_models(provider) if model not in configured)
+                if not remote:
+                    can_discover = False
+                    self.emit("No additional remote models found")
                 continue
             result = self.set_model(choice, back_to_model=True)
             if result is SELECTION_BACK:

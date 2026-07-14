@@ -189,7 +189,7 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
 def test_approval_segments_highlight_inline_edit_preview():
     preview = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42"
     block = n.LogBlock.hierarchy(
-        n.LogLine("Edit", "foo.py", n.LogRole.APPROVAL),
+        n.LogLine("Edit", "foo.py", n.LogRole.TOOL),
         [
             n.LogLine("preview", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
             *(n.LogLine("", line, n.LogRole.DIFF, n.LogEdge.CONTINUE) for line in preview.splitlines()),
@@ -198,6 +198,7 @@ def test_approval_segments_highlight_inline_edit_preview():
     segments = n.UiPrinter().log_segments(block)
     rendered = "".join(text for _style, text in segments)
 
+    assert ("ansigreen", "Edit") in segments
     assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
     assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
     assert any(style == "fg:default bg:#520000" and "pass" in text for style, text in segments)

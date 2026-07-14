@@ -480,6 +480,46 @@ def test_agent_rejects_empty_final_response(tmp_path):
         agent.run("answer me")
 
 
+def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
+    s = session(tmp_path)
+    s.config.provider.url = "https://example.test/v1"
+    s.config.provider.key = "test"
+    s.config.provider.model = "model"
+    started = threading.Event()
+    closed = threading.Event()
+
+    class Completions:
+        def create(self, **_params):
+            started.set()
+            closed.wait(timeout=1)
+            raise RuntimeError("connection closed")
+
+    class Client:
+        chat = SimpleNamespace(completions=Completions())
+
+        def close(self):
+            closed.set()
+
+    model = n.ModelClient(s)
+    model.client = Client
+    errors = []
+
+    def request():
+        try:
+            model.request([{"role": "user", "content": "hello"}], [])
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=request)
+    thread.start()
+    assert started.wait(timeout=1)
+    model.cancel()
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], KeyboardInterrupt)
+
+
 def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)
     queue(s, "extra instruction")
@@ -573,108 +613,6 @@ def test_ps_command_uses_markdown_renderer(tmp_path):
     assert "| id | status | elapsed | command |" in rendered[0]
 
 
-def test_queued_input_pauses_before_reading_stdin(tmp_path, monkeypatch):
-    read_fd, write_fd = os.pipe()
-    reader = os.fdopen(read_fd, encoding="utf-8")
-    writer = os.fdopen(write_fd, "w", encoding="utf-8")
-    monkeypatch.setattr(n.sys, "stdin", reader)
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    stop = threading.Event()
-    loop.queue_input_paused.set()
-    thread = threading.Thread(target=loop.queue_input_until, args=(stop,), daemon=True)
-    thread.start()
-    try:
-        writer.write("later\n")
-        writer.flush()
-        time.sleep(0.2)
-        assert s.pending_user_inputs == []
-        loop.queue_input_paused.clear()
-        deadline = time.monotonic() + 1
-        while not s.pending_user_inputs and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert queued_texts(s) == ["later"]
-    finally:
-        stop.set()
-        writer.close()
-        reader.close()
-
-
-def test_queue_input_closed_stdin_does_not_escape_thread(tmp_path):
-    class ClosedInputApp:
-        def __init__(self):
-            self.loop = None
-
-        def run(self, pre_run=None):
-            if pre_run:
-                pre_run()
-            raise ValueError("I/O operation on closed file")
-
-        def exit(self, result=None):
-            pass
-
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    loop._make_app = lambda *args, **kwargs: ClosedInputApp()
-
-    loop.run_queue_input_app(threading.Event())
-
-    assert not loop.queue_input_active.is_set()
-
-
-def drive_queue_app(loop, actions):
-    stop = threading.Event()
-
-    class App:
-        loop = None
-
-        def __init__(self, layout, bindings):
-            self.layout = layout
-            self.bindings = bindings
-
-        def invalidate(self):
-            pass
-
-        def exit(self, result=None):
-            stop.set()
-
-        def run(self, pre_run=None):
-            if pre_run:
-                pre_run()
-            event = SimpleNamespace(app=self, data="")
-            for action in actions:
-                if callable(action):
-                    action(self.layout.current_buffer)
-                    continue
-                key, event.data = action
-                keys = key if isinstance(key, tuple) else (key,)
-                self.bindings.get_bindings_for_keys(keys)[-1].handler(event)
-            stop.set()
-
-    loop._make_app = lambda layout, bindings, **kwargs: App(layout, bindings)
-    loop.run_queue_input_app(stop)
-
-
-def test_multiline_paste_queues_one_message_on_enter(tmp_path):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-
-    def still_draft(_buffer):
-        assert s.pending_user_inputs == []
-
-    drive_queue_app(loop, [(n.Keys.BracketedPaste, "first\nsecond\nthird"), still_draft, (n.Keys.ControlM, "")])
-
-    assert queued_texts(s) == ["first\nsecond\nthird"]
-    rendered = "".join(text for _style, text in loop.queue_region_fragments())
-    assert "+ first\n  second\n  third" in rendered
-
-    drive_queue_app(
-        loop,
-        [lambda buffer: buffer.insert_text("typed"), ((n.Keys.Escape, n.Keys.ControlM), ""), lambda buffer: buffer.insert_text("line"), (n.Keys.ControlM, "")],
-    )
-    assert queued_texts(s)[-1] == "typed\nline"
-
-
 def test_shared_completion_bindings_apply_completion_and_normalize_paste(tmp_path):
     class OneCompletion(n.Completer):
         def get_completions(self, document, _complete_event):
@@ -738,35 +676,6 @@ def test_shared_completion_bindings_start_and_cycle_multiple_completions(tmp_pat
     assert buffer.text == "alpine"
 
 
-def test_up_recalls_latest_queued_message_for_editing(tmp_path):
-    s = session(tmp_path)
-    queue(s, "first", "second")
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-
-    drive_queue_app(loop, [(n.Keys.Up, "")])
-
-    assert queued_texts(s) == ["first"]
-    assert loop.queue_input_text == "second"
-
-    drive_queue_app(
-        loop,
-        [lambda buffer: buffer.reset(n.Document("second edited")), (n.Keys.ControlM, "")],
-    )
-    assert queued_texts(s) == ["first", "second edited"]
-    assert loop.queue_input_text == ""
-
-
-def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
-    s = session(tmp_path)
-    queue(s, "first", "delete me")
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-
-    drive_queue_app(loop, [(n.Keys.Up, ""), lambda buffer: buffer.reset(n.Document(""))])
-
-    assert queued_texts(s) == ["first"]
-    assert loop.queue_input_text == ""
-
-
 def test_queue_acknowledges_only_claimed_duplicate_messages(tmp_path):
     s = session(tmp_path)
     queue(s, "same", "same")
@@ -790,27 +699,19 @@ def test_queue_release_restores_interrupted_inputs(tmp_path):
     assert not queued.inflight
 
 
-def test_queued_text_auto_submits_at_round_end(tmp_path):
-    """queue_input_text set during agent run is auto-submitted as next input."""
+def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
     s = session(tmp_path)
+    queue(s, "first", "second")
+    s.claim_user_inputs()
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    retried = []
 
-    class FakeModel:
-        def request(self, messages, tools=None):
-            return {"role": "assistant", "content": "done"}, [], "done"
+    text = loop.recall_pending_input(lambda: retried.append(True))
 
-    agent = n.Agent(s, output_fn=lambda text: None)
-    agent.model = FakeModel()
-
-    def fake_read(prompt="", **kw):
-        raise EOFError()
-
-    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
-    loop.queue_input_text = "auto instruction"
-
-    loop.run()
-
-    assert loop.queue_input_text == ""
-    assert any("auto instruction" in msg.get("content", "") for msg in s.messages)
+    assert text == "second"
+    assert queued_texts(s) == ["first"]
+    assert s.pending_user_inputs[0].inflight is False
+    assert retried == [True]
 
 
 def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
@@ -861,29 +762,6 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
 
-def test_queue_placeholder_shows_contextual_hint_only_when_input_empty():
-    pending = {"value": False}
-    placeholder = n.QueuePlaceholder("first", "second", lambda: pending["value"])
-
-    def ti(text: str, fragments=None):
-        document = n.Document(text)
-        return SimpleNamespace(
-            buffer_control=SimpleNamespace(buffer=SimpleNamespace(text=text)),
-            document=document,
-            lineno=document.line_count - 1,
-            fragments=fragments or [],
-        )
-
-    empty = placeholder.apply_transformation(ti(""))
-    pending["value"] = True
-    queued = placeholder.apply_transformation(ti(""))
-    typed = placeholder.apply_transformation(ti("x", [("", "x")]))
-
-    assert empty.fragments == [("class:queue.hint", "first")]
-    assert queued.fragments == [("class:queue.hint", "second")]
-    assert typed.fragments == [("", "x")]
-
-
 def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     s = session(tmp_path)
     out = []
@@ -900,55 +778,6 @@ def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     assert echoed == ["• do a thing"]  # non-empty messages emitted, blank ones skipped
     # A trailing blank line separates the flushed echo from the tool-log lines that follow.
     assert out == [""]
-
-
-def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    loop.queue_input_active.set()
-    loop.queue_input_app = object()  # sentinel standing in for a running app
-    calls = {"n": 0}
-
-    def fake_exit(app):
-        calls["n"] += 1
-        loop.queue_input_active.clear()
-
-    monkeypatch.setattr(loop, "exit_app", fake_exit)
-    monkeypatch.setattr(n.time, "sleep", lambda *_: None)
-
-    loop.pause_queue_input()
-
-    assert loop.queue_input_paused.is_set()
-    assert calls["n"] == 1
-    assert not loop.queue_input_active.is_set()
-
-
-def test_queue_input_does_not_restart_between_approval_and_live_tool(tmp_path):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    loop.queue_input_paused.set()
-    rendered = []
-
-    class Stop:
-        stopped = False
-        waits = 0
-
-        def is_set(self):
-            return self.stopped
-
-        def wait(self, _timeout):
-            self.waits += 1
-            if self.waits == 1:
-                loop.queue_input_paused.clear()  # approval closed
-            elif self.waits == 2:
-                loop.queue_input_paused.set()  # approved tool acquired the live region
-            else:
-                self.stopped = True
-            return self.stopped
-
-    loop.run_queue_input_app = lambda _stop: rendered.append(True)
-    loop.queue_input_until(Stop())
-
-    assert rendered == []
 
 
 def test_flush_sigint_ignores_stale_retry_signal(tmp_path):
@@ -970,66 +799,6 @@ def test_flush_sigint_still_interrupts_active_retry_request(tmp_path):
 
     with pytest.raises(KeyboardInterrupt):
         shortcut.handle_sigint(n.signal.SIGINT, None)
-
-
-def test_queued_combined_order_auto_submits_at_round_end(tmp_path):
-    """pending_user_inputs comes first, then queue_input_text."""
-    s = session(tmp_path)
-    queue(s, "first pending")
-
-    class FakeModel:
-        def request(self, messages, tools=None):
-            return {"role": "assistant", "content": "done"}, [], "done"
-
-    agent = n.Agent(s, output_fn=lambda text: None)
-    agent.model = FakeModel()
-
-    def fake_read(prompt="", **kw):
-        raise EOFError()
-
-    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
-    loop.queue_input_text = "second queued"
-
-    loop.run()
-
-    assert s.pending_user_inputs == []
-    assert loop.queue_input_text == ""
-    joined = "\n".join(msg.get("content", "") for msg in s.messages if msg.get("role") == "user")
-    assert "first pending" in joined
-    assert "second queued" in joined
-    assert joined.index("first pending") < joined.index("second queued")
-
-
-def test_queued_blank_text_is_cleared(tmp_path):
-    """Blank queue_input_text is cleared but does not auto-submit."""
-    s = session(tmp_path)
-
-    class FakeModel:
-        def request(self, messages, tools=None):
-            return {"role": "assistant", "content": "done"}, [], "done"
-
-    agent = n.Agent(s, output_fn=lambda text: None)
-    agent.model = FakeModel()
-
-    def fake_read(prompt="", **kw):
-        raise EOFError()
-
-    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
-    loop.queue_input_text = "   "
-
-    loop.run()
-
-    assert loop.queue_input_text == ""
-    # blank text did not auto-submit (no user message with spaces-only content)
-    assert not any(
-        msg.get("content", "").strip() == "" and msg.get("role") == "user"
-        for msg in s.messages
-    )
-
-
-@pytest.mark.skip(reason="Interactive queue-input auto-submit is being restructured under the TUI rewrite (branch full-tui); reintroduce a TUI-native equivalent test once run_tui's queue handling is finalized.")
-def test_interactive_entered_input_auto_submits_without_reprompt(tmp_path):
-    ...
 
 
 def test_queue_command_runs_readonly(tmp_path):
@@ -1302,11 +1071,12 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     loop.interactive_input = True
     rendered = []
 
-    def fake_run_input_app(app):
-        rendered.extend(app.layout.current_control.text())
-        return "A"
+    class Modal:
+        def show_modal(self, fragments_fn, key_fn):
+            rendered.extend(fragments_fn())
+            return key_fn("enter", "")
 
-    loop.run_input_app = fake_run_input_app
+    loop.tui = Modal()
 
     result = loop.choice_application(
         "Select:",
@@ -1353,22 +1123,24 @@ def test_elapsed_since_uses_whole_seconds(monkeypatch):
     assert n.Text.elapsed_since(100.0) == "1m02s"
 
 
-def test_bash_live_start_pauses_queue_before_app_is_active(tmp_path):
+def test_bash_live_start_pauses_standalone_status(tmp_path):
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     loop.ui.color = True
-    loop.interactive_input = True
     loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
+    loop.status_bar.thread = object()
+    loop.status_bar.stop = lambda: setattr(loop.status_bar, "thread", None)
+    loop.status_bar.start = lambda **_kwargs: setattr(loop.status_bar, "thread", object())
 
     loop.tool_live_start()
-    assert loop.queue_input_paused.is_set()
-    assert loop.live_queue_paused is True
+    assert loop.live_status_paused is True
+    assert loop.status_bar.thread is None
     assert loop.agent.tools.bash_live_preview_shown is not None
     assert loop.agent.tools.bash_live_preview_shown() is True
     assert loop.agent.tools.bash_live_preview_shown() is False
 
     loop.tool_live_output("", "")
-    assert not loop.queue_input_paused.is_set()
-    assert loop.live_queue_paused is False
+    assert loop.live_status_paused is False
+    assert loop.status_bar.thread is not None
 
 
 def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
@@ -1472,13 +1244,16 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path, monkeypatch
     assert "prior summary inserted" in result
 
 
-def test_compact_spinner_uses_standalone_divider(tmp_path, monkeypatch):
+def test_compact_spinner_reuses_tui_mode(tmp_path):
     loop = n.CommandLoop(n.Agent(session(tmp_path)))
-    monkeypatch.setattr(n.time, "monotonic", lambda: 0.0)
-    fragments = n.CompactSpinner(loop).fragments()
+    transitions = []
+    loop.tui = SimpleNamespace(set_running=transitions.append, set_dispatching=lambda: transitions.append("dispatch"))
+    spinner = n.CompactSpinner(loop)
 
-    assert "compacting context" in "".join(text for _, text in fragments)
-    assert any(style == "class:divider.working" and text == "compacting context" for style, text in fragments)
+    spinner.start()
+    spinner.stop()
+
+    assert transitions == ["compacting context", "dispatch"]
 
 
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
