@@ -4629,8 +4629,14 @@ class MCPManager:
                 self.resources[config.name] = self._resources_info(config.name, resources)
                 self.server_errors.pop(config.name, None)
                 self.server_skips.pop(config.name, None)
-        except Exception as e:
-            self.set_server_error(config.name, self.error_text(e, timeout=self.discovery_timeout()))
+        except BaseException as error:
+            if self.is_cancelled_error(error):
+                with self.lock:
+                    self.server_errors.pop(config.name, None)
+                return
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.set_server_error(config.name, self.error_text(error, timeout=self.discovery_timeout()))
 
     async def _gather_assets(self, config: MCPServerConfig, headers: dict[str, str]) -> tuple[Any, list[Any]]:
         """Fetch tools and resources concurrently. Tool failure aborts discovery; resources are best-effort."""
@@ -4652,6 +4658,29 @@ class MCPManager:
         with self.lock:
             self._forget_locked(name)
             self.server_skips[name] = reason
+
+    @classmethod
+    def is_cancelled_error(cls, error: BaseException) -> bool:
+        seen: set[int] = set()
+
+        def visit(item: BaseException) -> bool:
+            identity = id(item)
+            if identity in seen:
+                return False
+            seen.add(identity)
+            if type(item).__name__ == "CancelledError":
+                return True
+            nested = getattr(item, "exceptions", ())
+            if nested:
+                return all(isinstance(child, BaseException) and visit(child) for child in nested)
+            cause = item.__cause__ or item.__context__
+            return isinstance(cause, BaseException) and visit(cause)
+
+        return visit(error)
+
+    @staticmethod
+    def is_cancelled_error_text(error: str) -> bool:
+        return error.strip() == "CancelledError"
 
     @staticmethod
     def can_skip_auth_error(error: str) -> bool:
@@ -6733,6 +6762,7 @@ TUI_MODAL_PENDING = object()
 class TuiModal:
     fragments_fn: Callable[[], list[tuple[str, str]]]
     key_fn: Callable[[str, str], Any]
+    exclusive: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     result: Any = None
 
@@ -6760,15 +6790,15 @@ class TuiApp:
 
     Input widget is state-driven:
       * `chat`      — Enter submits to `on_chat_submit` (starts an agent turn).
-      * `approval`  — Enter resolves `_input_pending` (unblocks a bg-thread waiter).
+      * `approval`  — Enter resolves `_input_pending` (unblocks the agent thread).
       * `dispatch`  — command is being routed; input is temporarily ignored.
       * `running`   — Enter queues a follow-up for the active turn.
 
     Cross-thread coordination:
-      * The agent runs on a bg thread. Every LogBuffer.append fires an observer that invalidates
-        the pt app so the viewport repaints live.
-      * Approval prompts from the agent thread call `request_input(prompt)` which switches the
-        widget to `approval` mode and blocks until the user submits, using a threading.Event.
+      * The agent runs on the main thread while this Application runs on the TUI thread. Every
+        LogBuffer.append invalidates the Application so the viewport repaints live.
+      * Approval prompts call `request_input(prompt)`, which switches the widget on the TUI thread
+        and blocks the agent thread until the user submits.
 
     On exit, alt-screen tears down and the LogBuffer contents are dumped to normal stdout so the
     session history lands in the shell's scrollback."""
@@ -6825,11 +6855,12 @@ class TuiApp:
         self.viewport_window: Window | None = None
         self.activity_window: Window | None = None
         self.modal_window: Window | None = None
+        self.exclusive_modal_window: Window | None = None
         self.status_window: Window | None = None
 
     def request_input(self, prompt: str) -> str:
-        """Called from the agent (bg) thread to get a line of user input inline (approval prompts,
-        Ask tool, etc.). Blocks until the main thread's pt widget submits. If the app has exited
+        """Called from the agent thread to get a line of user input inline (approval prompts,
+        Ask tool, etc.). Blocks until the TUI thread's widget submits. If the app has exited
         before submission, returns "" so the caller unwinds cleanly."""
         # A tool approval must not replace an already-visible selector. Wait for that selector to
         # close, then reuse the shared input row.
@@ -6837,14 +6868,35 @@ class TuiApp:
             pass
         event = threading.Event()
         previous_mode, previous_prompt = self.input_mode, self.input_prompt
+        previous_document: list[Document] = []
         self._input_pending = event
         self._input_result = ""
-        self._set_mode("approval", prompt)
+
+        def switch(document: Document, mode: str, prompt_text: str, done: threading.Event) -> None:
+            if not previous_document:
+                previous_document.append(self.input_buffer.document)
+            self.input_buffer.reset(document)
+            self._set_mode(mode, prompt_text)
+            done.set()
+
+        switched = threading.Event()
+        app = self.app
+        if app is not None and app.is_running:
+            app.loop.call_soon_threadsafe(switch, Document(""), "approval", prompt, switched)
+            switched.wait()
+        else:
+            switch(Document(""), "approval", prompt, switched)
         try:
             event.wait()
         finally:
             self._input_pending = None
-            self._set_mode(previous_mode, previous_prompt)
+            restored = threading.Event()
+            document = previous_document[0] if previous_document else Document("")
+            if app is not None and app.is_running:
+                app.loop.call_soon_threadsafe(switch, document, previous_mode, previous_prompt, restored)
+                restored.wait()
+            else:
+                switch(document, previous_mode, previous_prompt, restored)
         return self._input_result
 
     def set_running(self, label: str) -> None:
@@ -6888,17 +6940,24 @@ class TuiApp:
             self.on_chat_submit(text)
         return False
 
-    def show_modal(self, fragments_fn: Callable[[], list[tuple[str, str]]], key_fn: Callable[[str, str], Any]) -> Any:
+    def show_modal(
+        self,
+        fragments_fn: Callable[[], list[tuple[str, str]]],
+        key_fn: Callable[[str, str], Any],
+        *,
+        exclusive: bool = False,
+    ) -> Any:
         """Show a modal inside this Application and block the calling worker until it closes."""
         with self.modal_lock:
             app = self.app
             if app is None or self.modal_window is None:
                 return None
-            modal = TuiModal(fragments_fn, key_fn)
+            modal = TuiModal(fragments_fn, key_fn, exclusive=exclusive)
 
             def activate() -> None:
                 self.modal = modal
-                app.layout.focus(self.modal_window)
+                target = self.exclusive_modal_window if exclusive else self.modal_window
+                app.layout.focus(target or self.modal_window)
                 app.invalidate()
 
             app.loop.call_soon_threadsafe(activate)
@@ -6989,7 +7048,10 @@ class TuiApp:
         if len(completions) == 1:
             buffer.apply_completion(completions[0])
         elif completions:
-            buffer.start_completion(select_last=reverse, complete_event=event)
+            if reverse:
+                buffer.start_completion(select_last=True)
+            else:
+                buffer.start_completion(select_first=False)
 
     def build_layout(self) -> Layout:
         self.viewport_window = Window(
@@ -7026,6 +7088,7 @@ class TuiApp:
         )
         self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
         modal_active = Condition(lambda: self.modal is not None)
+        exclusive_active = Condition(lambda: self.modal is not None and self.modal.exclusive)
         normal_region = ConditionalContainer(
             HSplit(
                 [
@@ -7041,7 +7104,7 @@ class TuiApp:
         )
         modal_region = ConditionalContainer(
             HSplit([self.modal_window, Window(height=1, dont_extend_height=True)]),
-            filter=modal_active,
+            filter=modal_active & ~exclusive_active,
         )
         self.status_window = Window(
             FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
@@ -7062,9 +7125,31 @@ class TuiApp:
                 Window(),
             ]
         )
+        self.exclusive_modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False)
+        exclusive_status = Window(
+            FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
+            style="class:bottom-toolbar",
+            height=1,
+        )
         root = FloatContainer(
             content,
-            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True)],
+            [
+                Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True),
+                Float(
+                    ConditionalContainer(self.exclusive_modal_window, filter=exclusive_active),
+                    top=0,
+                    bottom=1,
+                    left=0,
+                    right=0,
+                ),
+                Float(
+                    ConditionalContainer(exclusive_status, filter=exclusive_active),
+                    bottom=0,
+                    height=1,
+                    left=0,
+                    right=0,
+                ),
+            ],
         )
         return Layout(root, focused_element=self.input_window)
 
@@ -7141,7 +7226,6 @@ class TuiApp:
             # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
             if self.modal is not None:
                 self.close_modal(None)
-                self.modal = None
                 return
             if self.input_mode == "approval" and self._input_pending is not None:
                 self._input_result = ""
@@ -7188,7 +7272,7 @@ class TuiApp:
             with contextlib.suppress(ValueError):
                 self.log_buffer.observers.remove(invalidate)
             self.app = None
-            # If a bg-thread waiter is still parked in request_input at exit, unblock it so its
+            # If the agent thread is still parked in request_input at exit, unblock it so its
             # frame unwinds instead of leaking a thread.
             if self._input_pending is not None:
                 self._input_result = ""
@@ -8173,7 +8257,7 @@ class ChoiceViewState:
 
 class CommandLoop:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
-    QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
+    QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C sends now"
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
@@ -8321,7 +8405,7 @@ Tools:
         self.live_status_paused = False
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
-        # bg-thread approval prompts land in the same input widget the user is already typing in.
+        # approval prompts land in the same input widget the user is already typing in.
         self.tui: TuiApp | None = None
         if self.interactive_input:
             history_path = self.session.data_path("history.txt")
@@ -8638,7 +8722,7 @@ Tools:
 
         def request_exit() -> None:
             stop.set()
-            self.session.save_snapshot()
+            self.save_and_emit_resume()
 
         def force_exit() -> None:
             nonlocal force_exit_timer
@@ -8673,6 +8757,8 @@ Tools:
             pending.put(entered[0])
             for text in entered[1:]:
                 self.session.enqueue_user_input(text)
+
+        submit_next(self.take_pending_inputs())
 
         def run_agent_loop() -> None:
             while not stop.is_set():
@@ -8857,7 +8943,11 @@ Tools:
             )
 
     def mcp_error_notice(self) -> str:
-        errors = [(name, error) for name, error in sorted(self.session.mcp.server_errors.items()) if error and not error.startswith("oauth login required")]
+        errors = [
+            (name, error)
+            for name, error in sorted(self.session.mcp.server_errors.items())
+            if error and not error.startswith("oauth login required") and not self.session.mcp.is_cancelled_error_text(error)
+        ]
         if not errors:
             return ""
         shown = errors[:3]
@@ -8934,19 +9024,12 @@ Tools:
 
     def _add_completion_bindings(self, bindings: KeyBindings, buffer: Buffer, *, invalidate_on_paste: bool = False) -> None:
         @bindings.add("tab")
-        def _tab(event):
-            if buffer.complete_state:
-                buffer.complete_next()
-                return
-            completions = list(self.input_completer.get_completions(buffer.document, CompleteEvent(completion_requested=True)))
-            if len(completions) == 1:
-                buffer.apply_completion(completions[0])
-            else:
-                buffer.start_completion(select_first=False)
+        def _tab(_event):
+            TuiApp.complete_input(buffer)
 
         @bindings.add("s-tab")
-        def _shift_tab(event):
-            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
+        def _shift_tab(_event):
+            TuiApp.complete_input(buffer, reverse=True)
 
         @bindings.add(Keys.BracketedPaste)
         def _paste(event):
@@ -9074,7 +9157,7 @@ Tools:
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def tool_input(self, prompt: str = "") -> str:
-        # When the TUI is running (bg-thread agent asking for approval), route through TuiApp's
+        # When the TUI is running, route agent approvals through TuiApp's
         # own input widget so the user answers inline in the full-screen shell instead of a
         # separate pt Application (which would fail because pt does not nest).
         if self.tui is not None:
@@ -9570,7 +9653,7 @@ Tools:
                 state.reset()
             return TUI_MODAL_PENDING
 
-        self.tui.show_modal(fragments, modal_key)
+        self.tui.show_modal(fragments, modal_key, exclusive=True)
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
