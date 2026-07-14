@@ -6665,7 +6665,12 @@ class UiPrinter:
                 while end < len(entries) and entries[end][0].role is LogRole.DIFF and entries[end][1] == level:
                     end += 1
                 diff_lines = [item for item, _level in entries[index:end]]
-                highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in diff_lines)))
+                # The bg band lives inside diff_segments; size it to the width remaining after this
+                # log tree's own margin+edge, so the padding does not overflow into a phantom wrap row.
+                sample_prefix = [("", block.margin(level)), *self.edge_segments(diff_lines[0].edge)]
+                sample_prefix_width = sum(get_cwidth(text) for _style, text in sample_prefix)
+                diff_row_width = max(1, width - sample_prefix_width)
+                highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in diff_lines), diff_row_width))
                 for item, rendered in zip(diff_lines, highlighted):
                     prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
@@ -6802,15 +6807,22 @@ class UiPrinter:
                     lines[-1].append((style, part))
         return lines
 
-    def diff_segments(self, text: str) -> list[tuple[str, str]]:
+    # Width taken by the line-number gutter emitted inside diff_segments (`NNNN NNNN | `).
+    DIFF_GUTTER_WIDTH: ClassVar[int] = 12
+
+    def diff_segments(self, text: str, row_width: int | None = None) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
         # Pad the bg band to the current pane width for a solid edge-to-edge look. Scrollback bakes
         # the width in, so a later resize can zigzag — same tradeoff we already accept for Rich
-        # syntax-highlighted code blocks that come out of the strip_trailing_pad path.
-        changed_width = max(1, shutil.get_terminal_size((120, 20)).columns - 15)
+        # syntax-highlighted code blocks that come out of the strip_trailing_pad path. Callers pass
+        # `row_width` when they know the width available AFTER their own outer prefix (nested log
+        # trees, tree edges) so the padding doesn't overflow and wrap onto a phantom second row.
+        if row_width is None:
+            row_width = shutil.get_terminal_size((120, 20)).columns - 3
+        changed_width = max(1, row_width - self.DIFF_GUTTER_WIDTH)
 
         # Determine the target file path from the diff header.  The `+++` line
         # names the resulting file; for created files `---` is /dev/null.
