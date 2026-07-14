@@ -7587,6 +7587,12 @@ Tools:
                 continue
             self.run_queue_input_app(stop_event)
 
+    def echo_user_input(self, prefix: str, body: str, *, prefix_style: str = "class:prompt") -> None:
+        print_formatted_text(
+            FormattedText([("", "\n"), (prefix_style, prefix), (UiPrinter.user_log_style(), body)]),
+            style=self.style(),
+        )
+
     def flush_queued_to_log(self, texts: list[str]) -> None:
         # Move flushed queued messages from the live bottom region up into the scrollback log, then
         # refresh so the region drops them. Runs on the agent (main) thread; patch_stdout places the
@@ -7866,10 +7872,7 @@ Tools:
                     # no second Enter. Any half-typed text goes back to the box for the following prompt.
                     if typed:
                         self.queue_input_text = typed
-                    print_formatted_text(
-                        FormattedText([("", "\n"), ("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), entered[0])]),
-                        style=self.style(),
-                    )
+                    self.echo_user_input(UiPrinter.USER_LOG_PREFIX, entered[0])
                     user_input = entered[0]
                     for text in entered[1:]:
                         self.session.enqueue_user_input(text)
@@ -8222,10 +8225,7 @@ Tools:
         app = self._make_app(Layout(root, focused_element=input_window), bindings)
         text = self.run_input_app(app)
         if replay:
-            print_formatted_text(
-                FormattedText([("", "\n"), (prompt_style, replay_prefix or prompt_text), (UiPrinter.user_log_style(), text)]),
-                style=self.style(),
-            )
+            self.echo_user_input(replay_prefix or prompt_text, text, prefix_style=prompt_style)
         return text
 
     def emit(self, text: str | LogBlock = "") -> None:
