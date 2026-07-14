@@ -6803,6 +6803,14 @@ class UiPrinter:
         return lines
 
     def diff_segments(self, text: str) -> list[tuple[str, str]]:
+        return self._diff_segments(text, live=False)
+
+    def diff_segments_live(self, text: str) -> list[tuple[str, str]]:
+        """Same as diff_segments, but pads bg fill to the terminal width. Only for live full-screen
+        renderers that repaint on resize (e.g. the /diff viewer) — never for scrollback output."""
+        return self._diff_segments(text, live=True)
+
+    def _diff_segments(self, text: str, *, live: bool) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         old_line: int | None = None
         new_line: int | None = None
@@ -6812,9 +6820,13 @@ class UiPrinter:
             default=1,
         )
         available_changed_width = max(1, shutil.get_terminal_size((120, 20)).columns - 15)
-        # Pane-width padding becomes stale terminal scrollback after a resize. Keep rectangular
-        # highlighting only when its width comes entirely from the diff content.
-        changed_width = natural_changed_width if natural_changed_width <= available_changed_width else None
+        # Scrollback path: pane-width padding becomes stale after a resize, so cap the bg band at the
+        # natural content width (and drop it entirely if that already exceeds the pane). Live path:
+        # the caller repaints on resize, so fill edge-to-edge with the current pane width.
+        if live:
+            changed_width = available_changed_width
+        else:
+            changed_width = natural_changed_width if natural_changed_width <= available_changed_width else None
 
         # Determine the target file path from the diff header.  The `+++` line
         # names the resulting file; for created files `---` is /dev/null.
@@ -8762,7 +8774,7 @@ Tools:
             status, path, diff = sections[state.file]
             parts.append(("", "\n"))
             parts.append(("ansicyan", f"  {status.title()} · {path}\n"))
-            lines = self.ui.segment_lines(self.ui.diff_segments(diff))
+            lines = self.ui.segment_lines(self.ui.diff_segments_live(diff))
             visible = state.view.visible(lines, viewport())
             for line in visible:
                 parts.extend(line)
