@@ -42,6 +42,36 @@ def test_first_save_writes_init_line(tmp_path):
     assert "settings" not in init
     assert "tool_results" not in init
 
+
+def test_pending_user_inputs_persist_and_restore(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.enqueue_user_input("queued one")
+    s.enqueue_user_input("queued two")
+
+    s.save_snapshot()
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert lines[0]["pending_user_inputs"] == ["queued one", "queued two"]
+    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    assert [item.text for item in restored.pending_user_inputs] == ["queued one", "queued two"]
+    assert all(not item.inflight for item in restored.pending_user_inputs)
+
+
+def test_pending_user_input_delta_replaces_queue_state(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "active"})
+    s.save_snapshot()
+    s.enqueue_user_input("queued")
+    s.save_snapshot()
+    s.pending_user_inputs.clear()
+    s.save_snapshot()
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert lines[1]["pending_user_inputs"] == ["queued"]
+    assert lines[2]["pending_user_inputs"] == []
+    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    assert restored.pending_user_inputs == []
+
 def test_latest_pointer_created_on_first_save(tmp_path):
     """First save creates the latest pointer file."""
     s = session_with_data_dir(tmp_path)

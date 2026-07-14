@@ -1,4 +1,12 @@
+import multiprocessing
+import threading
+import time
+
 import pytest
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input.defaults import create_pipe_input
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.utils import get_cwidth
 
 import nanocode as n
@@ -12,6 +20,150 @@ def session(tmp_path):
 
 def loop(tmp_path):
     return n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt="": "", output_fn=lambda text: None)
+
+
+class ResizableOutput(DummyOutput):
+    def __init__(self, rows=24, columns=80):
+        self.size = Size(rows=rows, columns=columns)
+
+    def get_size(self):
+        return self.size
+
+
+def wait_until(predicate, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.005)
+    raise AssertionError("interactive TUI condition was not reached")
+
+
+def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, after_render=None):
+    real_application = n.Application
+    output = output or DummyOutput()
+    driver_errors = []
+    with create_pipe_input() as pipe_input:
+        def application(**kwargs):
+            return real_application(input=pipe_input, output=output, after_render=after_render, **kwargs)
+
+        monkeypatch.setattr(n, "Application", application)
+        monkeypatch.setattr(tui, "dump_to_scrollback", lambda: None)
+        if text:
+            pipe_input.send_text(text)
+        driver = None
+        if drive is not None:
+            def run_driver():
+                try:
+                    drive(pipe_input)
+                except BaseException as error:
+                    driver_errors.append(error)
+                    if tui.app is not None:
+                        tui.app.loop.call_soon_threadsafe(tui.app.exit)
+
+            driver = threading.Thread(target=run_driver, daemon=True)
+            driver.start()
+        tui.run()
+        if driver is not None:
+            driver.join(timeout=1)
+            assert not driver.is_alive()
+    if driver_errors:
+        raise driver_errors[0]
+
+
+def ctrl_c_queue_scenario(cwd, results):
+    config = n.Config(data_dir=cwd)
+    scenario_session = n.Session(cwd=cwd, config=config)
+    command_loop = n.CommandLoop(
+        n.Agent(scenario_session, output_fn=lambda text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda text: None,
+    )
+    started = threading.Event()
+    first_running = threading.Event()
+    cancel_calls = []
+    requests = []
+    preserved = []
+    elapsed = []
+    driver_errors = []
+
+    class RecordingModel:
+        def request(self, messages, tools=None):
+            requests.append([message.get("content") for message in messages if message.get("role") == "user"])
+            if len(requests) > 1:
+                return {"role": "assistant", "content": "next request complete"}, [], "next request complete"
+            started.set()
+            first_running.set()
+            try:
+                while True:
+                    time.sleep(0.05)
+            finally:
+                first_running.clear()
+
+        def cancel(self):
+            cancel_calls.append(True)
+
+    command_loop.agent.model = RecordingModel()
+    command_loop.discover_mcp = lambda: None
+    n.SessionSnapshotStore.clean_expired = lambda _session: 0
+    n.CodeIndex.refresh_existing_async = lambda _index: False
+    n.CodeIndex.update_pending_async = lambda _index: None
+    n.UpdateChecker.start = lambda _checker: None
+    real_application = n.Application
+
+    try:
+        with create_pipe_input() as pipe_input:
+            n.Application = lambda **kwargs: real_application(input=pipe_input, output=DummyOutput(), **kwargs)
+
+            def drive():
+                try:
+                    wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
+                    pipe_input.send_text("long request\r")
+                    assert started.wait(timeout=1)
+                    pipe_input.send_text("queued one\rqueued two\r")
+                    wait_until(lambda: len(command_loop.session.pending_user_inputs) == 2)
+                    pipe_input.send_text("unfinished draft")
+                    wait_until(lambda: command_loop.tui.input_buffer.text == "unfinished draft")
+                    began = time.monotonic()
+                    pipe_input.send_text("\x03" * 10)
+                    wait_until(lambda: not first_running.is_set())
+                    wait_until(lambda: len(requests) == 2)
+                    wait_until(lambda: command_loop.tui is not None and command_loop.tui.input_mode == "chat")
+                    wait_until(lambda: command_loop.tui.input_buffer.text == "unfinished draft")
+                    preserved.append(command_loop.tui.input_buffer.text)
+                    elapsed.append(time.monotonic() - began)
+                    command_loop.tui.input_buffer.reset(n.Document(""))
+                    pipe_input.send_text("\x04")
+                except BaseException as error:
+                    driver_errors.append(repr(error))
+                    if first_running.is_set():
+                        n.os.kill(n.os.getpid(), n.signal.SIGINT)
+                    if command_loop.tui is not None:
+                        command_loop.tui.on_exit_request()
+                        if command_loop.tui.app is not None:
+                            command_loop.tui.app.loop.call_soon_threadsafe(command_loop.tui.app.exit)
+
+            driver = threading.Thread(target=drive, daemon=True)
+            driver.start()
+            return_code = command_loop.run_tui()
+            driver.join(timeout=1)
+            if driver.is_alive():
+                driver_errors.append("driver did not exit")
+        restored_session = n.Session.load_snapshot(command_loop.session.uid, config=config)
+        results.put(
+            {
+                "cancel_calls": len(cancel_calls),
+                "driver_errors": driver_errors,
+                "elapsed": elapsed,
+                "preserved": preserved,
+                "persisted_user_inputs": [message.get("content") for message in restored_session.messages if message.get("role") == "user"],
+                "restored_queue": [item.text for item in restored_session.pending_user_inputs],
+                "requests": requests,
+                "return_code": return_code,
+            }
+        )
+    except BaseException as error:
+        results.put({"fatal": repr(error)})
 
 
 def test_theme_palettes_have_identical_complete_keys():
@@ -132,10 +284,186 @@ def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
     received: list[str] = []
     app = n.TuiApp(buffer, on_chat_submit=received.append)
     app.input_buffer.insert_text("hello")
-    # Simulate the accept handler pt would call on Enter in chat mode.
-    app._accept(app.input_buffer)
+    app.input_buffer.validate_and_handle()
     assert received == ["hello"]
     assert app.input_buffer.text == ""
+
+
+def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
+    received = []
+    app = None
+
+    def submit(text):
+        received.append(text)
+        app.set_idle()
+
+    app = n.TuiApp(n.LogBuffer(), on_chat_submit=submit)
+
+    run_interactive_tui(monkeypatch, app, text="hello from pipe\r\x04")
+
+    assert received == ["hello from pipe"]
+    assert app.app is None
+
+
+def test_interactive_tui_control_backslash_forces_exit(monkeypatch):
+    forced = []
+    app = None
+
+    def force_exit():
+        forced.append(True)
+        app.app.exit()
+
+    app = n.TuiApp(n.LogBuffer(), on_force_exit=force_exit)
+
+    run_interactive_tui(monkeypatch, app, text="\x1c")
+
+    assert forced == [True]
+
+
+def test_interactive_tui_recalls_and_submits_queued_input(monkeypatch):
+    received = []
+    recalled = []
+    app = None
+
+    def recall():
+        recalled.append(True)
+        return "edit queued message"
+
+    def submit(text):
+        received.append(text)
+        app.set_idle()
+
+    app = n.TuiApp(n.LogBuffer(), on_running_submit=submit, on_recall=recall)
+    app.set_running("working")
+
+    run_interactive_tui(monkeypatch, app, text="\x1b[A\r\x04")
+
+    assert recalled == [True]
+    assert received == ["edit queued message"]
+
+
+def test_interactive_tui_ctrl_p_recalls_submitted_queued_input(monkeypatch, tmp_path):
+    received = []
+    app = n.TuiApp(
+        n.LogBuffer(),
+        on_running_submit=received.append,
+        history=FileHistory(str(tmp_path / "history.txt")),
+    )
+    app.set_running("working")
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("queued message\r")
+        wait_until(lambda: received == ["queued message"])
+        pipe_input.send_text("\x10")
+        wait_until(lambda: app.input_buffer.text == "queued message")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert app.input_buffer.text == "queued message"
+
+
+def test_interactive_tui_tab_inserts_single_completion_without_menu(monkeypatch):
+    app = n.TuiApp(n.LogBuffer(), completer=n.CommandCompleter())
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("/pro\t")
+        wait_until(lambda: app.input_buffer.text == "/provider")
+        assert app.input_buffer.complete_state is None
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert app.input_buffer.text == "/provider"
+
+
+def test_interactive_tui_bracketed_paste_displays_all_lines(monkeypatch):
+    app = n.TuiApp(n.LogBuffer())
+    pasted = "\n".join(f"line {index}" for index in range(10))
+    rendered = threading.Event()
+    input_heights = []
+
+    def capture(application):
+        screen = application.renderer.last_rendered_screen
+        if screen is None:
+            return
+        position = screen.visible_windows_to_write_positions.get(app.input_window)
+        if position is not None and app.input_buffer.text == pasted:
+            input_heights.append(position.height)
+            rendered.set()
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text(f"\x1b[200~{pasted}\x1b[201~")
+        wait_until(lambda: app.input_buffer.text == pasted)
+        assert rendered.wait(timeout=1)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, after_render=capture)
+
+    assert app.input_buffer.text == pasted
+    assert input_heights and input_heights[-1] == 10
+
+
+def test_interactive_tui_keeps_legacy_padding_around_input(monkeypatch):
+    log = n.LogBuffer()
+    log.append([("", "history")])
+    app = n.TuiApp(log)
+    frames = []
+    rendered = threading.Event()
+
+    def capture(application):
+        screen = application.renderer.last_rendered_screen
+        if screen is None:
+            return
+        positions = screen.visible_windows_to_write_positions
+        if app.viewport_window in positions and app.input_window in positions and app.status_window in positions:
+            frames.append((positions[app.viewport_window], positions[app.input_window], positions[app.status_window]))
+        rendered.set()
+
+    def drive(_pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        assert rendered.wait(timeout=1)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, after_render=capture)
+
+    assert frames
+    viewport, prompt, status = frames[0]
+    assert prompt.ypos == viewport.ypos + viewport.height + 1
+    assert status.ypos == prompt.ypos + prompt.height + 1
+
+
+def test_interactive_tui_keeps_padding_around_running_queue(monkeypatch):
+    app = n.TuiApp(n.LogBuffer(), activity_fragments_fn=lambda: [("", "working\n+ queued")])
+    app.set_running("working")
+    frames = []
+    rendered = threading.Event()
+
+    def capture(application):
+        screen = application.renderer.last_rendered_screen
+        if screen is None:
+            return
+        positions = screen.visible_windows_to_write_positions
+        windows = (app.viewport_window, app.activity_window, app.input_window, app.status_window)
+        if all(window in positions for window in windows):
+            frames.append(tuple(positions[window] for window in windows))
+        rendered.set()
+
+    def drive(_pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        assert rendered.wait(timeout=1)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, after_render=capture)
+
+    assert frames
+    viewport, activity, prompt, status = frames[0]
+    assert activity.ypos == viewport.ypos + viewport.height + 1
+    assert prompt.ypos == activity.ypos + activity.height + 1
+    assert status.ypos == prompt.ypos + prompt.height + 1
 
 
 def test_tui_running_input_queues_one_multiline_message():
@@ -144,7 +472,7 @@ def test_tui_running_input_queues_one_multiline_message():
     app.set_running("working")
     app.input_buffer.insert_text("first\nsecond\nthird")
 
-    app._accept(app.input_buffer)
+    app.input_buffer.validate_and_handle()
 
     assert received == ["first\nsecond\nthird"]
     assert app.input_buffer.text == ""
@@ -187,6 +515,29 @@ def test_tui_sigint_interrupts_dispatch_and_running_modes():
     assert interrupted == [True, True]
 
 
+def test_tui_cancelling_is_transient_status_not_history():
+    log = n.LogBuffer()
+    app = n.TuiApp(log)
+    app.set_running("working")
+
+    app.set_cancelling()
+
+    assert app.input_mode == "running"
+    assert app.status_label == "cancelling"
+    assert log.entries == []
+
+
+def test_tui_activity_uses_transient_cancelling_status(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = n.TuiApp(command_loop.ui.log_buffer)
+    command_loop.tui.set_cancelling()
+
+    text = "".join(fragment for _style, fragment in command_loop.queue_divider_fragments())
+
+    assert "cancelling" in text
+    assert "working" not in text
+
+
 def test_tui_running_recall_removes_latest_pending_message():
     pending = ["first", "second"]
 
@@ -203,6 +554,97 @@ def test_tui_running_recall_removes_latest_pending_message():
 
     assert pending == ["first"]
     assert app.input_buffer.text == "second"
+
+
+def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):
+    app = n.TuiApp(n.LogBuffer())
+    selected = {"index": 0}
+    result = []
+
+    def key(key, _data):
+        if key == "j":
+            selected["index"] = 1
+            return n.TUI_MODAL_PENDING
+        if key == "enter":
+            return selected["index"]
+        return n.TUI_MODAL_PENDING
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        waiter = threading.Thread(target=lambda: result.append(app.show_modal(lambda: [("", "one\ntwo")], key)), daemon=True)
+        waiter.start()
+        wait_until(lambda: app.modal is not None)
+        pipe_input.send_text("j\r")
+        waiter.join(timeout=1)
+        assert not waiter.is_alive()
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert result == [1]
+
+
+def test_interactive_tui_modal_survives_repeated_resize(monkeypatch):
+    app = n.TuiApp(n.LogBuffer())
+    output = ResizableOutput()
+    result = []
+    rendered = threading.Event()
+
+    def fragments():
+        return [("", "\n".join(f"choice {index}" for index in range(40)))]
+
+    def key(key, _data):
+        return None if key == "q" else n.TUI_MODAL_PENDING
+
+    def after_render(_application):
+        rendered.set()
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        waiter = threading.Thread(target=lambda: result.append(app.show_modal(fragments, key)), daemon=True)
+        waiter.start()
+        wait_until(lambda: app.modal is not None)
+        for rows, columns in ((10, 40), (35, 120), (8, 24), (24, 80)):
+            rendered.clear()
+            output.size = Size(rows=rows, columns=columns)
+            app.app.loop.call_soon_threadsafe(app.app._on_resize)
+            assert rendered.wait(timeout=1)
+        pipe_input.send_text("q")
+        waiter.join(timeout=1)
+        assert not waiter.is_alive()
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, output=output, after_render=after_render)
+
+    assert result == [None]
+
+
+def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    results = context.Queue()
+    process = context.Process(target=ctrl_c_queue_scenario, args=(str(tmp_path), results))
+    process.start()
+    process.join(timeout=6)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=1)
+        pytest.fail("Ctrl-C TUI scenario did not exit within 6 seconds")
+
+    assert process.exitcode == 0
+    outcome = results.get(timeout=1)
+    assert "fatal" not in outcome, outcome
+    assert outcome["driver_errors"] == []
+    assert outcome["return_code"] == 0
+    assert outcome["elapsed"] and outcome["elapsed"][0] < 1.0
+    assert outcome["cancel_calls"] == 1
+    assert "long request" in outcome["requests"][0]
+    queued_request = outcome["requests"][1]
+    assert "queued one" in queued_request
+    assert "queued two" in queued_request
+    assert queued_request.index("queued one") < queued_request.index("queued two")
+    assert outcome["preserved"] == ["unfinished draft"]
+    assert outcome["persisted_user_inputs"] == ["long request", "queued one", "queued two"]
+    assert outcome["restored_queue"] == []
 
 
 def test_tui_app_approval_mode_resolves_bridge_event():
@@ -374,6 +816,37 @@ def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
     assert command_loop.session.config.provider.model == "model-b"
     assert command_loop.session.config.provider.reasoning == "high"
     assert "Set provider.model = model-b" in result
+
+
+def test_single_enabled_choice_is_selected_without_opening_modal(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    command_loop.choice_application = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("modal should not open"))
+
+    assert command_loop.select_choice("Provider", ("only",), current="only") == "only"
+    assert command_loop.select_choice("Model", ("heading", "only"), disabled={"heading"}) == "only"
+
+
+def test_provider_auto_selects_sole_provider_and_model(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    provider = command_loop.session.config.provider
+    provider.available_models = ("only-model",)
+    provider.model = "only-model"
+    provider.url = ""
+    provider.key = ""
+    titles = []
+
+    def choose(title, _choices, _labels, current, _disabled):
+        titles.append(title)
+        return current
+
+    command_loop.choice_application = choose
+
+    result = command_loop.provider("")
+
+    assert titles == ["Reasoning effort"]
+    assert "Set provider.model = only-model" in result
 
 
 def diff_loop(tmp_path):

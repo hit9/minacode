@@ -861,6 +861,7 @@ class SessionSnapshotCodec:
         # fmt: off
         return {
             "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
+            "pending_user_inputs_digest": cls.digest([item.text for item in session.pending_user_inputs]),
             "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
             "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
             "turn_diffs_len": len(turn_diff_keys), "turn_diffs_keys_digest": cls.digest(turn_diff_keys),
@@ -935,6 +936,7 @@ class SessionSnapshotCodec:
         return any(
             (
                 bool(cls.snapshot_messages(session)),
+                bool(session.pending_user_inputs),
                 bool(session.tool_records),
                 bool(session.tool_errors),
                 bool(session.turn_diffs),
@@ -980,6 +982,7 @@ class SessionSnapshotCodec:
         # fmt: off
         return {
             "uid": session.uid, "cwd": session.cwd, "messages": cls.snapshot_messages(session),
+            "pending_user_inputs": [item.text for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
             "turn_diffs": [cls.turn_diff(diff) for diff in session.turn_diffs],
@@ -994,6 +997,9 @@ class SessionSnapshotCodec:
             "state": cls.state(session.state),
         }
         cls.add_sequence_delta(delta, "messages", cls.snapshot_messages(session), saved, "messages_len", "messages_digest")
+        pending_user_inputs = [item.text for item in session.pending_user_inputs]
+        if cls.digest(pending_user_inputs) != saved.get("pending_user_inputs_digest", cls.digest([])):
+            delta["pending_user_inputs"] = pending_user_inputs
         cls.add_sequence_delta(
             delta,
             "tool_records",
@@ -1050,6 +1056,8 @@ class SessionSnapshotCodec:
             data["usage"] = delta["usage"]
         if "state" in delta:
             data["state"] = delta["state"]
+        if "pending_user_inputs" in delta:
+            data["pending_user_inputs"] = delta["pending_user_inputs"]
 
     @staticmethod
     def merge_sequence(data: Json, delta: Json, key: str) -> None:
@@ -1177,6 +1185,7 @@ class SessionSnapshotStore:
             tool_records=tool_records,
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
             turn_diffs=turn_diffs,
+            pending_user_inputs=[QueuedInput(str(text)) for text in data.get("pending_user_inputs", []) if str(text).strip()],
             uid=data.get("uid", uid),
             resumed=True,
         )
@@ -1534,6 +1543,7 @@ class Session:
     _cache_prefix_regions: dict[str, Json] = field(default_factory=dict)
     _cache_prefix_fingerprint: str = ""
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
+    _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
         if not self.uid:
@@ -1783,7 +1793,8 @@ class Session:
 
     def save_snapshot(self) -> str:
         # Session owns the persistence boundary; callers should not depend on the snapshot store.
-        return SessionSnapshotStore(self).save()
+        with self._snapshot_lock, self._queue_lock:
+            return SessionSnapshotStore(self).save()
 
     @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
@@ -2952,6 +2963,17 @@ class BashTool(Tool):
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
+    def __init__(self, session: Session, args: list[Any]):
+        super().__init__(session, args)
+        self._process_lock = threading.Lock()
+        self._process: subprocess.Popen[bytes] | None = None
+
+    def cancel(self) -> None:
+        with self._process_lock:
+            proc = self._process
+        if proc is not None and proc.poll() is None:
+            self.kill_process_group(proc)
+
     # Read-only executables that only inspect the filesystem/repo. A command built solely from these
     # (and safe git subcommands) auto-runs without a confirmation prompt in non-yolo mode, replacing
     # the dedicated List/Find/LineCount/read-only-Git tools that were removed in favour of Bash.
@@ -3100,12 +3122,17 @@ class BashTool(Tool):
             proc = subprocess.Popen(
                 [bash, "-lc", command], cwd=self.session.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
             )
+            with self._process_lock:
+                self._process = proc
             assert proc.stdout is not None and proc.stderr is not None
             return self.stream_process(proc)
         except KeyboardInterrupt:
-            stdout, stderr = self.kill_and_collect(proc)
-            return self.process_result("BashToolResult", -1, stdout, stderr + ("\n" if stderr else "") + "interrupted")
+            self.kill_and_collect(proc)
+            raise
         finally:
+            with self._process_lock:
+                if self._process is proc:
+                    self._process = None
             if self.live_output is not None:
                 self.live_output("", "")
 
@@ -3245,7 +3272,8 @@ class BashTool(Tool):
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
-            proc.kill()
+            with contextlib.suppress(OSError):
+                proc.kill()
 
     @classmethod
     def kill_and_collect(cls, proc: subprocess.Popen[Any] | None) -> tuple[str, str]:
@@ -5402,6 +5430,26 @@ class ToolRunner:
         self.live_start: Callable[[], None] | None = None
         self.bash_live_preview_shown: Callable[[], bool] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
+        self._active_bash_lock = threading.Lock()
+        self._active_bash: BashTool | None = None
+
+    def cancel(self) -> None:
+        with self._active_bash_lock:
+            tool = self._active_bash
+        if tool is not None:
+            tool.cancel()
+
+    def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
+        if not isinstance(tool, BashTool):
+            return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
+        with self._active_bash_lock:
+            self._active_bash = tool
+        try:
+            return tool.call()
+        finally:
+            with self._active_bash_lock:
+                if self._active_bash is tool:
+                    self._active_bash = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []
@@ -5567,7 +5615,7 @@ class ToolRunner:
                     self.output_fn(LogBlock.hierarchy(self.log_root(display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     nested_display = True
                 self.live_start()
-            output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
+            output = self.call_tool(tool, planned_edit)
         except ToolError as error:
             return "failed", self.reject(
                 call,
@@ -6342,11 +6390,22 @@ FINAL:
         self.model = ModelClient(session)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
+        self.cancel_requested = threading.Event()
         # Called with the queued messages when they are flushed into the turn, so the UI can move
         # them from the live queue region up into the scrollback log. Set by CommandLoop.
         self.on_queue_flush: Callable[[list[str]], None] | None = None
 
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+        self.tools.cancel()
+        self.model.cancel()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancel_requested.is_set():
+            raise KeyboardInterrupt
+
     def run(self, user_input: str) -> str:
+        self.cancel_requested.clear()
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
@@ -6366,8 +6425,10 @@ FINAL:
                 self.session.state.turn_step = step + 1
                 while True:
                     try:
+                        self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                        self.raise_if_cancelled()
                         self.accept_pending_inputs(turn_messages, request.pending)
                         break
                     except ModelRequestRetry:
@@ -6384,6 +6445,7 @@ FINAL:
                     self.output_fn(content.strip())
                 tool_batches += 1
                 turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else ""))
+                self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
             self.finish_turn(turn_messages, stopped)
@@ -6718,6 +6780,7 @@ class TuiApp:
         on_chat_submit: Callable[[str], None] | None = None,
         on_running_submit: Callable[[str], None] | None = None,
         on_exit_request: Callable[[], None] | None = None,
+        on_force_exit: Callable[[], None] | None = None,
         on_interrupt: Callable[[], None] | None = None,
         on_retry: Callable[[], None] | None = None,
         on_recall: Callable[[], str] | None = None,
@@ -6731,6 +6794,7 @@ class TuiApp:
         self.on_chat_submit = on_chat_submit or (lambda _text: None)
         self.on_running_submit = on_running_submit or (lambda _text: None)
         self.on_exit_request = on_exit_request or (lambda: None)
+        self.on_force_exit = on_force_exit or (lambda: None)
         self.on_interrupt = on_interrupt or (lambda: None)
         self.on_retry = on_retry or (lambda: None)
         self.on_recall = on_recall or (lambda: "")
@@ -6759,7 +6823,9 @@ class TuiApp:
         self.viewport_scroll = 0
         self.input_window: Window | None = None
         self.viewport_window: Window | None = None
+        self.activity_window: Window | None = None
         self.modal_window: Window | None = None
+        self.status_window: Window | None = None
 
     def request_input(self, prompt: str) -> str:
         """Called from the agent (bg) thread to get a line of user input inline (approval prompts,
@@ -6789,6 +6855,10 @@ class TuiApp:
     def set_dispatching(self) -> None:
         self._set_mode("dispatch", "")
 
+    def set_cancelling(self) -> None:
+        self.status_label = "cancelling"
+        self._set_mode("running", "+> ")
+
     def set_idle(self) -> None:
         self.status_label = ""
         self.started_at = 0.0
@@ -6803,7 +6873,6 @@ class TuiApp:
 
     def _accept(self, buffer: Buffer) -> bool:
         text = buffer.text
-        buffer.reset(Document(""))
         if self.input_mode == "approval" and self._input_pending is not None:
             self._input_result = text
             self._input_pending.set()
@@ -6908,11 +6977,26 @@ class TuiApp:
         if self.app is not None:
             self.app.invalidate()
 
+    @staticmethod
+    def complete_input(buffer: Buffer, *, reverse: bool = False) -> None:
+        if buffer.complete_state is not None:
+            buffer.complete_previous() if reverse else buffer.complete_next()
+            return
+        if buffer.completer is None:
+            return
+        event = CompleteEvent(completion_requested=True)
+        completions = list(buffer.completer.get_completions(buffer.document, event))
+        if len(completions) == 1:
+            buffer.apply_completion(completions[0])
+        elif completions:
+            buffer.start_completion(select_last=reverse, complete_event=event)
+
     def build_layout(self) -> Layout:
         self.viewport_window = Window(
             FormattedTextControl(self.viewport_fragments, show_cursor=False),
             wrap_lines=True,
             get_vertical_scroll=self.vertical_scroll,
+            dont_extend_height=True,
         )
         self.input_window = Window(
             BufferControl(
@@ -6925,36 +7009,64 @@ class TuiApp:
                 search_buffer_control=self.search_toolbar.control,
                 preview_search=True,
             ),
-            height=Dimension(min=1, max=6),
+            height=Dimension(min=1),
             dont_extend_height=True,
             wrap_lines=True,
             style=UiPrinter.user_log_style(),
         )
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        self.activity_window = Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True)
         activity = ConditionalContainer(
-            Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True),
+            self.activity_window,
+            filter=Condition(lambda: self.input_mode == "running"),
+        )
+        running_gap = ConditionalContainer(
+            Window(height=1, dont_extend_height=True),
             filter=Condition(lambda: self.input_mode == "running"),
         )
         self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
-        body = FloatContainer(
-            HSplit([self.viewport_window, activity, self.input_window, completion_space, self.search_toolbar]),
-            [
-                Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True),
-                Float(
-                    ConditionalContainer(self.modal_window, filter=Condition(lambda: self.modal is not None)),
-                    left=0,
-                    right=0,
-                    bottom=0,
-                ),
-            ],
+        modal_active = Condition(lambda: self.modal is not None)
+        normal_region = ConditionalContainer(
+            HSplit(
+                [
+                    activity,
+                    running_gap,
+                    self.input_window,
+                    completion_space,
+                    self.search_toolbar,
+                    Window(height=1, dont_extend_height=True),
+                ]
+            ),
+            filter=~modal_active,
         )
-        status_bar = Window(
+        modal_region = ConditionalContainer(
+            HSplit([self.modal_window, Window(height=1, dont_extend_height=True)]),
+            filter=modal_active,
+        )
+        self.status_window = Window(
             FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
             style="class:bottom-toolbar",
             height=1,
             dont_extend_height=True,
         )
-        return Layout(HSplit([body, status_bar]), focused_element=self.input_window)
+        # All fixed-height content shares one HSplit; only the final filler absorbs unused rows.
+        # This keeps history, selectors, multiline input, and status top-anchored like the legacy
+        # shell instead of letting an intermediate FloatContainer stretch the viewport.
+        content = HSplit(
+            [
+                self.viewport_window,
+                Window(height=1, dont_extend_height=True),
+                modal_region,
+                normal_region,
+                self.status_window,
+                Window(),
+            ]
+        )
+        root = FloatContainer(
+            content,
+            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True)],
+        )
+        return Layout(root, focused_element=self.input_window)
 
     def make_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
@@ -6977,16 +7089,11 @@ class TuiApp:
 
         @bindings.add("tab", filter=~modal)
         def _tab(event):
-            buffer = event.current_buffer
-            if buffer.complete_state:
-                buffer.complete_next()
-            else:
-                buffer.start_completion(select_first=False)
+            self.complete_input(event.current_buffer)
 
         @bindings.add("s-tab", filter=~modal)
         def _shift_tab(event):
-            buffer = event.current_buffer
-            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
+            self.complete_input(event.current_buffer, reverse=True)
 
         @bindings.add(Keys.BracketedPaste, filter=~modal)
         def _paste(event):
@@ -7051,6 +7158,11 @@ class TuiApp:
             if not self.input_buffer.text and self.input_mode == "chat" and self.modal is None:
                 self.on_exit_request()
                 event.app.exit()
+
+        @bindings.add(Keys.ControlBackslash, eager=True)
+        def _force_exit(event):  # pragma: no cover — interactive emergency path
+            self.on_force_exit()
+            event.app.exit()
 
         return bindings
 
@@ -8331,7 +8443,8 @@ Tools:
         ]
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
-        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})"
+        status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
+        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})" if status == "working" else status
         label = f"{label} [ {queued} queued ]" if queued else label
         return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
 
@@ -8399,6 +8512,7 @@ Tools:
                     pending_item.inflight = False
         if was_inflight:
             on_inflight()
+        self.session.save_snapshot()
         return item.text
 
     def run(self) -> int:
@@ -8454,10 +8568,9 @@ Tools:
             self.session.save_snapshot()
 
     def run_tui(self) -> int:
-        """Full-TUI REPL. Owns the pt Application on the main thread; the agent runs on a bg
-        thread so the viewport keeps repainting while tools execute. Approval prompts from the
-        agent thread route through TuiApp.request_input, which reuses the same input widget so
-        the user answers inline without leaving the shell."""
+        """Full-TUI REPL. The agent stays on the main thread so terminal SIGINT interrupts model
+        and tool calls immediately, matching the legacy shell. The prompt-toolkit Application runs
+        on its UI thread; approval prompts bridge to it through TuiApp.request_input."""
         buffer = self.ui.log_buffer
         self.ui.full_screen = True
         self.emit(f"nanocode {__version__}. /help for commands.")
@@ -8471,32 +8584,35 @@ Tools:
 
         pending: queue.Queue[str] = queue.Queue()
         stop = threading.Event()
-        self.worker_thread: threading.Thread | None = None
+        cancel_pending = threading.Event()
+        main_busy = threading.Event()
+        force_exit_timer: threading.Timer | None = None
 
-        def raise_worker(exc_type: type[BaseException]) -> None:
-            worker = self.worker_thread
-            if worker is None or not worker.is_alive() or worker.ident is None:
+        def interrupt() -> None:
+            if cancel_pending.is_set():
                 return
-            import ctypes
+            cancel_pending.set()
+            if self.tui is not None:
+                self.tui.set_cancelling()
+            threading.Thread(target=self.agent.cancel, daemon=True).start()
+            if main_busy.is_set():
+                os.kill(os.getpid(), signal.SIGINT)
 
-            result = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(worker.ident), ctypes.py_object(exc_type))
-            if result > 1:
-                ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(worker.ident), None)
-
-        def interrupt(message: str = "Cancelling…") -> None:
-            self.emit(message)
-            cancel = getattr(self.agent.model, "cancel", None)
-            if callable(cancel):
-                threading.Thread(target=cancel, daemon=True).start()
-            with contextlib.suppress(Exception):
-                raise_worker(KeyboardInterrupt)
+        def retry_model(label: str) -> None:
+            if self.tui is not None:
+                self.tui.status_label = label
+                if self.tui.app is not None:
+                    self.tui.app.invalidate()
+            threading.Thread(target=self.agent.model.cancel, daemon=True).start()
+            if main_busy.is_set():
+                os.kill(os.getpid(), signal.SIGINT)
 
         def retry() -> None:
             if self.session.state.current_model_call_started_at <= 0 or self.session.state.manual_model_retry_requested:
                 return
             self.session.state.manual_model_retry_requested = True
             self.session.state.model_retry_count += 1
-            interrupt("Retrying…")
+            retry_model("retrying")
 
         def submit_running(text: str) -> None:
             text = Text.clean(text.strip())
@@ -8506,6 +8622,7 @@ Tools:
                 threading.Thread(target=self.run_queued_command, args=(text,), daemon=True).start()
             else:
                 self.session.enqueue_user_input(text)
+                self.session.save_snapshot()
             if self.tui is not None and self.tui.app is not None:
                 self.tui.app.invalidate()
 
@@ -8515,7 +8632,7 @@ Tools:
                     return
                 self.session.state.manual_model_retry_requested = True
                 self.session.state.model_retry_count += 1
-                interrupt("Revising queued input…")
+                retry_model("revising queued input")
 
             return self.recall_pending_input(retry_inflight)
 
@@ -8523,11 +8640,21 @@ Tools:
             stop.set()
             self.session.save_snapshot()
 
+        def force_exit() -> None:
+            nonlocal force_exit_timer
+            stop.set()
+            threading.Thread(target=self.agent.cancel, daemon=True).start()
+            force_exit_timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
+            force_exit_timer.daemon = True
+            force_exit_timer.start()
+            os.kill(os.getpid(), signal.SIGINT)
+
         self.tui = TuiApp(
             buffer,
             on_chat_submit=lambda text: pending.put(text) if text.strip() else None,
             on_running_submit=submit_running,
             on_exit_request=request_exit,
+            on_force_exit=force_exit,
             on_interrupt=interrupt,
             on_retry=retry,
             on_recall=recall,
@@ -8540,11 +8667,25 @@ Tools:
             completer=self.input_completer,
         )
 
-        def worker() -> None:
+        def submit_next(entered: list[str]) -> None:
+            if not entered:
+                return
+            pending.put(entered[0])
+            for text in entered[1:]:
+                self.session.enqueue_user_input(text)
+
+        def run_agent_loop() -> None:
             while not stop.is_set():
                 try:
                     user_input = pending.get(timeout=0.1)
                 except queue.Empty:
+                    continue
+                main_busy.set()
+                if cancel_pending.is_set():
+                    self.emit("Cancelled")
+                    self.tui.set_idle()
+                    cancel_pending.clear()
+                    main_busy.clear()
                     continue
                 self.ui.emit(UiPrinter.USER_LOG_PREFIX + user_input)
                 try:
@@ -8552,14 +8693,19 @@ Tools:
                 except (KeyboardInterrupt, NanocodeError) as error:
                     self.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
                     self.tui.set_idle()
+                    cancel_pending.clear()
+                    main_busy.clear()
                     continue
                 if exit_now:
                     stop.set()
+                    main_busy.clear()
                     if self.tui is not None and self.tui.app is not None:
                         self.exit_app(self.tui.app)
                     return
                 if handled:
                     self.tui.set_idle()
+                    cancel_pending.clear()
+                    main_busy.clear()
                     continue
                 self.status_bar.begin()
                 self.tui.set_running("working")
@@ -8567,35 +8713,47 @@ Tools:
                 try:
                     answer = self.agent.run(user_input)
                 except KeyboardInterrupt:
+                    submit_next(self.take_pending_inputs())
                     self.emit("Cancelled")
                     continue
                 except NanocodeError as error:
                     answer = f"Error: {error}"
                 finally:
                     self.tui.set_idle()
+                    cancel_pending.clear()
+                    main_busy.clear()
                     self.session.state.manual_model_retry_requested = False
                     CodeIndex(self.session).update_pending_async()
                 elapsed = time.monotonic() - started
                 self.ui.emit_answer(answer)
                 self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
                 self.session.save_snapshot()
-                entered = self.take_pending_inputs()
-                if entered:
-                    pending.put(entered[0])
-                    for text in entered[1:]:
-                        self.session.enqueue_user_input(text)
+                submit_next(self.take_pending_inputs())
 
-        self.worker_thread = threading.Thread(target=worker, daemon=True)
-        self.worker_thread.start()
+        tui_errors: list[BaseException] = []
+
+        def run_tui_app() -> None:
+            try:
+                self.tui.run(style=self.style())
+            except BaseException as error:
+                tui_errors.append(error)
+                stop.set()
+
+        tui_thread = threading.Thread(target=run_tui_app, name="tui", daemon=True)
+        tui_thread.start()
         try:
-            self.tui.run(style=self.style())
+            run_agent_loop()
         finally:
             stop.set()
-            if self.worker_thread is not None:
-                self.worker_thread.join(timeout=1.0)
-            self.worker_thread = None
+            if force_exit_timer is not None:
+                force_exit_timer.cancel()
+            if self.tui is not None and self.tui.app is not None:
+                self.exit_app(self.tui.app)
+            tui_thread.join(timeout=1.0)
             self.tui = None
             self.ui.full_screen = False
+        if tui_errors:
+            raise tui_errors[0]
         return 0
 
     def render_resumed_session(self) -> None:
@@ -9053,6 +9211,9 @@ Tools:
         labels = labels or {}
         if not choices or not self.interactive_input:
             return None
+        enabled = tuple(choice for choice in choices if choice not in disabled)
+        if len(enabled) == 1:
+            return enabled[0]
         try:
             return self.choice_application(title, choices, labels, current, set(disabled))
         except (EOFError, KeyboardInterrupt):
@@ -9513,8 +9674,6 @@ Tools:
             return self.set_provider(parts[0])
         choices = tuple(sorted(self.session.config.providers))
         summary = "provider: " + self.session.config.active_provider + "\nproviders: " + ", ".join(choices)
-        if len(choices) <= 1:
-            return summary
         current = self.session.config.active_provider
         choice = self.select_choice("Provider", choices, labels={current: current + " (current)"}, current=current)
         if not isinstance(choice, str):

@@ -468,6 +468,36 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     assert [record.name for record in restored.tool_records] == ["Read"]
 
 
+def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
+    agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
+
+    class Model:
+        calls = 0
+
+        def request(self, messages, tools=None):
+            self.calls += 1
+            return {}, [call("Read", [{"path": "missing", "ranges": [[0, 0]]}])], ""
+
+        def cancel(self):
+            pass
+
+    class Tools:
+        def run(self, calls, batch_suffix=""):
+            agent.cancel()
+            return []
+
+        def cancel(self):
+            pass
+
+    agent.model = Model()
+    agent.tools = Tools()
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("stop after the tool")
+
+    assert agent.model.calls == 1
+
+
 def test_agent_rejects_empty_final_response(tmp_path):
     agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
 
