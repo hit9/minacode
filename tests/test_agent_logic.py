@@ -884,14 +884,22 @@ def test_queue_placeholder_shows_contextual_hint_only_when_input_empty():
     assert typed.fragments == [("", "x")]
 
 
-def test_queue_flush_moves_messages_into_log(tmp_path):
+def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     s = session(tmp_path)
     out = []
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=out.append)
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
+
+    # echo_user_input emits via print_formatted_text (color path); capture its FormattedText args
+    # so we can assert on the routed content without a real terminal.
+    echoed: list[str] = []
+    monkeypatch.setattr(loop, "echo_user_input", lambda prefix, body, **_: echoed.append(prefix + body))
+
     loop.flush_queued_to_log(["do a thing", "  "])
-    assert out == ["• do a thing"]  # non-empty messages emitted, blank ones skipped
+    assert echoed == ["• do a thing"]  # non-empty messages emitted, blank ones skipped
+    # A trailing blank line separates the flushed echo from the tool-log lines that follow.
+    assert out == [""]
 
 
 def test_pause_queue_input_signals_exit_and_waits_for_teardown(tmp_path, monkeypatch):
@@ -1131,7 +1139,8 @@ def test_read_input_does_not_replay_transient_approval(tmp_path, monkeypatch):
 
     assert loop.read_input("> ") == "y"
     assert len(printed) == 1
-    assert list(printed[0][0]) == [("class:prompt", "> "), (n.UiPrinter.user_log_style(), "y")]
+    # echo_user_input prepends a blank line so successive echoes breathe in the log.
+    assert list(printed[0][0]) == [("", "\n"), ("class:prompt", "> "), (n.UiPrinter.user_log_style(), "y")]
 
 
 def test_approval_prompt_fragments_keep_text_and_spinner(tmp_path, monkeypatch):

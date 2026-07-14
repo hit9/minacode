@@ -76,9 +76,9 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
     monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
 
     ui = n.UiPrinter()
+    # Interactive TTY output stays colored regardless of NO_COLOR — nanocode owns its theming and
+    # renders through prompt_toolkit's ANSI path, so the parent env var is not honored.
     assert ui.color
-    assert ui.console is not None and ui.console.no_color is False
-    assert ui.console.color_system == "truecolor"
 
 
 @pytest.mark.parametrize("width", [20, 40, 80])

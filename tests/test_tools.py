@@ -1358,6 +1358,75 @@ def test_bash_timeout_applies_after_output_streams_close(tmp_path):
     assert "timeout" in output
 
 
+def test_bash_fast_command_does_not_promote(tmp_path):
+    s = session(tmp_path)
+    s.settings.bash_wait_timeout = 5
+    s.settings.shell_timeout = 30
+
+    output = n.BashTool(s, ["printf hi"]).call()
+
+    assert "* exit_code: 0" in output
+    assert "hi" in output
+    assert "backgrounded" not in output
+    assert not s.jobs
+
+
+def test_bash_slow_command_promotes_to_job(tmp_path):
+    s = session(tmp_path)
+    s.settings.bash_wait_timeout = 1
+    s.settings.shell_timeout = 30
+
+    output = n.BashTool(s, ["printf early; sleep 3; printf late"]).call()
+
+    assert "* exit_code: -1" in output
+    assert "early" in output
+    assert "backgrounded after 1s" in output
+    assert "job.1" in output
+    assert "job.1" in s.jobs
+    job = s.jobs["job.1"]
+    assert job.stream_buffer is not None
+    # `early` was consumed by the foreground streaming loop before promotion, so it lives in the
+    # Bash result payload (asserted above). `late` was produced after the drainer took over, so it
+    # lives in the promoted job's tail buffer.
+    job.process.wait(timeout=10)
+    for _ in range(50):
+        if "late" in job.tail(4096):
+            break
+        import time as _t
+
+        _t.sleep(0.05)
+    assert "late" in job.tail(4096)
+    job.update_status()
+    assert job.status == "done"
+    assert job.exit_code == 0
+
+
+def test_bash_promotion_disabled_when_wait_timeout_zero(tmp_path):
+    s = session(tmp_path)
+    s.settings.bash_wait_timeout = 0
+    s.settings.shell_timeout = 1
+
+    output = n.BashTool(s, ["sleep 5"]).call()
+
+    assert "* exit_code: -1" in output
+    assert "timeout" in output
+    assert "backgrounded" not in output
+    assert not s.jobs
+
+
+def test_bash_promoted_job_is_killable(tmp_path):
+    s = session(tmp_path)
+    s.settings.bash_wait_timeout = 1
+    s.settings.shell_timeout = 30
+
+    n.BashTool(s, ["sleep 60"]).call()
+    assert "job.1" in s.jobs
+    job = s.jobs["job.1"]
+    job.kill()
+    assert job.status in {"done", "killed"}
+    assert job.process.poll() is not None
+
+
 def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True

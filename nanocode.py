@@ -338,6 +338,11 @@ class ProviderConfig:
 @dataclass
 class RuntimeSettings:
     shell_timeout: int = 60
+    # Bash foreground wait budget: if the command hasn't exited within this many seconds the running
+    # process is promoted to a background job (see BashTool.stream_process) and control returns to
+    # the model with a partial-output payload. Set to 0 to disable promotion (fall back to killing
+    # on shell_timeout).
+    bash_wait_timeout: int = 10
     max_steps: int = 200
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     session_retention_days: int = 7
@@ -352,6 +357,7 @@ class RuntimeSettings:
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
+            bash_wait_timeout=max(0, Config.int(runtime, "bash_wait_timeout", 10)),
             max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
@@ -1414,8 +1420,10 @@ def _read_and_release(selector: selectors.BaseSelector, key: selectors.SelectorK
 
 @dataclass
 class BackgroundJob:
-    """A non-blocking shell process tracked by the session. Output is redirected to a log file
-    on disk (stderr merged into stdout) so we don't need a threaded stream drainer."""
+    """A non-blocking shell process tracked by the session. Output is either redirected to a log
+    file on disk (jobs started via `Job(start)`) or accumulated in an in-memory tail buffer by a
+    drainer thread (jobs promoted from a running BashTool call after bash_wait_timeout). Both
+    variants expose the same tail/status/wait/kill surface."""
 
     id: str
     command: str
@@ -1424,6 +1432,12 @@ class BackgroundJob:
     started_at: float
     status: str = "running"
     exit_code: int | None = None
+    # Memory-backed tail, populated by BashTool.promote_to_job's drainer thread. When set, tail()
+    # reads from here instead of log_path. Bounded at BUFFER_LIMIT chars by the drainer.
+    stream_buffer: list[str] | None = None
+    stream_lock: threading.Lock | None = None
+
+    BUFFER_LIMIT: ClassVar[int] = 32 * 1024  # per-stream tail cap in chars
 
     def update_status(self) -> None:
         if self.status != "running":
@@ -1455,21 +1469,26 @@ class BackgroundJob:
             if self.status == "running":
                 self.status = "killed"
                 self.exit_code = -1
-        with contextlib.suppress(OSError):
-            os.unlink(self.log_path)
+        if self.log_path:
+            with contextlib.suppress(OSError):
+                os.unlink(self.log_path)
 
     def tail(self, limit: int) -> str:
         """Return the last `limit` chars from the merged stdout+stderr log."""
         limit = max(0, limit)
-        try:
-            with open(self.log_path, "rb") as file:
-                file.seek(0, 2)
-                size = file.tell()
-                # UTF-8 is up to 4 bytes/char; read a little extra so decoding produces at least `limit` chars.
-                file.seek(max(0, size - limit * 4), 0)
-                text = file.read().decode("utf-8", errors="replace")
-        except OSError:
-            return ""
+        if self.stream_buffer is not None:
+            with self.stream_lock or contextlib.nullcontext():
+                text = "".join(self.stream_buffer)
+        else:
+            try:
+                with open(self.log_path, "rb") as file:
+                    file.seek(0, 2)
+                    size = file.tell()
+                    # UTF-8 is up to 4 bytes/char; read a little extra so decoding produces at least `limit` chars.
+                    file.seek(max(0, size - limit * 4), 0)
+                    text = file.read().decode("utf-8", errors="replace")
+            except OSError:
+                return ""
         if len(text) <= limit:
             return text
         if limit <= 3:
@@ -3098,23 +3117,36 @@ class BashTool(Tool):
         selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
         selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
         timed_out = False
-        deadline = time.monotonic() + self.session.settings.shell_timeout
+        started = time.monotonic()
+        shell_deadline = started + self.session.settings.shell_timeout
+        wait_budget = self.session.settings.bash_wait_timeout
+        # Auto-promotion: if the command hasn't exited within bash_wait_timeout, hand the still-
+        # running proc to the background jobs registry and return control to the model with a
+        # partial-output payload. Disabled when the setting is 0 or the wait budget is already
+        # >= shell_timeout (in which case we would kill on the same deadline anyway).
+        promote_deadline = started + wait_budget if wait_budget and wait_budget < self.session.settings.shell_timeout else None
         try:
             while selector.get_map() or proc.poll() is None:
                 now = time.monotonic()
-                remaining = deadline - now
+                if promote_deadline is not None and now >= promote_deadline and proc.poll() is None:
+                    # Don't drain here: drain_selector does BLOCKING os.reads, which would wait
+                    # until bash produced more output (or exited) — defeating the whole point of
+                    # promotion. Whatever data the streaming loop already read is the partial
+                    # payload; anything still in-flight becomes the drainer thread's first read.
+                    return self.promote_to_job(proc, selector, stdout_parts, stderr_parts)
+                remaining = shell_deadline - now
                 if remaining <= 0:
                     timed_out = True
                     self.kill_process_group(proc)
                     proc.wait()
                     self.drain_selector(selector, stdout_parts, stderr_parts)
                     break
-                wait = min(0.2, remaining)
+                wait = min(0.2, remaining, promote_deadline - now if promote_deadline is not None else remaining)
                 if selector.get_map():
-                    for key, _ in selector.select(wait):
+                    for key, _ in selector.select(max(0.0, wait)):
                         self.read_stream_chunk(selector, key, stdout_parts, stderr_parts)
                 else:
-                    time.sleep(wait)
+                    time.sleep(max(0.0, wait))
             if proc.returncode is None:
                 proc.wait()
         finally:
@@ -3124,6 +3156,63 @@ class BashTool(Tool):
             stderr += ("\n" if stderr else "") + "timeout"
             return self.process_result("BashToolResult", -1, stdout, stderr)
         return self.process_result("BashToolResult", proc.returncode or 0, stdout, stderr)
+
+    def promote_to_job(
+        self,
+        proc: subprocess.Popen[bytes],
+        selector: selectors.BaseSelector,
+        stdout_parts: list[str],
+        stderr_parts: list[str],
+    ) -> str:
+        """Hand off a still-running Bash proc to the background job registry. Closes the streaming
+        selector, starts a drainer thread that keeps reading proc.stdout/stderr into an in-memory
+        tail buffer (bounded), and returns a partial-output payload for the model."""
+        # Take pipe handles before closing the selector so the drainer can keep reading them.
+        stdout_pipe, stderr_pipe = proc.stdout, proc.stderr
+        try:
+            selector.close()
+        except OSError:
+            pass
+        self.session.job_counter += 1
+        job_id = f"job.{self.session.job_counter}"
+        buffer: list[str] = []
+        buffer_lock = threading.Lock()
+        job = BackgroundJob(
+            id=job_id,
+            command=self.command(),
+            process=proc,
+            log_path="",
+            started_at=time.monotonic() - self.session.settings.bash_wait_timeout,
+            stream_buffer=buffer,
+            stream_lock=buffer_lock,
+        )
+        self.session.jobs[job_id] = job
+
+        def drain_pipe(pipe: Any) -> None:
+            if pipe is None:
+                return
+            try:
+                # read1 returns whatever is immediately available (line-buffered producers ship one
+                # line per call), so a slow trickle of output lands in the tail buffer promptly
+                # instead of blocking until a full 4KB is buffered.
+                for chunk in iter(lambda: pipe.read1(4096), b""):
+                    text = chunk.decode("utf-8", errors="replace")
+                    with buffer_lock:
+                        buffer.append(text)
+                        # Trim from the front once we exceed the cap, keeping the tail intact.
+                        total = sum(len(part) for part in buffer)
+                        while total > BackgroundJob.BUFFER_LIMIT and len(buffer) > 1:
+                            total -= len(buffer.pop(0))
+            except (OSError, ValueError):
+                return
+
+        threading.Thread(target=drain_pipe, args=(stdout_pipe,), daemon=True).start()
+        threading.Thread(target=drain_pipe, args=(stderr_pipe,), daemon=True).start()
+        partial_stdout = "".join(stdout_parts)
+        partial_stderr = "".join(stderr_parts)
+        note = f"backgrounded after {self.session.settings.bash_wait_timeout}s; still running as {job_id}. Use Job(action=\"wait\"|\"status\"|\"kill\", job=\"{job_id}\")."
+        partial_stderr = (partial_stderr + ("\n" if partial_stderr else "") + note)
+        return self.process_result("BashToolResult", -1, partial_stdout, partial_stderr)
 
     def drain_selector(self, selector: selectors.BaseSelector, stdout_parts: list[str], stderr_parts: list[str]) -> None:
         for key in list(selector.get_map().values()):
@@ -6315,6 +6404,7 @@ class CommandCompleter(Completer):
         "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
         "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
         "runtime.shell_timeout": ("settings", "shell_timeout", lambda v: max(1, int(v))),
+        "runtime.bash_wait_timeout": ("settings", "bash_wait_timeout", lambda v: max(0, int(v))),
     }
     SET_KEYS: ClassVar[tuple[str, ...]] = tuple(SET_HANDLERS)
     # fmt: on
