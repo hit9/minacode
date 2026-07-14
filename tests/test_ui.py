@@ -329,13 +329,16 @@ def test_full_tui_ctrl_d_emits_resume_command_before_exit(tmp_path, monkeypatch)
     monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
     monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
     real_application = n.Application
+    dump_threads = []
+    tui_daemon = []
 
     with create_pipe_input() as pipe_input:
         monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, output=DummyOutput(), **kwargs))
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
-            command_loop.tui.dump_to_scrollback = lambda: None
+            tui_daemon.append(next(thread for thread in threading.enumerate() if thread.name == "tui").daemon)
+            command_loop.tui.dump_to_scrollback = lambda: dump_threads.append(threading.current_thread())
             pipe_input.send_text("\x04")
 
         driver = threading.Thread(target=drive, daemon=True)
@@ -344,6 +347,8 @@ def test_full_tui_ctrl_d_emits_resume_command_before_exit(tmp_path, monkeypatch)
         driver.join(timeout=1)
 
     assert any(f"nanocode --resume {scenario_session.uid}" in line for line in output)
+    assert tui_daemon == [False]
+    assert dump_threads == [threading.main_thread()]
 
 
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):
@@ -436,6 +441,7 @@ def test_interactive_tui_recalls_and_submits_queued_input(monkeypatch):
 
 def test_interactive_tui_ctrl_p_recalls_submitted_queued_input(monkeypatch, tmp_path):
     received = []
+    recalled = []
     app = n.TuiApp(
         n.LogBuffer(),
         on_running_submit=received.append,
@@ -449,11 +455,12 @@ def test_interactive_tui_ctrl_p_recalls_submitted_queued_input(monkeypatch, tmp_
         wait_until(lambda: received == ["queued message"])
         pipe_input.send_text("\x10")
         wait_until(lambda: app.input_buffer.text == "queued message")
+        recalled.append(app.input_buffer.text)
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
-    assert app.input_buffer.text == "queued message"
+    assert recalled == ["queued message"]
 
 
 def test_interactive_tui_tab_inserts_single_completion_without_menu(monkeypatch):
@@ -961,6 +968,17 @@ def test_mcp_cancelled_error_notice_is_muted(tmp_path):
     assert "openaiDeveloperDocs" not in notice
     assert "CancelledError" not in notice
     assert "mcp: broken: connection failed" in notice
+
+
+def test_background_output_is_closed_before_final_output(tmp_path):
+    command_loop = loop(tmp_path)
+    emitted = []
+    command_loop.emit = emitted.append
+
+    command_loop.close_background_output(lambda: emitted.append("final"))
+    command_loop.emit_background("late worker output")
+
+    assert emitted == ["final"]
 
 
 def test_tool_labels_keep_legacy_green_style():

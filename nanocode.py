@@ -7278,7 +7278,6 @@ class TuiApp:
                 self._input_pending.set()
             if self.modal is not None:
                 self.close_modal(None)
-        self.dump_to_scrollback()
 
     def dump_to_scrollback(self) -> None:  # pragma: no cover — writes to real stdout
         for entry in self.log_buffer.entries:
@@ -8402,6 +8401,8 @@ Tools:
         self.live_preview = BashLivePreview()
         self.bash_live_preview_rendered = False
         self.live_status_paused = False
+        self.background_output_lock = threading.Lock()
+        self.background_output_open = True
         self.interactive_input = input_fn is input and sys.stdin.isatty()
         # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
         # approval prompts land in the same input widget the user is already typing in.
@@ -8602,15 +8603,7 @@ Tools:
         # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
         if self.interactive_input:
             return self.run_tui()
-        self.emit(f"nanocode {__version__}. /help for commands.")
-        if tip := self.startup_tip():
-            self.emit("tip: " + tip)
-        SessionSnapshotStore.clean_expired(self.session)
-        self.render_resumed_session()
-        CodeIndex(self.session).refresh_existing_async()
-        # Async MCP discovery — show > immediately, discover in background
-        threading.Thread(target=self.discover_mcp, daemon=True).start()
-        UpdateChecker(self.session).start()
+        self.start_session()
         while True:
             try:
                 entered = self.take_pending_inputs()
@@ -8650,196 +8643,20 @@ Tools:
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
             self.session.save_snapshot()
 
-    def run_tui(self) -> int:
-        """Full-TUI REPL. The agent stays on the main thread so terminal SIGINT interrupts model
-        and tool calls immediately, matching the legacy shell. The prompt-toolkit Application runs
-        on its UI thread; approval prompts bridge to it through TuiApp.request_input."""
-        buffer = self.ui.log_buffer
-        self.ui.full_screen = True
+    def start_session(self) -> None:
+        """Initialize output and background services shared by both command-loop frontends."""
         self.emit(f"nanocode {__version__}. /help for commands.")
         if tip := self.startup_tip():
             self.emit("tip: " + tip)
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
+        # Async MCP discovery — show > immediately, discover in background
         threading.Thread(target=self.discover_mcp, daemon=True).start()
         UpdateChecker(self.session).start()
 
-        pending: queue.Queue[str] = queue.Queue()
-        stop = threading.Event()
-        cancel_pending = threading.Event()
-        main_busy = threading.Event()
-        force_exit_timer: threading.Timer | None = None
-
-        def interrupt() -> None:
-            if cancel_pending.is_set():
-                return
-            cancel_pending.set()
-            if self.tui is not None:
-                self.tui.set_cancelling()
-            threading.Thread(target=self.agent.cancel, daemon=True).start()
-            if main_busy.is_set():
-                os.kill(os.getpid(), signal.SIGINT)
-
-        def retry_model(label: str) -> None:
-            if self.tui is not None:
-                self.tui.status_label = label
-                if self.tui.app is not None:
-                    self.tui.app.invalidate()
-            threading.Thread(target=self.agent.model.cancel, daemon=True).start()
-            if main_busy.is_set():
-                os.kill(os.getpid(), signal.SIGINT)
-
-        def retry() -> None:
-            if self.session.state.current_model_call_started_at <= 0 or self.session.state.manual_model_retry_requested:
-                return
-            self.session.state.manual_model_retry_requested = True
-            self.session.state.model_retry_count += 1
-            retry_model("retrying")
-
-        def submit_running(text: str) -> None:
-            text = Text.clean(text.strip())
-            if not text:
-                return
-            if "\n" not in text and text.startswith("/"):
-                threading.Thread(target=self.run_queued_command, args=(text,), daemon=True).start()
-            else:
-                self.session.enqueue_user_input(text)
-                self.session.save_snapshot()
-            if self.tui is not None and self.tui.app is not None:
-                self.tui.app.invalidate()
-
-        def recall() -> str:
-            def retry_inflight() -> None:
-                if self.session.state.current_model_call_started_at <= 0:
-                    return
-                self.session.state.manual_model_retry_requested = True
-                self.session.state.model_retry_count += 1
-                retry_model("revising queued input")
-
-            return self.recall_pending_input(retry_inflight)
-
-        def request_exit() -> None:
-            stop.set()
-            self.save_and_emit_resume()
-
-        def force_exit() -> None:
-            nonlocal force_exit_timer
-            stop.set()
-            threading.Thread(target=self.agent.cancel, daemon=True).start()
-            force_exit_timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
-            force_exit_timer.daemon = True
-            force_exit_timer.start()
-            os.kill(os.getpid(), signal.SIGINT)
-
-        self.tui = TuiApp(
-            buffer,
-            on_chat_submit=lambda text: pending.put(text) if text.strip() else None,
-            on_running_submit=submit_running,
-            on_exit_request=request_exit,
-            on_force_exit=force_exit,
-            on_interrupt=interrupt,
-            on_retry=retry,
-            on_recall=recall,
-            status_fragments_fn=lambda: self.status_bar.display_fragments(
-                active=self.tui is not None and self.tui.input_mode == "running"
-            ),
-            activity_fragments_fn=self.tui_activity_fragments,
-            input_hint_fn=self.tui_input_hint,
-            history=self.input_history,
-            completer=self.input_completer,
-        )
-
-        def submit_next(entered: list[str]) -> None:
-            if not entered:
-                return
-            pending.put(entered[0])
-            for text in entered[1:]:
-                self.session.enqueue_user_input(text)
-
-        submit_next(self.take_pending_inputs())
-
-        def run_agent_loop() -> None:
-            while not stop.is_set():
-                try:
-                    user_input = pending.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                main_busy.set()
-                if cancel_pending.is_set():
-                    self.emit("Cancelled")
-                    self.tui.set_idle()
-                    cancel_pending.clear()
-                    main_busy.clear()
-                    continue
-                self.ui.emit(UiPrinter.USER_LOG_PREFIX + user_input)
-                try:
-                    handled, exit_now = self.command(user_input)
-                except (KeyboardInterrupt, NanocodeError) as error:
-                    self.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
-                    self.tui.set_idle()
-                    cancel_pending.clear()
-                    main_busy.clear()
-                    continue
-                if exit_now:
-                    stop.set()
-                    main_busy.clear()
-                    if self.tui is not None and self.tui.app is not None:
-                        self.exit_app(self.tui.app)
-                    return
-                if handled:
-                    self.tui.set_idle()
-                    cancel_pending.clear()
-                    main_busy.clear()
-                    continue
-                self.status_bar.begin()
-                self.tui.set_running("working")
-                started = time.monotonic()
-                try:
-                    answer = self.agent.run(user_input)
-                except KeyboardInterrupt:
-                    submit_next(self.take_pending_inputs())
-                    self.emit("Cancelled")
-                    continue
-                except NanocodeError as error:
-                    answer = f"Error: {error}"
-                finally:
-                    self.tui.set_idle()
-                    cancel_pending.clear()
-                    main_busy.clear()
-                    self.session.state.manual_model_retry_requested = False
-                    CodeIndex(self.session).update_pending_async()
-                elapsed = time.monotonic() - started
-                self.ui.emit_answer(answer)
-                self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
-                self.session.save_snapshot()
-                submit_next(self.take_pending_inputs())
-
-        tui_errors: list[BaseException] = []
-
-        def run_tui_app() -> None:
-            try:
-                self.tui.run(style=self.style())
-            except BaseException as error:
-                tui_errors.append(error)
-                stop.set()
-
-        tui_thread = threading.Thread(target=run_tui_app, name="tui", daemon=True)
-        tui_thread.start()
-        try:
-            run_agent_loop()
-        finally:
-            stop.set()
-            if force_exit_timer is not None:
-                force_exit_timer.cancel()
-            if self.tui is not None and self.tui.app is not None:
-                self.exit_app(self.tui.app)
-            tui_thread.join(timeout=1.0)
-            self.tui = None
-            self.ui.full_screen = False
-        if tui_errors:
-            raise tui_errors[0]
-        return 0
+    def run_tui(self) -> int:
+        return TuiRuntime(self).run()
 
     def render_resumed_session(self) -> None:
         # Transcript reconstruction owns historical call/result matching and ordering invariants.
@@ -8932,12 +8749,12 @@ Tools:
         self.session.mcp.discover_enabled()
         notice = self.mcp_error_notice()
         if notice:
-            self.emit(notice)
+            self.emit_background(notice)
         # render once so index_truncated reflects the freshly discovered tools, then warn if
         # the index is too large to fit even as name-only (some tools are hidden from the model).
         self.session.mcp.render_tools_index()
         if self.session.mcp.index_truncated:
-            self.emit(
+            self.emit_background(
                 "mcp: tools index exceeds the size budget; some tools are hidden from the model. Reduce enabled servers or run /mcp tools to see the full list."
             )
 
@@ -9000,6 +8817,18 @@ Tools:
 
     def emit(self, text: str | LogBlock = "") -> None:
         self.ui.emit(text)
+
+    def emit_background(self, text: str) -> None:
+        """Emit from a daemon worker only while this loop still owns terminal output."""
+        with self.background_output_lock:
+            if self.background_output_open:
+                self.emit(text)
+
+    def close_background_output(self, final_output: Callable[[], None] | None = None) -> None:
+        with self.background_output_lock:
+            self.background_output_open = False
+            if final_output is not None:
+                final_output()
 
     def with_status_paused(self, action):
         # Only quiet the standalone status-bar thread used by the simple/non-TTY path. The full TUI
@@ -9749,6 +9578,204 @@ Tools:
         return "Set " + key
 
 
+class TuiRuntime:
+    """Own the interactive session timeline while CommandLoop owns session behavior."""
+
+    def __init__(self, command_loop: CommandLoop):
+        self.loop = command_loop
+        self.pending: queue.Queue[str] = queue.Queue()
+        self.stop = threading.Event()
+        self.cancel_pending = threading.Event()
+        self.main_busy = threading.Event()
+        self.force_exit_timer: threading.Timer | None = None
+        self.errors: list[BaseException] = []
+
+    @property
+    def tui(self) -> TuiApp:
+        assert self.loop.tui is not None
+        return self.loop.tui
+
+    def interrupt(self) -> None:
+        if self.cancel_pending.is_set():
+            return
+        self.cancel_pending.set()
+        self.tui.set_cancelling()
+        threading.Thread(target=self.loop.agent.cancel, daemon=True).start()
+        if self.main_busy.is_set():
+            os.kill(os.getpid(), signal.SIGINT)
+
+    def retry_model(self, label: str) -> None:
+        self.tui.status_label = label
+        if self.tui.app is not None:
+            self.tui.app.invalidate()
+        threading.Thread(target=self.loop.agent.model.cancel, daemon=True).start()
+        if self.main_busy.is_set():
+            os.kill(os.getpid(), signal.SIGINT)
+
+    def retry(self) -> None:
+        state = self.loop.session.state
+        if state.current_model_call_started_at <= 0 or state.manual_model_retry_requested:
+            return
+        state.manual_model_retry_requested = True
+        state.model_retry_count += 1
+        self.retry_model("retrying")
+
+    def submit_running(self, text: str) -> None:
+        text = Text.clean(text.strip())
+        if not text:
+            return
+        if "\n" not in text and text.startswith("/"):
+            threading.Thread(target=self.loop.run_queued_command, args=(text,), daemon=True).start()
+        else:
+            self.loop.session.enqueue_user_input(text)
+            self.loop.session.save_snapshot()
+        if self.tui.app is not None:
+            self.tui.app.invalidate()
+
+    def recall(self) -> str:
+        def retry_inflight() -> None:
+            state = self.loop.session.state
+            if state.current_model_call_started_at <= 0:
+                return
+            state.manual_model_retry_requested = True
+            state.model_retry_count += 1
+            self.retry_model("revising queued input")
+
+        return self.loop.recall_pending_input(retry_inflight)
+
+    def request_exit(self) -> None:
+        self.stop.set()
+        self.loop.save_and_emit_resume()
+
+    def force_exit(self) -> None:
+        self.stop.set()
+        threading.Thread(target=self.loop.agent.cancel, daemon=True).start()
+        self.force_exit_timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
+        self.force_exit_timer.daemon = True
+        self.force_exit_timer.start()
+        os.kill(os.getpid(), signal.SIGINT)
+
+    def build_tui(self) -> TuiApp:
+        return TuiApp(
+            self.loop.ui.log_buffer,
+            on_chat_submit=lambda text: self.pending.put(text) if text.strip() else None,
+            on_running_submit=self.submit_running,
+            on_exit_request=self.request_exit,
+            on_force_exit=self.force_exit,
+            on_interrupt=self.interrupt,
+            on_retry=self.retry,
+            on_recall=self.recall,
+            status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
+            activity_fragments_fn=self.loop.tui_activity_fragments,
+            input_hint_fn=self.loop.tui_input_hint,
+            history=self.loop.input_history,
+            completer=self.loop.input_completer,
+        )
+
+    def submit_next(self, entered: list[str]) -> None:
+        if not entered:
+            return
+        self.pending.put(entered[0])
+        for text in entered[1:]:
+            self.loop.session.enqueue_user_input(text)
+
+    def reset_turn(self) -> None:
+        self.tui.set_idle()
+        self.cancel_pending.clear()
+        self.main_busy.clear()
+
+    def dispatch(self, user_input: str) -> bool:
+        """Dispatch one input. Return true when it was fully handled as a command."""
+        self.loop.ui.emit(UiPrinter.USER_LOG_PREFIX + user_input)
+        try:
+            handled, exit_now = self.loop.command(user_input)
+        except (KeyboardInterrupt, NanocodeError) as error:
+            self.loop.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
+            self.reset_turn()
+            return True
+        if exit_now:
+            self.stop.set()
+            self.main_busy.clear()
+            if self.tui.app is not None:
+                self.loop.exit_app(self.tui.app)
+            return True
+        if handled:
+            self.reset_turn()
+            return True
+        return False
+
+    def run_agent_turn(self, user_input: str) -> None:
+        self.loop.status_bar.begin()
+        self.tui.set_running("working")
+        started = time.monotonic()
+        try:
+            answer = self.loop.agent.run(user_input)
+        except KeyboardInterrupt:
+            self.submit_next(self.loop.take_pending_inputs())
+            self.loop.emit("Cancelled")
+            return
+        except NanocodeError as error:
+            answer = f"Error: {error}"
+        finally:
+            self.reset_turn()
+            self.loop.session.state.manual_model_retry_requested = False
+            CodeIndex(self.loop.session).update_pending_async()
+        elapsed = time.monotonic() - started
+        self.loop.ui.emit_answer(answer)
+        self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+        self.loop.session.save_snapshot()
+        self.submit_next(self.loop.take_pending_inputs())
+
+    def run_agent_loop(self) -> None:
+        while not self.stop.is_set():
+            try:
+                user_input = self.pending.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            self.main_busy.set()
+            if self.cancel_pending.is_set():
+                self.loop.emit("Cancelled")
+                self.reset_turn()
+                continue
+            if not self.dispatch(user_input):
+                self.run_agent_turn(user_input)
+
+    def run_tui_app(self) -> None:
+        try:
+            self.tui.run(style=self.loop.style())
+        except BaseException as error:
+            self.errors.append(error)
+            self.stop.set()
+
+    def run(self) -> int:
+        """Run the agent on the main thread and prompt-toolkit on one joined UI thread."""
+        self.loop.ui.full_screen = True
+        self.loop.start_session()
+        self.loop.tui = self.build_tui()
+        self.submit_next(self.loop.take_pending_inputs())
+        tui_thread = threading.Thread(target=self.run_tui_app, name="tui")
+        tui_thread.start()
+        try:
+            self.run_agent_loop()
+        finally:
+            self.stop.set()
+            if self.force_exit_timer is not None:
+                self.force_exit_timer.cancel()
+            if self.tui.app is not None:
+                self.loop.exit_app(self.tui.app)
+            # Do not let interpreter finalization race a TUI thread flushing stdout. The emergency
+            # force-exit timer remains responsible for terminating a genuinely wedged application.
+            tui_thread.join()
+            try:
+                self.loop.close_background_output(self.tui.dump_to_scrollback)
+            finally:
+                self.loop.tui = None
+                self.loop.ui.full_screen = False
+        if self.errors:
+            raise self.errors[0]
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nanocode")
     parser.add_argument("--config", default=None, help="Path to config TOML")
@@ -9779,9 +9806,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme)
         Theme.set_mode(Theme.resolve(session.settings.theme))
+        command_loop = CommandLoop(Agent(session))
         try:
-            return CommandLoop(Agent(session)).run()
+            return command_loop.run()
         finally:
+            command_loop.close_background_output()
             if session.mcp is not None:
                 session.mcp.close()
     except ConfigError as error:
