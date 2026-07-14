@@ -6920,18 +6920,35 @@ class UiPrinter:
     DIFF_GUTTER_WIDTH: ClassVar[int] = 12
 
     def diff_segments(self, text: str, row_width: int | None = None) -> list[tuple[str, str]]:
+        return self._diff_segments(text, row_width=row_width, live=False)
+
+    def diff_segments_live(self, text: str, row_width: int | None = None) -> list[tuple[str, str]]:
+        """Same as diff_segments, but pads the bg band to the current pane width. Only for live
+        full-screen renderers that repaint on resize (the `/diff` viewer). Scrollback callers must
+        NOT use this — baked-in wide padding wraps on a later pane shrink and drops the bg color on
+        the wrapped continuation, which looks broken."""
+        return self._diff_segments(text, row_width=row_width, live=True)
+
+    def _diff_segments(self, text: str, *, row_width: int | None, live: bool) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
-        # Pad the bg band to the current pane width for a solid edge-to-edge look. Scrollback bakes
-        # the width in, so a later resize can zigzag — same tradeoff we already accept for Rich
-        # syntax-highlighted code blocks that come out of the strip_trailing_pad path. Callers pass
-        # `row_width` when they know the width available AFTER their own outer prefix (nested log
-        # trees, tree edges) so the padding doesn't overflow and wrap onto a phantom second row.
+        natural_changed_width = max(
+            (get_cwidth(line) for line in lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))),
+            default=1,
+        )
         if row_width is None:
             row_width = shutil.get_terminal_size((120, 20)).columns - 3
-        changed_width = max(1, row_width - self.DIFF_GUTTER_WIDTH)
+        available_changed_width = max(1, row_width - self.DIFF_GUTTER_WIDTH)
+        # Scrollback path: cap the bg band at the widest actual changed line, and drop bg entirely
+        # if that would already exceed the pane — a later resize can't wrap what wasn't padded. Live
+        # path (the /diff viewer): fill edge-to-edge with the current pane width; the viewer repaints
+        # on resize, so wide padding stays fresh.
+        if live:
+            changed_width: int | None = available_changed_width
+        else:
+            changed_width = natural_changed_width if natural_changed_width <= available_changed_width else None
 
         # Determine the target file path from the diff header.  The `+++` line
         # names the resulting file; for created files `---` is /dev/null.
@@ -6989,7 +7006,7 @@ class UiPrinter:
             for style, piece in content_hl:
                 segments.append((styled(style), piece))
             width = get_cwidth(prefix) + sum(get_cwidth(piece) for _style, piece in content_hl)
-            padding = " " * max(0, changed_width - width) if background else ""
+            padding = " " * max(0, changed_width - width) if background and changed_width is not None else ""
             segments.append((background if padding else "", padding + suffix))
 
         for index, line in enumerate(lines):
@@ -8879,7 +8896,7 @@ Tools:
             status, path, diff = sections[state.file]
             parts.append(("", "\n"))
             parts.append(("ansicyan", f"  {status.title()} · {path}\n"))
-            lines = self.ui.segment_lines(self.ui.diff_segments(diff))
+            lines = self.ui.segment_lines(self.ui.diff_segments_live(diff))
             visible = state.view.visible(lines, viewport())
             for line in visible:
                 parts.extend(line)
