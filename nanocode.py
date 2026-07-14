@@ -46,7 +46,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
-from prompt_toolkit.formatted_text import ANSI, FormattedText
+from prompt_toolkit.formatted_text import ANSI, FormattedText, to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -6648,6 +6648,8 @@ class UiPrinter:
             self.output_fn(str(text))
             return
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
+        if self.log_buffer is not None:
+            self.log_buffer.append(segments)
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
     # Rich right-pads every rendered line with spaces up to the console width so backgrounds and
@@ -6722,7 +6724,13 @@ class UiPrinter:
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
-        print_formatted_text(ANSI(self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))), end="", flush=True)
+        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        if self.log_buffer is not None:
+            # Rich output is ANSI bytes; parse it back into pt fragments so the TUI viewport can
+            # render it uniformly with emit() output. `to_formatted_text(ANSI(...))` is the same
+            # conversion print_formatted_text does internally on the next line.
+            self.log_buffer.append(list(to_formatted_text(ANSI(cleaned))))
+        print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:

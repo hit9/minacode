@@ -20,6 +20,44 @@ def test_theme_palettes_have_identical_complete_keys():
     assert all(n.Theme.LIGHT.values())
 
 
+def test_log_buffer_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("NANOCODE_TUI", raising=False)
+    ui = n.UiPrinter(output_fn=lambda text: None)
+    assert ui.log_buffer is None
+
+
+def test_log_buffer_captures_emit_when_tui_enabled(monkeypatch):
+    monkeypatch.setenv("NANOCODE_TUI", "1")
+    monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
+    ui = n.UiPrinter()
+    assert ui.log_buffer is not None
+    # emit() should mirror its styled segments into the LogBuffer even while it still prints via
+    # print_formatted_text (Phase 2 keeps both paths active).
+    monkeypatch.setattr(n, "print_formatted_text", lambda *a, **kw: None)
+    ui.emit("hello")
+    assert ui.log_buffer.entries
+    fragments = ui.log_buffer.entries[-1].fragments
+    assert any("hello" in text for _style, text in fragments)
+
+
+def test_log_buffer_bounded_at_limit():
+    buffer = n.LogBuffer()
+    for i in range(n.LogBuffer.LIMIT + 50):
+        buffer.append([("", str(i))])
+    assert len(buffer.entries) == n.LogBuffer.LIMIT
+    # Oldest entries drop off the front, tail preserved.
+    tail = buffer.entries[-1].fragments[0][1]
+    assert tail == str(n.LogBuffer.LIMIT + 49)
+
+
+def test_log_buffer_notifies_observers():
+    buffer = n.LogBuffer()
+    calls = []
+    buffer.observers.append(lambda: calls.append(True))
+    buffer.append([("", "line")])
+    assert calls == [True]
+
+
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):
