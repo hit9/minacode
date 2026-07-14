@@ -6498,9 +6498,8 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
-        self.console = Console(color_system="truecolor", no_color=False) if self.color else None
-        # When set, render Rich answers to an ANSI string and emit via prompt_toolkit, so
-        # answers printed from inside a running prompt app (queue input) aren't mangled by patch_stdout.
+        # When set, callers know a Rich render is happening inside a running prompt app; TUI-only
+        # commands like /diff refuse to launch a full-screen viewer in that context.
         self.capture_ansi = False
 
     def emit(self, text: str | LogBlock = "") -> None:
@@ -6510,6 +6509,17 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
+    # Rich right-pads every rendered line with spaces up to the console width so backgrounds and
+    # padding can fill the row. Those spaces are baked into scrollback and turn into visible wrap
+    # artifacts when the terminal is later resized narrower. nanocode does not rely on per-line
+    # background fill, so we strip the trailing whitespace while preserving any ANSI codes that
+    # sit between the last glyph and the newline (Rich often flushes a reset after padding).
+    TRAILING_PAD_RE: ClassVar[re.Pattern[str]] = re.compile(r"[ \t]+(?=(?:\x1b\[[0-9;]*m|[ \t])*\n)")
+
+    @classmethod
+    def strip_trailing_pad(cls, text: str) -> str:
+        return cls.TRAILING_PAD_RE.sub("", text)
+
     def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0) -> None:
         if not self.color:
             if role == "user":
@@ -6518,15 +6528,10 @@ class UiPrinter:
                 role = ""
             self.output_fn(self.indent_message(text, role, indent))
             return
-        console = self.console
-        if self.capture_ansi:
-            console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
-            with console.capture() as capture:
-                self.render_message(console, text, role, rule, indent)
-            print_formatted_text(ANSI(capture.get()), end="", flush=True)
-            return
-        assert console is not None
-        self.render_message(console, text, role, rule, indent)
+        console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
+        with console.capture() as capture:
+            self.render_message(console, text, role, rule, indent)
+        print_formatted_text(ANSI(self.strip_trailing_pad(capture.get())), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
@@ -6561,7 +6566,7 @@ class UiPrinter:
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             console.print(Markdown(text))
-        print_formatted_text(ANSI(capture.get()), end="", flush=True)
+        print_formatted_text(ANSI(self.strip_trailing_pad(capture.get())), end="", flush=True)
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
