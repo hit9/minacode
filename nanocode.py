@@ -6510,15 +6510,53 @@ class UiPrinter:
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
     # Rich right-pads every rendered line with spaces up to the console width so backgrounds and
-    # padding can fill the row. Those spaces are baked into scrollback and turn into visible wrap
-    # artifacts when the terminal is later resized narrower. nanocode does not rely on per-line
-    # background fill, so we strip the trailing whitespace while preserving any ANSI codes that
-    # sit between the last glyph and the newline (Rich often flushes a reset after padding).
-    TRAILING_PAD_RE: ClassVar[re.Pattern[str]] = re.compile(r"[ \t]+(?=(?:\x1b\[[0-9;]*m|[ \t])*\n)")
+    # padding can fill the row. Uncolored padding gets baked into scrollback and turns into wrap
+    # zigzags on a narrower terminal, so we strip it — but padding that carries a background color
+    # (syntax-highlighted code blocks, /diff previews) must be preserved so the block still reads
+    # as a solid band. We track the SGR bg state per token and only strip whitespace rendered with
+    # bg off.
+    SGR_RE: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[([0-9;]*)m")
 
     @classmethod
     def strip_trailing_pad(cls, text: str) -> str:
-        return cls.TRAILING_PAD_RE.sub("", text)
+        return "\n".join(cls._strip_line_pad(line) for line in text.split("\n"))
+
+    @classmethod
+    def _strip_line_pad(cls, line: str) -> str:
+        tokens: list[tuple[str, str]] = []  # ("sgr"|"text", payload)
+        bg_states: list[bool] = []  # bg active while each token renders
+        bg, idx = False, 0
+        for m in cls.SGR_RE.finditer(line):
+            if m.start() > idx:
+                tokens.append(("text", line[idx : m.start()]))
+                bg_states.append(bg)
+            tokens.append(("sgr", m.group(0)))
+            bg_states.append(bg)
+            for param in (m.group(1) or "0").split(";"):
+                n = int(param) if param else 0
+                if n == 0 or n == 49:
+                    bg = False
+                elif 40 <= n <= 47 or 100 <= n <= 107 or n == 48:
+                    bg = True
+            idx = m.end()
+        if idx < len(line):
+            tokens.append(("text", line[idx:]))
+            bg_states.append(bg)
+        seen_content = False
+        for i in range(len(tokens) - 1, -1, -1):
+            kind, payload = tokens[i]
+            if kind == "sgr" or seen_content:
+                continue
+            if bg_states[i]:
+                if payload.strip():
+                    seen_content = True
+                continue
+            stripped = payload.rstrip()
+            if stripped != payload:
+                tokens[i] = ("text", stripped)
+            if stripped:
+                seen_content = True
+        return "".join(payload for _, payload in tokens)
 
     def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0) -> None:
         if not self.color:
