@@ -6618,9 +6618,7 @@ class UiPrinter:
     # (e.g. `8;id=…;https://…;;` for OSC 8). Strip these up front so pt only ever sees CSI escapes.
     # The trade is that any legitimate uses of these (clickable hyperlinks, inline images) never
     # reach the terminal — but they weren't working through pt anyway; better clean than garbled.
-    NON_CSI_ESCAPE_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"\x1b[\]_PX^][^\x07\x1b]*(?:\x07|\x1b\\)"
-    )
+    NON_CSI_ESCAPE_RE: ClassVar[re.Pattern[str]] = re.compile(r"\x1b[\]_PX^][^\x07\x1b]*(?:\x07|\x1b\\)")
 
     @classmethod
     def strip_unknown_escapes(cls, text: str) -> str:
