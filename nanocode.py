@@ -6680,13 +6680,13 @@ class UiPrinter:
             console.print("")
             console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style=self.user_log_style()), (0, 0, 0, len(margin))))
         elif role == "assistant":
-            content = RichText(text, style="red") if error else Markdown(text)
+            content = RichText(text, style="red") if error else Markdown(text, hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
         else:
             if role:
                 label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
                 console.print(Padding(label, (0, 0, 0, len(margin))))
-            content = RichText(text, style="red") if error else Markdown(text)
+            content = RichText(text, style="red") if error else Markdown(text, hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
 
     def emit_markdown(self, text: str) -> None:
@@ -6698,7 +6698,7 @@ class UiPrinter:
             return
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
-            console.print(Markdown(text))
+            console.print(Markdown(text, hyperlinks=False))
         print_formatted_text(ANSI(self.strip_trailing_pad(capture.get())), end="", flush=True)
 
     @staticmethod
