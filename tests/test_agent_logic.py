@@ -707,6 +707,18 @@ def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
     assert retried == [True]
 
 
+def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first", "delete me")
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    assert loop.recall_pending_input(lambda: None) == "delete me"
+
+    assert queued_texts(s) == ["first"]
+    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    assert queued_texts(restored) == ["first"]
+
+
 def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     """Unconsumed pending_user_inputs are auto-submitted as next input."""
     s = session(tmp_path)

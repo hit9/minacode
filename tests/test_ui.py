@@ -55,7 +55,7 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
     driver_errors = []
     with create_pipe_input() as pipe_input:
         def application(**kwargs):
-            return real_application(input=pipe_input, output=output, after_render=after_render, **kwargs)
+            return real_application(input=pipe_input, after_render=after_render, **(kwargs | {"output": output}))
 
         monkeypatch.setattr(n, "Application", application)
         monkeypatch.setattr(tui, "dump_to_scrollback", lambda: None)
@@ -123,7 +123,7 @@ def ctrl_c_queue_scenario(cwd, results):
 
     try:
         with create_pipe_input() as pipe_input:
-            n.Application = lambda **kwargs: real_application(input=pipe_input, output=DummyOutput(), **kwargs)
+            n.Application = lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()}))
 
             def drive():
                 try:
@@ -289,6 +289,28 @@ def test_tui_app_build_layout_composes_viewport_input_and_status():
     assert app.input_buffer.text == "hi"
 
 
+def test_tui_approval_prompt_keeps_connector_style_and_spinner(monkeypatch):
+    app = n.TuiApp(n.LogBuffer())
+    connector = n.LogBlock.prefix(2, n.LogEdge.CONTINUE)
+    app.input_mode = "approval"
+    app.input_prompt = connector + "[Y/n] "
+    monkeypatch.setattr(n.time, "monotonic", lambda: 0.2)
+
+    assert app.status_fragments() == [
+        ("ansibrightblack", connector),
+        ("class:approval", "[Y/n] "),
+        ("class:approval.wait", "/ "),
+    ]
+
+
+def test_tui_prompt_output_disables_cpr_probe(monkeypatch):
+    output = type("Output", (), {"enable_cpr": True})()
+    monkeypatch.setattr(n, "create_output", lambda: output)
+
+    assert n.TuiApp.prompt_output() is output
+    assert output.enable_cpr is False
+
+
 def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
     buffer = n.LogBuffer()
     received: list[str] = []
@@ -333,7 +355,7 @@ def test_full_tui_ctrl_d_emits_resume_command_before_exit(tmp_path, monkeypatch)
     tui_daemon = []
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, output=DummyOutput(), **kwargs))
+        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -381,7 +403,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     real_application = n.Application
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, output=DummyOutput(), **kwargs))
+        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -577,6 +599,18 @@ def test_tui_running_input_queues_one_multiline_message():
     assert app.input_buffer.text == ""
 
 
+def test_tui_running_input_drops_whitespace_only_draft():
+    received: list[str] = []
+    app = n.TuiApp(n.LogBuffer(), on_running_submit=received.append)
+    app.set_running("working")
+    app.input_buffer.insert_text("  \n ")
+
+    app.input_buffer.validate_and_handle()
+
+    assert received == []
+    assert app.input_buffer.text == ""
+
+
 def test_tui_running_input_shows_contextual_placeholder():
     hint = {"text": "Enter queues follow-up"}
     placeholder = n.CallbackPlaceholder(lambda: hint["text"])
@@ -621,6 +655,34 @@ def test_tui_sigint_interrupts_dispatch_and_running_modes():
     handler(event)
 
     assert interrupted == [True, True]
+
+
+@pytest.mark.parametrize("mode", ["chat", "running"])
+def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
+    app = n.TuiApp(n.LogBuffer())
+    app.input_buffer.reset(n.Document("abc", cursor_position=1))
+    app.input_mode = mode
+    binding = next(binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (n.Keys.ControlD,) and binding.filter())
+    event = type("Event", (), {"app": type("Application", (), {"exit": lambda self: None})()})()
+
+    binding.handler(event)
+
+    assert app.input_buffer.text == "ac"
+
+
+def test_tui_ctrl_d_submits_multiline_approval_input():
+    app = n.TuiApp(n.LogBuffer())
+    pending = threading.Event()
+    app.input_mode = "approval"
+    app._input_pending = pending
+    app.input_buffer.reset(n.Document("first\nsecond"))
+    binding = next(binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (n.Keys.ControlD,) and binding.filter())
+    event = type("Event", (), {"app": type("Application", (), {"exit": lambda self: None})()})()
+
+    binding.handler(event)
+
+    assert pending.is_set()
+    assert app._input_result == "first\nsecond"
 
 
 def test_tui_ctrl_g_retries_only_while_running():

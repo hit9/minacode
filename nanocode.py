@@ -7016,6 +7016,15 @@ class TuiApp:
         return max(1, sum(1 for _line in split_lines(self.viewport_fragments())))
 
     def status_fragments(self) -> list[tuple[str, str]]:
+        if self.input_mode == "approval" and self.input_prompt:
+            frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
+            connector = LogBlock.prefix(2, LogEdge.CONTINUE)
+            prompt = (
+                [("ansibrightblack", connector), ("class:approval", self.input_prompt[len(connector) :])]
+                if self.input_prompt.startswith(connector)
+                else [("class:approval", self.input_prompt)]
+            )
+            return [*prompt, ("class:approval.wait", frame + " ")]
         return [("class:prompt", self.input_prompt)]
 
     def vertical_scroll(self, window: Window) -> int:
@@ -7157,7 +7166,28 @@ class TuiApp:
         modal = Condition(lambda: self.modal is not None)
         running = Condition(lambda: self.input_mode == "running" and self.modal is None)
 
-        for key in ("j", "k", "h", "l", "up", "down", "left", "right", "tab", "enter", "escape", "q", "r", "pagedown", "pageup", "c-d", "c-u", "backspace", "c-h", "/"):
+        for key in (
+            "j",
+            "k",
+            "h",
+            "l",
+            "up",
+            "down",
+            "left",
+            "right",
+            "tab",
+            "enter",
+            "escape",
+            "q",
+            "r",
+            "pagedown",
+            "pageup",
+            "c-d",
+            "c-u",
+            "backspace",
+            "c-h",
+            "/",
+        ):
             bindings.add(key, filter=modal, eager=True)(lambda event, key=key: self.dispatch_modal_key(key, event.data))
         for number in range(1, 10):
             bindings.add(str(number), filter=modal, eager=True)(lambda event, number=number: self.dispatch_modal_key(str(number), event.data))
@@ -7238,7 +7268,12 @@ class TuiApp:
 
         @bindings.add("c-d", filter=~modal, eager=True)
         def _ctrl_d(event):  # pragma: no cover — interactive path
-            if not self.input_buffer.text and self.input_mode == "chat" and self.modal is None:
+            if self.input_mode == "approval" and self._input_pending is not None:
+                self._input_result = self.input_buffer.text
+                self._input_pending.set()
+            elif self.input_buffer.text and self.input_mode in {"chat", "running"}:
+                self.input_buffer.delete()
+            elif self.input_mode == "chat":
                 self.on_exit_request()
                 event.app.exit()
 
@@ -7249,6 +7284,14 @@ class TuiApp:
 
         return bindings
 
+    @staticmethod
+    def prompt_output():
+        """Create terminal output without prompt-toolkit's visible CPR probe."""
+        output = create_output()
+        if hasattr(output, "enable_cpr"):
+            output.enable_cpr = False
+        return output
+
     def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = Application(
             layout=self.build_layout(),
@@ -7257,6 +7300,7 @@ class TuiApp:
             mouse_support=False,
             refresh_interval=0.2,
             style=style,
+            output=self.prompt_output(),
         )
         self.app = app
 
@@ -7497,9 +7541,7 @@ class UiPrinter:
                 sample_prefix_width = sum(get_cwidth(text) for _style, text in sample_prefix)
                 diff_row_width = max(1, width - sample_prefix_width)
                 diff_text = "\n".join(item.text for item in diff_lines)
-                highlighted = self.segment_lines(
-                    self.diff_segments_live(diff_text, diff_row_width) if live else self.diff_segments(diff_text, diff_row_width)
-                )
+                highlighted = self.segment_lines(self.diff_segments_live(diff_text, diff_row_width) if live else self.diff_segments(diff_text, diff_row_width))
                 for item, rendered in zip(diff_lines, highlighted):
                     prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
