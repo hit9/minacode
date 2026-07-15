@@ -212,12 +212,40 @@ def test_tui_loading_models_prompt_is_simple_and_dim():
     assert app.status_fragments() == [("ansibrightblack", "Loading models...")]
 
 
-def test_tui_prompt_output_disables_cpr_probe(monkeypatch):
-    output = type("Output", (), {"enable_cpr": True})()
-    monkeypatch.setattr(n, "create_output", lambda: output)
+def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch):
+    class CprOutput(ResizableOutput):
+        def __init__(self):
+            super().__init__()
+            self.requests = 0
 
-    assert n.TuiApp.prompt_output() is output
-    assert output.enable_cpr is False
+        @property
+        def responds_to_cpr(self):
+            return True
+
+        def get_rows_below_cursor_position(self):
+            raise NotImplementedError
+
+        def ask_for_cpr(self):
+            self.requests += 1
+
+    output = CprOutput()
+    app = n.TuiApp()
+
+    def drive(_pipe_input):
+        wait_until(lambda: app.app is not None and output.requests == 1)
+        callback = app.app.renderer.cpr_not_supported_callback
+        assert getattr(callback, "__self__", None) is None
+        assert callback() is None
+        app.app.loop.call_soon_threadsafe(app.app.renderer.report_absolute_cursor_row, 20)
+        wait_until(lambda: not app.app.renderer.waiting_for_cpr)
+        output.size = Size(rows=40, columns=120)
+        app.app.loop.call_soon_threadsafe(app.app._on_resize)
+        wait_until(lambda: output.requests == 2)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, output=output)
+
+    assert output.requests == 2
 
 
 def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():

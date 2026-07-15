@@ -7099,14 +7099,6 @@ class TuiApp:
 
         return bindings
 
-    @staticmethod
-    def prompt_output():
-        """Create terminal output without prompt-toolkit's visible CPR probe."""
-        output = create_output()
-        if hasattr(output, "enable_cpr"):
-            output.enable_cpr = False
-        return output
-
     def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = Application(
             layout=self.build_layout(),
@@ -7116,8 +7108,11 @@ class TuiApp:
             refresh_interval=0.2,
             style=style,
             erase_when_done=True,
-            output=self.prompt_output(),
         )
+        # A persistent primary-screen renderer needs CPR after a terminal resize; otherwise its
+        # stale cursor coordinates can leave the transient footer in tmux scrollback. Keep the
+        # legacy behavior of silently degrading on terminals that do not answer the probe.
+        app.renderer.cpr_not_supported_callback = lambda: None
         self.app = app
         self.ready.clear()
         try:
