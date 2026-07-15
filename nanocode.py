@@ -6429,16 +6429,29 @@ FINAL:
         try:
             for step in range(self.session.settings.max_steps):
                 self.session.state.turn_step = step + 1
+                followup_response = False
                 while True:
                     try:
                         self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
                         self.raise_if_cancelled()
+                        if request.pending and not content.strip():
+                            _, _, content = self.model.request(request.messages, [])
+                            self.raise_if_cancelled()
+                            if not content.strip():
+                                raise ModelError("empty live follow-up response")
+                            followup_response = True
                         self.accept_pending_inputs(turn_messages, request.pending)
                         break
                     except ModelRequestRetry:
                         continue
+                if followup_response:
+                    response = content.strip()
+                    turn_messages.append({"role": "assistant", "content": response})
+                    self.output_fn(response)
+                    self.checkpoint_turn(turn_messages)
+                    continue
                 if not tool_calls:
                     if not content.strip():
                         raise ModelError("empty final response")

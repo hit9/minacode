@@ -587,6 +587,38 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.pending_user_inputs == []
 
 
+def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first follow-up", "second follow-up")
+    output = []
+    agent = n.Agent(s, output_fn=output.append)
+
+    class FakeModel:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                return {}, [call("Bash", ["should-not-run"])], ""
+            if len(self.requests) == 2:
+                return {"role": "assistant", "content": "I hear both follow-ups; checking now."}, [], "I hear both follow-ups; checking now."
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+
+    assert agent.run("initial request") == "done"
+    assert agent.model.requests[0][1]
+    assert agent.model.requests[1][1] == []
+    assert "first follow-up" in "\n".join(message.get("content") or "" for message in agent.model.requests[1][0])
+    assert "second follow-up" in "\n".join(message.get("content") or "" for message in agent.model.requests[1][0])
+    assert output == ["I hear both follow-ups; checking now."]
+    assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant", "assistant"]
+    assert s.messages[3]["content"] == "I hear both follow-ups; checking now."
+    assert s.tool_records == []
+    assert s.pending_user_inputs == []
+
+
 def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     s = session(tmp_path)
     agent = n.Agent(s, output_fn=lambda text: None)
