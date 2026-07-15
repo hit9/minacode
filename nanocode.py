@@ -5403,6 +5403,31 @@ class MCPManager:
         return Text.clean(str(text)).replace("\n", " ").replace("|", "\\|")
 
 
+class ActiveResource:
+    """Thread-safe lifecycle for a resource that another thread may need to cancel."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.value: Any = None
+
+    @contextlib.contextmanager
+    def track(self, value: Any):
+        with self.lock:
+            self.value = value
+        try:
+            yield
+        finally:
+            with self.lock:
+                if self.value is value:
+                    self.value = None
+
+    def apply(self, action: Callable[[Any], None]) -> None:
+        with self.lock:
+            value = self.value
+        if value is not None:
+            action(value)
+
+
 class ToolRunner:
     BASH_PREVIEW_LINES: ClassVar[int] = 12
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
@@ -5416,26 +5441,16 @@ class ToolRunner:
         self.live_start: Callable[[], None] | None = None
         self.bash_live_preview_shown: Callable[[], bool] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
-        self._active_bash_lock = threading.Lock()
-        self._active_bash: BashTool | None = None
+        self._active_bash = ActiveResource()
 
     def cancel(self) -> None:
-        with self._active_bash_lock:
-            tool = self._active_bash
-        if tool is not None:
-            tool.cancel()
+        self._active_bash.apply(lambda tool: tool.cancel())
 
     def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
         if not isinstance(tool, BashTool):
             return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
-        with self._active_bash_lock:
-            self._active_bash = tool
-        try:
+        with self._active_bash.track(tool):
             return tool.call()
-        finally:
-            with self._active_bash_lock:
-                if self._active_bash is tool:
-                    self._active_bash = None
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []
@@ -5918,21 +5933,15 @@ class ModelClient:
     def __init__(self, session: Session):
         self.session = session
         self.cancel_requested = threading.Event()
-        self.active_client_lock = threading.Lock()
-        self.active_client: Any = None
+        self.active_client = ActiveResource()
 
     def cancel(self) -> None:
         self.cancel_requested.set()
-        with self.active_client_lock:
-            client = self.active_client
-        if client is not None:
-            with contextlib.suppress(Exception):
-                client.close()
+        with contextlib.suppress(Exception):
+            self.active_client.apply(lambda client: client.close())
 
     def call_client(self, client: Any, request: Callable[[], Any]) -> Any:
-        with self.active_client_lock:
-            self.active_client = client
-        try:
+        with self.active_client.track(client):
             try:
                 result = request()
                 if self.cancel_requested.is_set():
@@ -5942,12 +5951,9 @@ class ModelClient:
                 if self.cancel_requested.is_set():
                     raise KeyboardInterrupt from None
                 raise ModelError(str(error)) from error
-        finally:
-            with self.active_client_lock:
-                if self.active_client is client:
-                    self.active_client = None
-            with contextlib.suppress(Exception):
-                client.close()
+            finally:
+                with contextlib.suppress(Exception):
+                    client.close()
 
     def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
@@ -6758,8 +6764,8 @@ class TuiApp:
         self.on_input_cancel = on_input_cancel or (lambda: None)
         self.on_retry = on_retry or (lambda: None)
         self.on_recall = on_recall or (lambda: "")
-        self.status_fragments_fn = status_fragments_fn or (lambda: [])
-        self.activity_fragments_fn = activity_fragments_fn or (lambda: [])
+        self.status_fragments_fn = status_fragments_fn or list
+        self.activity_fragments_fn = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.input_buffer = Buffer(
             history=history,
@@ -6836,8 +6842,7 @@ class TuiApp:
         self._set_mode("dispatch", prompt)
 
     def set_cancelling(self) -> None:
-        self.status_label = "cancelling"
-        self._set_mode("running", "+> ")
+        self.set_running("cancelling")
 
     def set_idle(self) -> None:
         self.status_label = ""
@@ -7001,6 +7006,14 @@ class TuiApp:
             else:
                 buffer.start_completion(select_first=False)
 
+    def _status_bar_window(self, *, dont_extend_height: bool) -> Window:
+        return Window(
+            FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
+            style="class:bottom-toolbar",
+            height=1,
+            dont_extend_height=dont_extend_height,
+        )
+
     def build_layout(self) -> Layout:
         self.viewport_window = Window(
             FormattedTextControl(self.viewport_fragments, show_cursor=False),
@@ -7026,13 +7039,14 @@ class TuiApp:
         )
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
         self.activity_window = Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True)
+        running = Condition(lambda: self.input_mode == "running")
         activity = ConditionalContainer(
             self.activity_window,
-            filter=Condition(lambda: self.input_mode == "running"),
+            filter=running,
         )
         running_gap = ConditionalContainer(
             Window(height=1, dont_extend_height=True),
-            filter=Condition(lambda: self.input_mode == "running"),
+            filter=running,
         )
         self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
         modal_active = Condition(lambda: self.modal is not None)
@@ -7054,12 +7068,7 @@ class TuiApp:
             HSplit([self.modal_window, Window(height=1, dont_extend_height=True)]),
             filter=modal_active & ~exclusive_active,
         )
-        self.status_window = Window(
-            FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
-            style="class:bottom-toolbar",
-            height=1,
-            dont_extend_height=True,
-        )
+        self.status_window = self._status_bar_window(dont_extend_height=True)
         # All fixed-height content shares one HSplit; only the final filler absorbs unused rows.
         # This keeps history, selectors, multiline input, and status top-anchored like the legacy
         # shell instead of letting an intermediate FloatContainer stretch the viewport.
@@ -7074,11 +7083,7 @@ class TuiApp:
             ]
         )
         self.exclusive_modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False)
-        exclusive_status = Window(
-            FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
-            style="class:bottom-toolbar",
-            height=1,
-        )
+        exclusive_status = self._status_bar_window(dont_extend_height=False)
         root = FloatContainer(
             content,
             [
@@ -9499,29 +9504,30 @@ class TuiRuntime:
         assert self.loop.tui is not None
         return self.loop.tui
 
+    def _interrupt_active(self, cancel: Callable[[], None]) -> None:
+        threading.Thread(target=cancel, daemon=True).start()
+        if self.main_busy.is_set():
+            os.kill(os.getpid(), signal.SIGINT)
+
     def interrupt(self) -> None:
         if self.cancel_pending.is_set():
             return
         self.cancel_pending.set()
         self.tui.set_cancelling()
-        threading.Thread(target=self.loop.agent.cancel, daemon=True).start()
-        if self.main_busy.is_set():
-            os.kill(os.getpid(), signal.SIGINT)
+        self._interrupt_active(self.loop.agent.cancel)
 
-    def retry_model(self, label: str) -> None:
-        self.tui.status_label = label
-        self.tui.invalidate()
-        threading.Thread(target=self.loop.agent.model.cancel, daemon=True).start()
-        if self.main_busy.is_set():
-            os.kill(os.getpid(), signal.SIGINT)
-
-    def retry(self) -> None:
+    def _request_model_retry(self, label: str) -> None:
         state = self.loop.session.state
         if state.current_model_call_started_at <= 0 or state.manual_model_retry_requested:
             return
         state.manual_model_retry_requested = True
         state.model_retry_count += 1
-        self.retry_model("retrying")
+        self.tui.status_label = label
+        self.tui.invalidate()
+        self._interrupt_active(self.loop.agent.model.cancel)
+
+    def retry(self) -> None:
+        self._request_model_retry("retrying")
 
     def submit_running(self, text: str) -> None:
         text = Text.clean(text.strip())
@@ -9535,15 +9541,7 @@ class TuiRuntime:
         self.tui.invalidate()
 
     def recall(self) -> str:
-        def retry_inflight() -> None:
-            state = self.loop.session.state
-            if state.current_model_call_started_at <= 0:
-                return
-            state.manual_model_retry_requested = True
-            state.model_retry_count += 1
-            self.retry_model("revising queued input")
-
-        return self.loop.recall_pending_input(retry_inflight)
+        return self.loop.recall_pending_input(lambda: self._request_model_retry("revising queued input"))
 
     def request_exit(self) -> None:
         self.stop.set()
@@ -9560,7 +9558,7 @@ class TuiRuntime:
     def build_tui(self) -> TuiApp:
         return TuiApp(
             self.loop.ui.log_buffer,
-            on_chat_submit=lambda text: self.pending.put(text) if text.strip() else None,
+            on_chat_submit=self.pending.put,
             on_running_submit=self.submit_running,
             on_exit_request=self.request_exit,
             on_force_exit=self.force_exit,
