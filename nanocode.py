@@ -6984,7 +6984,11 @@ class TuiApp:
             self.activity_window,
             filter=running,
         )
-        running_gap = ConditionalContainer(
+        running_gap_above = ConditionalContainer(
+            Window(height=1, dont_extend_height=True),
+            filter=running,
+        )
+        running_gap_below = ConditionalContainer(
             Window(height=1, dont_extend_height=True),
             filter=running,
         )
@@ -6995,8 +6999,9 @@ class TuiApp:
         normal_region = ConditionalContainer(
             HSplit(
                 [
+                    running_gap_above,
                     activity,
-                    running_gap,
+                    running_gap_below,
                     self.input_window,
                     completion_space,
                     self.search_toolbar,

@@ -616,7 +616,7 @@ def test_interactive_tui_keeps_padding_around_running_queue(monkeypatch):
 
     assert frames
     activity, prompt, status = frames[0]
-    assert activity.ypos == 0
+    assert activity.ypos == 1
     assert prompt.ypos == activity.ypos + activity.height + 1
     assert status.ypos == prompt.ypos + prompt.height + 1
 
