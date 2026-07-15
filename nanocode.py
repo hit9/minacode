@@ -6811,6 +6811,7 @@ class TuiApp:
         on_exit_request: Callable[[], None] | None = None,
         on_force_exit: Callable[[], None] | None = None,
         on_interrupt: Callable[[], None] | None = None,
+        on_input_cancel: Callable[[], None] | None = None,
         on_retry: Callable[[], None] | None = None,
         on_recall: Callable[[], str] | None = None,
         status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
@@ -6825,6 +6826,7 @@ class TuiApp:
         self.on_exit_request = on_exit_request or (lambda: None)
         self.on_force_exit = on_force_exit or (lambda: None)
         self.on_interrupt = on_interrupt or (lambda: None)
+        self.on_input_cancel = on_input_cancel or (lambda: None)
         self.on_retry = on_retry or (lambda: None)
         self.on_recall = on_recall or (lambda: "")
         self.status_fragments_fn = status_fragments_fn or (lambda: [])
@@ -6845,7 +6847,6 @@ class TuiApp:
         self._input_pending: threading.Event | None = None
         self._input_result: str = ""
         self.status_label: str = ""
-        self.started_at: float = 0.0
         self.modal: TuiModal | None = None
         self.modal_lock = threading.Lock()
         self.follow_tail = True
@@ -6900,7 +6901,6 @@ class TuiApp:
 
     def set_running(self, label: str) -> None:
         self.status_label = label
-        self.started_at = time.monotonic()
         self._set_mode("running", "+> ")
 
     def set_dispatching(self) -> None:
@@ -6912,8 +6912,6 @@ class TuiApp:
 
     def set_idle(self) -> None:
         self.status_label = ""
-        self.started_at = 0.0
-        self.dismiss_resolved_modal()
         self._set_mode("chat", UiPrinter.PROMPT_PREFIX)
 
     def _set_mode(self, mode: str, prompt: str) -> None:
@@ -6968,21 +6966,12 @@ class TuiApp:
         if modal is None:
             return
         modal.result = result
+        self.modal = None
+        if self.app is not None:
+            if self.input_window is not None:
+                self.app.layout.focus(self.input_window)
+            self.app.invalidate()
         modal.done.set()
-
-    def dismiss_resolved_modal(self) -> None:
-        modal, app = self.modal, self.app
-        if modal is None or not modal.done.is_set() or app is None:
-            return
-
-        def dismiss() -> None:
-            if self.modal is modal:
-                self.modal = None
-                if self.input_window is not None:
-                    app.layout.focus(self.input_window)
-                app.invalidate()
-
-        app.loop.call_soon_threadsafe(dismiss)
 
     def modal_fragments(self) -> list[tuple[str, str]]:
         return self.modal.fragments_fn() if self.modal is not None else []
@@ -7249,19 +7238,21 @@ class TuiApp:
         def _ctrl_c(event):  # pragma: no cover — interactive path
             # Never quit on Ctrl-C. Instead:
             #   * approval mode → cancel this specific prompt (empty reply back to the agent).
-            #   * chat with typed input → clear the input.
+            #   * idle chat → cancel and clear the current input.
             #   * agent running → interrupt the running turn.
-            #   * idle chat with empty input → no-op.
             # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
             if self.modal is not None:
-                self.close_modal(None)
+                result = self.modal.key_fn("c-c", event.data)
+                self.close_modal(None if result is TUI_MODAL_PENDING else result)
                 return
             if self.input_mode == "approval" and self._input_pending is not None:
                 self._input_result = ""
                 self._input_pending.set()
                 return
-            if self.input_mode == "chat" and self.input_buffer.text:
-                self.input_buffer.reset(Document(""))
+            if self.input_mode == "chat":
+                if self.input_buffer.text:
+                    self.input_buffer.reset(Document(""))
+                self.on_input_cancel()
                 return
             if self.input_mode in {"dispatch", "running"}:
                 self.on_interrupt()
@@ -8611,11 +8602,7 @@ Tools:
             if sub and sub[0] != "tools":
                 self.emit("Only read-only /mcp (status, tools) is available while the agent is working.")
                 return
-        try:
-            self.command(text)
-        finally:
-            if self.tui is not None:
-                self.tui.dismiss_resolved_modal()
+        self.command(text)
 
     def take_pending_inputs(self) -> list[str]:
         """Remove and return queued inputs that are not currently being flushed."""
@@ -9112,6 +9099,8 @@ Tools:
                     state.searching = False
                 elif (choice := state.selected_choice()) is not None:
                     return SELECTION_FREE_TEXT if choice == FREE_TEXT else choice
+            elif key == "c-c":
+                return KeyboardInterrupt()
             elif key.isdigit() and not state.searching:
                 number = int(key)
                 options = state.enabled()
@@ -9119,7 +9108,10 @@ Tools:
                     state.selected = number - 1
             return TUI_MODAL_PENDING
 
-        return self.tui.show_modal(fragments, modal_key)
+        result = self.tui.show_modal(fragments, modal_key)
+        if isinstance(result, KeyboardInterrupt):
+            raise result
+        return result
 
     def question_application(self, spec: AskSpec, position: str = "") -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
@@ -9695,6 +9687,7 @@ class TuiRuntime:
             on_exit_request=self.request_exit,
             on_force_exit=self.force_exit,
             on_interrupt=self.interrupt,
+            on_input_cancel=lambda: self.loop.emit("Cancelled"),
             on_retry=self.retry,
             on_recall=self.recall,
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
@@ -9720,7 +9713,7 @@ class TuiRuntime:
         """Dispatch one input. Return true when it was fully handled as a command."""
         self.loop.ui.emit(UiPrinter.USER_LOG_PREFIX + user_input)
         try:
-            handled, exit_now = self.loop.command(user_input)
+            handled, exit_now = self.loop.command(user_input.strip())
         except (KeyboardInterrupt, NanocodeError) as error:
             self.loop.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
             self.reset_turn()

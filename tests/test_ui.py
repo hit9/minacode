@@ -337,6 +337,23 @@ def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
     assert app.app is None
 
 
+@pytest.mark.parametrize("draft", ["", "unfinished draft"])
+def test_interactive_tui_ctrl_c_cancels_idle_input_like_master(monkeypatch, draft):
+    cancelled = []
+    app = n.TuiApp(n.LogBuffer(), on_input_cancel=lambda: cancelled.append(True))
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text(draft + "\x03")
+        wait_until(lambda: cancelled == [True])
+        assert app.input_buffer.text == ""
+        pipe_input.send_text("\x04")
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert cancelled == [True]
+
+
 def test_full_tui_ctrl_d_emits_resume_command_before_exit(tmp_path, monkeypatch):
     scenario_session = session(tmp_path)
     scenario_session.messages.append({"role": "user", "content": "persist me"})
@@ -371,6 +388,18 @@ def test_full_tui_ctrl_d_emits_resume_command_before_exit(tmp_path, monkeypatch)
     assert any(f"nanocode --resume {scenario_session.uid}" in line for line in output)
     assert tui_daemon == [False]
     assert dump_threads == [threading.main_thread()]
+
+
+@pytest.mark.parametrize("entered", [" /help", "exit "])
+def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
+    command_loop = loop(tmp_path)
+    dispatched = []
+    command_loop.command = lambda text: dispatched.append(text) or (True, False)
+    command_loop.tui = n.TuiApp(command_loop.ui.log_buffer)
+    runtime = n.TuiRuntime(command_loop)
+
+    assert runtime.dispatch(entered)
+    assert dispatched == [entered.strip()]
 
 
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):
@@ -970,6 +999,71 @@ def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatc
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert received == ["after cancel"]
+
+
+def test_interactive_tui_resolved_modal_allows_followup_approval(monkeypatch):
+    app = n.TuiApp(n.LogBuffer())
+    selected = []
+    approved = []
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        selector = threading.Thread(
+            target=lambda: selected.append(
+                app.show_modal(
+                    lambda: [("", "selector")],
+                    lambda key, _data: "chosen" if key == "enter" else n.TUI_MODAL_PENDING,
+                )
+            ),
+            daemon=True,
+        )
+        selector.start()
+        wait_until(lambda: app.modal is not None)
+        pipe_input.send_text("\r")
+        selector.join(timeout=1)
+        assert not selector.is_alive()
+        wait_until(lambda: app.modal is None and app.app.layout.current_window is app.input_window)
+
+        approval = threading.Thread(target=lambda: approved.append(app.request_input("Approve? ")), daemon=True)
+        approval.start()
+        wait_until(lambda: app.input_mode == "approval")
+        pipe_input.send_text("y\r")
+        approval.join(timeout=1)
+        assert not approval.is_alive()
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert selected == ["chosen"]
+    assert approved == ["y"]
+
+
+def test_interactive_tui_choice_ctrl_c_reports_cancellation(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    output = []
+    command_loop.emit = output.append
+    app = n.TuiApp(command_loop.ui.log_buffer)
+    command_loop.tui = app
+    result = []
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        selector = threading.Thread(
+            target=lambda: result.append(command_loop.select_choice("Pick", ("a", "b"))),
+            daemon=True,
+        )
+        selector.start()
+        wait_until(lambda: app.modal is not None)
+        pipe_input.send_text("\x03")
+        selector.join(timeout=1)
+        assert not selector.is_alive()
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert result == [None]
+    assert output == ["Cancelled"]
 
 
 def test_resume_history_is_buffered_before_tui_starts(tmp_path, monkeypatch):
