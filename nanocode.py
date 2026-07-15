@@ -3048,11 +3048,11 @@ class BashTool(Tool):
         # Flags/args that turn a read-only command into a writer.
         if cmd == "find" and any(t in {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"} for t in tokens):
             return False
-        if cmd == "sed" and any(t == "-i" or t.startswith("-i") or t == "--in-place" or t.startswith("--in-place") for t in tokens):
+        if cmd == "sed" and any(t.startswith(("-i", "--in-place")) for t in tokens):
             return False
-        if cmd == "tree" and any(t == "-o" or t.startswith("-o") or t.startswith("--output") for t in tokens):
+        if cmd == "tree" and any(t.startswith(("-o", "--output")) for t in tokens):
             return False  # `tree -o FILE` writes the listing to a file
-        if cmd == "sort" and any(t.startswith("-o") or t.startswith("--output") for t in tokens):
+        if cmd == "sort" and any(t.startswith(("-o", "--output")) for t in tokens):
             return False  # `sort -o FILE` / `--output=FILE` writes to a file
         if cmd == "uniq" and cls._uniq_writes(tokens):
             return False  # `uniq INPUT OUTPUT` writes the second file operand
@@ -3087,7 +3087,7 @@ class BashTool(Tool):
         args = tokens[index + 1 :]
         if any(t == "--output" or t.startswith("--output=") for t in args):
             return False
-        if sub == "grep" and any(t == "-O" or t.startswith("-O") or t == "--open-files-in-pager" or t.startswith("--open-files-in-pager=") for t in args):
+        if sub == "grep" and any(t.startswith(("-O", "--open-files-in-pager")) for t in args):
             return False
         return True
 
@@ -3197,10 +3197,8 @@ class BashTool(Tool):
         tail buffer (bounded), and returns a partial-output payload for the model."""
         # Take pipe handles before closing the selector so the drainer can keep reading them.
         stdout_pipe, stderr_pipe = proc.stdout, proc.stderr
-        try:
+        with contextlib.suppress(OSError):
             selector.close()
-        except OSError:
-            pass
         self.session.job_counter += 1
         job_id = f"job.{self.session.job_counter}"
         buffer: list[str] = []
@@ -4129,12 +4127,6 @@ class ContextManager:
         ]
         return "\n".join(rows)
 
-    def context_overview(self) -> str:
-        """Markdown view of the synthesized context frame the model receives each turn:
-        the Environment and Memory sections (the live transcript is excluded)."""
-        header = f"### Context  ·  ctx `{self.session.state.context_percent}%`"
-        return "\n\n".join([header, self.environment_md(), self.memory_md()])
-
     @staticmethod
     def md_table(headers: list[str], rows: list[tuple]) -> str:
         def cell(value: object) -> str:
@@ -4145,34 +4137,6 @@ class ContextManager:
                 "| " + " | ".join(headers) + " |",
                 "| " + " | ".join("---" for _ in headers) + " |",
                 *("| " + " | ".join(cell(value) for value in row) + " |" for row in rows),
-            ]
-        )
-
-    def environment_md(self) -> str:
-        info = self.session.system_info
-        rows = [
-            ("cwd", "`" + info.cwd + "`"),
-            ("os", f"{info.os} · {info.arch}"),
-            ("shell timeout", f"{self.session.settings.shell_timeout}s"),
-            ("commands", ", ".join(info.commands) or "(none)"),
-        ]
-        return "#### Environment\n" + self.md_table(["key", "value"], rows)
-
-    def memory_md(self) -> str:
-        state = self.session.state
-        index_status = state.code_index_status or "missing"
-        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
-        rows = [
-            ("goal", state.goal or "(empty)"),
-            ("check", state.check or "(empty)"),
-            ("index", f"{index_status} (usable: {index_usable})"),
-        ]
-        known = "\n".join("- " + item for item in state.known) or "- (empty)"
-        return "\n\n".join(
-            [
-                "#### Memory\n" + self.md_table(["field", "value"], rows),
-                "**Plan**\n" + "\n".join(AgentState.plan_rows_for(state.plan, status=True, style="symbol")),
-                "**Known**\n" + known,
             ]
         )
 
@@ -5420,9 +5384,7 @@ class MCPManager:
                 auth.append(config.auth)
             if config.bearer_token_env_var:
                 auth.append("bearer_token_env_var(" + config.bearer_token_env_var + ")")
-            if config.env_http_headers:
-                for header_name in config.env_http_headers:
-                    auth.append("env_header(" + header_name + ")")
+            auth.extend("env_header(" + name + ")" for name in config.env_http_headers)
             lines.append(
                 "| `"
                 + self.markdown_cell(config.name)
@@ -8106,10 +8068,6 @@ class TabbedViewState:
 
     def switch(self, delta: int) -> None:
         self.tab = (self.tab + delta) % len(self.titles)
-        self.scroll = 0
-
-    def select(self, index: int) -> None:
-        self.tab = index % len(self.titles)
         self.scroll = 0
 
     def scroll_by(self, delta: int) -> None:
