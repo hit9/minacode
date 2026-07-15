@@ -9484,7 +9484,7 @@ class TuiRuntime:
 
     def dispatch(self, user_input: str) -> bool:
         """Dispatch one input. Return true when it was fully handled as a command."""
-        self.loop.ui.emit(UiPrinter.USER_LOG_PREFIX + user_input)
+        self.loop.ui.emit_answer(user_input, role="user", rule=False)
         try:
             handled, exit_now = self.loop.command(user_input.strip())
         except (KeyboardInterrupt, NanocodeError) as error:
@@ -9502,6 +9502,7 @@ class TuiRuntime:
         return False
 
     def run_agent_turn(self, user_input: str) -> None:
+        self.loop.emit("")
         self.loop.status_bar.begin()
         self.tui.set_running("working")
         started = time.monotonic()

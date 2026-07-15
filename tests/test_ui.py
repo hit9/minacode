@@ -389,6 +389,27 @@ def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
     assert dispatched == [entered.strip()]
 
 
+def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
+    output = []
+    scenario_session = session(tmp_path)
+    command_loop = n.CommandLoop(
+        n.Agent(scenario_session, output_fn=output.append),
+        input_fn=lambda prompt="": "",
+        output_fn=output.append,
+    )
+    runtime = n.TuiRuntime(command_loop)
+    command_loop.tui = n.TuiApp()
+    command_loop.tui.set_running = lambda label: output.append("set_running:" + label)
+    command_loop.command = lambda _text: (False, False)
+    command_loop.agent.run = lambda _text: "done"
+    monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
+
+    assert not runtime.dispatch("answer me")
+    runtime.run_agent_turn("answer me")
+
+    assert output[:3] == ["\n• answer me", "", "set_running:working"]
+
+
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):
     saved = session(tmp_path)
     saved.enqueue_user_input("queued one")
