@@ -5967,16 +5967,25 @@ class ModelClient:
             with contextlib.suppress(Exception):
                 client.close()
 
-    def activate_client(self, client: Any) -> None:
+    def call_client(self, client: Any, request: Callable[[], Any]) -> Any:
         with self.active_client_lock:
             self.active_client = client
-
-    def deactivate_client(self, client: Any) -> None:
-        with self.active_client_lock:
-            if self.active_client is client:
-                self.active_client = None
-        with contextlib.suppress(Exception):
-            client.close()
+        try:
+            try:
+                result = request()
+                if self.cancel_requested.is_set():
+                    raise KeyboardInterrupt
+                return result
+            except Exception as error:
+                if self.cancel_requested.is_set():
+                    raise KeyboardInterrupt from None
+                raise ModelError(str(error)) from error
+        finally:
+            with self.active_client_lock:
+                if self.active_client is client:
+                    self.active_client = None
+            with contextlib.suppress(Exception):
+                client.close()
 
     def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
@@ -6033,17 +6042,7 @@ class ModelClient:
             params["prompt_cache_key"] = prompt_cache_key
         self.apply_provider_params(params, provider)
         client = self.client()
-        self.activate_client(client)
-        try:
-            response = client.chat.completions.create(**params)
-            if self.cancel_requested.is_set():
-                raise KeyboardInterrupt
-        except Exception as error:
-            if self.cancel_requested.is_set():
-                raise KeyboardInterrupt from None
-            raise ModelError(str(error)) from error
-        finally:
-            self.deactivate_client(client)
+        response = self.call_client(client, lambda: client.chat.completions.create(**params))
         self.session.usage.add(getattr(response, "usage", None))
         message = response.choices[0].message
         assistant = self.assistant_message(message)
@@ -6137,17 +6136,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         messages = Text.value(messages)
         params = self.anthropic_params(messages, tools)
         client = self.anthropic_client()
-        self.activate_client(client)
-        try:
-            result = client.messages.create(**params)
-            if self.cancel_requested.is_set():
-                raise KeyboardInterrupt
-        except Exception as error:
-            if self.cancel_requested.is_set():
-                raise KeyboardInterrupt from None
-            raise ModelError(str(error)) from error
-        finally:
-            self.deactivate_client(client)
+        result = self.call_client(client, lambda: client.messages.create(**params))
         self.session.usage.add(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result)
         return assistant, calls, content
