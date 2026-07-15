@@ -8270,7 +8270,9 @@ class CommandLoop:
     # Commands safe to run from the follow-up input while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
     QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
-    MODEL_DISCOVER_ACTION = "Discover remote models…"
+    MODEL_CONFIGURED_LABEL = "---- Configured models ----"
+    MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
+    MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
     MCP_COMMANDS: ClassVar[dict[str, tuple[int, int, str]]] = {
         "tools": (0, 1, "Usage: /mcp tools [server]"),
         "login": (1, 1, "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"),
@@ -9463,25 +9465,26 @@ Tools:
             result = self.set_model(parts[0])
             return "No change" if result is SELECTION_BACK else str(result)
         provider = self.session.config.provider
-        configured = tuple(dict.fromkeys((*provider.available_models, *([provider.model] if provider.model else []))))
-        can_discover = bool(provider.url and provider.key)
-        if not configured and not can_discover:
+        configured = tuple(dict.fromkeys(provider.available_models))
+        remote = tuple(model for model in self.remote_models(provider) if model not in configured)
+        choices: list[str] = []
+        if configured:
+            choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
+        if remote:
+            choices.extend((self.MODEL_DISCOVERED_LABEL, *remote))
+        choice_values = tuple(choices)
+        if not choice_values:
             return "Current provider.model is " + (self.session.config.provider.model or "(empty)")
-        remote: tuple[str, ...] = ()
         while True:
-            choice_values = (*configured, *remote, *((self.MODEL_DISCOVER_ACTION,) if can_discover and not remote else ()))
             current = self.session.config.provider.model
-            labels = {current: current + " (current)"} if current in choice_values else {}
-            choice = self.select_choice("Model", choice_values, labels=labels, current=current)
+            labels = {label: label for label in self.MODEL_LABELS if label in choice_values}
+            labels.update({current: current + " (current)"} if current in choice_values else {})
+            choice = self.select_choice("Model", choice_values, labels=labels, current=current, disabled=self.MODEL_LABELS)
             if choice is SELECTION_BACK:
                 return "No change"
             if not isinstance(choice, str):
                 return "Current provider.model is " + (self.session.config.provider.model or "(empty)")
-            if choice == self.MODEL_DISCOVER_ACTION:
-                remote = tuple(model for model in self.remote_models(provider) if model not in configured)
-                if not remote:
-                    can_discover = False
-                    self.emit("No additional remote models found")
+            if choice in self.MODEL_LABELS:
                 continue
             result = self.set_model(choice, back_to_model=True)
             if result is SELECTION_BACK:

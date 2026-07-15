@@ -1090,7 +1090,8 @@ def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
         return next(selected)
 
     command_loop.select_choice = select
-    command_loop.remote_models = lambda _provider: (_ for _ in ()).throw(AssertionError("remote discovery must be lazy"))
+    discovered = []
+    command_loop.remote_models = lambda provider: discovered.append(provider.model) or ()
 
     result = command_loop.provider("")
 
@@ -1098,10 +1099,11 @@ def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
     assert command_loop.session.config.active_provider == "other"
     assert command_loop.session.config.provider.model == "model-b"
     assert command_loop.session.config.provider.reasoning == "high"
+    assert discovered == ["model-b"]
     assert "Set provider.model = model-b" in result
 
 
-def test_model_discovery_merges_configured_and_remote_choices(tmp_path):
+def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     provider = command_loop.session.config.provider
@@ -1115,16 +1117,21 @@ def test_model_discovery_merges_configured_and_remote_choices(tmp_path):
         shown.append((title, choices))
         if title == "Reasoning effort":
             return "off"
-        return command_loop.MODEL_DISCOVER_ACTION if len(shown) == 1 else "remote-model"
+        return "remote-model"
 
     command_loop.select_choice = select
     command_loop.remote_models = lambda _provider: ("remote-model",)
 
     assert "Set provider.model = remote-model" in command_loop.model("")
-    assert shown[:2] == [
-        ("Model", ("configured-model", command_loop.MODEL_DISCOVER_ACTION)),
-        ("Model", ("configured-model", "remote-model")),
-    ]
+    assert shown[0] == (
+        "Model",
+        (
+            command_loop.MODEL_CONFIGURED_LABEL,
+            "configured-model",
+            command_loop.MODEL_DISCOVERED_LABEL,
+            "remote-model",
+        ),
+    )
 
 
 def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monkeypatch, tmp_path):
