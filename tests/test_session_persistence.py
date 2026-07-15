@@ -206,6 +206,31 @@ def test_load_with_last_alias(tmp_path):
     assert s2.uid == s.uid
 
 
+def test_latest_uid_for_cwd_ignores_newer_sessions_from_other_projects(tmp_path):
+    data_dir = tmp_path / "data"
+    project = tmp_path / "project"
+    other = tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    config = n.Config(data_dir=str(data_dir))
+
+    project_session = n.Session(cwd=str(project), config=config)
+    project_session.messages.append({"role": "user", "content": "project"})
+    project_session.save_snapshot()
+
+    other_session = n.Session(cwd=str(other), config=config)
+    other_session.messages.append({"role": "user", "content": "other"})
+    other_session.save_snapshot()
+    os.utime(data_dir / "sessions" / f"{project_session.uid}.jsonl", (1, 1))
+    os.utime(data_dir / "sessions" / f"{other_session.uid}.jsonl", (2, 2))
+
+    assert n.SessionSnapshotStore.latest_uid_for_cwd(str(data_dir), str(project)) == project_session.uid
+
+
+def test_latest_uid_for_cwd_returns_empty_without_project_session(tmp_path):
+    assert n.SessionSnapshotStore.latest_uid_for_cwd(str(tmp_path / "missing"), str(tmp_path)) == ""
+
+
 def test_load_appends_resume_marker(tmp_path):
     """After load, the session has a resume marker message at the end."""
     s = session_with_data_dir(tmp_path)

@@ -1154,6 +1154,28 @@ class SessionSnapshotStore:
             return ""
 
     @classmethod
+    def latest_uid_for_cwd(cls, data_dir: str, cwd: str) -> str:
+        sessions_dir = cls.path_for(data_dir, "sessions")
+        try:
+            entries = sorted(
+                (entry for entry in os.scandir(sessions_dir) if entry.name.endswith(".jsonl") and entry.is_file()),
+                key=lambda entry: entry.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return ""
+        target = os.path.realpath(cwd)
+        for entry in entries:
+            try:
+                with open(entry.path, encoding="utf-8") as file:
+                    snapshot = next((json.loads(line) for line in file if line.strip()), {})
+            except (OSError, json.JSONDecodeError):
+                continue
+            if snapshot.get("cwd") and os.path.realpath(str(snapshot["cwd"])) == target:
+                return entry.name[:-6]
+        return ""
+
+    @classmethod
     def clear_latest(cls, data_dir: str) -> None:
         with contextlib.suppress(OSError):
             os.unlink(cls.path_for(data_dir, "latest"))
@@ -1276,7 +1298,7 @@ mutated mid-session (`/debug` shows the changed prefix regions), and a compactio
 chats compact automatically; `/compact` forces it.
 
 ## Sessions
-Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
+Auto-saved. Resume this project's latest session with `-c` (or use `--resume <UID>`).
 
 ## Providers & reasoning
 Set `provider.*` per provider. `/reason` sets reasoning effort; `/model` sets the model.
@@ -8178,7 +8200,7 @@ class CommandLoop:
     }
     TIPS: ClassVar[tuple[str, ...]] = (
         # Sessions & input
-        "Resume your last session anytime with `nanocode --resume`.",
+        "Resume this project's last session anytime with `nanocode -c`.",
         "Keep typing while the agent works — your input is picked up at the next step.",
         "Press Ctrl+C to cancel the current input or interrupt a running turn.",
         "Search your input history with Ctrl+R.",
@@ -8245,6 +8267,7 @@ Mentions:
   $skill             Reference a skill in your message to load its instructions for that turn (tab-completes).
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
+  -c, --last, --latest       Resume the latest session in the current project.
   --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
   Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
@@ -9566,7 +9589,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--theme", choices=["auto", "light", "dark"], default="", help="Color theme (defaults to runtime.theme, then auto-detect via COLORFGBG)"
     )
-    parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
+    resume = parser.add_mutually_exclusive_group()
+    resume.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
+    resume.add_argument(
+        "-c", "--last", "--latest", dest="continue_project", action="store_true", help="Resume the latest session in the current project"
+    )
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
@@ -9577,11 +9604,15 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        if args.resume:
+        if args.resume or args.continue_project:
             data = ConfigFile.load(args.config)
+            config = Config.from_dict(data)
+            uid = args.resume or SessionSnapshotStore.latest_uid_for_cwd(config.data_dir, os.getcwd())
+            if not uid:
+                raise NanocodeError(f"No previous session for this project: {os.getcwd()}")
             session = Session.load_snapshot(
-                args.resume,
-                config=Config.from_dict(data),
+                uid,
+                config=config,
                 settings=RuntimeSettings.from_dict(data, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme),
             )
         else:
