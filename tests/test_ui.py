@@ -498,7 +498,8 @@ def test_interactive_tui_recalls_and_submits_queued_input(monkeypatch):
     assert received == ["edit queued message"]
 
 
-def test_interactive_tui_ctrl_p_recalls_submitted_queued_input(monkeypatch, tmp_path):
+@pytest.mark.parametrize("history_key", ["\x10", "\x1b[A"])
+def test_interactive_tui_history_keys_recall_when_queue_is_empty(monkeypatch, tmp_path, history_key):
     received = []
     recalled = []
     app = n.TuiApp(
@@ -511,7 +512,7 @@ def test_interactive_tui_ctrl_p_recalls_submitted_queued_input(monkeypatch, tmp_
         wait_until(lambda: app.app is not None and app.app.is_running)
         pipe_input.send_text("queued message\r")
         wait_until(lambda: received == ["queued message"])
-        pipe_input.send_text("\x10")
+        pipe_input.send_text(history_key)
         wait_until(lambda: app.input_buffer.text == "queued message")
         recalled.append(app.input_buffer.text)
         app.app.loop.call_soon_threadsafe(app.app.exit)

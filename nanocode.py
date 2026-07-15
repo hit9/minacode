@@ -7072,6 +7072,8 @@ class TuiApp:
             text = self.on_recall()
             if text:
                 self.input_buffer.reset(Document(text, cursor_position=len(text)))
+            else:
+                event.current_buffer.auto_up(count=event.arg)
 
         bindings.add("c-g", filter=running, eager=True)(lambda _event: self.on_retry())
 
