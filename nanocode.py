@@ -8344,25 +8344,18 @@ Tools:
         self.agent.tools.bash_live_preview_shown = self.consume_bash_live_preview_rendered
         self.agent.tools.question_fn = self.question_interaction
 
-    def echo_user_input(self, prefix: str, body: str, *, prefix_style: str = "class:prompt") -> None:
-        print_formatted_text(
-            FormattedText([("", "\n"), (prefix_style, prefix), (UiPrinter.user_log_style(), body)]),
-            style=self.style(),
-        )
-
     def flush_queued_to_log(self, texts: list[str]) -> None:
         # Move flushed queued messages from the live activity region into terminal scrollback.
-        flushed = False
-        for text in texts:
-            if text.strip():
-                if self.tui is not None:
-                    self.ui.emit(UiPrinter.USER_LOG_PREFIX + text)
-                else:
-                    self.echo_user_input(UiPrinter.USER_LOG_PREFIX, text)
-                flushed = True
-        if flushed:
-            # Mid-turn flushes land between tool-log lines; give the next line breathing room too.
-            self.emit("")
+        texts = [text for text in texts if text.strip()]
+        if not texts:
+            return
+        fragments: list[tuple[str, str]] = [("", "\n")]
+        for index, text in enumerate(texts):
+            if index:
+                fragments.append(("", "\n"))
+            fragments.extend([("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), text), ("", "\n")])
+        fragments.append(("", "\n"))
+        print_formatted_text(FormattedText(fragments), style=self.style(), end="", flush=True)
 
     # Breathing green dot shown on the working divider while a model request is in flight — it sits
     # just before the "working (…)" label and vanishes as soon as the response returns (non-streaming

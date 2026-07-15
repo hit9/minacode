@@ -774,20 +774,16 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
 
 def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     s = session(tmp_path)
-    out = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=out.append)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda _text: None)
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
 
-    # echo_user_input emits via print_formatted_text (color path); capture its FormattedText args
-    # so we can assert on the routed content without a real terminal.
-    echoed: list[str] = []
-    monkeypatch.setattr(loop, "echo_user_input", lambda prefix, body, **_: echoed.append(prefix + body))
+    echoed = []
+    monkeypatch.setattr(n, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _style, text in value)))
 
-    loop.flush_queued_to_log(["do a thing", "  "])
-    assert echoed == ["• do a thing"]  # non-empty messages emitted, blank ones skipped
-    # A trailing blank line separates the flushed echo from the tool-log lines that follow.
-    assert out == [""]
+    loop.flush_queued_to_log(["do a thing", "then verify", "  "])
+
+    assert echoed == ["\n• do a thing\n\n• then verify\n\n"]
 
 
 def test_flush_sigint_ignores_stale_retry_signal(tmp_path):
