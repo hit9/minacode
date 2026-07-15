@@ -6894,8 +6894,26 @@ class TuiApp:
     def _set_mode(self, mode: str, prompt: str) -> None:
         self.input_mode = mode
         self.input_prompt = prompt
+        self.invalidate()
+
+    def invalidate(self) -> None:
         if self.app is not None:
             self.app.invalidate()
+
+    def exit(self) -> None:
+        app = self.app
+        if app is None:
+            return
+
+        def close() -> None:
+            with contextlib.suppress(Exception):
+                app.exit(result=None)
+
+        loop = getattr(app, "loop", None)
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(close)
+        else:
+            close()
 
     def _accept(self, buffer: Buffer) -> bool:
         text = buffer.text
@@ -6944,10 +6962,9 @@ class TuiApp:
             return
         modal.result = result
         self.modal = None
-        if self.app is not None:
-            if self.input_window is not None:
-                self.app.layout.focus(self.input_window)
-            self.app.invalidate()
+        if self.app is not None and self.input_window is not None:
+            self.app.layout.focus(self.input_window)
+        self.invalidate()
         modal.done.set()
 
     def modal_fragments(self) -> list[tuple[str, str]]:
@@ -6959,8 +6976,8 @@ class TuiApp:
         result = self.modal.key_fn(key, data)
         if result is not TUI_MODAL_PENDING:
             self.close_modal(result)
-        elif self.app is not None:
-            self.app.invalidate()
+        else:
+            self.invalidate()
 
     def viewport_fragments(self) -> list[tuple[str, str]]:
         fragments: list[tuple[str, str]] = []
@@ -7009,8 +7026,7 @@ class TuiApp:
         maximum = max(0, window.render_info.content_height - window.render_info.window_height)
         self.viewport_scroll = min(maximum, max(0, self.viewport_scroll + delta))
         self.follow_tail = self.viewport_scroll >= maximum
-        if self.app is not None:
-            self.app.invalidate()
+        self.invalidate()
 
     @staticmethod
     def complete_input(buffer: Buffer, *, reverse: bool = False) -> None:
@@ -7252,17 +7268,12 @@ class TuiApp:
             output=self.prompt_output(),
         )
         self.app = app
-
-        def invalidate() -> None:
-            if self.app is not None:
-                self.app.invalidate()
-
-        self.log_buffer.observers.append(invalidate)
+        self.log_buffer.observers.append(self.invalidate)
         try:
             app.run()
         finally:
             with contextlib.suppress(ValueError):
-                self.log_buffer.observers.remove(invalidate)
+                self.log_buffer.observers.remove(self.invalidate)
             self.app = None
             # If the agent thread is still parked in request_input at exit, unblock it so its
             # frame unwinds instead of leaking a thread.
@@ -8118,24 +8129,6 @@ class StatusBar:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
 
-class CompactSpinner:
-    def __init__(self, loop: "CommandLoop"):
-        self.loop = loop
-
-    def start(self) -> None:
-        self.loop.status_bar.begin()
-        if self.loop.tui is not None:
-            self.loop.tui.set_running("compacting context")
-            return
-        self.loop.status_bar.start(reset=False)
-
-    def stop(self) -> None:
-        if self.loop.tui is not None:
-            self.loop.tui.set_dispatching()
-            return
-        self.loop.status_bar.stop()
-
-
 @dataclass
 class TabbedViewState:
     titles: tuple[str, ...]
@@ -8520,18 +8513,6 @@ Tools:
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.bash_live_preview_shown = self.consume_bash_live_preview_rendered
         self.agent.tools.question_fn = self.question_interaction
-
-    @staticmethod
-    def exit_app(app: Application) -> None:
-        def close() -> None:
-            with contextlib.suppress(Exception):
-                app.exit(result=None)
-
-        loop = getattr(app, "loop", None)
-        if loop is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(close)
-        else:
-            close()
 
     def echo_user_input(self, prefix: str, body: str, *, prefix_style: str = "class:prompt") -> None:
         print_formatted_text(
@@ -8962,8 +8943,7 @@ Tools:
                 self.live_preview.text = ""
                 self.live_preview.started_at = time.monotonic()
             self.bash_live_preview_rendered = True
-            if self.tui.app is not None:
-                self.tui.app.invalidate()
+            self.tui.invalidate()
             return
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
@@ -8982,8 +8962,7 @@ Tools:
                 else:
                     self.live_preview.active = False
                     self.live_preview.text = ""
-            if self.tui.app is not None:
-                self.tui.app.invalidate()
+            self.tui.invalidate()
             return
         if text:
             if not self.live_preview.active:
@@ -9399,9 +9378,12 @@ Tools:
         if not compacted:
             return "No prior conversation to compact"
         fallback = False
-        spinner = CompactSpinner(self)
+        self.status_bar.begin()
+        if self.tui is not None:
+            self.tui.set_running("compacting context")
+        else:
+            self.status_bar.start(reset=False)
         try:
-            spinner.start()
             data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
@@ -9410,7 +9392,10 @@ Tools:
             fallback = True
             data = None
         finally:
-            spinner.stop()
+            if self.tui is not None:
+                self.tui.set_dispatching()
+            else:
+                self.status_bar.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
@@ -9598,8 +9583,7 @@ class TuiRuntime:
 
     def retry_model(self, label: str) -> None:
         self.tui.status_label = label
-        if self.tui.app is not None:
-            self.tui.app.invalidate()
+        self.tui.invalidate()
         threading.Thread(target=self.loop.agent.model.cancel, daemon=True).start()
         if self.main_busy.is_set():
             os.kill(os.getpid(), signal.SIGINT)
@@ -9621,8 +9605,7 @@ class TuiRuntime:
         else:
             self.loop.session.enqueue_user_input(text)
             self.loop.session.save_snapshot()
-        if self.tui.app is not None:
-            self.tui.app.invalidate()
+        self.tui.invalidate()
 
     def recall(self) -> str:
         def retry_inflight() -> None:
@@ -9689,8 +9672,7 @@ class TuiRuntime:
         if exit_now:
             self.stop.set()
             self.main_busy.clear()
-            if self.tui.app is not None:
-                self.loop.exit_app(self.tui.app)
+            self.tui.exit()
             return True
         if handled:
             self.reset_turn()
@@ -9754,8 +9736,7 @@ class TuiRuntime:
             self.stop.set()
             if self.force_exit_timer is not None:
                 self.force_exit_timer.cancel()
-            if self.tui.app is not None:
-                self.loop.exit_app(self.tui.app)
+            self.tui.exit()
             # Do not let interpreter finalization race a TUI thread flushing stdout. The emergency
             # force-exit timer remains responsible for terminating a genuinely wedged application.
             tui_thread.join()
