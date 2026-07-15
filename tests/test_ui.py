@@ -455,8 +455,9 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
 
     assert len(requests) == 1
     assert "queued one" in requests[0]
-    assert "queued two" in requests[0]
-    assert requests[0].index("queued one") < requests[0].index("queued two")
+    marked_followup = n.Agent.LIVE_FOLLOWUP_PREFIX + "queued two"
+    assert marked_followup in requests[0]
+    assert requests[0].index("queued one") < requests[0].index(marked_followup)
     assert restored.pending_user_inputs == []
 
 
@@ -923,8 +924,9 @@ def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path
     assert "long request" in outcome["requests"][0]
     queued_request = outcome["requests"][1]
     assert "queued one" in queued_request
-    assert "queued two" in queued_request
-    assert queued_request.index("queued one") < queued_request.index("queued two")
+    marked_followup = n.Agent.LIVE_FOLLOWUP_PREFIX + "queued two"
+    assert marked_followup in queued_request
+    assert queued_request.index("queued one") < queued_request.index(marked_followup)
     assert outcome["preserved"] == ["unfinished draft"]
     assert outcome["persisted_user_inputs"] == ["long request", "queued one", "queued two"]
     assert outcome["restored_queue"] == []

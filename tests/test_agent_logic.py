@@ -563,6 +563,11 @@ def test_agent_injects_pending_user_input_once(tmp_path):
 
     first = "\n\n".join(message.get("content") or "" for message in agent.model.messages[0])
     second = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
+    first_followup = next(message["content"] for message in agent.model.messages[0] if "extra instruction" in (message.get("content") or ""))
+    second_followup = next(message["content"] for message in agent.model.messages[1] if "second instruction" in (message.get("content") or ""))
+    assert n.Agent.LIVE_FOLLOWUP_PREFIX.strip() in n.Agent.SYSTEM_PROMPT
+    assert first_followup == n.Agent.LIVE_FOLLOWUP_PREFIX + "extra instruction"
+    assert second_followup == n.Agent.LIVE_FOLLOWUP_PREFIX + "second instruction"
     assert "extra instruction" in first
     assert "extra instruction" in second
     assert "checking" in second

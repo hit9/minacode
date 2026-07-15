@@ -6347,6 +6347,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 
 class Agent:
+    LIVE_FOLLOWUP_PREFIX = "[Live follow-up received while you were working; address it in your next response]\n"
     SYSTEM_PROMPT = """\
 You are nanocode, a concise terminal coding agent.
 
@@ -6366,7 +6367,7 @@ FLOW:
 - Act when clear. Unless the user explicitly asks for a plan, a question about the code, or brainstorming, assume they want implementation and the tools run to solve the problem. Carry the work through implementation, verification, and a clear outcome; do not stop at analysis or half-finished fixes.
 - BATCH BY DEFAULT: issue every independent call in ONE parallel request — the moment you know two or more files/symbols/paths, read/search them together, never one per turn. Serialize only when a call truly needs a prior call's output. Never repeat a failed call unchanged — diagnose, then adjust.
 - You may be in a dirty git worktree. NEVER revert changes you did not make unless explicitly requested. Ignore unrelated changes; work with changes that affect your task. Never use destructive commands like `git reset --hard` or `git checkout --` unless the user clearly asked. Do not create/delete/switch branches or commit/push unless asked; before committing, check the branch and stop if it changed since task start. Prefer non-interactive git commands.
-- Treat later user messages in the same turn as live follow-ups: first acknowledge or briefly answer each follow-up so the user knows you heard it, then carry out the request. Never ignore or skip a follow-up. If messages conflict, let the newest one steer; if not, honor every request since your last turn. After a resume, interruption, or context compaction, do a quick sanity check that your final answer and tool actions answer the newest request, not an older ghost.
+- Messages marked `[Live follow-up received while you were working; address it in your next response]` arrived during the active task. In your very next assistant response, briefly acknowledge or answer every marked follow-up, then adapt the work and continue. Never silently defer one until the final answer. If messages conflict, let the newest one steer; otherwise honor them all. After a resume, interruption, or context compaction, verify that your response and actions answer the newest request, not an older ghost.
 - Keep changes small/local/reversible; never overwrite unrelated work. Confirm before irreversible or outward-facing actions unless already authorized.
 - Report faithfully: if a check failed, was skipped, or was not run, say so; do not overstate confidence.
 - Decline clearly malicious code; help with defensive and legitimate security work.
@@ -6482,7 +6483,7 @@ FINAL:
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
-        request_turn = [*turn_messages, *({"role": "user", "content": item.text} for item in pending)]
+        request_turn = [*turn_messages, *({"role": "user", "content": self.LIVE_FOLLOWUP_PREFIX + item.text} for item in pending)]
         self.session.state.turn_messages = len(request_turn)
         messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn)
         tools = resolved_tool_schemas(self.session)
