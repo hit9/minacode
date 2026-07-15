@@ -6721,7 +6721,7 @@ class LogBuffer:
 
     def __init__(self) -> None:
         self.entries: list[LogEntry] = []
-        self.observers: list[Callable[[], None]] = []
+        self.on_change: Callable[[], None] | None = None
 
     def append(
         self,
@@ -6731,9 +6731,9 @@ class LogBuffer:
         self.entries.append(LogEntry(fragments, live_renderer))
         if len(self.entries) > self.LIMIT:
             del self.entries[: len(self.entries) - self.LIMIT]
-        for observer in list(self.observers):
+        if self.on_change is not None:
             with contextlib.suppress(Exception):
-                observer()
+                self.on_change()
 
 
 TUI_MODAL_PENDING = object()
@@ -7238,12 +7238,11 @@ class TuiApp:
             output=self.prompt_output(),
         )
         self.app = app
-        self.log_buffer.observers.append(self.invalidate)
+        self.log_buffer.on_change = self.invalidate
         try:
             app.run()
         finally:
-            with contextlib.suppress(ValueError):
-                self.log_buffer.observers.remove(self.invalidate)
+            self.log_buffer.on_change = None
             self.app = None
             # If the agent thread is still parked in request_input at exit, unblock it so its
             # frame unwinds instead of leaking a thread.
@@ -7287,9 +7286,9 @@ class UiPrinter:
             return
         is_log_block = isinstance(text, LogBlock)
         segments = self.log_segments(text) if is_log_block else self.segments(text)
-        live_renderer = (lambda width: self.log_segments(text, live=True, columns=width)) if is_log_block and self.full_screen else None
-        self.log_buffer.append(segments, live_renderer)
-        if not self.full_screen:
+        if self.full_screen:
+            self.log_buffer.append(segments, (lambda width: self.log_segments(text, live=True, columns=width)) if is_log_block else None)
+        else:
             print_formatted_text(FormattedText(segments), end="", flush=True)
 
     # Rich right-pads every rendered line with spaces up to the console width so backgrounds and

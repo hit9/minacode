@@ -188,13 +188,14 @@ def test_log_buffer_always_allocated():
     assert ui.log_buffer.entries == []
 
 
-def test_log_buffer_captures_emit_when_color_active(monkeypatch):
+def test_log_buffer_captures_emit_only_in_full_screen(monkeypatch):
     monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
     ui = n.UiPrinter()
-    assert ui.log_buffer is not None
-    # emit() mirrors its styled segments into the LogBuffer while also printing via
-    # print_formatted_text (viewport gets the same content the scrollback would).
     monkeypatch.setattr(n, "print_formatted_text", lambda *a, **kw: None)
+    ui.emit("hello")
+    assert ui.log_buffer.entries == []
+
+    ui.full_screen = True
     ui.emit("hello")
     assert ui.log_buffer.entries
     fragments = ui.log_buffer.entries[-1].fragments
@@ -211,10 +212,10 @@ def test_log_buffer_bounded_at_limit():
     assert tail == str(n.LogBuffer.LIMIT + 49)
 
 
-def test_log_buffer_notifies_observers():
+def test_log_buffer_notifies_owner():
     buffer = n.LogBuffer()
     calls = []
-    buffer.observers.append(lambda: calls.append(True))
+    buffer.on_change = lambda: calls.append(True)
     buffer.append([("", "line")])
     assert calls == [True]
 
