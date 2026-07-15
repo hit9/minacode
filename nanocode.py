@@ -6734,6 +6734,7 @@ class TuiApp:
         )
         self.search_toolbar = SearchToolbar()
         self.app: Application | None = None
+        self.ready = threading.Event()
         self.input_mode = "chat"  # chat | dispatch | running | approval
         self.input_prompt = UiPrinter.PROMPT_PREFIX
         self._input_pending: threading.Event | None = None
@@ -7101,10 +7102,12 @@ class TuiApp:
             output=self.prompt_output(),
         )
         self.app = app
+        self.ready.clear()
         try:
             with patch_stdout():
-                app.run()
+                app.run(pre_run=self.ready.set)
         finally:
+            self.ready.set()
             self.app = None
             # If the agent thread is still parked in request_input at exit, unblock it so its
             # frame unwinds instead of leaking a thread.
@@ -7136,8 +7139,7 @@ class UiPrinter:
         if not self.color:
             self.output_fn(str(text))
             return
-        is_log_block = isinstance(text, LogBlock)
-        segments = self.log_segments(text) if is_log_block else self.segments(text)
+        segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
     # Rich right-pads every rendered line with spaces up to the console width so backgrounds and
@@ -7297,9 +7299,9 @@ class UiPrinter:
         LogRole.DIFF: ("fg:default", "fg:default"),
     }
 
-    def log_segments(self, block: LogBlock, *, live: bool = False, columns: int | None = None) -> list[tuple[str, str]]:
+    def log_segments(self, block: LogBlock) -> list[tuple[str, str]]:
         segments: list[tuple[str, str]] = []
-        width = max(1, (columns if columns is not None else shutil.get_terminal_size((120, 20)).columns) - 1)
+        width = max(1, shutil.get_terminal_size((120, 20)).columns - 1)
         entries = list(block.walk())
         index = 0
         while index < len(entries):
@@ -7315,7 +7317,7 @@ class UiPrinter:
                 sample_prefix_width = sum(get_cwidth(text) for _style, text in sample_prefix)
                 diff_row_width = max(1, width - sample_prefix_width)
                 diff_text = "\n".join(item.text for item in diff_lines)
-                highlighted = self.segment_lines(self.diff_segments_live(diff_text, diff_row_width) if live else self.diff_segments(diff_text, diff_row_width))
+                highlighted = self.segment_lines(self.diff_segments(diff_text, diff_row_width))
                 for item, rendered in zip(diff_lines, highlighted):
                     prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
@@ -8149,7 +8151,7 @@ class ChoiceViewState:
 
 
 class CommandLoop:
-    QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
+    QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C send immediately"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C sends now"
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
@@ -8331,7 +8333,7 @@ Tools:
         )
 
     def flush_queued_to_log(self, texts: list[str]) -> None:
-        # Move flushed queued messages from the live activity region into the viewport log.
+        # Move flushed queued messages from the live activity region into terminal scrollback.
         flushed = False
         for text in texts:
             if text.strip():
@@ -9526,12 +9528,17 @@ class TuiRuntime:
 
     def run(self) -> int:
         """Run the agent on the main thread and prompt-toolkit on one joined UI thread."""
-        self.loop.start_session()
         self.loop.tui = self.build_tui()
-        self.submit_next(self.loop.take_pending_inputs())
         tui_thread = threading.Thread(target=self.run_tui_app, name="tui")
         tui_thread.start()
         try:
+            self.tui.ready.wait()
+            if self.errors:
+                raise self.errors[0]
+            # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
+            # so the primary-screen application places them in native terminal/tmux scrollback.
+            self.loop.start_session()
+            self.submit_next(self.loop.take_pending_inputs())
             self.run_agent_loop()
         finally:
             self.stop.set()

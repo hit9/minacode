@@ -302,6 +302,53 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
     assert tui_daemon == [False]
 
 
+def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeypatch):
+    scenario_session = session(tmp_path)
+    scenario_session.resumed = True
+    scenario_session.messages.extend(
+        [
+            {"role": "user", "content": "restored question"},
+            {"role": "assistant", "content": "restored answer"},
+        ]
+    )
+    command_loop = n.CommandLoop(
+        n.Agent(scenario_session, output_fn=lambda _text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda _text: None,
+    )
+    command_loop.ui.color = True
+    monkeypatch.setattr(command_loop, "discover_mcp", lambda: None)
+    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
+    real_application = n.Application
+    emitted_while_running = []
+    history_emitted = threading.Event()
+
+    def print_formatted(value, *args, **kwargs):
+        text = fragment_list_to_text(to_formatted_text(value))
+        if "restored answer" in text:
+            emitted_while_running.append(command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
+            history_emitted.set()
+
+    monkeypatch.setattr(n, "print_formatted_text", print_formatted)
+
+    with create_pipe_input() as pipe_input:
+        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+
+        def drive():
+            assert history_emitted.wait(timeout=1)
+            pipe_input.send_text("\x04")
+
+        driver = threading.Thread(target=drive, daemon=True)
+        driver.start()
+        assert command_loop.run_tui() == 0
+        driver.join(timeout=1)
+
+    assert not driver.is_alive()
+    assert emitted_while_running == [True]
+
+
 @pytest.mark.parametrize("entered", [" /help", "exit "])
 def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
     command_loop = loop(tmp_path)
