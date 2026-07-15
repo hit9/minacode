@@ -6960,6 +6960,7 @@ class TuiApp:
         self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
         modal_active = Condition(lambda: self.modal is not None)
         exclusive_active = Condition(lambda: self.modal is not None and self.modal.exclusive)
+        idle = Condition(lambda: self.input_mode == "chat")
         normal_region = ConditionalContainer(
             HSplit(
                 [
@@ -6978,16 +6979,15 @@ class TuiApp:
             filter=modal_active & ~exclusive_active,
         )
         self.status_window = self._status_bar_window(dont_extend_height=True)
-        # All fixed-height content shares one HSplit; only the final filler absorbs unused rows.
-        # This keeps history, selectors, multiline input, and status top-anchored like the legacy
-        # shell instead of letting an intermediate FloatContainer stretch the viewport.
+        # Keep the idle prompt padded from prior output, but start transient running/approval
+        # regions at row zero. Otherwise patch_stdout can commit that leading empty row between a
+        # tool's approval header and its eventual result when it suspends and redraws the app.
         content = HSplit(
             [
-                Window(height=1, dont_extend_height=True),
+                ConditionalContainer(Window(height=1, dont_extend_height=True), filter=idle),
                 modal_region,
                 normal_region,
                 self.status_window,
-                Window(),
             ]
         )
         self.exclusive_modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False)

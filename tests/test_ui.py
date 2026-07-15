@@ -520,8 +520,36 @@ def test_interactive_tui_keeps_padding_around_running_queue(monkeypatch):
 
     assert frames
     activity, prompt, status = frames[0]
-    assert activity.ypos == 1
+    assert activity.ypos == 0
     assert prompt.ypos == activity.ypos + activity.height + 1
+    assert status.ypos == prompt.ypos + prompt.height + 1
+
+
+def test_interactive_tui_approval_has_no_leading_blank_row(monkeypatch):
+    app = n.TuiApp()
+    app._set_mode("approval", "    ├ [Y/n or reason] ")
+    frames = []
+    rendered = threading.Event()
+
+    def capture(application):
+        screen = application.renderer.last_rendered_screen
+        if screen is None:
+            return
+        positions = screen.visible_windows_to_write_positions
+        if app.input_window in positions and app.status_window in positions:
+            frames.append((positions[app.input_window], positions[app.status_window]))
+        rendered.set()
+
+    def drive(_pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        assert rendered.wait(timeout=1)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, after_render=capture)
+
+    assert frames
+    prompt, status = frames[0]
+    assert prompt.ypos == 0
     assert status.ypos == prompt.ypos + prompt.height + 1
 
 
