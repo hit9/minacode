@@ -4678,10 +4678,6 @@ class MCPManager:
         return visit(error)
 
     @staticmethod
-    def is_cancelled_error_text(error: str) -> bool:
-        return error.strip() == "CancelledError"
-
-    @staticmethod
     def can_skip_auth_error(error: str) -> bool:
         return error.startswith("missing environment variable ")
 
@@ -6711,11 +6707,7 @@ class Theme:
 
 @dataclass
 class LogEntry:
-    """One append-only entry in the TUI-mode LogBuffer.
-
-    `fragments` is the same shape UiPrinter already produces for print_formatted_text: a list of
-    (style, text) pairs where `text` may contain embedded newlines. Kept opaque here so styling
-    logic stays in UiPrinter and this stays a plain data record."""
+    """Styled output with an optional terminal-width-aware renderer."""
 
     fragments: list[tuple[str, str]]
     live_renderer: Callable[[int], list[tuple[str, str]]] | None = None
@@ -6779,28 +6771,13 @@ class CallbackPlaceholder(Processor):
 
 
 class TuiApp:
-    """The full-screen interactive shell. One pt Application drives the entire session:
+    """One full-screen application for history, live activity, input, selectors, and status.
 
-    Layout (top → bottom):
-      * viewport — renders the LogBuffer as scrolling styled fragments (tail-anchored).
-      * activity — queued input and live tool output while a turn is running.
-      * input — chat, queued follow-up, or approval input depending on the current mode.
-      * status — provider/model/context and runtime state.
+    The agent owns the main thread; prompt-toolkit owns the TUI thread. `request_input` bridges
+    blocking approvals, and the log is dumped to shell scrollback when the application exits.
+    """
 
-    Input widget is state-driven:
-      * `chat`      — Enter submits to `on_chat_submit` (starts an agent turn).
-      * `approval`  — Enter resolves `_input_pending` (unblocks the agent thread).
-      * `dispatch`  — command is being routed; input is temporarily ignored.
-      * `running`   — Enter queues a follow-up for the active turn.
-
-    Cross-thread coordination:
-      * The agent runs on the main thread while this Application runs on the TUI thread. Every
-        LogBuffer.append invalidates the Application so the viewport repaints live.
-      * Approval prompts call `request_input(prompt)`, which switches the widget on the TUI thread
-        and blocks the agent thread until the user submits.
-
-    On exit, alt-screen tears down and the LogBuffer contents are dumped to normal stdout so the
-    session history lands in the shell's scrollback."""
+    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l up down left right tab enter escape q r pagedown pageup c-d c-u backspace c-h /".split())
 
     def __init__(
         self,
@@ -7157,28 +7134,7 @@ class TuiApp:
         modal = Condition(lambda: self.modal is not None)
         running = Condition(lambda: self.input_mode == "running" and self.modal is None)
 
-        for key in (
-            "j",
-            "k",
-            "h",
-            "l",
-            "up",
-            "down",
-            "left",
-            "right",
-            "tab",
-            "enter",
-            "escape",
-            "q",
-            "r",
-            "pagedown",
-            "pageup",
-            "c-d",
-            "c-u",
-            "backspace",
-            "c-h",
-            "/",
-        ):
+        for key in self.MODAL_KEYS:
             bindings.add(key, filter=modal, eager=True)(lambda event, key=key: self.dispatch_modal_key(key, event.data))
         for number in range(1, 10):
             bindings.add(str(number), filter=modal, eager=True)(lambda event, number=number: self.dispatch_modal_key(str(number), event.data))
@@ -8204,6 +8160,8 @@ class TabbedViewState:
 
 @dataclass
 class DiffViewState:
+    REFRESH: ClassVar[object] = object()
+
     class Mode(Enum):
         LIST = auto()
         FILE = auto()
@@ -8238,9 +8196,41 @@ class DiffViewState:
             self.mode = self.Mode.LIST
             self.view.scroll = 0
 
+    def handle_key(self, key: str, file_count: int, viewport: int) -> Any:
+        if key in {"q", "c-c"}:
+            return None
+        if key == "escape":
+            if self.mode is self.Mode.LIST:
+                return None
+            self.close_file()
+        elif key in {"down", "j", "up", "k"}:
+            delta = 1 if key in {"down", "j"} else -1
+            if self.mode is self.Mode.LIST and file_count:
+                self.move_file(delta, file_count)
+            elif self.mode is self.Mode.FILE:
+                self.view.scroll_by(delta)
+        elif key in {"right", "l", "tab"} and self.mode is self.Mode.LIST:
+            self.switch_tab(1)
+        elif key in {"left", "h"}:
+            if self.mode is self.Mode.FILE:
+                self.close_file()
+            else:
+                self.switch_tab(-1)
+        elif key == "enter" and self.mode is self.Mode.LIST and file_count:
+            self.open_file(file_count)
+        elif self.mode is self.Mode.FILE and key in {"pagedown", "pageup", "c-d", "c-u"}:
+            distance = max(1, viewport if key in {"pagedown", "pageup"} else viewport // 2)
+            self.view.scroll_by(distance if key in {"pagedown", "c-d"} else -distance)
+        elif key == "r":
+            self.reset()
+            return self.REFRESH
+        return TUI_MODAL_PENDING
+
 
 @dataclass
 class ChoiceViewState:
+    FREE_TEXT: ClassVar[str] = "\x00free_text"
+
     choices: tuple[str, ...]
     labels: dict[str, str]
     disabled: set[str]
@@ -8286,6 +8276,73 @@ class ChoiceViewState:
     def selected_choice(self) -> str | None:
         options = self.clamp()
         return options[self.selected] if options else None
+
+    def fragments(self, title: str, preview_fn: Callable[[str], str] | None = None) -> list[tuple[str, str]]:
+        visible = self.visible()
+        options = self.clamp()
+        suffix = (" /" + self.query) if self.query else ""
+        if self.query and not self.searching:
+            suffix += " (filtered)"
+        parts: list[tuple[str, str]] = [
+            ("class:choice.title", title + suffix + "\n"),
+            ("class:choice.disabled", "  j/k move, / search, Esc back/cancel\n"),
+        ]
+        if self.query and not options:
+            return [*parts, ("class:choice.disabled", "  no matches\n")]
+        number = 0
+        for choice in visible:
+            label = self.labels.get(choice, choice)
+            if choice in self.disabled:
+                parts.append(("class:choice.disabled", "  " + label + "\n"))
+                continue
+            number += 1
+            selected = number - 1 == self.selected
+            if selected:
+                parts.append(("[SetCursorPosition]", ""))
+            parts.append(("class:choice.selected" if selected else "", ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
+        if preview_fn and options:
+            preview = preview_fn(options[self.selected]).replace("\\n", "\n")
+            if preview:
+                parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
+                parts.extend(("class:choice.preview", "  │ " + line + "\n") for line in preview.splitlines())
+        if self.searching:
+            parts.append(("", "/" + self.query))
+        return parts
+
+    def handle_key(self, key: str, data: str = "") -> Any:
+        if self.searching and key not in {"enter", "escape", "backspace", "c-h"}:
+            text = data if key == "any" else key
+            if len(text) == 1 and text not in "\r\n":
+                self.set_query(self.query + text)
+        elif key in {"j", "down"} and not self.searching:
+            self.move(1)
+        elif key in {"k", "up"} and not self.searching:
+            self.move(-1)
+        elif key == "/":
+            self.searching = True
+            self.set_query("")
+        elif key in {"backspace", "c-h"} and self.searching:
+            self.set_query(self.query[:-1])
+        elif key == "escape":
+            if self.searching:
+                self.searching = False
+            elif self.query:
+                self.set_query("")
+            else:
+                return SELECTION_BACK
+        elif key == "enter":
+            if self.searching:
+                self.searching = False
+            elif (choice := self.selected_choice()) is not None:
+                return SELECTION_FREE_TEXT if choice == self.FREE_TEXT else choice
+        elif key == "c-c":
+            return KeyboardInterrupt()
+        elif key.isdigit() and not self.searching:
+            number = int(key)
+            options = self.enabled()
+            if 1 <= number <= len(options):
+                self.selected = number - 1
+        return TUI_MODAL_PENDING
 
 
 class CommandLoop:
@@ -8792,7 +8849,7 @@ Tools:
         errors = [
             (name, error)
             for name, error in sorted(self.session.mcp.server_errors.items())
-            if error and not error.startswith("oauth login required") and not self.session.mcp.is_cancelled_error_text(error)
+            if error and not error.startswith("oauth login required") and error.strip() != "CancelledError"
         ]
         if not errors:
             return ""
@@ -9029,88 +9086,15 @@ Tools:
         preview_fn: Callable[[str], str] | None = None,
         free_text: bool = False,
     ) -> str | object | None:
-        FREE_TEXT = "\x00free_text"
         if free_text and self.interactive_input:
-            choices = (*choices, FREE_TEXT)
-            labels = {**labels, FREE_TEXT: "Type freely..."}
+            choices = (*choices, ChoiceViewState.FREE_TEXT)
+            labels = {**labels, ChoiceViewState.FREE_TEXT: "Type freely..."}
         state = ChoiceViewState(choices, labels, disabled)
         options = state.enabled()
         state.selected = options.index(current) if current in options else 0
-
-        def fragments():
-            visible = state.visible()
-            options = state.clamp()
-            suffix = (" /" + state.query) if state.query else ""
-            if state.query and not state.searching:
-                suffix += " (filtered)"
-            parts: list[tuple[str, str]] = [
-                ("class:choice.title", title + suffix + "\n"),
-                ("class:choice.disabled", "  j/k move, / search, Esc back/cancel\n"),
-            ]
-            if state.query and not options:
-                parts.append(("class:choice.disabled", "  no matches\n"))
-                return parts
-            number = 0
-            for choice in visible:
-                label = labels.get(choice, choice)
-                if choice in disabled:
-                    parts.append(("class:choice.disabled", "  " + label + "\n"))
-                    continue
-                number += 1
-                selected = number - 1 == state.selected
-                style = "class:choice.selected" if selected else ""
-                if selected:
-                    parts.append(("[SetCursorPosition]", ""))
-                parts.append((style, ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
-            if preview_fn and options:
-                preview_text = preview_fn(options[state.selected]).replace("\\n", "\n")
-                if preview_text:
-                    parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
-                    for line in preview_text.splitlines():
-                        parts.append(("class:choice.preview", "  │ " + line + "\n"))
-            if state.searching:
-                parts.append(("", "/" + state.query))
-            return parts
-
         if self.tui is None:
             return None
-
-        def modal_key(key: str, data: str) -> Any:
-            if state.searching and key not in {"enter", "escape", "backspace", "c-h"}:
-                text = data if key == "any" else key
-                if len(text) == 1 and text not in "\r\n":
-                    state.set_query(state.query + text)
-            elif key in {"j", "down"} and not state.searching:
-                state.move(1)
-            elif key in {"k", "up"} and not state.searching:
-                state.move(-1)
-            elif key == "/":
-                state.searching = True
-                state.set_query("")
-            elif key in {"backspace", "c-h"} and state.searching:
-                state.set_query(state.query[:-1])
-            elif key == "escape":
-                if state.searching:
-                    state.searching = False
-                elif state.query:
-                    state.set_query("")
-                else:
-                    return SELECTION_BACK
-            elif key == "enter":
-                if state.searching:
-                    state.searching = False
-                elif (choice := state.selected_choice()) is not None:
-                    return SELECTION_FREE_TEXT if choice == FREE_TEXT else choice
-            elif key == "c-c":
-                return KeyboardInterrupt()
-            elif key.isdigit() and not state.searching:
-                number = int(key)
-                options = state.enabled()
-                if 1 <= number <= len(options):
-                    state.selected = number - 1
-            return TUI_MODAL_PENDING
-
-        result = self.tui.show_modal(fragments, modal_key)
+        result = self.tui.show_modal(lambda: state.fragments(title, preview_fn), state.handle_key)
         if isinstance(result, KeyboardInterrupt):
             raise result
         return result
@@ -9344,36 +9328,11 @@ Tools:
 
         def modal_key(key: str, _data: str) -> Any:
             nonlocal model
-            sections = active_sections()
-            if key in {"q", "c-c"}:
-                return None
-            if key == "escape":
-                if state.mode is DiffViewState.Mode.FILE:
-                    state.close_file()
-                    return TUI_MODAL_PENDING
-                return None
-            if key in {"down", "j"}:
-                state.move_file(1, len(sections)) if state.mode is DiffViewState.Mode.LIST else state.view.scroll_by(1)
-            elif key in {"up", "k"}:
-                state.move_file(-1, len(sections)) if state.mode is DiffViewState.Mode.LIST else state.view.scroll_by(-1)
-            elif key in {"right", "l", "tab"} and state.mode is DiffViewState.Mode.LIST:
-                state.switch_tab(1)
-            elif key in {"left", "h"}:
-                state.close_file() if state.mode is DiffViewState.Mode.FILE else state.switch_tab(-1)
-            elif key == "enter":
-                state.open_file(len(sections))
-            elif key == "pagedown" and state.mode is DiffViewState.Mode.FILE:
-                state.view.scroll_by(max(1, viewport()))
-            elif key == "pageup" and state.mode is DiffViewState.Mode.FILE:
-                state.view.scroll_by(-max(1, viewport()))
-            elif key == "c-d" and state.mode is DiffViewState.Mode.FILE:
-                state.view.scroll_by(max(1, viewport() // 2))
-            elif key == "c-u" and state.mode is DiffViewState.Mode.FILE:
-                state.view.scroll_by(-max(1, viewport() // 2))
-            elif key == "r":
+            result = state.handle_key(key, len(active_sections()), viewport())
+            if result is DiffViewState.REFRESH:
                 model = build_model()
-                state.reset()
-            return TUI_MODAL_PENDING
+                return TUI_MODAL_PENDING
+            return result
 
         self.tui.show_modal(fragments, modal_key, exclusive=True)
 

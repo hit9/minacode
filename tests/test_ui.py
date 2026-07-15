@@ -1448,6 +1448,25 @@ def test_empty_diff_viewer_reports_zero_position(tmp_path):
     assert "[0/0]" in text
 
 
+def test_diff_view_state_owns_navigation_transitions():
+    state = n.DiffViewState(n.TabbedViewState(("Latest", "Session")))
+
+    state.handle_key("down", 3, 10)
+    assert state.file == 1
+    state.handle_key("enter", 3, 10)
+    assert state.mode is n.DiffViewState.Mode.FILE
+    state.handle_key("c-d", 3, 10)
+    assert state.view.scroll == 5
+    assert state.handle_key("escape", 3, 10) is n.TUI_MODAL_PENDING
+    assert state.mode is n.DiffViewState.Mode.LIST
+
+    state.handle_key("right", 3, 10)
+    assert state.view.tab == 1
+    assert state.file == 0
+    assert state.handle_key("r", 3, 10) is n.DiffViewState.REFRESH
+    assert state.handle_key("q", 3, 10) is None
+
+
 def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
     monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((20, 24)))
     preview = n.BashLivePreview()
@@ -1593,3 +1612,50 @@ def test_choice_view_state_no_enabled_choices_returns_none():
     )
     assert state.enabled() == ()
     assert state.selected_choice() is None
+
+
+def test_choice_view_state_key_navigation_and_selection():
+    state = n.ChoiceViewState(
+        choices=("a", "---", "b", n.ChoiceViewState.FREE_TEXT),
+        labels={n.ChoiceViewState.FREE_TEXT: "Type freely..."},
+        disabled={"---"},
+    )
+
+    assert state.handle_key("j") is n.TUI_MODAL_PENDING
+    assert state.selected_choice() == "b"
+    assert state.handle_key("1") is n.TUI_MODAL_PENDING
+    assert state.handle_key("enter") == "a"
+
+    state.selected = 2
+    assert state.handle_key("enter") is n.SELECTION_FREE_TEXT
+
+
+def test_choice_view_state_search_and_escape_layers():
+    state = n.ChoiceViewState(choices=("alpha", "beta"), labels={}, disabled=set())
+
+    state.handle_key("/")
+    state.handle_key("any", "b")
+    assert state.searching
+    assert state.query == "b"
+    assert state.selected_choice() == "beta"
+    assert state.handle_key("escape") is n.TUI_MODAL_PENDING
+    assert not state.searching
+    assert state.query == "b"
+    assert state.handle_key("escape") is n.TUI_MODAL_PENDING
+    assert state.query == ""
+    assert state.handle_key("escape") is n.SELECTION_BACK
+
+
+def test_choice_view_state_fragments_preserve_headers_and_preview():
+    state = n.ChoiceViewState(
+        choices=("--- Models ---", "alpha"),
+        labels={"--- Models ---": "  ---- Models ----", "alpha": "Alpha"},
+        disabled={"--- Models ---"},
+    )
+
+    fragments = state.fragments("Model", lambda _choice: "first\\nsecond")
+    rendered = "".join(text for _style, text in fragments)
+
+    assert "  ---- Models ----" in rendered
+    assert ">  1. Alpha" in rendered
+    assert "  │ first\n  │ second\n" in rendered
