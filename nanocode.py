@@ -6780,35 +6780,28 @@ class TuiApp:
             pass
         event = threading.Event()
         previous_mode, previous_prompt = self.input_mode, self.input_prompt
-        previous_document: list[Document] = []
+        previous_document: Document | None = None
         self._input_pending = event
         self._input_result = ""
 
         def switch(document: Document, mode: str, prompt_text: str, done: threading.Event) -> None:
-            if not previous_document:
-                previous_document.append(self.input_buffer.document)
+            nonlocal previous_document
+            if previous_document is None:
+                previous_document = self.input_buffer.document
             self.input_buffer.reset(document)
             self._set_mode(mode, prompt_text)
             done.set()
 
         switched = threading.Event()
-        app = self.app
-        if app is not None and app.is_running:
-            app.loop.call_soon_threadsafe(switch, Document(""), "approval", prompt, switched)
-            switched.wait()
-        else:
-            switch(Document(""), "approval", prompt, switched)
+        self._schedule(switch, Document(""), "approval", prompt, switched)
+        switched.wait()
         try:
             event.wait()
         finally:
             self._input_pending = None
             restored = threading.Event()
-            document = previous_document[0] if previous_document else Document("")
-            if app is not None and app.is_running:
-                app.loop.call_soon_threadsafe(switch, document, previous_mode, previous_prompt, restored)
-                restored.wait()
-            else:
-                switch(document, previous_mode, previous_prompt, restored)
+            self._schedule(switch, previous_document or Document(""), previous_mode, previous_prompt, restored)
+            restored.wait()
         return self._input_result
 
     def set_running(self, label: str) -> None:
@@ -6817,9 +6810,6 @@ class TuiApp:
 
     def set_dispatching(self, prompt: str = "") -> None:
         self._set_mode("dispatch", prompt)
-
-    def set_cancelling(self) -> None:
-        self.set_running("cancelling")
 
     def set_idle(self) -> None:
         self.status_label = ""
@@ -6834,6 +6824,13 @@ class TuiApp:
         if self.app is not None:
             self.app.invalidate()
 
+    def _schedule(self, callback: Callable[..., None], *args: Any) -> None:
+        app = self.app
+        if app is not None and app.is_running:
+            app.loop.call_soon_threadsafe(callback, *args)
+        else:
+            callback(*args)
+
     def exit(self) -> None:
         app = self.app
         if app is None:
@@ -6843,11 +6840,7 @@ class TuiApp:
             with contextlib.suppress(Exception):
                 app.exit(result=None)
 
-        loop = getattr(app, "loop", None)
-        if loop is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(close)
-        else:
-            close()
+        self._schedule(close)
 
     def _accept(self, buffer: Buffer) -> bool:
         text = buffer.text
@@ -6876,7 +6869,7 @@ class TuiApp:
         """Show a modal inside this Application and block the calling worker until it closes."""
         with self.modal_lock:
             app = self.app
-            if app is None or self.modal_window is None:
+            if app is None or not app.is_running or self.modal_window is None:
                 return None
             modal = TuiModal(fragments_fn, key_fn, exclusive=exclusive)
 
@@ -6886,7 +6879,7 @@ class TuiApp:
                 app.layout.focus(target or self.modal_window)
                 app.invalidate()
 
-            app.loop.call_soon_threadsafe(activate)
+            self._schedule(activate)
             modal.done.wait()
             return modal.result
 
@@ -8036,9 +8029,11 @@ class DiffViewState:
                 self.move_file(delta, file_count)
             elif self.mode is self.Mode.FILE:
                 self.view.scroll_by(delta)
-        elif key in {"right", "l", "tab"} and self.mode is self.Mode.LIST:
+        elif key in {"h", "l", "tab"}:
+            self.switch_tab(1 if key in {"l", "tab"} else -1)
+        elif key == "right" and self.mode is self.Mode.LIST:
             self.switch_tab(1)
-        elif key in {"left", "h"}:
+        elif key == "left":
             if self.mode is self.Mode.FILE:
                 self.close_file()
             else:
@@ -9400,7 +9395,7 @@ class TuiRuntime:
         self.cancel_pending = threading.Event()
         self.main_busy = threading.Event()
         self.force_exit_timer: threading.Timer | None = None
-        self.errors: list[BaseException] = []
+        self.error: BaseException | None = None
 
     @property
     def tui(self) -> TuiApp:
@@ -9416,7 +9411,7 @@ class TuiRuntime:
         if self.cancel_pending.is_set():
             return
         self.cancel_pending.set()
-        self.tui.set_cancelling()
+        self.tui.set_running("cancelling")
         self._interrupt_active(self.loop.agent.cancel)
 
     def _request_model_retry(self, label: str) -> None:
@@ -9428,9 +9423,6 @@ class TuiRuntime:
         self.tui.status_label = label
         self.tui.invalidate()
         self._interrupt_active(self.loop.agent.model.cancel)
-
-    def retry(self) -> None:
-        self._request_model_retry("retrying")
 
     def submit_running(self, text: str) -> None:
         text = Text.clean(text.strip())
@@ -9466,7 +9458,7 @@ class TuiRuntime:
             on_force_exit=self.force_exit,
             on_interrupt=self.interrupt,
             on_input_cancel=lambda: self.loop.emit("Cancelled"),
-            on_retry=self.retry,
+            on_retry=lambda: self._request_model_retry("retrying"),
             on_recall=self.recall,
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
             activity_fragments_fn=self.loop.tui_activity_fragments,
@@ -9546,7 +9538,7 @@ class TuiRuntime:
         try:
             self.tui.run(style=self.loop.style())
         except BaseException as error:
-            self.errors.append(error)
+            self.error = error
             self.stop.set()
 
     def run(self) -> int:
@@ -9556,8 +9548,8 @@ class TuiRuntime:
         tui_thread.start()
         try:
             self.tui.ready.wait()
-            if self.errors:
-                raise self.errors[0]
+            if self.error is not None:
+                raise self.error
             # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
             # so the primary-screen application places them in native terminal/tmux scrollback.
             self.loop.start_session()
@@ -9575,8 +9567,8 @@ class TuiRuntime:
                 self.loop.close_background_output()
             finally:
                 self.loop.tui = None
-        if self.errors:
-            raise self.errors[0]
+        if self.error is not None:
+            raise self.error
         return 0
 
 

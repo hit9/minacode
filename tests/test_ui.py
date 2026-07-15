@@ -714,20 +714,10 @@ def test_tui_ctrl_g_retries_only_while_running():
     assert not binding.filter()
 
 
-def test_tui_cancelling_is_transient_status_not_history():
-    app = n.TuiApp()
-    app.set_running("working")
-
-    app.set_cancelling()
-
-    assert app.input_mode == "running"
-    assert app.status_label == "cancelling"
-
-
 def test_tui_activity_uses_transient_cancelling_status(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = n.TuiApp()
-    command_loop.tui.set_cancelling()
+    command_loop.tui.set_running("cancelling")
 
     text = "".join(fragment for _style, fragment in command_loop.queue_divider_fragments())
 
@@ -1407,6 +1397,18 @@ def test_diff_view_state_owns_navigation_transitions():
     assert state.file == 0
     assert state.handle_key("r", 3, 10) is n.DiffViewState.REFRESH
     assert state.handle_key("q", 3, 10) is None
+
+
+@pytest.mark.parametrize(("key", "expected_tab"), [("l", 1), ("tab", 1), ("h", 0)])
+def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
+    state = n.DiffViewState(n.TabbedViewState(("Latest", "Session"), tab=0 if key != "h" else 1))
+    state.open_file(3)
+
+    state.handle_key(key, 3, 10)
+
+    assert state.view.tab == expected_tab
+    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.file == 0
 
 
 def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
