@@ -1101,6 +1101,32 @@ def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
     assert "Set provider.model = model-b" in result
 
 
+def test_model_discovery_merges_configured_and_remote_choices(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    provider = command_loop.session.config.provider
+    provider.model = "configured-model"
+    provider.available_models = ("configured-model",)
+    provider.url = "https://example.com/v1"
+    provider.key = "key"
+    shown = []
+
+    def select(title, choices, **_kwargs):
+        shown.append((title, choices))
+        if title == "Reasoning effort":
+            return "off"
+        return command_loop.MODEL_DISCOVER_ACTION if len(shown) == 1 else "remote-model"
+
+    command_loop.select_choice = select
+    command_loop.remote_models = lambda _provider: ("remote-model",)
+
+    assert "Set provider.model = remote-model" in command_loop.model("")
+    assert shown[:2] == [
+        ("Model", ("configured-model", command_loop.MODEL_DISCOVER_ACTION)),
+        ("Model", ("configured-model", "remote-model")),
+    ]
+
+
 def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
