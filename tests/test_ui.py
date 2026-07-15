@@ -303,6 +303,13 @@ def test_tui_approval_prompt_keeps_connector_style_and_spinner(monkeypatch):
     ]
 
 
+def test_tui_loading_models_prompt_is_simple_and_dim():
+    app = n.TuiApp(n.LogBuffer())
+    app.set_dispatching("Loading models...")
+
+    assert app.status_fragments() == [("ansibrightblack", "Loading models...")]
+
+
 def test_tui_prompt_output_disables_cpr_probe(monkeypatch):
     output = type("Output", (), {"enable_cpr": True})()
     monkeypatch.setattr(n, "create_output", lambda: output)
@@ -1288,6 +1295,25 @@ def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_pa
             "remote-model",
         ),
     )
+
+
+def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    provider = command_loop.session.config.provider
+    provider.model = "configured-model"
+    provider.available_models = ("configured-model",)
+    provider.url = "https://example.com/v1"
+    provider.key = "key"
+    transitions = []
+    command_loop.tui = n.TuiApp(command_loop.ui.log_buffer)
+    command_loop.tui.set_dispatching = lambda prompt="": transitions.append(prompt)
+    command_loop.remote_models = lambda selected: ("remote-model",)
+    selected = iter(["remote-model", "off"])
+    command_loop.select_choice = lambda *_args, **_kwargs: next(selected)
+
+    assert "Set provider.model = remote-model" in command_loop.model("")
+    assert transitions == ["Loading models...", ""]
 
 
 def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monkeypatch, tmp_path):

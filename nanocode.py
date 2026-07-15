@@ -6903,8 +6903,8 @@ class TuiApp:
         self.status_label = label
         self._set_mode("running", "+> ")
 
-    def set_dispatching(self) -> None:
-        self._set_mode("dispatch", "")
+    def set_dispatching(self, prompt: str = "") -> None:
+        self._set_mode("dispatch", prompt)
 
     def set_cancelling(self) -> None:
         self.status_label = "cancelling"
@@ -7005,6 +7005,8 @@ class TuiApp:
         return max(1, sum(1 for _line in split_lines(self.viewport_fragments())))
 
     def status_fragments(self) -> list[tuple[str, str]]:
+        if self.input_mode == "dispatch" and self.input_prompt:
+            return [("ansibrightblack", self.input_prompt)]
         if self.input_mode == "approval" and self.input_prompt:
             frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
             connector = LogBlock.prefix(2, LogEdge.CONTINUE)
@@ -9500,7 +9502,14 @@ Tools:
             return "No change" if result is SELECTION_BACK else str(result)
         provider = self.session.config.provider
         configured = tuple(dict.fromkeys(provider.available_models))
-        remote = tuple(model for model in self.remote_models(provider) if model not in configured)
+        show_loading = self.tui is not None and bool(provider.url and provider.key)
+        if show_loading:
+            self.tui.set_dispatching("Loading models...")
+        try:
+            remote = tuple(model for model in self.remote_models(provider) if model not in configured)
+        finally:
+            if show_loading:
+                self.tui.set_dispatching()
         choices: list[str] = []
         if configured:
             choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
