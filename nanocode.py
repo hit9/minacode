@@ -7028,6 +7028,10 @@ class TuiApp:
         self.follow_tail = self.viewport_scroll >= maximum
         self.invalidate()
 
+    def scroll_page(self, direction: int) -> None:
+        height = self.viewport_window.render_info.window_height if self.viewport_window and self.viewport_window.render_info else 10
+        self.scroll_viewport(direction * max(1, height - 2))
+
     @staticmethod
     def complete_input(buffer: Buffer, *, reverse: bool = False) -> None:
         if buffer.complete_state is not None:
@@ -7156,25 +7160,11 @@ class TuiApp:
             bindings.add(str(number), filter=modal, eager=True)(lambda event, number=number: self.dispatch_modal_key(str(number), event.data))
         bindings.add(Keys.Any, filter=modal)(lambda event: self.dispatch_modal_key("any", event.data))
 
-        @bindings.add("enter", filter=~modal, eager=True)
-        def _enter(event):
-            event.current_buffer.validate_and_handle()
-
-        @bindings.add("escape", "enter", filter=~modal, eager=True)
-        def _alt_enter(event):
-            event.current_buffer.insert_text("\n")
-
-        @bindings.add("tab", filter=~modal)
-        def _tab(event):
-            self.complete_input(event.current_buffer)
-
-        @bindings.add("s-tab", filter=~modal)
-        def _shift_tab(event):
-            self.complete_input(event.current_buffer, reverse=True)
-
-        @bindings.add(Keys.BracketedPaste, filter=~modal)
-        def _paste(event):
-            event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
+        bindings.add("enter", filter=~modal, eager=True)(lambda event: event.current_buffer.validate_and_handle())
+        bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
+        for key, reverse in (("tab", False), ("s-tab", True)):
+            bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.complete_input(event.current_buffer, reverse=reverse))
+        bindings.add(Keys.BracketedPaste, filter=~modal)(lambda event: event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n")))
 
         @bindings.add("c-r", filter=~modal, eager=True)
         def _history_search(event):
@@ -7193,19 +7183,9 @@ class TuiApp:
             if text:
                 self.input_buffer.reset(Document(text, cursor_position=len(text)))
 
-        @bindings.add("c-g", filter=running, eager=True)
-        def _retry(_event):
-            self.on_retry()
-
-        @bindings.add("pageup", filter=~modal, eager=True)
-        def _page_up(_event):
-            height = self.viewport_window.render_info.window_height if self.viewport_window and self.viewport_window.render_info else 10
-            self.scroll_viewport(-max(1, height - 2))
-
-        @bindings.add("pagedown", filter=~modal, eager=True)
-        def _page_down(_event):
-            height = self.viewport_window.render_info.window_height if self.viewport_window and self.viewport_window.render_info else 10
-            self.scroll_viewport(max(1, height - 2))
+        bindings.add("c-g", filter=running, eager=True)(lambda _event: self.on_retry())
+        for key, direction in (("pageup", -1), ("pagedown", 1)):
+            bindings.add(key, filter=~modal, eager=True)(lambda _event, direction=direction: self.scroll_page(direction))
 
         @bindings.add("c-c", eager=True)
         @bindings.add("<sigint>", eager=True)
