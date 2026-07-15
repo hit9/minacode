@@ -545,7 +545,8 @@ def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
 def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)
     queue(s, "extra instruction")
-    agent = n.Agent(s, output_fn=lambda text: None)
+    output = []
+    agent = n.Agent(s, output_fn=output.append)
 
     class FakeModel:
         def __init__(self):
@@ -565,7 +566,10 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     second = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
     first_followup = next(message["content"] for message in agent.model.messages[0] if "extra instruction" in (message.get("content") or ""))
     second_followup = next(message["content"] for message in agent.model.messages[1] if "second instruction" in (message.get("content") or ""))
-    assert n.Agent.LIVE_FOLLOWUP_PREFIX.strip() in n.Agent.SYSTEM_PROMPT
+    assert "[Live follow-up received while you were working]" in n.Agent.LIVE_FOLLOWUP_PREFIX
+    assert "[Live follow-up received while you were working]" in n.Agent.SYSTEM_PROMPT
+    assert "must include a brief visible text response" in n.Agent.LIVE_FOLLOWUP_PREFIX
+    assert "never respond with tool calls only" in n.Agent.SYSTEM_PROMPT
     assert first_followup == n.Agent.LIVE_FOLLOWUP_PREFIX + "extra instruction"
     assert second_followup == n.Agent.LIVE_FOLLOWUP_PREFIX + "second instruction"
     assert "extra instruction" in first
@@ -578,6 +582,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.messages[3]["role"] == "tool"
     assert s.messages[3]["content"].startswith("tool tr.1 Bash wc -l missing.txt")
     assert s.messages[4]["content"] == "second instruction"
+    assert "checking" in output
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
 
