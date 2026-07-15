@@ -47,8 +47,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
-from prompt_toolkit.formatted_text import ANSI, FormattedText, to_formatted_text
-from prompt_toolkit.formatted_text.utils import split_lines
+from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -59,6 +58,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.output import create_output
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar
@@ -6663,47 +6663,6 @@ class Theme:
         return cls._pygments_cache[name]
 
 
-@dataclass
-class LogEntry:
-    """Styled output with an optional terminal-width-aware renderer."""
-
-    fragments: list[tuple[str, str]]
-    live_renderer: Callable[[int], list[tuple[str, str]]] | None = None
-    live_width: int = 0
-    live_fragments: list[tuple[str, str]] | None = None
-
-    def render(self) -> list[tuple[str, str]]:
-        if self.live_renderer is None:
-            return self.fragments
-        width = shutil.get_terminal_size((120, 20)).columns
-        if self.live_fragments is None or self.live_width != width:
-            self.live_width = width
-            self.live_fragments = self.live_renderer(width)
-        return self.live_fragments
-
-
-class LogBuffer:
-    """Bounded append-only source of styled entries for the full-screen viewport."""
-
-    LIMIT: ClassVar[int] = 20_000
-
-    def __init__(self) -> None:
-        self.entries: list[LogEntry] = []
-        self.on_change: Callable[[], None] | None = None
-
-    def append(
-        self,
-        fragments: list[tuple[str, str]],
-        live_renderer: Callable[[int], list[tuple[str, str]]] | None = None,
-    ) -> None:
-        self.entries.append(LogEntry(fragments, live_renderer))
-        if len(self.entries) > self.LIMIT:
-            del self.entries[: len(self.entries) - self.LIMIT]
-        if self.on_change is not None:
-            with contextlib.suppress(Exception):
-                self.on_change()
-
-
 TUI_MODAL_PENDING = object()
 
 
@@ -6729,17 +6688,16 @@ class CallbackPlaceholder(Processor):
 
 
 class TuiApp:
-    """One full-screen application for history, live activity, input, selectors, and status.
+    """One primary-screen application for live activity, input, selectors, and status.
 
     The agent owns the main thread; prompt-toolkit owns the TUI thread. `request_input` bridges
-    blocking approvals, and the log is dumped to shell scrollback when the application exits.
+    blocking approvals, while completed output is printed above the app into terminal scrollback.
     """
 
     MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l up down left right tab enter escape q r pagedown pageup c-d c-u backspace c-h /".split())
 
     def __init__(
         self,
-        log_buffer: LogBuffer,
         *,
         on_chat_submit: Callable[[str], None] | None = None,
         on_running_submit: Callable[[str], None] | None = None,
@@ -6755,7 +6713,6 @@ class TuiApp:
         history: FileHistory | None = None,
         completer: Completer | None = None,
     ) -> None:
-        self.log_buffer = log_buffer
         self.on_chat_submit = on_chat_submit or (lambda _text: None)
         self.on_running_submit = on_running_submit or (lambda _text: None)
         self.on_exit_request = on_exit_request or (lambda: None)
@@ -6784,10 +6741,7 @@ class TuiApp:
         self.status_label: str = ""
         self.modal: TuiModal | None = None
         self.modal_lock = threading.Lock()
-        self.follow_tail = True
-        self.viewport_scroll = 0
         self.input_window: Window | None = None
-        self.viewport_window: Window | None = None
         self.activity_window: Window | None = None
         self.modal_window: Window | None = None
         self.exclusive_modal_window: Window | None = None
@@ -6936,25 +6890,6 @@ class TuiApp:
         else:
             self.invalidate()
 
-    def viewport_fragments(self) -> list[tuple[str, str]]:
-        fragments: list[tuple[str, str]] = []
-        for index, entry in enumerate(self.log_buffer.entries):
-            if index:
-                fragments.append(("", "\n"))
-            fragments.extend(entry.render())
-        lines = list(split_lines(fragments)) or [[]]
-        cursor_line = len(lines) - 1 if self.follow_tail else min(self.viewport_scroll, len(lines) - 1)
-        lines[cursor_line] = [("[SetCursorPosition]", ""), *lines[cursor_line]]
-        rendered: list[tuple[str, str]] = []
-        for index, line in enumerate(lines):
-            if index:
-                rendered.append(("", "\n"))
-            rendered.extend((style, text) for style, text, *_rest in line)
-        return rendered
-
-    def viewport_line_count(self) -> int:
-        return max(1, sum(1 for _line in split_lines(self.viewport_fragments())))
-
     def status_fragments(self) -> list[tuple[str, str]]:
         if self.input_mode == "dispatch" and self.input_prompt:
             return [("ansibrightblack", self.input_prompt)]
@@ -6968,26 +6903,6 @@ class TuiApp:
             )
             return [*prompt, ("class:approval.wait", frame + " ")]
         return [("class:prompt", self.input_prompt)]
-
-    def vertical_scroll(self, window: Window) -> int:
-        if self.follow_tail:
-            content_height = window.render_info.content_height if window.render_info is not None else self.viewport_line_count()
-            window_height = window.render_info.window_height if window.render_info is not None else max(1, shutil.get_terminal_size().lines - 2)
-            self.viewport_scroll = max(0, content_height - window_height)
-        return self.viewport_scroll
-
-    def scroll_viewport(self, delta: int) -> None:
-        window = self.viewport_window
-        if window is None or window.render_info is None:
-            return
-        maximum = max(0, window.render_info.content_height - window.render_info.window_height)
-        self.viewport_scroll = min(maximum, max(0, self.viewport_scroll + delta))
-        self.follow_tail = self.viewport_scroll >= maximum
-        self.invalidate()
-
-    def scroll_page(self, direction: int) -> None:
-        height = self.viewport_window.render_info.window_height if self.viewport_window and self.viewport_window.render_info else 10
-        self.scroll_viewport(direction * max(1, height - 2))
 
     @staticmethod
     def complete_input(buffer: Buffer, *, reverse: bool = False) -> None:
@@ -7015,12 +6930,6 @@ class TuiApp:
         )
 
     def build_layout(self) -> Layout:
-        self.viewport_window = Window(
-            FormattedTextControl(self.viewport_fragments, show_cursor=False),
-            wrap_lines=True,
-            get_vertical_scroll=self.vertical_scroll,
-            dont_extend_height=True,
-        )
         self.input_window = Window(
             BufferControl(
                 buffer=self.input_buffer,
@@ -7074,7 +6983,6 @@ class TuiApp:
         # shell instead of letting an intermediate FloatContainer stretch the viewport.
         content = HSplit(
             [
-                self.viewport_window,
                 Window(height=1, dont_extend_height=True),
                 modal_region,
                 normal_region,
@@ -7085,24 +6993,13 @@ class TuiApp:
         self.exclusive_modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False)
         exclusive_status = self._status_bar_window(dont_extend_height=False)
         root = FloatContainer(
-            content,
-            [
-                Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True),
-                Float(
-                    ConditionalContainer(self.exclusive_modal_window, filter=exclusive_active),
-                    top=0,
-                    bottom=1,
-                    left=0,
-                    right=0,
-                ),
-                Float(
-                    ConditionalContainer(exclusive_status, filter=exclusive_active),
-                    bottom=0,
-                    height=1,
-                    left=0,
-                    right=0,
-                ),
-            ],
+            HSplit(
+                [
+                    ConditionalContainer(content, filter=~exclusive_active),
+                    ConditionalContainer(HSplit([self.exclusive_modal_window, exclusive_status]), filter=exclusive_active),
+                ]
+            ),
+            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True)],
         )
         return Layout(root, focused_element=self.input_window)
 
@@ -7141,8 +7038,6 @@ class TuiApp:
                 self.input_buffer.reset(Document(text, cursor_position=len(text)))
 
         bindings.add("c-g", filter=running, eager=True)(lambda _event: self.on_retry())
-        for key, direction in (("pageup", -1), ("pagedown", 1)):
-            bindings.add(key, filter=~modal, eager=True)(lambda _event, direction=direction: self.scroll_page(direction))
 
         @bindings.add("c-c", eager=True)
         @bindings.add("<sigint>", eager=True)
@@ -7198,18 +7093,18 @@ class TuiApp:
         app = Application(
             layout=self.build_layout(),
             key_bindings=self.make_bindings(),
-            full_screen=True,
+            full_screen=False,
             mouse_support=False,
             refresh_interval=0.2,
             style=style,
+            erase_when_done=True,
             output=self.prompt_output(),
         )
         self.app = app
-        self.log_buffer.on_change = self.invalidate
         try:
-            app.run()
+            with patch_stdout():
+                app.run()
         finally:
-            self.log_buffer.on_change = None
             self.app = None
             # If the agent thread is still parked in request_input at exit, unblock it so its
             # frame unwinds instead of leaking a thread.
@@ -7218,11 +7113,6 @@ class TuiApp:
                 self._input_pending.set()
             if self.modal is not None:
                 self.close_modal(None)
-
-    def dump_to_scrollback(self) -> None:  # pragma: no cover — writes to real stdout
-        for entry in self.log_buffer.entries:
-            print_formatted_text(FormattedText(entry.fragments), end="", flush=True)
-            print()
 
 
 class UiPrinter:
@@ -7241,11 +7131,6 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
-        # The source of truth for the full-screen viewport. Always allocated so tools/tests that
-        # inspect it don't have to null-check; the run loop only enters TUI mode in interactive
-        # TTY sessions (see CommandLoop.run).
-        self.log_buffer: LogBuffer = LogBuffer()
-        self.full_screen = False
 
     def emit(self, text: str | LogBlock = "") -> None:
         if not self.color:
@@ -7253,10 +7138,7 @@ class UiPrinter:
             return
         is_log_block = isinstance(text, LogBlock)
         segments = self.log_segments(text) if is_log_block else self.segments(text)
-        if self.full_screen:
-            self.log_buffer.append(segments, (lambda width: self.log_segments(text, live=True, columns=width)) if is_log_block else None)
-        else:
-            print_formatted_text(FormattedText(segments), end="", flush=True)
+        print_formatted_text(FormattedText(segments), end="", flush=True)
 
     # Rich right-pads every rendered line with spaces up to the console width so backgrounds and
     # padding can fill the row. Uncolored padding gets baked into scrollback and turns into wrap
@@ -7331,9 +7213,7 @@ class UiPrinter:
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
-        self.log_buffer.append(list(to_formatted_text(ANSI(cleaned))))
-        if not self.full_screen:
-            print_formatted_text(ANSI(cleaned), end="", flush=True)
+        print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
@@ -7369,9 +7249,7 @@ class UiPrinter:
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
-        self.log_buffer.append(list(to_formatted_text(ANSI(cleaned))))
-        if not self.full_screen:
-            print_formatted_text(ANSI(cleaned), end="", flush=True)
+        print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
@@ -7582,7 +7460,7 @@ class UiPrinter:
 
     def diff_segments_live(self, text: str, row_width: int | None = None) -> list[tuple[str, str]]:
         """Same as diff_segments, but pads the bg band to the current pane width. Only for live
-        full-screen renderers that repaint on resize (the `/diff` viewer). Scrollback callers must
+        live renderers that repaint on resize (the `/diff` viewer). Scrollback callers must
         NOT use this — baked-in wide padding wraps on a later pane shrink and drops the bg color on
         the wrapped continuation, which looks broken."""
         return self._diff_segments(text, row_width=row_width, live=True)
@@ -8850,7 +8728,7 @@ Tools:
 
     def tool_input(self, prompt: str = "") -> str:
         # When the TUI is running, route agent approvals through TuiApp's
-        # own input widget so the user answers inline in the full-screen shell instead of a
+        # own input widget so the user answers inline in the persistent shell instead of a
         # separate pt Application (which would fail because pt does not nest).
         if self.tui is not None:
             return self.tui.request_input(prompt)
@@ -9557,7 +9435,6 @@ class TuiRuntime:
 
     def build_tui(self) -> TuiApp:
         return TuiApp(
-            self.loop.ui.log_buffer,
             on_chat_submit=self.pending.put,
             on_running_submit=self.submit_running,
             on_exit_request=self.request_exit,
@@ -9649,7 +9526,6 @@ class TuiRuntime:
 
     def run(self) -> int:
         """Run the agent on the main thread and prompt-toolkit on one joined UI thread."""
-        self.loop.ui.full_screen = True
         self.loop.start_session()
         self.loop.tui = self.build_tui()
         self.submit_next(self.loop.take_pending_inputs())
@@ -9666,10 +9542,9 @@ class TuiRuntime:
             # force-exit timer remains responsible for terminating a genuinely wedged application.
             tui_thread.join()
             try:
-                self.loop.close_background_output(self.tui.dump_to_scrollback)
+                self.loop.close_background_output()
             finally:
                 self.loop.tui = None
-                self.loop.ui.full_screen = False
         if self.errors:
             raise self.errors[0]
         return 0
