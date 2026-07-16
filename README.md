@@ -44,6 +44,7 @@ Upgrade: `nanocode upgrade`
 
 Common flags:
 
+- `-c`, `--last`, `--latest`: resume the latest session in the current project
 - `--resume [UID]`: resume a saved session; without UID, resumes latest
 - `--yolo`: skip tool confirmations
 - `--mcp <selector>`: choose which MCP servers to enable
@@ -64,7 +65,7 @@ It works on real repositories, including its own: I use nanocode to build and ma
 
 - **Live follow-ups:** type while the agent works; queued input joins the next model request or can interrupt the current one.
 - **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content instead of guessing.
-- **Resumable sessions:** conversation, completed tool calls, diffs, and working memory survive interruption and `--resume`.
+- **Resumable sessions:** conversation, completed tool calls, diffs, and working memory survive interruption and `-c` or `--resume`.
 - **Built-in diff viewer:** `/diff` shows changes from the latest user round and the net session result.
 - **Prompt-cache aware:** stable instructions, environment, and tool schemas preserve reusable request prefixes.
 - **Provider compatibility:** tested with DeepSeek, OpenCode, Alibaba Cloud, and ZenMux; other OpenAI-compatible endpoints should work in principle. Anthropic APIs, remote/local MCP servers, and Markdown skills are also supported.
@@ -82,7 +83,7 @@ It works on real repositories, including its own: I use nanocode to build and ma
 | `/model [MODEL]` | Show or switch model |
 | `/yolo` | Toggle tool confirmations |
 
-Run `/help` for every command, tool, and shortcut. Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc; input supports history completion and `Ctrl-R` search.
+Run `/help` for every command and tool. Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc; input supports history completion and `Ctrl-R` search.
 
 ## Configuration
 

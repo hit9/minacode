@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import queue
 import random
 import re
 import selectors
@@ -41,7 +42,7 @@ from anthropic import Anthropic
 from json_repair import repair_json
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
-from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
@@ -76,7 +77,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-__version__ = "0.9.6"
+__version__ = "0.9.7"
 
 Json = dict[str, Any]
 
@@ -859,6 +860,7 @@ class SessionSnapshotCodec:
         # fmt: off
         return {
             "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
+            "pending_user_inputs_digest": cls.digest([item.text for item in session.pending_user_inputs]),
             "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
             "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
             "turn_diffs_len": len(turn_diff_keys), "turn_diffs_keys_digest": cls.digest(turn_diff_keys),
@@ -933,6 +935,7 @@ class SessionSnapshotCodec:
         return any(
             (
                 bool(cls.snapshot_messages(session)),
+                bool(session.pending_user_inputs),
                 bool(session.tool_records),
                 bool(session.tool_errors),
                 bool(session.turn_diffs),
@@ -978,6 +981,7 @@ class SessionSnapshotCodec:
         # fmt: off
         return {
             "uid": session.uid, "cwd": session.cwd, "messages": cls.snapshot_messages(session),
+            "pending_user_inputs": [item.text for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
             "turn_diffs": [cls.turn_diff(diff) for diff in session.turn_diffs],
@@ -992,6 +996,9 @@ class SessionSnapshotCodec:
             "state": cls.state(session.state),
         }
         cls.add_sequence_delta(delta, "messages", cls.snapshot_messages(session), saved, "messages_len", "messages_digest")
+        pending_user_inputs = [item.text for item in session.pending_user_inputs]
+        if cls.digest(pending_user_inputs) != saved.get("pending_user_inputs_digest", cls.digest([])):
+            delta["pending_user_inputs"] = pending_user_inputs
         cls.add_sequence_delta(
             delta,
             "tool_records",
@@ -1048,6 +1055,8 @@ class SessionSnapshotCodec:
             data["usage"] = delta["usage"]
         if "state" in delta:
             data["state"] = delta["state"]
+        if "pending_user_inputs" in delta:
+            data["pending_user_inputs"] = delta["pending_user_inputs"]
 
     @staticmethod
     def merge_sequence(data: Json, delta: Json, key: str) -> None:
@@ -1145,6 +1154,28 @@ class SessionSnapshotStore:
             return ""
 
     @classmethod
+    def latest_uid_for_cwd(cls, data_dir: str, cwd: str) -> str:
+        sessions_dir = cls.path_for(data_dir, "sessions")
+        try:
+            entries = sorted(
+                (entry for entry in os.scandir(sessions_dir) if entry.name.endswith(".jsonl") and entry.is_file()),
+                key=lambda entry: entry.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return ""
+        target = os.path.realpath(cwd)
+        for entry in entries:
+            try:
+                with open(entry.path, encoding="utf-8") as file:
+                    snapshot = next((json.loads(line) for line in file if line.strip()), {})
+            except (OSError, json.JSONDecodeError):
+                continue
+            if snapshot.get("cwd") and os.path.realpath(str(snapshot["cwd"])) == target:
+                return entry.name[:-6]
+        return ""
+
+    @classmethod
     def clear_latest(cls, data_dir: str) -> None:
         with contextlib.suppress(OSError):
             os.unlink(cls.path_for(data_dir, "latest"))
@@ -1175,6 +1206,7 @@ class SessionSnapshotStore:
             tool_records=tool_records,
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
             turn_diffs=turn_diffs,
+            pending_user_inputs=[QueuedInput(str(text)) for text in data.get("pending_user_inputs", []) if str(text).strip()],
             uid=data.get("uid", uid),
             resumed=True,
         )
@@ -1266,7 +1298,7 @@ mutated mid-session (`/debug` shows the changed prefix regions), and a compactio
 chats compact automatically; `/compact` forces it.
 
 ## Sessions
-Auto-saved. Resume the latest with `--resume` (or `--resume <UID>`).
+Auto-saved. Resume this project's latest session with `-c` (or use `--resume <UID>`).
 
 ## Providers & reasoning
 Set `provider.*` per provider. `/reason` sets reasoning effort; `/model` sets the model.
@@ -1532,6 +1564,7 @@ class Session:
     _cache_prefix_regions: dict[str, Json] = field(default_factory=dict)
     _cache_prefix_fingerprint: str = ""
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
+    _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
         if not self.uid:
@@ -1781,7 +1814,8 @@ class Session:
 
     def save_snapshot(self) -> str:
         # Session owns the persistence boundary; callers should not depend on the snapshot store.
-        return SessionSnapshotStore(self).save()
+        with self._snapshot_lock, self._queue_lock:
+            return SessionSnapshotStore(self).save()
 
     @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
@@ -2950,6 +2984,17 @@ class BashTool(Tool):
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
+    def __init__(self, session: Session, args: list[Any]):
+        super().__init__(session, args)
+        self._process_lock = threading.Lock()
+        self._process: subprocess.Popen[bytes] | None = None
+
+    def cancel(self) -> None:
+        with self._process_lock:
+            proc = self._process
+        if proc is not None and proc.poll() is None:
+            self.kill_process_group(proc)
+
     # Read-only executables that only inspect the filesystem/repo. A command built solely from these
     # (and safe git subcommands) auto-runs without a confirmation prompt in non-yolo mode, replacing
     # the dedicated List/Find/LineCount/read-only-Git tools that were removed in favour of Bash.
@@ -3025,11 +3070,11 @@ class BashTool(Tool):
         # Flags/args that turn a read-only command into a writer.
         if cmd == "find" and any(t in {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"} for t in tokens):
             return False
-        if cmd == "sed" and any(t == "-i" or t.startswith("-i") or t == "--in-place" or t.startswith("--in-place") for t in tokens):
+        if cmd == "sed" and any(t.startswith(("-i", "--in-place")) for t in tokens):
             return False
-        if cmd == "tree" and any(t == "-o" or t.startswith("-o") or t.startswith("--output") for t in tokens):
+        if cmd == "tree" and any(t.startswith(("-o", "--output")) for t in tokens):
             return False  # `tree -o FILE` writes the listing to a file
-        if cmd == "sort" and any(t.startswith("-o") or t.startswith("--output") for t in tokens):
+        if cmd == "sort" and any(t.startswith(("-o", "--output")) for t in tokens):
             return False  # `sort -o FILE` / `--output=FILE` writes to a file
         if cmd == "uniq" and cls._uniq_writes(tokens):
             return False  # `uniq INPUT OUTPUT` writes the second file operand
@@ -3064,7 +3109,7 @@ class BashTool(Tool):
         args = tokens[index + 1 :]
         if any(t == "--output" or t.startswith("--output=") for t in args):
             return False
-        if sub == "grep" and any(t == "-O" or t.startswith("-O") or t == "--open-files-in-pager" or t.startswith("--open-files-in-pager=") for t in args):
+        if sub == "grep" and any(t.startswith(("-O", "--open-files-in-pager")) for t in args):
             return False
         return True
 
@@ -3098,12 +3143,17 @@ class BashTool(Tool):
             proc = subprocess.Popen(
                 [bash, "-lc", command], cwd=self.session.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
             )
+            with self._process_lock:
+                self._process = proc
             assert proc.stdout is not None and proc.stderr is not None
             return self.stream_process(proc)
         except KeyboardInterrupt:
-            stdout, stderr = self.kill_and_collect(proc)
-            return self.process_result("BashToolResult", -1, stdout, stderr + ("\n" if stderr else "") + "interrupted")
+            self.kill_and_collect(proc)
+            raise
         finally:
+            with self._process_lock:
+                if self._process is proc:
+                    self._process = None
             if self.live_output is not None:
                 self.live_output("", "")
 
@@ -3169,10 +3219,8 @@ class BashTool(Tool):
         tail buffer (bounded), and returns a partial-output payload for the model."""
         # Take pipe handles before closing the selector so the drainer can keep reading them.
         stdout_pipe, stderr_pipe = proc.stdout, proc.stderr
-        try:
+        with contextlib.suppress(OSError):
             selector.close()
-        except OSError:
-            pass
         self.session.job_counter += 1
         job_id = f"job.{self.session.job_counter}"
         buffer: list[str] = []
@@ -3243,7 +3291,8 @@ class BashTool(Tool):
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
-            proc.kill()
+            with contextlib.suppress(OSError):
+                proc.kill()
 
     @classmethod
     def kill_and_collect(cls, proc: subprocess.Popen[Any] | None) -> tuple[str, str]:
@@ -3807,7 +3856,6 @@ class LogEdge(Enum):
 
 class LogRole(Enum):
     TOOL = auto()
-    APPROVAL = auto()
     AUTO = auto()
     META = auto()
     OUTPUT = auto()
@@ -4101,12 +4149,6 @@ class ContextManager:
         ]
         return "\n".join(rows)
 
-    def context_overview(self) -> str:
-        """Markdown view of the synthesized context frame the model receives each turn:
-        the Environment and Memory sections (the live transcript is excluded)."""
-        header = f"### Context  ·  ctx `{self.session.state.context_percent}%`"
-        return "\n\n".join([header, self.environment_md(), self.memory_md()])
-
     @staticmethod
     def md_table(headers: list[str], rows: list[tuple]) -> str:
         def cell(value: object) -> str:
@@ -4117,34 +4159,6 @@ class ContextManager:
                 "| " + " | ".join(headers) + " |",
                 "| " + " | ".join("---" for _ in headers) + " |",
                 *("| " + " | ".join(cell(value) for value in row) + " |" for row in rows),
-            ]
-        )
-
-    def environment_md(self) -> str:
-        info = self.session.system_info
-        rows = [
-            ("cwd", "`" + info.cwd + "`"),
-            ("os", f"{info.os} · {info.arch}"),
-            ("shell timeout", f"{self.session.settings.shell_timeout}s"),
-            ("commands", ", ".join(info.commands) or "(none)"),
-        ]
-        return "#### Environment\n" + self.md_table(["key", "value"], rows)
-
-    def memory_md(self) -> str:
-        state = self.session.state
-        index_status = state.code_index_status or "missing"
-        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
-        rows = [
-            ("goal", state.goal or "(empty)"),
-            ("check", state.check or "(empty)"),
-            ("index", f"{index_status} (usable: {index_usable})"),
-        ]
-        known = "\n".join("- " + item for item in state.known) or "- (empty)"
-        return "\n\n".join(
-            [
-                "#### Memory\n" + self.md_table(["field", "value"], rows),
-                "**Plan**\n" + "\n".join(AgentState.plan_rows_for(state.plan, status=True, style="symbol")),
-                "**Known**\n" + known,
             ]
         )
 
@@ -4600,8 +4614,14 @@ class MCPManager:
                 self.resources[config.name] = self._resources_info(config.name, resources)
                 self.server_errors.pop(config.name, None)
                 self.server_skips.pop(config.name, None)
-        except Exception as e:
-            self.set_server_error(config.name, self.error_text(e, timeout=self.discovery_timeout()))
+        except BaseException as error:
+            if self.is_cancelled_error(error):
+                with self.lock:
+                    self.server_errors.pop(config.name, None)
+                return
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.set_server_error(config.name, self.error_text(error, timeout=self.discovery_timeout()))
 
     async def _gather_assets(self, config: MCPServerConfig, headers: dict[str, str]) -> tuple[Any, list[Any]]:
         """Fetch tools and resources concurrently. Tool failure aborts discovery; resources are best-effort."""
@@ -4623,6 +4643,25 @@ class MCPManager:
         with self.lock:
             self._forget_locked(name)
             self.server_skips[name] = reason
+
+    @classmethod
+    def is_cancelled_error(cls, error: BaseException) -> bool:
+        seen: set[int] = set()
+
+        def visit(item: BaseException) -> bool:
+            identity = id(item)
+            if identity in seen:
+                return False
+            seen.add(identity)
+            if type(item).__name__ == "CancelledError":
+                return True
+            nested = getattr(item, "exceptions", ())
+            if nested:
+                return all(isinstance(child, BaseException) and visit(child) for child in nested)
+            cause = item.__cause__ or item.__context__
+            return isinstance(cause, BaseException) and visit(cause)
+
+        return visit(error)
 
     @staticmethod
     def can_skip_auth_error(error: str) -> bool:
@@ -5367,9 +5406,7 @@ class MCPManager:
                 auth.append(config.auth)
             if config.bearer_token_env_var:
                 auth.append("bearer_token_env_var(" + config.bearer_token_env_var + ")")
-            if config.env_http_headers:
-                for header_name in config.env_http_headers:
-                    auth.append("env_header(" + header_name + ")")
+            auth.extend("env_header(" + name + ")" for name in config.env_http_headers)
             lines.append(
                 "| `"
                 + self.markdown_cell(config.name)
@@ -5388,6 +5425,31 @@ class MCPManager:
         return Text.clean(str(text)).replace("\n", " ").replace("|", "\\|")
 
 
+class ActiveResource:
+    """Thread-safe lifecycle for a resource that another thread may need to cancel."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.value: Any = None
+
+    @contextlib.contextmanager
+    def track(self, value: Any):
+        with self.lock:
+            self.value = value
+        try:
+            yield
+        finally:
+            with self.lock:
+                if self.value is value:
+                    self.value = None
+
+    def apply(self, action: Callable[[Any], None]) -> None:
+        with self.lock:
+            value = self.value
+        if value is not None:
+            action(value)
+
+
 class ToolRunner:
     BASH_PREVIEW_LINES: ClassVar[int] = 12
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
@@ -5401,6 +5463,16 @@ class ToolRunner:
         self.live_start: Callable[[], None] | None = None
         self.bash_live_preview_shown: Callable[[], bool] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
+        self._active_bash = ActiveResource()
+
+    def cancel(self) -> None:
+        self._active_bash.apply(lambda tool: tool.cancel())
+
+    def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
+        if not isinstance(tool, BashTool):
+            return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
+        with self._active_bash.track(tool):
+            return tool.call()
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []
@@ -5566,7 +5638,7 @@ class ToolRunner:
                     self.output_fn(LogBlock.hierarchy(self.log_root(display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     nested_display = True
                 self.live_start()
-            output = planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
+            output = self.call_tool(tool, planned_edit)
         except ToolError as error:
             return "failed", self.reject(
                 call,
@@ -5714,7 +5786,7 @@ class ToolRunner:
         batch_suffix: str = "",
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
     ) -> LogBlock:
-        role = LogRole.APPROVAL if status == "confirm" else LogRole.AUTO
+        role = LogRole.TOOL if status == "confirm" else LogRole.AUTO
         root = self.log_root(self.short_call(call), role, batch_suffix, call)
         children = []
         if tool.NAME != "Edit":
@@ -5882,11 +5954,34 @@ class PreparedRequest:
 class ModelClient:
     def __init__(self, session: Session):
         self.session = session
+        self.cancel_requested = threading.Event()
+        self.active_client = ActiveResource()
+
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+        with contextlib.suppress(Exception):
+            self.active_client.apply(lambda client: client.close())
+
+    def call_client(self, client: Any, request: Callable[[], Any]) -> Any:
+        with self.active_client.track(client):
+            try:
+                result = request()
+                if self.cancel_requested.is_set():
+                    raise KeyboardInterrupt
+                return result
+            except Exception as error:
+                if self.cancel_requested.is_set():
+                    raise KeyboardInterrupt from None
+                raise ModelError(str(error)) from error
+            finally:
+                with contextlib.suppress(Exception):
+                    client.close()
 
     def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
+        self.cancel_requested.clear()
         tools = tools if tools is not None else resolved_tool_schemas(self.session)
         for attempt in range(MODEL_REQUEST_RETRIES + 1):
             self.session.state.current_model_call_started_at = time.monotonic()
@@ -5936,10 +6031,8 @@ class ModelClient:
         if prompt_cache_key:
             params["prompt_cache_key"] = prompt_cache_key
         self.apply_provider_params(params, provider)
-        try:
-            response = self.client().chat.completions.create(**params)
-        except Exception as error:
-            raise ModelError(str(error)) from error
+        client = self.client()
+        response = self.call_client(client, lambda: client.chat.completions.create(**params))
         self.session.usage.add(getattr(response, "usage", None))
         message = response.choices[0].message
         assistant = self.assistant_message(message)
@@ -5948,6 +6041,7 @@ class ModelClient:
         return assistant, calls, content
 
     def compact(self, context: str) -> Json:
+        self.cancel_requested.clear()
         prompt = """
 Compact the nanocode working context.
 Return one JSON object only. No markdown, prose, code fences, or comments.
@@ -6031,10 +6125,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
         params = self.anthropic_params(messages, tools)
-        try:
-            result = self.anthropic_client().messages.create(**params)
-        except Exception as error:
-            raise ModelError(str(error)) from error
+        client = self.anthropic_client()
+        result = self.call_client(client, lambda: client.messages.create(**params))
         self.session.usage.add(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result)
         return assistant, calls, content
@@ -6245,6 +6337,9 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 
 class Agent:
+    LIVE_FOLLOWUP_PREFIX = """[Live follow-up received while you were working]
+REQUIRED: Your next assistant message must include a brief visible text response to this follow-up, not only tool calls. Then continue the active task; this response is a progress update, not the final answer.
+"""
     SYSTEM_PROMPT = """\
 You are nanocode, a concise terminal coding agent.
 
@@ -6264,7 +6359,7 @@ FLOW:
 - Act when clear. Unless the user explicitly asks for a plan, a question about the code, or brainstorming, assume they want implementation and the tools run to solve the problem. Carry the work through implementation, verification, and a clear outcome; do not stop at analysis or half-finished fixes.
 - BATCH BY DEFAULT: issue every independent call in ONE parallel request — the moment you know two or more files/symbols/paths, read/search them together, never one per turn. Serialize only when a call truly needs a prior call's output. Never repeat a failed call unchanged — diagnose, then adjust.
 - You may be in a dirty git worktree. NEVER revert changes you did not make unless explicitly requested. Ignore unrelated changes; work with changes that affect your task. Never use destructive commands like `git reset --hard` or `git checkout --` unless the user clearly asked. Do not create/delete/switch branches or commit/push unless asked; before committing, check the branch and stop if it changed since task start. Prefer non-interactive git commands.
-- Treat later user messages in the same turn as live follow-ups: first acknowledge or briefly answer each follow-up so the user knows you heard it, then carry out the request. Never ignore or skip a follow-up. If messages conflict, let the newest one steer; if not, honor every request since your last turn. After a resume, interruption, or context compaction, do a quick sanity check that your final answer and tool actions answer the newest request, not an older ghost.
+- Messages marked `[Live follow-up received while you were working]` arrived during the active task. Your very next assistant message MUST include non-empty natural-language content that briefly acknowledges or answers every marked follow-up; never respond with tool calls only. When more work remains, include the visible response alongside the next tool calls and keep working—the response is a progress update, not the final answer. If messages conflict, let the newest one steer; otherwise honor them all. After a resume, interruption, or context compaction, verify that your response and actions answer the newest request, not an older ghost.
 - Keep changes small/local/reversible; never overwrite unrelated work. Confirm before irreversible or outward-facing actions unless already authorized.
 - Report faithfully: if a check failed, was skipped, or was not run, say so; do not overstate confidence.
 - Decline clearly malicious code; help with defensive and legitimate security work.
@@ -6301,11 +6396,22 @@ FINAL:
         self.model = ModelClient(session)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
+        self.cancel_requested = threading.Event()
         # Called with the queued messages when they are flushed into the turn, so the UI can move
         # them from the live queue region up into the scrollback log. Set by CommandLoop.
         self.on_queue_flush: Callable[[list[str]], None] | None = None
 
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+        self.tools.cancel()
+        self.model.cancel()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancel_requested.is_set():
+            raise KeyboardInterrupt
+
     def run(self, user_input: str) -> str:
+        self.cancel_requested.clear()
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
         self.session.state.turn_tool_calls = 0
@@ -6323,14 +6429,29 @@ FINAL:
         try:
             for step in range(self.session.settings.max_steps):
                 self.session.state.turn_step = step + 1
+                followup_response = False
                 while True:
                     try:
+                        self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                        self.raise_if_cancelled()
+                        if request.pending and not content.strip():
+                            _, _, content = self.model.request(request.messages, [])
+                            self.raise_if_cancelled()
+                            if not content.strip():
+                                raise ModelError("empty live follow-up response")
+                            followup_response = True
                         self.accept_pending_inputs(turn_messages, request.pending)
                         break
                     except ModelRequestRetry:
                         continue
+                if followup_response:
+                    response = content.strip()
+                    turn_messages.append({"role": "assistant", "content": response})
+                    self.output_fn(response)
+                    self.checkpoint_turn(turn_messages)
+                    continue
                 if not tool_calls:
                     if not content.strip():
                         raise ModelError("empty final response")
@@ -6343,6 +6464,7 @@ FINAL:
                     self.output_fn(content.strip())
                 tool_batches += 1
                 turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else ""))
+                self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
             self.finish_turn(turn_messages, stopped)
@@ -6366,7 +6488,7 @@ FINAL:
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
-        request_turn = [*turn_messages, *({"role": "user", "content": item.text} for item in pending)]
+        request_turn = [*turn_messages, *({"role": "user", "content": self.LIVE_FOLLOWUP_PREFIX + item.text} for item in pending)]
         self.session.state.turn_messages = len(request_turn)
         messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn)
         tools = resolved_tool_schemas(self.session)
@@ -6578,6 +6700,477 @@ class Theme:
         return cls._pygments_cache[name]
 
 
+TUI_MODAL_PENDING = object()
+
+
+@dataclass
+class TuiModal:
+    fragments_fn: Callable[[], list[tuple[str, str]]]
+    key_fn: Callable[[str, str], Any]
+    exclusive: bool = False
+    done: threading.Event = field(default_factory=threading.Event)
+    result: Any = None
+
+
+class CallbackPlaceholder(Processor):
+    def __init__(self, text_fn: Callable[[], str]):
+        self.text_fn = text_fn
+
+    def apply_transformation(self, ti) -> Transformation:
+        text = self.text_fn()
+        buffer = ti.buffer_control.buffer
+        if not text or buffer is None or buffer.text or ti.lineno != ti.document.line_count - 1:
+            return Transformation(ti.fragments)
+        return Transformation([*ti.fragments, ("class:queue.hint", text)])
+
+
+class TuiApp:
+    """One primary-screen application for live activity, input, selectors, and status.
+
+    The agent owns the main thread; prompt-toolkit owns the TUI thread. `request_input` bridges
+    blocking approvals, while completed output is printed above the app into terminal scrollback.
+    """
+
+    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l up down left right tab enter escape q r pagedown pageup c-d c-u backspace c-h /".split())
+
+    def __init__(
+        self,
+        *,
+        on_chat_submit: Callable[[str], None] | None = None,
+        on_running_submit: Callable[[str], None] | None = None,
+        on_exit_request: Callable[[], None] | None = None,
+        on_force_exit: Callable[[], None] | None = None,
+        on_interrupt: Callable[[], None] | None = None,
+        on_input_cancel: Callable[[], None] | None = None,
+        on_retry: Callable[[], None] | None = None,
+        on_recall: Callable[[], str] | None = None,
+        status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
+        activity_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
+        input_hint_fn: Callable[[], str] | None = None,
+        history: FileHistory | None = None,
+        completer: Completer | None = None,
+    ) -> None:
+        self.on_chat_submit = on_chat_submit or (lambda _text: None)
+        self.on_running_submit = on_running_submit or (lambda _text: None)
+        self.on_exit_request = on_exit_request or (lambda: None)
+        self.on_force_exit = on_force_exit or (lambda: None)
+        self.on_interrupt = on_interrupt or (lambda: None)
+        self.on_input_cancel = on_input_cancel or (lambda: None)
+        self.on_retry = on_retry or (lambda: None)
+        self.on_recall = on_recall or (lambda: "")
+        self.status_fragments_fn = status_fragments_fn or list
+        self.activity_fragments_fn = activity_fragments_fn or list
+        self.input_hint_fn = input_hint_fn or (lambda: "")
+        self.input_buffer = Buffer(
+            history=history,
+            completer=completer,
+            complete_while_typing=False,
+            enable_history_search=True,
+            multiline=True,
+            accept_handler=self._accept,
+        )
+        self.search_toolbar = SearchToolbar()
+        self.app: Application | None = None
+        self.ready = threading.Event()
+        self.input_mode = "chat"  # chat | dispatch | running | approval
+        self.input_prompt = UiPrinter.PROMPT_PREFIX
+        self._input_pending: threading.Event | None = None
+        self._input_result: str = ""
+        self.status_label: str = ""
+        self.modal: TuiModal | None = None
+        self.modal_lock = threading.Lock()
+        self.input_window: Window | None = None
+        self.activity_window: Window | None = None
+        self.modal_window: Window | None = None
+        self.exclusive_modal_window: Window | None = None
+        self.status_window: Window | None = None
+
+    def request_input(self, prompt: str) -> str:
+        """Called from the agent thread to get a line of user input inline (approval prompts,
+        Ask tool, etc.). Blocks until the TUI thread's widget submits. If the app has exited
+        before submission, returns "" so the caller unwinds cleanly."""
+        # A tool approval must not replace an already-visible selector. Wait for that selector to
+        # close, then reuse the shared input row.
+        with self.modal_lock:
+            pass
+        event = threading.Event()
+        previous_mode, previous_prompt = self.input_mode, self.input_prompt
+        previous_document: Document | None = None
+        self._input_pending = event
+        self._input_result = ""
+
+        def switch(document: Document, mode: str, prompt_text: str, done: threading.Event) -> None:
+            nonlocal previous_document
+            if previous_document is None:
+                previous_document = self.input_buffer.document
+            self.input_buffer.reset(document)
+            self._set_mode(mode, prompt_text)
+            done.set()
+
+        switched = threading.Event()
+        self._schedule(switch, Document(""), "approval", prompt, switched)
+        switched.wait()
+        try:
+            event.wait()
+        finally:
+            self._input_pending = None
+            restored = threading.Event()
+            self._schedule(switch, previous_document or Document(""), previous_mode, previous_prompt, restored)
+            restored.wait()
+        return self._input_result
+
+    def set_running(self, label: str) -> None:
+        self.status_label = label
+        self._set_mode("running", "+> ")
+
+    def set_dispatching(self, prompt: str = "") -> None:
+        self._set_mode("dispatch", prompt)
+
+    def set_idle(self) -> None:
+        self.status_label = ""
+        self._set_mode("chat", UiPrinter.PROMPT_PREFIX)
+
+    def _set_mode(self, mode: str, prompt: str) -> None:
+        self.input_mode = mode
+        self.input_prompt = prompt
+        self.invalidate()
+
+    def invalidate(self) -> None:
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _schedule(self, callback: Callable[..., None], *args: Any) -> None:
+        app = self.app
+        if app is not None and app.is_running:
+            app.loop.call_soon_threadsafe(callback, *args)
+        else:
+            callback(*args)
+
+    def exit(self) -> None:
+        app = self.app
+        if app is None:
+            return
+
+        def close() -> None:
+            with contextlib.suppress(Exception):
+                app.exit(result=None)
+
+        self._schedule(close)
+
+    def _accept(self, buffer: Buffer) -> bool:
+        text = buffer.text
+        if self.input_mode == "approval" and self._input_pending is not None:
+            self._input_result = text
+            self._input_pending.set()
+            return False
+        if self.input_mode == "running":
+            if text.strip():
+                self.on_running_submit(text)
+            return False
+        if self.input_mode == "chat":
+            if not text.strip():
+                return False
+            self.set_dispatching()
+            self.on_chat_submit(text)
+        return False
+
+    def show_modal(
+        self,
+        fragments_fn: Callable[[], list[tuple[str, str]]],
+        key_fn: Callable[[str, str], Any],
+        *,
+        exclusive: bool = False,
+    ) -> Any:
+        """Show a modal inside this Application and block the calling worker until it closes."""
+        with self.modal_lock:
+            app = self.app
+            if app is None or not app.is_running or self.modal_window is None:
+                return None
+            modal = TuiModal(fragments_fn, key_fn, exclusive=exclusive)
+
+            def activate() -> None:
+                self.modal = modal
+                target = self.exclusive_modal_window if exclusive else self.modal_window
+                app.layout.focus(target or self.modal_window)
+                if exclusive:
+                    self._use_alternate_screen(True)
+                app.invalidate()
+
+            self._schedule(activate)
+            modal.done.wait()
+            return modal.result
+
+    def close_modal(self, result: Any = None) -> None:
+        modal = self.modal
+        if modal is None:
+            return
+        modal.result = result
+        self.modal = None
+        if self.app is not None and self.input_window is not None:
+            self.app.layout.focus(self.input_window)
+        if modal.exclusive:
+            self._use_alternate_screen(False)
+        self.invalidate()
+        modal.done.set()
+
+    def _use_alternate_screen(self, enabled: bool) -> None:
+        """Move the persistent app between the primary and alternate screen.
+
+        Exclusive modals (the /diff viewer) fill the whole pane. Painted on the primary screen they
+        push the transcript above them off the top into scrollback, and closing the modal only
+        shrinks the app region back — the transcript never comes back down. Give them the alternate
+        screen instead, so the terminal restores the transcript on exit the way `less` does.
+        """
+        app = self.app
+        if app is None or app.renderer.full_screen == enabled:
+            return
+        # Erase the region we own on the screen we are leaving, so no stale footer is left behind
+        # (on the way back this also drops us out of the alternate screen).
+        app.renderer.erase()
+        app.renderer.full_screen = enabled
+        app._request_absolute_cursor_position()
+
+    def modal_fragments(self) -> list[tuple[str, str]]:
+        return self.modal.fragments_fn() if self.modal is not None else []
+
+    def dispatch_modal_key(self, key: str, data: str = "") -> None:
+        if self.modal is None:
+            return
+        result = self.modal.key_fn(key, data)
+        if result is not TUI_MODAL_PENDING:
+            self.close_modal(result)
+        else:
+            self.invalidate()
+
+    def status_fragments(self) -> list[tuple[str, str]]:
+        if self.input_mode == "dispatch" and self.input_prompt:
+            return [("ansibrightblack", self.input_prompt)]
+        if self.input_mode == "approval" and self.input_prompt:
+            frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
+            connector = LogBlock.prefix(2, LogEdge.CONTINUE)
+            prompt = (
+                [("ansibrightblack", connector), ("class:approval", self.input_prompt[len(connector) :])]
+                if self.input_prompt.startswith(connector)
+                else [("class:approval", self.input_prompt)]
+            )
+            return [*prompt, ("class:approval.wait", frame + " ")]
+        return [("class:prompt", self.input_prompt)]
+
+    @staticmethod
+    def complete_input(buffer: Buffer, *, reverse: bool = False) -> None:
+        if buffer.complete_state is not None:
+            buffer.complete_previous() if reverse else buffer.complete_next()
+            return
+        if buffer.completer is None:
+            return
+        event = CompleteEvent(completion_requested=True)
+        completions = list(buffer.completer.get_completions(buffer.document, event))
+        if len(completions) == 1:
+            buffer.apply_completion(completions[0])
+        elif completions:
+            if reverse:
+                buffer.start_completion(select_last=True)
+            else:
+                buffer.start_completion(select_first=False)
+
+    def _status_bar_window(self, *, dont_extend_height: bool) -> Window:
+        return Window(
+            FormattedTextControl(self.status_fragments_fn, style="class:bottom-toolbar.text"),
+            style="class:bottom-toolbar",
+            height=1,
+            dont_extend_height=dont_extend_height,
+        )
+
+    def build_layout(self) -> Layout:
+        self.input_window = Window(
+            BufferControl(
+                buffer=self.input_buffer,
+                input_processors=[
+                    HighlightIncrementalSearchProcessor(),
+                    BeforeInput(self.status_fragments),
+                    CallbackPlaceholder(self.input_hint_fn),
+                ],
+                search_buffer_control=self.search_toolbar.control,
+                preview_search=True,
+            ),
+            height=Dimension(min=1),
+            dont_extend_height=True,
+            wrap_lines=True,
+            style=UiPrinter.user_log_style(),
+        )
+        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        self.activity_window = Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True)
+        running = Condition(lambda: self.input_mode == "running")
+        activity = ConditionalContainer(
+            self.activity_window,
+            filter=running,
+        )
+        running_gap_above = ConditionalContainer(
+            Window(height=1, dont_extend_height=True),
+            filter=running,
+        )
+        running_gap_below = ConditionalContainer(
+            Window(height=1, dont_extend_height=True),
+            filter=running,
+        )
+        self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
+        modal_active = Condition(lambda: self.modal is not None)
+        exclusive_active = Condition(lambda: self.modal is not None and self.modal.exclusive)
+        idle = Condition(lambda: self.input_mode == "chat")
+        normal_region = ConditionalContainer(
+            HSplit(
+                [
+                    running_gap_above,
+                    activity,
+                    running_gap_below,
+                    self.input_window,
+                    completion_space,
+                    self.search_toolbar,
+                    Window(height=1, dont_extend_height=True),
+                ]
+            ),
+            filter=~modal_active,
+        )
+        modal_region = ConditionalContainer(
+            HSplit([self.modal_window, Window(height=1, dont_extend_height=True)]),
+            filter=modal_active & ~exclusive_active,
+        )
+        self.status_window = self._status_bar_window(dont_extend_height=True)
+        # Keep the idle prompt padded from prior output, but start transient running/approval
+        # regions at row zero. Otherwise patch_stdout can commit that leading empty row between a
+        # tool's approval header and its eventual result when it suspends and redraws the app.
+        content = HSplit(
+            [
+                ConditionalContainer(Window(height=1, dont_extend_height=True), filter=idle),
+                modal_region,
+                normal_region,
+                self.status_window,
+            ]
+        )
+        self.exclusive_modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False)
+        exclusive_status = self._status_bar_window(dont_extend_height=False)
+        root = FloatContainer(
+            HSplit(
+                [
+                    ConditionalContainer(content, filter=~exclusive_active),
+                    ConditionalContainer(HSplit([self.exclusive_modal_window, exclusive_status]), filter=exclusive_active),
+                ]
+            ),
+            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=self.input_window, transparent=True)],
+        )
+        return Layout(root, focused_element=self.input_window)
+
+    def make_bindings(self) -> KeyBindings:
+        bindings = KeyBindings()
+        modal = Condition(lambda: self.modal is not None)
+        running = Condition(lambda: self.input_mode == "running" and self.modal is None)
+
+        for key in self.MODAL_KEYS:
+            bindings.add(key, filter=modal, eager=True)(lambda event, key=key: self.dispatch_modal_key(key, event.data))
+        for number in range(1, 10):
+            bindings.add(str(number), filter=modal, eager=True)(lambda event, number=number: self.dispatch_modal_key(str(number), event.data))
+        bindings.add(Keys.Any, filter=modal)(lambda event: self.dispatch_modal_key("any", event.data))
+
+        bindings.add("enter", filter=~modal, eager=True)(lambda event: event.current_buffer.validate_and_handle())
+        bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
+        for key, reverse in (("tab", False), ("s-tab", True)):
+            bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.complete_input(event.current_buffer, reverse=reverse))
+        bindings.add(Keys.BracketedPaste, filter=~modal)(lambda event: event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n")))
+
+        @bindings.add("c-r", filter=~modal, eager=True)
+        def _history_search(event):
+            direction = pt_search.SearchDirection.BACKWARD
+            if event.app.layout.current_control is self.search_toolbar.control:
+                pt_search.do_incremental_search(direction, count=event.arg)
+            else:
+                pt_search.start_search(direction=direction)
+
+        @bindings.add("up", filter=running, eager=True)
+        def _recall(event):
+            if self.input_buffer.text:
+                self.input_buffer.cursor_up()
+                return
+            text = self.on_recall()
+            if text:
+                self.input_buffer.reset(Document(text, cursor_position=len(text)))
+            else:
+                event.current_buffer.auto_up(count=event.arg)
+
+        bindings.add("c-g", filter=running, eager=True)(lambda _event: self.on_retry())
+
+        @bindings.add("c-c", eager=True)
+        @bindings.add("<sigint>", eager=True)
+        def _ctrl_c(event):  # pragma: no cover — interactive path
+            # Never quit on Ctrl-C. Instead:
+            #   * approval mode → cancel this specific prompt (empty reply back to the agent).
+            #   * idle chat → cancel and clear the current input.
+            #   * agent running → interrupt the running turn.
+            # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
+            if self.modal is not None:
+                result = self.modal.key_fn("c-c", event.data)
+                self.close_modal(None if result is TUI_MODAL_PENDING else result)
+                return
+            if self.input_mode == "approval" and self._input_pending is not None:
+                self._input_result = ""
+                self._input_pending.set()
+                return
+            if self.input_mode == "chat":
+                if self.input_buffer.text:
+                    self.input_buffer.reset(Document(""))
+                self.on_input_cancel()
+                return
+            if self.input_mode in {"dispatch", "running"}:
+                self.on_interrupt()
+
+        @bindings.add("c-d", filter=~modal, eager=True)
+        def _ctrl_d(event):  # pragma: no cover — interactive path
+            if self.input_mode == "approval" and self._input_pending is not None:
+                self._input_result = self.input_buffer.text
+                self._input_pending.set()
+            elif self.input_buffer.text and self.input_mode in {"chat", "running"}:
+                self.input_buffer.delete()
+            elif self.input_mode == "chat":
+                self.on_exit_request()
+                event.app.exit()
+
+        @bindings.add(Keys.ControlBackslash, eager=True)
+        def _force_exit(event):  # pragma: no cover — interactive emergency path
+            self.on_force_exit()
+            event.app.exit()
+
+        return bindings
+
+    def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
+        app = Application(
+            layout=self.build_layout(),
+            key_bindings=self.make_bindings(),
+            full_screen=False,
+            mouse_support=False,
+            refresh_interval=0.2,
+            style=style,
+            erase_when_done=True,
+        )
+        # A persistent primary-screen renderer needs CPR after a terminal resize; otherwise its
+        # stale cursor coordinates can leave the transient footer in tmux scrollback. Keep the
+        # legacy behavior of silently degrading on terminals that do not answer the probe.
+        app.renderer.cpr_not_supported_callback = lambda: None
+        self.app = app
+        self.ready.clear()
+        try:
+            with patch_stdout():
+                app.run(pre_run=self.ready.set)
+        finally:
+            self.ready.set()
+            self.app = None
+            # If the agent thread is still parked in request_input at exit, unblock it so its
+            # frame unwinds instead of leaking a thread.
+            if self._input_pending is not None:
+                self._input_result = ""
+                self._input_pending.set()
+            if self.modal is not None:
+                self.close_modal(None)
+
+
 class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
@@ -6594,9 +7187,6 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
-        # When set, callers know a Rich render is happening inside a running prompt app; TUI-only
-        # commands like /diff refuse to launch a full-screen viewer in that context.
-        self.capture_ansi = False
 
     def emit(self, text: str | LogBlock = "") -> None:
         if not self.color:
@@ -6677,7 +7267,8 @@ class UiPrinter:
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
-        print_formatted_text(ANSI(self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))), end="", flush=True)
+        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
@@ -6704,15 +7295,16 @@ class UiPrinter:
 
     def emit_markdown(self, text: str) -> None:
         # Render markdown to an ANSI string and emit via prompt_toolkit. Printing Rich output directly
-        # while a prompt app is running (e.g. the Ask selector) lets patch_stdout mangle the ANSI
-        # into raw escapes; capturing first and emitting as ANSI avoids that.
+        # while the TUI is running can interleave raw escapes with its renderer; capturing first and
+        # emitting as ANSI keeps all terminal output inside the shared application.
         if not self.color:
             self.emit(text)
             return
         console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
-        print_formatted_text(ANSI(self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))), end="", flush=True)
+        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
@@ -6752,7 +7344,6 @@ class UiPrinter:
 
     LOG_STYLES: ClassVar[dict[LogRole, tuple[str, str]]] = {
         LogRole.TOOL: ("ansigreen", "fg:default"),
-        LogRole.APPROVAL: ("ansiyellow", "fg:default"),
         LogRole.AUTO: ("ansiblue", "fg:default"),
         LogRole.META: ("ansibrightblack", "ansibrightblack"),
         LogRole.OUTPUT: ("fg:default", "fg:default"),
@@ -6778,7 +7369,8 @@ class UiPrinter:
                 sample_prefix = [("", block.margin(level)), *self.edge_segments(diff_lines[0].edge)]
                 sample_prefix_width = sum(get_cwidth(text) for _style, text in sample_prefix)
                 diff_row_width = max(1, width - sample_prefix_width)
-                highlighted = self.segment_lines(self.diff_segments("\n".join(item.text for item in diff_lines), diff_row_width))
+                diff_text = "\n".join(item.text for item in diff_lines)
+                highlighted = self.segment_lines(self.diff_segments(diff_text, diff_row_width))
                 for item, rendered in zip(diff_lines, highlighted):
                     prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
@@ -6923,7 +7515,7 @@ class UiPrinter:
 
     def diff_segments_live(self, text: str, row_width: int | None = None) -> list[tuple[str, str]]:
         """Same as diff_segments, but pads the bg band to the current pane width. Only for live
-        full-screen renderers that repaint on resize (the `/diff` viewer). Scrollback callers must
+        live renderers that repaint on resize (the `/diff` viewer). Scrollback callers must
         NOT use this — baked-in wide padding wraps on a later pane shrink and drops the bg color on
         the wrapped continuation, which looks broken."""
         return self._diff_segments(text, row_width=row_width, live=True)
@@ -7075,6 +7667,10 @@ class BashLivePreview:
         self.timer: threading.Thread | None = None
 
     def start(self) -> None:
+        if self.loop.tui is not None:
+            self.loop.status_bar.begin()
+            self.loop.tui.set_running("compacting context")
+            return
         if not sys.stderr.isatty():
             return
         with self.lock:
@@ -7402,54 +7998,6 @@ class StatusBar:
         return max(30.0, self.session.config.provider.timeout * 0.5)
 
 
-class CompactSpinner:
-    def __init__(self, loop: "CommandLoop"):
-        self.loop = loop
-        self.stop_event = threading.Event()
-        self.thread: threading.Thread | None = None
-        self.app: Application | None = None
-
-    def start(self) -> None:
-        if not sys.stderr.isatty():
-            return
-        self.thread = threading.Thread(target=self.run, daemon=True)
-        self.thread.start()
-
-    def run(self) -> None:
-        window = Window(FormattedTextControl(self.fragments), height=1, dont_extend_height=True)
-        app = self.loop._make_app(Layout(HSplit([window, self.loop.status_window()])), KeyBindings())
-        self.app = app
-        try:
-            self.loop.run_background_app(app, self.stop_event.is_set)
-        finally:
-            self.app = None
-
-    def stop(self) -> None:
-        if self.thread is None:
-            return
-        self.stop_event.set()
-        if self.app is not None:
-            self.loop.exit_app(self.app)
-        self.thread.join()
-
-    def fragments(self) -> list[tuple[str, str]]:
-        return self.loop.sweep_divider_fragments("compacting context")
-
-
-class QueuePlaceholder(Processor):
-    def __init__(self, empty_text: str, pending_text: str, has_pending: Callable[[], bool]):
-        self.empty_text = empty_text
-        self.pending_text = pending_text
-        self.has_pending = has_pending
-
-    def apply_transformation(self, ti):
-        buffer = ti.buffer_control.buffer
-        if ti.lineno != ti.document.line_count - 1 or buffer is None or buffer.text:
-            return Transformation(ti.fragments)
-        text = self.pending_text if self.has_pending() else self.empty_text
-        return Transformation(ti.fragments + [("class:queue.hint", text)])
-
-
 @dataclass
 class TabbedViewState:
     titles: tuple[str, ...]
@@ -7458,10 +8006,6 @@ class TabbedViewState:
 
     def switch(self, delta: int) -> None:
         self.tab = (self.tab + delta) % len(self.titles)
-        self.scroll = 0
-
-    def select(self, index: int) -> None:
-        self.tab = index % len(self.titles)
         self.scroll = 0
 
     def scroll_by(self, delta: int) -> None:
@@ -7474,6 +8018,8 @@ class TabbedViewState:
 
 @dataclass
 class DiffViewState:
+    REFRESH: ClassVar[object] = object()
+
     class Mode(Enum):
         LIST = auto()
         FILE = auto()
@@ -7508,9 +8054,43 @@ class DiffViewState:
             self.mode = self.Mode.LIST
             self.view.scroll = 0
 
+    def handle_key(self, key: str, file_count: int, viewport: int) -> Any:
+        if key in {"q", "c-c"}:
+            return None
+        if key == "escape":
+            if self.mode is self.Mode.LIST:
+                return None
+            self.close_file()
+        elif key in {"down", "j", "up", "k"}:
+            delta = 1 if key in {"down", "j"} else -1
+            if self.mode is self.Mode.LIST and file_count:
+                self.move_file(delta, file_count)
+            elif self.mode is self.Mode.FILE:
+                self.view.scroll_by(delta)
+        elif key in {"h", "l", "tab"}:
+            self.switch_tab(1 if key in {"l", "tab"} else -1)
+        elif key == "right" and self.mode is self.Mode.LIST:
+            self.switch_tab(1)
+        elif key == "left":
+            if self.mode is self.Mode.FILE:
+                self.close_file()
+            else:
+                self.switch_tab(-1)
+        elif key == "enter" and self.mode is self.Mode.LIST and file_count:
+            self.open_file(file_count)
+        elif self.mode is self.Mode.FILE and key in {"pagedown", "pageup", "c-d", "c-u"}:
+            distance = max(1, viewport if key in {"pagedown", "pageup"} else viewport // 2)
+            self.view.scroll_by(distance if key in {"pagedown", "c-d"} else -distance)
+        elif key == "r":
+            self.reset()
+            return self.REFRESH
+        return TUI_MODAL_PENDING
+
 
 @dataclass
 class ChoiceViewState:
+    FREE_TEXT: ClassVar[str] = "\x00free_text"
+
     choices: tuple[str, ...]
     labels: dict[str, str]
     disabled: set[str]
@@ -7557,10 +8137,77 @@ class ChoiceViewState:
         options = self.clamp()
         return options[self.selected] if options else None
 
+    def fragments(self, title: str, preview_fn: Callable[[str], str] | None = None) -> list[tuple[str, str]]:
+        visible = self.visible()
+        options = self.clamp()
+        suffix = (" /" + self.query) if self.query else ""
+        if self.query and not self.searching:
+            suffix += " (filtered)"
+        parts: list[tuple[str, str]] = [
+            ("class:choice.title", title + suffix + "\n"),
+            ("class:choice.disabled", "  j/k move, / search, Esc back/cancel\n"),
+        ]
+        if self.query and not options:
+            return [*parts, ("class:choice.disabled", "  no matches\n")]
+        number = 0
+        for choice in visible:
+            label = self.labels.get(choice, choice)
+            if choice in self.disabled:
+                parts.append(("class:choice.disabled", "  " + label + "\n"))
+                continue
+            number += 1
+            selected = number - 1 == self.selected
+            if selected:
+                parts.append(("[SetCursorPosition]", ""))
+            parts.append(("class:choice.selected" if selected else "", ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
+        if preview_fn and options:
+            preview = preview_fn(options[self.selected]).replace("\\n", "\n")
+            if preview:
+                parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
+                parts.extend(("class:choice.preview", "  │ " + line + "\n") for line in preview.splitlines())
+        if self.searching:
+            parts.append(("", "/" + self.query))
+        return parts
+
+    def handle_key(self, key: str, data: str = "") -> Any:
+        if self.searching and key not in {"enter", "escape", "backspace", "c-h"}:
+            text = data if key == "any" else key
+            if len(text) == 1 and text not in "\r\n":
+                self.set_query(self.query + text)
+        elif key in {"j", "down"} and not self.searching:
+            self.move(1)
+        elif key in {"k", "up"} and not self.searching:
+            self.move(-1)
+        elif key == "/":
+            self.searching = True
+            self.set_query("")
+        elif key in {"backspace", "c-h"} and self.searching:
+            self.set_query(self.query[:-1])
+        elif key == "escape":
+            if self.searching:
+                self.searching = False
+            elif self.query:
+                self.set_query("")
+            else:
+                return SELECTION_BACK
+        elif key == "enter":
+            if self.searching:
+                self.searching = False
+            elif (choice := self.selected_choice()) is not None:
+                return SELECTION_FREE_TEXT if choice == self.FREE_TEXT else choice
+        elif key == "c-c":
+            return KeyboardInterrupt()
+        elif key.isdigit() and not self.searching:
+            number = int(key)
+            options = self.enabled()
+            if 1 <= number <= len(options):
+                self.selected = number - 1
+        return TUI_MODAL_PENDING
+
 
 class CommandLoop:
-    QUEUE_EMPTY_HINT: ClassVar[str] = "Enter queues follow-up · Ctrl-C interrupts"
-    QUEUE_PENDING_HINT: ClassVar[str] = "↑ recalls queued · Ctrl-C sends now"
+    QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C send immediately"
+    QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C sends now"
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
@@ -7572,7 +8219,7 @@ class CommandLoop:
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
 
-    # Commands safe to run from the background queue-input thread while the agent works: read-only
+    # Commands safe to run from the follow-up input while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
     QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
@@ -7586,7 +8233,7 @@ class CommandLoop:
     }
     TIPS: ClassVar[tuple[str, ...]] = (
         # Sessions & input
-        "Resume your last session anytime with `nanocode --resume`.",
+        "Resume this project's last session anytime with `nanocode -c`.",
         "Keep typing while the agent works — your input is picked up at the next step.",
         "Press Ctrl+C to cancel the current input or interrupt a running turn.",
         "Search your input history with Ctrl+R.",
@@ -7653,6 +8300,7 @@ Mentions:
   $skill             Reference a skill in your message to load its instructions for that turn (tab-completes).
 CLI:
   --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
+  -c, --last, --latest       Resume the latest session in the current project.
   --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
   Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
@@ -7705,12 +8353,12 @@ Tools:
         self.live_preview = BashLivePreview()
         self.bash_live_preview_rendered = False
         self.live_status_paused = False
-        self.live_queue_paused = False
+        self.background_output_lock = threading.Lock()
+        self.background_output_open = True
         self.interactive_input = input_fn is input and sys.stdin.isatty()
-        self.queue_input_paused = threading.Event()
-        self.queue_input_active = threading.Event()
-        self.queue_input_app: Application | None = None
-        self.queue_input_text = ""
+        # Set by run_tui() while the full-TUI shell is active; tool_input reroutes through it so
+        # approval prompts land in the same input widget the user is already typing in.
+        self.tui: TuiApp | None = None
         if self.interactive_input:
             history_path = self.session.data_path("history.txt")
             os.makedirs(os.path.dirname(history_path), exist_ok=True)
@@ -7734,61 +8382,18 @@ Tools:
         self.agent.tools.bash_live_preview_shown = self.consume_bash_live_preview_rendered
         self.agent.tools.question_fn = self.question_interaction
 
-    @staticmethod
-    def exit_app(app: Application) -> None:
-        def close() -> None:
-            with contextlib.suppress(Exception):
-                app.exit(result=None)
-
-        loop = getattr(app, "loop", None)
-        if loop is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(close)
-        else:
-            close()
-
-    def queue_input_until(self, stop_event: threading.Event) -> None:
-        was_paused = False
-        while not stop_event.is_set():
-            if self.queue_input_paused.is_set():
-                was_paused = True
-                stop_event.wait(0.05)
-                continue
-            if was_paused:
-                # Avoid briefly rebuilding the queue UI between an approval prompt and the live UI
-                # of the approved tool, which would leave transient divider redraws in scrollback.
-                was_paused = False
-                if stop_event.wait(0.05):
-                    return
-                continue
-            self.run_queue_input_app(stop_event)
-
-    def run_background_app(self, app: Application, should_exit: Callable[[], bool]) -> None:
-        try:
-            with patch_stdout():
-                app.run(pre_run=lambda: self.exit_app(app) if should_exit() else None)
-        except (EOFError, KeyboardInterrupt, ValueError, OSError):
-            pass
-
-    def echo_user_input(self, prefix: str, body: str, *, prefix_style: str = "class:prompt") -> None:
-        print_formatted_text(
-            FormattedText([("", "\n"), (prefix_style, prefix), (UiPrinter.user_log_style(), body)]),
-            style=self.style(),
-        )
-
     def flush_queued_to_log(self, texts: list[str]) -> None:
-        # Move flushed queued messages from the live bottom region up into the scrollback log, then
-        # refresh so the region drops them. Runs on the agent (main) thread; patch_stdout places the
-        # emitted lines above the still-running queue-input app.
-        flushed = False
-        for text in texts:
-            if text.strip():
-                self.echo_user_input(UiPrinter.USER_LOG_PREFIX, text)
-                flushed = True
-        if flushed:
-            # Mid-turn flushes land between tool-log lines; give the next line breathing room too.
-            self.emit("")
-        if self.queue_input_app is not None:
-            self.queue_input_app.invalidate()
+        # Move flushed queued messages from the live activity region into terminal scrollback.
+        texts = [text for text in texts if text.strip()]
+        if not texts:
+            return
+        fragments: list[tuple[str, str]] = [("", "\n")]
+        for index, text in enumerate(texts):
+            if index:
+                fragments.append(("", "\n"))
+            fragments.extend([("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), text), ("", "\n")])
+        fragments.append(("", "\n"))
+        print_formatted_text(FormattedText(fragments), style=self.style(), end="", flush=True)
 
     # Breathing green dot shown on the working divider while a model request is in flight — it sits
     # just before the "working (…)" label and vanishes as soon as the response returns (non-streaming
@@ -7855,7 +8460,8 @@ Tools:
         ]
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
-        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})"
+        status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
+        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})" if status == "working" else status
         label = f"{label} [ {queued} queued ]" if queued else label
         return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
 
@@ -7871,139 +8477,23 @@ Tools:
                 fragments.extend([("", "\n"), (UiPrinter.user_log_style(), (marker if index == 0 else "  ") + line)])
         return fragments
 
-    def retry_current_model_request(self) -> bool:
-        if self.session.state.current_model_call_started_at <= 0 or self.session.state.manual_model_retry_requested:
-            return False
-        self.session.state.manual_model_retry_requested = True
-        self.session.state.model_retry_count += 1
-        os.kill(os.getpid(), signal.SIGINT)
-        return True
+    def tui_activity_fragments(self) -> list[tuple[str, str]]:
+        fragments = self.queue_region_fragments()
+        with self.live_preview.lock:
+            lines = self.live_preview.frame_lines() if self.live_preview.active else []
+        for line in lines:
+            fragments.extend([("", "\n"), ("ansibrightblack", line)])
+        return fragments
 
-    def run_queue_input_app(self, stop_event: threading.Event) -> None:
-        def changed(buffer: Buffer) -> None:
-            self.queue_input_text = buffer.text
-
-        def has_pending() -> bool:
-            with self.session._queue_lock:
-                return any(not item.inflight for item in self.session.pending_user_inputs)
-
-        buffer = Buffer(
-            document=Document(self.queue_input_text),
-            multiline=True,
-            on_text_changed=changed,
-            completer=self.input_completer,
-            complete_while_typing=False,
-        )
-        control = BufferControl(
-            buffer=buffer,
-            input_processors=[
-                BeforeInput(FormattedText([("class:prompt", UiPrinter.PROMPT_PREFIX)])),
-                QueuePlaceholder(
-                    self.QUEUE_EMPTY_HINT,
-                    self.QUEUE_PENDING_HINT,
-                    has_pending,
-                ),
-            ],
-        )
-        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True, style=UiPrinter.user_log_style())
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-
-        def record(text: str) -> None:
-            text = Text.clean(text.strip())
-            if not text:
-                return
-            if "\n" not in text and text.startswith("/"):
-                run_in_terminal(lambda: self.run_queued_command(text))
-                return
-            # Queued messages live in the bottom region (below the sweep divider) until the turn
-            # flushes them up into the log — they are not echoed to scrollback here.
-            self.session.enqueue_user_input(text)
-            if self.queue_input_app is not None:
-                self.queue_input_app.invalidate()
-
-        def recall_latest() -> None:
-            if buffer.text:
-                buffer.cursor_up()
-                return
-            with self.session._queue_lock:
-                item = next((item for item in reversed(self.session.pending_user_inputs) if not item.inflight), None)
-                if item is None:
-                    return
-                self.session.pending_user_inputs.remove(item)
-                text = item.text
-            buffer.reset(Document(text, cursor_position=len(text)))
-            if self.queue_input_app is not None:
-                self.queue_input_app.invalidate()
-
-        @bindings.add("enter", eager=True)
-        def _enter(event):
-            if buffer.text.strip():
-                record(buffer.text)
-            buffer.reset(Document(""))
-
-        @bindings.add("escape", "enter", eager=True)
-        def _alt_enter(event):
-            buffer.insert_text("\n")
-
-        @bindings.add("up", eager=True)
-        def _up(event):
-            recall_latest()
-
-        @bindings.add("down", eager=True)
-        def _down(event):
-            buffer.cursor_down()
-
-        @bindings.add("c-c", eager=True)
-        def _ctrl_c(event):
-            os.kill(os.getpid(), signal.SIGINT)
-
-        @bindings.add("c-g", eager=True)
-        def _ctrl_g(event):
-            self.retry_current_model_request()
-
-        self._add_completion_bindings(bindings, buffer)
-
-        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # Live region above the +> input: a sweep divider plus the still-pending queued messages.
-        # The divider persists for the whole turn; queued messages flush up into the scrollback log.
-        queued_region = Window(FormattedTextControl(self.queue_region_fragments), dont_extend_height=True, wrap_lines=True)
-        # Blank lines above the divider and below the queued region, so the +> prompt is not crowded
-        # against the divider and the log above.
-        root = FloatContainer(
-            HSplit(
-                [
-                    Window(height=1, dont_extend_height=True),
-                    queued_region,
-                    Window(height=1, dont_extend_height=True),
-                    input_window,
-                    completion_space,
-                    self.status_window(active=True),
-                ]
-            ),
-            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
-        )
-        app = self._make_app(Layout(root, focused_element=input_window), bindings)
-        self.queue_input_app = app
-        self.queue_input_active.set()
-
-        def stop_when_needed() -> None:
-            while not stop_event.is_set() and not self.queue_input_paused.is_set():
-                stop_event.wait(0.05)
-            self.exit_app(app)
-
-        threading.Thread(target=stop_when_needed, daemon=True).start()
-        try:
-            self.run_background_app(app, lambda: stop_event.is_set() or self.queue_input_paused.is_set())
-        finally:
-            self.queue_input_text = buffer.text
-            self.queue_input_active.clear()
-            if self.queue_input_app is app:
-                self.queue_input_app = None
+    def tui_input_hint(self) -> str:
+        if self.tui is None or self.tui.input_mode != "running":
+            return ""
+        with self.session._queue_lock:
+            has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
+        return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
 
     def run_queued_command(self, text: str) -> None:
-        """Dispatch a slash command typed in the queue input. Only read-only commands run while the
-        agent is working; mutating/control commands would race the in-flight turn, so they are refused."""
+        """Dispatch a read-only slash command while an agent turn is running."""
         name = text.partition(" ")[0]
         if name not in self.QUEUE_RUN_COMMANDS:
             self.emit(f"{name} is unavailable while the agent is working; press Ctrl-C to run it.")
@@ -8013,57 +8503,40 @@ Tools:
             if sub and sub[0] != "tools":
                 self.emit("Only read-only /mcp (status, tools) is available while the agent is working.")
                 return
-        self.ui.capture_ansi = True
-        try:
-            self.command(text)
-        finally:
-            self.ui.capture_ansi = False
+        self.command(text)
 
-    def pause_queue_input(self) -> None:
-        self.queue_input_paused.set()
-        if self.queue_input_app is not None:
-            self.exit_app(self.queue_input_app)
-        deadline = time.monotonic() + 1.5
-        while self.queue_input_active.is_set() and time.monotonic() < deadline:
-            time.sleep(0.02)
-
-    def take_queue_input(self) -> tuple[list[str], str]:
-        """Take committed queue items and clear any uncommitted text."""
+    def take_pending_inputs(self) -> list[str]:
+        """Remove and return queued inputs that are not currently being flushed."""
         with self.session._queue_lock:
             texts = [item.text for item in self.session.pending_user_inputs if not item.inflight]
             self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.inflight]
-        typed = self.queue_input_text if self.queue_input_text.strip() else ""
-        self.queue_input_text = ""
-        return texts, typed
+        return texts
+
+    def recall_pending_input(self, on_inflight: Callable[[], None]) -> str:
+        """Move the newest queued input back to the editor, retrying if it was already claimed."""
+        with self.session._queue_lock:
+            item = next(reversed(self.session.pending_user_inputs), None)
+            if item is None:
+                return ""
+            self.session.pending_user_inputs.remove(item)
+            was_inflight = item.inflight
+            if was_inflight:
+                for pending_item in self.session.pending_user_inputs:
+                    pending_item.inflight = False
+        if was_inflight:
+            on_inflight()
+        self.session.save_snapshot()
+        return item.text
 
     def run(self) -> int:
-        self.emit(f"nanocode {__version__}. /help for commands.")
-        if tip := self.startup_tip():
-            self.emit("tip: " + tip)
-        SessionSnapshotStore.clean_expired(self.session)
-        self.render_resumed_session()
-        CodeIndex(self.session).refresh_existing_async()
-        # Async MCP discovery — show > immediately, discover in background
-        threading.Thread(target=self.discover_mcp, daemon=True).start()
-        UpdateChecker(self.session).start()
+        # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
+        if self.interactive_input:
+            return self.run_tui()
+        self.start_session()
         while True:
             try:
-                entered, typed = self.take_queue_input()
-                if entered and self.interactive_input:
-                    # Input you already pressed Enter on in the > queue auto-submits as the next turn —
-                    # no second Enter. Any half-typed text goes back to the box for the following prompt.
-                    if typed:
-                        self.queue_input_text = typed
-                    self.echo_user_input(UiPrinter.USER_LOG_PREFIX, entered[0])
-                    user_input = entered[0]
-                    for text in entered[1:]:
-                        self.session.enqueue_user_input(text)
-                else:
-                    # Headless (returns initial_text directly), or nothing entered: pre-fill the still-typed
-                    # text into the prompt for review/edit.
-                    user_input = self.read_input(
-                        initial_text="\n".join([*entered, *([typed] if typed else [])]), replay_prefix=UiPrinter.USER_LOG_PREFIX, pad=True
-                    )
+                entered = self.take_pending_inputs()
+                user_input = self.read_input(initial_text="\n".join(entered))
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()
@@ -8080,14 +8553,8 @@ Tools:
                 continue
             self.emit("")
             started = time.monotonic()
-            stop_input = threading.Event()
-            watcher = threading.Thread(target=self.queue_input_until, args=(stop_input,), daemon=True) if self.interactive_input else None
             try:
-                if watcher:
-                    self.status_bar.begin()
-                    watcher.start()
-                else:
-                    self.status_bar.start()
+                self.status_bar.start()
                 try:
                     with ModelRetryShortcut(self.session):
                         answer = self.agent.run(user_input)
@@ -8097,11 +8564,6 @@ Tools:
                 except NanocodeError as error:
                     answer = f"Error: {error}"
             finally:
-                stop_input.set()
-                self.pause_queue_input()
-                if watcher:
-                    watcher.join(timeout=1.0)
-                self.queue_input_paused.clear()
                 self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
@@ -8109,6 +8571,21 @@ Tools:
             self.ui.emit_answer(answer)
             self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
             self.session.save_snapshot()
+
+    def start_session(self) -> None:
+        """Initialize output and background services shared by both command-loop frontends."""
+        self.emit(f"nanocode {__version__}. /help for commands.")
+        if tip := self.startup_tip():
+            self.emit("tip: " + tip)
+        SessionSnapshotStore.clean_expired(self.session)
+        self.render_resumed_session()
+        CodeIndex(self.session).refresh_existing_async()
+        # Async MCP discovery — show > immediately, discover in background
+        threading.Thread(target=self.discover_mcp, daemon=True).start()
+        UpdateChecker(self.session).start()
+
+    def run_tui(self) -> int:
+        return TuiRuntime(self).run()
 
     def render_resumed_session(self) -> None:
         # Transcript reconstruction owns historical call/result matching and ordering invariants.
@@ -8201,17 +8678,21 @@ Tools:
         self.session.mcp.discover_enabled()
         notice = self.mcp_error_notice()
         if notice:
-            self.emit(notice)
+            self.emit_background(notice)
         # render once so index_truncated reflects the freshly discovered tools, then warn if
         # the index is too large to fit even as name-only (some tools are hidden from the model).
         self.session.mcp.render_tools_index()
         if self.session.mcp.index_truncated:
-            self.emit(
+            self.emit_background(
                 "mcp: tools index exceeds the size budget; some tools are hidden from the model. Reduce enabled servers or run /mcp tools to see the full list."
             )
 
     def mcp_error_notice(self) -> str:
-        errors = [(name, error) for name, error in sorted(self.session.mcp.server_errors.items()) if error and not error.startswith("oauth login required")]
+        errors = [
+            (name, error)
+            for name, error in sorted(self.session.mcp.server_errors.items())
+            if error and not error.startswith("oauth login required") and error.strip() != "CancelledError"
+        ]
         if not errors:
             return ""
         shown = errors[:3]
@@ -8254,170 +8735,33 @@ Tools:
             }
         )
 
-    def status_window(self, *, active: bool = False) -> Window:
-        return Window(
-            FormattedTextControl(lambda: self.status_bar.display_fragments(active=active), style="class:bottom-toolbar.text"),
-            style="class:bottom-toolbar",
-            height=1,
-            dont_extend_height=True,
-        )
-
-    def _make_app(self, layout: Layout, bindings: KeyBindings, *, full_screen: bool = False) -> Application:
-        return Application(
-            layout=layout,
-            key_bindings=bindings,
-            full_screen=full_screen,
-            style=self.style(),
-            refresh_interval=StatusBar.INTERVAL,
-            erase_when_done=True,
-            output=self.prompt_output(),
-        )
-
-    @staticmethod
-    def prompt_output():
-        # Suppress prompt-toolkit's cursor-position report probe; some terminals echo it back as
-        # visible input and the agent loop doesn't rely on the response anyway.
-        output = create_output()
-        if hasattr(output, "enable_cpr"):
-            output.enable_cpr = False
-        return output
-
-    def run_input_app(self, app: Application) -> Any:
-        self.pause_queue_input()
-        try:
-            with patch_stdout():
-                return app.run()
-        finally:
-            self.queue_input_paused.clear()
-
-    def _add_completion_bindings(self, bindings: KeyBindings, buffer: Buffer, *, invalidate_on_paste: bool = False) -> None:
-        @bindings.add("tab")
-        def _tab(event):
-            if buffer.complete_state:
-                buffer.complete_next()
-                return
-            completions = list(self.input_completer.get_completions(buffer.document, CompleteEvent(completion_requested=True)))
-            if len(completions) == 1:
-                buffer.apply_completion(completions[0])
-            else:
-                buffer.start_completion(select_first=False)
-
-        @bindings.add("s-tab")
-        def _shift_tab(event):
-            buffer.complete_previous() if buffer.complete_state else buffer.start_completion(select_last=True)
-
-        @bindings.add(Keys.BracketedPaste)
-        def _paste(event):
-            buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
-            if invalidate_on_paste:
-                event.app.invalidate()
-
-    def input_prompt_fragments(self, prompt_text: str, prompt_style: str) -> list[tuple[str, str]]:
-        if prompt_style != "class:approval" or not prompt_text:
-            return [(prompt_style, prompt_text)]
-        frame = "|/-\\"[int(time.monotonic() / 0.2) % 4]
-        connector = LogBlock.prefix(2, LogEdge.CONTINUE)
-        prompt = (
-            [("ansibrightblack", connector), ("class:approval", prompt_text[len(connector) :])]
-            if prompt_text.startswith(connector)
-            else [("class:approval", prompt_text)]
-        )
-        return [*prompt, ("class:approval.wait", frame + " ")]
-
     def read_input(
         self,
         prompt_text: str = UiPrinter.PROMPT_PREFIX,
         *,
-        multiline: bool = False,
-        submit_on_enter: bool = False,
-        prompt_style: str = "class:prompt",
-        replay_prefix: str | None = None,
         initial_text: str = "",
-        pad: bool = False,
-        replay: bool = True,
     ) -> str:
-        if self.input_history is None:
-            return initial_text or self.input_fn(prompt_text)
-
-        def accept(buffer: Buffer) -> bool:
-            app.exit(result=buffer.text)
-            return True
-
-        buffer = Buffer(
-            history=self.input_history,
-            completer=self.input_completer,
-            complete_while_typing=False,
-            enable_history_search=True,
-            multiline=multiline,
-            accept_handler=accept,
-            document=Document(initial_text, cursor_position=len(initial_text)),
-        )
-        search_toolbar = SearchToolbar()
-        control = BufferControl(
-            buffer=buffer,
-            input_processors=[HighlightIncrementalSearchProcessor(), BeforeInput(lambda: self.input_prompt_fragments(prompt_text, prompt_style))],
-            search_buffer_control=search_toolbar.control,
-            preview_search=True,
-        )
-        input_window = Window(control, height=Dimension(min=1, max=6), dont_extend_height=True, wrap_lines=True, style=UiPrinter.user_log_style())
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-
-        @bindings.add("c-c", eager=True)
-        @bindings.add("<sigint>", eager=True)
-        def _ctrl_c(event):
-            event.app.exit(exception=KeyboardInterrupt())
-
-        @bindings.add("c-d", eager=True)
-        def _ctrl_d(event):
-            if multiline:
-                event.app.exit(result=buffer.text)
-            elif buffer.text:
-                buffer.delete()
-            else:
-                event.app.exit(exception=EOFError())
-
-        @bindings.add("escape", "enter", filter=Condition(lambda: multiline), eager=True)
-        def _escape_enter(event):
-            event.app.exit(result=buffer.text)
-
-        @bindings.add("enter", filter=Condition(lambda: submit_on_enter), eager=True)
-        def _enter(event):
-            event.app.exit(result=buffer.text)
-
-        @bindings.add("c-r", eager=True)
-        def _ctrl_r(event):
-            direction = pt_search.SearchDirection.BACKWARD
-            if event.app.layout.current_control is search_toolbar.control:
-                pt_search.do_incremental_search(direction, count=event.arg)
-            else:
-                pt_search.start_search(direction=direction)
-
-        self._add_completion_bindings(bindings, buffer, invalidate_on_paste=True)
-
-        completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
-        # The idle > prompt shows no divider (the divider is a working-state marker only); keep a
-        # blank line above and below the input so it is not crowded against the log or status bar.
-        top: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
-        bottom: list[Any] = [Window(height=1, dont_extend_height=True)] if pad else []
-        root = FloatContainer(
-            HSplit([*top, input_window, completion_space, search_toolbar, *bottom, self.status_window()]),
-            [Float(CompletionsMenu(max_height=12, scroll_offset=1), xcursor=True, ycursor=True, attach_to_window=input_window, transparent=True)],
-        )
-        app = self._make_app(Layout(root, focused_element=input_window), bindings)
-        text = self.run_input_app(app)
-        if replay:
-            self.echo_user_input(replay_prefix or prompt_text, text, prefix_style=prompt_style)
-        return text
+        """Read from the injected/non-TTY input path; interactive terminals use TuiApp."""
+        return initial_text or self.input_fn(prompt_text)
 
     def emit(self, text: str | LogBlock = "") -> None:
         self.ui.emit(text)
 
+    def emit_background(self, text: str) -> None:
+        """Emit from a daemon worker only while this loop still owns terminal output."""
+        with self.background_output_lock:
+            if self.background_output_open:
+                self.emit(text)
+
+    def close_background_output(self, final_output: Callable[[], None] | None = None) -> None:
+        with self.background_output_lock:
+            self.background_output_open = False
+            if final_output is not None:
+                final_output()
+
     def with_status_paused(self, action):
-        # Only quiet the standalone status-bar thread (headless turns). We deliberately do NOT tear
-        # down the queue-input app here: while it runs, patch_stdout already places emitted log lines
-        # cleanly above it, so pausing per line just flickered the whole bottom region. The one caller
-        # that needs the queue app down — the approval prompt — pauses it itself via run_input_app.
+        # Only quiet the standalone status-bar thread used by the simple/non-TTY path. The full TUI
+        # renders status and output together, so it never needs this terminal-level coordination.
         was_running = self.status_bar.is_running()
         if was_running:
             self.status_bar.stop()
@@ -8434,25 +8778,18 @@ Tools:
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def tool_input(self, prompt: str = "") -> str:
-        def read() -> str:
-            return (
-                self.read_input(prompt, multiline=True, submit_on_enter=True, prompt_style="class:approval", replay=False)
-                if self.interactive_input
-                else self.input_fn(prompt)
-            )
+        # When the TUI is running, route agent approvals through TuiApp's
+        # own input widget so the user answers inline in the persistent shell instead of a
+        # separate pt Application (which would fail because pt does not nest).
+        if self.tui is not None:
+            return self.tui.request_input(prompt)
 
-        return self.with_status_paused(read)
+        return self.with_status_paused(lambda: self.input_fn(prompt))
 
     def emit_agent_output(self, text: str) -> None:
         if self.ui.color and text.strip():
             self.emit()
-            capture = self.queue_input_active.is_set()
-            previous_capture = self.ui.capture_ansi
-            self.ui.capture_ansi = previous_capture or capture
-            try:
-                self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
-            finally:
-                self.ui.capture_ansi = previous_capture
+            self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
             self.emit()
             return
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
@@ -8461,9 +8798,14 @@ Tools:
         self.bash_live_preview_rendered = False
         if not self.ui.color:
             return
-        self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
-        if self.live_queue_paused or self.queue_input_active.is_set():
-            self.pause_queue_input()
+        if self.tui is not None:
+            with self.live_preview.lock:
+                self.live_preview.active = True
+                self.live_preview.text = ""
+                self.live_preview.started_at = time.monotonic()
+            self.bash_live_preview_rendered = True
+            self.tui.invalidate()
+            return
         self.live_status_paused = self.status_bar.is_running()
         if self.live_status_paused:
             self.status_bar.stop()
@@ -8473,11 +8815,18 @@ Tools:
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
             return
+        if self.tui is not None:
+            with self.live_preview.lock:
+                if text:
+                    self.live_preview.active = True
+                    self.live_preview.text = (self.live_preview.text + text)[-self.live_preview.MAX_CHARS :]
+                else:
+                    self.live_preview.active = False
+                    self.live_preview.text = ""
+            self.tui.invalidate()
+            return
         if text:
             if not self.live_preview.active:
-                self.live_queue_paused = self.interactive_input and not self.queue_input_paused.is_set()
-                if self.live_queue_paused or self.queue_input_active.is_set():
-                    self.pause_queue_input()
                 self.live_status_paused = self.status_bar.is_running()
                 if self.live_status_paused:
                     self.status_bar.stop()
@@ -8490,9 +8839,6 @@ Tools:
         if self.live_status_paused:
             self.status_bar.start(reset=False)
             self.live_status_paused = False
-        if self.live_queue_paused:
-            self.queue_input_paused.clear()
-            self.live_queue_paused = False
 
     def consume_bash_live_preview_rendered(self) -> bool:
         rendered = self.bash_live_preview_rendered
@@ -8560,6 +8906,9 @@ Tools:
         labels = labels or {}
         if not choices or not self.interactive_input:
             return None
+        enabled = tuple(choice for choice in choices if choice not in disabled)
+        if len(enabled) == 1:
+            return enabled[0]
         try:
             return self.choice_application(title, choices, labels, current, set(disabled))
         except (EOFError, KeyboardInterrupt):
@@ -8577,129 +8926,18 @@ Tools:
         preview_fn: Callable[[str], str] | None = None,
         free_text: bool = False,
     ) -> str | object | None:
-        FREE_TEXT = "\x00free_text"
         if free_text and self.interactive_input:
-            choices = (*choices, FREE_TEXT)
-            labels = {**labels, FREE_TEXT: "Type freely..."}
+            choices = (*choices, ChoiceViewState.FREE_TEXT)
+            labels = {**labels, ChoiceViewState.FREE_TEXT: "Type freely..."}
         state = ChoiceViewState(choices, labels, disabled)
-        searching = Condition(lambda: state.searching)
-
-        def move(event, delta: int) -> None:
-            state.move(delta)
-            event.app.invalidate()
-
-        def fragments():
-            visible = state.visible()
-            options = state.clamp()
-            suffix = (" /" + state.query) if state.query else ""
-            if state.query and not state.searching:
-                suffix += " (filtered)"
-            parts: list[tuple[str, str]] = [
-                ("class:choice.title", title + suffix + "\n"),
-                ("class:choice.disabled", "  j/k move, / search, Esc back/cancel\n"),
-            ]
-            if state.query and not options:
-                parts.append(("class:choice.disabled", "  no matches\n"))
-                return parts
-            number = 0
-            for choice in visible:
-                label = labels.get(choice, choice)
-                if choice in disabled:
-                    parts.append(("class:choice.disabled", "  " + label + "\n"))
-                    continue
-                number += 1
-                selected = number - 1 == state.selected
-                style = "class:choice.selected" if selected else ""
-                if selected:
-                    parts.append(("[SetCursorPosition]", ""))
-                parts.append((style, ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
-            if preview_fn and options:
-                preview_text = preview_fn(options[state.selected]).replace("\\n", "\n")
-                if preview_text:
-                    parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
-                    for line in preview_text.splitlines():
-                        parts.append(("class:choice.preview", "  │ " + line + "\n"))
-            if state.searching:
-                parts.append(("", "/" + state.query))
-            return parts
-
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-
-        @bindings.add("j", filter=~searching, eager=True)
-        @bindings.add("down", eager=True)
-        def _j(event):
-            move(event, 1)
-
-        @bindings.add("k", filter=~searching, eager=True)
-        @bindings.add("up", eager=True)
-        def _k(event):
-            move(event, -1)
-
-        @bindings.add("/", eager=True)
-        def _search(event):
-            state.searching = True
-            state.set_query("")
-            event.app.invalidate()
-
-        @bindings.add("backspace", filter=searching, eager=True)
-        @bindings.add("c-h", filter=searching, eager=True)
-        def _backspace(event):
-            state.set_query(state.query[:-1])
-            event.app.invalidate()
-
-        @bindings.add("escape", eager=True)
-        def _escape(event):
-            if state.searching:
-                state.searching = False
-                event.app.invalidate()
-                return
-            if state.query:
-                state.set_query("")
-                event.app.invalidate()
-                return
-            event.app.exit(result=SELECTION_BACK)
-
-        @bindings.add("enter", eager=True)
-        def _enter(event):
-            if state.searching:
-                state.searching = False
-                event.app.invalidate()
-                return
-            choice = state.selected_choice()
-            if choice is not None:
-                event.app.exit(result=SELECTION_FREE_TEXT if choice == FREE_TEXT else choice)
-
-        @bindings.add("c-c", eager=True)
-        @bindings.add("<sigint>", eager=True)
-        def _ctrl_c(event):
-            event.app.exit(exception=KeyboardInterrupt())
-
-        for number in range(1, 10):
-
-            @bindings.add(str(number), eager=True)
-            def _digit(event, number=number):
-                if state.searching:
-                    state.set_query(state.query + event.data)
-                    event.app.invalidate()
-                    return
-                options = state.enabled()
-                if number <= len(options):
-                    state.selected = number - 1
-                    event.app.invalidate()
-
-        @bindings.add(Keys.Any, filter=searching)
-        def _typed(event):
-            if event.data and event.data not in "\r\n":
-                state.set_query(state.query + event.data)
-                event.app.invalidate()
-
         options = state.enabled()
         state.selected = options.index(current) if current in options else 0
-        content = FormattedTextControl(fragments, focusable=True)
-        choice_window = Window(content, wrap_lines=False)
-        app = self._make_app(Layout(HSplit([choice_window, self.status_window()]), focused_element=choice_window), bindings)
-        return self.run_input_app(app)
+        if self.tui is None:
+            return None
+        result = self.tui.show_modal(lambda: state.fragments(title, preview_fn), state.handle_key)
+        if isinstance(result, KeyboardInterrupt):
+            raise result
+        return result
 
     def question_application(self, spec: AskSpec, position: str = "") -> str:
         """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
@@ -8707,7 +8945,9 @@ Tools:
         # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
         # markdown — no separate styled line, hence no ANSI escapes to mangle.
         prompt = f"({position}) {spec.question}" if position else spec.question
-        if not choices or not self.interactive_input:
+        if not choices:
+            return self.tui.request_input("\n" + prompt) if self.tui is not None else self.read_input("\n" + prompt)
+        if not self.interactive_input:
             return self.read_input("\n" + prompt)
 
         # Blank separator line before each question so multi-question prompts don't run together.
@@ -8738,7 +8978,7 @@ Tools:
             # The question was already rendered before the choice selector; do not repeat a long
             # raw prompt when the user switches to free text.
             self.emit("")
-            return self.read_input("> ")
+            return self.tui.request_input("> ") if self.tui is not None else self.read_input("> ")
         if isinstance(result, str):
             return result
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
@@ -8824,7 +9064,7 @@ Tools:
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
-        if self.interactive_input and self.ui.color and not self.ui.capture_ansi:
+        if self.interactive_input and self.ui.color:
             self.diff_viewer()
             return None
         latest = self.agent.session.latest_round_diff_sections()
@@ -8923,78 +9163,18 @@ Tools:
             parts.append(("class:choice.disabled", f"\n  [{mode_hint}] {hint} [{position}]\n"))
             return parts
 
-        def switch_tab(event, delta: int) -> None:
-            state.switch_tab(delta)
-            event.app.invalidate()
+        if self.tui is None:
+            return
 
-        def move(event, delta: int) -> None:
-            sections = active_sections()
-            if state.mode is DiffViewState.Mode.LIST:
-                state.move_file(delta, len(sections))
-            elif sections:
-                state.view.scroll_by(delta)
-            event.app.invalidate()
-
-        def page(event, delta: int, divisor: int = 1) -> None:
-            if state.mode is DiffViewState.Mode.FILE:
-                state.view.scroll_by(delta * max(1, viewport() // divisor))
-                event.app.invalidate()
-
-        def open_file(event):
-            previous = state.mode
-            state.open_file(len(active_sections()))
-            if state.mode != previous:
-                event.app.invalidate()
-
-        def back(event):
-            previous = state.mode
-            state.close_file()
-            if state.mode != previous:
-                event.app.invalidate()
-
-        def refresh(event):
+        def modal_key(key: str, _data: str) -> Any:
             nonlocal model
-            model = build_model()
-            state.reset()
-            event.app.invalidate()
+            result = state.handle_key(key, len(active_sections()), viewport())
+            if result is DiffViewState.REFRESH:
+                model = build_model()
+                return TUI_MODAL_PENDING
+            return result
 
-        # Decorated callbacks below are prompt-toolkit registrations, not dead local functions.
-        bindings = KeyBindings()
-
-        def _left(event):
-            if state.mode is DiffViewState.Mode.FILE:
-                back(event)
-            else:
-                switch_tab(event, -1)
-
-        def _right(event):
-            if state.mode is DiffViewState.Mode.LIST:
-                switch_tab(event, 1)
-
-        bindings.add("right", eager=True)(_right)
-        bindings.add("left", eager=True)(_left)
-        bindings.add("l", eager=True)(lambda event: switch_tab(event, 1))
-        bindings.add("h", eager=True)(lambda event: switch_tab(event, -1))
-        bindings.add("tab", eager=True)(lambda event: switch_tab(event, 1))
-        bindings.add("down", eager=True)(lambda event: move(event, 1))
-        bindings.add("j", eager=True)(lambda event: move(event, 1))
-        bindings.add("up", eager=True)(lambda event: move(event, -1))
-        bindings.add("k", eager=True)(lambda event: move(event, -1))
-        bindings.add("pagedown", eager=True)(lambda event: page(event, 1))
-        bindings.add("pageup", eager=True)(lambda event: page(event, -1))
-        bindings.add("c-d", eager=True)(lambda event: page(event, 1, 2))
-        bindings.add("c-u", eager=True)(lambda event: page(event, -1, 2))
-        bindings.add("enter", eager=True)(open_file)
-        bindings.add("escape", eager=True)(lambda event: back(event) if state.mode is DiffViewState.Mode.FILE else event.app.exit(result=None))
-        bindings.add("q", eager=True)(lambda event: event.app.exit(result=None))
-        bindings.add("c-c", eager=True)(lambda event: event.app.exit(result=None))
-        bindings.add("r", eager=True)(refresh)
-
-        content = FormattedTextControl(fragments, focusable=True)
-        window = Window(content, dont_extend_height=True, wrap_lines=False)
-        app = self._make_app(Layout(HSplit([window, self.status_window()]), focused_element=window), bindings, full_screen=True)
-        with contextlib.suppress(KeyboardInterrupt):
-            self.run_input_app(app)
+        self.tui.show_modal(fragments, modal_key, exclusive=True)
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
@@ -9059,9 +9239,12 @@ Tools:
         if not compacted:
             return "No prior conversation to compact"
         fallback = False
-        spinner = CompactSpinner(self)
+        self.status_bar.begin()
+        if self.tui is not None:
+            self.tui.set_running("compacting context")
+        else:
+            self.status_bar.start(reset=False)
         try:
-            spinner.start()
             data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
@@ -9070,7 +9253,10 @@ Tools:
             fallback = True
             data = None
         finally:
-            spinner.stop()
+            if self.tui is not None:
+                self.tui.set_dispatching()
+            else:
+                self.status_bar.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
@@ -9098,11 +9284,13 @@ Tools:
             return self.set_provider(parts[0])
         choices = tuple(sorted(self.session.config.providers))
         summary = "provider: " + self.session.config.active_provider + "\nproviders: " + ", ".join(choices)
-        if len(choices) <= 1:
-            return summary
         current = self.session.config.active_provider
         choice = self.select_choice("Provider", choices, labels={current: current + " (current)"}, current=current)
-        return self.set_provider(choice) if isinstance(choice, str) else ("No change" if choice is SELECTION_BACK else summary)
+        if not isinstance(choice, str):
+            return "No change" if choice is SELECTION_BACK else summary
+        provider_result = self.set_provider(choice)
+        model_result = self.model("")
+        return provider_result + ("\n" + model_result if model_result else "")
 
     def set_provider(self, name: str) -> str:
         if name not in self.session.config.providers:
@@ -9119,20 +9307,27 @@ Tools:
             return "No change" if result is SELECTION_BACK else str(result)
         provider = self.session.config.provider
         configured = tuple(dict.fromkeys(provider.available_models))
-        remote = tuple(model for model in self.remote_models(provider) if model not in configured)
+        show_loading = self.tui is not None and bool(provider.url and provider.key)
+        if show_loading:
+            self.tui.set_dispatching("Loading models...")
+        try:
+            remote = tuple(model for model in self.remote_models(provider) if model not in configured)
+        finally:
+            if show_loading:
+                self.tui.set_dispatching()
         choices: list[str] = []
         if configured:
             choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))
         if remote:
             choices.extend((self.MODEL_DISCOVERED_LABEL, *remote))
-        choices = tuple(choices)
-        if not choices:
+        choice_values = tuple(choices)
+        if not choice_values:
             return "Current provider.model is " + (self.session.config.provider.model or "(empty)")
         while True:
             current = self.session.config.provider.model
-            labels = {label: label for label in self.MODEL_LABELS if label in choices}
-            labels.update({current: current + " (current)"} if current in choices else {})
-            choice = self.select_choice("Model", choices, labels=labels, current=current, disabled=self.MODEL_LABELS)
+            labels = {label: label for label in self.MODEL_LABELS if label in choice_values}
+            labels.update({current: current + " (current)"} if current in choice_values else {})
+            choice = self.select_choice("Model", choice_values, labels=labels, current=current, disabled=self.MODEL_LABELS)
             if choice is SELECTION_BACK:
                 return "No change"
             if not isinstance(choice, str):
@@ -9221,6 +9416,194 @@ Tools:
         return "Set " + key
 
 
+class TuiRuntime:
+    """Own the interactive session timeline while CommandLoop owns session behavior."""
+
+    def __init__(self, command_loop: CommandLoop):
+        self.loop = command_loop
+        self.pending: queue.Queue[str] = queue.Queue()
+        self.stop = threading.Event()
+        self.cancel_pending = threading.Event()
+        self.main_busy = threading.Event()
+        self.force_exit_timer: threading.Timer | None = None
+        self.error: BaseException | None = None
+
+    @property
+    def tui(self) -> TuiApp:
+        assert self.loop.tui is not None
+        return self.loop.tui
+
+    def _interrupt_active(self, cancel: Callable[[], None]) -> None:
+        threading.Thread(target=cancel, daemon=True).start()
+        if self.main_busy.is_set():
+            os.kill(os.getpid(), signal.SIGINT)
+
+    def interrupt(self) -> None:
+        if self.cancel_pending.is_set():
+            return
+        self.cancel_pending.set()
+        self.tui.set_running("cancelling")
+        self._interrupt_active(self.loop.agent.cancel)
+
+    def _request_model_retry(self, label: str) -> None:
+        state = self.loop.session.state
+        if state.current_model_call_started_at <= 0 or state.manual_model_retry_requested:
+            return
+        state.manual_model_retry_requested = True
+        state.model_retry_count += 1
+        self.tui.status_label = label
+        self.tui.invalidate()
+        self._interrupt_active(self.loop.agent.model.cancel)
+
+    def submit_running(self, text: str) -> None:
+        text = Text.clean(text.strip())
+        if not text:
+            return
+        if "\n" not in text and text.startswith("/"):
+            threading.Thread(target=self.loop.run_queued_command, args=(text,), daemon=True).start()
+        else:
+            self.loop.session.enqueue_user_input(text)
+            self.loop.session.save_snapshot()
+        self.tui.invalidate()
+
+    def recall(self) -> str:
+        return self.loop.recall_pending_input(lambda: self._request_model_retry("revising queued input"))
+
+    def request_exit(self) -> None:
+        self.stop.set()
+        self.loop.save_and_emit_resume()
+
+    def force_exit(self) -> None:
+        self.stop.set()
+        threading.Thread(target=self.loop.agent.cancel, daemon=True).start()
+        self.force_exit_timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
+        self.force_exit_timer.daemon = True
+        self.force_exit_timer.start()
+        os.kill(os.getpid(), signal.SIGINT)
+
+    def build_tui(self) -> TuiApp:
+        return TuiApp(
+            on_chat_submit=self.pending.put,
+            on_running_submit=self.submit_running,
+            on_exit_request=self.request_exit,
+            on_force_exit=self.force_exit,
+            on_interrupt=self.interrupt,
+            on_input_cancel=lambda: self.loop.emit("Cancelled"),
+            on_retry=lambda: self._request_model_retry("retrying"),
+            on_recall=self.recall,
+            status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
+            activity_fragments_fn=self.loop.tui_activity_fragments,
+            input_hint_fn=self.loop.tui_input_hint,
+            history=self.loop.input_history,
+            completer=self.loop.input_completer,
+        )
+
+    def submit_next(self, entered: list[str]) -> None:
+        if not entered:
+            return
+        self.pending.put(entered[0])
+        for text in entered[1:]:
+            self.loop.session.enqueue_user_input(text)
+
+    def reset_turn(self) -> None:
+        self.tui.set_idle()
+        self.cancel_pending.clear()
+        self.main_busy.clear()
+
+    def dispatch(self, user_input: str) -> bool:
+        """Dispatch one input. Return true when it was fully handled as a command."""
+        self.loop.ui.emit_answer(user_input, role="user", rule=False)
+        try:
+            handled, exit_now = self.loop.command(user_input.strip())
+        except (KeyboardInterrupt, NanocodeError) as error:
+            self.loop.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
+            self.reset_turn()
+            return True
+        if exit_now:
+            self.stop.set()
+            self.main_busy.clear()
+            self.tui.exit()
+            return True
+        if handled:
+            self.reset_turn()
+            return True
+        return False
+
+    def run_agent_turn(self, user_input: str) -> None:
+        self.loop.emit("")
+        self.loop.status_bar.begin()
+        self.tui.set_running("working")
+        started = time.monotonic()
+        try:
+            answer = self.loop.agent.run(user_input)
+        except KeyboardInterrupt:
+            self.submit_next(self.loop.take_pending_inputs())
+            self.loop.emit("Cancelled")
+            return
+        except NanocodeError as error:
+            answer = f"Error: {error}"
+        finally:
+            self.reset_turn()
+            self.loop.session.state.manual_model_retry_requested = False
+            CodeIndex(self.loop.session).update_pending_async()
+        elapsed = time.monotonic() - started
+        self.loop.ui.emit_answer(answer)
+        self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+        self.loop.session.save_snapshot()
+        self.submit_next(self.loop.take_pending_inputs())
+
+    def run_agent_loop(self) -> None:
+        while not self.stop.is_set():
+            try:
+                user_input = self.pending.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            self.main_busy.set()
+            if self.cancel_pending.is_set():
+                self.loop.emit("Cancelled")
+                self.reset_turn()
+                continue
+            if not self.dispatch(user_input):
+                self.run_agent_turn(user_input)
+
+    def run_tui_app(self) -> None:
+        try:
+            self.tui.run(style=self.loop.style())
+        except BaseException as error:
+            self.error = error
+            self.stop.set()
+
+    def run(self) -> int:
+        """Run the agent on the main thread and prompt-toolkit on one joined UI thread."""
+        self.loop.tui = self.build_tui()
+        tui_thread = threading.Thread(target=self.run_tui_app, name="tui")
+        tui_thread.start()
+        try:
+            self.tui.ready.wait()
+            if self.error is not None:
+                raise self.error
+            # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
+            # so the primary-screen application places them in native terminal/tmux scrollback.
+            self.loop.start_session()
+            self.submit_next(self.loop.take_pending_inputs())
+            self.run_agent_loop()
+        finally:
+            self.stop.set()
+            if self.force_exit_timer is not None:
+                self.force_exit_timer.cancel()
+            self.tui.exit()
+            # Do not let interpreter finalization race a TUI thread flushing stdout. The emergency
+            # force-exit timer remains responsible for terminating a genuinely wedged application.
+            tui_thread.join()
+            try:
+                self.loop.close_background_output()
+            finally:
+                self.loop.tui = None
+        if self.error is not None:
+            raise self.error
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nanocode")
     parser.add_argument("--config", default=None, help="Path to config TOML")
@@ -9230,7 +9613,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--theme", choices=["auto", "light", "dark"], default="", help="Color theme (defaults to runtime.theme, then auto-detect via COLORFGBG)"
     )
-    parser.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
+    resume = parser.add_mutually_exclusive_group()
+    resume.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
+    resume.add_argument(
+        "-c", "--last", "--latest", dest="continue_project", action="store_true", help="Resume the latest session in the current project"
+    )
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
@@ -9241,19 +9628,25 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        if args.resume:
+        if args.resume or args.continue_project:
             data = ConfigFile.load(args.config)
+            config = Config.from_dict(data)
+            uid = args.resume or SessionSnapshotStore.latest_uid_for_cwd(config.data_dir, os.getcwd())
+            if not uid:
+                raise NanocodeError(f"No previous session for this project: {os.getcwd()}")
             session = Session.load_snapshot(
-                args.resume,
-                config=Config.from_dict(data),
+                uid,
+                config=config,
                 settings=RuntimeSettings.from_dict(data, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme),
             )
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme)
         Theme.set_mode(Theme.resolve(session.settings.theme))
+        command_loop = CommandLoop(Agent(session))
         try:
-            return CommandLoop(Agent(session)).run()
+            return command_loop.run()
         finally:
+            command_loop.close_background_output()
             if session.mcp is not None:
                 session.mcp.close()
     except ConfigError as error:

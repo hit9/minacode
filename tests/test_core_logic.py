@@ -15,6 +15,42 @@ def data_session(tmp_path):
     return n.Session(cwd=str(tmp_path), config=n.Config(data_dir=str(tmp_path / ".data")))
 
 
+@pytest.mark.parametrize("flag", ["-c", "--last", "--latest"])
+def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monkeypatch, flag):
+    config = n.Config(data_dir=str(tmp_path / "data"))
+    settings = n.RuntimeSettings()
+    resumed = SimpleNamespace(settings=settings, mcp=None)
+    selected = []
+
+    monkeypatch.setattr(n.ConfigFile, "load", lambda _path: {})
+    monkeypatch.setattr(n.Config, "from_dict", classmethod(lambda _cls, _data: config))
+    monkeypatch.setattr(n.RuntimeSettings, "from_dict", classmethod(lambda _cls, _data, **_kwargs: settings))
+    monkeypatch.setattr(
+        n.SessionSnapshotStore,
+        "latest_uid_for_cwd",
+        classmethod(lambda _cls, data_dir, cwd: selected.append((data_dir, cwd)) or "project-session"),
+    )
+    monkeypatch.setattr(
+        n.Session,
+        "load_snapshot",
+        classmethod(lambda _cls, uid, config=None, settings=None: selected.append((uid, config, settings)) or resumed),
+    )
+    monkeypatch.setattr(n, "Agent", lambda session: session)
+
+    class Loop:
+        def run(self):
+            return 0
+
+        def close_background_output(self):
+            pass
+
+    monkeypatch.setattr(n, "CommandLoop", lambda _agent: Loop())
+    monkeypatch.chdir(tmp_path)
+
+    assert n.main([flag]) == 0
+    assert selected == [(str(tmp_path / "data"), str(tmp_path)), ("project-session", config, settings)]
+
+
 def test_runtime_settings_reads_limits_and_yolo_override():
     settings = n.RuntimeSettings.from_dict(
         {"runtime": {"shell_timeout": 7, "max_agent_steps": 0, "max_context_tokens": 0, "yolo": False}},

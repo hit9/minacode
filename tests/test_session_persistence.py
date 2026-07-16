@@ -42,6 +42,36 @@ def test_first_save_writes_init_line(tmp_path):
     assert "settings" not in init
     assert "tool_results" not in init
 
+
+def test_pending_user_inputs_persist_and_restore(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.enqueue_user_input("queued one")
+    s.enqueue_user_input("queued two")
+
+    s.save_snapshot()
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert lines[0]["pending_user_inputs"] == ["queued one", "queued two"]
+    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    assert [item.text for item in restored.pending_user_inputs] == ["queued one", "queued two"]
+    assert all(not item.inflight for item in restored.pending_user_inputs)
+
+
+def test_pending_user_input_delta_replaces_queue_state(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "active"})
+    s.save_snapshot()
+    s.enqueue_user_input("queued")
+    s.save_snapshot()
+    s.pending_user_inputs.clear()
+    s.save_snapshot()
+
+    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    assert lines[1]["pending_user_inputs"] == ["queued"]
+    assert lines[2]["pending_user_inputs"] == []
+    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    assert restored.pending_user_inputs == []
+
 def test_latest_pointer_created_on_first_save(tmp_path):
     """First save creates the latest pointer file."""
     s = session_with_data_dir(tmp_path)
@@ -174,6 +204,31 @@ def test_load_with_last_alias(tmp_path):
 
     s2 = n.Session.load_snapshot("last", config=s.config)
     assert s2.uid == s.uid
+
+
+def test_latest_uid_for_cwd_ignores_newer_sessions_from_other_projects(tmp_path):
+    data_dir = tmp_path / "data"
+    project = tmp_path / "project"
+    other = tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    config = n.Config(data_dir=str(data_dir))
+
+    project_session = n.Session(cwd=str(project), config=config)
+    project_session.messages.append({"role": "user", "content": "project"})
+    project_session.save_snapshot()
+
+    other_session = n.Session(cwd=str(other), config=config)
+    other_session.messages.append({"role": "user", "content": "other"})
+    other_session.save_snapshot()
+    os.utime(data_dir / "sessions" / f"{project_session.uid}.jsonl", (1, 1))
+    os.utime(data_dir / "sessions" / f"{other_session.uid}.jsonl", (2, 2))
+
+    assert n.SessionSnapshotStore.latest_uid_for_cwd(str(data_dir), str(project)) == project_session.uid
+
+
+def test_latest_uid_for_cwd_returns_empty_without_project_session(tmp_path):
+    assert n.SessionSnapshotStore.latest_uid_for_cwd(str(tmp_path / "missing"), str(tmp_path)) == ""
 
 
 def test_load_appends_resume_marker(tmp_path):

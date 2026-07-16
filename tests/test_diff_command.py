@@ -129,11 +129,11 @@ def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
     lp = loop(s)
     rendered = []
 
-    def render(app):
-        assert app.full_screen is True
-        rendered.extend(app.layout.current_control.text())
+    class Modal:
+        def show_modal(self, fragments_fn, _key_fn, **_kwargs):
+            rendered.extend(fragments_fn())
 
-    lp.run_input_app = render
+    lp.tui = Modal()
 
     lp.diff_viewer()
 

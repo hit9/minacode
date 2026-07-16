@@ -1,5 +1,7 @@
 import shlex
 import sys
+import threading
+import time
 
 import pytest
 
@@ -189,7 +191,7 @@ def test_diff_segments_gracefully_degrades_without_header_path(tmp_path):
 def test_approval_segments_highlight_inline_edit_preview():
     preview = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42"
     block = n.LogBlock.hierarchy(
-        n.LogLine("Edit", "foo.py", n.LogRole.APPROVAL),
+        n.LogLine("Edit", "foo.py", n.LogRole.TOOL),
         [
             n.LogLine("preview", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
             *(n.LogLine("", line, n.LogRole.DIFF, n.LogEdge.CONTINUE) for line in preview.splitlines()),
@@ -198,6 +200,7 @@ def test_approval_segments_highlight_inline_edit_preview():
     segments = n.UiPrinter().log_segments(block)
     rendered = "".join(text for _style, text in segments)
 
+    assert ("ansigreen", "Edit") in segments
     assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
     assert any(style == "ansigreen bg:#003b00" and text == "+" for style, text in segments)
     assert any(style == "fg:default bg:#520000" and "pass" in text for style, text in segments)
@@ -303,6 +306,26 @@ def test_bash_behaviors(tmp_path):
     wide = n.BashTool(s, ['python3 -c "print(chr(0x4e2d)*3000)"']).call()
     assert "�" not in wide
     assert wide.count(chr(0x4e2d)) == 3000
+
+
+def test_bash_cancel_kills_active_process(tmp_path):
+    tool = n.BashTool(session(tmp_path), ["sleep 30"])
+    finished = threading.Event()
+
+    def run():
+        tool.call()
+        finished.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 1
+    while tool._process is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    tool.cancel()
+
+    assert finished.wait(timeout=1)
+    thread.join(timeout=1)
 
 
 def test_bash_readonly_auto_approval_classification(tmp_path):

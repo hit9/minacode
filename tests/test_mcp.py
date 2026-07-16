@@ -350,6 +350,32 @@ class TestMCPManagerDiscovery:
         assert s.mcp.discovery_status == "ready"
         assert s.mcp.server_errors.get("test") is not None
 
+    def test_discover_enabled_ignores_cancelled_server(self, monkeypatch):
+        raw = mcp_cfg()
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+
+        async def cancelled(_config, _headers):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(s.mcp, "_gather_assets", cancelled)
+
+        s.mcp.discover_enabled()
+
+        assert s.mcp.discovery_status == "ready"
+        assert "test" not in s.mcp.server_errors
+
+    def test_cancelled_error_detection_handles_groups_and_cyclic_causes(self):
+        cancelled = BaseExceptionGroup("cancelled", [asyncio.CancelledError()])
+        mixed = BaseExceptionGroup("mixed", [asyncio.CancelledError(), RuntimeError("failed")])
+        first = RuntimeError("first")
+        second = RuntimeError("second")
+        first.__cause__ = second
+        second.__cause__ = first
+
+        assert n.MCPManager.is_cancelled_error(cancelled)
+        assert not n.MCPManager.is_cancelled_error(mixed)
+        assert not n.MCPManager.is_cancelled_error(first)
+
     def test_discover_enabled_skips_missing_bearer_env(self, monkeypatch):
         """Missing bearer_token_env_var skips discovery without an error log."""
         monkeypatch.delenv("MISSING_TOKEN", raising=False)
