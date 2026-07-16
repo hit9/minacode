@@ -42,7 +42,7 @@ from anthropic import Anthropic
 from json_repair import repair_json
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text, search as pt_search
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
@@ -77,7 +77,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-__version__ = "0.9.7"
+__version__ = "0.9.8"
 
 Json = dict[str, Any]
 
@@ -7098,6 +7098,14 @@ class TuiApp:
 
         bindings.add("c-g", filter=running, eager=True)(lambda _event: self.on_retry())
 
+        # Ctrl-X hands the current input to $VISUAL/$EDITOR (fallback vim) for editing. eager, so it
+        # fires immediately instead of waiting as an Emacs `c-x …` chord prefix.
+        edits_input = Condition(lambda: self.input_mode in {"chat", "running", "approval"})
+
+        @bindings.add("c-x", filter=~modal & edits_input, eager=True)
+        def _edit_in_editor(event):  # pragma: no cover — interactive path
+            self.edit_input_in_editor()
+
         @bindings.add("c-c", eager=True)
         @bindings.add("<sigint>", eager=True)
         def _ctrl_c(event):  # pragma: no cover — interactive path
@@ -7139,6 +7147,51 @@ class TuiApp:
             event.app.exit()
 
         return bindings
+
+    @staticmethod
+    def editor_command() -> list[str]:
+        """The editor to launch for Ctrl-X: $VISUAL, then $EDITOR, then vim."""
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vim"
+        return shlex.split(editor)
+
+    def _edit_text_in_editor(self, text: str) -> str | None:
+        """Run the editor on `text` via a temp file and return the edited content, or None if the
+        editor could not launch or exited non-zero. Runs off the event loop, inside run_in_terminal."""
+        fd, path = tempfile.mkstemp(prefix="nanocode-input-", suffix=".md")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            try:
+                completed = subprocess.run([*self.editor_command(), path])
+            except OSError:
+                return None
+            if completed.returncode != 0:
+                return None
+            with open(path, encoding="utf-8") as handle:
+                return handle.read()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    async def _run_input_editor(self) -> None:
+        # `run_in_terminal` suspends the app and restores it afterward (the same primitive
+        # prompt_toolkit uses for its own editor support), so a full-screen editor gets a clean
+        # terminal. A non-zero exit or a launch failure leaves the input untouched.
+        original = self.input_buffer.text
+        edited = await run_in_terminal(lambda: self._edit_text_in_editor(original), in_executor=True)
+        if edited is None:
+            return
+        edited = edited.rstrip("\n")
+        if edited != original:
+            self.input_buffer.reset(Document(edited, cursor_position=len(edited)))
+            self.invalidate()
+
+    def edit_input_in_editor(self) -> None:
+        """Ctrl-X: edit the current input in an external editor, then load the result back."""
+        if self.app is not None:
+            self.app.create_background_task(self._run_input_editor())
 
     def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = Application(
