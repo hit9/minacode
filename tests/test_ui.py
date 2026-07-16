@@ -181,6 +181,43 @@ def test_theme_palettes_have_identical_complete_keys():
     assert all(n.Theme.LIGHT.values())
 
 
+def test_editor_command_prefers_visual_then_editor_then_vim(monkeypatch):
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+    assert n.TuiApp.editor_command() == ["vim"]
+
+    monkeypatch.setenv("EDITOR", "code --wait")
+    assert n.TuiApp.editor_command() == ["code", "--wait"]
+
+    monkeypatch.setenv("VISUAL", "nvim")
+    assert n.TuiApp.editor_command() == ["nvim"]
+
+
+def test_edit_text_in_editor_roundtrips_edited_content(tmp_path, monkeypatch):
+    # A fake $EDITOR that appends a marker to whatever file it is given.
+    editor = tmp_path / "fake_editor.sh"
+    editor.write_text('#!/bin/sh\nprintf " EDITED" >> "$1"\n')
+    editor.chmod(0o755)
+    monkeypatch.setenv("EDITOR", str(editor))
+    monkeypatch.delenv("VISUAL", raising=False)
+
+    assert n.TuiApp()._edit_text_in_editor("hello") == "hello EDITED"
+
+
+def test_edit_text_in_editor_leaves_input_untouched_when_editor_missing(monkeypatch):
+    monkeypatch.setenv("EDITOR", "definitely-not-an-editor-binary")
+    monkeypatch.delenv("VISUAL", raising=False)
+
+    assert n.TuiApp()._edit_text_in_editor("hello") is None
+
+
+def test_edit_text_in_editor_leaves_input_untouched_on_nonzero_exit(monkeypatch):
+    monkeypatch.setenv("EDITOR", "false")
+    monkeypatch.delenv("VISUAL", raising=False)
+
+    assert n.TuiApp()._edit_text_in_editor("hello") is None
+
+
 def test_tui_app_build_layout_composes_input_and_status():
     app = n.TuiApp()
     layout = app.build_layout()
