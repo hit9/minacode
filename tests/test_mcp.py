@@ -1,6 +1,5 @@
 """Tests for nanocode MCP client integration."""
 import asyncio
-import json
 import os
 import time
 from types import SimpleNamespace
@@ -285,8 +284,6 @@ class TestMCPManagerDiscovery:
 
     def test_save_closes_fd_when_fdopen_fails(self, tmp_path, monkeypatch):
         """os.fdopen doesn't close its fd on failure — save() must close it or the descriptor leaks."""
-        import os
-
         store = n.MCPFileTokenStore(str(tmp_path / "tokens.json"))
         closed: list[int] = []
         real_close = os.close
@@ -1144,14 +1141,12 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("refresh")
+        loop.mcp_command("refresh")
         assert s.mcp.discovery_status == "ready"
 
     def test_mcp_refresh_specific_server(self, monkeypatch):
         """/mcp refresh NAME calls discover_server."""
         calls = []
-        original = type("", (), {"discover_server": lambda self, name: calls.append(name)})()
-
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
