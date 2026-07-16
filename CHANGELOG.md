@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.9.7 - 2026-07-16
 
 ### Added
 - Resume this project's latest session with `-c` (also `--last`, `--latest`), matched by working directory. Mutually exclusive with `--resume`, which still takes a UID or resolves the most recent session across all projects.
