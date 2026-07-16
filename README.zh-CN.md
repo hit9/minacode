@@ -44,6 +44,7 @@ nanocode
 
 常用参数：
 
+- `-c`、`--last`、`--latest`：恢复当前项目最近一次 session
 - `--resume [UID]`：恢复已保存的 session，不传 UID 恢复最近一次
 - `--yolo`：跳过工具确认，直接执行
 - `--mcp <selector>`：选择启用哪些 MCP 服务器
@@ -64,7 +65,7 @@ nanocode 并没有发明一种新的 coding agent。它把读取和编辑文件�
 
 - **实时 follow-up：** Agent 工作时仍可输入；排队消息进入下一次模型请求，也可以中断当前请求立即发送。
 - **锚点编辑：** 结构化编辑使用 `line:hash` 锚点，遇到过期文件内容时拒绝执行，而不是猜测。
-- **可恢复 session：** 对话、已完成的工具调用、diff 和工作记忆在中断后仍可通过 `--resume` 恢复。
+- **可恢复 session：** 对话、已完成的工具调用、diff 和工作记忆在中断后仍可通过 `-c` 或 `--resume` 恢复。
 - **内置 diff viewer：** `/diff` 显示最新用户 round 的变更和整个 session 的净结果。
 - **Prompt-cache 友好：** 稳定的指令、环境信息和工具 schema 保持可复用的请求前缀。
 - **Provider 兼容性：** 已测试 DeepSeek、OpenCode、阿里云和 ZenMux；理论上其他 OpenAI-compatible endpoint 也可以工作。此外还支持 Anthropic API、远程/本地 MCP server 和 Markdown skill。

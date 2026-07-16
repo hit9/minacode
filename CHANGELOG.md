@@ -1,6 +1,15 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+- Resume this project's latest session with `-c` (also `--last`, `--latest`), matched by working directory. Mutually exclusive with `--resume`, which still takes a UID or resolves the most recent session across all projects.
+
+### Changed
+- Rebuild the interactive REPL around a single persistent prompt-toolkit application: live activity, input, approval prompts, selectors, the `/diff` viewer, and the status bar now share one app, while completed output prints above it into native terminal scrollback.
+- Define `Ctrl-C` uniformly across that app: cancel an approval prompt, clear the current input at an idle prompt, or interrupt a running turn. Exit stays on `Ctrl-D` at an empty prompt and `/exit`.
+
 ## 0.9.6 - 2026-07-14
 
 ### Changed
