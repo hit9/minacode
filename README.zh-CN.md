@@ -40,7 +40,7 @@ model = "deepseek-v4-flash"
 nanocode
 ```
 
-升级：`nanocode upgrade`
+升级：`uv tool upgrade nanocode-cli`
 
 常用参数：
 

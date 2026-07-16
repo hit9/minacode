@@ -77,7 +77,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-__version__ = "0.9.8"
+__version__ = "0.9.9"
 
 Json = dict[str, Any]
 
@@ -8628,6 +8628,9 @@ Tools:
     def start_session(self) -> None:
         """Initialize output and background services shared by both command-loop frontends."""
         self.emit(f"nanocode {__version__}. /help for commands.")
+        UpdateChecker(self.session).start()
+        if self.session.update.newer_than(__version__):
+            self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `uv tool upgrade nanocode-cli`.")
         if tip := self.startup_tip():
             self.emit("tip: " + tip)
         SessionSnapshotStore.clean_expired(self.session)
@@ -8635,7 +8638,6 @@ Tools:
         CodeIndex(self.session).refresh_existing_async()
         # Async MCP discovery — show > immediately, discover in background
         threading.Thread(target=self.discover_mcp, daemon=True).start()
-        UpdateChecker(self.session).start()
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()

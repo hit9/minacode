@@ -1,6 +1,15 @@
 # Changelog
 
 
+## 0.9.9 - 2026-07-16
+
+### Added
+- Show a one-line notice at startup when a newer version is available on PyPI, pointing to `uv tool upgrade nanocode-cli`. The update check stays cached and rate-limited to once per 24h, and never blocks startup.
+
+### Fixed
+- README pointed at a `nanocode upgrade` command that no longer exists; the upgrade instructions now use `uv tool upgrade nanocode-cli`.
+
+
 ## 0.9.8 - 2026-07-16
 
 ### Added

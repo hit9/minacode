@@ -40,7 +40,7 @@ Then start:
 nanocode
 ```
 
-Upgrade: `nanocode upgrade`
+Upgrade: `uv tool upgrade nanocode-cli`
 
 Common flags:
 
