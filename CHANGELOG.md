@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.9.8 - 2026-07-16
 
 ### Added
 - `Ctrl-X` at the input prompt opens the current input in `$VISUAL`/`$EDITOR` (falling back to vim) and loads the edited text back; a non-zero exit or a failed launch leaves the input untouched.
