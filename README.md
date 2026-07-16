@@ -83,7 +83,7 @@ It works on real repositories, including its own: I use nanocode to build and ma
 | `/model [MODEL]` | Show or switch model |
 | `/yolo` | Toggle tool confirmations |
 
-Run `/help` for every command, tool, and shortcut. Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc; input supports history completion and `Ctrl-R` search.
+Run `/help` for every command and tool. Interactive selectors support `j`/`k`, arrows, `/` search, Enter, and Esc; input supports history completion and `Ctrl-R` search.
 
 ## Configuration
 
