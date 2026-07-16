@@ -9615,9 +9615,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     resume = parser.add_mutually_exclusive_group()
     resume.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
-    resume.add_argument(
-        "-c", "--last", "--latest", dest="continue_project", action="store_true", help="Resume the latest session in the current project"
-    )
+    resume.add_argument("-c", "--last", "--latest", dest="continue_project", action="store_true", help="Resume the latest session in the current project")
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
     if args.version:
