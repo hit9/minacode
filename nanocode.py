@@ -6892,6 +6892,8 @@ class TuiApp:
                 self.modal = modal
                 target = self.exclusive_modal_window if exclusive else self.modal_window
                 app.layout.focus(target or self.modal_window)
+                if exclusive:
+                    self._use_alternate_screen(True)
                 app.invalidate()
 
             self._schedule(activate)
@@ -6906,8 +6908,27 @@ class TuiApp:
         self.modal = None
         if self.app is not None and self.input_window is not None:
             self.app.layout.focus(self.input_window)
+        if modal.exclusive:
+            self._use_alternate_screen(False)
         self.invalidate()
         modal.done.set()
+
+    def _use_alternate_screen(self, enabled: bool) -> None:
+        """Move the persistent app between the primary and alternate screen.
+
+        Exclusive modals (the /diff viewer) fill the whole pane. Painted on the primary screen they
+        push the transcript above them off the top into scrollback, and closing the modal only
+        shrinks the app region back — the transcript never comes back down. Give them the alternate
+        screen instead, so the terminal restores the transcript on exit the way `less` does.
+        """
+        app = self.app
+        if app is None or app.renderer.full_screen == enabled:
+            return
+        # Erase the region we own on the screen we are leaving, so no stale footer is left behind
+        # (on the way back this also drops us out of the alternate screen).
+        app.renderer.erase()
+        app.renderer.full_screen = enabled
+        app._request_absolute_cursor_position()
 
     def modal_fragments(self) -> list[tuple[str, str]]:
         return self.modal.fragments_fn() if self.modal is not None else []
