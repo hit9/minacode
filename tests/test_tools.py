@@ -384,6 +384,10 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     assert not readonly("git commit -m x")
     assert not readonly("git checkout main")
     assert not readonly("echo hi > out.txt")          # redirection
+    assert not readonly("cat >/dev/nullx")            # /dev/null is only a prefix; writes real file /dev/nullx
+    assert not readonly("echo x >/dev/null.bak")      # /dev/null prefix of a real file
+    assert not readonly("cat 2>/dev/nullish")         # /dev/null prefix on a stderr redirect
+    assert not readonly("cat >/dev/null2>&1")         # writes /dev/null2, not the null device
     assert not readonly("cat $(cmd)")                  # command substitution
     assert not readonly("python3 script.py")          # arbitrary code
     assert not readonly("find . -delete")             # destructive flag

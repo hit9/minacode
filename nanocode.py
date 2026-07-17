@@ -3060,7 +3060,7 @@ class BashTool(Tool):
         # Normalize away the ubiquitous harmless redirections — discarding output to /dev/null and
         # merging stderr/stdout — so the common `cmd 2>/dev/null` / `cmd >/dev/null 2>&1` forms are
         # not treated as file writes.
-        scan = re.sub(r"(?:\d*>>?|&>|<)\s*/dev/null", " ", command)
+        scan = re.sub(r"(?:\d*>>?|&>|<)\s*/dev/null(?![\w./])", " ", command)
         scan = scan.replace("2>&1", " ").replace(">&2", " ")
         # Anything still redirecting to/from a real path, or substituting a command, can write or
         # run arbitrary code.
