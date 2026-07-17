@@ -4221,18 +4221,22 @@ class ContextManager:
     def messages_text(self, messages: list[Json]) -> str:
         return "\n\n".join(f"{message.get('role', 'message')}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
 
+    def _summary_block(self, summary: str) -> list[Json]:
+        """The single compaction-summary user message, or [] when there is no summary yet."""
+        return [{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []
+
     def apply_compaction(self, data: Json, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
         self.session.state.compaction_count += 1
         self.session.state.apply(data)
         summary = self.session.state.summary
-        self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
+        self.session.messages = self._summary_block(summary) + keep
         self.prune_tool_records([*self.session.messages, *(tool_messages or [])])
 
     def apply_compaction_fallback(self, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
         self.session.state.compaction_count += 1
         self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
         summary = self.session.state.summary
-        self.session.messages = ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep
+        self.session.messages = self._summary_block(summary) + keep
         self.prune_tool_records([*keep, *(tool_messages or [])])
 
     def apply_turn_compaction(self, data: Json, keep: list[Json], turn_messages: list[Json]) -> None:
@@ -4241,7 +4245,7 @@ class ContextManager:
         summary = self.session.state.summary
         index = self.latest_user_index(keep)
         insert = len(keep) if index is None else index + 1
-        turn_messages[:] = keep[:insert] + ([{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []) + keep[insert:]
+        turn_messages[:] = keep[:insert] + self._summary_block(summary) + keep[insert:]
         self.prune_tool_records([*self.session.messages, *turn_messages])
 
     def apply_turn_compaction_fallback(self, keep: list[Json], turn_messages: list[Json]) -> None:
