@@ -30,7 +30,7 @@ import tomllib
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum, auto
 from typing import Any, ClassVar
@@ -882,11 +882,11 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def tool_record(record: ToolResultRecord) -> Json:
-        return {"key": record.key, "name": record.name, "args": record.args, "output": record.output, "note": record.note}
+        return asdict(record)
 
     @staticmethod
     def tool_error(error: ToolErrorRecord) -> Json:
-        return {"key": error.key, "name": error.name, "args": error.args, "error": error.error}
+        return asdict(error)
 
     @staticmethod
     def turn_diffs(data: list[Json]) -> list[TurnDiff]:
@@ -957,24 +957,15 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def state(state: AgentState) -> Json:
-        # fmt: off
-        return {
-            "goal": state.goal, "plan": [item.to_json() for item in AgentState.plan_items(state.plan)], "known": state.known, "check": state.check,
-            "summary": state.summary, "compaction_count": state.compaction_count,
-            "prefix_fingerprint": state.prefix_fingerprint, "prefix_fingerprints": state.prefix_fingerprints,
-            "round_count": state.round_count,
-        }
-        # fmt: on
+        data = asdict(state)
+        return {key: data[key] for key in (
+            "goal", "plan", "known", "check", "summary", "compaction_count",
+            "prefix_fingerprint", "prefix_fingerprints", "round_count",
+        )}
 
     @staticmethod
     def usage(usage: ModelUsage) -> Json:
-        # fmt: off
-        return {
-            "calls": usage.calls, "prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens,
-            "total_tokens": usage.total_tokens, "cached_prompt_tokens": usage.cached_prompt_tokens, "last_cached_prompt_tokens": usage.last_cached_prompt_tokens,
-            "last_prompt_tokens": usage.last_prompt_tokens, "last_total_tokens": usage.last_total_tokens,
-        }
-        # fmt: on
+        return asdict(usage)
 
     @classmethod
     def snapshot(cls, session: "Session") -> Json:
@@ -1044,11 +1035,6 @@ class SessionSnapshotCodec:
         cls.merge_sequence(data, delta, "tool_records")
         cls.merge_sequence(data, delta, "tool_errors")
         cls.merge_sequence(data, delta, "turn_diffs")
-        # Backward compatibility for snapshots written before tool_results became derived.
-        if "tool_results_replace" in delta:
-            data["tool_results"] = delta["tool_results_replace"]
-        if "tool_results" in delta:
-            data.setdefault("tool_results", {}).update(delta["tool_results"])
         if "tool_counter" in delta:
             data["tool_counter"] = delta["tool_counter"]
         if "usage" in delta:
@@ -4127,15 +4113,15 @@ class ContextManager:
             try:
                 self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
             except Exception:
-                self.apply_compaction_fallback(keep, turn_messages)
+                self.apply_compaction(None, keep, turn_messages, fallback_note="Previous context was deterministically trimmed.")
             messages = self.model_messages(base_system, turn_messages)
         if turn_messages is not None and self.estimated_tokens(messages) >= self.session.settings.max_context_tokens:
             compacted, keep = self.turn_compaction_parts(turn_messages)
             if compacted:
                 try:
-                    self.apply_turn_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages)
+                    self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages=turn_messages)
                 except Exception:
-                    self.apply_turn_compaction_fallback(keep, turn_messages)
+                    self.apply_compaction(None, keep, turn_messages=turn_messages, fallback_note="Current turn context was deterministically trimmed.")
                 messages = self.model_messages(base_system, turn_messages)
         return messages
 
@@ -4225,32 +4211,31 @@ class ContextManager:
         """The single compaction-summary user message, or [] when there is no summary yet."""
         return [{"role": "user", "content": self.COMPACT_TITLE + "\n" + summary}] if summary else []
 
-    def apply_compaction(self, data: Json, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
+    def apply_compaction(
+        self,
+        data: Json | None,
+        keep: list[Json],
+        tool_messages: list[Json] | None = None,
+        *,
+        turn_messages: list[Json] | None = None,
+        fallback_note: str = "",
+    ) -> None:
         self.session.state.compaction_count += 1
-        self.session.state.apply(data)
+        if data is not None:
+            self.session.state.apply(data)
+        if fallback_note:
+            self.session.state.summary = (self.session.state.summary + "\n" + fallback_note).strip()
         summary = self.session.state.summary
-        self.session.messages = self._summary_block(summary) + keep
-        self.prune_tool_records([*self.session.messages, *(tool_messages or [])])
-
-    def apply_compaction_fallback(self, keep: list[Json], tool_messages: list[Json] | None = None) -> None:
-        self.session.state.compaction_count += 1
-        self.session.state.summary = (self.session.state.summary + "\nPrevious context was deterministically trimmed.").strip()
-        summary = self.session.state.summary
-        self.session.messages = self._summary_block(summary) + keep
-        self.prune_tool_records([*keep, *(tool_messages or [])])
-
-    def apply_turn_compaction(self, data: Json, keep: list[Json], turn_messages: list[Json]) -> None:
-        self.session.state.compaction_count += 1
-        self.session.state.apply(data)
-        summary = self.session.state.summary
-        index = self.latest_user_index(keep)
-        insert = len(keep) if index is None else index + 1
-        turn_messages[:] = keep[:insert] + self._summary_block(summary) + keep[insert:]
-        self.prune_tool_records([*self.session.messages, *turn_messages])
-
-    def apply_turn_compaction_fallback(self, keep: list[Json], turn_messages: list[Json]) -> None:
-        self.session.state.summary = (self.session.state.summary + "\nCurrent turn context was deterministically trimmed.").strip()
-        self.apply_turn_compaction({"summary": self.session.state.summary}, keep, turn_messages)
+        summary_block = self._summary_block(summary)
+        if turn_messages is None:
+            self.session.messages = summary_block + keep
+            prune_context = (self.session.messages if data is not None else [*keep]) + (tool_messages or [])
+        else:
+            index = self.latest_user_index(keep)
+            insert = len(keep) if index is None else index + 1
+            turn_messages[:] = keep[:insert] + summary_block + keep[insert:]
+            prune_context = [*self.session.messages, *turn_messages]
+        self.prune_tool_records(prune_context)
 
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
         records = self.session.tool_records
@@ -9225,7 +9210,7 @@ Tools:
         except KeyboardInterrupt:
             return "Cancelled"
         except Exception:
-            self.agent.context.apply_compaction_fallback(keep)
+            self.agent.context.apply_compaction(None, keep, fallback_note="Previous context was deterministically trimmed.")
             fallback = True
             data = None
         finally:
