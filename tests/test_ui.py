@@ -1512,6 +1512,39 @@ def test_diff_view_state_owns_navigation_transitions():
     assert state.handle_key("q", 3, 10) is None
 
 
+def test_diff_view_g_and_shift_g_jump_top_and_bottom():
+    state = n.DiffViewState(n.TabbedViewState(("Latest", "Session")))
+
+    # LIST mode: jump file selection to last / first.
+    state.handle_key("G", 5, 10)
+    assert state.file == 4
+    state.handle_key("g", 5, 10)
+    assert state.file == 0
+
+    # FILE mode: jump scroll to bottom (clamped on render) / top.
+    state.handle_key("enter", 5, 10)
+    assert state.mode is n.DiffViewState.Mode.FILE
+    state.handle_key("G", 5, 10)
+    assert state.view.scroll > 0
+    state.handle_key("g", 5, 10)
+    assert state.view.scroll == 0
+
+
+def test_choice_view_g_and_shift_g_jump_first_and_last():
+    state = n.ChoiceViewState(choices=("one", "two", "three"), labels={}, disabled=set())
+
+    state.handle_key("G")
+    assert state.selected == 2
+    state.handle_key("g")
+    assert state.selected == 0
+
+    # While searching, g/G are query text, not jumps.
+    state.searching = True
+    state.handle_key("g")
+    assert state.query == "g"
+    assert state.selected == 0
+
+
 @pytest.mark.parametrize(("key", "expected_tab"), [("l", 1), ("tab", 1), ("h", 0)])
 def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
     state = n.DiffViewState(n.TabbedViewState(("Latest", "Session"), tab=0 if key != "h" else 1))

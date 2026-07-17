@@ -6731,7 +6731,7 @@ class TuiApp:
     blocking approvals, while completed output is printed above the app into terminal scrollback.
     """
 
-    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l up down left right tab enter escape q r pagedown pageup c-d c-u backspace c-h /".split())
+    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l g G up down left right tab enter escape q r pagedown pageup c-d c-u backspace c-h /".split())
 
     def __init__(
         self,
@@ -8138,6 +8138,11 @@ class DiffViewState:
         elif self.mode is self.Mode.FILE and key in {"pagedown", "pageup", "c-d", "c-u"}:
             distance = max(1, viewport if key in {"pagedown", "pageup"} else viewport // 2)
             self.view.scroll_by(distance if key in {"pagedown", "c-d"} else -distance)
+        elif key in {"g", "G"}:  # less-style: g→top, G→bottom
+            if self.mode is self.Mode.LIST and file_count:
+                self.file = 0 if key == "g" else file_count - 1
+            elif self.mode is self.Mode.FILE:
+                self.view.scroll = 0 if key == "g" else 10**9  # clamped to the last page on render
         elif key == "r":
             self.reset()
             return self.REFRESH
@@ -8235,6 +8240,8 @@ class ChoiceViewState:
             self.move(1)
         elif key in {"k", "up"} and not self.searching:
             self.move(-1)
+        elif key in {"g", "G"} and not self.searching:  # less-style: g→first, G→last
+            self.move(-len(self.enabled()) if key == "g" else len(self.enabled()))
         elif key == "/":
             self.searching = True
             self.set_query("")
