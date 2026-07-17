@@ -1900,6 +1900,11 @@ class Tool:
         self.session = session
         self.args = args
 
+    def turn_diff(self) -> "TurnDiff | None":
+        """The file diff this tool produced on its last run, or None if it made no edit. Overridden
+        by EditTool; the runner records it against the stored result for the /diff viewer."""
+        return None
+
     @classmethod
     def schema(cls, strict: bool = False) -> Json:
         description = "\n".join([cls.DESCRIPTION, "Signature: " + cls.SIGNATURE, *(("- " + item) for item in cls.EXAMPLE if item)])
@@ -2701,6 +2706,24 @@ class EditApplyResult:
     replace_all: bool = False
 
 
+def validate_edit_target(session: "Session", path: str, creating: bool) -> bool:
+    """Validate a filesystem path for an edit/create and raise ToolError on an invalid state
+    (already exists, is a directory, missing without create, or creating outside the workspace).
+    Returns True when the file exists on disk and should be read, False when it will be created."""
+    if os.path.exists(path):
+        if creating:
+            raise ToolError("file already exists")
+        if os.path.isdir(path):
+            raise ToolError("path is a directory")
+        return True
+    if creating:
+        parent = os.path.dirname(path) or "."
+        if not session.in_cwd(parent):
+            raise ToolError("refusing to create parent directories outside workspace")
+        return False
+    raise ToolError("file does not exist; use op=create to create it")
+
+
 class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
@@ -2759,6 +2782,12 @@ class EditTool(Tool):
                 "</Edit>",
             ]
         )
+
+    def turn_diff(self) -> "TurnDiff | None":
+        path, diff = getattr(self, "last_path", ""), getattr(self, "last_diff", "")
+        if not (path and diff):
+            return None
+        return TurnDiff(key="", turn=0, path=path, diff=diff, before=getattr(self, "last_before", ""), after=getattr(self, "last_after", ""))
 
     def preview(self) -> str:
         path, original, _created, result = self.build()
@@ -2820,21 +2849,12 @@ class EditTool(Tool):
     def build(self) -> tuple[str, str, bool, EditApplyResult]:
         path, edits = self.parse()
         creating = edits[0].op == "create"
-        if os.path.exists(path):
-            if creating:
-                raise ToolError("file already exists")
-            if os.path.isdir(path):
-                raise ToolError("path is a directory")
+        if validate_edit_target(self.session, path, creating):
             with open(path, encoding="utf-8") as file:
                 original = file.read()
             created = False
-        elif creating:
-            parent = os.path.dirname(path) or "."
-            if not self.session.in_cwd(parent):
-                raise ToolError("refusing to create parent directories outside workspace")
-            original, created = "", True
         else:
-            raise ToolError("file does not exist; use op=create to create it")
+            original, created = "", True
         result = self.apply(original, edits)
         return path, original, created, result
 
@@ -4378,21 +4398,12 @@ class EditBatchPlan:
             if state.exists and creating:
                 raise ToolError("file already exists")
             return state
-        if os.path.exists(path):
-            if creating:
-                raise ToolError("file already exists")
-            if os.path.isdir(path):
-                raise ToolError("path is a directory")
+        if validate_edit_target(self.session, path, creating):
             with open(path, encoding="utf-8") as file:
                 original = file.readlines()
             state = self.FileState(path, [self.Line(line, index) for index, line in enumerate(original)], original, True)
-        elif creating:
-            parent = os.path.dirname(path) or "."
-            if not self.session.in_cwd(parent):
-                raise ToolError("refusing to create parent directories outside workspace")
-            state = self.FileState(path, [], [], False)
         else:
-            raise ToolError("file does not exist; use op=create to create it")
+            state = self.FileState(path, [], [], False)
         self.files[path] = state
         return state
 
@@ -4863,19 +4874,24 @@ class MCPManager:
                 headers[header_name] = value
         return headers
 
-    def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
+    def _resolve_server(self, server: str) -> tuple[MCPServerConfig, dict[str, str]]:
+        """Look up a configured server and build its request headers, raising ToolError with a
+        user-facing message on a missing, errored, or unauthenticated server. Shared by tool and
+        resource calls."""
         config = self.find_config(server)
         if config is None:
             raise ToolError(f"MCP server '{server}' not found")
         if config.error:
             raise ToolError(config.error)
-
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             raise ToolError(headers)
         if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
             raise ToolError(f"MCP server '{server}' requires OAuth login; run /mcp login {server}")
+        return config, headers
 
+    def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
+        config, headers = self._resolve_server(server)
         if server not in self.tools:
             self.discover_server(server)
         if server in self.server_errors:
@@ -4890,16 +4906,7 @@ class MCPManager:
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
 
     def _resource_preamble(self, server: str) -> tuple[MCPServerConfig, dict[str, str]]:
-        config = self.find_config(server)
-        if config is None:
-            raise ToolError(f"MCP server '{server}' not found")
-        if config.error:
-            raise ToolError(config.error)
-        headers = self._build_mcp_headers(config)
-        if isinstance(headers, str):
-            raise ToolError(headers)
-        if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
-            raise ToolError(f"MCP server '{server}' requires OAuth login; run /mcp login {server}")
+        config, headers = self._resolve_server(server)
         if server not in self.tools and server not in self.resources:
             self.discover_server(server)
         if server in self.server_errors:
@@ -5659,10 +5666,6 @@ class ToolRunner:
                 nested_display=nested_display,
                 batch_suffix=batch_suffix,
             )
-        turn_diff_path = getattr(tool, "last_path", "") if isinstance(tool, EditTool) else ""
-        turn_diff_text = getattr(tool, "last_diff", "") if isinstance(tool, EditTool) else ""
-        turn_diff_before = getattr(tool, "last_before", "") if isinstance(tool, EditTool) else ""
-        turn_diff_after = getattr(tool, "last_after", "") if isinstance(tool, EditTool) else ""
         return "ok", self.finish(
             call,
             output,
@@ -5672,10 +5675,7 @@ class ToolRunner:
             display=display,
             nested_display=nested_display,
             batch_suffix=batch_suffix,
-            turn_diff_path=turn_diff_path,
-            turn_diff_text=turn_diff_text,
-            turn_diff_before=turn_diff_before,
-            turn_diff_after=turn_diff_after,
+            turn_diff=tool.turn_diff(),
         )
 
     def reject(
@@ -5716,10 +5716,7 @@ class ToolRunner:
         nested_display: bool = False,
         store: bool = True,
         batch_suffix: str = "",
-        turn_diff_path: str = "",
-        turn_diff_text: str = "",
-        turn_diff_before: str = "",
-        turn_diff_after: str = "",
+        turn_diff: "TurnDiff | None" = None,
     ) -> str:
         tool_class = TOOL_REGISTRY.get(call.name)
         key = self.session.store_tool_result(call.name, call.args, output) if not failed and store and (tool_class is None or tool_class.STORES_RESULT) else ""
@@ -5727,14 +5724,14 @@ class ToolRunner:
             self.session.record_tool_error(key or "-", call.name, call.args, output)
         elif key:
             self.update_code_index(call, output)
-            if turn_diff_path and turn_diff_text:
+            if turn_diff and turn_diff.path and turn_diff.diff:
                 self.session.store_turn_diff(
                     key,
                     self.session.state.turn_step,
-                    turn_diff_path,
-                    turn_diff_text,
-                    before=turn_diff_before,
-                    after=turn_diff_after,
+                    turn_diff.path,
+                    turn_diff.diff,
+                    before=turn_diff.before,
+                    after=turn_diff.after,
                     round=self.session.state.round_count,
                 )
         self.output_fn(
@@ -8861,6 +8858,14 @@ Tools:
             return
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
+    def _begin_cli_preview(self) -> None:
+        """Pause the status bar if running and start the CLI Bash live-preview line."""
+        self.live_status_paused = self.status_bar.is_running()
+        if self.live_status_paused:
+            self.status_bar.stop()
+        self.live_preview.start()
+        self.bash_live_preview_rendered = self.live_preview.active
+
     def tool_live_start(self) -> None:
         self.bash_live_preview_rendered = False
         if not self.ui.color:
@@ -8873,11 +8878,7 @@ Tools:
             self.bash_live_preview_rendered = True
             self.tui.invalidate()
             return
-        self.live_status_paused = self.status_bar.is_running()
-        if self.live_status_paused:
-            self.status_bar.stop()
-        self.live_preview.start()
-        self.bash_live_preview_rendered = self.live_preview.active
+        self._begin_cli_preview()
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
@@ -8894,11 +8895,7 @@ Tools:
             return
         if text:
             if not self.live_preview.active:
-                self.live_status_paused = self.status_bar.is_running()
-                if self.live_status_paused:
-                    self.status_bar.stop()
-                self.live_preview.start()
-                self.bash_live_preview_rendered = self.live_preview.active
+                self._begin_cli_preview()
             self.live_preview.update(text)
             return
         if self.live_preview.active:

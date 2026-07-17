@@ -1073,6 +1073,15 @@ class TestCallTool:
         with pytest.raises(n.ToolError, match="url"):
             s.mcp.call_tool("test", "echo", {})
 
+    def test_call_and_resource_paths_share_oauth_gate(self):
+        """call_tool and the resource path both reject an OAuth server with no stored login
+        (both route through the shared _resolve_server)."""
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        with pytest.raises(n.ToolError, match="requires OAuth login"):
+            s.mcp.call_tool("test", "echo", {})
+        with pytest.raises(n.ToolError, match="requires OAuth login"):
+            s.mcp.list_resources("test")
+
 
 # ---------------------------------------------------------------------------
 # CommandLoop — /mcp commands

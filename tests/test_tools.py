@@ -16,6 +16,26 @@ def anchor(index, line):
     return f"{index}:{n.ReadTool.line_hash(line)}"
 
 
+def test_validate_edit_target_branches(tmp_path):
+    s = session(tmp_path)
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+
+    # Existing file, editing -> True (caller should read it).
+    assert n.validate_edit_target(s, str(tmp_path / "a.py"), creating=False) is True
+    # Missing file, creating inside the workspace -> False (create fresh).
+    assert n.validate_edit_target(s, str(tmp_path / "new.py"), creating=True) is False
+    # Each invalid state raises the same ToolError both edit paths relied on.
+    with pytest.raises(n.ToolError, match="file already exists"):
+        n.validate_edit_target(s, str(tmp_path / "a.py"), creating=True)
+    with pytest.raises(n.ToolError, match="path is a directory"):
+        n.validate_edit_target(s, str(tmp_path / "sub"), creating=False)
+    with pytest.raises(n.ToolError, match="does not exist"):
+        n.validate_edit_target(s, str(tmp_path / "missing.py"), creating=False)
+    with pytest.raises(n.ToolError, match="outside workspace"):
+        n.validate_edit_target(s, "/etc/nanocode_should_not_create.py", creating=True)
+
+
 def test_read_and_search_success_paths(tmp_path):
     (tmp_path / "sample.py").write_text("alpha\nNeedle\nomega\n", encoding="utf-8")
     (tmp_path / "blob.bin").write_bytes(b"a\0b")
