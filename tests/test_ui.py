@@ -837,7 +837,8 @@ def test_tui_activity_uses_transient_cancelling_status(tmp_path):
     assert "working" not in text
 
 
-def test_tui_running_recall_removes_latest_pending_message():
+@pytest.mark.parametrize("recall_key", [(n.Keys.Up,), (n.Keys.ControlP,)])
+def test_tui_running_recall_removes_latest_pending_message(recall_key):
     pending = ["first", "second"]
 
     def recall():
@@ -847,7 +848,7 @@ def test_tui_running_recall_removes_latest_pending_message():
     app.set_running("working")
     bindings = app.make_bindings()
     event = type("Event", (), {"current_buffer": app.input_buffer})()
-    handler = next(binding.handler for binding in reversed(bindings.bindings) if binding.keys == (n.Keys.Up,) and binding.filter())
+    handler = next(binding.handler for binding in reversed(bindings.bindings) if binding.keys == recall_key and binding.filter())
 
     handler(event)
 

@@ -7085,7 +7085,10 @@ class TuiApp:
             else:
                 pt_search.start_search(direction=direction)
 
+        # Ctrl-P mirrors Up here: readline treats them as synonyms, and both recall the latest
+        # queued follow-up (or move the cursor up / walk history) while a turn is working.
         @bindings.add("up", filter=running, eager=True)
+        @bindings.add("c-p", filter=running, eager=True)
         def _recall(event):
             if self.input_buffer.text:
                 self.input_buffer.cursor_up()

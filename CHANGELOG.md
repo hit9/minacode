@@ -6,6 +6,7 @@
 ### Changed
 - Re-request the in-flight model turn with the `/resend` command, typed in the running follow-up input, instead of a keybinding; a long-running request now shows a `/resend` hint in the status bar.
 - Open the current input in `$VISUAL`/`$EDITOR` with `Ctrl-X Ctrl-E` (readline `edit-and-execute-command`) or `Ctrl-G`, matching Claude Code; a lone `Ctrl-X` no longer opens the editor on its own.
+- `Ctrl-P` now mirrors the Up arrow in the running follow-up input, recalling the latest queued message for editing; previously only the arrow key did.
 
 
 ## 0.9.9 - 2026-07-16
