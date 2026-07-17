@@ -83,7 +83,7 @@ nanocode 并没有发明一种新的 coding agent。它把读取和编辑文件�
 | `/model [MODEL]` | 显示或切换模型 |
 | `/yolo` | 切换工具确认 |
 
-运行 `/help` 查看全部命令和工具。交互选择器支持 `j`/`k`、方向键、`/` 搜索、Enter 和 Esc；输入支持历史补全、`Ctrl-R` 历史搜索，以及 `Ctrl-X` 用 `$EDITOR`（缺省回退到 vim）编辑当前输入。
+运行 `/help` 查看全部命令和工具。交互选择器支持 `j`/`k`、方向键、`/` 搜索、Enter 和 Esc；输入支持历史补全、`Ctrl-R` 历史搜索，以及 `Ctrl-X Ctrl-E`（或 `Ctrl-G`）用 `$EDITOR`（缺省回退到 vim）编辑当前输入。
 
 ## 配置
 

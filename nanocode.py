@@ -7096,13 +7096,14 @@ class TuiApp:
             else:
                 event.current_buffer.auto_up(count=event.arg)
 
-        bindings.add("c-g", filter=running, eager=True)(lambda _event: self.on_retry())
-
-        # Ctrl-X hands the current input to $VISUAL/$EDITOR (fallback vim) for editing. eager, so it
-        # fires immediately instead of waiting as an Emacs `c-x …` chord prefix.
+        # Ctrl-X Ctrl-E (readline `edit-and-execute-command`) and Ctrl-G hand the current input to
+        # $VISUAL/$EDITOR (fallback vim) for editing, matching Claude Code's editor bindings. The
+        # `c-x c-e` chord means a lone Ctrl-X waits for the second key instead of firing eagerly.
+        # In-flight resend has no key; it is the `/resend` command typed in the running input.
         edits_input = Condition(lambda: self.input_mode in {"chat", "running", "approval"})
 
-        @bindings.add("c-x", filter=~modal & edits_input, eager=True)
+        @bindings.add("c-x", "c-e", filter=~modal & edits_input)
+        @bindings.add("c-g", filter=~modal & edits_input)
         def _edit_in_editor(event):  # pragma: no cover — interactive path
             self.edit_input_in_editor()
 
@@ -7150,7 +7151,7 @@ class TuiApp:
 
     @staticmethod
     def editor_command() -> list[str]:
-        """The editor to launch for Ctrl-X: $VISUAL, then $EDITOR, then vim."""
+        """The editor to launch for Ctrl-X Ctrl-E / Ctrl-G: $VISUAL, then $EDITOR, then vim."""
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vim"
         return shlex.split(editor)
 
@@ -7189,7 +7190,7 @@ class TuiApp:
             self.invalidate()
 
     def edit_input_in_editor(self) -> None:
-        """Ctrl-X: edit the current input in an external editor, then load the result back."""
+        """Ctrl-X Ctrl-E / Ctrl-G: edit the current input in an external editor, then load the result back."""
         if self.app is not None:
             self.app.create_background_task(self._run_input_editor())
 
@@ -7802,7 +7803,7 @@ class BashLivePreview:
 
 
 class ModelRetryShortcut:
-    CTRL_G = 0x07
+    CTRL_RBRACKET = 0x1D
 
     def __init__(self, session: Session):
         self.session = session
@@ -7823,7 +7824,7 @@ class ModelRetryShortcut:
             self.original_attrs = termios.tcgetattr(self.fd)
             attrs = list(self.original_attrs)
             attrs[6] = list(attrs[6])
-            attrs[6][termios.VQUIT] = self.control_char(attrs[6], self.CTRL_G)
+            attrs[6][termios.VQUIT] = self.control_char(attrs[6], self.CTRL_RBRACKET)
             if hasattr(termios, "VREPRINT"):
                 attrs[6][termios.VREPRINT] = self.control_char(attrs[6], os.fpathconf(self.fd, "PC_VDISABLE"))
             termios.tcsetattr(self.fd, termios.TCSADRAIN, attrs)
@@ -7983,7 +7984,7 @@ class StatusBar:
             if self.retry_notice_until > time.monotonic():
                 parts.append(("retrying", "warn"))
             elif self.model_elapsed() >= self.stress_after():
-                parts.append(("ctrl-g retry", "warn"))
+                parts.append(("/resend to re-request", "warn"))
         return parts
 
     def styled_fragments(self, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -8267,14 +8268,14 @@ class CommandLoop:
         "/skills": "skills_command", "/config": "config", "/debug": "debug",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
-        "/mcp": "mcp_command",
+        "/mcp": "mcp_command", "/resend": "resend_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
 
     # Commands safe to run from the follow-up input while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo", "/resend"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -8335,6 +8336,7 @@ class CommandLoop:
   /config            Show active config.
   /debug             Show recent diagnostics.
   /compact           Compact context now.
+  /resend            Resend the in-flight model request (type it while a turn is working).
   /index [force]      Sync or rebuild code symbol index.
   /provider [NAME]   Select or show the active provider.
   /model [MODEL]     Select or set the active model.
@@ -8914,6 +8916,16 @@ Tools:
         if output is not None:
             (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/skills", "/debug", "/diff"} else self.emit)(output)
         return True, False
+
+    def resend_command(self, _args: str) -> str | None:
+        """Resend the in-flight model request. Available only in the running queue-input region:
+        typed while a turn works, it re-requests the current model call (same path as on_retry)."""
+        if self.tui is None or self.tui.input_mode != "running":
+            return "/resend re-requests the current model request — type it while a turn is working."
+        if self.session.state.current_model_call_started_at <= 0:
+            return "Nothing to resend right now; /resend works while the model is generating."
+        self.tui.on_retry()
+        return None
 
     def mcp_command(self, args: str) -> str:
         mcp = self.session.mcp

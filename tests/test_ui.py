@@ -785,20 +785,45 @@ def test_tui_ctrl_d_submits_multiline_approval_input():
     assert app._input_result == "first\nsecond"
 
 
-def test_tui_ctrl_g_retries_only_while_running():
+def test_resend_command_only_resends_while_running(tmp_path):
+    command_loop = loop(tmp_path)
     retried = []
-    app = n.TuiApp(on_retry=lambda: retried.append(True))
+    command_loop.tui = n.TuiApp(on_retry=lambda: retried.append(True))
+
+    # Reachable from the running follow-up input (queue region), not just the idle prompt.
+    assert "/resend" in n.CommandLoop.QUEUE_RUN_COMMANDS
+
+    # Idle chat: no-op with guidance.
+    command_loop.tui.set_idle()
+    command_loop.command("/resend")
+    assert retried == []
+
+    # Running but no model call in flight: still a no-op.
+    command_loop.tui.set_running("working")
+    command_loop.session.state.current_model_call_started_at = 0.0
+    command_loop.command("/resend")
+    assert retried == []
+
+    # Running with a model call in flight: resends via on_retry.
+    command_loop.session.state.current_model_call_started_at = 1.0
+    command_loop.command("/resend")
+    assert retried == [True]
+
+
+def test_tui_ctrl_g_and_ctrl_x_ctrl_e_open_editor():
+    opened = []
+    app = n.TuiApp()
+    app.edit_input_in_editor = lambda: opened.append(True)
     bindings = app.make_bindings()
     event = type("Event", (), {})()
 
-    app.set_running("working")
-    binding = next(binding for binding in bindings.bindings if binding.keys == (n.Keys.ControlG,))
-    assert binding.filter()
-    binding.handler(event)
-    app.set_idle()
+    # A fresh TuiApp is in chat mode, where the editor bindings are active.
+    for keys in ((n.Keys.ControlG,), (n.Keys.ControlX, n.Keys.ControlE)):
+        binding = next(binding for binding in bindings.bindings if binding.keys == keys)
+        assert binding.filter()
+        binding.handler(event)
 
-    assert retried == [True]
-    assert not binding.filter()
+    assert opened == [True, True]
 
 
 def test_tui_activity_uses_transient_cancelling_status(tmp_path):
