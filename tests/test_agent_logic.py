@@ -1578,7 +1578,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     count = len(s.skills.skills)  # 2 project + built-in nanocode-help
     assert count == 3
     assert f"skills `{count}`" in loop.status("")
-    bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(0.0, show_elapsed=False))
+    bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
 

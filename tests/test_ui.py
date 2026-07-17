@@ -1571,7 +1571,7 @@ def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch
     s.config.provider.model = "模型" * 20
     monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((20, 24)))
 
-    fragments = n.StatusBar(s).fragments(0.0, sweep=False, show_elapsed=False)
+    fragments = n.StatusBar(s).fragments(sweep=False, show_elapsed=False)
 
     assert get_cwidth("".join(text for _style, text in fragments)) < 20
 

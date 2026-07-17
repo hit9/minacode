@@ -5608,7 +5608,7 @@ class ToolRunner:
         if kind == "ok":
             return self.finish(call, output, elapsed=elapsed, d=d)
         if kind == "reject":
-            return self.reject(call, output, elapsed=elapsed, d=d)
+            return self.reject(call, output, d=d)
         return self.finish(call, output, failed=True, elapsed=elapsed, d=d)
 
     def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
@@ -5668,7 +5668,7 @@ class ToolRunner:
                 self.live_start()
             output = self.call_tool(tool, planned_edit)
         except ToolError as error:
-            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, d=d)
+            return "failed", self.reject(call, f"ToolError: {error}", d=d)
         except Exception as error:
             return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d)
         return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d)
@@ -5678,7 +5678,6 @@ class ToolRunner:
         call: ToolCall,
         output: str,
         *,
-        elapsed: float | None = None,
         d: "ToolDisplay | None" = None,
     ) -> str:
         d = d or ToolDisplay()
@@ -7839,24 +7838,23 @@ class StatusBar:
 
     def display_fragments(self, *, active: bool) -> list[tuple[str, str]]:
         if not active:
-            return self.fragments(0.0, sweep=False, show_elapsed=False)
+            return self.fragments(sweep=False, show_elapsed=False)
         count = self.session.state.model_retry_count
         if count != self.seen_retry_count:
             self.seen_retry_count = count
             self.retry_notice_until = time.monotonic() + 2.0
-        elapsed = max(0.0, time.monotonic() - self.started_at) if self.started_at else 0.0
-        return self.fragments(elapsed, sweep=True, show_elapsed=True)
+        return self.fragments(sweep=True, show_elapsed=True)
 
-    def fragments(self, elapsed: float, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
-        entries = self.entries(elapsed, show_elapsed=show_elapsed)
+    def fragments(self, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
+        entries = self.entries(show_elapsed=show_elapsed)
         text = " | ".join(text for text, _ in entries)
         columns = shutil.get_terminal_size((120, 20)).columns
         if get_cwidth(text) >= columns:
             text = Text.clip_width(text, columns - 1)
-            return self.sweep_fragments(text, elapsed) if sweep else [(Theme.style("status.base"), text)]
-        return self.sweep_fragments(text, elapsed) if sweep else self.styled_fragments(entries)
+            return self.sweep_fragments(text) if sweep else [(Theme.style("status.base"), text)]
+        return self.sweep_fragments(text) if sweep else self.styled_fragments(entries)
 
-    def entries(self, elapsed: float, *, show_elapsed: bool) -> list[tuple[str, str]]:
+    def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
         provider = self.session.config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         reason = provider.reasoning
@@ -7901,7 +7899,7 @@ class StatusBar:
             fragments.append((self.role_style(role), text))
         return fragments or [("", "")]
 
-    def sweep_fragments(self, text: str, elapsed: float) -> list[tuple[str, str]]:
+    def sweep_fragments(self, text: str) -> list[tuple[str, str]]:
         if not text:
             return [("", "")]
         width = max(1, len(text) - 1)
