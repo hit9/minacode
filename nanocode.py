@@ -4969,6 +4969,13 @@ class MCPManager:
         body = "\n".join(blocks)
         return f'<MCPAutoResources note="docs referenced by {server}.{tool_name}; injected once">\n{body}\n</MCPAutoResources>\n'
 
+    @staticmethod
+    def _dump_object(item: Any) -> str:
+        """Render a non-str/dict MCP item: pydantic-style model_dump as JSON, else str()."""
+        if hasattr(item, "model_dump"):
+            return json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2)
+        return str(item)
+
     def normalize_resource(self, result: Any) -> str:
         items = result if isinstance(result, list) else [result]
         parts: list[str] = []
@@ -4982,10 +4989,7 @@ class MCPManager:
                 mime = str(getattr(item, "mimeType", "") or "application/octet-stream")
                 parts.append(f"<binary mimeType={json.dumps(mime)} bytes={len(blob)}/>")
                 continue
-            if hasattr(item, "model_dump"):
-                parts.append(json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2))
-                continue
-            parts.append(str(item))
+            parts.append(self._dump_object(item))
         return self._join_bounded(parts)
 
     def _format_resource_line(self, info: MCPResourceInfo) -> str:
@@ -5032,10 +5036,8 @@ class MCPManager:
                 parts.append(str(getattr(item, "text", "") or ""))
             elif item_type == "resource":
                 parts.append(str(getattr(item, "resource", "") or ""))
-            elif hasattr(item, "model_dump"):
-                parts.append(json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2))
             else:
-                parts.append(str(item))
+                parts.append(self._dump_object(item))
         return self._join_bounded(parts)
 
     def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
