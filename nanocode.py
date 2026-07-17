@@ -7777,75 +7777,6 @@ class BashLivePreview:
         return str(LogBlock.hierarchy(None, lines)).splitlines()
 
 
-class ModelRetryShortcut:
-    CTRL_RBRACKET = 0x1D
-
-    def __init__(self, session: Session):
-        self.session = session
-        self.fd: int | None = None
-        self.original_attrs = None
-        self.previous_handler = None
-        self.previous_sigint_handler = None
-
-    def __enter__(self):
-        self.previous_sigint_handler = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, self.handle_sigint)
-        if not sys.stdin.isatty() or not hasattr(signal, "SIGQUIT"):
-            return self
-        try:
-            import termios
-
-            self.fd = sys.stdin.fileno()
-            self.original_attrs = termios.tcgetattr(self.fd)
-            attrs = list(self.original_attrs)
-            attrs[6] = list(attrs[6])
-            attrs[6][termios.VQUIT] = self.control_char(attrs[6], self.CTRL_RBRACKET)
-            if hasattr(termios, "VREPRINT"):
-                attrs[6][termios.VREPRINT] = self.control_char(attrs[6], os.fpathconf(self.fd, "PC_VDISABLE"))
-            termios.tcsetattr(self.fd, termios.TCSADRAIN, attrs)
-            self.previous_handler = signal.getsignal(signal.SIGQUIT)
-            signal.signal(signal.SIGQUIT, self.handle_signal)
-        except Exception:
-            self.fd = None
-            self.original_attrs = None
-        return self
-
-    def __exit__(self, *args) -> None:
-        if self.previous_sigint_handler is not None:
-            with contextlib.suppress(Exception):
-                signal.signal(signal.SIGINT, self.previous_sigint_handler)
-        try:
-            import termios
-
-            if self.previous_handler is not None:
-                signal.signal(signal.SIGQUIT, self.previous_handler)
-            if self.fd is not None and self.original_attrs is not None:
-                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.original_attrs)
-        except Exception:
-            pass
-        self.fd = None
-        self.original_attrs = None
-        self.previous_handler = None
-        self.previous_sigint_handler = None
-
-    @staticmethod
-    def control_char(chars: list[Any], value: int) -> int | bytes:
-        return bytes([value]) if chars and isinstance(chars[0], bytes) else value
-
-    def handle_sigint(self, _signum: int, _frame: Any) -> None:
-        if not self.session.state.manual_model_retry_requested:
-            raise KeyboardInterrupt
-        if self.session.state.current_model_call_started_at > 0:
-            raise KeyboardInterrupt
-        self.session.state.manual_model_retry_requested = False
-
-    def handle_signal(self, _signum: int, _frame: Any) -> None:
-        if self.session.state.current_model_call_started_at > 0:
-            self.session.state.manual_model_retry_requested = True
-            self.session.state.model_retry_count += 1
-            raise KeyboardInterrupt
-
-
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
@@ -8593,15 +8524,13 @@ Tools:
             try:
                 self.status_bar.start()
                 try:
-                    with ModelRetryShortcut(self.session):
-                        answer = self.agent.run(user_input)
+                    answer = self.agent.run(user_input)
                 except KeyboardInterrupt:
                     self.emit("Cancelled")
                     continue
                 except NanocodeError as error:
                     answer = f"Error: {error}"
             finally:
-                self.session.state.manual_model_retry_requested = False
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
             elapsed = time.monotonic() - started

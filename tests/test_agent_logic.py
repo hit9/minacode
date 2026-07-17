@@ -823,27 +823,6 @@ def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     assert echoed == ["\n• do a thing\n\n• then verify\n\n"]
 
 
-def test_flush_sigint_ignores_stale_retry_signal(tmp_path):
-    s = session(tmp_path)
-    shortcut = n.ModelRetryShortcut(s)
-    s.state.manual_model_retry_requested = True
-    s.state.current_model_call_started_at = 0.0
-
-    shortcut.handle_sigint(n.signal.SIGINT, None)
-
-    assert s.state.manual_model_retry_requested is False
-
-
-def test_flush_sigint_still_interrupts_active_retry_request(tmp_path):
-    s = session(tmp_path)
-    shortcut = n.ModelRetryShortcut(s)
-    s.state.manual_model_retry_requested = True
-    s.state.current_model_call_started_at = 123.0
-
-    with pytest.raises(KeyboardInterrupt):
-        shortcut.handle_sigint(n.signal.SIGINT, None)
-
-
 def test_queue_command_runs_readonly(tmp_path):
     """A read-only slash command in the queue runs immediately and is not queued for the LLM."""
     s = session(tmp_path)

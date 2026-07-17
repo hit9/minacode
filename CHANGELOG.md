@@ -11,6 +11,9 @@
 - Open the current input in `$VISUAL`/`$EDITOR` with `Ctrl-X Ctrl-E` (readline `edit-and-execute-command`) or `Ctrl-G`, matching Claude Code; a lone `Ctrl-X` no longer opens the editor on its own.
 - `Ctrl-P` now mirrors the Up arrow in the running follow-up input, recalling the latest queued message for editing; previously only the arrow key did.
 
+### Removed
+- The non-TUI REPL's `Ctrl-\` model-request retry (terminal `VQUIT` remapping). It only activated when the plain REPL ran on a TTY via an injected input function — never in normal use, where the full TUI provides `/resend`. Interactive sessions retry with `/resend`; transient errors still auto-retry.
+
 
 ## 0.9.9 - 2026-07-16
 
