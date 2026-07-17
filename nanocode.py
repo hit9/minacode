@@ -5457,6 +5457,18 @@ class ActiveResource:
             action(value)
 
 
+@dataclass
+class ToolDisplay:
+    """How one tool call renders: the batch-counter suffix, the short call line, whether it prints
+    as a nested tree, and whether it was auto/user approved. Threaded from run_one into finish/reject."""
+
+    batch_suffix: str = ""
+    display: str | None = None
+    nested_display: bool = False
+    approved: bool = False
+    auto: bool = False
+
+
 class ToolRunner:
     BASH_PREVIEW_LINES: ClassVar[int] = 12
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
@@ -5582,11 +5594,12 @@ class ToolRunner:
 
     def finalize_outcome(self, call: ToolCall, outcome: tuple[str, str, str | None, float], batch_suffix: str = "") -> str:
         kind, output, display, elapsed = outcome
+        d = ToolDisplay(batch_suffix=batch_suffix, display=display)
         if kind == "ok":
-            return self.finish(call, output, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
+            return self.finish(call, output, elapsed=elapsed, d=d)
         if kind == "reject":
-            return self.reject(call, output, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
-        return self.finish(call, output, failed=True, elapsed=elapsed, display=display, batch_suffix=batch_suffix)
+            return self.reject(call, output, elapsed=elapsed, d=d)
+        return self.finish(call, output, failed=True, elapsed=elapsed, d=d)
 
     def edit_segment_end(self, calls: list[ToolCall], start: int) -> int:
         end = start
@@ -5607,76 +5620,48 @@ class ToolRunner:
     ) -> tuple[str, str]:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", batch_suffix=batch_suffix)
+            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", d=ToolDisplay(batch_suffix=batch_suffix))
         if call.error:
-            return "failed", self.reject(call, f"ToolError: {call.error}", batch_suffix=batch_suffix)
+            return "failed", self.reject(call, f"ToolError: {call.error}", d=ToolDisplay(batch_suffix=batch_suffix))
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
-        started, approved, auto, display = time.monotonic(), False, False, None
-        nested_display = False
+        started = time.monotonic()
+        d = ToolDisplay(batch_suffix=batch_suffix)
         if isinstance(tool, AskTool):
             tool.question_fn = self.question_fn
         try:
-            display = self.short_call(call, tool.short_args())
+            d.display = self.short_call(call, tool.short_args())
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
             if needs_confirmation and self.session.settings.yolo:
-                auto = True
+                d.auto = True
                 pre = self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit)
                 # The "auto …" header duplicates the result line; only surface it when it carries a
                 # preview the result line won't repeat (e.g. an Edit diff). The auto-approval itself
                 # is recorded by the [auto] tag on the result line below.
                 if pre.has_children:
                     self.output_fn(pre)
-                    nested_display = True
+                    d.nested_display = True
             elif needs_confirmation:
-                nested_display = True
+                d.nested_display = True
                 confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
-                    return "refused", self.finish(
-                        call, output, failed=True, elapsed=time.monotonic() - started, display=display, nested_display=True, batch_suffix=batch_suffix
-                    )
-                approved = True
+                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, d=d)
+                d.approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
-                if not nested_display:
-                    self.output_fn(LogBlock.hierarchy(self.log_root(display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
-                    nested_display = True
+                if not d.nested_display:
+                    self.output_fn(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
+                    d.nested_display = True
                 self.live_start()
             output = self.call_tool(tool, planned_edit)
         except ToolError as error:
-            return "failed", self.reject(
-                call,
-                f"ToolError: {error}",
-                elapsed=time.monotonic() - started,
-                display=display,
-                nested_display=nested_display,
-                batch_suffix=batch_suffix,
-            )
+            return "failed", self.reject(call, f"ToolError: {error}", elapsed=time.monotonic() - started, d=d)
         except Exception as error:
-            output = f"ToolError: {error}"
-            return "failed", self.finish(
-                call,
-                output,
-                failed=True,
-                elapsed=time.monotonic() - started,
-                display=display,
-                nested_display=nested_display,
-                batch_suffix=batch_suffix,
-            )
-        return "ok", self.finish(
-            call,
-            output,
-            elapsed=time.monotonic() - started,
-            approved=approved,
-            auto=auto,
-            display=display,
-            nested_display=nested_display,
-            batch_suffix=batch_suffix,
-            turn_diff=tool.turn_diff(),
-        )
+            return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d)
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d)
 
     def reject(
         self,
@@ -5684,24 +5669,23 @@ class ToolRunner:
         output: str,
         *,
         elapsed: float | None = None,
-        display: str | None = None,
-        nested_display: bool = False,
-        batch_suffix: str = "",
+        d: "ToolDisplay | None" = None,
     ) -> str:
+        d = d or ToolDisplay()
         self.session.record_tool_error("-", call.name, call.args, output)
         self.output_fn(
             LogBlock.hierarchy(None, [LogLine("error", self.oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
-            if nested_display
-            else self.reject_display(call, output, display=display, batch_suffix=batch_suffix)
+            if d.nested_display
+            else self.reject_display(call, output, d=d)
         )
-        return self.tool_message(call, "", output, failed=True, display=display)
+        return self.tool_message(call, "", output, failed=True, display=d.display)
 
-    def reject_display(self, call: ToolCall, output: str, *, display: str | None = None, batch_suffix: str = "") -> LogBlock:
+    def reject_display(self, call: ToolCall, output: str, *, d: "ToolDisplay") -> LogBlock:
         # Argument/usage rejections are usually self-corrected on retry, so show a quiet one-liner
         # (rendered dim by UiPrinter) instead of the full red failed block. The model still receives
         # the complete error so it can correct the call.
         reason = self.oneline(output.removeprefix("ToolError:").strip(), 60)
-        return LogBlock.hierarchy(self.log_root((display or self.short_call(call)) + " · rejected: " + reason, LogRole.MUTED, batch_suffix, call), [])
+        return LogBlock.hierarchy(self.log_root((d.display or self.short_call(call)) + " · rejected: " + reason, LogRole.MUTED, d.batch_suffix, call), [])
 
     def finish(
         self,
@@ -5710,14 +5694,11 @@ class ToolRunner:
         *,
         failed: bool = False,
         elapsed: float | None = None,
-        approved: bool = False,
-        auto: bool = False,
-        display: str | None = None,
-        nested_display: bool = False,
         store: bool = True,
-        batch_suffix: str = "",
         turn_diff: "TurnDiff | None" = None,
+        d: "ToolDisplay | None" = None,
     ) -> str:
+        d = d or ToolDisplay()
         tool_class = TOOL_REGISTRY.get(call.name)
         key = self.session.store_tool_result(call.name, call.args, output) if not failed and store and (tool_class is None or tool_class.STORES_RESULT) else ""
         if failed:
@@ -5734,21 +5715,8 @@ class ToolRunner:
                     after=turn_diff.after,
                     round=self.session.state.round_count,
                 )
-        self.output_fn(
-            self.finish_display(
-                call,
-                key,
-                output,
-                failed=failed,
-                approved=approved,
-                auto=auto,
-                display=display,
-                nested_display=nested_display,
-                batch_suffix=batch_suffix,
-                elapsed=elapsed,
-            )
-        )
-        return self.tool_message(call, key, output, failed=failed, display=display)
+        self.output_fn(self.finish_display(call, key, output, failed=failed, elapsed=elapsed, d=d))
+        return self.tool_message(call, key, output, failed=failed, display=d.display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
         head = "tool " + ((key + " ") if key else ("- " if failed else "")) + (display or self.short_call(call))
@@ -5802,19 +5770,16 @@ class ToolRunner:
         output: str,
         *,
         failed: bool,
-        approved: bool = False,
-        auto: bool = False,
-        display: str | None = None,
-        nested_display: bool = False,
-        batch_suffix: str = "",
         elapsed: float | None = None,
+        d: "ToolDisplay | None" = None,
     ) -> str | LogBlock:
-        if call.name == "Note" and not failed and display:
-            return self.with_batch_suffix(display.removeprefix("Note ").strip(), batch_suffix)
+        d = d or ToolDisplay()
+        if call.name == "Note" and not failed and d.display:
+            return self.with_batch_suffix(d.display.removeprefix("Note ").strip(), d.batch_suffix)
         bash_live_preview_shown = bool(call.name == "Bash" and self.bash_live_preview_shown and self.bash_live_preview_shown())
-        tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if approved else " [auto]" if auto else ""
-        tree = nested_display or call.name == "Bash"
-        root = self.log_root(display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, batch_suffix, call)
+        tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
+        tree = d.nested_display or call.name == "Bash"
+        root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
         children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
@@ -5834,7 +5799,7 @@ class ToolRunner:
         elif not tree:
             tail = ((" → " + key) if key else "") + tag
             root = LogLine(root.label, root.text, root.role, meta=root.meta + tail, syntax=root.syntax)
-        return LogBlock.hierarchy(None if nested_display else root, children)
+        return LogBlock.hierarchy(None if d.nested_display else root, children)
 
     def log_root(self, display: str, role: LogRole = LogRole.TOOL, batch_suffix: str = "", call: ToolCall | None = None) -> LogLine:
         name, _, args = display.partition(" ")

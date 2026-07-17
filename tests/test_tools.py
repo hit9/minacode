@@ -1564,7 +1564,7 @@ def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_pa
         "tr.1",
         output,
         failed=False,
-        nested_display=True,
+        d=n.ToolDisplay(nested_display=True),
     ))
 
     assert display.startswith("    ├ output")
