@@ -2163,6 +2163,14 @@ class ReadTool(Tool):
         match = re.fullmatch(r"(\d+):([0-9a-z]{5}|[0-9a-f]{8})", text)
         return (int(match.group(1)), match.group(2).lower()) if match else None
 
+    @staticmethod
+    def require_anchor(anchor: str) -> tuple[int, str]:
+        """Parse an anchor or raise the standard ToolError guiding the model to a real one."""
+        parsed = ReadTool.parse_anchor(anchor)
+        if parsed is None:
+            raise ToolError('invalid anchor; use the "anchor=line:hash" value from Read, Search, or InspectCode')
+        return parsed
+
     @classmethod
     def anchor_matches(cls, line: str, expected: str) -> bool:
         return expected == cls.line_hash(line) or expected == cls.indexed_line_hash(line)
@@ -2978,10 +2986,7 @@ class EditTool(Tool):
         return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t") if "\n" not in value and "\\n" in value else value
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
-        parsed = ReadTool.parse_anchor(anchor)
-        if parsed is None:
-            raise ToolError('invalid anchor; use the "anchor=line:hash" value from Read, Search, or InspectCode')
-        index, expected = parsed
+        index, expected = ReadTool.require_anchor(anchor)
         if index >= len(lines):
             raise ToolError("anchor line out of range")
         if not ReadTool.anchor_matches(lines[index], expected):
@@ -4421,10 +4426,7 @@ class EditBatchPlan:
         return [EditBatchPlan.Line(line, None) for line in lines]
 
     def resolve_anchor(self, state: FileState, anchor: str) -> int:
-        parsed = ReadTool.parse_anchor(anchor)
-        if parsed is None:
-            raise ToolError('invalid anchor; use the "anchor=line:hash" value from Read, Search, or InspectCode')
-        index, expected = parsed
+        index, expected = ReadTool.require_anchor(anchor)
         if index < len(state.lines) and ReadTool.anchor_matches(state.lines[index].text, expected):
             return index
         if index < len(state.original) and ReadTool.anchor_matches(state.original[index], expected):
@@ -4984,10 +4986,7 @@ class MCPManager:
                 parts.append(json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2))
                 continue
             parts.append(str(item))
-        text = "\n".join(part for part in parts if part).strip()
-        if len(text) > self.RAW_OUTPUT_LIMIT:
-            text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
-        return text
+        return self._join_bounded(parts)
 
     def _format_resource_line(self, info: MCPResourceInfo) -> str:
         desc = " ".join((info.description or "").split())
@@ -4996,6 +4995,20 @@ class MCPManager:
         mime = f" [{info.mime_type}]" if info.mime_type else ""
         label = f"{info.uri}{mime}"
         return f"- {label} - {desc}" if desc else f"- {label}"
+
+    def _join_bounded(self, parts: list[str]) -> str:
+        """Join non-empty parts and clip to RAW_OUTPUT_LIMIT with a truncation marker."""
+        text = "\n".join(part for part in parts if part).strip()
+        if len(text) > self.RAW_OUTPUT_LIMIT:
+            text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
+        return text
+
+    @staticmethod
+    def _schema_props_required(schema: Json) -> tuple[dict, list]:
+        """Extract a JSON-Schema object's `properties` dict and `required` list, tolerant of bad types."""
+        props = schema.get("properties", {})
+        required = schema.get("required", [])
+        return (props if isinstance(props, dict) else {}, required if isinstance(required, list) else [])
 
     def normalize_result(self, result: Any) -> str:
         parts: list[str] = []
@@ -5023,10 +5036,7 @@ class MCPManager:
                 parts.append(json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2))
             else:
                 parts.append(str(item))
-        text = "\n".join(part for part in parts if part).strip()
-        if len(text) > self.RAW_OUTPUT_LIMIT:
-            text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
-        return text
+        return self._join_bounded(parts)
 
     def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
         config = self.find_config(name)
@@ -5105,10 +5115,7 @@ class MCPManager:
             lines.append(Tool.compact(info.description, self.DESCRIBE_DESCRIPTION_LIMIT))
             lines.append("</description>")
         lines.append("<arguments>")
-        props = schema.get("properties", {})
-        props = props if isinstance(props, dict) else {}
-        required = schema.get("required", [])
-        required = required if isinstance(required, list) else []
+        props, required = self._schema_props_required(schema)
         for index, (name, prop) in enumerate(props.items()):
             if index >= self.DESCRIBE_ARGUMENT_LIMIT:
                 lines.append(f"... {len(props) - self.DESCRIBE_ARGUMENT_LIMIT} more arguments omitted")
@@ -5340,10 +5347,7 @@ class MCPManager:
 
     def _tool_args_summary(self, info: MCPToolInfo) -> str:
         schema = info.input_schema or {}
-        props = schema.get("properties", {})
-        props = props if isinstance(props, dict) else {}
-        required = schema.get("required", [])
-        required = required if isinstance(required, list) else []
+        props, required = self._schema_props_required(schema)
 
         def _fmt(name: str) -> str:
             t = props.get(name, {}).get("type", "")
