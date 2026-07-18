@@ -21,8 +21,3 @@ searching, navigating code) never prompt.
 
 Turn confirmations off once you trust a workflow with `--yolo` (at startup) or `/yolo`
 (in a session).
-
-## External tools
-
-- **[MCP](mcp.md)** — call tools from external servers you connect.
-- **[Skills](skills.md)** — load reusable instruction packs on demand.

@@ -68,13 +68,3 @@ data_dir = "~/.nanocode"   # sessions, code index, OAuth tokens
 ```
 
 Sessions live under `<data_dir>/sessions/`.
-
-## MCP servers
-
-MCP servers are configured under `[mcp.<name>]` blocks — see [MCP](mcp.md) for the full
-reference.
-
-## Skills
-
-Skills aren't configured in TOML; they're discovered from the filesystem — see
-[Skills](skills.md).

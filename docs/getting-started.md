@@ -77,9 +77,3 @@ Exit with `/exit`, `/quit`, or `Ctrl-D`.
 | `--config <path>` | Use a specific config file instead of `~/.nanocode/config.toml` |
 | `--init-config` | Write a starter config file and exit |
 | `-v`, `--version` | Print the version and exit |
-
-## Where to next
-
-- [Usage](usage.md) — the interactive session, commands, sessions, and diffs
-- [Tools](tools.md) — what the agent can actually do
-- [Configuration](configuration.md) — providers, reasoning, runtime limits
