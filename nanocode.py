@@ -8213,55 +8213,23 @@ class ChoiceViewState:
         return TUI_MODAL_PENDING
 
 
-@dataclass(frozen=True)
-class CommandSpec:
-    """Metadata for a slash-command registered on CommandLoop."""
-
-    name: str
-    queue_run: bool = False  # safe to run from the running follow-up input
-    emit_answer: bool = False  # output should use ui.emit_answer instead of emit
-
-
-def slash_command(name: str, *, queue_run: bool = False, emit_answer: bool = False):
-    """Decorator that registers a CommandLoop method as a slash-command."""
-
-    def decorator(func: Callable) -> Callable:
-        func._command_spec = CommandSpec(name, queue_run, emit_answer)
-        return func
-
-    return decorator
-
-
-def register_commands(cls: type) -> type:
-    """Class decorator that collects @command metadata into class registries."""
-
-    handlers: dict[str, str] = {}
-    queue_run: set[str] = set()
-    emit_answer: set[str] = set()
-    for attr in dir(cls):
-        if attr.startswith("_"):
-            continue
-        method = getattr(cls, attr)
-        spec = getattr(method, "_command_spec", None)
-        if spec is None:
-            continue
-        handlers[spec.name] = attr
-        if spec.queue_run:
-            queue_run.add(spec.name)
-        if spec.emit_answer:
-            emit_answer.add(spec.name)
-    cls.COMMAND_HANDLERS = handlers
-    cls.COMMANDS = tuple(handlers) + ("/exit", "/quit")
-    cls.QUEUE_RUN_COMMANDS = frozenset(queue_run)
-    cls.EMIT_ANSWER_COMMANDS = frozenset(emit_answer)
-    return cls
-
-
-@register_commands
 class CommandLoop:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C send immediately"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C sends now"
+    # fmt: off
+    COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
+        "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
+        "/skills": "skills_command", "/config": "config", "/debug": "debug",
+        "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
+        "/reason": "reason", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
+        "/mcp": "mcp_command", "/resend": "resend_command",
+    }
+    COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
+    # fmt: on
 
+    # Commands safe to run from the follow-up input while the agent works: read-only
+    # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo", "/resend"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -8898,10 +8866,9 @@ Tools:
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
-            (self.ui.emit_answer if name in self.EMIT_ANSWER_COMMANDS else self.emit)(output)
+            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/skills", "/debug", "/diff"} else self.emit)(output)
         return True, False
 
-    @slash_command("/resend", queue_run=True)
     def resend_command(self, _args: str) -> str | None:
         """Resend the in-flight model request. Available only in the running queue-input region:
         typed while a turn works, it re-requests the current model call (same path as on_retry)."""
@@ -8912,7 +8879,6 @@ Tools:
         self.tui.on_retry()
         return None
 
-    @slash_command("/mcp", queue_run=True, emit_answer=True)
     def mcp_command(self, args: str) -> str:
         mcp = self.session.mcp
         if mcp is None:
@@ -9050,11 +9016,9 @@ Tools:
         labels[current] = labels.get(current, current) + " (current)"
         return self.select_choice("Reasoning effort", REASONING_CHOICES, labels=labels, current=current)
 
-    @slash_command("/help", queue_run=True)
     def help(self, args: str) -> str:
         return self.HELP.rstrip()
 
-    @slash_command("/status", queue_run=True, emit_answer=True)
     def status(self, args: str) -> str:
         usage = self.session.usage
         provider = self.session.config.provider
@@ -9094,7 +9058,6 @@ Tools:
             ]
         )
 
-    @slash_command("/skills", queue_run=True, emit_answer=True)
     def skills_command(self, args: str) -> str:
         library = self.session.skills
         skills = library.all() if library else []
@@ -9106,7 +9069,6 @@ Tools:
         )
         return "\n".join([f"### Skills · {len(skills)}", "", "Load with `Skill(name)` or reference inline with `$name`.", "", table])
 
-    @slash_command("/ps", queue_run=True, emit_answer=True)
     def ps_command(self, args: str) -> str:
         if args.strip():
             return "Usage: /ps"
@@ -9118,7 +9080,6 @@ Tools:
         table = ContextManager.md_table(["id", "status", "elapsed", "command"], rows)
         return f"### Active jobs · {len(running)}\n\n{table}"
 
-    @slash_command("/diff", queue_run=True, emit_answer=True)
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
@@ -9234,7 +9195,6 @@ Tools:
 
         self.tui.show_modal(fragments, modal_key, exclusive=True)
 
-    @slash_command("/config")
     def config(self, args: str) -> str:
         provider = self.session.config.provider
         return "\n".join(
@@ -9265,7 +9225,6 @@ Tools:
             ]
         )
 
-    @slash_command("/debug", queue_run=True, emit_answer=True)
     def debug(self, args: str) -> str:
         if args.strip():
             return "Usage: /debug"
@@ -9291,7 +9250,6 @@ Tools:
                 lines.append(f"| {region.get('name', '(unknown)')} | {sizes} | `{before}` → `{after}` |")
         return "\n".join(lines)
 
-    @slash_command("/compact")
     def compact(self, args: str) -> str:
         if args.strip():
             return "Usage: /compact"
@@ -9327,7 +9285,6 @@ Tools:
             f"prior summary inserted, ctx {self.session.state.context_percent}%{fallback_note}"
         )
 
-    @slash_command("/index")
     def index(self, args: str) -> str:
         value = args.strip()
         if value not in {"", "force"}:
@@ -9338,7 +9295,6 @@ Tools:
         finally:
             self.status_bar.stop()
 
-    @slash_command("/provider")
     def provider(self, args: str) -> str:
         parts = args.split()
         if len(parts) > 1:
@@ -9361,7 +9317,6 @@ Tools:
         self.session.config.active_provider = name
         return "Set provider = " + name
 
-    @slash_command("/model")
     def model(self, args: str) -> str:
         parts = args.split()
         if len(parts) > 1:
@@ -9435,7 +9390,6 @@ Tools:
             lines.append("Set provider.reasoning = " + reasoning)
         return "\n".join(lines)
 
-    @slash_command("/reason")
     def reason(self, args: str) -> str:
         value = args.strip()
         if value:
@@ -9449,12 +9403,10 @@ Tools:
             return "Set provider.reasoning = " + choice
         return "No change"
 
-    @slash_command("/yolo", queue_run=True)
     def yolo(self, args: str) -> str:
         self.session.settings.yolo = not self.session.settings.yolo
         return "yolo: " + ("on" if self.session.settings.yolo else "off")
 
-    @slash_command("/strict")
     def strict(self, args: str) -> str:
         if args:
             return "Usage: /strict"
@@ -9465,7 +9417,6 @@ Tools:
             return f"strict_tools: {state} (inactive: {provider.host() or 'this provider'} does not support strict tool calling)"
         return f"strict_tools: {state}"
 
-    @slash_command("/set")
     def set_value(self, args: str) -> str:
         key, _, value = args.partition(" ")
         if not key or not value:
