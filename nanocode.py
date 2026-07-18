@@ -718,13 +718,6 @@ class MCPFileTokenStore:
                 data.get(collection, {}).pop(key, None)
             self.save(data)
 
-    def clear_client_info(self, server_url: str) -> None:
-        # Same collection/key convention as clear_server above — keep them in sync.
-        with self.lock:
-            data = self.load()
-            data.get("mcp-oauth-client-info", {}).pop(self.token_key(server_url, "/client_info"), None)
-            self.save(data)
-
     async def get(self, key: str, *, collection: str | None = None) -> Json | None:
         collection = collection or self.DEFAULT_COLLECTION
         with self.lock:
@@ -4473,12 +4466,21 @@ class MCPManager:
         config = self.find_config(name)
         if config is None:
             return f"{self.STATUS_MARKER} error  `{name}` — server not found" if _compact else "MCP server not found: " + name
-        if not config.error and config.auth == "oauth" and not self._oauth_token_store.has_server_tokens(config.url):
-            if not interactive:
+        if not config.error and config.auth == "oauth":
+            has_tokens = self._oauth_token_store.has_server_tokens(config.url)
+            if not interactive and not has_tokens:
                 message = f"authentication required; run `/mcp connect {name}` interactively"
                 return f"{self.STATUS_MARKER} error  `{name}` — {message}" if _compact else f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
-            with self._oauth_lock:
-                if not self._oauth_token_store.has_server_tokens(config.url):
+            if interactive:
+                if has_tokens:
+                    self.discover_server(name)
+                    if not self._oauth_reauthorization_required(name):
+                        return self._connect_result(name, compact=_compact)
+                with self._oauth_lock:
+                    # The token and registered OAuth client form one credential set. If
+                    # either is rejected, discard both so the new random callback port is
+                    # registered together with the replacement token.
+                    self._oauth_token_store.clear_server(config.url)
                     if error := self._authenticate_oauth(config, notify=notify):
                         if _compact:
                             prefix = f"MCP OAuth authentication failed for {name}: "
@@ -4486,6 +4488,14 @@ class MCPManager:
                         return error
         self.discover_server(name)
         return self._connect_result(name, compact=_compact)
+
+    def _oauth_reauthorization_required(self, name: str) -> bool:
+        issue = self.server_issue(name)
+        if issue is None or issue[0] != "error":
+            return False
+        message = issue[1].lower()
+        markers = ("authentication required", "unauthorized", "invalid token", "invalid_token", "invalid_request", "invalid client")
+        return any(marker in message for marker in markers) or re.search(r"\b(?:401|403)\b", message) is not None
 
     def _connect_result(self, name: str, *, compact: bool = False) -> str:
         if issue := self.server_issue(name):
@@ -4984,14 +4994,10 @@ class MCPManager:
         return self._join_bounded(parts)
 
     def _authenticate_oauth(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
-        """Complete interactive OAuth before the normal connection discovery."""
+        """Validate cached OAuth credentials or complete interactive authorization."""
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             return headers
-        # Drop any stale client registration so the fresh authorization uses a client
-        # whose registered redirect_uri matches this run's callback port. Reusing a
-        # client registered against an earlier random port yields invalid_request.
-        self._oauth_token_store.clear_client_info(config.url)
         try:
             self.run_async(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
         except Exception as error:

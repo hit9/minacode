@@ -312,19 +312,6 @@ class TestMCPManagerDiscovery:
         assert raised, "save should propagate fdopen failure"
         assert closed, "fd must be closed when fdopen raises, otherwise it leaks"
 
-    def test_clear_client_info_removes_stored_registration(self, tmp_path):
-        """clear_client_info must target the same collection/key the client info is stored under."""
-        store = n.MCPFileTokenStore(str(tmp_path / "tokens.json"))
-        url = "https://mcp.example.com/sse"
-        key = store.token_key(url, "/client_info")
-        data = store.load()
-        data.setdefault("mcp-oauth-client-info", {})[key] = {"value": {"client_id": "abc"}}
-        store.save(data)
-
-        store.clear_client_info(url)
-
-        assert store.load().get("mcp-oauth-client-info", {}).get(key) is None
-
     def test_discover_auto_stale_to_discovering(self, monkeypatch):
         """discover_auto sets status to discovering then ready."""
         raw = mcp_cfg()
@@ -1256,8 +1243,10 @@ class TestMCPCommands:
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
         authenticated = False
         calls = []
+        cleared = []
 
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: authenticated)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", cleared.append)
 
         def fake_auth(config, notify=None):
             nonlocal authenticated
@@ -1276,8 +1265,74 @@ class TestMCPCommands:
 
         assert result == "MCP server connected: test; tools=1; resources=0"
         assert calls == [("test", None)]
+        assert cleared == ["http://localhost:9999/mcp"]
         assert s.mcp.connected("test")
         assert "echo" in s.mcp.render_tools_index()
+
+    def test_mcp_connect_reauthorizes_rejected_cached_oauth_session(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        authorized = False
+        attempts = []
+        cleared = []
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", cleared.append)
+
+        async def request(_config, _headers, _operation, *, long_timeout=False, interactive=False, notify=None):
+            nonlocal authorized
+            attempts.append(interactive)
+            if interactive:
+                authorized = True
+                return []
+            if not authorized:
+                raise RuntimeError("authentication required; run /mcp connect test")
+            return []
+
+        monkeypatch.setattr(s.mcp, "_run_op", request)
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
+        loop.interactive_input = True
+
+        result = loop.mcp_command("connect test")
+
+        assert result == "MCP server connected: test; tools=0; resources=0"
+        assert attempts.count(True) == 1
+        assert attempts.index(True) >= 1
+        assert cleared == ["http://localhost:9999/mcp"]
+        assert s.mcp.connected("test")
+
+    def test_mcp_connect_keeps_valid_cached_oauth_session(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("valid credentials were cleared"))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("valid credentials triggered login"))
+
+        async def tools(_config, _headers):
+            return [SimpleNamespace(name="echo", description="Echo", inputSchema={}, annotations=None)]
+
+        async def resources(_config, _headers):
+            return []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", resources)
+
+        result = s.mcp.connect_server("test", interactive=True)
+
+        assert result == "MCP server connected: test; tools=1; resources=0"
+
+    def test_mcp_connect_does_not_reauthorize_on_non_auth_failure(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("credentials were cleared"))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("connection error triggered login"))
+
+        async def offline(_config, _headers):
+            raise ConnectionError("service unavailable")
+
+        monkeypatch.setattr(s.mcp, "_list_tools", offline)
+        monkeypatch.setattr(s.mcp, "_list_resources", offline)
+
+        result = s.mcp.connect_server("test", interactive=True)
+
+        assert result == "MCP server error: test: service unavailable"
 
     def test_mcp_connect_oauth_requires_interactive_session(self):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))

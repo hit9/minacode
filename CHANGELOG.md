@@ -29,6 +29,7 @@
 - Retry OpenAI and Anthropic connection/timeout failures, retryable client statuses, and every provider `5xx` response.
 - Bound MCP calls by timeout, recreate failed async loops, and close the MCP loop safely during shutdown.
 - Keep concurrent MCP discovery status accurate, serialize OAuth authorization in the manager, and expose resource-only servers through `@server` mentions.
+- Let explicit OAuth MCP connections validate cached credentials and reauthorize interactively when the server rejects them.
 - Treat redirects to paths that merely start with `/dev/null` as writes requiring confirmation; only the exact device remains auto-approved.
 - Prevent the plain CLI Bash live preview from accessing a nonexistent command-loop reference.
 
