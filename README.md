@@ -11,6 +11,7 @@
 </p>
 
 <p align="center"><a href="README.zh-CN.md">中文</a></p>
+
 ## Install
 
 Requires macOS or Linux, Python 3.11+, and [uv](https://docs.astral.sh/uv/).

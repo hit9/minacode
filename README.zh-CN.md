@@ -10,6 +10,7 @@
 </p>
 
 <p align="center"><a href="README.md">English</a></p>
+
 ## 安装
 
 需要 macOS 或 Linux、Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
