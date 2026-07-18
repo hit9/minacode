@@ -1141,9 +1141,9 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     assert "most recent answer" in text
 
 
-def test_orange_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
+def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
-    for mode, expected in (("dark", "#fb923c"), ("light", "#9a3412")):
+    for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):
         monkeypatch.setattr(n.Theme, "_mode", mode)
         assert n.UiPrinter.user_log_style() == expected
         assert command_loop.style().get_attrs_for_style_str("").color == ""
@@ -1182,8 +1182,8 @@ def test_tool_labels_keep_legacy_green_style():
     assert n.UiPrinter.LOG_STYLES[n.LogRole.TOOL][0] == "ansigreen"
 
 
-@pytest.mark.parametrize(("mode", "rgb"), [("dark", "251;146;60"), ("light", "154;52;18")])
-def test_resumed_user_rendering_emits_orange_truecolor(mode, rgb, monkeypatch):
+@pytest.mark.parametrize(("mode", "rgb"), [("dark", "224;169;109"), ("light", "154;91;46")])
+def test_resumed_user_rendering_emits_desert_truecolor(mode, rgb, monkeypatch):
     monkeypatch.setattr(n.Theme, "_mode", mode)
     ui = n.UiPrinter(output_fn=lambda text: None)
     console = n.Console(force_terminal=True, color_system="truecolor", no_color=False, width=40)

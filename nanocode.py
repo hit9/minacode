@@ -6553,7 +6553,7 @@ class Theme:
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
         "status.runtime": "#c084fc",
-        "user.log": "#fb923c",
+        "user.log": "#e0a96d",
         "pygments": "github-dark",
     }
 
@@ -6578,7 +6578,7 @@ class Theme:
         "status.index": "#475569",
         "status.warn": "#b91c1c",
         "status.runtime": "#6b21a8",
-        "user.log": "#9a3412",
+        "user.log": "#9a5b2e",
         "pygments": "default",
     }
 
