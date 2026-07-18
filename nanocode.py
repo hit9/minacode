@@ -4837,12 +4837,15 @@ class MCPManager:
             raise ToolError(headers)
         if config.auth == "oauth" and not self._oauth_token_store.has_server_tokens(config.url):
             raise ToolError(f"MCP server '{server}' requires authentication; run /mcp connect {server}")
+        self._require_available(server)
+        return config, headers
+
+    def _require_available(self, server: str) -> None:
+        """Raise ToolError if a configured server has a failure state or is not connected."""
         if issue := self.server_issue(server):
-            kind, message = issue
-            raise ToolError(f"MCP server '{server}' {kind}: {message}")
+            raise ToolError(f"MCP server '{server}' {issue[0]}: {issue[1]}")
         if not self.connected(server):
             raise ToolError(f"MCP server '{server}' is not connected; run /mcp connect {server}")
-        return config, headers
 
     def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
         config, headers = self._resolve_server(server)
@@ -5012,11 +5015,7 @@ class MCPManager:
     def describe_tool(self, server: str, tool_name: str) -> str:
         if self.find_config(server) is None:
             raise ToolError(f"MCP server '{server}' not found")
-        if issue := self.server_issue(server):
-            kind, message = issue
-            raise ToolError(f"MCP server '{server}' {kind}: {message}")
-        if not self.connected(server):
-            raise ToolError(f"MCP server '{server}' is not connected; run /mcp connect {server}")
+        self._require_available(server)
 
         info = self.tool_info(server, tool_name)
         if info is None:
@@ -5161,9 +5160,6 @@ class MCPManager:
         return "not connected"
 
     MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")
-
-    def server_tool_names(self, server: str) -> tuple[str, ...]:
-        return tuple(tool.name for tool in self.tools.get(server, []))
 
     def resolve_mentions(self, text: str) -> str:
         configs = {config.name: config for config in self.parse_configs()}
@@ -8250,7 +8246,7 @@ Tools:
             mcp_connected_servers=lambda: tuple(
                 config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)
             ),
-            mcp_tools=lambda server: self.session.mcp.server_tool_names(server),
+            mcp_tools=lambda server: tuple(tool.name for tool in self.session.mcp.tools.get(server, [])),
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
         self.agent.output_fn = self.agent_output
