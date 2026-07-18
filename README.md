@@ -47,7 +47,6 @@ Common flags:
 - `-c`, `--last`, `--latest`: resume the latest session in the current project
 - `--resume [UID]`: resume a saved session; without UID, resumes latest
 - `--yolo`: skip tool confirmations
-- `--mcp <selector>`: choose which MCP servers to enable
 - `--config <path>`: use a specific TOML config file
 
 ## A working personal agent
@@ -113,7 +112,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 enabled = true
 ```
 
-Runtime management: `/mcp` to view status, `/mcp tools [server]` to list tools, `/mcp login/logout <server>` for OAuth.
+Servers are discovered on demand through `@server`, MCP calls, or `/mcp tools <server>`; `/mcp refresh` discovers all enabled servers. Use `/mcp` to view status and `/mcp login/logout <server>` for OAuth.
 
 ## Skills
 

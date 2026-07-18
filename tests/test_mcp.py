@@ -1088,6 +1088,18 @@ class TestCallTool:
 # ---------------------------------------------------------------------------
 
 class TestMCPCommands:
+    def test_start_session_does_not_discover_servers(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        calls = []
+        monkeypatch.setattr(s.mcp, "discover_enabled", lambda: calls.append("all"))
+        monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
+        monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
+        monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
+
+        n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None).start_session()
+
+        assert calls == []
+
     def test_mcp_command_no_args_shows_status(self, monkeypatch):
         """/mcp returns server status."""
         raw = mcp_cfg()
@@ -1125,6 +1137,17 @@ class TestMCPCommands:
         result = loop.mcp_command("tools")
         assert "### `test`" in result
         assert "echo" in result
+
+    def test_mcp_tools_without_name_does_not_discover(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        calls = []
+        monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
+
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        result = loop.mcp_command("tools")
+
+        assert calls == []
+        assert "no tools discovered" in result
 
     def test_mcp_login_failure_includes_mcp_url(self, monkeypatch):
         """/mcp login shows a fallback URL when OAuth does not provide one."""
@@ -1480,11 +1503,13 @@ class TestMCPPruning:
 
 class TestMCPCommandsByName:
     def test_mcp_tools_specific_server(self, monkeypatch):
-        "/mcp tools test filters to one server."""
+        """/mcp tools NAME discovers and lists only that server."""
         raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        discovered = []
 
-        async def fake_list(url, headers):
+        async def fake_list(config, headers):
+            discovered.append(config.name)
             class T:
                 name = "tool"
                 description = "A test tool"
@@ -1494,11 +1519,11 @@ class TestMCPCommandsByName:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
-        s.mcp.discover_enabled()
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("tools a")
 
+        assert set(discovered) == {"a"}
         assert "### `a`" in result
         assert "### `b`" not in result
         assert "tool" in result

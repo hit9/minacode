@@ -113,7 +113,6 @@ def ctrl_c_queue_scenario(cwd, results):
             cancel_calls.append(True)
 
     command_loop.agent.model = RecordingModel()
-    command_loop.discover_mcp = lambda: None
     n.SessionSnapshotStore.clean_expired = lambda _session: 0
     n.CodeIndex.refresh_existing_async = lambda _index: False
     n.CodeIndex.update_pending_async = lambda _index: None
@@ -336,7 +335,6 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
         input_fn=lambda prompt="": "",
         output_fn=output.append,
     )
-    monkeypatch.setattr(command_loop, "discover_mcp", lambda: None)
     monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
     monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
@@ -382,7 +380,6 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
         output_fn=lambda _text: None,
     )
     command_loop.ui.color = True
-    monkeypatch.setattr(command_loop, "discover_mcp", lambda: None)
     monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
     monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
@@ -469,7 +466,6 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
             pass
 
     command_loop.agent.model = RecordingModel()
-    monkeypatch.setattr(command_loop, "discover_mcp", lambda: None)
     monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
     monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
     monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
@@ -1169,17 +1165,6 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     assert "/provider" in text
     assert "status marker" in text
     assert "No skills installed" in text
-
-
-def test_mcp_cancelled_error_notice_is_muted(tmp_path):
-    command_loop = loop(tmp_path)
-    command_loop.session.mcp.server_errors.update({"openaiDeveloperDocs": "CancelledError", "broken": "connection failed"})
-
-    notice = command_loop.mcp_error_notice()
-
-    assert "openaiDeveloperDocs" not in notice
-    assert "CancelledError" not in notice
-    assert "mcp: broken: connection failed" in notice
 
 
 def test_background_output_is_closed_before_final_output(tmp_path):

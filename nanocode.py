@@ -351,12 +351,11 @@ class RuntimeSettings:
     session_retention_days: int = 7
     # Max read-only tool calls from one model batch to execute concurrently; 1 disables parallelism.
     max_parallel_tools: int = 4
-    mcp_selector: str = ""
     yolo: bool = False
     theme: str = "auto"
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False, mcp_selector: str = "", theme: str = "") -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, theme: str = "") -> "RuntimeSettings":
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
@@ -365,7 +364,6 @@ class RuntimeSettings:
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
-            mcp_selector=mcp_selector,
             yolo=yolo or Config.bool(runtime, "yolo", False),
             theme=theme or Config.str(runtime, "theme", "auto"),
         )
@@ -1483,9 +1481,9 @@ class Session:
             self.turn_diffs.pop(0)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, mcp_selector: str = "", theme: str = "") -> "Session":
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, theme: str = "") -> "Session":
         data = ConfigFile.load(path)
-        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, mcp_selector=mcp_selector, theme=theme))
+        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, theme=theme))
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -4315,7 +4313,7 @@ class MCPManager:
         if not isinstance(mcp_config, dict):
             return []
         configs = [self._parse_config(str(name), raw) for name, raw in mcp_config.items() if isinstance(raw, dict)]
-        return self.select_configs(configs)
+        return configs
 
     def _parse_config(self, name: str, raw: Json) -> MCPServerConfig:
         config = MCPServerConfig(
@@ -4358,37 +4356,6 @@ class MCPManager:
     @staticmethod
     def _has_header(headers: dict[str, str], name: str) -> bool:
         return any(header.lower() == name.lower() for header in headers)
-
-    def select_configs(self, configs: list[MCPServerConfig]) -> list[MCPServerConfig]:
-        selector = self.session.settings.mcp_selector.strip()
-        if not selector:
-            return configs
-
-        by_name = {config.name: config for config in configs}
-        selected: set[str] = set()
-        started = False
-        for raw in selector.split(","):
-            rule = raw.strip()
-            if not rule:
-                continue
-            exclude = rule.startswith("!")
-            pattern = rule[1:].strip() if exclude else rule
-            if not pattern:
-                continue
-            if pattern == "none":
-                selected.clear()
-                started = True
-                continue
-            matches = set(by_name) if pattern == "all" else {name for name in by_name if fnmatch.fnmatchcase(name, pattern)}
-            if exclude:
-                if not started:
-                    selected = set(by_name)
-                    started = True
-                selected.difference_update(matches)
-            else:
-                selected.update(matches)
-                started = True
-        return [config for config in configs if config.name in selected] if started else configs
 
     def find_config(self, name: str, *, enabled_only: bool = True) -> "MCPServerConfig | None":
         return next((c for c in self.parse_configs() if c.name == name and (c.enabled or not enabled_only)), None)
@@ -8089,7 +8056,6 @@ Mentions:
   @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
   $skill             Reference a skill in your message to load its instructions for that turn (tab-completes).
 CLI:
-  --mcp "orion*,!orionEval"  Select MCP servers by name glob; use all or none.
   -c, --last, --latest       Resume the latest session in the current project.
   --resume [UID]             Resume a saved session; defaults to latest (last also works).
 Tools:
@@ -8369,8 +8335,6 @@ Tools:
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
-        # Async MCP discovery — show > immediately, discover in background
-        threading.Thread(target=self.discover_mcp, daemon=True).start()
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()
@@ -8461,33 +8425,6 @@ Tools:
         uid = self.session.save_snapshot()
         if uid:
             self.emit(f"Resume with:\nnanocode --resume {uid}")
-
-    def discover_mcp(self) -> None:
-        self.session.mcp.discover_enabled()
-        notice = self.mcp_error_notice()
-        if notice:
-            self.emit_background(notice)
-        # render once so index_truncated reflects the freshly discovered tools, then warn if
-        # the index is too large to fit even as name-only (some tools are hidden from the model).
-        self.session.mcp.render_tools_index()
-        if self.session.mcp.index_truncated:
-            self.emit_background(
-                "mcp: tools index exceeds the size budget; some tools are hidden from the model. Reduce enabled servers or run /mcp tools to see the full list."
-            )
-
-    def mcp_error_notice(self) -> str:
-        errors = [
-            (name, error)
-            for name, error in sorted(self.session.mcp.server_errors.items())
-            if error and not error.startswith("oauth login required") and error.strip() != "CancelledError"
-        ]
-        if not errors:
-            return ""
-        shown = errors[:3]
-        lines = [f"mcp: {name}: {error}" for name, error in shown]
-        if len(errors) > len(shown):
-            lines.append(f"mcp: {len(errors) - len(shown)} more errors; run /mcp")
-        return "\n".join(lines)
 
     def style(self) -> Style:
         return Style.from_dict(
@@ -8678,6 +8615,8 @@ Tools:
 
         if sub == "tools":
             server = rest[0] if rest else None
+            if server and server not in mcp.tools and server not in mcp.resources:
+                mcp.discover_server(server)
             return mcp.render_tool_listing(server)
         if sub == "login":
             return mcp.login_server(rest[0], notify=self.emit)
@@ -8823,7 +8762,7 @@ Tools:
             ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"),
-            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("jobs", f"running `{len(self.session.running_jobs())}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
@@ -9382,7 +9321,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
-    parser.add_argument("--mcp", default="", help='Filter MCP servers, e.g. "orion*,!orionEval", "all", or "none"')
     parser.add_argument(
         "--theme", choices=["auto", "light", "dark"], default="", help="Color theme (defaults to runtime.theme, then auto-detect via COLORFGBG)"
     )
@@ -9408,10 +9346,10 @@ def main(argv: list[str] | None = None) -> int:
             session = Session.load_snapshot(
                 uid,
                 config=config,
-                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme),
+                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, theme=args.theme),
             )
         else:
-            session = Session.from_config_file(path=args.config, yolo=args.yolo, mcp_selector=args.mcp, theme=args.theme)
+            session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
         Theme.set_mode(Theme.resolve(session.settings.theme))
         command_loop = CommandLoop(Agent(session))
         try:
