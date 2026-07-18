@@ -2,7 +2,7 @@
 
 ## Install
 
-- nanocode supports macOS and Linux only
+- nanocode supports <span class="marker">macOS and Linux only</span>
 - Python 3.11 or newer
 - [uv](https://docs.astral.sh/uv/) to install and run
 
@@ -21,7 +21,7 @@ nanocode checks PyPI at most once a day and reports an available update at start
 
 ## Configure
 
-<span class="marker">nanocode needs one thing to start: a provider to talk to.</span> Generate a
+nanocode needs one thing to start: <span class="marker">a provider to talk to</span>. Generate a
 starter config:
 
 ```sh

@@ -6,14 +6,16 @@ nanocode edits files and runs shell commands in the environment where you start 
 **not** sandbox itself.
 ```
 
-nanocode acts directly in your environment. Through its [tools](tools.md) it can read and edit
-files in (and beyond) the working directory and run any shell command. There is no built-in
-isolation, so treat it with the same care as running those commands yourself.
+nanocode acts directly in your environment. Through its [tools](tools.md) it can
+<span class="marker">read and edit files beyond the working directory and run any shell
+command</span>. There is no built-in isolation, so treat it with the same care as running those
+commands yourself.
 
 ## Built-in guardrails
 
 - **Confirmations.** File-changing and command-running tools — Edit, Bash, Job, and MCP
-  calls — ask before they act. This is on by default; `--yolo` and `/yolo` turn it off.
+  calls — ask before they act. <span class="marker">This is on by default</span>; `--yolo` and
+  `/yolo` turn it off.
 - **Anchored edits.** Edits are tied to `line:hash` anchors and rejected if the file changed
   underneath, so the agent can't silently patch the wrong lines. See
   [Tools](tools.md).

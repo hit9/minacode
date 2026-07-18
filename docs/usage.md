@@ -118,7 +118,8 @@ be resumed with `-c` or `--resume`.
 Two inline references, both Tab-completed as you type:
 
 - `@server` or `@server.tool` — connect to an [MCP](mcp.md) server on demand and point the
-  agent at that server or tool. The connection remains active until you disconnect it.
+  agent at that server or tool. <span class="marker">The connection remains active until you
+  disconnect it.</span>
 - `$skill` — inject a [skill](skills.md)'s full instructions into the current turn.
 
 ## Keys and input editing
@@ -147,9 +148,9 @@ Typing a follow-up message in an external editor.
 
 ## Sessions
 
-Your work is saved automatically — the conversation, edits, and diffs are tied to the
-project directory you started in, so an interrupted session picks up where it stopped.
-Inactive sessions older than seven days are removed at startup by default; set
+<span class="marker">Your work is saved automatically</span> — the conversation, edits, and diffs
+are tied to the project directory you started in, so an interrupted session picks up where it
+stopped. Inactive sessions older than seven days are removed at startup by default; set
 `runtime.session_retention_days = 0` to keep them indefinitely.
 
 Resume from the command line:

@@ -2,7 +2,8 @@
 
 nanocode can connect to [Model Context Protocol](https://modelcontextprotocol.io) servers and
 call their tools through its `MCP` tool. Servers can be **remote** (HTTP) or **local**
-(stdio), and nothing about a server reaches the model until you connect it.
+(stdio), and <span class="marker">nothing about a server reaches the model until you connect
+it</span>.
 
 ## Configuring servers
 
@@ -42,8 +43,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 
 ## Connecting
 
-Servers are **manual by default** — they stay inactive, and cost nothing, until you connect
-them. Set `auto_connect = true` for servers you always want. Ways to connect:
+Servers are <span class="marker"><strong>manual by default</strong></span> — they stay inactive,
+and cost nothing, until you connect them. Set `auto_connect = true` for servers you always
+want. Ways to connect:
 
 - **`/mcp`** — open the interactive manager and toggle a server on or off.
 
@@ -84,5 +86,5 @@ read-only run without a prompt; anything that may change state asks for
 ```{admonition} Trust
 :class: warning
 Local (stdio) servers run programs on your machine, and remote servers receive whatever the
-agent sends them. <span class="marker">Only connect servers you trust.</span>
+agent sends them. Only connect servers you trust.
 ```

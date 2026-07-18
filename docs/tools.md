@@ -7,8 +7,9 @@ know what it's capable of.
   files.
 - **Navigate code** — jump to definitions, callers, and implementations using the
   [code symbol index](#code-symbol-index). Build it with `/index`.
-- **Edit files** safely — <span class="marker">before applying a change it checks the file hasn't
-  changed underneath, so it won't patch the wrong place.</span>
+- **Edit files** safely — before applying a change it
+  <span class="marker">checks the file hasn't changed underneath</span>, so it won't patch the
+  wrong place.
 - **Run commands**, including long-running ones in the background (list them with `/ps`).
 - **Keep working notes** — a goal, a plan, and facts it has learned — so it stays on track
   through a long task.
@@ -37,9 +38,9 @@ a connected server exposes tools or resources.
 ## Execution behavior
 
 Read-only calls may run concurrently, up to `runtime.max_parallel_tools`. File edits run in
-order and verify their anchors before changing content. Large tool results are stored outside
-the conversation; the model receives a bounded result and can retrieve the full output with
-`Recall`.
+order and verify their anchors before changing content. <span class="marker">Large tool results
+are stored outside the conversation</span>; the model receives a bounded result and can retrieve
+the full output with `Recall`.
 
 ## Confirmations
 
@@ -52,9 +53,9 @@ Turn confirmations off once you trust a workflow with `--yolo` (at startup) or `
 
 ## Code symbol index
 
-nanocode includes a **code symbol index** for structured navigation — finding definitions,
-callers, references, and implementations without relying on an external language server. The
-index is built separately for each project.
+nanocode includes a **code symbol index** for <span class="marker">structured navigation</span> —
+finding definitions, callers, references, and implementations without relying on an external
+language server. The index is <span class="marker">built separately for each project</span>.
 
 ### What it is
 
@@ -78,13 +79,14 @@ project to build it.
 
 ### Building and syncing
 
-Run `/index` to build or rebuild the index. The first build walks every source file;
-subsequent builds sync from the previous snapshot and are much faster. Add `force`
-to rebuild from scratch.
+<span class="marker">Run `/index` to build or rebuild the index.</span> The first build walks every
+source file; subsequent builds sync from the previous snapshot and are much faster. Add
+`force` to rebuild from scratch.
 
 When an index already exists, nanocode refreshes it in the background at startup. After an
-agent turn, it automatically updates small batches of changed source files; run `/index` when
-a large set of changes leaves it stale. `/status` shows the current state:
+agent turn, it <span class="marker">automatically updates small batches of changed source
+files</span>; run `/index` when a large set of changes leaves it stale. `/status` shows the
+current state:
 
 | State | Meaning |
 |---|---|

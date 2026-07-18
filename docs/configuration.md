@@ -4,9 +4,9 @@ nanocode reads a single TOML file, `~/.nanocode/config.toml` by default. Generat
 commented starter with `nanocode --init-config`, or point at another file with
 `--config <path>`.
 
-Only the `[provider]` block is required. Every other key falls back to a built-in default, so
-a minimal config is just a provider. Inspect the resolved configuration at any time with
-`/config`.
+<span class="marker">Only the `[provider]` block is required.</span> Every other key falls back to
+a built-in default, so a minimal config is just a provider. Inspect the resolved configuration
+at any time with `/config`.
 
 ## Providers
 
@@ -42,10 +42,10 @@ Switch providers within a session with `/provider [NAME]` and models with `/mode
 | `max_tokens` | — | Cap on output tokens (omit to use the server default) |
 | `strict_tools` | `false` | Emit strict tool-call schemas where supported (OpenAI, DeepSeek); toggle live with `/strict` |
 
-For well-known hosts, `auto` settings pick sensible defaults for you, so `url`, `key`, and
-`model` are usually all you need. Anything you set explicitly is always respected. Tested
-with DeepSeek, OpenCode, Alibaba Cloud, and ZenMux; other OpenAI-compatible and Anthropic
-endpoints work too.
+For well-known hosts, `auto` settings pick sensible defaults for you, so
+<span class="marker">`url`, `key`, and `model` are usually all you need</span>. Anything you set
+explicitly is always respected. Tested with DeepSeek, OpenCode, Alibaba Cloud, and ZenMux;
+other OpenAI-compatible and Anthropic endpoints work too.
 
 ## Runtime
 

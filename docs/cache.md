@@ -11,5 +11,5 @@ reusable prefix; the newest content has no matching earlier request yet.
 
 `/status` shows the cached prompt tokens reported by your provider for the whole session and
 the latest request. The ratio varies with the provider, model, prompt length, and conversation;
-when the request prefixes line up, it can reach 90–99%. This is an observation, not a
-guaranteed rate.
+when the request prefixes line up, it <span class="marker">can reach 90–99%</span>. This is an
+observation, not a guaranteed rate.
