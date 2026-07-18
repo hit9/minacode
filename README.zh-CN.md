@@ -10,8 +10,8 @@
 
 <p align="center"><a href="README.md">English</a></p>
 
-nanocode 可以读取和编辑代码、运行命令、恢复 session、连接 MCP server，并在交互式
-终端对话中按需加载可复用的 skill。
+我自己在用、维护并定制的一个 Python 单文件 coding agent — 在交互式终端对话中读取
+和编辑代码、运行命令、恢复 session、连接 MCP server，并按需加载可复用的 skill。
 
 ## 环境要求
 

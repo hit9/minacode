@@ -10,8 +10,9 @@
 
 <p align="center"><a href="README.zh-CN.md">中文</a></p>
 
-nanocode reads and edits code, runs commands, resumes sessions, connects MCP servers, and
-loads reusable skills—all from an interactive terminal conversation.
+A coding agent I use, maintain, and customize in one Python file — reads and edits code,
+runs commands, resumes sessions, connects MCP servers, and loads reusable skills,
+all from an interactive terminal conversation.
 
 ## Requirements
 
