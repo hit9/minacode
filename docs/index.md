@@ -51,6 +51,7 @@ Working through a repository task in an interactive session.
 | **[MCP](mcp.md)** | Connect external Model Context Protocol servers and use their tools. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |
 | **[Code symbol index](code-index.md)** | Pre-built symbol database that powers code navigation. Build with `/index`. |
+| **[Slash commands](commands.md)** | Complete reference for every `/` command, from `/status` to `/exit`. |
 | **[Providers](configuration.md#providers)** | Any OpenAI-compatible API, plus Anthropic. |
 
 ```{toctree}
@@ -64,6 +65,8 @@ skills
 configuration
 safety
 code-index
+commands
+follow-ups
 ```
 
 ```{toctree}
