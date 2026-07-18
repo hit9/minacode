@@ -72,8 +72,6 @@ nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 
 | `/model [MODEL]` | 查看或切换模型 |
 | `/yolo` | 开关确认提示 |
 
-完整文档位于 [nanocode.readthedocs.io](https://nanocode.readthedocs.io)。
-
 ## 安全
 
 **使用风险自负。** nanocode 会在启动环境中编辑文件并执行 shell 命令，不提供 sandbox 隔离。需要隔离时，请使用容器或虚拟机。

@@ -73,8 +73,6 @@ Everything ships in one file, so changing the behavior is one edit away.
 | `/model [MODEL]` | Show or switch model |
 | `/yolo` | Toggle confirmations |
 
-The full documentation is at [nanocode.readthedocs.io](https://nanocode.readthedocs.io).
-
 ## Safety
 
 **Use at your own risk.** nanocode can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
