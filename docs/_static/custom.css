@@ -224,4 +224,11 @@ div.highlight::-webkit-scrollbar-thumb, pre::-webkit-scrollbar-thumb {
 }
 div.highlight::-webkit-scrollbar-track, pre::-webkit-scrollbar-track { background: transparent; }
 
+/* A restrained marker treatment for a few details users should not miss. */
+.marker {
+    background: linear-gradient(transparent 62%, rgba(180, 150, 80, 0.28) 62%);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+
 div.highlight, pre { scrollbar-color: #3a4048 transparent; }

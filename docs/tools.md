@@ -7,8 +7,8 @@ know what it's capable of.
   files.
 - **Navigate code** — jump to definitions, callers, and implementations using the
   [code symbol index](#code-symbol-index). Build it with `/index`.
-- **Edit files** safely — before applying a change it checks the file hasn't changed
-  underneath, so it won't patch the wrong place.
+- **Edit files** safely — <span class="marker">before applying a change it checks the file hasn't
+  changed underneath, so it won't patch the wrong place.</span>
 - **Run commands**, including long-running ones in the background (list them with `/ps`).
 - **Keep working notes** — a goal, a plan, and facts it has learned — so it stays on track
   through a long task.

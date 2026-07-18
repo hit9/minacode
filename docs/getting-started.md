@@ -21,7 +21,8 @@ nanocode checks PyPI at most once a day and reports an available update at start
 
 ## Configure
 
-nanocode needs one thing to start: a provider to talk to. Generate a starter config:
+<span class="marker">nanocode needs one thing to start: a provider to talk to.</span> Generate a
+starter config:
 
 ```sh
 nanocode --init-config
