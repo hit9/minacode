@@ -17,6 +17,7 @@
 - Render multi-server connection results as a compact vertical list instead of one wrapped paragraph.
 - Color a consistent solid-circle MCP status marker green when connected, yellow when disconnected, red on error, and dim when skipped.
 - Show the number of connected MCP servers in the `/status` context row.
+- Make each selection in `/mcp` toggle that server in place, showing connection progress without closing the selector, and limit `/mcp tools` listings and completion to connected servers.
 
 ### Removed
 - Remove the unreachable non-TUI `Ctrl-\` model-request retry; interactive retries use `/resend`, while transient errors still retry automatically.

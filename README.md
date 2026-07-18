@@ -112,7 +112,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # auto_connect = true  # optional; default false
 ```
 
-Configured servers are manual by default; set `auto_connect = true` on servers that should connect at startup. Comment out a server's `[mcp.NAME]` section to remove it. Until connection, no MCP name, index, or tool schema is sent to the model. Run `/mcp` for the interactive connection manager, mention `@server` to connect on demand, or use `/mcp connect <server> [server ...]` and `/mcp disconnect <server>` as plain-terminal fallbacks. A batch connect discovers its servers concurrently. Connecting handles OAuth authorization when required; disconnecting also clears saved OAuth authentication.
+Configured servers are manual by default; set `auto_connect = true` on servers that should connect at startup. Comment out a server's `[mcp.NAME]` section to remove it. Until connection, no MCP name, index, or tool schema is sent to the model. Run `/mcp` and select a server to toggle its connection in place, mention `@server` to connect on demand, or use `/mcp connect <server> [server ...]` and `/mcp disconnect <server>` as plain-terminal fallbacks. The manager remains responsive while connections run, so several servers can be started concurrently; OAuth authorization flows remain serialized. `/mcp tools` lists capabilities from connected servers only. Connecting handles OAuth authorization when required; disconnecting also clears saved OAuth authentication.
 
 ## Skills
 

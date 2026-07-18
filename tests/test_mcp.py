@@ -754,7 +754,7 @@ class TestServerStatusRendering:
         assert "● disconnected" in lines[3]
 
     def test_render_tool_listing_all(self, monkeypatch):
-        """render_tool_listing shows all servers."""
+        """render_tool_listing shows connected servers."""
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         class FakeTool:
@@ -790,6 +790,22 @@ class TestServerStatusRendering:
         """No servers returns placeholder."""
         s = session("/tmp")
         assert s.mcp.render_tool_listing() == "(no MCP servers configured)"
+
+    def test_render_tool_listing_omits_disconnected_servers(self):
+        raw = {"mcp": {"connected": {"url": "http://a/mcp"}, "offline": {"url": "http://b/mcp"}}}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        s.mcp.tools["connected"] = []
+        s.mcp.resources["connected"] = []
+
+        listing = s.mcp.render_tool_listing()
+
+        assert "### `connected`" in listing
+        assert "offline" not in listing
+
+    def test_render_tool_listing_disconnected_server_has_connect_hint(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+
+        assert s.mcp.render_tool_listing("test") == "MCP server 'test' is not connected; run /mcp connect test"
 
     def test_render_tool_listing_includes_resources(self):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
@@ -1221,7 +1237,7 @@ class TestMCPCommands:
         result = loop.mcp_command("tools")
 
         assert calls == []
-        assert "no tools discovered" in result
+        assert result == "(no connected MCP servers)"
 
     def test_mcp_connect_oauth_failure_includes_mcp_url(self, monkeypatch):
         """Interactive connect shows a fallback URL when OAuth does not provide one."""
@@ -1378,15 +1394,89 @@ class TestMCPCommands:
 
     def test_mcp_manager_connects_selected_server(self, monkeypatch):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
-        output = []
-        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=output.append)
-        selections = iter(("test", "connect", None))
-        monkeypatch.setattr(loop, "select_choice", lambda *args, **kwargs: next(selections))
-        monkeypatch.setattr(s.mcp, "connect_server", lambda name, **_kwargs: "connected " + name)
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        connected = threading.Event()
+        release = threading.Event()
+        repainted = threading.Event()
+
+        def connect(name, **_kwargs):
+            release.wait(1)
+            s.mcp.tools[name] = []
+            s.mcp.resources[name] = []
+            return "connected " + name
+
+        def show_modal(fragments, handle_key):
+            assert handle_key("enter") is n.TUI_MODAL_PENDING
+            assert "● connecting" in "".join(text for _style, text in fragments())
+            release.set()
+            assert repainted.wait(1)
+            assert "● connected" in "".join(text for _style, text in fragments())
+            connected.set()
+            return n.SELECTION_BACK
+
+        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
+        monkeypatch.setattr(s.mcp, "connect_server", connect)
 
         loop.mcp_manager()
 
-        assert any("connected test" in text for text in output)
+        assert connected.is_set()
+        assert s.mcp.connected("test")
+
+    def test_mcp_manager_disconnects_selected_server(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = []
+        s.mcp.resources["test"] = []
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        release = threading.Event()
+        repainted = threading.Event()
+
+        def disconnect(name):
+            release.wait(1)
+            return n.MCPManager.disconnect_server(s.mcp, name)
+
+        def show_modal(fragments, handle_key):
+            assert handle_key("enter") is n.TUI_MODAL_PENDING
+            assert "● disconnecting" in "".join(text for _style, text in fragments())
+            release.set()
+            assert repainted.wait(1)
+            assert "● disconnected" in "".join(text for _style, text in fragments())
+            return n.SELECTION_BACK
+
+        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
+        monkeypatch.setattr(s.mcp, "disconnect_server", disconnect)
+
+        loop.mcp_manager()
+
+        assert not s.mcp.connected("test")
+
+    def test_mcp_manager_starts_multiple_connections_concurrently(self, monkeypatch):
+        raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        started = {name: threading.Event() for name in ("a", "b")}
+        release = threading.Event()
+
+        def connect(name, **_kwargs):
+            started[name].set()
+            release.wait(1)
+            s.mcp.tools[name] = []
+            s.mcp.resources[name] = []
+            return "connected " + name
+
+        def show_modal(_fragments, handle_key):
+            assert handle_key("enter") is n.TUI_MODAL_PENDING
+            assert handle_key("j") is n.TUI_MODAL_PENDING
+            assert handle_key("enter") is n.TUI_MODAL_PENDING
+            assert all(event.wait(1) for event in started.values())
+            release.set()
+            return n.SELECTION_BACK
+
+        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
+        monkeypatch.setattr(s.mcp, "connect_server", connect)
+
+        loop.mcp_manager()
+
+        assert all(event.is_set() for event in started.values())
 
     def test_mcp_manager_aligns_server_labels(self, monkeypatch):
         raw = {"mcp": {
@@ -1399,39 +1489,45 @@ class TestMCPCommands:
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         captured = {}
 
-        def select(_title, _choices, **kwargs):
-            captured.update(kwargs["labels"])
+        def show_modal(fragments, _handle_key):
+            captured["text"] = "".join(text for _style, text in fragments())
+            return n.SELECTION_BACK
 
-        monkeypatch.setattr(loop, "select_choice", select)
+        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
 
         loop.mcp_manager()
 
-        connected = captured["a"]
-        disconnected = captured["much-longer"]
+        lines = captured["text"].splitlines()
+        connected = next(line for line in lines if " a " in line)
+        disconnected = next(line for line in lines if "much-longer" in line)
         assert connected.index("●") == disconnected.index("●")
         assert connected.index("manual") == disconnected.index("auto")
         assert connected.rindex("tools") == disconnected.rindex("tools")
+        assert lines[0] == "MCP servers · Enter toggles connection"
 
     def test_mcp_status_dots_use_semantic_terminal_colors(self):
-        text = "● connected  ● disconnected  ● error  ● skipped"
+        text = "● connected  ● connecting  ● disconnected  ● disconnecting  ● error  ● skipped"
 
         colored = n.UiPrinter.colorize_mcp_status(text)
 
         assert "\x1b[32m●\x1b[39m connected" in colored
+        assert "\x1b[32m●\x1b[39m connecting" in colored
         assert "\x1b[33m●\x1b[39m disconnected" in colored
+        assert "\x1b[33m●\x1b[39m disconnecting" in colored
         assert "\x1b[31m●\x1b[39m error" in colored
         assert "\x1b[90m●\x1b[39m skipped" in colored
 
     def test_mcp_manager_status_dots_receive_selector_styles(self):
         state = n.ChoiceViewState(
-            choices=("up", "down"),
-            labels={"up": "up    ● connected", "down": "down  ● disconnected"},
+            choices=("up", "busy", "down"),
+            labels={"up": "up    ● connected", "busy": "busy  ● connecting", "down": "down  ● disconnected"},
             disabled=set(),
         )
 
         fragments = state.fragments("MCP servers")
 
         assert ("class:choice.selected class:choice.status.connected", "●") in fragments
+        assert ("class:choice.status.connecting", "●") in fragments
         assert ("class:choice.status.disconnected", "●") in fragments
 
     def test_unknown_mcp_subcommand(self):
@@ -1493,10 +1589,11 @@ class TestMCPTabCompletion:
         assert "tools" not in texts
         assert texts == ["connect"]
 
-    def test_mcp_tools_completion_uses_all_servers(self):
-        """/mcp tools completes all MCP server names."""
+    def test_mcp_tools_completion_uses_connected_servers(self):
+        """/mcp tools completes only connected MCP server names."""
         completer = n.CommandCompleter(
             mcp_servers=lambda: ("plain", "oauthOne"),
+            mcp_connected_servers=lambda: ("oauthOne",),
         )
         from prompt_toolkit.document import Document
 
@@ -1766,7 +1863,7 @@ class TestMCPPruning:
 
 class TestMCPCommandsByName:
     def test_mcp_tools_specific_server(self, monkeypatch):
-        """/mcp tools NAME lists only that server without discovering it."""
+        """/mcp tools NAME points disconnected servers to connect."""
         raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         discovered = []
@@ -1777,9 +1874,7 @@ class TestMCPCommandsByName:
         result = loop.mcp_command("tools a")
 
         assert discovered == []
-        assert "### `a`" in result
-        assert "### `b`" not in result
-        assert "no tools discovered" in result
+        assert result == "MCP server 'a' is not connected; run /mcp connect a"
 
 
 # ---------------------------------------------------------------------------

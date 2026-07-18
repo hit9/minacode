@@ -5276,15 +5276,19 @@ class MCPManager:
     def render_tool_listing(self, server: str | None = None) -> str:
         sections: list[str] = []
         configs = self.parse_configs()
+        if server:
+            config = self.find_config(server)
+            if config is None:
+                return f"MCP server not found: {server}"
+            if not self.connected(server):
+                return f"MCP server '{server}' is not connected; run /mcp connect {server}"
+            configs = [config]
+        elif not configs:
+            return "(no MCP servers configured)"
+        else:
+            configs = [config for config in configs if self.connected(config.name)]
         for config in configs:
-            if server and config.name != server:
-                continue
             lines = [f"### `{config.name}`", "", "| tool | args | description |", "| --- | --- | --- |"]
-            if issue := self.server_issue(config.name):
-                kind, message = issue
-                lines.append(f"| {kind} |  | " + self.markdown_cell(message) + " |")
-                sections.append("\n".join(lines))
-                continue
             tools = self.tools.get(config.name, [])
             if not tools:
                 lines.append("| (none) |  | no tools discovered |")
@@ -5301,7 +5305,7 @@ class MCPManager:
                 for resource in resources:
                     lines.append("| `" + self.markdown_cell(resource.uri) + "` | " + self.markdown_cell(resource.description or "-") + " |")
             sections.append("\n".join(lines))
-        return "\n\n".join(sections) if sections else "(no MCP servers configured)"
+        return "\n\n".join(sections) if sections else "(no connected MCP servers)"
 
     def render_server_status(self) -> str:
         headers = ("server", "mode", "status", "tools", "auth")
@@ -6440,12 +6444,14 @@ class CommandCompleter(Completer):
         providers: Callable[[], tuple[str, ...]] = tuple,
         models: Callable[[], tuple[str, ...]] = tuple,
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
+        mcp_connected_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
         skills: Callable[[], tuple[str, ...]] = tuple,
     ):
         self.providers = providers
         self.models = models
         self.mcp_servers = mcp_servers
+        self.mcp_connected_servers = mcp_connected_servers
         self.mcp_tools = mcp_tools
         self.skills = skills
 
@@ -6479,8 +6485,11 @@ class CommandCompleter(Completer):
                 selected = set(completed.split())
                 yield from self.matches((name for name in self.mcp_servers() if name not in selected), prefix)
                 return
-            if sub in {"disconnect", "tools"}:
+            if sub == "disconnect":
                 yield from self.matches(self.mcp_servers(), value)
+                return
+            if sub == "tools":
+                yield from self.matches(self.mcp_connected_servers(), value)
                 return
 
         at_match = re.search(r"@([A-Za-z0-9_.-]*)$", text)
@@ -7128,10 +7137,12 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
-    MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|disconnected|error|skipped)")
+    MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|connecting|disconnected|disconnecting|error|skipped)")
     MCP_STATUS_ANSI: ClassVar[dict[str, str]] = {
         "connected": "\x1b[32m",
+        "connecting": "\x1b[32m",
         "disconnected": "\x1b[33m",
+        "disconnecting": "\x1b[33m",
         "error": "\x1b[31m",
         "skipped": "\x1b[90m",
     }
@@ -8223,6 +8234,9 @@ Tools:
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
             mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs()),
+            mcp_connected_servers=lambda: tuple(
+                config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)
+            ),
             mcp_tools=lambda server: self.session.mcp.server_tool_names(server),
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
@@ -8544,7 +8558,9 @@ Tools:
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
                 "choice.status.connected": "ansigreen bold",
+                "choice.status.connecting": "ansigreen bold",
                 "choice.status.disconnected": "ansiyellow bold",
+                "choice.status.disconnecting": "ansiyellow bold",
                 "choice.status.error": "ansired bold",
                 "choice.status.skipped": "ansibrightblack",
                 "tab.active": "bold reverse ansicyan",
@@ -8727,18 +8743,32 @@ Tools:
 
     def mcp_manager(self) -> None:
         mcp = self.session.mcp
-        if mcp is None:
+        if mcp is None or self.tui is None:
             return
-        current = ""
-        while True:
-            configs = tuple(mcp.parse_configs())
-            if not configs:
-                self.ui.emit_answer(mcp.render_server_status())
-                return
+        configs = tuple(mcp.parse_configs())
+        if not configs:
+            self.ui.emit_answer(mcp.render_server_status())
+            return
+
+        state = ChoiceViewState(tuple(config.name for config in configs), {}, set())
+        transitions: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        state_lock = threading.Lock()
+        oauth_lock = threading.Lock()
+        modal_open = threading.Event()
+        modal_open.set()
+
+        def server_labels() -> dict[str, str]:
+            with state_lock:
+                changing = dict(transitions)
+                failed = dict(errors)
             server_rows = []
             for config in configs:
-                issue = mcp.server_issue(config.name)
-                if issue:
+                if transition := changing.get(config.name):
+                    status = mcp.STATUS_MARKER + " " + transition
+                elif config.name in failed:
+                    status = mcp.STATUS_MARKER + " error"
+                elif issue := mcp.server_issue(config.name):
                     status = mcp.STATUS_MARKER + " " + issue[0]
                 elif mcp.connected(config.name):
                     status = mcp.STATUS_MARKER + " connected"
@@ -8748,41 +8778,68 @@ Tools:
                 count = len(mcp.tools.get(config.name, []))
                 server_rows.append((config.name, status, mode, count))
             name_width = max(len(name) for name, *_rest in server_rows)
-            status_width = max(len(status) for _name, status, _mode, _count in server_rows)
-            labels = {name: f"{name:<{name_width}}  {status:<{status_width}}  {mode:<6}  {count:>3} tools" for name, status, mode, count in server_rows}
-            choice = self.select_choice("MCP servers", tuple(config.name for config in configs), labels=labels, current=current)
-            if not isinstance(choice, str):
-                return
-            current = choice
-            config = mcp.find_config(choice)
-            if config is None:
-                continue
-            connected = mcp.connected(choice)
-            actions = ("reconnect", "disconnect", "tools") if connected else ("connect", "tools")
-            action_labels = {
-                "connect": "Connect",
-                "reconnect": "Reconnect and refresh capabilities",
-                "disconnect": (
-                    "Disconnect, remove from model context, and clear saved authentication"
-                    if config.auth == "oauth"
-                    else "Disconnect and remove from model context"
-                ),
-                "tools": "View tools and resources",
-            }
-            action = self.select_choice(choice, actions, labels=action_labels)
-            if action is SELECTION_BACK:
-                continue
-            if not isinstance(action, str):
-                return
-            if action in {"connect", "reconnect"}:
-                result = mcp.connect_server(choice, interactive=True, notify=self.emit)
-            elif action == "disconnect":
-                result = mcp.disconnect_server(choice)
-            elif action == "tools":
-                result = mcp.render_tool_listing(choice)
-            else:
-                raise AssertionError("unreachable MCP manager action")
-            self.ui.emit_answer(result)
+            status_width = max(len(mcp.STATUS_MARKER + " disconnecting"), *(len(status) for _name, status, _mode, _count in server_rows))
+            return {name: f"{name:<{name_width}}  {status:<{status_width}}  {mode:<6}  {count:>3} tools" for name, status, mode, count in server_rows}
+
+        def preview(name: str) -> str:
+            with state_lock:
+                if message := errors.get(name):
+                    return message
+            if issue := mcp.server_issue(name):
+                return issue[1]
+            return ""
+
+        def fragments() -> list[tuple[str, str]]:
+            state.labels = server_labels()
+            return state.fragments("MCP servers · Enter toggles connection", preview)
+
+        def toggle(name: str, connect: bool) -> None:
+            try:
+                if connect:
+                    config = mcp.find_config(name)
+                    needs_oauth = (
+                        config is not None
+                        and config.auth == "oauth"
+                        and not mcp.oauth_token_store().has_server_tokens(config.url)
+                    )
+                    if needs_oauth:
+                        with oauth_lock:
+                            result = mcp.connect_server(name, interactive=True, notify=self.emit)
+                    else:
+                        result = mcp.connect_server(name, interactive=True, notify=self.emit)
+                else:
+                    result = mcp.disconnect_server(name)
+            except Exception as error:  # Keep background failures visible in the selector.
+                result = f"MCP server error: {name}: {error}"
+
+            succeeded = mcp.connected(name) == connect
+            with state_lock:
+                transitions.pop(name, None)
+                if succeeded:
+                    errors.pop(name, None)
+                else:
+                    errors[name] = result
+            self.tui.invalidate()
+            if not modal_open.is_set():
+                self.ui.emit_answer(result)
+
+        def handle_key(key: str, data: str = "") -> Any:
+            result = state.handle_key(key, data)
+            if not isinstance(result, str):
+                return result
+            with state_lock:
+                if result in transitions:
+                    return TUI_MODAL_PENDING
+                connect = not mcp.connected(result)
+                errors.pop(result, None)
+                transitions[result] = "connecting" if connect else "disconnecting"
+            threading.Thread(target=toggle, args=(result, connect), name="mcp-toggle-" + result, daemon=True).start()
+            return TUI_MODAL_PENDING
+
+        try:
+            self.tui.show_modal(fragments, handle_key)
+        finally:
+            modal_open.clear()
 
     def select_choice(
         self,
