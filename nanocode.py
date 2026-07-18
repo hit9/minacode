@@ -1035,6 +1035,11 @@ class SessionSnapshotCodec:
         cls.merge_sequence(data, delta, "tool_records")
         cls.merge_sequence(data, delta, "tool_errors")
         cls.merge_sequence(data, delta, "turn_diffs")
+        # Backward compatibility for snapshots written before tool_results became derived.
+        if "tool_results_replace" in delta:
+            data["tool_results"] = delta["tool_results_replace"]
+        if "tool_results" in delta:
+            data.setdefault("tool_results", {}).update(delta["tool_results"])
         if "tool_counter" in delta:
             data["tool_counter"] = delta["tool_counter"]
         if "usage" in delta:

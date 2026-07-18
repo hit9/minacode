@@ -176,6 +176,23 @@ def test_load_merges_init_and_deltas(tmp_path):
     assert s2.tool_counter == 2
 
 
+def test_load_merges_legacy_tool_result_deltas(tmp_path):
+    """Snapshots from before tool_records retain replacement and incremental tool results."""
+    uid = "legacy-tool-results"
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    lines = [
+        {"uid": uid, "cwd": str(tmp_path), "messages": [], "tool_counter": 2},
+        {"tool_results_replace": {"tr.1": "read output"}},
+        {"tool_results": {"tr.2": "search output"}},
+    ]
+    (sessions / f"{uid}.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+
+    restored = n.Session.load_snapshot(uid, config=n.Config(data_dir=str(tmp_path)))
+
+    assert restored.tool_results == {"tr.1": "read output", "tr.2": "search output"}
+
+
 def test_load_preserves_uid(tmp_path):
     """load_snapshot preserves the original uid."""
     s = session_with_data_dir(tmp_path)
