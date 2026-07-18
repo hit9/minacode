@@ -404,7 +404,7 @@ def test_agent_state_roundtrip(tmp_path):
 
     s2 = n.Session.load_snapshot(s.uid, config=s.config)
     assert s2.state.goal == "fix bug"
-    assert [item.to_json() for item in s2.state.plan] == [{"status": "todo", "text": "step 1"}, {"status": "todo", "text": "step 2"}]
+    assert [vars(item) for item in s2.state.plan] == [{"status": "todo", "text": "step 1"}, {"status": "todo", "text": "step 2"}]
     assert s2.state.known == ["file at src/a.py"]
     assert s2.state.check == "assert x == 1"
     assert s2.state.summary == "working on it"

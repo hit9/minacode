@@ -3,11 +3,7 @@
 These tests exercise the stateful parts of the TUI without requiring a real terminal.
 """
 
-import queue
 import time
-from types import SimpleNamespace
-
-import pytest
 
 import nanocode as n
 
@@ -127,9 +123,7 @@ def test_choice_view_state_selected_choice():
 
 
 def test_bash_live_preview_frame_lines():
-    # Build a minimal CommandLoop-like object for BashLivePreview
-    loop = SimpleNamespace(tui=None)
-    preview = n.BashLivePreview(loop)
+    preview = n.BashLivePreview()
     preview.active = True
     preview.text = "line1\nline2\n"
     preview.started_at = time.monotonic() - 1.5
@@ -141,8 +135,7 @@ def test_bash_live_preview_frame_lines():
 
 
 def test_bash_live_preview_text_accumulation():
-    loop = SimpleNamespace(tui=None)
-    preview = n.BashLivePreview(loop)
+    preview = n.BashLivePreview()
     preview.active = True
     preview.update("hello ")
     preview.update("world")
@@ -152,8 +145,7 @@ def test_bash_live_preview_text_accumulation():
 
 
 def test_bash_live_preview_finish():
-    loop = SimpleNamespace(tui=None)
-    preview = n.BashLivePreview(loop)
+    preview = n.BashLivePreview()
     preview.active = True
     preview.text = "output"
     preview.finish()

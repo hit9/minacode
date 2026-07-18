@@ -569,9 +569,6 @@ class PlanItem:
             return None
         return cls(status if status in cls.STATUSES else "todo", text)
 
-    def to_json(self) -> Json:
-        return {"status": self.status, "text": self.text}
-
     def row(self, *, status: bool = False, style: str = "text") -> str:
         prefix = f"[{self.SYMBOLS[self.status]}] " if status and style == "symbol" else f"{self.status}: " if status else ""
         return "- " + prefix + self.text
@@ -7726,8 +7723,7 @@ class BashLivePreview:
     # looks frozen during a blocking command.
     TICK: ClassVar[float] = 0.3
 
-    def __init__(self, loop: "CommandLoop" | None = None):
-        self.loop = loop
+    def __init__(self):
         self.output = create_output(sys.stderr)
         self.active = False
         self.rendered_lines = 0
@@ -7738,10 +7734,6 @@ class BashLivePreview:
         self.timer: threading.Thread | None = None
 
     def start(self) -> None:
-        if self.loop is not None and self.loop.tui is not None:
-            self.loop.status_bar.begin()
-            self.loop.tui.set_running("compacting context")
-            return
         if not sys.stderr.isatty():
             return
         with self.lock:
@@ -8359,7 +8351,7 @@ Tools:
         self.input_fn = input_fn
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
-        self.live_preview = BashLivePreview(self)
+        self.live_preview = BashLivePreview()
         self.bash_live_preview_rendered = False
         self.live_status_paused = False
         self.background_output_lock = threading.Lock()

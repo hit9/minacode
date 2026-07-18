@@ -162,7 +162,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert "latest" not in model.input
     assert "request" not in model.input
     assert s.state.summary == "compact summary"
-    assert [item.to_json() for item in s.state.plan] == [{"status": "todo", "text": "next"}]
+    assert [vars(item) for item in s.state.plan] == [{"status": "todo", "text": "next"}]
     assert s.state.known == ["fact"]
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
     assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)

@@ -186,7 +186,9 @@ def test_strict_tools_gating_and_beta_routing():
 
 
 def test_stripped_url_removes_known_suffixes():
-    p = lambda url: n.ProviderConfig(url=url)._stripped_url()
+    def p(url):
+        return n.ProviderConfig(url=url)._stripped_url()
+
     assert p("https://api.openai.com/v1/chat/completions") == "https://api.openai.com/v1"
     assert p("https://api.openai.com/v1/responses") == "https://api.openai.com/v1"
     assert p("https://api.openai.com/v1/messages") == "https://api.openai.com/v1"

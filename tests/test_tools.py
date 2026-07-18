@@ -893,7 +893,7 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     )
 
     assert s.state.goal == "ship"
-    assert [item.to_json() for item in s.state.plan] == [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}]
+    assert [vars(item) for item in s.state.plan] == [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}]
     assert s.state.known == ["existing", "pytest"]
     assert s.tool_records == []
     assert output == ["goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + pytest"]
