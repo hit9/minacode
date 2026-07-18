@@ -267,13 +267,12 @@ class TestMCPManagerDiscovery:
 
         assert s.mcp.run_async(loop_id()) == s.mcp.run_async(loop_id())
 
-    def test_oauth_token_store_is_shared_for_manager(self, tmp_path):
+    def test_oauth_token_store_lock_is_shared_by_path(self, tmp_path):
         """Token storage keeps one store and one lock per token file path."""
         s = session(tmp_path)
-        store = s.mcp.oauth_token_store()
+        store = s.mcp._oauth_token_store
         same_path_store = n.MCPFileTokenStore(store.path)
 
-        assert s.mcp.oauth_token_store() is store
         assert same_path_store.lock is store.lock
 
     def test_token_store_put_get_roundtrip(self, tmp_path):
@@ -1258,7 +1257,7 @@ class TestMCPCommands:
         authenticated = False
         calls = []
 
-        monkeypatch.setattr(s.mcp.oauth_token_store(), "has_server_tokens", lambda _url: authenticated)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: authenticated)
 
         def fake_auth(config, notify=None):
             nonlocal authenticated
@@ -1327,6 +1326,39 @@ class TestMCPCommands:
             "- ● connected  `beta` — 0 tools"
         )
 
+    def test_mcp_batch_serializes_oauth_only(self, monkeypatch):
+        raw = {"mcp": {
+            "alpha": {"url": "https://alpha.example/mcp", "auth": "oauth"},
+            "beta": {"url": "https://beta.example/mcp", "auth": "oauth"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        authenticated: set[str] = set()
+        active = 0
+        maximum = 0
+        state_lock = threading.Lock()
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda url: url in authenticated)
+
+        def authenticate(config, notify=None):
+            nonlocal active, maximum
+            with state_lock:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.02)
+            authenticated.add(config.url)
+            with state_lock:
+                active -= 1
+
+        def discover(config):
+            s.mcp.tools[config.name] = []
+            s.mcp.resources[config.name] = []
+
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authenticate)
+        monkeypatch.setattr(s.mcp, "_discover_one", discover)
+
+        s.mcp.connect_servers(["alpha", "beta"], interactive=True)
+
+        assert maximum == 1
+
     def test_mcp_batch_connect_formats_failures_as_separate_list_items(self, monkeypatch):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         monkeypatch.setattr(s.mcp, "_discover_one", lambda config: s.mcp.set_server_error(config.name, "offline"))
@@ -1374,7 +1406,7 @@ class TestMCPCommands:
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
         cleared = []
-        monkeypatch.setattr(s.mcp.oauth_token_store(), "clear_server", cleared.append)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", cleared.append)
 
         result = s.mcp.disconnect_server("test")
 
@@ -2052,6 +2084,16 @@ class TestMCPResources:
         block = s.mcp._mention_block("test", "")
         assert "docs://a.md" in block and "read_resource" in block
 
+    def test_mention_block_lists_resources_without_tools(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = []
+        s.mcp.resources["test"] = [n.MCPResourceInfo("test", "docs://guide.md", "guide", "Usage guide", "text/markdown")]
+
+        block = s.mcp._mention_block("test", "")
+
+        assert "docs://guide.md" in block
+        assert "no tools or resources" not in block
+
     def test_resource_only_server_renders_in_index(self):
         """A connected server with resources but zero tools is listed (not dumped into pending)."""
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
@@ -2133,6 +2175,183 @@ class TestMCPResources:
         monkeypatch.setattr(s.mcp, "_call_tool", ok)
         out = n.MCPTool(s, [{"action": "call", "server": "test", "tool": "query", "arguments": {}}]).call()
         assert "MCPAutoResources" not in out and reads == []
+
+
+# ---------------------------------------------------------------------------
+# User scenarios — public commands through model-visible context
+# ---------------------------------------------------------------------------
+
+class TestMCPUserScenarios:
+    @staticmethod
+    def tool(name, description):
+        return SimpleNamespace(
+            name=name,
+            description=description,
+            inputSchema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            annotations=None,
+        )
+
+    @staticmethod
+    def model():
+        class RecordingModel:
+            def __init__(self):
+                self.requests = []
+                self.tools = []
+
+            def request(self, messages, tools=None):
+                self.requests.append(messages)
+                self.tools.append(tools or [])
+                return {"role": "assistant", "content": "done"}, [], "done"
+
+        return RecordingModel()
+
+    @staticmethod
+    def mcp_context(model):
+        return next(
+            (message["content"] for message in model.requests[-1] if str(message.get("content", "")).startswith("--- MCP TOOLS ---")),
+            "",
+        )
+
+    @staticmethod
+    def wait_until(predicate, timeout=1):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.001)
+        return predicate()
+
+    def test_startup_manual_connect_and_disconnect_update_next_model_request(self, monkeypatch):
+        raw = {"mcp": {
+            "search": {"url": "https://search.example/mcp", "auto_connect": True},
+            "docs": {"url": "https://docs.example/mcp"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        tools = {
+            "search": [self.tool("find", "Search source code")],
+            "docs": [self.tool("lookup", "Look up documentation")],
+        }
+
+        async def list_tools(config, _headers):
+            return tools[config.name]
+
+        async def list_resources(config, _headers):
+            return [_fake_resource(uri="docs://guide.md", description="Project guide")] if config.name == "docs" else []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", list_resources)
+        s.mcp.discover_auto()
+        agent = n.Agent(s, output_fn=lambda _text: None)
+        agent.model = self.model()
+        loop = n.CommandLoop(agent, input_fn=lambda _: "", output_fn=lambda _text: None)
+
+        assert agent.run("Search the project") == "done"
+        assert "[search]" in self.mcp_context(agent.model)
+        assert "[docs]" not in self.mcp_context(agent.model)
+
+        assert loop.mcp_command("connect docs") == "MCP server connected: docs; tools=1; resources=1"
+        assert agent.run("Read the project guide") == "done"
+        context = self.mcp_context(agent.model)
+        assert "[search]" in context
+        assert "[docs]" in context
+        assert "docs://guide.md" in context
+
+        assert loop.mcp_command("disconnect search") == "MCP server disconnected: search"
+        assert agent.run("Continue with the documentation") == "done"
+        context = self.mcp_context(agent.model)
+        assert "[search]" not in context
+        assert "[docs]" in context
+
+    def test_resource_only_mention_connects_server_and_reaches_model(self, monkeypatch):
+        raw = {"mcp": {"handbook": {"url": "https://handbook.example/mcp"}}}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+
+        async def no_tools(_config, _headers):
+            return []
+
+        async def handbook(_config, _headers):
+            return [_fake_resource(uri="handbook://operations.md", description="Operations handbook")]
+
+        monkeypatch.setattr(s.mcp, "_list_tools", no_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", handbook)
+        agent = n.Agent(s, output_fn=lambda _text: None)
+        agent.model = self.model()
+
+        assert agent.run("Use @handbook to check the deployment process") == "done"
+
+        request_text = "\n".join(str(message.get("content", "")) for message in agent.model.requests[-1])
+        assert "--- MCP MENTIONS ---" in request_text
+        assert "handbook://operations.md" in request_text
+        assert "MCP" in {schema["function"]["name"] for schema in agent.model.tools[-1]}
+
+    def test_batch_connection_isolates_failed_server_from_model_context(self, monkeypatch):
+        raw = {"mcp": {
+            "catalog": {"url": "https://catalog.example/mcp"},
+            "offline": {"url": "https://offline.example/mcp"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+
+        async def list_tools(config, _headers):
+            if config.name == "offline":
+                raise ConnectionError("service unavailable")
+            return [self.tool("search", "Search the catalog")]
+
+        async def no_resources(_config, _headers):
+            return []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
+        agent = n.Agent(s, output_fn=lambda _text: None)
+        agent.model = self.model()
+        loop = n.CommandLoop(agent, input_fn=lambda _: "", output_fn=lambda _text: None)
+
+        result = loop.mcp_command("connect catalog offline")
+        assert "● connected  `catalog`" in result
+        assert "● error  `offline` — service unavailable" in result
+
+        assert agent.run("Search available products") == "done"
+        context = self.mcp_context(agent.model)
+        assert "[catalog]" in context
+        assert "[offline]" not in context
+
+    def test_batch_command_reports_live_progress_until_every_server_finishes(self, monkeypatch):
+        raw = {"mcp": {
+            "alpha": {"url": "https://alpha.example/mcp"},
+            "beta": {"url": "https://beta.example/mcp"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        started = {name: threading.Event() for name in ("alpha", "beta")}
+        release = {name: threading.Event() for name in ("alpha", "beta")}
+
+        async def list_tools(config, _headers):
+            started[config.name].set()
+            while not release[config.name].is_set():
+                await asyncio.sleep(0.001)
+            return [self.tool("run", "Run workflow")]
+
+        async def no_resources(_config, _headers):
+            return []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
+        result = []
+        worker = threading.Thread(target=lambda: result.append(loop.mcp_command("connect alpha beta")))
+        worker.start()
+        assert all(event.wait(1) for event in started.values())
+        assert n.StatusBar(s).mcp_status().startswith("mcp 0/2")
+
+        release["alpha"].set()
+        assert self.wait_until(lambda: s.mcp.connected("alpha"))
+        assert s.mcp.discovery_status == "discovering"
+        assert n.StatusBar(s).mcp_status().startswith("mcp 1/2")
+
+        release["beta"].set()
+        worker.join(1)
+        assert not worker.is_alive()
+        assert s.mcp.discovery_status == "ready"
+        assert n.StatusBar(s).mcp_status() == "mcp 2"
+        assert result and "`alpha`" in result[0] and "`beta`" in result[0]
 
 
 # ---------------------------------------------------------------------------

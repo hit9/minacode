@@ -4299,6 +4299,9 @@ class MCPManager:
         self.index_truncated: bool = False  # set by render_tools_index when even name-only overflows the cap
         self._configs_cache: list[MCPServerConfig] | None = None
         self._oauth_token_store = MCPFileTokenStore(self.session.data_path("mcp-oauth", "tokens.json"))
+        self._oauth_lock = threading.Lock()
+        self._discovering_servers: dict[str, int] = {}
+        self._discovery_failed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._loop_lock = threading.Lock()
@@ -4370,6 +4373,43 @@ class MCPManager:
     def find_config(self, name: str) -> "MCPServerConfig | None":
         return next((config for config in self.parse_configs() if config.name == name), None)
 
+    @contextlib.contextmanager
+    def _discovery(self, names: tuple[str, ...]):
+        with self.lock:
+            if not self._discovering_servers:
+                self._discovery_failed = False
+            for name in names:
+                self._discovering_servers[name] = self._discovering_servers.get(name, 0) + 1
+            self.discovery_status = "discovering"
+        failed = False
+        try:
+            yield
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            with self.lock:
+                self._discovery_failed |= failed
+                for name in names:
+                    remaining = self._discovering_servers.get(name, 0) - 1
+                    if remaining > 0:
+                        self._discovering_servers[name] = remaining
+                    else:
+                        self._discovering_servers.pop(name, None)
+                if not self._discovering_servers:
+                    self.discovery_status = "error" if self._discovery_failed else "ready"
+
+    def discovering(self, name: str) -> bool:
+        with self.lock:
+            return name in self._discovering_servers
+
+    def discovery_progress(self) -> tuple[int, int]:
+        with self.lock:
+            connected = self.tools.keys() | self.resources.keys()
+            pending = sum(name not in connected for name in self._discovering_servers)
+            automatic = sum(config.auto_connect for config in self.parse_configs())
+            return len(connected), max(automatic, len(connected) + pending)
+
     def _forget_locked(self, name: str) -> None:
         self.tools.pop(name, None)
         self.resources.pop(name, None)
@@ -4378,26 +4418,25 @@ class MCPManager:
         self.server_skips.pop(name, None)
 
     def discover_auto(self) -> None:
-        self.discovery_status = "discovering"
+        configs = self.parse_configs()
+        discoverable = [config for config in configs if config.auto_connect]
+        names = tuple(config.name for config in discoverable)
         try:
-            configs = self.parse_configs()
-            configured = {config.name for config in configs}
-            with self.lock:
-                for name in list(self.tools.keys() | self.resources.keys()):
-                    if name not in configured:
-                        self._forget_locked(name)
-            discoverable = [config for config in configs if config.auto_connect]
-            if discoverable:
-                workers = min(self.MAX_DISCOVERY_WORKERS, len(discoverable))
-                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-discover") as executor:
-                    futures = [executor.submit(self._discover_one, config) for config in discoverable]
-                    for future in as_completed(futures):
-                        future.result()
-            self.discovery_status = "ready"
+            with self._discovery(names):
+                configured = {config.name for config in configs}
+                with self.lock:
+                    for name in list(self.tools.keys() | self.resources.keys()):
+                        if name not in configured:
+                            self._forget_locked(name)
+                if discoverable:
+                    workers = min(self.MAX_DISCOVERY_WORKERS, len(discoverable))
+                    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-discover") as executor:
+                        futures = [executor.submit(self._discover_one, config) for config in discoverable]
+                        for future in as_completed(futures):
+                            future.result()
         except Exception as error:
             with self.lock:
                 self.server_errors["-"] = str(error)
-            self.discovery_status = "error"
 
     def discover_server(self, name: str) -> None:
         config = self.find_config(name)
@@ -4406,22 +4445,18 @@ class MCPManager:
                 self._forget_locked(name)
                 self.server_errors[name] = "server not found"
             return
-        self.discovery_status = "discovering"
-        try:
+        names = (name,)
+        with self._discovery(names):
             self._discover_one(config)
-        finally:
-            self.discovery_status = "ready"
 
     def disconnect_server(self, name: str) -> str:
         config = self.find_config(name)
         if config is None:
             return "MCP server not found: " + name
         if config.auth == "oauth" and config.url:
-            self.oauth_token_store().clear_server(config.url)
+            self._oauth_token_store.clear_server(config.url)
         with self.lock:
             self._forget_locked(name)
-            self.server_errors.pop(name, None)
-            self.server_skips.pop(name, None)
         return "MCP server disconnected: " + name
 
     def connected(self, name: str) -> bool:
@@ -4433,17 +4468,24 @@ class MCPManager:
         *,
         interactive: bool = False,
         notify: Callable[[str], None] | None = None,
+        _compact: bool = False,
     ) -> str:
         config = self.find_config(name)
         if config is None:
-            return "MCP server not found: " + name
-        if not config.error and config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+            return f"{self.STATUS_MARKER} error  `{name}` — server not found" if _compact else "MCP server not found: " + name
+        if not config.error and config.auth == "oauth" and not self._oauth_token_store.has_server_tokens(config.url):
             if not interactive:
-                return f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
-            if error := self._authenticate_oauth(config, notify=notify):
-                return error
+                message = f"authentication required; run `/mcp connect {name}` interactively"
+                return f"{self.STATUS_MARKER} error  `{name}` — {message}" if _compact else f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
+            with self._oauth_lock:
+                if not self._oauth_token_store.has_server_tokens(config.url):
+                    if error := self._authenticate_oauth(config, notify=notify):
+                        if _compact:
+                            prefix = f"MCP OAuth authentication failed for {name}: "
+                            return f"{self.STATUS_MARKER} error  `{name}` — " + error.removeprefix(prefix)
+                        return error
         self.discover_server(name)
-        return self._connect_result(name)
+        return self._connect_result(name, compact=_compact)
 
     def _connect_result(self, name: str, *, compact: bool = False) -> str:
         if issue := self.server_issue(name):
@@ -4472,37 +4514,15 @@ class MCPManager:
         if len(selected) == 1:
             return self.connect_server(selected[0], interactive=interactive, notify=notify)
 
-        # OAuth browser flows are intentionally serialized. Once authorization is
-        # ready, discovery can safely share the same worker pool as startup discovery.
         results: dict[str, str] = {}
-        ready: list[MCPServerConfig] = []
-        for name in selected:
-            config = self.find_config(name)
-            if config is None:
-                results[name] = f"{self.STATUS_MARKER} error  `{name}` — server not found"
-                continue
-            if not config.error and config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
-                if not interactive:
-                    results[name] = f"{self.STATUS_MARKER} error  `{name}` — authentication required; run `/mcp connect {name}` interactively"
-                    continue
-                if error := self._authenticate_oauth(config, notify=notify):
-                    prefix = f"MCP OAuth authentication failed for {name}: "
-                    results[name] = f"{self.STATUS_MARKER} error  `{name}` — " + error.removeprefix(prefix)
-                    continue
-            ready.append(config)
-
-        if ready:
-            workers = min(self.MAX_DISCOVERY_WORKERS, len(ready))
-            self.discovery_status = "discovering"
-            try:
-                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-connect") as executor:
-                    futures = [executor.submit(self._discover_one, config) for config in ready]
-                    for future in as_completed(futures):
-                        future.result()
-            finally:
-                self.discovery_status = "ready"
-            for config in ready:
-                results[config.name] = self._connect_result(config.name, compact=True)
+        workers = min(self.MAX_DISCOVERY_WORKERS, len(selected))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-connect") as executor:
+            futures = {
+                name: executor.submit(self.connect_server, name, interactive=interactive, notify=notify, _compact=True)
+                for name in selected
+            }
+            for name, future in futures.items():
+                results[name] = future.result()
         items = ("- " + results[name].replace("\n", "\n    ") for name in selected)
         return "MCP connection results:\n\n" + "\n".join(items)
 
@@ -4518,7 +4538,7 @@ class MCPManager:
                 self.set_server_error(config.name, headers)
             return
 
-        if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+        if config.auth == "oauth" and not self._oauth_token_store.has_server_tokens(config.url):
             self.set_server_error(config.name, "authentication required; run /mcp connect " + config.name)
             return
         try:
@@ -4646,9 +4666,6 @@ class MCPManager:
     def tool_info(self, server: str, tool_name: str) -> MCPToolInfo | None:
         return next((tool for tool in self.tools.get(server, []) if tool.name == tool_name), None)
 
-    def oauth_token_store(self) -> MCPFileTokenStore:
-        return self._oauth_token_store
-
     def _async_loop(self) -> asyncio.AbstractEventLoop:
         with self._loop_lock:
             if self._closed:
@@ -4741,7 +4758,7 @@ class MCPManager:
                 await super().redirect_handler(authorization_url)
 
         return NanocodeOAuth(
-            token_storage=self.oauth_token_store(),
+            token_storage=self._oauth_token_store,
             client_name="nanocode",
             callback_timeout=self.session.settings.shell_timeout,
         )
@@ -4818,7 +4835,7 @@ class MCPManager:
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             raise ToolError(headers)
-        if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+        if config.auth == "oauth" and not self._oauth_token_store.has_server_tokens(config.url):
             raise ToolError(f"MCP server '{server}' requires authentication; run /mcp connect {server}")
         if issue := self.server_issue(server):
             kind, message = issue
@@ -4838,11 +4855,8 @@ class MCPManager:
         text = self.normalize_result(result)
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
 
-    def _resource_preamble(self, server: str) -> tuple[MCPServerConfig, dict[str, str]]:
-        return self._resolve_server(server)
-
     def list_resources(self, server: str) -> str:
-        self._resource_preamble(server)
+        self._resolve_server(server)
         resources = self.resources.get(server, [])
         lines = [f"<MCPResources server={json.dumps(server)}>"]
         if resources:
@@ -4855,7 +4869,7 @@ class MCPManager:
     def read_resource(self, server: str, uri: str) -> str:
         if not uri:
             raise ToolError("MCP read_resource requires a uri")
-        config, headers = self._resource_preamble(server)
+        config, headers = self._resolve_server(server)
         try:
             result = self.run_async(self._read_resource(config, headers, uri))
         except Exception as e:
@@ -4974,7 +4988,7 @@ class MCPManager:
         # Drop any stale client registration so the fresh authorization uses a client
         # whose registered redirect_uri matches this run's callback port. Reusing a
         # client registered against an earlier random port yields invalid_request.
-        self.oauth_token_store().clear_client_info(config.url)
+        self._oauth_token_store.clear_client_info(config.url)
         try:
             self.run_async(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
         except Exception as error:
@@ -5140,9 +5154,9 @@ class MCPManager:
         if issue := self.server_issue(name):
             kind, message = issue
             return message if kind == "error" else "skipped: " + message
-        if self.discovery_status == "discovering":
+        if self.discovering(name):
             return "discovering — tools not loaded yet; retry shortly"
-        if name in self.tools:
+        if self.connected(name):
             return "connected; no tools or resources advertised"
         return "not connected"
 
@@ -5177,13 +5191,14 @@ class MCPManager:
         return "\n".join(header + blocks).strip()
 
     def _mention_block(self, server: str, tool: str) -> str:
-        if server not in self.tools and self.discovery_status != "discovering":
+        if not self.connected(server) and not self.discovering(server):
             self.discover_server(server)
         if issue := self.server_issue(server):
             kind, message = issue
             return f"[{server}] {'unavailable' if kind == 'error' else 'skipped'}: {message}"
         tools = self.tools.get(server, [])
-        if not tools:
+        resources = self.resources.get(server, [])
+        if not tools and not resources:
             return f"[{server}] {self._pending_status(server)}"
         if tool:
             info = self.tool_info(server, tool)
@@ -5196,7 +5211,6 @@ class MCPManager:
             line = self._format_tool_line(server, info)
             if line:
                 lines.append(line)
-        resources = self.resources.get(server, [])
         if resources:
             lines.append(f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(server)}, uri=...):')
             lines.extend(self._format_resource_line(res) for res in resources)
@@ -7878,8 +7892,7 @@ class StatusBar:
         status = self.session.mcp.discovery_status
         if status == "discovering":
             spinner = self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
-            loaded = len(self.session.mcp.tools)
-            total = sum(1 for config in configs if config.auto_connect)
+            loaded, total = self.session.mcp.discovery_progress()
             return f"mcp {loaded}/{total}{spinner}"
         if status == "error":
             return "mcp err"
@@ -8743,7 +8756,8 @@ Tools:
 
     def mcp_manager(self) -> None:
         mcp = self.session.mcp
-        if mcp is None or self.tui is None:
+        tui = self.tui
+        if mcp is None or tui is None:
             return
         configs = tuple(mcp.parse_configs())
         if not configs:
@@ -8754,7 +8768,6 @@ Tools:
         transitions: dict[str, str] = {}
         errors: dict[str, str] = {}
         state_lock = threading.Lock()
-        oauth_lock = threading.Lock()
         modal_open = threading.Event()
         modal_open.set()
 
@@ -8796,17 +8809,7 @@ Tools:
         def toggle(name: str, connect: bool) -> None:
             try:
                 if connect:
-                    config = mcp.find_config(name)
-                    needs_oauth = (
-                        config is not None
-                        and config.auth == "oauth"
-                        and not mcp.oauth_token_store().has_server_tokens(config.url)
-                    )
-                    if needs_oauth:
-                        with oauth_lock:
-                            result = mcp.connect_server(name, interactive=True, notify=self.emit)
-                    else:
-                        result = mcp.connect_server(name, interactive=True, notify=self.emit)
+                    result = mcp.connect_server(name, interactive=True, notify=self.emit)
                 else:
                     result = mcp.disconnect_server(name)
             except Exception as error:  # Keep background failures visible in the selector.
@@ -8819,9 +8822,10 @@ Tools:
                     errors.pop(name, None)
                 else:
                     errors[name] = result
-            self.tui.invalidate()
-            if not modal_open.is_set():
-                self.ui.emit_answer(result)
+            if modal_open.is_set():
+                tui.invalidate()
+            else:
+                self.emit_background(result)
 
         def handle_key(key: str, data: str = "") -> Any:
             result = state.handle_key(key, data)
@@ -8837,7 +8841,7 @@ Tools:
             return TUI_MODAL_PENDING
 
         try:
-            self.tui.show_modal(fragments, handle_key)
+            tui.show_modal(fragments, handle_key)
         finally:
             modal_open.clear()
 
