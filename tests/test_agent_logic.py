@@ -1533,7 +1533,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     assert bare.skills_context() == ""
     tools = n.resolved_tool_schemas(bare.session)
     assert not any(t["function"]["name"] == "Skill" for t in tools)
-    assert all("--- SKILLS ---" not in text for _name, text in bare.cache_prefix_regions(n.Agent.SYSTEM_PROMPT, tools))
+    assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(n.Agent.SYSTEM_PROMPT))
 
 
 def test_skills_command_lists_builtin_and_installed(tmp_path):
@@ -1582,22 +1582,6 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"skills {count}" in bar_text
 
 
-def test_debug_command_shows_bounded_cache_prefix_records(tmp_path):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
-    loop.agent.context.check_cache_prefix("first")
-    loop.agent.context.check_cache_prefix("second")
-
-    output = loop.debug("")
-
-    assert "### Debug · 1 cache-prefix mismatch" in output
-    assert "#### Latest · call 1 · round 0 · step 0" in output
-    assert "| system |" in output
-    assert "first" not in output and "second" not in output
-    assert "prefix mismatches `1`; see `/debug`" in loop.status("")
-    assert loop.debug("on") == "Usage: /debug"
-
-
 def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     s = session(tmp_path)
     skill = s.skills.get("nanocode-help")
@@ -1605,7 +1589,7 @@ def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
     body = n.SkillTool(s, ["nanocode-help"]).call()
     # Authored manual prose so how-to / feature / troubleshooting questions need no source read.
     assert "## How it works" in body and "## Troubleshooting" in body
-    assert "prefix-mismatch" in body  # a concept /help does not explain
+    assert "prompt-cache metrics" in body  # a concept /help does not explain
     # Plus lists assembled from in-code constants (so they cannot drift).
     assert "/strict" in body and "/skills" in body  # command list (from /help)
     assert "InspectCode:" in body  # tool details (from DESCRIPTIONs)
@@ -1632,17 +1616,6 @@ def test_session_from_config_file_theme_param(tmp_path):
 
     s3 = n.Session.from_config_file(path=str(cfg), theme="")
     assert s3.settings.theme == "light"
-
-
-def test_agent_state_prefix_fingerprints_truncated_to_last_three():
-    state = n.AgentState(prefix_fingerprints=["a", "b", "c", "d", "e"])
-    assert state.prefix_fingerprints == ["c", "d", "e"]
-
-    state2 = n.AgentState(prefix_fingerprints=["x"])
-    assert state2.prefix_fingerprints == ["x"]
-
-    state3 = n.AgentState(prefix_fingerprints=[])
-    assert state3.prefix_fingerprints == []
 
 
 def test_memory_context_includes_tool_errors_when_present(tmp_path):

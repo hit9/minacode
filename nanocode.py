@@ -595,12 +595,9 @@ class AgentState:
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
     compaction_count: int = 0
-    prefix_fingerprint: str = ""
-    prefix_fingerprints: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.plan = self.plan_items(self.plan)
-        self.prefix_fingerprints = self.prefix_fingerprints[-3:]
 
     @classmethod
     def plan_items(cls, items: list[Any]) -> list[PlanItem]:
@@ -960,7 +957,7 @@ class SessionSnapshotCodec:
         data = asdict(state)
         return {key: data[key] for key in (
             "goal", "plan", "known", "check", "summary", "compaction_count",
-            "prefix_fingerprint", "prefix_fingerprints", "round_count",
+            "round_count",
         )}
 
     @staticmethod
@@ -1180,12 +1177,15 @@ class SessionSnapshotStore:
         turn_diffs = SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", []))
         if not turn_diffs:
             turn_diffs = SessionSnapshotCodec.turn_diffs_from_tool_records(tool_records)
+        state_data = dict(data.get("state", {}))
+        state_data.pop("prefix_fingerprint", None)
+        state_data.pop("prefix_fingerprints", None)
         session = Session(
             cwd=data.get("cwd", os.getcwd()),
             config=config,
             settings=settings,
             messages=SessionSnapshotCodec.persistable_messages(data.get("messages", [])),
-            state=AgentState(**data.get("state", {})),
+            state=AgentState(**state_data),
             usage=SessionSnapshotCodec.model_usage(data.get("usage", {})),
             tool_counter=data.get("tool_counter", 0),
             tool_results=tool_results,
@@ -1278,10 +1278,8 @@ search, edit, run commands) and returns a short answer in your language.
 
 ## Context & caching
 Each request is a cache-stable prefix (system prompt, environment, SKILLS/MCP indexes, tool schemas)
-then the conversation and `Memory`. Tool outputs stay in the conversation and large outputs are bounded with Recall keys. Caching needs that
-prefix byte-identical; `/status` shows context %, cache hit rate, a prefix-mismatch warning if it
-mutated mid-session (`/debug` shows the changed prefix regions), and a compaction count. Long
-chats compact automatically; `/compact` forces it.
+then the conversation and `Memory`. Tool outputs stay in the conversation and large outputs are bounded with Recall keys. `/status` shows
+context %, cache hit rate, and compaction count. Long chats compact automatically; `/compact` forces it.
 
 ## Sessions
 Auto-saved. Resume this project's latest session with `-c` (or use `--resume <UID>`).
@@ -1310,11 +1308,10 @@ only read-only subcommands auto-run; commit/add/push and branch changes still as
 
 ## Troubleshooting
 - "missing config": set `provider.url`/`key`/`model`.
-- Slow/costly or low cache hit: check `/status`; a prefix-mismatch warning means the prefix changed
-  mid-session — `/debug` shows the changed regions.
+- Slow/costly or low cache hit: check the prompt-cache metrics in `/status`.
 - InspectCode stale/unavailable: `/index` to sync or rebuild.
 - Context full: compacts automatically; `/compact` forces it.
-- Command refused while the agent works unless read-only (`/help`, `/status`, `/skills`, `/debug`,
+- Command refused while the agent works unless read-only (`/help`, `/status`, `/skills`,
   read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
 
     def __init__(self, skills: dict[str, Skill]):
@@ -1538,8 +1535,6 @@ class Session:
     job_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
-    debug_records: list[Json] = field(default_factory=list)
-    prefix_mismatch_count: int = 0
     mcp: MCPManager | None = None
     skills: SkillLibrary | None = None
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
@@ -1547,8 +1542,6 @@ class Session:
     resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
     _active_turn_messages: list[Json] = field(default_factory=list)
-    _cache_prefix_regions: dict[str, Json] = field(default_factory=dict)
-    _cache_prefix_fingerprint: str = ""
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
     _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -1561,18 +1554,6 @@ class Session:
             self.mcp = MCPManager(self)
         if self.skills is None:
             self.skills = SkillLibrary.load(self)
-
-    def record_debug(self, kind: str, details: Json) -> None:
-        self.debug_records.append(
-            {
-                "kind": kind,
-                "call": self.usage.calls + 1,
-                "round": self.state.round_count,
-                "step": self.state.turn_step,
-                **details,
-            }
-        )
-        del self.debug_records[:-3]
 
     def store_turn_diff(
         self,
@@ -4049,56 +4030,6 @@ class ContextManager:
     def skills_context(self) -> str:
         return self.session.skills.index() if self.session.skills else ""
 
-    def cache_prefix_regions(self, base_system: str, tools: list[Json] | None) -> list[tuple[str, str]]:
-        return [
-            ("system", base_system.strip()),
-            ("environment", "--- Environment ---\n" + (self.environment() or "(empty)")),
-            ("skills", self.skills_context()),
-            ("mcp-tools", self.mcp_tools_context() or ""),
-            ("tool-schemas", json.dumps(tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
-        ]
-
-    def check_cache_prefix(self, base_system: str, tools: list[Json] | None = None) -> None:
-        tools = tools if tools is not None else resolved_tool_schemas(self.session)
-        regions: dict[str, Json] = {}
-        prefix_hash = hashlib.sha256()
-        for index, (name, text) in enumerate(self.cache_prefix_regions(base_system, tools)):
-            encoded = text.encode("utf-8")
-            if index:
-                prefix_hash.update(b"\x00")
-            prefix_hash.update(encoded)
-            regions[name] = {"hash": hashlib.sha256(encoded).hexdigest(), "chars": len(text)}
-        fingerprint = prefix_hash.hexdigest()
-        previous_regions = self.session._cache_prefix_regions
-        previous_fingerprint = self.session._cache_prefix_fingerprint
-        if previous_fingerprint and fingerprint != previous_fingerprint:
-            changed = []
-            for name, current in regions.items():
-                previous = previous_regions.get(name, {"hash": "", "chars": 0})
-                if previous["hash"] != current["hash"]:
-                    changed.append(
-                        {
-                            "name": name,
-                            "expected": previous["hash"],
-                            "actual": current["hash"],
-                            "expected_chars": previous["chars"],
-                            "actual_chars": current["chars"],
-                        }
-                    )
-            self.session.prefix_mismatch_count += 1
-            self.session.record_debug(
-                "cache-prefix",
-                {"expected": previous_fingerprint, "actual": fingerprint, "regions": changed},
-            )
-        state = self.session.state
-        if not state.prefix_fingerprint:
-            state.prefix_fingerprint = fingerprint
-        if fingerprint not in state.prefix_fingerprints:
-            state.prefix_fingerprints.append(fingerprint)
-            del state.prefix_fingerprints[:-3]
-        self.session._cache_prefix_regions = regions
-        self.session._cache_prefix_fingerprint = fingerprint
-
     def update_percent(self, messages: list[Json]) -> int:
         tokens = self.estimated_tokens(messages)
         self.session.state.context_percent = min(100, tokens * 100 // self.session.settings.max_context_tokens)
@@ -6502,7 +6433,6 @@ FINAL:
         self.session.state.turn_messages = len(request_turn)
         messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn)
         tools = resolved_tool_schemas(self.session)
-        self.context.check_cache_prefix(self.SYSTEM_PROMPT, tools)
         self.context.update_percent(messages)
         return PreparedRequest(messages, tools, pending)
 
@@ -8211,7 +8141,7 @@ class CommandLoop:
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
-        "/skills": "skills_command", "/config": "config", "/debug": "debug",
+        "/skills": "skills_command", "/config": "config",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
         "/mcp": "mcp_command", "/resend": "resend_command",
@@ -8221,7 +8151,7 @@ class CommandLoop:
 
     # Commands safe to run from the follow-up input while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/debug", "/diff", "/yolo", "/resend"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/diff", "/yolo", "/resend"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -8255,7 +8185,7 @@ class CommandLoop:
         # Config & setup
         "`/config` opens your config; `/set KEY VALUE` changes settings live.",
         "Scaffold a fresh config with `nanocode --init-config`.",
-        "Launch with `--yolo` to skip confirmations; `/debug` shows recent diagnostics.",
+        "Launch with `--yolo` to skip confirmations.",
         'Filter MCP servers at launch with `--mcp "name*,!exclude"`.',
         # Rendering behavior
         "Markdown links render as `text (url)` — clickable hyperlinks are disabled so the URL stays visible; most terminals auto-link the bare URL.",
@@ -8280,7 +8210,6 @@ class CommandLoop:
   /diff              Show latest edits and overall session diff.
   /skills            List installed skills (load with Skill(name) or reference inline with $name).
   /config            Show active config.
-  /debug             Show recent diagnostics.
   /compact           Compact context now.
   /resend            Resend the in-flight model request (type it while a turn is working).
   /index [force]      Sync or rebuild code symbol index.
@@ -8858,7 +8787,7 @@ Tools:
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
-            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/skills", "/debug", "/diff"} else self.emit)(output)
+            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
         return True, False
 
     def resend_command(self, _args: str) -> str | None:
@@ -9035,7 +8964,7 @@ Tools:
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
             ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
-            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)" + (f"; prefix mismatches `{self.session.prefix_mismatch_count}`; see `/debug`" if self.session.prefix_mismatch_count else "")),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; mcp `{self.session.settings.mcp_selector or 'all'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("jobs", f"running `{len(self.session.running_jobs())}`; total `{len(self.session.jobs)}`"),
@@ -9216,31 +9145,6 @@ Tools:
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
             ]
         )
-
-    def debug(self, args: str) -> str:
-        if args.strip():
-            return "Usage: /debug"
-        if not self.session.debug_records:
-            return "No debug records"
-        count = self.session.prefix_mismatch_count
-        lines = [f"### Debug · {count} cache-prefix {'mismatch' if count == 1 else 'mismatches'}"]
-        for index, record in enumerate(reversed(self.session.debug_records)):
-            label = "Latest" if index == 0 else "Previous " + str(index)
-            lines.extend(
-                [
-                    "",
-                    f"#### {label} · call {record['call']} · round {record['round']} · step {record['step']}",
-                    "",
-                    "| region | chars | fingerprint |",
-                    "| --- | ---: | --- |",
-                ]
-            )
-            for region in record.get("regions", []):
-                before = str(region.get("expected", ""))[:8] or "(none)"
-                after = str(region.get("actual", ""))[:8] or "(none)"
-                sizes = f"{region.get('expected_chars', 0):,} → {region.get('actual_chars', 0):,}"
-                lines.append(f"| {region.get('name', '(unknown)')} | {sizes} | `{before}` → `{after}` |")
-        return "\n".join(lines)
 
     def compact(self, args: str) -> str:
         if args.strip():

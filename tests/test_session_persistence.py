@@ -410,6 +410,20 @@ def test_agent_state_roundtrip(tmp_path):
     assert s2.state.summary == "working on it"
     assert s2.state.round_count == 7
 
+
+def test_load_ignores_retired_cache_prefix_state(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.state.goal = "resume"
+    s.save_snapshot()
+    path = tmp_path / "sessions" / f"{s.uid}.jsonl"
+    lines = read_jsonl(path)
+    lines[0]["state"].update(prefix_fingerprint="old", prefix_fingerprints=["old", "new"])
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config)
+
+    assert restored.uid == s.uid
+
 def test_multiple_deltas_accumulate_correctly(tmp_path):
     """Multiple delta saves accumulate data correctly."""
     s = session_with_data_dir(tmp_path)
