@@ -30,8 +30,6 @@ classifiers = [
     "Topic :: Terminals",
 ]
 
-[project.urls]
-Documentation = "https://nanocode.readthedocs.io"
 dependencies = [
     "anthropic>=0.64.0",
     "code-symbol-index>=0.3.5",
@@ -48,6 +46,7 @@ dependencies = [
 Homepage = "https://github.com/hit9/nanocode"
 Repository = "https://github.com/hit9/nanocode"
 Issues = "https://github.com/hit9/nanocode/issues"
+Documentation = "https://nanocode.readthedocs.io"
 
 [project.scripts]
 nanocode = "nanocode:main"
