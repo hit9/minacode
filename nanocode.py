@@ -9534,6 +9534,10 @@ class TuiRuntime:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.platform == "win32":
+        print("Error: nanocode does not support native Windows; use WSL instead.", file=sys.stderr)
+        return 1
+
     parser = argparse.ArgumentParser(prog="nanocode")
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")

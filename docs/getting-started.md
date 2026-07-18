@@ -2,6 +2,7 @@
 
 ## Requirements
 
+- macOS or Linux. On Windows, use WSL; native Windows is rejected at startup.
 - Python 3.11 or newer
 - [uv](https://docs.astral.sh/uv/) to install and run
 
