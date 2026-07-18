@@ -33,6 +33,9 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--nc-fg-strong);
     letter-spacing: -0.01em;
 }
+h1 { font-size: 2.4rem; line-height: 1.2; }
+h2 { font-size: 1.8rem; margin-top: 2rem; }
+h3 { font-size: 1.35rem; margin-top: 1.5rem; }
 
 /* Links */
 a, a:visited { color: var(--nc-link); }

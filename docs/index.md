@@ -54,25 +54,13 @@ Working through a repository task in an interactive session.
 
 ```{toctree}
 :hidden:
-:caption: Guide
 
 getting-started
 usage
-```
-
-```{toctree}
-:hidden:
-:caption: Capabilities
-
 tools
+tool-reference
 mcp
 skills
-```
-
-```{toctree}
-:hidden:
-:caption: Reference
-
 configuration
 safety
 ```

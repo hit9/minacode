@@ -1,7 +1,8 @@
 # What the agent can do
 
 You don't run tools yourself — you describe a goal and nanocode does the work. It helps to
-know what it's capable of.
+know what it's capable of. See [Tool reference](tool-reference.md) for the exact model-facing
+tool names and confirmation behavior.
 
 - **Read and search** files across your project. Search skips hidden, binary, and gitignored
   files.
