@@ -17,8 +17,7 @@
 - Python 3.11 or newer
 - [uv](https://docs.astral.sh/uv/)
 
-Native Windows is not supported. Use nanocode inside
-[Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/windows/wsl/) instead.
+Windows is not supported.
 
 ## Install
 

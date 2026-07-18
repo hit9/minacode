@@ -16,8 +16,7 @@
 - Python 3.11 或更新版本
 - [uv](https://docs.astral.sh/uv/)
 
-暂不支持原生 Windows。请通过
-[Windows Subsystem for Linux（WSL）](https://learn.microsoft.com/windows/wsl/)运行 nanocode。
+Windows 不支持。
 
 ## 安装
 
