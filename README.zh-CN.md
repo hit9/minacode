@@ -39,8 +39,6 @@ nanocode
 
 升级：`uv tool upgrade nanocode-cli`。
 
-完整文档位于 [nanocode.readthedocs.io](https://nanocode.readthedocs.io)。
-
 ## 它是什么
 
 nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 — 读取和编辑文件、运行命令、追加指令、session 恢复、diff、MCP 和 skill — 整合成我自己真正在用的工具。
@@ -61,16 +59,11 @@ nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 
 - **MCP 与 skills：** 按需连接 Model Context Protocol server，加载 Markdown 指令包。
 - **Provider 兼容：** 支持 OpenAI-compatible API 与 Anthropic。
 
-## 常用命令
+## 链接
 
-| 命令 | 说明 |
-|---|---|
-| `/help` | 命令与工具参考 |
-| `/status` | 运行状态、上下文、缓存和 MCP |
-| `/diff` | 查看最新改动与 session 累计 diff |
-| `/mcp` | 管理 MCP server 连接 |
-| `/model [MODEL]` | 查看或切换模型 |
-| `/yolo` | 开关确认提示 |
+- [文档](https://nanocode.readthedocs.io)
+- [博客](https://hit9.dev/post/nanocode)
+- [code-symbol-index](https://github.com/hit9/code-symbol-index)
 
 ## 安全
 

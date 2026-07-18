@@ -39,8 +39,6 @@ nanocode
 
 Upgrade with `uv tool upgrade nanocode-cli`.
 
-The full documentation is at [nanocode.readthedocs.io](https://nanocode.readthedocs.io).
-
 ## What it is
 
 nanocode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
@@ -61,16 +59,11 @@ It works on real repositories, including its own: I use nanocode to build and ma
 - **MCP and skills:** connect Model Context Protocol servers and load Markdown instruction packs on demand.
 - **Provider compatibility:** OpenAI-compatible APIs and Anthropic.
 
-## Common commands
+## Links
 
-| Command | Description |
-|---|---|
-| `/help` | Command and tool reference |
-| `/status` | Runtime status, context, cache, and MCP |
-| `/diff` | Review latest edits and session diff |
-| `/mcp` | Manage MCP server connections |
-| `/model [MODEL]` | Show or switch model |
-| `/yolo` | Toggle confirmations |
+- [Documentation](https://nanocode.readthedocs.io)
+- [Blog post](https://hit9.dev/post/nanocode)
+- [code-symbol-index](https://github.com/hit9/code-symbol-index)
 
 ## Safety
 
