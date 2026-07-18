@@ -64,7 +64,7 @@ nanocode
 Type a request in plain language and the agent starts working — reading files, proposing
 edits, running commands. Before anything that changes files or runs a command, it asks for
 confirmation (unless you pass `--yolo`). You can keep typing while it works; see
-[Follow-ups](usage.md#follow-ups-typing-while-it-works).
+[Follow-ups](usage.md#follow-ups).
 
 Exit with `/exit`, `/quit`, or `Ctrl-D`.
 
