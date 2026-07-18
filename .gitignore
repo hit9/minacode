@@ -18,3 +18,4 @@ uv.lock
 # crash core dumps
 core
 core.*
+.playwright-cli/
