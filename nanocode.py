@@ -7726,7 +7726,8 @@ class BashLivePreview:
     # looks frozen during a blocking command.
     TICK: ClassVar[float] = 0.3
 
-    def __init__(self):
+    def __init__(self, loop: "CommandLoop" | None = None):
+        self.loop = loop
         self.output = create_output(sys.stderr)
         self.active = False
         self.rendered_lines = 0
@@ -7737,7 +7738,7 @@ class BashLivePreview:
         self.timer: threading.Thread | None = None
 
     def start(self) -> None:
-        if self.loop.tui is not None:
+        if self.loop is not None and self.loop.tui is not None:
             self.loop.status_bar.begin()
             self.loop.tui.set_running("compacting context")
             return
@@ -8358,7 +8359,7 @@ Tools:
         self.input_fn = input_fn
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
-        self.live_preview = BashLivePreview()
+        self.live_preview = BashLivePreview(self)
         self.bash_live_preview_rendered = False
         self.live_status_paused = False
         self.background_output_lock = threading.Lock()
