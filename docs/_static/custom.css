@@ -46,10 +46,24 @@ header#pageheader h1 a, header#pageheader h1 a:visited { color: var(--nc-fg-stro
 footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var(--nc-muted); }
 .related a:hover, footer#pagefooter a:hover { color: var(--nc-fg); }
 
+/* Keep the bottom navigation inside the content column instead of running
+   underneath the fixed sidebar. */
+@media (min-width: 821px) {
+    .bodywrapper {
+        box-sizing: border-box;
+        padding-left: 1.5rem;
+    }
+    .related.bottom {
+        width: min(calc(100% - 16rem), 44rem);
+        margin-left: max(16rem, calc((100vw - 60rem) / 2 + 16rem));
+        margin-right: 0;
+    }
+}
+
 /* Fixed sidebar: the theme's bodywrapper keeps a matching 16rem content gutter.
    A long navigation tree scrolls internally. */
 .sphinxsidebar {
-    font-size: 1rem;
+    font-size: 1.0625rem;
     position: fixed;
     top: 0;
     left: max(0px, calc((100vw - 60rem) / 2));
@@ -68,6 +82,16 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 .sphinxsidebar h3.site-title a,
 .sphinxsidebar h3.site-title a:visited { color: var(--nc-fg-strong); }
 .sphinxsidebar a:hover { color: var(--nc-link); }
+
+/* Separate documentation pages from sections within the current page. */
+.sphinxsidebar .toctree-l1 > a {
+    color: var(--nc-fg-strong);
+    font-weight: 600;
+}
+.sphinxsidebar .toctree-l2 > a {
+    color: var(--nc-muted);
+    font-size: 1rem;
+}
 
 /* Use one stable highlight for both the current page and subsection. None of
    these properties affect layout, so moving the highlight cannot shift links. */

@@ -58,7 +58,7 @@ Once a server is connected, nanocode can use its tools like any other. Tools the
 read-only run without a prompt; anything that may change state asks for
 [confirmation](tools.md#confirmations) first.
 
-## Authentication
+### Authentication
 
 - **Bearer token** — set `bearer_token_env_var` (or a custom header via `env_http_headers`).
 - **OAuth** — set `auth = "oauth"`. Connecting runs the authorization flow; disconnecting

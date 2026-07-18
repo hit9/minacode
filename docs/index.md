@@ -35,6 +35,14 @@ Full walkthrough: [Getting started](getting-started.md).
 
 ## What it does
 
+```{figure} ../snapshots/nanocode2.gif
+:alt: nanocode working through a repository task
+:width: 600px
+:align: center
+
+Working through a repository task in an interactive session.
+```
+
 | Area | In short |
 |---|---|
 | **[Interactive session](usage.md)** | Describe a task; keep typing while it works to steer or add context. |
@@ -72,6 +80,7 @@ safety
 ```{toctree}
 :hidden:
 :maxdepth: 1
+:titlesonly:
 
 changelog
 ```

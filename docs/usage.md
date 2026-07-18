@@ -4,14 +4,16 @@ nanocode runs as a conversation in your terminal. You type a request, the agent 
 through it with [tools](tools.md), and you stay in the loop the whole time — steering,
 answering questions, and reviewing changes.
 
-## Follow-ups: typing while it works
+## Interaction
+
+### Follow-ups: typing while it works
 
 You don't have to wait for the agent to finish. Press `Enter` while it works to queue a
 follow-up for the next step, or `Ctrl-C` to interrupt the current turn so queued input takes
 over immediately. Press `Up` (or `Ctrl-P`) to bring back the newest queued message and edit
 it.
 
-## Commands
+### Commands
 
 Type `/` commands at the prompt. Run `/help` for the built-in reference.
 
@@ -35,7 +37,7 @@ Type `/` commands at the prompt. Run `/help` for the built-in reference.
 | `/resend` | Re-send the in-flight model request (while a turn is working) |
 | `/exit`, `/quit` | Leave nanocode |
 
-## Mentions
+### Mentions
 
 Two inline references, both Tab-completed as you type:
 
@@ -43,7 +45,7 @@ Two inline references, both Tab-completed as you type:
   it on demand for this message.
 - `$skill` — inject a [skill](skills.md)'s full instructions into the current turn.
 
-## Keys and input editing
+### Keys and input editing
 
 **Interactive selectors** (model picker, MCP manager, diff viewer) support:
 
@@ -74,7 +76,7 @@ nanocode --resume      # same, explicit
 nanocode --resume UID  # resume a specific session by id
 ```
 
-## Reviewing changes
+### Reviewing changes
 
 `/diff` opens an interactive, tabbed viewer with two views:
 
@@ -83,7 +85,7 @@ nanocode --resume UID  # resume a specific session by id
 
 Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close.
 
-## Long sessions
+### Long sessions
 
 nanocode keeps long conversations within a working budget on its own, summarizing older
 context as needed so a session can run indefinitely. Run `/compact` to trim it now, or

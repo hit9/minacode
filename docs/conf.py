@@ -43,9 +43,9 @@ html_theme_options = {
     "showrelbarbottom": True,
     "sidebarwidth": "16rem",
     "cssfiles": ["_static/custom.css"],
-    # Keep the sidebar compact: expand sections for the current page only and
-    # omit third-level headings from the global navigation.
-    "globaltoc_collapse": True,
+    # Show every page's major sections while keeping third-level headings out
+    # of the global navigation.
+    "globaltoc_collapse": False,
     "globaltoc_includehidden": True,
     "globaltoc_maxdepth": 2,
 }

@@ -4,7 +4,9 @@ A **skill** is a reusable pack of instructions the agent loads only when it's ne
 a release checklist, a project convention, a multi-step procedure. Keeping the full text out
 of context until it's used means you can have many skills without bloating every request.
 
-## What a skill looks like
+## Creating and installing skills
+
+### What a skill looks like
 
 A skill is a folder containing a `SKILL.md` file with `name` and `description` frontmatter:
 
@@ -29,7 +31,7 @@ description: Draft release notes from the git log since the last tag.
 nanocode only sees the `name` and `description` until the skill is used — the full body
 loads on demand.
 
-## Where skills come from
+### Where skills come from
 
 nanocode discovers skills from two places:
 
@@ -40,12 +42,12 @@ nanocode discovers skills from two places:
 If both define the same name, the **project** skill wins. List what's installed with
 `/skills`.
 
-## Using a skill
+## Using skills
 
 - **On demand** — nanocode loads a skill itself when it's relevant to your request.
 - **Inline** — type `$name` in a message (Tab-completes) to load a skill yourself for that turn.
 
-## Bundled scripts
+### Bundled scripts
 
 A skill can ship helper scripts alongside `SKILL.md`. Inside the body, `{skill_dir}` (or
 `${SKILL_DIR}`) expands to the skill's absolute path, so instructions can point the agent at

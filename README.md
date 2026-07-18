@@ -46,6 +46,11 @@ Upgrade with `uv tool upgrade nanocode-cli`.
 - On-demand MCP servers and Markdown skills
 - One Python module for straightforward customization
 
+<p align="center">
+  <img src="snapshots/nanocode2.gif" alt="nanocode resuming a saved session" width="600">
+</p>
+<p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
+
 ## Documentation
 
 The full documentation lives in [`docs/`](docs/index.md):

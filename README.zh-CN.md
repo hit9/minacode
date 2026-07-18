@@ -46,6 +46,11 @@ nanocode
 - 按需连接 MCP server、加载 Markdown skill
 - 单个 Python 模块，便于直接定制
 
+<p align="center">
+  <img src="snapshots/nanocode2.gif" alt="nanocode 恢复保存的 session" width="600">
+</p>
+<p align="center"><sub>恢复保存的 session，包括对话和工具调用历史。</sub></p>
+
 ## 文档
 
 完整文档位于 [`docs/`](docs/index.md)：

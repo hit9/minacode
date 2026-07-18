@@ -1,18 +1,16 @@
 # Getting started
 
-## Requirements
+## Install
 
-- macOS or Linux. On Windows, use WSL; native Windows is rejected at startup.
+- macOS or Linux; native Windows is not supported
 - Python 3.11 or newer
 - [uv](https://docs.astral.sh/uv/) to install and run
-
-## Install
 
 ```sh
 uv tool install nanocode-cli
 ```
 
-## Upgrade
+### Upgrade
 
 ```sh
 uv tool upgrade nanocode-cli
@@ -21,7 +19,7 @@ uv tool upgrade nanocode-cli
 nanocode checks PyPI at most once a day and reports an available update at startup and in
 `/status`.
 
-## Create a config file
+## Configure
 
 nanocode needs one thing to start: a provider to talk to. Generate a starter config:
 
@@ -32,7 +30,7 @@ nanocode --init-config
 This writes `~/.nanocode/config.toml`. Only the `[provider]` block is required; every other
 setting has a built-in default, and the file lists the common ones as comments.
 
-## Point it at a provider
+### Point it at a provider
 
 nanocode speaks to any OpenAI-compatible API (and to Anthropic). Open the config and fill in
 a provider — for example [DeepSeek](https://api-docs.deepseek.com/):
