@@ -40,6 +40,8 @@ nanocode
 
 Upgrade with `uv tool upgrade nanocode-cli`.
 
+The full documentation is at [nanocode.readthedocs.io](https://nanocode.readthedocs.io).
+
 ## What it is
 
 nanocode does not try to invent a new kind of coding agent. It combines familiar ideas — reading and editing files, running commands, live follow-ups, sessions, diffs, MCP, and skills — into a single Python module I actually use and maintain.
@@ -70,8 +72,6 @@ Everything ships in one file, so changing the behavior is one edit away.
 | `/mcp` | Manage MCP server connections |
 | `/model [MODEL]` | Show or switch model |
 | `/yolo` | Toggle confirmations |
-
-## Documentation
 
 The full documentation is at [nanocode.readthedocs.io](https://nanocode.readthedocs.io).
 

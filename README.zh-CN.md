@@ -39,6 +39,8 @@ nanocode
 
 升级：`uv tool upgrade nanocode-cli`。
 
+完整文档位于 [nanocode.readthedocs.io](https://nanocode.readthedocs.io)。
+
 ## 它是什么
 
 nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 — 读取和编辑文件、运行命令、实时追加指令、session 恢复、diff、MCP 和 skill — 整合到一个我真正在用、维护的 Python 模块里。
@@ -69,8 +71,6 @@ nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 
 | `/mcp` | 管理 MCP server 连接 |
 | `/model [MODEL]` | 查看或切换模型 |
 | `/yolo` | 开关确认提示 |
-
-## 文档
 
 完整文档位于 [nanocode.readthedocs.io](https://nanocode.readthedocs.io)。
 
