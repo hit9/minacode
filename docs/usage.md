@@ -37,6 +37,53 @@ Type `/` commands at the prompt. Run `/help` for the built-in reference.
 | `/resend` | Re-send the in-flight model request (while a turn is working) |
 | `/exit`, `/quit` | Leave nanocode |
 
+### Key commands in detail
+
+`/status`
+
+Shows everything about the runtime at a glance: workspace path, session id, model
+and provider in use, context window fill percentage, conversation history length,
+prompt-cache hit ratio, code index state, background jobs, and whether an update is
+available. Run it when you want to know "where am I right now."
+
+`/diff`
+
+Opens an interactive diff viewer with two tabs — **Latest** (what changed in the
+most recent turn) and **Session** (the net diff since the session started). Navigate
+with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close. See
+[Reviewing changes](#reviewing-changes) for more.
+
+`/ps`
+
+Lists active background jobs — shell commands that are still running after the
+initial `Bash` call timed out. Each job shows its id, state (`running` / `done`),
+command, and elapsed time. Use `Job` tool actions to inspect or manage them.
+
+`/index [force]`
+
+Build or rebuild the code symbol index that powers `InspectCode`. The first build
+scans every source file; subsequent syncs are fast. Add `force` to rebuild from
+scratch. See [Code symbol index](code-index.md) for the full picture.
+
+`/provider [NAME]`
+
+Show or switch the active provider. With no argument, it lists every configured
+provider and marks the active one. With a name, it switches immediately — all
+subsequent model calls use that provider. Providers are defined in
+[Configuration](configuration.md#providers).
+
+`/model [MODEL]`
+
+Show or switch the model for the current provider. Without an argument it lists
+available models (from your config) and lets you pick one with arrow keys. With a
+model name, it switches to that model directly.
+
+`/reason [EFFORT]`
+
+Show or set the reasoning effort for providers that support it (OpenAI o-series and
+DeepSeek R1). Values are `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`.
+Without an argument it opens a picker to choose interactively.
+
 ### Mentions
 
 Two inline references, both Tab-completed as you type:

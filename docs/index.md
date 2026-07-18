@@ -50,6 +50,7 @@ Working through a repository task in an interactive session.
 | **[Sessions](usage.md#sessions)** | Your work is saved and resumable with `-c` or `--resume`. |
 | **[MCP](mcp.md)** | Connect external Model Context Protocol servers and use their tools. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |
+| **[Code symbol index](code-index.md)** | Pre-built symbol database that powers code navigation. Build with `/index`. |
 | **[Providers](configuration.md#providers)** | Any OpenAI-compatible API, plus Anthropic. |
 
 ```{toctree}
@@ -62,6 +63,7 @@ mcp
 skills
 configuration
 safety
+code-index
 ```
 
 ```{toctree}

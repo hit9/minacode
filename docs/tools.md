@@ -5,8 +5,8 @@ know what it's capable of.
 
 - **Read and search** files across your project. Search skips hidden, binary, and gitignored
   files.
-- **Navigate code** — jump to definitions, callers, and implementations using a built-in
-  code index. Rebuild it any time with `/index`.
+- **Navigate code** — jump to definitions, callers, and implementations using the
+  [code symbol index](code-index.md). Build it with `/index`.
 - **Edit files** safely — before applying a change it checks the file hasn't changed
   underneath, so it won't patch the wrong place.
 - **Run commands**, including long-running ones in the background (list them with `/ps`).
