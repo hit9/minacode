@@ -27,7 +27,7 @@ It works on real repositories, including its own: I use nanocode to build and ma
 
 ## Highlights
 
-- **Prompt-cache aware:** stable instructions, environment, and tool schemas preserve reusable request prefixes, routinely hitting 98–99% cache rates.
+- **Prompt-cache aware:** stable instructions, environment, and tool schemas preserve reusable request prefixes, can reach 98–99% cache hit rates.
 - **Code navigation:** jump to definitions, callers, and implementations with a searchable code index.
 - **Live follow-ups:** type while the agent works; queued input joins the next turn or interrupts the current one.
 - **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content.
