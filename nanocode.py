@@ -4442,10 +4442,57 @@ class MCPManager:
             if error := self._authenticate_oauth(config, notify=notify):
                 return error
         self.discover_server(name)
+        return self._connect_result(name)
+
+    def _connect_result(self, name: str) -> str:
         if issue := self.server_issue(name):
             kind, message = issue
             return f"MCP server {kind}: {name}: {message}"
         return f"MCP server connected: {name}; tools={len(self.tools.get(name, []))}; resources={len(self.resources.get(name, []))}"
+
+    def connect_servers(
+        self,
+        names: list[str],
+        *,
+        interactive: bool = False,
+        notify: Callable[[str], None] | None = None,
+    ) -> str:
+        """Connect a de-duplicated batch concurrently while preserving result order."""
+        selected = list(dict.fromkeys(names))
+        if len(selected) == 1:
+            return self.connect_server(selected[0], interactive=interactive, notify=notify)
+
+        # OAuth browser flows are intentionally serialized. Once authorization is
+        # ready, discovery can safely share the same worker pool as startup discovery.
+        results: dict[str, str] = {}
+        ready: list[MCPServerConfig] = []
+        for name in selected:
+            config = self.find_config(name)
+            if config is None:
+                results[name] = "MCP server not found: " + name
+                continue
+            if not config.error and config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+                if not interactive:
+                    results[name] = f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
+                    continue
+                if error := self._authenticate_oauth(config, notify=notify):
+                    results[name] = error
+                    continue
+            ready.append(config)
+
+        if ready:
+            workers = min(self.MAX_DISCOVERY_WORKERS, len(ready))
+            self.discovery_status = "discovering"
+            try:
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-connect") as executor:
+                    futures = [executor.submit(self._discover_one, config) for config in ready]
+                    for future in as_completed(futures):
+                        future.result()
+            finally:
+                self.discovery_status = "ready"
+            for config in ready:
+                results[config.name] = self._connect_result(config.name)
+        return "\n".join(results[name] for name in selected)
 
     def _discover_one(self, config: MCPServerConfig) -> None:
         if config.error:
@@ -6410,7 +6457,12 @@ class CommandCompleter(Completer):
                 yield from self.matches(("connect", "disconnect", "tools"), tail)
                 return
             sub, _, value = tail.partition(" ")
-            if sub in {"connect", "disconnect", "tools"}:
+            if sub == "connect":
+                completed, _, prefix = value.rpartition(" ")
+                selected = set(completed.split())
+                yield from self.matches((name for name in self.mcp_servers() if name not in selected), prefix)
+                return
+            if sub in {"disconnect", "tools"}:
                 yield from self.matches(self.mcp_servers(), value)
                 return
 
@@ -8037,11 +8089,11 @@ class CommandLoop:
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
     MCP_COMMANDS: ClassVar[dict[str, tuple[int, int, str]]] = {
-        "connect": (1, 1, "Usage: /mcp connect <server>"),
+        "connect": (1, sys.maxsize, "Usage: /mcp connect <server> [server ...]"),
         "disconnect": (1, 1, "Usage: /mcp disconnect <server>"),
         "tools": (0, 1, "Usage: /mcp tools [server]"),
     }
-    MCP_HELP = "Try /mcp, /mcp connect <server>, /mcp disconnect <server>, or /mcp tools [server]"
+    MCP_HELP = "Try /mcp, /mcp connect <server> [server ...], /mcp disconnect <server>, or /mcp tools [server]"
 
     HELP = """Commands:
   /help              Show this help.
@@ -8625,7 +8677,7 @@ Tools:
             return usage
 
         if sub == "connect":
-            return mcp.connect_server(rest[0], interactive=self.interactive_input, notify=self.emit)
+            return mcp.connect_servers(rest, interactive=self.interactive_input, notify=self.emit)
         if sub == "disconnect":
             return mcp.disconnect_server(rest[0])
         if sub == "tools":

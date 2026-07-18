@@ -12,6 +12,7 @@
 - Open the current input in `$VISUAL`/`$EDITOR` with `Ctrl-X Ctrl-E` or `Ctrl-G`; a lone `Ctrl-X` no longer opens the editor.
 - Make `Ctrl-P` mirror the Up arrow when recalling the latest queued message for editing.
 - Connect MCP servers on demand through targeted mentions or `/mcp connect NAME`, keeping disconnected servers entirely out of model context. Connecting handles OAuth authorization when required; disconnecting unloads the server and clears its saved OAuth authentication.
+- Let `/mcp connect` accept multiple server names, connect them concurrently, and complete each successive server argument.
 
 ### Removed
 - Remove the unreachable non-TUI `Ctrl-\` model-request retry; interactive retries use `/resend`, while transient errors still retry automatically.

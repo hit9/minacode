@@ -1,6 +1,7 @@
 """Tests for nanocode MCP client integration."""
 import asyncio
 import os
+import threading
 import time
 from types import SimpleNamespace
 
@@ -1269,6 +1270,46 @@ class TestMCPCommands:
 
         assert calls == ["test", "test"]
 
+    def test_mcp_connects_multiple_servers_concurrently_in_argument_order(self, monkeypatch):
+        raw = {"mcp": {
+            "alpha": {"url": "https://alpha.example/mcp"},
+            "beta": {"url": "https://beta.example/mcp"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        barrier = threading.Barrier(2)
+        started = []
+
+        def fake_discover(config):
+            started.append(config.name)
+            barrier.wait(timeout=1)
+            s.mcp.tools[config.name] = []
+            s.mcp.resources[config.name] = []
+
+        monkeypatch.setattr(s.mcp, "_discover_one", fake_discover)
+
+        result = s.mcp.connect_servers(["alpha", "beta", "alpha"])
+
+        assert set(started) == {"alpha", "beta"}
+        assert result == (
+            "MCP server connected: alpha; tools=0; resources=0\n"
+            "MCP server connected: beta; tools=0; resources=0"
+        )
+
+    def test_mcp_connect_command_accepts_multiple_servers(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        calls = []
+        monkeypatch.setattr(
+            s.mcp,
+            "connect_servers",
+            lambda names, **kwargs: calls.append((names, kwargs)) or "connected batch",
+        )
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+
+        result = loop.mcp_command("connect alpha beta")
+
+        assert result == "connected batch"
+        assert calls == [(["alpha", "beta"], {"interactive": False, "notify": loop.emit})]
+
     def test_mcp_connect_rejects_missing_server(self):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
@@ -1332,8 +1373,7 @@ class TestMCPCommands:
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
         assert loop.mcp_command("tools a b") == "Usage: /mcp tools [server]"
-        assert loop.mcp_command("connect") == "Usage: /mcp connect <server>"
-        assert loop.mcp_command("connect a b") == "Usage: /mcp connect <server>"
+        assert loop.mcp_command("connect") == "Usage: /mcp connect <server> [server ...]"
         assert loop.mcp_command("disconnect") == "Usage: /mcp disconnect <server>"
         assert loop.mcp_command("disconnect a b") == "Usage: /mcp disconnect <server>"
         assert "Unknown" in loop.mcp_command("login test")
@@ -1396,6 +1436,18 @@ class TestMCPTabCompletion:
 
         completions = list(completer.get_completions(Document("/mcp connect p"), None))
         assert [c.text for c in completions] == ["plain"]
+
+    def test_mcp_connect_completion_advances_and_omits_selected_servers(self):
+        completer = n.CommandCompleter(mcp_servers=lambda: ("plain", "oauthOne", "other"))
+        from prompt_toolkit.document import Document
+
+        completions = list(completer.get_completions(Document("/mcp connect plain o"), None))
+
+        assert [c.text for c in completions] == ["oauthOne", "other"]
+        assert all(c.start_position == -1 for c in completions)
+
+        completions = list(completer.get_completions(Document("/mcp connect plain "), None))
+        assert [c.text for c in completions] == ["oauthOne", "other"]
 
     def test_mcp_disconnect_completion_uses_all_servers(self):
         completer = n.CommandCompleter(mcp_servers=lambda: ("plain", "oauthOne"))
