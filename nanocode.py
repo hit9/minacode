@@ -6004,7 +6004,7 @@ class ModelClient:
 
         # SDK status errors expose status_code directly.
         if isinstance(cause, (openai.APIStatusError, anthropic.APIStatusError)):
-            return cause.status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+            return cause.status_code in {408, 409, 425, 429} or 500 <= cause.status_code < 600
 
         # SDK connection/timeout errors are always retryable.
         if isinstance(
