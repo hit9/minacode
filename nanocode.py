@@ -29,6 +29,7 @@ import time
 import tomllib
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
 from collections.abc import Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -38,6 +39,8 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import code_symbol_index as csi
+import anthropic
+import openai
 from anthropic import Anthropic
 from json_repair import repair_json
 from openai import OpenAI
@@ -4452,6 +4455,7 @@ class MCPManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._loop_lock = threading.Lock()
+        self._closed = False
 
     def parse_configs(self) -> list[MCPServerConfig]:
         # Config and selector are immutable for the session, so parse once and reuse.
@@ -4739,8 +4743,18 @@ class MCPManager:
 
     def _async_loop(self) -> asyncio.AbstractEventLoop:
         with self._loop_lock:
-            if self._loop is not None and self._loop.is_running():
+            if self._closed:
+                raise ToolError("MCP manager is closed")
+            if (
+                self._loop is not None
+                and self._loop.is_running()
+                and self._loop_thread is not None
+                and self._loop_thread.is_alive()
+            ):
                 return self._loop
+            # Previous thread died or loop stopped; reset and recreate.
+            self._loop = None
+            self._loop_thread = None
             ready = threading.Event()
             holder: dict[str, asyncio.AbstractEventLoop] = {}
 
@@ -4749,8 +4763,11 @@ class MCPManager:
                 asyncio.set_event_loop(loop)
                 holder["loop"] = loop
                 ready.set()
-                loop.run_forever()
-                loop.close()
+                try:
+                    loop.run_forever()
+                finally:
+                    with contextlib.suppress(Exception):
+                        loop.close()
 
             self._loop_thread = threading.Thread(target=run, name="mcp-async", daemon=True)
             self._loop_thread.start()
@@ -4758,8 +4775,18 @@ class MCPManager:
             self._loop = holder["loop"]
             return self._loop
 
-    def run_async(self, coroutine: Any) -> Any:
-        return asyncio.run_coroutine_threadsafe(coroutine, self._async_loop()).result()
+    def run_async(self, coroutine: Any, *, timeout: int | None = None) -> Any:
+        if timeout is None:
+            timeout = self.call_timeout()
+        loop = self._async_loop()
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as error:
+            future.cancel()
+            raise ToolError(f"MCP call timed out after {timeout}s") from error
+        except concurrent.futures.CancelledError as error:
+            raise ToolError("MCP call was cancelled") from error
 
     def close(self) -> None:
         # Stop and join the background loop before the interpreter tears down its
@@ -4767,6 +4794,9 @@ class MCPManager:
         # termination, DNS via run_in_executor) races the concurrent.futures atexit
         # shutdown and prints "cannot schedule new futures after shutdown".
         with self._loop_lock:
+            if self._closed:
+                return
+            self._closed = True
             loop = self._loop
             thread = self._loop_thread
             self._loop = None
@@ -4783,10 +4813,18 @@ class MCPManager:
                     await task
 
         if loop.is_running():
-            with contextlib.suppress(BaseException):
+            try:
                 asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=5)
-            loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=5)
+            except concurrent.futures.TimeoutError:
+                pass
+            except Exception:
+                pass
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+        if thread.is_alive():
+            thread.join(timeout=5)
 
     def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
         from fastmcp.client.auth import OAuth
@@ -5962,15 +6000,34 @@ class ModelClient:
 
     @staticmethod
     def retryable_error(error: Exception) -> bool:
-        status = getattr(error.__cause__, "status_code", None) or getattr(error.__cause__, "code", None)
-        text = str(error).lower()
+        cause = getattr(error, "__cause__", None)
+
+        # SDK status errors expose status_code directly.
+        if isinstance(cause, (openai.APIStatusError, anthropic.APIStatusError)):
+            return cause.status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+        # SDK connection/timeout errors are always retryable.
+        if isinstance(
+            cause,
+            (openai.APIConnectionError, openai.APITimeoutError, anthropic.APIConnectionError, anthropic.APITimeoutError),
+        ):
+            return True
+
+        # Built-in network/timeout errors are retryable.
+        if isinstance(cause, (TimeoutError, asyncio.TimeoutError, ConnectionError, ConnectionResetError, ConnectionAbortedError)):
+            return True
+
+        # Fallback: parse status codes embedded in the error text or cause attributes.
+        status = getattr(cause, "status_code", None) or getattr(cause, "code", None)
         with contextlib.suppress(Exception):
             if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
                 return True
+        text = str(error).lower()
         if re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b", text):
             return True
         return any(
-            part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
+            part in text
+            for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
         )
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
