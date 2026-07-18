@@ -3,7 +3,8 @@
 You don't run tools yourself — you describe a goal and nanocode does the work. It helps to
 know what it's capable of.
 
-- **Read and search** files across your project.
+- **Read and search** files across your project. Search skips hidden, binary, and gitignored
+  files.
 - **Navigate code** — jump to definitions, callers, and implementations using a built-in
   code index. Rebuild it any time with `/index`.
 - **Edit files** safely — before applying a change it checks the file hasn't changed
@@ -15,9 +16,9 @@ know what it's capable of.
 
 ## Confirmations
 
-Before anything that changes your system — editing a file, running a command, or calling an
-external [MCP](mcp.md) tool — nanocode asks you to confirm. Read-only actions (reading,
-searching, navigating code) never prompt.
+Before anything that changes your system — editing a file, running a mutating shell command,
+or calling an external [MCP](mcp.md) tool not marked read-only — nanocode asks you to
+confirm. Read-only actions, including safe shell commands, never prompt.
 
 Turn confirmations off once you trust a workflow with `--yolo` (at startup) or `/yolo`
 (in a session).

@@ -43,13 +43,15 @@ html_theme_options = {
     "showrelbarbottom": True,
     "sidebarwidth": "16rem",
     "cssfiles": ["_static/custom.css"],
-    # Expand the whole navigation tree by default instead of collapsing sections.
-    "globaltoc_collapse": False,
+    # Keep the sidebar compact: expand sections for the current page only and
+    # omit third-level headings from the global navigation.
+    "globaltoc_collapse": True,
     "globaltoc_includehidden": True,
+    "globaltoc_maxdepth": 2,
 }
 html_sidebars = {
-    # globaltoc is expanded (globaltoc_collapse above), so it already shows the current
-    # page's sub-sections — a separate localtoc would just duplicate the heading.
+    # The global TOC shows the current page's sections, so a separate local TOC
+    # would duplicate them.
     "**": ["globaltoc.html", "nc_links.html", "searchbox.html"],
 }
 html_title = f"{project} {release}"

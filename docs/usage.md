@@ -6,9 +6,10 @@ answering questions, and reviewing changes.
 
 ## Follow-ups: typing while it works
 
-You don't have to wait for the agent to finish. Anything you type while it's working is
-queued and picked up on the next step, so you can add context or correct course without
-interrupting. Press `Up` (or `Ctrl-P`) to bring back the message you just queued and edit it.
+You don't have to wait for the agent to finish. Press `Enter` while it works to queue a
+follow-up for the next step, or `Ctrl-C` to interrupt the current turn so queued input takes
+over immediately. Press `Up` (or `Ctrl-P`) to bring back the newest queued message and edit
+it.
 
 ## Commands
 
@@ -17,7 +18,7 @@ Type `/` commands at the prompt. Run `/help` for the built-in reference.
 | Command | What it does |
 |---|---|
 | `/help` | Show the command and tool reference |
-| `/status` | Runtime status: model, context use, token/cache usage, index, jobs |
+| `/status` | Runtime status: model, context and cache use, MCP, index, jobs, updates |
 | `/config` | Show the active configuration |
 | `/diff` | Review the latest edits and the whole-session diff |
 | `/ps` | List active background jobs |
@@ -27,7 +28,7 @@ Type `/` commands at the prompt. Run `/help` for the built-in reference.
 | `/provider [NAME]` | Show or switch the active provider |
 | `/model [MODEL]` | Show or switch the model |
 | `/reason [EFFORT]` | Show or set reasoning effort (`minimal`…`xhigh`, or `off`) |
-| `/set KEY VALUE` | Set a `provider.*` or `runtime.*` value for this session |
+| `/set KEY VALUE` | Set a supported provider or runtime tuning value for this session |
 | `/yolo` | Toggle confirmation prompts on or off |
 | `/strict` | Toggle strict tool-call schemas (OpenAI / DeepSeek) |
 | `/mcp` | Manage [MCP](mcp.md) server connections |
@@ -53,6 +54,8 @@ Two inline references, both Tab-completed as you type:
 **The input line** supports:
 
 - history recall and completion
+- `Ctrl-C` — clear idle input; while running, interrupt the current turn
+- `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)
 
@@ -60,6 +63,8 @@ Two inline references, both Tab-completed as you type:
 
 Your work is saved automatically — the conversation, edits, and diffs are tied to the
 project directory you started in, so an interrupted session picks up where it stopped.
+Inactive sessions older than seven days are removed at startup by default; set
+`runtime.session_retention_days = 0` to keep them indefinitely.
 
 Resume from the command line:
 

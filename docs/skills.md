@@ -34,7 +34,8 @@ loads on demand.
 nanocode discovers skills from two places:
 
 - `.nanocode/skills/` — project-local, checked in with the repo
-- `~/.nanocode/skills/` — your personal skills, available everywhere
+- `~/.nanocode/skills/` — your personal skills, available everywhere (under
+  `<data_dir>/skills/` when `paths.data_dir` is customized)
 
 If both define the same name, the **project** skill wins. List what's installed with
 `/skills`.

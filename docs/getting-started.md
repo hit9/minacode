@@ -18,6 +18,9 @@ uv tool install nanocode-cli
 uv tool upgrade nanocode-cli
 ```
 
+nanocode checks PyPI at most once a day and reports an available update at startup and in
+`/status`.
+
 ## Create a config file
 
 nanocode needs one thing to start: a provider to talk to. Generate a starter config:
@@ -73,7 +76,9 @@ Exit with `/exit`, `/quit`, or `Ctrl-D`.
 |---|---|
 | `-c`, `--last`, `--latest` | Resume the most recent session in this project |
 | `--resume [UID]` | Resume a saved session; with no `UID`, resumes the latest |
-| `--yolo` | Skip confirmation prompts for file-changing and shell tools |
+| `--yolo` | Skip confirmation prompts for mutating tools |
+| `--theme {auto,light,dark}` | Override the configured terminal color theme |
 | `--config <path>` | Use a specific config file instead of `~/.nanocode/config.toml` |
 | `--init-config` | Write a starter config file and exit |
+| `-h`, `--help` | Show command-line help and exit |
 | `-v`, `--version` | Print the version and exit |

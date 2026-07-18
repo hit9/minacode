@@ -32,8 +32,10 @@ Switch providers within a session with `/provider [NAME]` and models with `/mode
 | `url` | — | Base URL of the API |
 | `key` | — | API key |
 | `model` | — | Model name |
-| `api` | `auto` | Request format: `auto`, `anthropic`, `openai`/`chat`. `auto` picks the right one for the host and model. |
+| `api` | `auto` | Request format: `auto`, `anthropic`, or `chat`. `auto` picks the right one for the host and model. |
 | `reasoning` | `medium` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `chat_reasoning` | `auto` | Chat-API reasoning format: `auto`, `off`, `reasoning`, `reasoning_effort`, `thinking`, or `enable_thinking` |
+| `prompt_cache_key` | `auto` | Stable prompt-cache key; use `off` to disable or provide a custom key |
 | `timeout` | `180` | Request timeout, in seconds |
 | `available_models` | — | Models offered by `/model`'s picker |
 | `temperature` | — | Sampling temperature (omit to use the server default) |
@@ -49,22 +51,25 @@ endpoints work too.
 
 Optional; the defaults shown are used when omitted.
 
-```toml
-[runtime]
-yolo = false               # start with confirmations off
-max_context_tokens = 128000  # budget before auto-compaction
-max_agent_steps = 200      # max tool steps per turn
-shell_timeout = 60         # default timeout for shell tools, in seconds
-```
+| Key | Default | Meaning |
+|---|---|---|
+| `yolo` | `false` | Start without confirmation prompts |
+| `max_context_tokens` | `128000` | Context budget before automatic compaction |
+| `max_agent_steps` | `200` | Maximum tool steps in one turn |
+| `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |
+| `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |
+| `max_parallel_tools` | `4` | Maximum read-only tool calls executed concurrently; `1` disables parallelism |
+| `session_retention_days` | `7` | Delete inactive saved sessions older than this at startup; `0` keeps them indefinitely |
+| `theme` | `auto` | Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme` |
 
-You can change these live for the current session with `/set runtime.KEY VALUE` (and provider
-values with `/set provider.KEY VALUE`). `/yolo` toggles `yolo`.
+Selected tuning values can be changed for the current session with `/set` (Tab completion
+lists the supported keys). `/yolo` toggles `yolo`.
 
 ## Data location
 
 ```toml
 [paths]
-data_dir = "~/.nanocode"   # sessions, code index, OAuth tokens
+data_dir = "~/.nanocode"   # sessions, code index, OAuth tokens, user skills, update cache
 ```
 
 Sessions live under `<data_dir>/sessions/`.
