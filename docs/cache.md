@@ -1,16 +1,15 @@
 # Prompt cache
 
-Most of nanocode's prompt — its instructions, environment, tool schemas — is the same across
-every turn. The model provider sees identical request prefixes and reuses cached computations,
-skipping the expensive inference work on those tokens.
+Some model providers can reuse work when the beginning of a request is unchanged. nanocode
+keeps its instructions, environment, and tool schemas stable so supported providers can cache
+that prefix.
 
-When everything lines up, nanocode can reach <span class="marked">90–99%</span> cache hit rates. This is the main reason
-its API cost stays low even across long conversations.
+What gets cached depends on the provider. OpenAI-compatible providers may reuse matching
+conversation prefixes automatically. For Anthropic, nanocode explicitly marks the stable tools
+and system instructions for caching. Older messages and tool results may become part of a
+reusable prefix; the newest content has no matching earlier request yet.
 
-| Cached | Not cached |
-|---|---|
-| System instructions | Your messages |
-| Environment context (cwd, OS, commands) | Tool call results |
-| Tool schemas (Read, Edit, Bash, etc.) | The model's replies |
-| Recent conversation prefix | Each new turn's content |
-
+`/status` shows the cached prompt tokens reported by your provider for the whole session and
+the latest request. The ratio varies with the provider, model, prompt length, and conversation;
+when the request prefixes line up, it can reach 90–99%. This is an observation, not a
+guaranteed rate.

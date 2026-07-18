@@ -54,7 +54,8 @@ them. Set `auto_connect = true` for servers you always want. Ways to connect:
 
 The /mcp interactive server manager.
 ```
-- **`@server`** in a message — connect on demand for that turn.
+- **`@server`** in a message — connect on demand. The connection remains active until you
+  disconnect it.
 
 ```{figure} ../snapshots/nanocode-mcp-mention.png
 :alt: Using @server mention to connect an MCP server on demand
@@ -83,5 +84,5 @@ read-only run without a prompt; anything that may change state asks for
 ```{admonition} Trust
 :class: warning
 Local (stdio) servers run programs on your machine, and remote servers receive whatever the
-agent sends them. <span class="marked">Only connect servers you trust.</span>
+agent sends them. Only connect servers you trust.
 ```

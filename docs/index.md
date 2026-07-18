@@ -3,9 +3,9 @@
 A small terminal coding agent
 
 nanocode works in your terminal: you describe a task, and it reads code, edits files, runs
-commands, and reports back. It reuses prompt prefixes (up to <span class="marked">90–99% cache hit rate</span>) to reduce API cost, keeps a
-searchable code index, runs background jobs, tracks its own working notes, and resumes
-where you left off.
+commands, and reports back. It keeps stable prompt prefixes so supported providers can reuse
+work, maintains a searchable code index, runs background jobs, tracks its own working notes,
+and resumes where you left off.
 
 ```{figure} ../snapshots/nanocode1.gif
 :alt: nanocode editing code and running tools in one interactive session

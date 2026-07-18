@@ -7,8 +7,8 @@ know what it's capable of.
   files.
 - **Navigate code** — jump to definitions, callers, and implementations using the
   [code symbol index](#code-symbol-index). Build it with `/index`.
-- **Edit files** safely — <span class="marked">before applying a change it checks the file hasn't changed
-  underneath, so it won't patch the wrong place.</span>
+- **Edit files** safely — before applying a change it checks the file hasn't changed
+  underneath, so it won't patch the wrong place.
 - **Run commands**, including long-running ones in the background (list them with `/ps`).
 - **Keep working notes** — a goal, a plan, and facts it has learned — so it stays on track
   through a long task.
@@ -26,13 +26,14 @@ a connected server exposes tools or resources.
 | `Search` | Search text with regular expressions, skipping hidden, binary, and gitignored files | Only outside the project |
 | `InspectCode` | Find symbols, references, implementations, callers, callees, and file outlines through the code index | No |
 | `Edit` | Create or patch one UTF-8 file using anchored edits | Yes |
-| `Bash` | <span class="marked">Run one shell command with live output</span> | Only when the command is not conservatively classified as read-only |
+| `Bash` | Run one shell command with live output | Only when the command is not conservatively classified as read-only |
 | `Job` | Start, inspect, wait for, list, or stop background shell jobs | Start, wait, and stop only |
 | `Recall` | Retrieve complete stored tool output, optionally by line range | No |
 | `Note` | Maintain the agent's durable goal, plan, checks, and learned facts | No |
 | `Ask` | Pause and ask you one or more questions | No |
 | `Skill` | Load an installed skill's full instructions | No |
 | `MCP` | Describe or call connected MCP tools and list or read their resources | Calls prompt unless the server marks the tool read-only |
+
 ## Execution behavior
 
 Read-only calls may run concurrently, up to `runtime.max_parallel_tools`. File edits run in
@@ -51,9 +52,9 @@ Turn confirmations off once you trust a workflow with `--yolo` (at startup) or `
 
 ## Code symbol index
 
-nanocode ships with a pre-built **code symbol index** that enables <span class="marked">structured code
-navigation</span> — jump to definitions, find callers, list implementations — without
-relying on slow, real-time file scans or external language servers.
+nanocode includes a **code symbol index** for structured navigation — finding definitions,
+callers, references, and implementations without relying on an external language server. The
+index is built separately for each project.
 
 ### What it is
 
@@ -71,7 +72,7 @@ When the index is available, the `InspectCode` tool can:
 - **File outlines** — symbol tree of a single file
 
 ```{note}
-<span class="marked">Without the index `InspectCode` returns nothing.</span> Run `/index` once after opening a
+Without an index, `InspectCode` reports that the index is unavailable. Run `/index` once in a
 project to build it.
 ```
 
@@ -81,16 +82,17 @@ Run `/index` to build or rebuild the index. The first build walks every source f
 subsequent builds sync from the previous snapshot and are much faster. Add `force`
 to rebuild from scratch.
 
-When the index already exists, nanocode <span class="marked">refreshes it automatically in the background</span>
-at startup and after source-file edits. The `/status` command shows the current
-index state:
+When an index already exists, nanocode refreshes it in the background at startup. After an
+agent turn, it automatically updates small batches of changed source files; run `/index` when
+a large set of changes leaves it stale. `/status` shows the current state:
 
 | State | Meaning |
 |---|---|
-| **available** | Index is current and ready |
+| **synced** | Index is current and ready |
 | **stale** | Out of date; wait for background refresh or run `/index` |
 | **syncing** | A background refresh is in progress |
-| **missing** (or **error**) | No index exists yet; run `/index` |
+| **missing** | No index exists yet; run `/index` |
+| **error** | The index failed to build or sync; `/status` shows the details |
 
-The index lives in `.nanocode/code-index/` as a set of sqlite databases. It covers
+The project index is stored in `.code-symbol-index/index.sqlite`. It covers
 Python, JavaScript, TypeScript, Go, Rust, C, C++, Java, and more.

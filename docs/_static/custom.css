@@ -90,7 +90,7 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 .sphinxsidebar h3, .sphinxsidebar h3 a, .sphinxsidebar h3 a:visited { color: var(--nc-muted); }
 .sphinxsidebar h3.site-title {
     font-size: 2.5rem;
-    margin-bottom: 0.35rem;
+    margin-bottom: 0.75rem;
 }
 .sphinxsidebar h3.site-title a,
 .sphinxsidebar h3.site-title a:visited { color: var(--nc-fg-strong); }
@@ -224,6 +224,4 @@ div.highlight::-webkit-scrollbar-thumb, pre::-webkit-scrollbar-thumb {
 }
 div.highlight::-webkit-scrollbar-track, pre::-webkit-scrollbar-track { background: transparent; }
 
-/* Inline highlighted/underlined text for emphasis */
-.marked { border-bottom: 1px solid rgba(180, 150, 80, 0.8); padding-bottom: 1px; }
 div.highlight, pre { scrollbar-color: #3a4048 transparent; }

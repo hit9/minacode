@@ -27,9 +27,9 @@ It works on real repositories, including its own: I use nanocode to build and ma
 
 ## Highlights
 
-- **Prompt-cache aware:** stable instructions, environment, and tool schemas preserve reusable request prefixes, can reach 98–99% cache hit rates.
+- **Prompt-cache aware:** stable request prefixes let supported providers reuse work and can reach 90–99% cache hit rates; `/status` shows the reported result.
 - **Code navigation:** jump to definitions, callers, and implementations with a searchable code index.
-- **Live follow-ups:** type while the agent works; queued input joins the next turn or interrupts the current one.
+- **Live follow-ups:** type while the agent works; `Enter` queues a message for the next model step, while `Ctrl-C` interrupts the current task.
 - **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content.
 - **Resumable sessions:** conversation, tool calls, diffs, and working memory survive `-c` or `--resume`.
 - **Built-in diff viewer:** `/diff` shows the latest round and the net session result.

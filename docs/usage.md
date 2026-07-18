@@ -6,15 +6,17 @@ answering questions, and reviewing changes.
 
 ## Follow-ups
 
-Press `Enter` to queue a message for the next turn, <span class="marked">`Ctrl-C` to interrupt and
-take over immediately.</span>
+You can keep typing while nanocode works. A submitted follow-up joins the current task if
+another model step begins; otherwise it becomes the next task. Interrupting does not submit a
+draft that is still in the editor.
 
 | Key | When | Effect |
 |---|---|---|
-| `Enter` | Typing a message | Queue for next turn |
-| `Ctrl-C` | Typing a message | Interrupt agent now |
+| `Enter` | While the agent works | Queue a follow-up for the next model step |
+| `Ctrl-C` | While the agent works | Interrupt the current task; keep any draft in the editor |
 | `Ctrl-C` | Idle prompt | Clear input line |
-| `Up` / `Ctrl-P` | Typing | Recall newest queued message |
+| `Up` / `Ctrl-P` | While working, with an empty editor | Recall the newest queued message |
+
 ## Commands
 
 Type `/` commands at the prompt to inspect state, switch models, manage the
@@ -36,13 +38,8 @@ and whether an update is available.
 The /status output at a glance.
 ```
 
-**`/diff`** — Opens an interactive diff viewer with two tabs:
-
-- **Latest** — what changed during the most recent turn
-- **Session** — the net diff for everything since the session began
-
-Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close. Outside of
-interactive mode it prints the diffs as plain text.
+**`/diff`** — Review changes from the latest turn or the whole session. See
+[Reviewing changes](#reviewing-changes) below.
 
 **`/ps`** — Lists active background jobs (see [Tools](tools.md#built-in-tools)).
 Each row shows job id, state, command, and elapsed time.
@@ -55,7 +52,7 @@ and their resolved values.
 
 ### The code index
 
-**`/index [force]`** — <span class="marked">Build or rebuild the code symbol index</span> that powers
+**`/index [force]`** — Build or rebuild the code symbol index that powers
 `InspectCode`. The first build walks every source file; later syncs are fast. Add
 `force` to rebuild from scratch. See [Code symbol index](tools.md#code-symbol-index)
 for details.
@@ -120,8 +117,8 @@ be resumed with `-c` or `--resume`.
 
 Two inline references, both Tab-completed as you type:
 
-- `@server` or `@server.tool` — point the agent at an [MCP](mcp.md) server or tool, connecting
-  it on demand for this message.
+- `@server` or `@server.tool` — connect to an [MCP](mcp.md) server on demand and point the
+  agent at that server or tool. The connection remains active until you disconnect it.
 - `$skill` — inject a [skill](skills.md)'s full instructions into the current turn.
 
 ## Keys and input editing
