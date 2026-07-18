@@ -10,8 +10,6 @@
 </p>
 
 <p align="center"><a href="README.md">English</a></p>
-
-
 ## 环境要求
 
 - macOS 或 Linux
