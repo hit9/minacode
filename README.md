@@ -1,7 +1,9 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  A small terminal coding agent, implemented in one Python module you can read and change.
+  A small terminal coding agent I use, maintain, and customize in one Python file —
+  reads and edits code, runs commands, resumes sessions, connects MCP servers,
+  and loads reusable skills, all from an interactive conversation.
 </p>
 
 <p align="center">
@@ -10,9 +12,6 @@
 
 <p align="center"><a href="README.zh-CN.md">中文</a></p>
 
-A coding agent I use, maintain, and customize in one Python file — reads and edits code,
-runs commands, resumes sessions, connects MCP servers, and loads reusable skills,
-all from an interactive terminal conversation.
 
 ## Requirements
 

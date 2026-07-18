@@ -1,7 +1,8 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  一个小型终端 coding agent；全部实现集中在一个便于阅读和修改的 Python 模块中。
+  一个我自己在用、维护并定制的小型终端 coding agent — 单文件 Python 实现，可在交互式
+  对话中读取和编辑代码、运行命令、恢复 session、连接 MCP server、按需加载 skill。
 </p>
 
 <p align="center">
@@ -10,8 +11,6 @@
 
 <p align="center"><a href="README.md">English</a></p>
 
-我自己在用、维护并定制的一个 Python 单文件 coding agent — 在交互式终端对话中读取
-和编辑代码、运行命令、恢复 session、连接 MCP server，并按需加载可复用的 skill。
 
 ## 环境要求
 
