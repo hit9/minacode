@@ -1627,13 +1627,6 @@ class TestMCPTabCompletion:
         completions = list(completer.get_completions(Document("/mcp disconnect o"), None))
         assert [c.text for c in completions] == ["oauthOne"]
 
-    def test_file_path_mention_does_not_match_mcp_server_prefix(self, monkeypatch):
-        raw = {"mcp": {"src": {"url": "http://src/mcp"}}}
-        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
-        monkeypatch.setattr(s.mcp, "_mention_block", lambda *_args: "unexpected")
-
-        assert s.mcp.resolve_mentions("review @src/app.py") == ""
-
 
 # ---------------------------------------------------------------------------
 # render_tools_index truncation

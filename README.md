@@ -123,8 +123,6 @@ Skills are instruction packs the agent loads on demand. Each skill is a folder w
 - **Inline reference**: type `$name` in a message (Tab-completes) to inject that skill's instructions
 - **Bundled scripts**: `{skill_dir}` expands to the skill's absolute path for running via `Bash`
 
-Type `@` and press Tab to complete context from MCP servers, skills, or workspace files. Completion labels each candidate by type; selecting a skill keeps its `$name` syntax. File completion and injection skip hidden and `.gitignore`-matched paths, following the same rules as `Search`.
-
 ## Safety
 
 **Use at your own risk.** nanocode can edit files and run shell commands in the environment where it is started. It does not provide sandbox protection. Run it inside your own sandbox, container, VM, or other isolated environment when needed.
