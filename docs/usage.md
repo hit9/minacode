@@ -55,7 +55,7 @@ and their resolved values.
 
 ### The code index
 
-**`/index [force]`** — Build or rebuild the code symbol index that powers
+**`/index [force]`** — <span class="marked">Build or rebuild the code symbol index</span> that powers
 `InspectCode`. The first build walks every source file; later syncs are fast. Add
 `force` to rebuild from scratch. See [Code symbol index](tools.md#code-symbol-index)
 for details.

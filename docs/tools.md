@@ -51,8 +51,8 @@ Turn confirmations off once you trust a workflow with `--yolo` (at startup) or `
 
 ## Code symbol index
 
-nanocode ships with a pre-built **code symbol index** that lets the agent navigate
-your codebase — jump to definitions, find callers, list implementations — without
+<span class="marked">nanocode ships with a pre-built **code symbol index** that lets the agent navigate
+your codebase</span> — jump to definitions, find callers, list implementations — without
 relying on slow, real-time file scans or external language servers.
 
 ### What it is
