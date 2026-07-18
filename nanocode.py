@@ -7252,7 +7252,7 @@ class UiPrinter:
                 role = ""
             self.output_fn(self.indent_message(text, role, indent))
             return
-        console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
+        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
@@ -7293,7 +7293,7 @@ class UiPrinter:
         if not self.color:
             self.emit(text)
             return
-        console = Console(force_terminal=True, width=shutil.get_terminal_size().columns)
+        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))

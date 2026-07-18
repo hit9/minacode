@@ -1228,11 +1228,30 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
 def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(n.Theme, "_mode", "dark")
+    emitted = []
+    monkeypatch.setattr(n, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
 
     ui = n.UiPrinter()
     # Interactive TTY output stays colored regardless of NO_COLOR — nanocode owns its theming and
     # renders through prompt_toolkit's ANSI path, so the parent env var is not honored.
     assert ui.color
+    ui.emit_answer("sent message", role="user", rule=False)
+
+    desert_text = "".join(text for style, text in emitted if style == "#e0a96d")
+    assert "• sent message" in desert_text
+
+
+def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
+    monkeypatch.setattr(n.Theme, "_mode", "dark")
+    expected = n.UiPrinter.user_log_style()
+    app = n.TuiApp()
+    app.build_layout()
+    assert app.input_window.style == expected
+
+    command_loop = loop(tmp_path)
+    command_loop.session.enqueue_user_input("queued message")
+    assert any(style == expected and "queued message" in text for style, text in command_loop.queue_region_fragments())
 
 
 @pytest.mark.parametrize("width", [20, 40, 80])
