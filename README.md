@@ -5,9 +5,7 @@
 </p>
 
 <p align="center">
-  A small terminal coding agent I use, maintain, and customize in one Python file —
-  reads and edits code, runs commands, resumes sessions, connects MCP servers,
-  and loads reusable skills, all from an interactive conversation.
+  A coding agent I use, maintain, and customize in one Python file.
 </p>
 
 <p align="center"><a href="README.zh-CN.md">中文</a></p>
@@ -45,9 +43,9 @@ The full documentation is at [nanocode.readthedocs.io](https://nanocode.readthed
 
 ## What it is
 
-nanocode does not try to invent a new kind of coding agent. It combines familiar ideas — reading and editing files, running commands, live follow-ups, sessions, diffs, MCP, and skills — into a single Python module I actually use and maintain.
+nanocode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
 
-Everything ships in one file, so changing the behavior is one edit away.
+It works on real repositories, including its own: I use nanocode to build and maintain nanocode. Everything ships in one Python module, so I can change the behavior directly whenever I want the workflow to work differently.
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode resuming a saved session" width="600">

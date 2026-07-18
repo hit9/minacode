@@ -5,8 +5,7 @@
 </p>
 
 <p align="center">
-  一个我自己在用、维护并定制的小型终端 coding agent — 单文件 Python 实现，可在交互式
-  对话中读取和编辑代码、运行命令、恢复 session、连接 MCP servers、加载可复用的 skills。
+  一个我自己在用、维护并定制的 coding agent。
 </p>
 
 <p align="center"><a href="README.md">English</a></p>
@@ -44,9 +43,9 @@ nanocode
 
 ## 它是什么
 
-nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 — 读取和编辑文件、运行命令、实时追加指令、session 恢复、diff、MCP 和 skill — 整合到一个我真正在用、维护的 Python 模块里。
+nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 — 读取和编辑文件、运行命令、追加指令、session 恢复、diff、MCP 和 skill — 整合成我自己真正在用的工具。
 
-所有功能都在一个文件中，改行为只需要改一个文件。
+它不仅用于真实项目，也用于自身开发：我用 nanocode 来构建和维护 nanocode。所有功能都在一个 Python 模块中，所以我可以随时直接修改行为，让工作流按我想要的方式运行。
 
 <p align="center">
   <img src="snapshots/nanocode2.gif" alt="nanocode 恢复保存的 session" width="600">

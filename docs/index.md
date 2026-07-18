@@ -4,8 +4,7 @@ A small terminal coding agent
 
 nanocode works in your terminal: you describe a task, and it reads code, edits files, runs
 commands, and reports back. It keeps a searchable code index, runs background jobs, tracks
-its own working notes, and resumes where you left off. Everything ships as a single Python
-module, so any behaviour you want to change is one file away.
+its own working notes, and resumes where you left off.
 
 ```{figure} ../snapshots/nanocode1.gif
 :alt: nanocode editing code and running tools in one interactive session
