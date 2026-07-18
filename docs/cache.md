@@ -4,7 +4,7 @@ Most of nanocode's prompt — its instructions, environment, tool schemas — is
 every turn. The model provider sees identical request prefixes and reuses cached computations,
 skipping the expensive inference work on those tokens.
 
-When everything lines up, nanocode can reach 90–99% cache hit rates. This is the main reason
+When everything lines up, nanocode can reach {marked}`90–99%` cache hit rates. This is the main reason
 its API cost stays low even across long conversations.
 
 | Cached | Not cached |
