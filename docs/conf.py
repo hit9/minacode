@@ -38,8 +38,8 @@ import better  # noqa: E402
 html_theme = "better"
 html_theme_path = [better.better_theme_path]
 html_theme_options = {
-    "showheader": True,
-    "showrelbartop": True,
+    "showheader": False,
+    "showrelbartop": False,
     "showrelbarbottom": True,
     "sidebarwidth": "16rem",
     "cssfiles": ["_static/custom.css"],
