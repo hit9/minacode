@@ -53,14 +53,7 @@ Upgrade with `uv tool upgrade nanocode-cli`.
 
 ## Documentation
 
-The full documentation lives in [`docs/`](docs/index.md):
-
-- [Getting started](docs/getting-started.md)
-- [Interactive usage](docs/usage.md)
-- [Configuration](docs/configuration.md)
-- [MCP](docs/mcp.md) and [skills](docs/skills.md)
-- [Safety](docs/safety.md)
-
+The full documentation is at [nanocode.readthedocs.io](https://nanocode.readthedocs.io).
 ## Safety
 
 **Use at your own risk.** nanocode can edit files and run shell commands in the environment

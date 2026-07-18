@@ -29,6 +29,9 @@ classifiers = [
     "Topic :: Software Development",
     "Topic :: Terminals",
 ]
+
+[project.urls]
+Documentation = "https://nanocode.readthedocs.io"
 dependencies = [
     "anthropic>=0.64.0",
     "code-symbol-index>=0.3.5",
