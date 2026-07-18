@@ -52,6 +52,7 @@ It works on real repositories, including its own: I use nanocode to build and ma
 
 ## Highlights
 
+- **Code navigation:** jump to definitions, callers, and implementations with a searchable code index.
 - **Live follow-ups:** type while the agent works; queued input joins the next turn or interrupts the current one.
 - **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content.
 - **Resumable sessions:** conversation, tool calls, diffs, and working memory survive `-c` or `--resume`.
