@@ -1306,8 +1306,21 @@ class TestMCPCommands:
 
         assert set(started) == {"alpha", "beta"}
         assert result == (
-            "MCP server connected: alpha; tools=0; resources=0\n"
-            "MCP server connected: beta; tools=0; resources=0"
+            "MCP connection results:\n\n"
+            "- ● `alpha` — 0 tools\n"
+            "- ● `beta` — 0 tools"
+        )
+
+    def test_mcp_batch_connect_formats_failures_as_separate_list_items(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        monkeypatch.setattr(s.mcp, "_discover_one", lambda config: s.mcp.set_server_error(config.name, "offline"))
+
+        result = s.mcp.connect_servers(["test", "missing"])
+
+        assert result == (
+            "MCP connection results:\n\n"
+            "- ! `test` — error: offline\n"
+            "- ! `missing` — server not found"
         )
 
     def test_mcp_connect_command_accepts_multiple_servers(self, monkeypatch):

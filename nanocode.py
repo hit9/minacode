@@ -4444,11 +4444,21 @@ class MCPManager:
         self.discover_server(name)
         return self._connect_result(name)
 
-    def _connect_result(self, name: str) -> str:
+    def _connect_result(self, name: str, *, compact: bool = False) -> str:
         if issue := self.server_issue(name):
             kind, message = issue
+            if compact:
+                marker = "!" if kind == "error" else "-"
+                return f"{marker} `{name}` — {kind}: {message}"
             return f"MCP server {kind}: {name}: {message}"
-        return f"MCP server connected: {name}; tools={len(self.tools.get(name, []))}; resources={len(self.resources.get(name, []))}"
+        tool_count = len(self.tools.get(name, []))
+        resource_count = len(self.resources.get(name, []))
+        if compact:
+            assets = f"{tool_count} tool" + ("" if tool_count == 1 else "s")
+            if resource_count:
+                assets += f", {resource_count} resource" + ("" if resource_count == 1 else "s")
+            return f"● `{name}` — {assets}"
+        return f"MCP server connected: {name}; tools={tool_count}; resources={resource_count}"
 
     def connect_servers(
         self,
@@ -4469,11 +4479,11 @@ class MCPManager:
         for name in selected:
             config = self.find_config(name)
             if config is None:
-                results[name] = "MCP server not found: " + name
+                results[name] = f"! `{name}` — server not found"
                 continue
             if not config.error and config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
                 if not interactive:
-                    results[name] = f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
+                    results[name] = f"! `{name}` — authentication required; run `/mcp connect {name}` interactively"
                     continue
                 if error := self._authenticate_oauth(config, notify=notify):
                     results[name] = error
@@ -4491,8 +4501,9 @@ class MCPManager:
             finally:
                 self.discovery_status = "ready"
             for config in ready:
-                results[config.name] = self._connect_result(config.name)
-        return "\n".join(results[name] for name in selected)
+                results[config.name] = self._connect_result(config.name, compact=True)
+        items = ("- " + results[name].replace("\n", "\n    ") for name in selected)
+        return "MCP connection results:\n\n" + "\n".join(items)
 
     def _discover_one(self, config: MCPServerConfig) -> None:
         if config.error:

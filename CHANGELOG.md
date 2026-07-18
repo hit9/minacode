@@ -14,6 +14,7 @@
 - Connect MCP servers on demand through targeted mentions or `/mcp connect NAME`, keeping disconnected servers entirely out of model context. Connecting handles OAuth authorization when required; disconnecting unloads the server and clears its saved OAuth authentication.
 - Let `/mcp connect` accept multiple server names, connect them concurrently, and complete each successive server argument.
 - Align `/mcp` status columns and add compact connection-state markers for faster scanning.
+- Render multi-server connection results as a compact vertical list instead of one wrapped paragraph.
 
 ### Removed
 - Remove the unreachable non-TUI `Ctrl-\` model-request retry; interactive retries use `/resend`, while transient errors still retry automatically.
