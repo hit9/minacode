@@ -4,17 +4,23 @@
 ## Unreleased
 
 ### Added
-- `g`/`G` jump to top/bottom in the `/diff` viewer and interactive selectors (first/last file or option, or scroll extremes), matching the `less` pager convention.
+- Add `g`/`G` jumps to the top/bottom in the `/diff` viewer and interactive selectors, matching the `less` pager convention.
 
 ### Changed
-- Re-request the in-flight model turn with the `/resend` command, typed in the running follow-up input, instead of a keybinding; a long-running request now shows a `/resend` hint in the status bar.
-- Open the current input in `$VISUAL`/`$EDITOR` with `Ctrl-X Ctrl-E` (readline `edit-and-execute-command`) or `Ctrl-G`, matching Claude Code; a lone `Ctrl-X` no longer opens the editor on its own.
-- `Ctrl-P` now mirrors the Up arrow in the running follow-up input, recalling the latest queued message for editing; previously only the arrow key did.
+- Replace the in-flight model retry keybinding with `/resend` in the running follow-up input, and show a `/resend` hint during long requests.
+- Open the current input in `$VISUAL`/`$EDITOR` with `Ctrl-X Ctrl-E` or `Ctrl-G`; a lone `Ctrl-X` no longer opens the editor.
+- Make `Ctrl-P` mirror the Up arrow when recalling the latest queued message for editing.
 
 ### Removed
-- The non-TUI REPL's `Ctrl-\` model-request retry (terminal `VQUIT` remapping). It only activated when the plain REPL ran on a TTY via an injected input function — never in normal use, where the full TUI provides `/resend`. Interactive sessions retry with `/resend`; transient errors still auto-retry.
-- The `/debug` cache-prefix diagnostics and persisted prefix fingerprints. Prompt caching and the cache-hit metrics in `/status` remain unchanged.
-- Startup tips and the built-in `nanocode-help` skill. `/help` and externally installed project/user skills remain available.
+- Remove the unreachable non-TUI `Ctrl-\` model-request retry; interactive retries use `/resend`, while transient errors still retry automatically.
+- Remove `/debug` cache-prefix diagnostics and persisted prefix fingerprints; prompt caching and `/status` cache-hit metrics remain unchanged.
+- Remove startup tips and the built-in `nanocode-help` skill; `/help` and project/user skills remain available.
+
+### Fixed
+- Retry OpenAI and Anthropic connection/timeout failures, retryable client statuses, and every provider `5xx` response.
+- Bound MCP calls by timeout, recreate failed async loops, and close the MCP loop safely during shutdown.
+- Treat redirects to paths that merely start with `/dev/null` as writes requiring confirmation; only the exact device remains auto-approved.
+- Prevent the plain CLI Bash live preview from accessing a nonexistent command-loop reference.
 
 
 ## 0.9.9 - 2026-07-16
