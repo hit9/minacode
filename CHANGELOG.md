@@ -15,6 +15,8 @@
 - Let `/mcp connect` accept multiple server names, connect them concurrently, and complete each successive server argument.
 - Align `/mcp` status columns and add compact connection-state markers for faster scanning.
 - Render multi-server connection results as a compact vertical list instead of one wrapped paragraph.
+- Color a consistent solid-circle MCP status marker green when connected, yellow when disconnected, red on error, and dim when skipped.
+- Show the number of connected MCP servers in the `/status` context row.
 
 ### Removed
 - Remove the unreachable non-TUI `Ctrl-\` model-request retry; interactive retries use `/resend`, while transient errors still retry automatically.

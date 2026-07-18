@@ -4285,6 +4285,7 @@ class MCPManager:
     DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT: ClassVar[int] = 160
     INDEX_SCHEMA_LIMIT: ClassVar[int] = 700  # per-tool schema cap in the early (cached) tools index
     INDEX_TOTAL_LIMIT: ClassVar[int] = 16_000  # overall cap for the tools index block
+    STATUS_MARKER: ClassVar[str] = "●"
 
     def __init__(self, session: Session):
         self.session = session
@@ -4448,8 +4449,7 @@ class MCPManager:
         if issue := self.server_issue(name):
             kind, message = issue
             if compact:
-                marker = "!" if kind == "error" else "-"
-                return f"{marker} `{name}` — {kind}: {message}"
+                return f"{self.STATUS_MARKER} {kind}  `{name}` — {message}"
             return f"MCP server {kind}: {name}: {message}"
         tool_count = len(self.tools.get(name, []))
         resource_count = len(self.resources.get(name, []))
@@ -4457,7 +4457,7 @@ class MCPManager:
             assets = f"{tool_count} tool" + ("" if tool_count == 1 else "s")
             if resource_count:
                 assets += f", {resource_count} resource" + ("" if resource_count == 1 else "s")
-            return f"● `{name}` — {assets}"
+            return f"{self.STATUS_MARKER} connected  `{name}` — {assets}"
         return f"MCP server connected: {name}; tools={tool_count}; resources={resource_count}"
 
     def connect_servers(
@@ -4479,14 +4479,15 @@ class MCPManager:
         for name in selected:
             config = self.find_config(name)
             if config is None:
-                results[name] = f"! `{name}` — server not found"
+                results[name] = f"{self.STATUS_MARKER} error  `{name}` — server not found"
                 continue
             if not config.error and config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
                 if not interactive:
-                    results[name] = f"! `{name}` — authentication required; run `/mcp connect {name}` interactively"
+                    results[name] = f"{self.STATUS_MARKER} error  `{name}` — authentication required; run `/mcp connect {name}` interactively"
                     continue
                 if error := self._authenticate_oauth(config, notify=notify):
-                    results[name] = error
+                    prefix = f"MCP OAuth authentication failed for {name}: "
+                    results[name] = f"{self.STATUS_MARKER} error  `{name}` — " + error.removeprefix(prefix)
                     continue
             ready.append(config)
 
@@ -5310,13 +5311,13 @@ class MCPManager:
             tools = ""
             if issue := self.server_issue(config.name):
                 kind, message = issue
-                status = ("!" if kind == "error" else "-") + " " + kind + ": " + message
+                status = self.STATUS_MARKER + " " + kind + ": " + message
             else:
                 if self.connected(config.name):
-                    status = "● connected"
+                    status = self.STATUS_MARKER + " connected"
                     tools = str(len(self.tools.get(config.name, [])))
                 else:
-                    status = "○ disconnected"
+                    status = self.STATUS_MARKER + " disconnected"
             auth = []
             if config.auth:
                 auth.append(config.auth)
@@ -7127,6 +7128,13 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
+    MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|disconnected|error|skipped)")
+    MCP_STATUS_ANSI: ClassVar[dict[str, str]] = {
+        "connected": "\x1b[32m",
+        "disconnected": "\x1b[33m",
+        "error": "\x1b[31m",
+        "skipped": "\x1b[90m",
+    }
 
     @classmethod
     def user_log_style(cls) -> str:
@@ -7227,8 +7235,13 @@ class UiPrinter:
         body = "\n".join(LogBlock.margin(indent) + line for line in text.splitlines() or [""])
         return f"{LogBlock.margin(indent)}{role}:\n{body}" if role else body
 
+    @classmethod
+    def colorize_mcp_status(cls, text: str) -> str:
+        return cls.MCP_STATUS_RE.sub(lambda match: cls.MCP_STATUS_ANSI[match.group(1)] + "●\x1b[39m " + match.group(1), text)
+
     def render_message(self, console: Console, text: str, role: str, rule: bool, indent: int) -> None:
         error = text.startswith(("Error:", "ConfigError:", "Unknown command:"))
+        styled_text = self.colorize_mcp_status(text) if role != "user" else text
         if rule and not error:
             console.print(Rule(style="bright_black", characters="─"))
         margin = LogBlock.margin(indent)
@@ -7236,13 +7249,13 @@ class UiPrinter:
             console.print("")
             console.print(Padding(RichText(UiPrinter.USER_LOG_PREFIX + text, style=self.user_log_style()), (0, 0, 0, len(margin))))
         elif role == "assistant":
-            content = RichText(text, style="red") if error else Markdown(text, hyperlinks=False)
+            content = RichText(styled_text, style="red") if error else Markdown(styled_text, hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
         else:
             if role:
                 label = RichText(role + ":", style=self.MESSAGE_ROLE_STYLES.get(role, "bright_black"))
                 console.print(Padding(label, (0, 0, 0, len(margin))))
-            content = RichText(text, style="red") if error else Markdown(text, hyperlinks=False)
+            content = RichText(styled_text, style="red") if error else Markdown(styled_text, hyperlinks=False)
             console.print(Padding(content, (0, 0, 0, len(margin))))
 
     def emit_markdown(self, text: str) -> None:
@@ -8034,7 +8047,15 @@ class ChoiceViewState:
             selected = number - 1 == self.selected
             if selected:
                 parts.append(("[SetCursorPosition]", ""))
-            parts.append(("class:choice.selected" if selected else "", ("> " if selected else "  ") + f"{number:2d}. {label}\n"))
+            style = "class:choice.selected" if selected else ""
+            prefix = ("> " if selected else "  ") + f"{number:2d}. "
+            if match := UiPrinter.MCP_STATUS_RE.search(label):
+                parts.append((style, prefix + label[: match.start()]))
+                marker_style = (style + " class:choice.status." + match.group(1)).strip()
+                parts.append((marker_style, "●"))
+                parts.append((style, label[match.start() + 1 :] + "\n"))
+            else:
+                parts.append((style, prefix + label + "\n"))
         if preview_fn and options:
             preview = preview_fn(options[self.selected]).replace("\\n", "\n")
             if preview:
@@ -8522,6 +8543,10 @@ Tools:
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
+                "choice.status.connected": "ansigreen bold",
+                "choice.status.disconnected": "ansiyellow bold",
+                "choice.status.error": "ansired bold",
+                "choice.status.skipped": "ansibrightblack",
                 "tab.active": "bold reverse ansicyan",
                 "tab.inactive": "ansicyan",
                 "completion-menu": "noreverse bg:default",
@@ -8714,11 +8739,11 @@ Tools:
             for config in configs:
                 issue = mcp.server_issue(config.name)
                 if issue:
-                    status = ("!" if issue[0] == "error" else "-") + " " + issue[0]
+                    status = mcp.STATUS_MARKER + " " + issue[0]
                 elif mcp.connected(config.name):
-                    status = "● connected"
+                    status = mcp.STATUS_MARKER + " connected"
                 else:
-                    status = "○ disconnected"
+                    status = mcp.STATUS_MARKER + " disconnected"
                 mode = "auto" if config.auto_connect else "manual"
                 count = len(mcp.tools.get(config.name, []))
                 server_rows.append((config.name, status, mode, count))
@@ -8882,12 +8907,13 @@ Tools:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
+        connected_mcp = sum(self.session.mcp.connected(config.name) for config in self.session.mcp.parse_configs()) if self.session.mcp else 0
         # fmt: off
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
-            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
+            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; mcp `{connected_mcp}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`"),

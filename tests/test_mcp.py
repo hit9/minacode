@@ -736,7 +736,7 @@ class TestServerStatusRendering:
         status = s.mcp.render_server_status()
         assert "test" in status
         assert "manual" in status
-        assert "○ disconnected" in status
+        assert "● disconnected" in status
 
     def test_render_server_status_aligns_columns(self):
         raw = {"mcp": {
@@ -751,7 +751,7 @@ class TestServerStatusRendering:
 
         assert len({tuple(index for index, char in enumerate(line) if char == "|") for line in lines}) == 1
         assert "● connected" in lines[2]
-        assert "○ disconnected" in lines[3]
+        assert "● disconnected" in lines[3]
 
     def test_render_tool_listing_all(self, monkeypatch):
         """render_tool_listing shows all servers."""
@@ -1307,8 +1307,8 @@ class TestMCPCommands:
         assert set(started) == {"alpha", "beta"}
         assert result == (
             "MCP connection results:\n\n"
-            "- ● `alpha` — 0 tools\n"
-            "- ● `beta` — 0 tools"
+            "- ● connected  `alpha` — 0 tools\n"
+            "- ● connected  `beta` — 0 tools"
         )
 
     def test_mcp_batch_connect_formats_failures_as_separate_list_items(self, monkeypatch):
@@ -1319,8 +1319,8 @@ class TestMCPCommands:
 
         assert result == (
             "MCP connection results:\n\n"
-            "- ! `test` — error: offline\n"
-            "- ! `missing` — server not found"
+            "- ● error  `test` — offline\n"
+            "- ● error  `missing` — server not found"
         )
 
     def test_mcp_connect_command_accepts_multiple_servers(self, monkeypatch):
@@ -1408,9 +1408,31 @@ class TestMCPCommands:
 
         connected = captured["a"]
         disconnected = captured["much-longer"]
-        assert connected.index("●") == disconnected.index("○")
+        assert connected.index("●") == disconnected.index("●")
         assert connected.index("manual") == disconnected.index("auto")
         assert connected.rindex("tools") == disconnected.rindex("tools")
+
+    def test_mcp_status_dots_use_semantic_terminal_colors(self):
+        text = "● connected  ● disconnected  ● error  ● skipped"
+
+        colored = n.UiPrinter.colorize_mcp_status(text)
+
+        assert "\x1b[32m●\x1b[39m connected" in colored
+        assert "\x1b[33m●\x1b[39m disconnected" in colored
+        assert "\x1b[31m●\x1b[39m error" in colored
+        assert "\x1b[90m●\x1b[39m skipped" in colored
+
+    def test_mcp_manager_status_dots_receive_selector_styles(self):
+        state = n.ChoiceViewState(
+            choices=("up", "down"),
+            labels={"up": "up    ● connected", "down": "down  ● disconnected"},
+            disabled=set(),
+        )
+
+        fragments = state.fragments("MCP servers")
+
+        assert ("class:choice.selected class:choice.status.connected", "●") in fragments
+        assert ("class:choice.status.disconnected", "●") in fragments
 
     def test_unknown_mcp_subcommand(self):
         """Bad /mcp subcommand returns error."""

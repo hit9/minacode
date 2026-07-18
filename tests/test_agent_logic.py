@@ -1548,11 +1548,19 @@ def test_status_and_bar_show_skill_count(tmp_path):
     _write_skill(tmp_path, "one", "d1", "b")
     _write_skill(tmp_path, "two", "d2", "b")
     s = session(tmp_path)
+    s.config.mcp = {
+        "connected": {"url": "https://connected.example/mcp"},
+        "disconnected": {"url": "https://disconnected.example/mcp"},
+    }
+    s.mcp.tools["connected"] = []
+    s.mcp.resources["connected"] = []
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
 
     count = len(s.skills.skills)
     assert count == 2
-    assert f"skills `{count}`" in loop.status("")
+    status = loop.status("")
+    assert "mcp `1`" in status
+    assert f"skills `{count}`" in status
     bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
