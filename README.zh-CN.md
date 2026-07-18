@@ -2,7 +2,7 @@
 
 <p align="center">
   一个我自己在用、维护并定制的小型终端 coding agent — 单文件 Python 实现，可在交互式
-  对话中读取和编辑代码、运行命令、恢复 session、连接 MCP server、按需加载 skill。
+  对话中读取和编辑代码、运行命令、恢复 session、连接 MCP servers、加载可复用的 skills。
 </p>
 
 <p align="center">
