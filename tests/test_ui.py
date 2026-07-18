@@ -1168,7 +1168,7 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     text = "".join(printed)
     assert "/provider" in text
     assert "status marker" in text
-    assert "Skills ·" in text
+    assert "No skills installed" in text
 
 
 def test_mcp_cancelled_error_notice_is_muted(tmp_path):

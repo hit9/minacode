@@ -644,22 +644,6 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     assert agent.model.received_tools is tools
 
 
-def test_startup_tip_respects_context(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-
-    # Force startup_tip to always pick the last candidate so we can check what's in the pool.
-    monkeypatch.setattr(n.random, "choice", lambda seq: seq[-1])
-
-    # No MCP: MCP tips are absent from the pool.
-    tip = loop.startup_tip()
-    assert "@server.tool" not in tip
-
-    # Enabling MCP appends the MCP tip; with the seeded random.choice the last MCP tip wins.
-    s.config.mcp["example"] = {"url": "http://x"}
-    assert "`/mcp`" in loop.startup_tip()
-
-
 def test_ps_command_uses_markdown_renderer(tmp_path):
     s = session(tmp_path)
     s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7, update_status=lambda: None)
@@ -1520,7 +1504,7 @@ def test_skill_mentions_inject_body(tmp_path):
 
 
 def test_skill_tool_absent_only_when_no_skills(tmp_path):
-    # With the built-in nanocode-help present, the Skill tool and SKILLS section are offered.
+    _write_skill(tmp_path, "available", "available skill", "body")
     withskill = n.ContextManager(session(tmp_path))
     assert "--- SKILLS ---" in withskill.skills_context()
     assert any(t["function"]["name"] == "Skill" for t in n.resolved_tool_schemas(withskill.session))
@@ -1536,24 +1520,15 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(n.Agent.SYSTEM_PROMPT))
 
 
-def test_skills_command_lists_builtin_and_installed(tmp_path):
-    # The built-in nanocode-help skill always ships; /skills lists it plus any installed ones.
+def test_skills_command_lists_installed(tmp_path):
     base = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
-    base_out = base.skills_command("")
-    assert "| skill | source | description |" in base_out  # rendered as a markdown table
-    assert "| `nanocode-help` | builtin |" in base_out
+    assert "No skills installed" in base.skills_command("")
 
     _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
     loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
     output = loop.skills_command("")
+    assert "| skill | source | description |" in output
     assert "| `release-notes` | project | Draft a CHANGELOG entry. |" in output
-    assert "| `nanocode-help` | builtin |" in output
-
-
-def test_skills_command_empty_when_builtins_absent(tmp_path):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
-    loop.session.skills = n.SkillLibrary({})
-    assert "No skills installed" in loop.skills_command("")
 
 
 def test_skill_loads_dedup_on_repeat(tmp_path):
@@ -1575,34 +1550,11 @@ def test_status_and_bar_show_skill_count(tmp_path):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
 
-    count = len(s.skills.skills)  # 2 project + built-in nanocode-help
-    assert count == 3
+    count = len(s.skills.skills)
+    assert count == 2
     assert f"skills `{count}`" in loop.status("")
     bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
-
-
-def test_builtin_nanocode_help_skill_is_self_contained(tmp_path):
-    s = session(tmp_path)
-    skill = s.skills.get("nanocode-help")
-    assert skill is not None and skill.source == "builtin"
-    body = n.SkillTool(s, ["nanocode-help"]).call()
-    # Authored manual prose so how-to / feature / troubleshooting questions need no source read.
-    assert "## How it works" in body and "## Troubleshooting" in body
-    assert "prompt-cache metrics" in body  # a concept /help does not explain
-    # Plus lists assembled from in-code constants (so they cannot drift).
-    assert "/strict" in body and "/skills" in body  # command list (from /help)
-    assert "InspectCode:" in body  # tool details (from DESCRIPTIONs)
-    assert "provider.model" in body and "runtime.max_agent_steps" in body  # settable keys
-    assert os.path.abspath(n.__file__) in body  # source named only as a last-resort fallback
-
-
-def test_project_skill_overrides_builtin(tmp_path):
-    _write_skill(tmp_path, "nanocode-help", "custom help", "my own instructions")
-    s = session(tmp_path)
-    skill = s.skills.get("nanocode-help")
-    assert skill.source == "project"
-    assert "my own instructions" in n.SkillTool(s, ["nanocode-help"]).call()
 
 
 def test_session_from_config_file_theme_param(tmp_path):

@@ -15,7 +15,6 @@ import logging
 import os
 import platform
 import queue
-import random
 import re
 import selectors
 import shlex
@@ -1255,72 +1254,12 @@ class SkillLibrary:
     META_LINE = re.compile(r"^([A-Za-z0-9_-]+):[ \t]*(.*)$", re.MULTILINE)
     MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]+)")
 
-    # Authored manual behind the built-in `nanocode-help` skill. Explains concepts, workflows, and
-    # common problems — the prose a "how do I / why does" question needs, which the auto-generated
-    # command/tool/key lists (appended in builtins) cannot supply. Kept broader than `/help`.
-    MANUAL = """\
-# nanocode manual
-
-nanocode is a concise, single-file terminal coding agent: describe a task; it loops over tools (read,
-search, edit, run commands) and returns a short answer in your language.
-
-## Getting started
-- Config: `~/.nanocode/config.toml` — set at least `provider.url`, `provider.key`, `provider.model`
-  (`/status` and startup warn if missing). `/config` views it; `/set KEY VALUE` changes most values
-  for the session; `/provider`, `/model`, `/reason` switch provider/model/reasoning at runtime.
-
-## How it works
-- Acts when the task is clear, loops until done or blocked (up to `runtime.max_agent_steps`), and
-  self-corrects on tool errors (never repeats a failed call unchanged).
-- Read-only tools in one batch run concurrently (`runtime.max_parallel_tools`); edits/shell run
-  serially. Working notes (goal/plan/known/check) via `Note`. Answers concisely
-  and notes changed files and checks run.
-
-## Context & caching
-Each request is a cache-stable prefix (system prompt, environment, SKILLS/MCP indexes, tool schemas)
-then the conversation and `Memory`. Tool outputs stay in the conversation and large outputs are bounded with Recall keys. `/status` shows
-context %, cache hit rate, and compaction count. Long chats compact automatically; `/compact` forces it.
-
-## Sessions
-Auto-saved. Resume this project's latest session with `-c` (or use `--resume <UID>`).
-
-## Providers & reasoning
-Set `provider.*` per provider. `/reason` sets reasoning effort; `/model` sets the model.
-`provider.max_tokens`, `provider.temperature`, `provider.timeout` tune requests. Native thinking modes drop
-`temperature` automatically.
-
-## MCP
-External tools under `[mcp.<name>]` (`url` or `command`). Manage with `/mcp`, `/mcp tools`,
-`/mcp refresh`, `/mcp login|logout`. `@server.tool` pulls a tool's schema into the turn; the `MCP`
-tool invokes them.
-
-## Skills
-Reusable instruction packs at `.nanocode/skills/<name>/SKILL.md` (project) and
-`~/.nanocode/skills/<name>/SKILL.md` (user; project wins). Load with `Skill(name)` or inline `$name`
-for one turn; a skill-directory placeholder expands to the skill's folder so bundled scripts run via
-`Bash`. `/skills` lists them; the status bar and `/status` show the count. This manual is the
-built-in `nanocode-help` skill.
-
-## Safety
-`Edit` and mutating `Bash` ask for confirmation unless `/yolo` is on; read-only shell commands (`ls`,
-`cat`, `wc`, `find`, `grep`/`rg`, `git status`/`diff`/`log`, …) auto-run. git runs through `Bash` —
-only read-only subcommands auto-run; commit/add/push and branch changes still ask.
-
-## Troubleshooting
-- "missing config": set `provider.url`/`key`/`model`.
-- Slow/costly or low cache hit: check the prompt-cache metrics in `/status`.
-- InspectCode stale/unavailable: `/index` to sync or rebuild.
-- Context full: compacts automatically; `/compact` forces it.
-- Command refused while the agent works unless read-only (`/help`, `/status`, `/skills`,
-  read-only `/mcp`) or `/yolo`; press Ctrl-C to run others."""
-
     def __init__(self, skills: dict[str, Skill]):
         self.skills = skills
 
     @classmethod
     def load(cls, session: "Session") -> "SkillLibrary":
-        # Built-ins seed the library first; a user/project skill of the same name overrides them.
-        skills: dict[str, Skill] = {skill.name: skill for skill in cls.builtins()}
+        skills: dict[str, Skill] = {}
         # User skills load before project skills so a project skill of the same name overrides them.
         for root, source in ((session.data_path("skills"), "user"), (os.path.join(session.cwd, ".nanocode", "skills"), "project")):
             if not os.path.isdir(root):
@@ -1330,34 +1269,6 @@ only read-only subcommands auto-run; commit/add/push and branch changes still as
                 if skill is not None:
                     skills[skill.name] = skill
         return cls(skills)
-
-    @classmethod
-    def builtins(cls) -> list[Skill]:
-        """Skills shipped with nanocode itself. `nanocode-help` carries a self-contained reference so
-        the model answers questions about nanocode instantly, without searching the source. The body is
-        assembled at load time from the same in-code constants the app uses (`/help` text, tool
-        DESCRIPTIONs, settable keys), so it is fast to read yet cannot drift from the running version;
-        the raw source is named only as a fallback for anything the reference does not cover."""
-        source = os.path.abspath(__file__)
-        root = os.path.dirname(source)
-        tool_lines = [f"- {tool.NAME}: {tool.DESCRIPTION}" for tool in TOOLS]
-        # fmt: off
-        sections = [
-            "Self-contained manual for answering questions about nanocode itself — how to use it, its",
-            "features, and common problems. Answer from the sections below; only fall back to reading the",
-            "source for details they do not cover. Cite exact command names, flags, and config keys.",
-            "", cls.MANUAL,
-            "", "## Commands, mentions, CLI, tools (verbatim /help)", CommandLoop.HELP.strip(),
-            "", "## Tool details", *tool_lines,
-            "", "## Settable config keys (/set KEY VALUE)", ", ".join(CommandCompleter.SET_KEYS),
-        ]
-        # fmt: on
-        if os.path.isfile(source):
-            # fmt: off
-            sections += ["", "## Source (last-resort fallback)", f"For anything the manual does not cover, read `{source}` (README/CHANGELOG in `{root}` if present)."]
-            # fmt: on
-        description = "Answer questions about nanocode itself — how to use it, its features, config, and common problems — from a bundled manual."
-        return [Skill("nanocode-help", description, "\n".join(sections), root, "builtin")]
 
     @classmethod
     def parse(cls, path: str, folder: str, source: str) -> "Skill | None":
@@ -7324,20 +7235,9 @@ class UiPrinter:
             return [("ansibrightblack", text + "\n")]
         if text.startswith("nanocode "):
             return [("ansicyan", text + "\n")]
-        if text.startswith("tip: "):
-            return self.tip_segments(text[len("tip: ") :])
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
         return [("fg:default", line + "\n") for line in text.splitlines() or [""]]
-
-    def tip_segments(self, text: str) -> list[tuple[str, str]]:
-        # Muted hint line with a labeled marker; `code` spans are highlighted so commands stand out.
-        segments: list[tuple[str, str]] = [("ansibrightblack", "  "), ("ansiyellow", "💡 tip "), ("ansibrightblack", "· ")]
-        for index, part in enumerate(text.split("`")):
-            if part:
-                segments.append(("ansicyan" if index % 2 else "ansibrightblack", part))
-        segments.append(("", "\n"))
-        return segments
 
     LOG_STYLES: ClassVar[dict[LogRole, tuple[str, str]]] = {
         LogRole.TOOL: ("ansigreen", "fg:default"),
@@ -8161,46 +8061,6 @@ class CommandLoop:
         "logout": (1, 1, "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"),
         "refresh": (0, 1, "Usage: /mcp refresh [server]"),
     }
-    TIPS: ClassVar[tuple[str, ...]] = (
-        # Sessions & input
-        "Resume this project's last session anytime with `nanocode -c`.",
-        "Keep typing while the agent works — your input is picked up at the next step.",
-        "Press Ctrl+C to cancel the current input or interrupt a running turn.",
-        "Search your input history with Ctrl+R.",
-        "Tab completes commands, file paths, and mentions.",
-        # Context & memory
-        "`/compact` summarizes a long conversation to reclaim context.",
-        "`/status` shows token usage, context %, and prompt-cache hit rate.",
-        "Stable context is kept early so the prompt cache is reused — cheaper, faster turns.",
-        # Model & reasoning
-        "`/model` switches model and `/reason` sets reasoning effort on the fly.",
-        "`/reason high` digs deeper on hard tasks; `off` is fastest.",
-        "`/set provider.max_tokens N` caps the model's output length.",
-        "`/strict` toggles strict tool-call schemas where supported.",
-        # Tools & navigation
-        "`/index` manages the code symbol index for fast symbol navigation.",
-        "`/yolo` skips tool confirmations when you want to move fast.",
-        "`/set runtime.max_parallel_tools N` tunes how many reads run at once.",
-        "`/ps` shows active background jobs started with the Job tool.",
-        # Config & setup
-        "`/config` opens your config; `/set KEY VALUE` changes settings live.",
-        "Scaffold a fresh config with `nanocode --init-config`.",
-        "Launch with `--yolo` to skip confirmations.",
-        'Filter MCP servers at launch with `--mcp "name*,!exclude"`.',
-        # Rendering behavior
-        "Markdown links render as `text (url)` — clickable hyperlinks are disabled so the URL stays visible; most terminals auto-link the bare URL.",
-    )
-
-    def startup_tip(self) -> str:
-        tips = list(self.TIPS)
-        config = self.session.config
-        if len(config.providers) > 1:
-            tips.append("`/provider` switches between your configured providers.")
-        if config.mcp:
-            tips.append("Mention an MCP tool inline with `@server.tool` to pull in its schema.")
-            tips.append("`/mcp` manages servers; `/mcp login NAME` starts an OAuth flow.")
-        return random.choice(tips)
-
     MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
 
     HELP = """Commands:
@@ -8506,8 +8366,6 @@ Tools:
         UpdateChecker(self.session).start()
         if self.session.update.newer_than(__version__):
             self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `uv tool upgrade nanocode-cli`.")
-        if tip := self.startup_tip():
-            self.emit("tip: " + tip)
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()

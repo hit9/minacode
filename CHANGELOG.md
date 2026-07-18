@@ -14,6 +14,7 @@
 ### Removed
 - The non-TUI REPL's `Ctrl-\` model-request retry (terminal `VQUIT` remapping). It only activated when the plain REPL ran on a TTY via an injected input function — never in normal use, where the full TUI provides `/resend`. Interactive sessions retry with `/resend`; transient errors still auto-retry.
 - The `/debug` cache-prefix diagnostics and persisted prefix fingerprints. Prompt caching and the cache-hit metrics in `/status` remain unchanged.
+- Startup tips and the built-in `nanocode-help` skill. `/help` and externally installed project/user skills remain available.
 
 
 ## 0.9.9 - 2026-07-16

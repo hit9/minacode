@@ -123,7 +123,6 @@ Skills are instruction packs the agent loads on demand. Each skill is a folder w
 - **Model view**: only a name + description index sits in context; the full body loads on `Skill(name)` call
 - **Inline reference**: type `$name` in a message (Tab-completes) to inject that skill's instructions
 - **Bundled scripts**: `{skill_dir}` expands to the skill's absolute path for running via `Bash`
-- **Built-in**: ships with a `nanocode-help` skill containing a self-contained manual and auto-generated command/tool/config lists
 
 ## Safety
 
