@@ -1,12 +1,12 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  一个我自己在用、维护并定制的小型终端 coding agent — 单文件 Python 实现，可在交互式
-  对话中读取和编辑代码、运行命令、恢复 session、连接 MCP servers、加载可复用的 skills。
+  <img src="snapshots/nanocode1.gif" alt="nanocode 编辑代码并运行工具" width="600">
 </p>
 
 <p align="center">
-  <img src="snapshots/nanocode1.gif" alt="nanocode 编辑代码并运行工具" width="600">
+  一个我自己在用、维护并定制的小型终端 coding agent — 单文件 Python 实现，可在交互式
+  对话中读取和编辑代码、运行命令、恢复 session、连接 MCP servers、加载可复用的 skills。
 </p>
 
 <p align="center"><a href="README.md">English</a></p>

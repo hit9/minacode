@@ -1,13 +1,13 @@
 <h1 align="center">nanocode-cli</h1>
 
 <p align="center">
-  A small terminal coding agent I use, maintain, and customize in one Python file —
-  reads and edits code, runs commands, resumes sessions, connects MCP servers,
-  and loads reusable skills, all from an interactive conversation.
+  <img src="snapshots/nanocode1.gif" alt="nanocode editing code and running tools" width="600">
 </p>
 
 <p align="center">
-  <img src="snapshots/nanocode1.gif" alt="nanocode editing code and running tools" width="600">
+  A small terminal coding agent I use, maintain, and customize in one Python file —
+  reads and edits code, runs commands, resumes sessions, connects MCP servers,
+  and loads reusable skills, all from an interactive conversation.
 </p>
 
 <p align="center"><a href="README.zh-CN.md">中文</a></p>
