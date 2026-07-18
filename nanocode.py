@@ -5292,39 +5292,44 @@ class MCPManager:
         return "\n\n".join(sections) if sections else "(no MCP servers configured)"
 
     def render_server_status(self) -> str:
-        lines: list[str] = ["| server | mode | status | tools | auth |", "| --- | --- | --- | ---: | --- |"]
+        headers = ("server", "mode", "status", "tools", "auth")
+        rows: list[tuple[str, ...]] = []
         configs = self.parse_configs()
         for config in configs:
             tools = ""
             if issue := self.server_issue(config.name):
-                status = issue[0] + ": " + issue[1]
+                kind, message = issue
+                status = ("!" if kind == "error" else "-") + " " + kind + ": " + message
             else:
                 if self.connected(config.name):
-                    status = "connected"
+                    status = "● connected"
                     tools = str(len(self.tools.get(config.name, [])))
                 else:
-                    status = "not connected"
+                    status = "○ disconnected"
             auth = []
             if config.auth:
                 auth.append(config.auth)
             if config.bearer_token_env_var:
                 auth.append("bearer_token_env_var(" + config.bearer_token_env_var + ")")
             auth.extend("env_header(" + name + ")" for name in config.env_http_headers)
-            lines.append(
-                "| `"
-                + self.markdown_cell(config.name)
-                + "` | "
-                + ("auto" if config.auto_connect else "manual")
-                + " | "
-                + self.markdown_cell(status)
-                + " | "
-                + self.markdown_cell(tools or "-")
-                + " | "
-                + self.markdown_cell(", ".join(auth) or "-")
-                + " |"
+            rows.append(
+                (
+                    "`" + self.markdown_cell(config.name) + "`",
+                    "auto" if config.auto_connect else "manual",
+                    self.markdown_cell(status),
+                    self.markdown_cell(tools or "-"),
+                    self.markdown_cell(", ".join(auth) or "-"),
+                )
             )
-        if len(lines) <= 2:
+        if not rows:
             return "(no MCP servers configured)"
+        widths = [max(len(headers[index]), *(len(row[index]) for row in rows)) for index in range(len(headers))]
+
+        def table_row(cells: tuple[str, ...]) -> str:
+            return "| " + " | ".join(cell.ljust(widths[index]) for index, cell in enumerate(cells)) + " |"
+
+        separators = tuple("-" * (width - 1) + (":" if index == 3 else "-") for index, width in enumerate(widths))
+        lines = [table_row(headers), table_row(separators), *(table_row(row) for row in rows)]
         lines.extend(["", "Manage in the TUI with `/mcp`; fallback: `/mcp connect|disconnect NAME`. Mention `@NAME` to connect on demand."])
         return "\n".join(lines)
 
@@ -8694,18 +8699,21 @@ Tools:
             if not configs:
                 self.ui.emit_answer(mcp.render_server_status())
                 return
-            labels = {}
+            server_rows = []
             for config in configs:
                 issue = mcp.server_issue(config.name)
                 if issue:
-                    status = issue[0]
+                    status = ("!" if issue[0] == "error" else "-") + " " + issue[0]
                 elif mcp.connected(config.name):
-                    status = "connected"
+                    status = "● connected"
                 else:
-                    status = "not connected"
+                    status = "○ disconnected"
                 mode = "auto" if config.auto_connect else "manual"
                 count = len(mcp.tools.get(config.name, []))
-                labels[config.name] = f"{config.name}  {status}  {mode}  {count} tools"
+                server_rows.append((config.name, status, mode, count))
+            name_width = max(len(name) for name, *_rest in server_rows)
+            status_width = max(len(status) for _name, status, _mode, _count in server_rows)
+            labels = {name: f"{name:<{name_width}}  {status:<{status_width}}  {mode:<6}  {count:>3} tools" for name, status, mode, count in server_rows}
             choice = self.select_choice("MCP servers", tuple(config.name for config in configs), labels=labels, current=current)
             if not isinstance(choice, str):
                 return

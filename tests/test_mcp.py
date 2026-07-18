@@ -722,8 +722,8 @@ class TestServerStatusRendering:
 
         status = s.mcp.render_server_status()
         assert "test" in status
-        assert "connected" in status
-        assert "| `test` | auto | connected | 1 |" in status
+        assert "● connected" in status
+        assert "| `test` | auto | ● connected | 1     |" in status
         assert "`/mcp`" in status
         assert "`@NAME`" in status
         # No secrets leaked
@@ -736,7 +736,22 @@ class TestServerStatusRendering:
         status = s.mcp.render_server_status()
         assert "test" in status
         assert "manual" in status
-        assert "not connected" in status
+        assert "○ disconnected" in status
+
+    def test_render_server_status_aligns_columns(self):
+        raw = {"mcp": {
+            "a": {"url": "https://a.example/mcp"},
+            "much-longer": {"url": "https://long.example/mcp", "auto_connect": True},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        s.mcp.tools["a"] = []
+        s.mcp.resources["a"] = []
+
+        lines = [line for line in s.mcp.render_server_status().splitlines() if line.startswith("|")]
+
+        assert len({tuple(index for index, char in enumerate(line) if char == "|") for line in lines}) == 1
+        assert "● connected" in lines[2]
+        assert "○ disconnected" in lines[3]
 
     def test_render_tool_listing_all(self, monkeypatch):
         """render_tool_listing shows all servers."""
@@ -1176,7 +1191,7 @@ class TestMCPCommands:
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("")
         assert "test" in result
-        assert "| `test` | auto | connected | 1 |" in result
+        assert "| `test` | auto | ● connected | 1     |" in result
 
     def test_mcp_tools_shows_listing(self, monkeypatch):
         """/mcp tools returns tool listing."""
@@ -1359,6 +1374,30 @@ class TestMCPCommands:
         loop.mcp_manager()
 
         assert any("connected test" in text for text in output)
+
+    def test_mcp_manager_aligns_server_labels(self, monkeypatch):
+        raw = {"mcp": {
+            "a": {"url": "https://a.example/mcp"},
+            "much-longer": {"url": "https://long.example/mcp", "auto_connect": True},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        s.mcp.tools["a"] = []
+        s.mcp.resources["a"] = []
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        captured = {}
+
+        def select(_title, _choices, **kwargs):
+            captured.update(kwargs["labels"])
+
+        monkeypatch.setattr(loop, "select_choice", select)
+
+        loop.mcp_manager()
+
+        connected = captured["a"]
+        disconnected = captured["much-longer"]
+        assert connected.index("●") == disconnected.index("○")
+        assert connected.index("manual") == disconnected.index("auto")
+        assert connected.rindex("tools") == disconnected.rindex("tools")
 
     def test_unknown_mcp_subcommand(self):
         """Bad /mcp subcommand returns error."""
