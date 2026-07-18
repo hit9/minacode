@@ -57,6 +57,30 @@ def mcp_tool_info(server: str, name: str, **kw) -> n.MCPToolInfo:
     )
 
 
+def put_oauth_state(store: n.MCPFileTokenStore, url: str, label: str) -> None:
+    data = store.load()
+    data.setdefault("mcp-oauth-token", {})[store.token_key(url, "/tokens")] = {
+        "value": {"access_token": label + "-token", "token_type": "Bearer"}
+    }
+    data.setdefault("mcp-oauth-client-info", {})[store.token_key(url, "/client_info")] = {
+        "value": {"client_id": label + "-client", "redirect_uris": ["http://localhost:12345/callback"]}
+    }
+    store.save(data)
+
+
+def oauth_store(tmp_path, states: dict[str, str]) -> n.MCPFileTokenStore:
+    """Create a real token store containing one token/client pair per server URL."""
+    store = n.MCPFileTokenStore(str(tmp_path / "mcp-oauth.json"))
+    for url, label in states.items():
+        put_oauth_state(store, url, label)
+    return store
+
+
+def oauth_value(store: n.MCPFileTokenStore, url: str, collection: str, suffix: str) -> dict | None:
+    entry = store.load().get(collection, {}).get(store.token_key(url, suffix))
+    return entry.get("value") if entry else None
+
+
 # ---------------------------------------------------------------------------
 # Config parsing
 # ---------------------------------------------------------------------------
@@ -286,6 +310,90 @@ class TestMCPManagerDiscovery:
             return await store.get("k", collection="mcp-oauth-token")
 
         assert asyncio.run(roundtrip()) == {"v": 1}
+
+    def test_clear_server_matches_fastmcp_oauth_storage_contract(self, tmp_path):
+        from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+
+        url = "https://mcp.example.com/mcp"
+        s = n.Session(cwd=str(tmp_path), config=n.Config.from_dict({"mcp": {"test": {"url": url, "auth": "oauth"}}}))
+        store = n.MCPFileTokenStore(str(tmp_path / "tokens.json"))
+        s.mcp._oauth_token_store = store
+        auth = s.mcp.oauth_client(s.mcp.find_config("test"))
+        auth._bind(url)
+        adapter = auth.token_storage_adapter
+
+        async def roundtrip():
+            await adapter.set_tokens(OAuthToken(access_token="stale", token_type="Bearer", expires_in=3600))
+            await adapter.set_client_info(
+                OAuthClientInformationFull(client_id="old-client", redirect_uris=["http://localhost:12345/callback"])
+            )
+            assert await adapter.get_tokens() is not None
+            assert await adapter.get_client_info() is not None
+            s.mcp._oauth_token_store.clear_server(url)
+            return await adapter.get_tokens(), await adapter.get_client_info(), await adapter.get_token_expiry()
+
+        assert asyncio.run(roundtrip()) == (None, None, None)
+
+    def test_oauth_redirect_requires_explicit_interactive_connection(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        auth = s.mcp.oauth_client(s.mcp.find_config("test"), interactive=False)
+
+        with pytest.raises(RuntimeError, match=r"authentication required; run /mcp connect test"):
+            asyncio.run(auth.redirect_handler("https://login.example/authorize"))
+
+    def test_interactive_oauth_redirect_notifies_before_delegating(self, monkeypatch):
+        from fastmcp.client.auth import OAuth
+
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        notices = []
+        delegated = []
+
+        async def redirect(_auth, url):
+            delegated.append(url)
+
+        monkeypatch.setattr(OAuth, "redirect_handler", redirect)
+        auth = s.mcp.oauth_client(s.mcp.find_config("test"), interactive=True, notify=notices.append)
+
+        asyncio.run(auth.redirect_handler("https://login.example/authorize"))
+
+        assert notices == ["Open this URL to authorize MCP server `test`:\nhttps://login.example/authorize"]
+        assert delegated == ["https://login.example/authorize"]
+
+    def test_interactive_run_op_builds_interactive_oauth_client(self, monkeypatch):
+        import fastmcp.client
+
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        config = s.mcp.find_config("test")
+        marker = object()
+        auth_calls = []
+        client_args = []
+
+        def oauth_client(received, *, interactive=False, notify=None):
+            auth_calls.append((received, interactive, notify))
+            return marker
+
+        class Client:
+            def __init__(self, transport, *, auth, timeout, init_timeout):
+                client_args.append((transport, auth, timeout, init_timeout))
+
+            async def __aenter__(self):
+                return SimpleNamespace(ping=lambda: asyncio.sleep(0, result="pong"))
+
+            async def __aexit__(self, *_args):
+                return None
+
+        def notify(_text):
+            return None
+
+        monkeypatch.setattr(s.mcp, "oauth_client", oauth_client)
+        monkeypatch.setattr(s.mcp, "_transport", lambda *_args: "transport")
+        monkeypatch.setattr(fastmcp.client, "Client", Client)
+
+        result = asyncio.run(s.mcp._run_op(config, {}, lambda client: client.ping(), interactive=True, notify=notify))
+
+        assert result == "pong"
+        assert auth_calls == [(config, True, notify)]
+        assert client_args == [("transport", marker, s.mcp.call_timeout(), s.mcp.call_timeout())]
 
     def test_save_closes_fd_when_fdopen_fails(self, tmp_path, monkeypatch):
         """os.fdopen doesn't close its fd on failure — save() must close it or the descriptor leaks."""
@@ -1334,6 +1442,36 @@ class TestMCPCommands:
 
         assert result == "MCP server error: test: service unavailable"
 
+    @pytest.mark.parametrize("rejection", ["invalid_request", "invalid client", "invalid_token", "HTTP 403 forbidden"])
+    def test_mcp_connect_recognizes_cached_oauth_rejection_variants(self, rejection, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        authorized = False
+        logins = []
+        monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: None)
+
+        async def tools(_config, _headers):
+            if not authorized:
+                raise RuntimeError(rejection)
+            return []
+
+        async def resources(_config, _headers):
+            return []
+
+        def authorize(config, notify=None):
+            nonlocal authorized
+            logins.append(config.name)
+            authorized = True
+
+        monkeypatch.setattr(s.mcp, "_list_tools", tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", resources)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
+
+        result = s.mcp.connect_server("test", interactive=True)
+
+        assert result == "MCP server connected: test; tools=0; resources=0"
+        assert logins == ["test"]
+
     def test_mcp_connect_oauth_requires_interactive_session(self):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
 
@@ -1413,6 +1551,68 @@ class TestMCPCommands:
         s.mcp.connect_servers(["alpha", "beta"], interactive=True)
 
         assert maximum == 1
+
+    def test_mcp_batch_keeps_oauth_failure_compact_and_connects_other_servers(self, monkeypatch):
+        raw = {"mcp": {
+            "oauth": {"url": "https://oauth.example/mcp", "auth": "oauth"},
+            "plain": {"url": "https://plain.example/mcp"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: None)
+        monkeypatch.setattr(
+            s.mcp,
+            "_authenticate_oauth",
+            lambda config, notify=None: "\n".join([
+                "MCP OAuth authentication failed for oauth: authorization denied",
+                "No authorization URL was provided by the server.",
+                "Open MCP URL: " + config.url,
+            ]),
+        )
+
+        async def tools(_config, _headers):
+            return [SimpleNamespace(name="echo", description="Echo", inputSchema={}, annotations=None)]
+
+        async def no_resources(_config, _headers):
+            return []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
+
+        result = s.mcp.connect_servers(["oauth", "plain"], interactive=True)
+
+        assert result == (
+            "MCP connection results:\n\n"
+            "- ● error  `oauth` — authorization denied\n"
+            "    No authorization URL was provided by the server.\n"
+            "    Open MCP URL: https://oauth.example/mcp\n"
+            "- ● connected  `plain` — 1 tool"
+        )
+        assert not s.mcp.connected("oauth")
+        assert s.mcp.connected("plain")
+
+    def test_noninteractive_batch_never_starts_missing_oauth_login(self, monkeypatch):
+        raw = {"mcp": {
+            "oauth": {"url": "https://oauth.example/mcp", "auth": "oauth"},
+            "plain": {"url": "https://plain.example/mcp"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("batch opened OAuth"))
+
+        async def tools(_config, _headers):
+            return []
+
+        async def no_resources(_config, _headers):
+            return []
+
+        monkeypatch.setattr(s.mcp, "_list_tools", tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
+
+        result = s.mcp.connect_servers(["oauth", "plain"], interactive=False)
+
+        assert "● error  `oauth` — authentication required" in result
+        assert "● connected  `plain` — 0 tools" in result
+        assert not s.mcp.connected("oauth")
+        assert s.mcp.connected("plain")
 
     def test_mcp_batch_connect_formats_failures_as_separate_list_items(self, monkeypatch):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
@@ -1564,6 +1764,41 @@ class TestMCPCommands:
         loop.mcp_manager()
 
         assert all(event.is_set() for event in started.values())
+
+    def test_mcp_manager_emits_late_result_without_repainting_closed_modal(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auto_connect=False)))
+        release = threading.Event()
+        emitted = threading.Event()
+        outputs = []
+        modal_closed = False
+
+        def output(text):
+            outputs.append(str(text))
+            emitted.set()
+
+        def connect(name, **_kwargs):
+            release.wait(1)
+            s.mcp.tools[name] = []
+            s.mcp.resources[name] = []
+            return "MCP server connected: " + name + "; tools=0; resources=0"
+
+        def show_modal(_fragments, handle_key):
+            assert handle_key("enter") is n.TUI_MODAL_PENDING
+            return n.SELECTION_BACK
+
+        def invalidate():
+            assert not modal_closed, "completed worker repainted a closed modal"
+
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=output)
+        loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=invalidate)
+        monkeypatch.setattr(s.mcp, "connect_server", connect)
+
+        loop.mcp_manager()
+        modal_closed = True
+        release.set()
+
+        assert emitted.wait(1)
+        assert any("MCP server connected: test" in text for text in outputs)
 
     def test_mcp_manager_aligns_server_labels(self, monkeypatch):
         raw = {"mcp": {
@@ -2338,6 +2573,128 @@ class TestMCPUserScenarios:
         assert "--- MCP MENTIONS ---" in request_text
         assert "handbook://operations.md" in request_text
         assert "MCP" in {schema["function"]["name"] for schema in agent.model.tools[-1]}
+
+    def test_reauthorization_replaces_cached_token_and_client_as_one_unit(self, tmp_path, monkeypatch):
+        url = "https://metabase.example/mcp"
+        raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
+        s = n.Session(cwd=str(tmp_path), config=n.Config.from_dict(raw))
+        store = oauth_store(tmp_path, {url: "stale"})
+        s.mcp._oauth_token_store = store
+        authorized = False
+
+        async def list_tools(_config, _headers):
+            if not authorized:
+                raise RuntimeError("authentication required; run /mcp connect metabase")
+            return [self.tool("query", "Query analytics")]
+
+        async def no_resources(_config, _headers):
+            return []
+
+        def authorize(_config, notify=None):
+            nonlocal authorized
+            assert oauth_value(store, url, "mcp-oauth-token", "/tokens") is None
+            assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info") is None
+            put_oauth_state(store, url, "fresh")
+            authorized = True
+
+        monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
+        loop.interactive_input = True
+
+        result = loop.mcp_command("connect metabase")
+
+        assert result == "MCP server connected: metabase; tools=1; resources=0"
+        assert oauth_value(store, url, "mcp-oauth-token", "/tokens")["access_token"] == "fresh-token"
+        assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info")["client_id"] == "fresh-client"
+
+    def test_noninteractive_connect_preserves_rejected_cached_oauth_state(self, tmp_path, monkeypatch):
+        url = "https://metabase.example/mcp"
+        raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
+        s = n.Session(cwd=str(tmp_path), config=n.Config.from_dict(raw))
+        store = oauth_store(tmp_path, {url: "cached"})
+        s.mcp._oauth_token_store = store
+
+        async def rejected(_config, _headers):
+            raise RuntimeError("authentication required; run /mcp connect metabase")
+
+        monkeypatch.setattr(s.mcp, "_list_tools", rejected)
+        monkeypatch.setattr(s.mcp, "_list_resources", rejected)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("non-interactive connect opened OAuth"))
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
+
+        result = loop.mcp_command("connect metabase")
+
+        assert result == "MCP server error: metabase: authentication required; run /mcp connect metabase"
+        assert oauth_value(store, url, "mcp-oauth-token", "/tokens")["access_token"] == "cached-token"
+        assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info")["client_id"] == "cached-client"
+
+    def test_oauth_mention_reports_rejection_without_starting_login(self, tmp_path, monkeypatch):
+        url = "https://metabase.example/mcp"
+        raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
+        s = n.Session(cwd=str(tmp_path), config=n.Config.from_dict(raw))
+        store = oauth_store(tmp_path, {url: "cached"})
+        s.mcp._oauth_token_store = store
+
+        async def rejected(_config, _headers):
+            raise RuntimeError("authentication required; run /mcp connect metabase")
+
+        monkeypatch.setattr(s.mcp, "_list_tools", rejected)
+        monkeypatch.setattr(s.mcp, "_list_resources", rejected)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("mention opened OAuth"))
+        agent = n.Agent(s, output_fn=lambda _text: None)
+        agent.model = self.model()
+
+        assert agent.run("Use @metabase to inspect the dashboard") == "done"
+
+        request_text = "\n".join(str(message.get("content", "")) for message in agent.model.requests[-1])
+        assert "[metabase] unavailable: authentication required" in request_text
+        assert oauth_value(store, url, "mcp-oauth-client-info", "/client_info")["client_id"] == "cached-client"
+
+    def test_mixed_batch_reauthorizes_only_rejected_oauth_server(self, tmp_path, monkeypatch):
+        valid_url = "https://valid.example/mcp"
+        stale_url = "https://stale.example/mcp"
+        raw = {"mcp": {
+            "valid": {"url": valid_url, "auth": "oauth"},
+            "stale": {"url": stale_url, "auth": "oauth"},
+            "plain": {"url": "https://plain.example/mcp"},
+        }}
+        s = n.Session(cwd=str(tmp_path), config=n.Config.from_dict(raw))
+        store = oauth_store(tmp_path, {valid_url: "valid", stale_url: "stale"})
+        s.mcp._oauth_token_store = store
+        refreshed: set[str] = set()
+        authorized = []
+
+        async def list_tools(config, _headers):
+            if config.name == "stale" and config.name not in refreshed:
+                raise RuntimeError("HTTP 401 unauthorized")
+            return [self.tool(config.name + "_tool", "Tool for " + config.name)]
+
+        async def no_resources(_config, _headers):
+            return []
+
+        def authorize(config, notify=None):
+            authorized.append(config.name)
+            assert config.name == "stale"
+            assert oauth_value(store, stale_url, "mcp-oauth-client-info", "/client_info") is None
+            assert oauth_value(store, valid_url, "mcp-oauth-client-info", "/client_info")["client_id"] == "valid-client"
+            put_oauth_state(store, stale_url, "fresh")
+            refreshed.add(config.name)
+
+        monkeypatch.setattr(s.mcp, "_list_tools", list_tools)
+        monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", authorize)
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
+        loop.interactive_input = True
+
+        result = loop.mcp_command("connect valid stale plain")
+
+        assert authorized == ["stale"]
+        assert all(s.mcp.connected(name) for name in ("valid", "stale", "plain"))
+        assert result.index("`valid`") < result.index("`stale`") < result.index("`plain`")
+        assert oauth_value(store, valid_url, "mcp-oauth-client-info", "/client_info")["client_id"] == "valid-client"
+        assert oauth_value(store, stale_url, "mcp-oauth-client-info", "/client_info")["client_id"] == "fresh-client"
 
     def test_batch_connection_isolates_failed_server_from_model_context(self, monkeypatch):
         raw = {"mcp": {
