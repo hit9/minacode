@@ -81,7 +81,7 @@ Run `/index` to build or rebuild the index. The first build walks every source f
 subsequent builds sync from the previous snapshot and are much faster. Add `force`
 to rebuild from scratch.
 
-When the index already exists, nanocode refreshes it automatically in the background
+When the index already exists, nanocode <span class="marked">refreshes it automatically in the background</span>
 at startup and after source-file edits. The `/status` command shows the current
 index state:
 
