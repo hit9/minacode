@@ -845,12 +845,12 @@ def test_queue_command_rejects_mutating(tmp_path):
 
 
 def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
-    """Read-only /mcp is allowed; mutating subcommands like refresh are refused."""
+    """Read-only /mcp is allowed; mutating subcommands like connect are refused."""
     s = session(tmp_path)
     out = []
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    loop.run_queued_command("/mcp refresh")
+    loop.run_queued_command("/mcp connect test")
 
     assert any("read-only /mcp" in t for t in out)
 

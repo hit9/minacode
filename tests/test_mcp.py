@@ -23,7 +23,7 @@ def mcp_cfg(**overrides) -> dict:
         "mcp": {
             "test": {
                 "url": "http://localhost:9999/mcp",
-                "enabled": True,
+                "auto_connect": True,
             }
         }
     }
@@ -62,12 +62,12 @@ def mcp_tool_info(server: str, name: str, **kw) -> n.MCPToolInfo:
 
 class TestConfigParsing:
     def test_parse_basic_server(self):
-        """Parse [mcp.x] with url and default enabled=true."""
+        """Parse [mcp.x] with explicit automatic connection."""
         cfg = parse_one(mcp_cfg())
         assert cfg is not None
         assert cfg.name == "test"
         assert cfg.url == "http://localhost:9999/mcp"
-        assert cfg.enabled is True
+        assert cfg.auto_connect is True
         assert cfg.bearer_token_env_var == ""
         assert cfg.error == ""
 
@@ -77,14 +77,19 @@ class TestConfigParsing:
         assert cfg is not None
         assert cfg.bearer_token_env_var == "MY_TOKEN"
 
-    def test_disabled_server(self):
-        """Disabled servers are parsed but not discovered."""
-        cfg = parse_one(mcp_cfg(enabled=False))
+    def test_auto_connect_defaults_false(self):
+        cfg = parse_one({"mcp": {"test": {"url": "http://localhost:9999/mcp"}}})
         assert cfg is not None
-        assert cfg.enabled is False
+        assert cfg.auto_connect is False
 
-    def test_missing_url_on_enabled_server(self):
-        """Missing URL on enabled server — server config stores error."""
+    @pytest.mark.parametrize("legacy", [True, False])
+    def test_legacy_enabled_is_ignored(self, legacy):
+        cfg = parse_one({"mcp": {"test": {"url": "http://localhost:9999/mcp", "enabled": legacy}}})
+        assert cfg is not None
+        assert cfg.auto_connect is False
+
+    def test_missing_url(self):
+        """Missing URL stores a server configuration error."""
         raw = mcp_cfg()
         raw["mcp"]["test"].pop("url")
         cfg = parse_one(raw)
@@ -142,7 +147,7 @@ class TestStdioConfig:
     def test_url_and_command_mutually_exclusive(self):
         """Providing both url and command is an error; so is neither."""
         assert "exactly one" in parse_one({"mcp": {"x": {"url": "http://x/mcp", "command": "npx"}}}).error
-        assert "exactly one" in parse_one({"mcp": {"x": {"enabled": True}}}).error
+        assert "exactly one" in parse_one({"mcp": {"x": {"auto_connect": True}}}).error
 
     def test_stdio_rejects_http_auth(self):
         """stdio servers cannot use HTTP auth/headers."""
@@ -320,8 +325,8 @@ class TestMCPManagerDiscovery:
 
         assert store.load().get("mcp-oauth-client-info", {}).get(key) is None
 
-    def test_discover_enabled_stale_to_discovering(self, monkeypatch):
-        """discover_enabled sets status to discovering then ready."""
+    def test_discover_auto_stale_to_discovering(self, monkeypatch):
+        """discover_auto sets status to discovering then ready."""
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
 
@@ -331,10 +336,10 @@ class TestMCPManagerDiscovery:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
 
         assert s.mcp.discovery_status == "stale"
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
         assert s.mcp.discovery_status == "ready"
 
-    def test_discover_enabled_error_sets_status(self, monkeypatch):
+    def test_discover_auto_error_sets_status(self, monkeypatch):
         """Failed discovery sets error status."""
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
@@ -343,11 +348,11 @@ class TestMCPManagerDiscovery:
             raise Exception("connection refused")
         monkeypatch.setattr(s.mcp, "_list_tools", fake_fail)
 
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
         assert s.mcp.discovery_status == "ready"
         assert s.mcp.server_errors.get("test") is not None
 
-    def test_discover_enabled_ignores_cancelled_server(self, monkeypatch):
+    def test_discover_auto_ignores_cancelled_server(self, monkeypatch):
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
 
@@ -356,7 +361,7 @@ class TestMCPManagerDiscovery:
 
         monkeypatch.setattr(s.mcp, "_gather_assets", cancelled)
 
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         assert s.mcp.discovery_status == "ready"
         assert "test" not in s.mcp.server_errors
@@ -373,24 +378,24 @@ class TestMCPManagerDiscovery:
         assert not n.MCPManager.is_cancelled_error(mixed)
         assert not n.MCPManager.is_cancelled_error(first)
 
-    def test_discover_enabled_skips_missing_bearer_env(self, monkeypatch):
+    def test_discover_auto_skips_missing_bearer_env(self, monkeypatch):
         """Missing bearer_token_env_var skips discovery without an error log."""
         monkeypatch.delenv("MISSING_TOKEN", raising=False)
         raw = mcp_cfg(bearer_token_env_var="MISSING_TOKEN")
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
 
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         assert "test" not in s.mcp.server_errors
         assert "test" in s.mcp.server_skips
         assert "missing environment variable MISSING_TOKEN" in s.mcp.render_server_status()
 
-    def test_discover_enabled_loads_servers_in_parallel(self, monkeypatch):
-        """Multiple enabled servers are discovered in parallel."""
+    def test_discover_auto_loads_servers_in_parallel(self, monkeypatch):
+        """Multiple automatic servers are discovered in parallel."""
         raw = {
             "mcp": {
-                "a": {"url": "http://a/mcp"},
-                "b": {"url": "http://b/mcp"},
+                "a": {"url": "http://a/mcp", "auto_connect": True},
+                "b": {"url": "http://b/mcp", "auto_connect": True},
             }
         }
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
@@ -402,11 +407,31 @@ class TestMCPManagerDiscovery:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
         started = time.monotonic()
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.18
         assert s.mcp.discovery_status == "ready"
+
+    def test_discover_auto_skips_manual_servers(self, monkeypatch):
+        raw = {"mcp": {
+            "automatic": {"url": "http://a/mcp", "auto_connect": True},
+            "manual": {"url": "http://b/mcp"},
+        }}
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        discovered = []
+
+        def fake_discover(config):
+            discovered.append(config.name)
+            s.mcp.tools[config.name] = []
+            s.mcp.resources[config.name] = []
+
+        monkeypatch.setattr(s.mcp, "_discover_one", fake_discover)
+
+        s.mcp.discover_auto()
+
+        assert discovered == ["automatic"]
+        assert "manual" not in s.mcp.tools
 
     def test_tools_are_cached_after_discovery(self, monkeypatch):
         """Listed tools are cached after discovery."""
@@ -423,19 +448,17 @@ class TestMCPManagerDiscovery:
             return [FakeTool()]
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         assert "test" in s.mcp.tools
         assert len(s.mcp.tools["test"]) == 1
         assert s.mcp.tools["test"][0].name == "echo"
 
-    def test_disabled_servers_removed_from_tools(self, monkeypatch):
-        """Disabled servers are removed from tools on discovery."""
+    def test_discover_auto_preserves_manual_and_removes_stale_servers(self, monkeypatch):
         raw = {
             "mcp": {
-                "enabled_server": {"url": "http://a/mcp", "enabled": True},
-                "disabled_server": {"url": "http://b/mcp", "enabled": False},
-                "removed_server": {"url": "http://c/mcp", "enabled": True},
+                "auto_server": {"url": "http://a/mcp", "auto_connect": True},
+                "manual_server": {"url": "http://b/mcp", "enabled": False},
             }
         }
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
@@ -445,17 +468,14 @@ class TestMCPManagerDiscovery:
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
 
         # Manually add pre-existing stale data
-        s.mcp.tools["removed_server"] = [mcp_tool_info("removed_server", "stale")]
+        s.mcp.tools["manual_server"] = [mcp_tool_info("manual_server", "kept")]
         s.mcp.tools["stale_server"] = [mcp_tool_info("stale_server", "old")]
 
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
-        # stale_server was removed (not in config)
         assert "stale_server" not in s.mcp.tools
-        # disabled_server was removed
-        assert "disabled_server" not in s.mcp.tools
-        # enabled_server exists
-        assert "enabled_server" in s.mcp.tools
+        assert "manual_server" in s.mcp.tools
+        assert "auto_server" in s.mcp.tools
 
 
 # ---------------------------------------------------------------------------
@@ -525,16 +545,16 @@ class TestToolIndexRendering:
         async def fake_list(url, headers):
             return [FakeTool()]
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         idx = s.mcp.render_tools_index()
         assert "--- MCP TOOLS ---" in idx
         assert "[test]" in idx
 
-    def test_index_does_not_include_disabled_servers(self, monkeypatch):
-        """Disabled servers are not included in the index."""
+    def test_legacy_enabled_does_not_connect_server(self, monkeypatch):
         raw = {"mcp": {"test": {"url": "http://x/mcp", "enabled": False}}}
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
+        s.mcp.discover_auto()
         idx = s.mcp.render_tools_index()
         assert idx == ""
 
@@ -547,7 +567,7 @@ class TestToolIndexRendering:
 def _index_session(servers):
     """Build a session with the given {server: [(tool_name, n_schema_fields), ...]}."""
     s = n.Session(cwd="/tmp", config=n.Config.from_dict(
-        {"mcp": {name: {"url": f"https://{name}/mcp", "enabled": True} for name in servers}}))
+        {"mcp": {name: {"url": f"https://{name}/mcp", "auto_connect": True} for name in servers}}))
     for name, tools in servers.items():
         s.mcp.tools[name] = [
             n.MCPToolInfo(
@@ -636,21 +656,42 @@ class TestToolIndexBudget:
         small.mcp.render_tools_index()
         assert small.mcp.index_truncated is False
 
-    def test_unconnected_server_listed_as_pending(self):
-        """A configured-but-not-yet-connected server (e.g. awaiting OAuth login) is still
-        surfaced so the model knows it exists."""
+    def test_unconnected_server_stays_out_of_model_index(self):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict({"mcp": {
-            "github": {"url": "https://g/mcp", "enabled": True},
-            "metabase": {"url": "https://m/api/mcp", "auth": "oauth", "enabled": True},
+            "github": {"url": "https://g/mcp", "auto_connect": True},
+            "metabase": {"url": "https://m/api/mcp", "auth": "oauth", "auto_connect": True},
         }}))
         s.mcp.tools["github"] = [n.MCPToolInfo(server="github", name="search", description="Search.",
             input_schema={"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}, annotations={})]
-        s.mcp.server_errors["metabase"] = "oauth login required; run /mcp login metabase"
+        s.mcp.server_errors["metabase"] = "authentication required; run /mcp connect metabase"
         s.mcp.discovery_status = "ready"
         idx = s.mcp.render_tools_index()
         assert "[github]" in idx
-        assert "metabase" in idx
-        assert "oauth login required" in idx
+        assert "metabase" not in idx
+        assert "authentication required" not in idx
+
+    def test_mcp_context_and_tool_schema_require_activation(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+
+        assert s.mcp.render_tools_index() == ""
+        assert "MCP" not in {schema["function"]["name"] for schema in n.resolved_tool_schemas(s)}
+
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+        s.mcp.resources["test"] = []
+
+        assert "[test]" in s.mcp.render_tools_index()
+        assert "MCP" in {schema["function"]["name"] for schema in n.resolved_tool_schemas(s)}
+
+    def test_disconnect_removes_server_from_model_context(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+        s.mcp.resources["test"] = []
+
+        result = s.mcp.disconnect_server("test")
+
+        assert result == "MCP server disconnected: test"
+        assert s.mcp.render_tools_index() == ""
+        assert "MCP" not in {schema["function"]["name"] for schema in n.resolved_tool_schemas(s)}
 
 
 # ---------------------------------------------------------------------------
@@ -664,8 +705,8 @@ class TestServerStatusRendering:
         status = s.mcp.render_server_status()
         assert status == "(no MCP servers configured)"
 
-    def test_render_server_status_enabled(self, monkeypatch):
-        """Enabled server shows connected and tool count."""
+    def test_render_server_status_connected(self, monkeypatch):
+        """Connected server shows mode and tool count."""
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         class FakeTool:
@@ -676,22 +717,25 @@ class TestServerStatusRendering:
         async def fake_list(url, headers):
             return [FakeTool()]
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         status = s.mcp.render_server_status()
         assert "test" in status
         assert "connected" in status
-        assert "| `test` | connected | 1 |" in status
+        assert "| `test` | auto | connected | 1 |" in status
+        assert "`/mcp`" in status
+        assert "`@NAME`" in status
         # No secrets leaked
         assert "localhost" not in status
 
-    def test_render_server_status_disabled(self):
-        """Disabled server shows disabled."""
+    def test_render_server_status_manual(self):
+        """Legacy enabled=false is ignored and the server remains manual."""
         raw = {"mcp": {"test": {"url": "http://x/mcp", "enabled": False}}}
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         status = s.mcp.render_server_status()
         assert "test" in status
-        assert "disabled" in status
+        assert "manual" in status
+        assert "not connected" in status
 
     def test_render_tool_listing_all(self, monkeypatch):
         """render_tool_listing shows all servers."""
@@ -705,7 +749,7 @@ class TestServerStatusRendering:
         async def fake_list(url, headers):
             return [FakeTool()]
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         listing = s.mcp.render_tool_listing()
         assert "### `test`" in listing
@@ -714,13 +758,13 @@ class TestServerStatusRendering:
 
     def test_render_tool_listing_specific_server(self, monkeypatch):
         """render_tool_listing('test') filters to one server."""
-        raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
+        raw = {"mcp": {"a": {"url": "http://a/mcp", "auto_connect": True}, "b": {"url": "http://b/mcp", "auto_connect": True}}}
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         async def fake_list(url, headers):
             return []
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         listing = s.mcp.render_tool_listing("a")
         assert "### `a`" in listing
@@ -730,6 +774,17 @@ class TestServerStatusRendering:
         """No servers returns placeholder."""
         s = session("/tmp")
         assert s.mcp.render_tool_listing() == "(no MCP servers configured)"
+
+    def test_render_tool_listing_includes_resources(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = []
+        s.mcp.resources["test"] = [n.MCPResourceInfo("test", "docs://guide", "guide", "Usage guide", "text/plain")]
+
+        listing = s.mcp.render_tool_listing("test")
+
+        assert "no tools discovered" in listing
+        assert "docs://guide" in listing
+        assert "Usage guide" in listing
 
 
 # ---------------------------------------------------------------------------
@@ -833,13 +888,13 @@ class TestMCPToolShortArgs:
 class TestStatusBarMCPStatus:
     def test_stale_shows_nothing(self):
         """Stale status → empty string."""
-        s = n.Session(cwd="/tmp")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         bar = n.StatusBar(s)
         assert bar.mcp_status() == ""
 
     def test_discovering_shows_spinner(self, monkeypatch):
         """Discovering status → loaded/total + spinner."""
-        s = n.Session(cwd="/tmp")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict({"mcp": {"test": {"url": "http://x/mcp"}}}))
         s.mcp.discovery_status = "discovering"
         bar = n.StatusBar(s)
         monkeypatch.setattr(n.time, "monotonic", lambda: 0.0)
@@ -851,8 +906,8 @@ class TestStatusBarMCPStatus:
         """Discovering status includes loaded and configured server counts."""
         raw = {
             "mcp": {
-                "a": {"url": "http://a/mcp"},
-                "b": {"url": "http://b/mcp"},
+                "a": {"url": "http://a/mcp", "auto_connect": True},
+                "b": {"url": "http://b/mcp", "auto_connect": True},
             }
         }
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
@@ -864,7 +919,7 @@ class TestStatusBarMCPStatus:
 
     def test_ready_shows_server_count(self, monkeypatch):
         """Ready status → 'MCP N' where N is server count."""
-        s = n.Session(cwd="/tmp")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         s.mcp.discovery_status = "ready"
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         bar = n.StatusBar(s)
@@ -872,21 +927,21 @@ class TestStatusBarMCPStatus:
 
     def test_ready_zero_servers(self):
         """Ready with no servers → 'mcp 0'."""
-        s = n.Session(cwd="/tmp")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict({"mcp": {"test": {"url": "http://x/mcp"}}}))
         s.mcp.discovery_status = "ready"
         bar = n.StatusBar(s)
         assert bar.mcp_status() == "mcp 0"
 
     def test_error_shows_error(self):
         """Error status → 'mcp err'."""
-        s = n.Session(cwd="/tmp")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         s.mcp.discovery_status = "error"
         bar = n.StatusBar(s)
         assert bar.mcp_status() == "mcp err"
 
     def test_discovering_statusbar_spinner_animates(self, monkeypatch):
         """Discovering spinner changes over time."""
-        s = n.Session(cwd="/tmp")
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         s.mcp.discovery_status = "discovering"
         bar = n.StatusBar(s)
 
@@ -922,7 +977,7 @@ class TestMCPContextBlocks:
         async def fake_list(url, headers):
             return [FakeTool()]
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         ctx = n.ContextManager(s)
         result = ctx.mcp_tools_context()
@@ -1028,22 +1083,15 @@ class TestDescribeTool:
         with pytest.raises(n.ToolError, match="not found"):
             s.mcp.describe_tool("unknown", "echo")
 
-    def test_describe_refreshes_if_missing(self, monkeypatch):
-        """describe rediscover server if tools not cached."""
+    def test_describe_requires_connected_server(self, monkeypatch):
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
-        class FakeTool:
-            name = "echo"
-            description = "Echo"
-            inputSchema = {"type": "object", "properties": {}, "required": []}
-            annotations = None
+        calls = []
+        monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
 
-        async def fake_list(url, headers):
-            return [FakeTool()]
-        monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-
-        result = s.mcp.describe_tool("test", "echo")
-        assert "<MCPDescribe" in result
+        with pytest.raises(n.ToolError, match="not connected"):
+            s.mcp.describe_tool("test", "echo")
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -1057,6 +1105,16 @@ class TestCallTool:
         with pytest.raises(n.ToolError, match="not found"):
             s.mcp.call_tool("unknown", "echo", {})
 
+    def test_call_disconnected_server_does_not_rediscover(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        calls = []
+        monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
+
+        with pytest.raises(n.ToolError, match="not connected"):
+            s.mcp.call_tool("test", "echo", {})
+
+        assert calls == []
+
     def test_call_server_with_error_raises(self, monkeypatch):
         """Server with prior error raises ToolError."""
         raw = mcp_cfg()
@@ -1068,18 +1126,18 @@ class TestCallTool:
 
     def test_call_without_url(self):
         """Server without URL raises ToolError."""
-        raw = {"mcp": {"test": {"url": "", "enabled": True}}}
+        raw = {"mcp": {"test": {"url": "", "auto_connect": True}}}
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         with pytest.raises(n.ToolError, match="url"):
             s.mcp.call_tool("test", "echo", {})
 
     def test_call_and_resource_paths_share_oauth_gate(self):
-        """call_tool and the resource path both reject an OAuth server with no stored login
+        """call_tool and the resource path both reject an OAuth server with no stored authentication
         (both route through the shared _resolve_server)."""
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
-        with pytest.raises(n.ToolError, match="requires OAuth login"):
+        with pytest.raises(n.ToolError, match="requires authentication"):
             s.mcp.call_tool("test", "echo", {})
-        with pytest.raises(n.ToolError, match="requires OAuth login"):
+        with pytest.raises(n.ToolError, match="requires authentication"):
             s.mcp.list_resources("test")
 
 
@@ -1088,17 +1146,17 @@ class TestCallTool:
 # ---------------------------------------------------------------------------
 
 class TestMCPCommands:
-    def test_start_session_does_not_discover_servers(self, monkeypatch):
+    def test_start_session_discovers_auto_servers(self, monkeypatch):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
         calls = []
-        monkeypatch.setattr(s.mcp, "discover_enabled", lambda: calls.append("all"))
+        monkeypatch.setattr(s.mcp, "discover_auto", lambda: calls.append("auto"))
         monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
         monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
         monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
 
         n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None).start_session()
 
-        assert calls == []
+        assert calls == ["auto"]
 
     def test_mcp_command_no_args_shows_status(self, monkeypatch):
         """/mcp returns server status."""
@@ -1112,12 +1170,12 @@ class TestMCPCommands:
         async def fake_list(url, headers):
             return [FakeTool()]
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("")
         assert "test" in result
-        assert "| `test` | connected | 1 |" in result
+        assert "| `test` | auto | connected | 1 |" in result
 
     def test_mcp_tools_shows_listing(self, monkeypatch):
         """/mcp tools returns tool listing."""
@@ -1131,7 +1189,7 @@ class TestMCPCommands:
         async def fake_list(url, headers):
             return [FakeTool()]
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("tools")
@@ -1149,8 +1207,8 @@ class TestMCPCommands:
         assert calls == []
         assert "no tools discovered" in result
 
-    def test_mcp_login_failure_includes_mcp_url(self, monkeypatch):
-        """/mcp login shows a fallback URL when OAuth does not provide one."""
+    def test_mcp_connect_oauth_failure_includes_mcp_url(self, monkeypatch):
+        """Interactive connect shows a fallback URL when OAuth does not provide one."""
         raw = mcp_cfg(auth="oauth")
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
 
@@ -1158,37 +1216,108 @@ class TestMCPCommands:
             raise RuntimeError("Unexpected content type: text/html")
 
         monkeypatch.setattr(s.mcp, "_run_op", fake_login)
-        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("login test")
+        result = s.mcp.connect_server("test", interactive=True)
 
         assert "Unexpected content type: text/html" in result
         assert "Open MCP URL: http://localhost:9999/mcp" in result
 
-    def test_mcp_refresh_invokes_discovery(self, monkeypatch):
-        """/mcp refresh calls discover_enabled."""
-        raw = mcp_cfg()
-        s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
-        async def fake_list(url, headers):
-            return []
-        monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
+    def test_mcp_connect_authenticates_then_loads_capabilities(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        authenticated = False
+        calls = []
 
-        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        loop.mcp_command("refresh")
-        assert s.mcp.discovery_status == "ready"
+        monkeypatch.setattr(s.mcp.oauth_token_store(), "has_server_tokens", lambda _url: authenticated)
 
-    def test_mcp_refresh_specific_server(self, monkeypatch):
-        """/mcp refresh NAME calls discover_server."""
+        def fake_auth(config, notify=None):
+            nonlocal authenticated
+            authenticated = True
+            calls.append((config.name, notify))
+
+        def fake_discover(name):
+            assert authenticated
+            s.mcp.tools[name] = [mcp_tool_info(name, "echo")]
+            s.mcp.resources[name] = []
+
+        monkeypatch.setattr(s.mcp, "_authenticate_oauth", fake_auth)
+        monkeypatch.setattr(s.mcp, "discover_server", fake_discover)
+
+        result = s.mcp.connect_server("test", interactive=True)
+
+        assert result == "MCP server connected: test; tools=1; resources=0"
+        assert calls == [("test", None)]
+        assert s.mcp.connected("test")
+        assert "echo" in s.mcp.render_tools_index()
+
+    def test_mcp_connect_oauth_requires_interactive_session(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+
+        result = s.mcp.connect_server("test")
+
+        assert result == "MCP server authentication required: test; run /mcp connect test interactively"
+        assert not s.mcp.connected("test")
+
+    def test_mcp_connect_discovers_and_rediscovers_server(self, monkeypatch):
+        """Repeated /mcp connect NAME calls reconnect that server."""
         calls = []
         raw = mcp_cfg()
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
-        async def fake_list(url, headers):
-            return []
-        monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        loop.mcp_command("refresh test")
-        assert "test" in calls
+        loop.mcp_command("connect test")
+        loop.mcp_command("connect test")
+
+        assert calls == ["test", "test"]
+
+    def test_mcp_connect_rejects_missing_server(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+
+        assert loop.mcp_command("connect missing") == "MCP server not found: missing"
+
+    def test_mcp_disconnect_removes_connected_server(self):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+        s.mcp.resources["test"] = []
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+
+        assert loop.mcp_command("disconnect test") == "MCP server disconnected: test"
+        assert not s.mcp.connected("test")
+
+    def test_mcp_disconnect_oauth_also_clears_authentication(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg(auth="oauth")))
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+        s.mcp.resources["test"] = []
+        cleared = []
+        monkeypatch.setattr(s.mcp.oauth_token_store(), "clear_server", cleared.append)
+
+        result = s.mcp.disconnect_server("test")
+
+        assert result == "MCP server disconnected: test"
+        assert cleared == ["http://localhost:9999/mcp"]
+        assert not s.mcp.connected("test")
+
+    def test_bare_mcp_opens_manager_in_tui(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
+        loop.tui = SimpleNamespace(input_mode="idle")
+        calls = []
+        monkeypatch.setattr(loop, "mcp_manager", lambda: calls.append("manager"))
+
+        assert loop.mcp_command("") is None
+        assert calls == ["manager"]
+
+    def test_mcp_manager_connects_selected_server(self, monkeypatch):
+        s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
+        output = []
+        loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=output.append)
+        selections = iter(("test", "connect", None))
+        monkeypatch.setattr(loop, "select_choice", lambda *args, **kwargs: next(selections))
+        monkeypatch.setattr(s.mcp, "connect_server", lambda name, **_kwargs: "connected " + name)
+
+        loop.mcp_manager()
+
+        assert any("connected test" in text for text in output)
 
     def test_unknown_mcp_subcommand(self):
         """Bad /mcp subcommand returns error."""
@@ -1203,9 +1332,12 @@ class TestMCPCommands:
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
         assert loop.mcp_command("tools a b") == "Usage: /mcp tools [server]"
-        assert loop.mcp_command("login a b").startswith("Usage: /mcp login")
-        assert loop.mcp_command("logout a b").startswith("Usage: /mcp logout")
-        assert loop.mcp_command("refresh a b") == "Usage: /mcp refresh [server]"
+        assert loop.mcp_command("connect") == "Usage: /mcp connect <server>"
+        assert loop.mcp_command("connect a b") == "Usage: /mcp connect <server>"
+        assert loop.mcp_command("disconnect") == "Usage: /mcp disconnect <server>"
+        assert loop.mcp_command("disconnect a b") == "Usage: /mcp disconnect <server>"
+        assert "Unknown" in loop.mcp_command("login test")
+        assert "Unknown" in loop.mcp_command("logout test")
 
     def test_no_mcp_config(self):
         """No MCP config returns message."""
@@ -1222,7 +1354,7 @@ class TestMCPCommands:
 
 class TestMCPTabCompletion:
     def test_mcp_command_completion(self):
-        """/mcp  completes with tools, refresh."""
+        """/mcp completes with connect and inspection commands."""
         completer = n.CommandCompleter()
         from prompt_toolkit.document import Document
 
@@ -1230,42 +1362,47 @@ class TestMCPTabCompletion:
         completions = list(completer.get_completions(doc, None))
         texts = [c.text for c in completions]
         assert "tools" in texts
-        assert "refresh" in texts
+        assert "connect" in texts
+        assert "disconnect" in texts
+        assert "refresh" not in texts
+        assert "login" not in texts
+        assert "logout" not in texts
 
     def test_mcp_completion_prefix_filtering(self):
         """Prefix filters subcommands."""
         completer = n.CommandCompleter()
         from prompt_toolkit.document import Document
 
-        doc = Document("/mcp r")
+        doc = Document("/mcp c")
         completions = list(completer.get_completions(doc, None))
         texts = [c.text for c in completions]
         assert "tools" not in texts
-        assert "refresh" in texts
-
-    def test_mcp_login_completion_uses_oauth_servers(self):
-        """/mcp login completes only OAuth server names."""
-        completer = n.CommandCompleter(
-            mcp_servers=lambda: ("plain", "oauthOne"),
-            mcp_oauth_servers=lambda: ("oauthOne",),
-        )
-        from prompt_toolkit.document import Document
-
-        completions = list(completer.get_completions(Document("/mcp login "), None))
-        texts = [c.text for c in completions]
-        assert texts == ["oauthOne"]
+        assert texts == ["connect"]
 
     def test_mcp_tools_completion_uses_all_servers(self):
         """/mcp tools completes all MCP server names."""
         completer = n.CommandCompleter(
             mcp_servers=lambda: ("plain", "oauthOne"),
-            mcp_oauth_servers=lambda: ("oauthOne",),
         )
         from prompt_toolkit.document import Document
 
         completions = list(completer.get_completions(Document("/mcp tools o"), None))
         texts = [c.text for c in completions]
         assert texts == ["oauthOne"]
+
+    def test_mcp_connect_completion_uses_all_servers(self):
+        completer = n.CommandCompleter(mcp_servers=lambda: ("plain", "oauthOne"))
+        from prompt_toolkit.document import Document
+
+        completions = list(completer.get_completions(Document("/mcp connect p"), None))
+        assert [c.text for c in completions] == ["plain"]
+
+    def test_mcp_disconnect_completion_uses_all_servers(self):
+        completer = n.CommandCompleter(mcp_servers=lambda: ("plain", "oauthOne"))
+        from prompt_toolkit.document import Document
+
+        completions = list(completer.get_completions(Document("/mcp disconnect o"), None))
+        assert [c.text for c in completions] == ["oauthOne"]
 
 
 # ---------------------------------------------------------------------------
@@ -1299,7 +1436,7 @@ class TestToolIndexTruncation:
         async def fake_list(url, headers):
             return many_tools
         monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
 
         idx = s.mcp.render_tools_index()
         assert len(idx) <= n.MCPManager.INDEX_TOTAL_LIMIT + 100
@@ -1503,30 +1640,20 @@ class TestMCPPruning:
 
 class TestMCPCommandsByName:
     def test_mcp_tools_specific_server(self, monkeypatch):
-        """/mcp tools NAME discovers and lists only that server."""
+        """/mcp tools NAME lists only that server without discovering it."""
         raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(raw))
         discovered = []
 
-        async def fake_list(config, headers):
-            discovered.append(config.name)
-            class T:
-                name = "tool"
-                description = "A test tool"
-                inputSchema = {"type": "object", "properties": {}, "required": []}
-                annotations = None
-            return [T()]
-
-        monkeypatch.setattr(s.mcp, "_list_tools", fake_list)
-        monkeypatch.setattr(s.mcp, "_list_resources", fake_list)
+        monkeypatch.setattr(s.mcp, "discover_server", lambda name: discovered.append(name))
 
         loop = n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = loop.mcp_command("tools a")
 
-        assert set(discovered) == {"a"}
+        assert discovered == []
         assert "### `a`" in result
         assert "### `b`" not in result
-        assert "tool" in result
+        assert "no tools discovered" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1579,7 +1706,7 @@ class TestMCPResources:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_resources)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
         return s
 
     def test_action_schema_includes_resource_actions(self):
@@ -1615,7 +1742,7 @@ class TestMCPResources:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", boom)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
         assert s.mcp.tools["test"]  # tool discovery still succeeded
         assert s.mcp.resources["test"] == []
         assert "test" not in s.mcp.server_errors
@@ -1693,7 +1820,7 @@ class TestMCPResources:
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", empty)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
         idx = s.mcp.render_tools_index()
         # URI survives even though the description is truncated to 80 chars on the main line.
         assert "metabase://docs/construct-query.md" in idx
@@ -1745,7 +1872,7 @@ class TestMCPResources:
         monkeypatch.setattr(s.mcp, "_list_tools", fake_tools)
         monkeypatch.setattr(s.mcp, "_list_resources", fake_resources)
         monkeypatch.setattr(s.mcp, "_read_resource", fake_read)
-        s.mcp.discover_enabled()
+        s.mcp.discover_auto()
         return s
 
     def test_auto_read_injects_doc_on_first_call(self, monkeypatch):

@@ -87,7 +87,7 @@ Json = dict[str, Any]
 HTTP_USER_AGENT = "nanocode/" + __version__
 logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
-# actionable "oauth login required" message; suppress this logger's ERROR-level
+# actionable "authentication required" message; suppress this logger's ERROR-level
 # traceback spam (incl. the RuntimeError nanocode raises as control flow).
 logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 128_000
@@ -470,7 +470,7 @@ model = ""
 
 # [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
-# enabled = true
+# auto_connect = false
 """
 
     @classmethod
@@ -683,7 +683,7 @@ class MCPServerConfig:
     auth: str = ""
     bearer_token_env_var: str = ""
     env_http_headers: dict[str, str] = field(default_factory=dict)
-    enabled: bool = True
+    auto_connect: bool = False
     error: str = ""
 
 
@@ -952,10 +952,18 @@ class SessionSnapshotCodec:
     @staticmethod
     def state(state: AgentState) -> Json:
         data = asdict(state)
-        return {key: data[key] for key in (
-            "goal", "plan", "known", "check", "summary", "compaction_count",
-            "round_count",
-        )}
+        return {
+            key: data[key]
+            for key in (
+                "goal",
+                "plan",
+                "known",
+                "check",
+                "summary",
+                "compaction_count",
+                "round_count",
+            )
+        }
 
     @staticmethod
     def usage(usage: ModelUsage) -> Json:
@@ -3733,9 +3741,10 @@ TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 def resolved_tool_schemas(session: Session) -> list[Json]:
     strict = session.config.provider.resolved_strict_tools()
-    # Skill is conditional so a skill-free session keeps the same cache-stable tool prefix.
+    # Optional tool families stay out of the model prefix until they have usable session state.
     has_skills = bool(session.skills and session.skills.skills)
-    return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if tool is not SkillTool or has_skills]
+    has_mcp = bool(session.mcp and (session.mcp.tools or session.mcp.resources))
+    return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp)]
 
 
 @dataclass
@@ -4322,7 +4331,7 @@ class MCPManager:
             command=Config.str(raw, "command"),
             auth=Config.str(raw, "auth").lower(),
             bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
-            enabled=Config.bool(raw, "enabled", True),
+            auto_connect=Config.bool(raw, "auto_connect", False),
         )
         self._read_config_field(raw, config, "args", self._string_list, "args must be a string list")
         self._read_config_field(raw, config, "env", self._string_map, "env must be a string map")
@@ -4357,8 +4366,8 @@ class MCPManager:
     def _has_header(headers: dict[str, str], name: str) -> bool:
         return any(header.lower() == name.lower() for header in headers)
 
-    def find_config(self, name: str, *, enabled_only: bool = True) -> "MCPServerConfig | None":
-        return next((c for c in self.parse_configs() if c.name == name and (c.enabled or not enabled_only)), None)
+    def find_config(self, name: str) -> "MCPServerConfig | None":
+        return next((config for config in self.parse_configs() if config.name == name), None)
 
     def _forget_locked(self, name: str) -> None:
         self.tools.pop(name, None)
@@ -4367,22 +4376,16 @@ class MCPManager:
         self.server_errors.pop(name, None)
         self.server_skips.pop(name, None)
 
-    def discover_enabled(self) -> None:
+    def discover_auto(self) -> None:
         self.discovery_status = "discovering"
         try:
             configs = self.parse_configs()
             configured = {config.name for config in configs}
             with self.lock:
-                for name in list(self.tools):
+                for name in list(self.tools.keys() | self.resources.keys()):
                     if name not in configured:
                         self._forget_locked(name)
-            discoverable = []
-            for config in configs:
-                if not config.enabled:
-                    with self.lock:
-                        self._forget_locked(config.name)
-                    continue
-                discoverable.append(config)
+            discoverable = [config for config in configs if config.auto_connect]
             if discoverable:
                 workers = min(self.MAX_DISCOVERY_WORKERS, len(discoverable))
                 with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-discover") as executor:
@@ -4400,9 +4403,49 @@ class MCPManager:
         if config is None:
             with self.lock:
                 self._forget_locked(name)
-                self.server_errors[name] = "server not found or disabled"
+                self.server_errors[name] = "server not found"
             return
-        self._discover_one(config)
+        self.discovery_status = "discovering"
+        try:
+            self._discover_one(config)
+        finally:
+            self.discovery_status = "ready"
+
+    def disconnect_server(self, name: str) -> str:
+        config = self.find_config(name)
+        if config is None:
+            return "MCP server not found: " + name
+        if config.auth == "oauth" and config.url:
+            self.oauth_token_store().clear_server(config.url)
+        with self.lock:
+            self._forget_locked(name)
+            self.server_errors.pop(name, None)
+            self.server_skips.pop(name, None)
+        return "MCP server disconnected: " + name
+
+    def connected(self, name: str) -> bool:
+        return name in self.tools or name in self.resources
+
+    def connect_server(
+        self,
+        name: str,
+        *,
+        interactive: bool = False,
+        notify: Callable[[str], None] | None = None,
+    ) -> str:
+        config = self.find_config(name)
+        if config is None:
+            return "MCP server not found: " + name
+        if not config.error and config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
+            if not interactive:
+                return f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
+            if error := self._authenticate_oauth(config, notify=notify):
+                return error
+        self.discover_server(name)
+        if issue := self.server_issue(name):
+            kind, message = issue
+            return f"MCP server {kind}: {name}: {message}"
+        return f"MCP server connected: {name}; tools={len(self.tools.get(name, []))}; resources={len(self.resources.get(name, []))}"
 
     def _discover_one(self, config: MCPServerConfig) -> None:
         if config.error:
@@ -4417,7 +4460,7 @@ class MCPManager:
             return
 
         if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
-            self.set_server_error(config.name, "oauth login required; run /mcp login " + config.name)
+            self.set_server_error(config.name, "authentication required; run /mcp connect " + config.name)
             return
         try:
             tools, resources = self.run_async(self._gather_assets(config, headers))
@@ -4551,12 +4594,7 @@ class MCPManager:
         with self._loop_lock:
             if self._closed:
                 raise ToolError("MCP manager is closed")
-            if (
-                self._loop is not None
-                and self._loop.is_running()
-                and self._loop_thread is not None
-                and self._loop_thread.is_alive()
-            ):
+            if self._loop is not None and self._loop.is_running() and self._loop_thread is not None and self._loop_thread.is_alive():
                 return self._loop
             # Previous thread died or loop stopped; reset and recreate.
             self._loop = None
@@ -4638,7 +4676,7 @@ class MCPManager:
         class NanocodeOAuth(OAuth):
             async def redirect_handler(self, authorization_url: str) -> None:
                 if not interactive:
-                    raise RuntimeError("oauth login required; run /mcp login " + config.name)
+                    raise RuntimeError("authentication required; run /mcp connect " + config.name)
                 if notify:
                     notify("Open this URL to authorize MCP server `" + config.name + "`:\n" + authorization_url)
                 await super().redirect_handler(authorization_url)
@@ -4722,15 +4760,16 @@ class MCPManager:
         if isinstance(headers, str):
             raise ToolError(headers)
         if config.auth == "oauth" and not self.oauth_token_store().has_server_tokens(config.url):
-            raise ToolError(f"MCP server '{server}' requires OAuth login; run /mcp login {server}")
+            raise ToolError(f"MCP server '{server}' requires authentication; run /mcp connect {server}")
+        if issue := self.server_issue(server):
+            kind, message = issue
+            raise ToolError(f"MCP server '{server}' {kind}: {message}")
+        if not self.connected(server):
+            raise ToolError(f"MCP server '{server}' is not connected; run /mcp connect {server}")
         return config, headers
 
     def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
         config, headers = self._resolve_server(server)
-        if server not in self.tools:
-            self.discover_server(server)
-        if server in self.server_errors:
-            raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
 
         try:
             result = self.run_async(self._call_tool(config, headers, tool_name, arguments))
@@ -4741,12 +4780,7 @@ class MCPManager:
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
 
     def _resource_preamble(self, server: str) -> tuple[MCPServerConfig, dict[str, str]]:
-        config, headers = self._resolve_server(server)
-        if server not in self.tools and server not in self.resources:
-            self.discover_server(server)
-        if server in self.server_errors:
-            raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
-        return config, headers
+        return self._resolve_server(server)
 
     def list_resources(self, server: str) -> str:
         self._resource_preamble(server)
@@ -4873,16 +4907,8 @@ class MCPManager:
                 parts.append(self._dump_object(item))
         return self._join_bounded(parts)
 
-    def login_server(self, name: str, notify: Callable[[str], None] | None = None) -> str:
-        config = self.find_config(name)
-        if config is None:
-            return "MCP server not found or disabled: " + name
-        if config.error:
-            return config.error
-        if config.auth != "oauth":
-            return "MCP server does not use OAuth: " + name
-        if not config.url:
-            return "url is required"
+    def _authenticate_oauth(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
+        """Complete interactive OAuth before the normal connection discovery."""
         headers = self._build_mcp_headers(config)
         if isinstance(headers, str):
             return headers
@@ -4891,50 +4917,33 @@ class MCPManager:
         # client registered against an earlier random port yields invalid_request.
         self.oauth_token_store().clear_client_info(config.url)
         try:
-            tools = self.run_async(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
+            self.run_async(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
         except Exception as error:
             text = self.error_text(error, timeout=self.call_timeout())
-            self.set_server_error(name, text)
-            return self.oauth_login_failure(config, text)
-        tools_info = self._tools_info(name, tools)
+            self.set_server_error(config.name, text)
+            return self.oauth_auth_failure(config, text)
         with self.lock:
-            self.tools[name] = tools_info
-            self.server_errors.pop(name, None)
-        self.discovery_status = "ready"
-        return "MCP OAuth login succeeded for " + name + f"; tools={len(tools_info)}"
+            self.server_errors.pop(config.name, None)
+        return None
 
     @staticmethod
-    def oauth_login_failure(config: MCPServerConfig, error: str) -> str:
+    def oauth_auth_failure(config: MCPServerConfig, error: str) -> str:
         return "\n".join(
             [
-                "MCP OAuth login failed for " + config.name + ": " + error,
+                "MCP OAuth authentication failed for " + config.name + ": " + error,
                 "No authorization URL was provided by the server.",
                 "Open MCP URL: " + config.url,
             ]
         )
 
-    def logout_server(self, name: str) -> str:
-        config = self.find_config(name, enabled_only=False)
-        if config is None:
-            return "MCP server not found: " + name
-        if config.auth != "oauth":
-            return "MCP server does not use OAuth: " + name
-        self.oauth_token_store().clear_server(config.url)
-        with self.lock:
-            self._forget_locked(name)
-            self.server_errors[name] = "oauth login required; run /mcp login " + name
-        return "MCP OAuth tokens cleared for " + name
-
     def describe_tool(self, server: str, tool_name: str) -> str:
-        tools = self.tools.get(server)
-        if tools is None:
-            self.discover_server(server)
-            tools = self.tools.get(server)
-
-        if tools is None:
-            if server in self.server_errors:
-                raise ToolError(f"MCP server '{server}' error: {self.server_errors[server]}")
+        if self.find_config(server) is None:
             raise ToolError(f"MCP server '{server}' not found")
+        if issue := self.server_issue(server):
+            kind, message = issue
+            raise ToolError(f"MCP server '{server}' {kind}: {message}")
+        if not self.connected(server):
+            raise ToolError(f"MCP server '{server}' is not connected; run /mcp connect {server}")
 
         info = self.tool_info(server, tool_name)
         if info is None:
@@ -4984,10 +4993,11 @@ class MCPManager:
                               physically cannot hold them); server headers come first so
                               the model still sees most servers exist.
 
-        Tiers 1–3 keep every enabled server and tool name visible. See _index_body for how
+        Tiers 1–3 keep every connected server and tool name visible. See _index_body for how
         each detail level is rendered, and test_mcp.TestToolIndexBudget for the guarantees.
         """
-        configs = [c for c in self.parse_configs() if c.enabled]
+        activated = self.tools.keys() | self.resources.keys()
+        configs = [config for config in self.parse_configs() if config.name in activated]
         if not configs:
             return ""
 
@@ -5029,9 +5039,7 @@ class MCPManager:
             "args"   — same line without the schema (name + arg summary + description)
             "names"  — one "tools: a, b, c" line per server, names only
 
-        Every enabled server is represented regardless of detail: a connected server shows
-        its tools, an unconnected one (no tools/resources) is collected into a trailing
-        "not yet available" section so the model still knows it exists.
+        Every connected server is represented regardless of detail.
         """
         lines: list[str] = []
         pending: list[str] = []
@@ -5085,7 +5093,7 @@ class MCPManager:
         return tuple(tool.name for tool in self.tools.get(server, []))
 
     def resolve_mentions(self, text: str) -> str:
-        configs = {config.name: config for config in self.parse_configs() if config.enabled}
+        configs = {config.name: config for config in self.parse_configs()}
         if not configs:
             return ""
         lower = {name.lower(): name for name in configs}
@@ -5210,8 +5218,6 @@ class MCPManager:
         sections: list[str] = []
         configs = self.parse_configs()
         for config in configs:
-            if not config.enabled:
-                continue
             if server and config.name != server:
                 continue
             lines = [f"### `{config.name}`", "", "| tool | args | description |", "| --- | --- | --- |"]
@@ -5223,28 +5229,32 @@ class MCPManager:
             tools = self.tools.get(config.name, [])
             if not tools:
                 lines.append("| (none) |  | no tools discovered |")
-                sections.append("\n".join(lines))
-                continue
-            for tool in tools:
-                args_str = self._tool_args_summary(tool)
-                desc = Tool.compact((tool.description or "").split("\n")[0].strip(), 80)
-                lines.append("| `" + self.markdown_cell(tool.name) + "` | `" + self.markdown_cell(args_str) + "` | " + self.markdown_cell(desc or "-") + " |")
+            else:
+                for tool in tools:
+                    args_str = self._tool_args_summary(tool)
+                    desc = Tool.compact((tool.description or "").split("\n")[0].strip(), 80)
+                    lines.append(
+                        "| `" + self.markdown_cell(tool.name) + "` | `" + self.markdown_cell(args_str) + "` | " + self.markdown_cell(desc or "-") + " |"
+                    )
+            resources = self.resources.get(config.name, [])
+            if resources:
+                lines.extend(["", "| resource | description |", "| --- | --- |"])
+                for resource in resources:
+                    lines.append("| `" + self.markdown_cell(resource.uri) + "` | " + self.markdown_cell(resource.description or "-") + " |")
             sections.append("\n".join(lines))
         return "\n\n".join(sections) if sections else "(no MCP servers configured)"
 
     def render_server_status(self) -> str:
-        lines: list[str] = ["| server | status | tools | auth |", "| --- | --- | ---: | --- |"]
+        lines: list[str] = ["| server | mode | status | tools | auth |", "| --- | --- | --- | ---: | --- |"]
         configs = self.parse_configs()
         for config in configs:
             tools = ""
-            if not config.enabled:
-                status = "disabled"
-            elif issue := self.server_issue(config.name):
+            if issue := self.server_issue(config.name):
                 status = issue[0] + ": " + issue[1]
             else:
-                if config.name in self.tools:
+                if self.connected(config.name):
                     status = "connected"
-                    tools = str(len(self.tools[config.name]))
+                    tools = str(len(self.tools.get(config.name, [])))
                 else:
                     status = "not connected"
             auth = []
@@ -5257,6 +5267,8 @@ class MCPManager:
                 "| `"
                 + self.markdown_cell(config.name)
                 + "` | "
+                + ("auto" if config.auto_connect else "manual")
+                + " | "
                 + self.markdown_cell(status)
                 + " | "
                 + self.markdown_cell(tools or "-")
@@ -5264,7 +5276,10 @@ class MCPManager:
                 + self.markdown_cell(", ".join(auth) or "-")
                 + " |"
             )
-        return "\n".join(lines) if len(lines) > 2 else "(no MCP servers configured)"
+        if len(lines) <= 2:
+            return "(no MCP servers configured)"
+        lines.extend(["", "Manage in the TUI with `/mcp`; fallback: `/mcp connect|disconnect NAME`. Mention `@NAME` to connect on demand."])
+        return "\n".join(lines)
 
     @staticmethod
     def markdown_cell(text: str) -> str:
@@ -5832,8 +5847,7 @@ class ModelClient:
         if re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b", text):
             return True
         return any(
-            part in text
-            for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
+            part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
         )
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
@@ -6362,14 +6376,12 @@ class CommandCompleter(Completer):
         providers: Callable[[], tuple[str, ...]] = tuple,
         models: Callable[[], tuple[str, ...]] = tuple,
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
-        mcp_oauth_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
         skills: Callable[[], tuple[str, ...]] = tuple,
     ):
         self.providers = providers
         self.models = models
         self.mcp_servers = mcp_servers
-        self.mcp_oauth_servers = mcp_oauth_servers
         self.mcp_tools = mcp_tools
         self.skills = skills
 
@@ -6395,13 +6407,10 @@ class CommandCompleter(Completer):
         if text.startswith("/mcp "):
             tail = text[len("/mcp ") :]
             if " " not in tail:
-                yield from self.matches(("tools", "login", "logout", "refresh"), tail)
+                yield from self.matches(("connect", "disconnect", "tools"), tail)
                 return
             sub, _, value = tail.partition(" ")
-            if sub in {"login", "logout"}:
-                yield from self.matches(self.mcp_oauth_servers(), value)
-                return
-            if sub in {"tools", "refresh"}:
+            if sub in {"connect", "disconnect", "tools"}:
                 yield from self.matches(self.mcp_servers(), value)
                 return
 
@@ -7771,11 +7780,14 @@ class StatusBar:
     def mcp_status(self) -> str:
         if self.session.mcp is None:
             return ""
+        configs = self.session.mcp.parse_configs()
+        if not configs:
+            return ""
         status = self.session.mcp.discovery_status
         if status == "discovering":
             spinner = self.INDEX_SPINNER[int(time.monotonic() / self.INTERVAL) % len(self.INDEX_SPINNER)]
             loaded = len(self.session.mcp.tools)
-            total = sum(1 for config in self.session.mcp.parse_configs() if config.enabled)
+            total = sum(1 for config in configs if config.auto_connect)
             return f"mcp {loaded}/{total}{spinner}"
         if status == "error":
             return "mcp err"
@@ -7940,7 +7952,7 @@ class ChoiceViewState:
             suffix += " (filtered)"
         parts: list[tuple[str, str]] = [
             ("class:choice.title", title + suffix + "\n"),
-            ("class:choice.disabled", "  j/k move, / search, Esc back/cancel\n"),
+            ("class:choice.disabled", "  j/k move, / search, Esc/q back/cancel\n"),
         ]
         if self.query and not options:
             return [*parts, ("class:choice.disabled", "  no matches\n")]
@@ -7987,6 +7999,8 @@ class ChoiceViewState:
                 self.set_query("")
             else:
                 return SELECTION_BACK
+        elif key == "q" and not self.searching:
+            return SELECTION_BACK
         elif key == "enter":
             if self.searching:
                 self.searching = False
@@ -8023,12 +8037,11 @@ class CommandLoop:
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
     MCP_COMMANDS: ClassVar[dict[str, tuple[int, int, str]]] = {
+        "connect": (1, 1, "Usage: /mcp connect <server>"),
+        "disconnect": (1, 1, "Usage: /mcp disconnect <server>"),
         "tools": (0, 1, "Usage: /mcp tools [server]"),
-        "login": (1, 1, "Usage: /mcp login <server>\nExample: /mcp login myOAuthServer"),
-        "logout": (1, 1, "Usage: /mcp logout <server>\nExample: /mcp logout myOAuthServer"),
-        "refresh": (0, 1, "Usage: /mcp refresh [server]"),
     }
-    MCP_HELP = "Try /mcp, /mcp tools [server], /mcp login <server>, /mcp logout <server>, /mcp refresh [server]"
+    MCP_HELP = "Try /mcp, /mcp connect <server>, /mcp disconnect <server>, or /mcp tools [server]"
 
     HELP = """Commands:
   /help              Show this help.
@@ -8046,11 +8059,7 @@ class CommandLoop:
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
   /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
-  /mcp               Show MCP server status.
-  /mcp tools [NAME]   List MCP tools.
-  /mcp login NAME     Start OAuth login for a server.
-  /mcp logout NAME    Clear OAuth tokens for a server.
-  /mcp refresh [NAME] Refresh MCP servers.
+  /mcp               Manage MCP server connections.
   /exit, /quit       Exit.
 Mentions:
   @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
@@ -8124,8 +8133,7 @@ Tools:
         self.input_completer = CommandCompleter(
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
-            mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled),
-            mcp_oauth_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if config.enabled and config.auth == "oauth"),
+            mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs()),
             mcp_tools=lambda server: self.session.mcp.server_tool_names(server),
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
@@ -8335,6 +8343,7 @@ Tools:
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
+        self.session.mcp.discover_auto()
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()
@@ -8595,13 +8604,15 @@ Tools:
         self.tui.on_retry()
         return None
 
-    def mcp_command(self, args: str) -> str:
+    def mcp_command(self, args: str) -> str | None:
         mcp = self.session.mcp
         if mcp is None:
             return "MCP not configured"
 
         parts = args.split()
         if not parts:
+            if self.tui is not None and self.tui.input_mode != "running":
+                return self.mcp_manager()
             return mcp.render_server_status()
 
         sub = parts[0]
@@ -8613,23 +8624,69 @@ Tools:
         if not min_args <= len(rest) <= max_args:
             return usage
 
+        if sub == "connect":
+            return mcp.connect_server(rest[0], interactive=self.interactive_input, notify=self.emit)
+        if sub == "disconnect":
+            return mcp.disconnect_server(rest[0])
         if sub == "tools":
-            server = rest[0] if rest else None
-            if server and server not in mcp.tools and server not in mcp.resources:
-                mcp.discover_server(server)
-            return mcp.render_tool_listing(server)
-        if sub == "login":
-            return mcp.login_server(rest[0], notify=self.emit)
-        if sub == "logout":
-            return mcp.logout_server(rest[0])
-        if sub == "refresh":
-            name = rest[0] if rest else ""
-            if name:
-                mcp.discover_server(name)
-            else:
-                mcp.discover_enabled()
-            return mcp.render_server_status()
+            return mcp.render_tool_listing(rest[0] if rest else None)
         raise AssertionError("unreachable MCP subcommand")
+
+    def mcp_manager(self) -> None:
+        mcp = self.session.mcp
+        if mcp is None:
+            return
+        current = ""
+        while True:
+            configs = tuple(mcp.parse_configs())
+            if not configs:
+                self.ui.emit_answer(mcp.render_server_status())
+                return
+            labels = {}
+            for config in configs:
+                issue = mcp.server_issue(config.name)
+                if issue:
+                    status = issue[0]
+                elif mcp.connected(config.name):
+                    status = "connected"
+                else:
+                    status = "not connected"
+                mode = "auto" if config.auto_connect else "manual"
+                count = len(mcp.tools.get(config.name, []))
+                labels[config.name] = f"{config.name}  {status}  {mode}  {count} tools"
+            choice = self.select_choice("MCP servers", tuple(config.name for config in configs), labels=labels, current=current)
+            if not isinstance(choice, str):
+                return
+            current = choice
+            config = mcp.find_config(choice)
+            if config is None:
+                continue
+            connected = mcp.connected(choice)
+            actions = ("reconnect", "disconnect", "tools") if connected else ("connect", "tools")
+            action_labels = {
+                "connect": "Connect",
+                "reconnect": "Reconnect and refresh capabilities",
+                "disconnect": (
+                    "Disconnect, remove from model context, and clear saved authentication"
+                    if config.auth == "oauth"
+                    else "Disconnect and remove from model context"
+                ),
+                "tools": "View tools and resources",
+            }
+            action = self.select_choice(choice, actions, labels=action_labels)
+            if action is SELECTION_BACK:
+                continue
+            if not isinstance(action, str):
+                return
+            if action in {"connect", "reconnect"}:
+                result = mcp.connect_server(choice, interactive=True, notify=self.emit)
+            elif action == "disconnect":
+                result = mcp.disconnect_server(choice)
+            elif action == "tools":
+                result = mcp.render_tool_listing(choice)
+            else:
+                raise AssertionError("unreachable MCP manager action")
+            self.ui.emit_answer(result)
 
     def select_choice(
         self,

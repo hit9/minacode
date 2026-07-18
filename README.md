@@ -100,7 +100,7 @@ Remote server (HTTP):
 [mcp.example]
 url = "https://example.com/mcp"
 bearer_token_env_var = "EXAMPLE_MCP_TOKEN"  # optional
-enabled = true
+# auto_connect = true  # optional; default false
 ```
 
 Local server (stdio):
@@ -109,10 +109,10 @@ Local server (stdio):
 [mcp.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-enabled = true
+# auto_connect = true  # optional; default false
 ```
 
-Servers are discovered on demand through `@server`, MCP calls, or `/mcp tools <server>`; `/mcp refresh` discovers all enabled servers. Use `/mcp` to view status and `/mcp login/logout <server>` for OAuth.
+Configured servers are manual by default; set `auto_connect = true` on servers that should connect at startup. Comment out a server's `[mcp.NAME]` section to remove it. Until connection, no MCP name, index, or tool schema is sent to the model. Run `/mcp` for the interactive connection manager, mention `@server` to connect on demand, or use `/mcp connect|disconnect <server>` as a plain-terminal fallback. Connecting handles OAuth authorization when required; disconnecting also clears saved OAuth authentication.
 
 ## Skills
 

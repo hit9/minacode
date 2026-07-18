@@ -5,18 +5,19 @@
 
 ### Added
 - Add `g`/`G` jumps to the top/bottom in the `/diff` viewer and interactive selectors, matching the `less` pager convention.
+- Add an interactive `/mcp` connection manager and per-server `auto_connect` configuration for explicit startup connections.
 
 ### Changed
 - Replace the in-flight model retry keybinding with `/resend` in the running follow-up input, and show a `/resend` hint during long requests.
 - Open the current input in `$VISUAL`/`$EDITOR` with `Ctrl-X Ctrl-E` or `Ctrl-G`; a lone `Ctrl-X` no longer opens the editor.
 - Make `Ctrl-P` mirror the Up arrow when recalling the latest queued message for editing.
-- Discover MCP servers on demand through targeted mentions, calls, descriptions, and `/mcp tools NAME`; `/mcp refresh` remains the explicit way to discover every enabled server.
+- Connect MCP servers on demand through targeted mentions or `/mcp connect NAME`, keeping disconnected servers entirely out of model context. Connecting handles OAuth authorization when required; disconnecting unloads the server and clears its saved OAuth authentication.
 
 ### Removed
 - Remove the unreachable non-TUI `Ctrl-\` model-request retry; interactive retries use `/resend`, while transient errors still retry automatically.
 - Remove `/debug` cache-prefix diagnostics and persisted prefix fingerprints; prompt caching and `/status` cache-hit metrics remain unchanged.
 - Remove startup tips and the built-in `nanocode-help` skill; `/help` and project/user skills remain available.
-- Remove the `--mcp` per-run server selector; each server's `enabled` configuration now solely controls availability.
+- Remove the `--mcp` per-run selector and per-server `enabled` behavior; comment out unwanted server sections instead. Legacy `enabled` keys are ignored.
 
 ### Fixed
 - Retry OpenAI and Anthropic connection/timeout failures, retryable client statuses, and every provider `5xx` response.
