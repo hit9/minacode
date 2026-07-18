@@ -5146,7 +5146,7 @@ class MCPManager:
             return "connected; no tools or resources advertised"
         return "not connected"
 
-    MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")
+    MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?(?![A-Za-z0-9_./-])")
 
     def server_tool_names(self, server: str) -> tuple[str, ...]:
         return tuple(tool.name for tool in self.tools.get(server, []))
@@ -6238,6 +6238,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
 
 class Agent:
+    FILE_MENTION_PATTERN = re.compile(r'(?<![A-Za-z0-9_])@("(?:\\.|[^"\\])*"|(?:\./|[A-Za-z0-9_.-]+/)[^\s@]+)')
     LIVE_FOLLOWUP_PREFIX = """[Live follow-up received while you were working]
 REQUIRED: Your next assistant message must include a brief visible text response to this follow-up, not only tool calls. Then continue the active task; this response is a progress update, not the final answer.
 """
@@ -6311,6 +6312,28 @@ FINAL:
         if self.cancel_requested.is_set():
             raise KeyboardInterrupt
 
+    def resolve_file_mentions(self, text: str) -> str:
+        search = SearchTool(self.session, [])
+        seen: set[str] = set()
+        blocks: list[str] = []
+        for token in self.FILE_MENTION_PATTERN.findall(text):
+            try:
+                raw = str(json.loads(token)) if token.startswith('"') else token
+            except json.JSONDecodeError:
+                continue
+            path = self.session.resolve_path(raw)
+            if path in seen or not self.session.in_cwd(path) or search.files(path, "") != [path]:
+                continue
+            seen.add(path)
+            try:
+                blocks.append(ReadTool(self.session, []).read_one(path, [(0, 0)]))
+            except (OSError, UnicodeDecodeError):
+                continue
+        if not blocks:
+            return ""
+        content = "\n\n".join(["--- FILE MENTIONS ---", "The user explicitly referenced these workspace files.", *blocks])
+        return self.context.bound_output(content)
+
     def run(self, user_input: str) -> str:
         self.cancel_requested.clear()
         self.session.state.round_count += 1
@@ -6326,6 +6349,8 @@ FINAL:
             skill_mentions = self.session.skills.resolve_mentions(user_input)
             if skill_mentions:
                 turn_messages.append({"role": "user", "content": skill_mentions})
+        if file_mentions := self.resolve_file_mentions(user_input):
+            turn_messages.append({"role": "user", "content": file_mentions})
         self.checkpoint_turn(turn_messages)
         try:
             for step in range(self.session.settings.max_steps):
@@ -6447,6 +6472,7 @@ class CommandCompleter(Completer):
         mcp_connected_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
         skills: Callable[[], tuple[str, ...]] = tuple,
+        context_files: Callable[[], tuple[str, ...]] = tuple,
     ):
         self.providers = providers
         self.models = models
@@ -6454,6 +6480,7 @@ class CommandCompleter(Completer):
         self.mcp_connected_servers = mcp_connected_servers
         self.mcp_tools = mcp_tools
         self.skills = skills
+        self.context_files = context_files
 
     def get_completions(self, document, _complete_event):
         text = document.text_before_cursor
@@ -6492,13 +6519,26 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_connected_servers(), value)
                 return
 
-        at_match = re.search(r"@([A-Za-z0-9_.-]*)$", text)
+        quoted_at_match = re.search(r'(?<![A-Za-z0-9_])@("(?:\\.|[^"\\])*")$', text)
+        at_match = quoted_at_match or re.search(r"(?<![A-Za-z0-9_])@([^\s@]*)$", text)
         if at_match:
-            server_part, dot, tool_part = at_match.group(1).partition(".")
-            if dot:
-                yield from self.matches(self.mcp_tools(server_part), tool_part)
-            else:
-                yield from self.matches(self.mcp_servers(), server_part)
+            prefix = str(json.loads(at_match.group(1))) if quoted_at_match else at_match.group(1)
+            replace_length = len(at_match.group(1))
+            servers = self.mcp_servers()
+            server_part, dot, tool_part = prefix.partition(".")
+            if dot and server_part in servers:
+                for tool in self.mcp_tools(server_part):
+                    if tool.startswith(tool_part):
+                        yield Completion(tool, start_position=-len(tool_part), display=server_part + "." + tool, display_meta="[MCP tool]")
+                return
+            if not quoted_at_match and "/" not in prefix:
+                for server in servers:
+                    if server.startswith(prefix):
+                        yield Completion(server, start_position=-len(prefix), display=server, display_meta="[MCP]")
+                for skill in self.skills():
+                    if skill.startswith(prefix):
+                        yield Completion("$" + skill, start_position=-len(prefix) - 1, display=skill, display_meta="[Skill]")
+            yield from self.file_completions(self.context_files(), prefix, replace_length)
             return
 
         skill_match = re.search(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$", text)
@@ -6512,6 +6552,26 @@ class CommandCompleter(Completer):
     @staticmethod
     def matches(values, prefix: str):
         return (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
+
+    @staticmethod
+    def file_completions(paths: tuple[str, ...], prefix: str, replace_length: int | None = None):
+        typed = prefix.removeprefix("./")
+        parent, separator, _leaf = typed.rpartition("/")
+        parent = parent + "/" if separator else ""
+        candidates: dict[str, bool] = {}
+        for path in paths:
+            path = path.replace(os.sep, "/").removeprefix("./")
+            if not path.startswith(parent):
+                continue
+            head, slash, _rest = path[len(parent) :].partition("/")
+            candidate = parent + head + ("/" if slash else "")
+            candidates[candidate] = bool(slash)
+        for candidate, directory in sorted(candidates.items()):
+            if not candidate.startswith(typed):
+                continue
+            display = candidate if directory or "/" in candidate else "./" + candidate
+            inserted = json.dumps(display, ensure_ascii=False) if any(char.isspace() for char in display) else display
+            yield Completion(inserted, start_position=-(replace_length if replace_length is not None else len(prefix)), display=display, display_meta="[Directory]" if directory else "[File]")
 
 
 class Theme:
@@ -8162,6 +8222,7 @@ class CommandLoop:
   /mcp               Manage MCP server connections.
   /exit, /quit       Exit.
 Mentions:
+  @...                Complete MCP, skill, and workspace-file context.
   @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
   $skill             Reference a skill in your message to load its instructions for that turn (tab-completes).
 CLI:
@@ -8239,6 +8300,10 @@ Tools:
             ),
             mcp_tools=lambda server: self.session.mcp.server_tool_names(server),
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
+            context_files=lambda: tuple(
+                self.session.relpath(path).replace(os.sep, "/")
+                for path in SearchTool(self.session, []).files(self.session.cwd, "")
+            ),
         )
         self.agent.output_fn = self.agent_output
         self.agent.on_queue_flush = self.flush_queued_to_log

@@ -1503,6 +1503,75 @@ def test_skill_mentions_inject_body(tmp_path):
     assert s.skills.resolve_mentions("$unknown") == ""
 
 
+def test_context_completion_labels_mcp_skills_files_and_directories():
+    from prompt_toolkit.document import Document
+
+    completer = n.CommandCompleter(
+        mcp_servers=lambda: ("orion",),
+        mcp_tools=lambda _server: ("query",),
+        skills=lambda: ("triage",),
+        context_files=lambda: ("README.md", "dir with space/app.py", "src/app.py", "src/lib/util.py"),
+    )
+
+    completions = list(completer.get_completions(Document("use @"), None))
+    candidates = {(completion.text, completion.display_text): completion.display_meta_text for completion in completions}
+
+    assert candidates[("orion", "orion")] == "[MCP]"
+    assert candidates[("$triage", "triage")] == "[Skill]"
+    assert candidates[("./README.md", "./README.md")] == "[File]"
+    assert candidates[("src/", "src/")] == "[Directory]"
+
+    nested = list(completer.get_completions(Document("use @src/"), None))
+    assert [(item.text, item.display_meta_text) for item in nested] == [("src/app.py", "[File]"), ("src/lib/", "[Directory]")]
+
+    spaced_dir = next(item for item in completions if item.display_text == "dir with space/")
+    assert spaced_dir.text == '"dir with space/"'
+    spaced_file = list(completer.get_completions(Document('use @"dir with space/"'), None))
+    assert [(item.text, item.display_meta_text) for item in spaced_file] == [('"dir with space/app.py"', "[File]")]
+
+    tools = list(completer.get_completions(Document("use @orion.q"), None))
+    assert [(item.text, item.display_text, item.display_meta_text) for item in tools] == [("query", "orion.query", "[MCP tool]")]
+
+
+def test_context_file_completion_uses_search_ignore_rules(tmp_path):
+    from prompt_toolkit.document import Document
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("secret", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("ignored.txt\nbuild/\n", encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("ignored", encoding="utf-8")
+    (tmp_path / "visible.txt").write_text("visible", encoding="utf-8")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "artifact.txt").write_text("ignored", encoding="utf-8")
+    loop = n.CommandLoop(n.Agent(session(tmp_path)), input_fn=lambda _: "", output_fn=lambda _: None)
+
+    displays = {item.display_text for item in loop.input_completer.get_completions(Document("@"), None)}
+
+    assert "./visible.txt" in displays
+    assert "./ignored.txt" not in displays
+    assert ".git/" not in displays
+    assert "build/" not in displays
+
+
+def test_file_mentions_inject_only_search_visible_utf8_files(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("git secret", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("ignored secret", encoding="utf-8")
+    (tmp_path / "visible file.txt").write_text("visible context", encoding="utf-8")
+    (tmp_path / "binary.dat").write_bytes(b"\xff\x00")
+    agent = n.Agent(session(tmp_path))
+
+    resolved = agent.resolve_file_mentions('review @"./visible file.txt" @./ignored.txt @.git/config @./binary.dat')
+
+    assert "--- FILE MENTIONS ---" in resolved
+    assert "visible file.txt" in resolved
+    assert "visible context" in resolved
+    assert "ignored secret" not in resolved
+    assert "git secret" not in resolved
+    assert "binary.dat" not in resolved
+
+
 def test_skill_tool_absent_only_when_no_skills(tmp_path):
     _write_skill(tmp_path, "available", "available skill", "body")
     withskill = n.ContextManager(session(tmp_path))
