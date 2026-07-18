@@ -14,6 +14,28 @@
 
 **Use at your own risk.** nanocode can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
 
+## What it is
+
+nanocode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
+
+It works on real repositories, including its own: I use nanocode to build and maintain nanocode. Everything ships in one Python module, so I can change the behavior directly whenever I want the workflow to work differently.
+
+<p align="center">
+  <img src="snapshots/nanocode2.gif" alt="nanocode resuming a saved session" width="600">
+</p>
+<p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
+
+## Highlights
+
+- **Prompt-cache aware:** stable instructions, environment, and tool schemas preserve reusable request prefixes, routinely hitting 98–99% cache rates.
+- **Code navigation:** jump to definitions, callers, and implementations with a searchable code index.
+- **Live follow-ups:** type while the agent works; queued input joins the next turn or interrupts the current one.
+- **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content.
+- **Resumable sessions:** conversation, tool calls, diffs, and working memory survive `-c` or `--resume`.
+- **Built-in diff viewer:** `/diff` shows the latest round and the net session result.
+- **MCP and skills:** connect Model Context Protocol servers and load Markdown instruction packs on demand.
+- **Provider compatibility:** OpenAI-compatible APIs and Anthropic.
+
 ## Install
 
 Requires macOS or Linux, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
@@ -42,28 +64,6 @@ nanocode
 ```
 
 Upgrade with `uv tool upgrade nanocode-cli`.
-
-## What it is
-
-nanocode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
-
-It works on real repositories, including its own: I use nanocode to build and maintain nanocode. Everything ships in one Python module, so I can change the behavior directly whenever I want the workflow to work differently.
-
-<p align="center">
-  <img src="snapshots/nanocode2.gif" alt="nanocode resuming a saved session" width="600">
-</p>
-<p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
-
-## Highlights
-
-- **Prompt-cache aware:** stable instructions, environment, and tool schemas preserve reusable request prefixes, routinely hitting 98–99% cache rates.
-- **Code navigation:** jump to definitions, callers, and implementations with a searchable code index.
-- **Live follow-ups:** type while the agent works; queued input joins the next turn or interrupts the current one.
-- **Anchored edits:** structured edits use `line:hash` anchors and reject stale file content.
-- **Resumable sessions:** conversation, tool calls, diffs, and working memory survive `-c` or `--resume`.
-- **Built-in diff viewer:** `/diff` shows the latest round and the net session result.
-- **MCP and skills:** connect Model Context Protocol servers and load Markdown instruction packs on demand.
-- **Provider compatibility:** OpenAI-compatible APIs and Anthropic.
 
 ## Links
 
