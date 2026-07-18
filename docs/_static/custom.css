@@ -225,5 +225,5 @@ div.highlight::-webkit-scrollbar-thumb, pre::-webkit-scrollbar-thumb {
 div.highlight::-webkit-scrollbar-track, pre::-webkit-scrollbar-track { background: transparent; }
 
 /* Inline highlighted/underlined text for emphasis */
-.marked { text-decoration: underline; text-decoration-color: rgba(138, 180, 248, 0.8); text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.marked { border-bottom: 1px solid rgba(180, 150, 80, 0.6); padding-bottom: 1px; }
 div.highlight, pre { scrollbar-color: #3a4048 transparent; }
