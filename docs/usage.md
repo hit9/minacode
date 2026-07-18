@@ -6,8 +6,8 @@ answering questions, and reviewing changes.
 
 ## Follow-ups
 
-Press `Enter` to queue a message for the next turn, `Ctrl-C` to interrupt and
-take over immediately.
+Press `Enter` to queue a message for the next turn, <span class="marked">`Ctrl-C` to interrupt and
+take over immediately.</span>
 
 | Key | When | Effect |
 |---|---|---|

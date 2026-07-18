@@ -2,8 +2,8 @@
 
 ```{admonition} Use at your own risk
 :class: warning
-nanocode edits files and runs shell commands in the environment where you start it. It does
-**not** sandbox itself.
+nanocode edits files and runs shell commands in the environment where you start it. <span class="marked">It does
+**not** sandbox itself.</span>
 ```
 
 nanocode acts directly in your environment. Through its [tools](tools.md) it can read and edit

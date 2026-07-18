@@ -83,5 +83,5 @@ read-only run without a prompt; anything that may change state asks for
 ```{admonition} Trust
 :class: warning
 Local (stdio) servers run programs on your machine, and remote servers receive whatever the
-agent sends them. Only connect servers you trust.
+agent sends them. <span class="marked">Only connect servers you trust.</span>
 ```

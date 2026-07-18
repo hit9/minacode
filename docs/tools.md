@@ -71,7 +71,7 @@ When the index is available, the `InspectCode` tool can:
 - **File outlines** — symbol tree of a single file
 
 ```{note}
-Without the index `InspectCode` returns nothing. Run `/index` once after opening a
+<span class="marked">Without the index `InspectCode` returns nothing.</span> Run `/index` once after opening a
 project to build it.
 ```
 
