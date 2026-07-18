@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.9.10 - 2026-07-18
 
 ### Added
 - Add `g`/`G` jumps to the top/bottom in the `/diff` viewer and interactive selectors, matching the `less` pager convention.
