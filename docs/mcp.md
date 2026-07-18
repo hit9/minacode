@@ -46,7 +46,23 @@ Servers are **manual by default** — they stay inactive, and cost nothing, unti
 them. Set `auto_connect = true` for servers you always want. Ways to connect:
 
 - **`/mcp`** — open the interactive manager and toggle a server on or off.
+
+```{figure} ../snapshots/nanocode-mcp-list.png
+:alt: MCP server manager listing all configured servers and their connection status
+:width: 600px
+:align: center
+
+The /mcp interactive server manager.
+```
 - **`@server`** in a message — connect on demand for that turn.
+
+```{figure} ../snapshots/nanocode-mcp-mention.png
+:alt: Using @server mention to connect an MCP server on demand
+:width: 600px
+:align: center
+
+Connecting a server on demand with an @-mention.
+```
 - **`/mcp connect <server> [server ...]`** / **`/mcp disconnect <server>`** — terminal
   fallbacks.
 - **`/mcp tools [server]`** — list the tools of connected servers.

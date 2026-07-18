@@ -66,4 +66,9 @@ pygments_style = "one-dark"
 # -- Extension tuning --------------------------------------------------------
 
 copybutton_prompt_text = r"\$ |>>> "
+
+# Custom roles for inline markup
+rst_prolog = """
+.. role:: marked
+"""
 copybutton_prompt_is_regexp = True

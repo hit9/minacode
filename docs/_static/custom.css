@@ -223,4 +223,7 @@ div.highlight::-webkit-scrollbar-thumb, pre::-webkit-scrollbar-thumb {
     border-radius: 6px;
 }
 div.highlight::-webkit-scrollbar-track, pre::-webkit-scrollbar-track { background: transparent; }
+
+/* Inline highlighted/underlined text for emphasis */
+.marked { border-bottom: 2px solid #f4d03f; }
 div.highlight, pre { scrollbar-color: #3a4048 transparent; }

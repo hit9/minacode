@@ -28,6 +28,14 @@ session id, active provider and model, context window fill percentage,
 conversation history, prompt-cache hit ratio, code index state, background jobs,
 and whether an update is available.
 
+```{figure} ../snapshots/nanocode-status-command.png
+:alt: The /status command showing workspace, session, provider, context, and code index state
+:width: 600px
+:align: center
+
+The /status output at a glance.
+```
+
 **`/diff`** — Opens an interactive diff viewer with two tabs:
 
 - **Latest** — what changed during the most recent turn
@@ -65,6 +73,14 @@ Changing the model also prompts you to pick a reasoning effort.
 **`/reason [EFFORT]`** — Show or set reasoning effort (OpenAI o-series and DeepSeek
 R1). Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Without an
 argument it opens a picker.
+
+```{figure} ../snapshots/nanocode-demo-switching-providers-models.gif
+:alt: Switching providers and models interactively during a session
+:width: 600px
+:align: center
+
+Switching providers and models mid-session.
+```
 
 ### Managing the session
 
@@ -124,6 +140,14 @@ Two inline references, both Tab-completed as you type:
 - `Ctrl-R` — reverse-search your history
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)
 
+```{figure} ../snapshots/nanocode-working-input-editor.png
+:alt: Editing a follow-up message in an external editor
+:width: 600px
+:align: center
+
+Typing a follow-up message in an external editor.
+```
+
 ## Sessions
 
 Your work is saved automatically — the conversation, edits, and diffs are tied to the
@@ -147,6 +171,22 @@ nanocode --resume UID  # resume a specific session by id
 - **Session** — the net diff for everything since the session began
 
 Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close.
+
+```{figure} ../snapshots/nanocode-diff-list.png
+:alt: Interactive diff list showing changed files from the latest turn
+:width: 600px
+:align: center
+
+Choosing a file to diff.
+```
+
+```{figure} ../snapshots/nanocode-diff-file-detail.png
+:alt: Side-by-side file diff with syntax highlighting
+:width: 600px
+:align: center
+
+Side-by-side detail view of a changed file.
+```
 
 ### Long sessions
 

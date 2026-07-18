@@ -47,6 +47,14 @@ If both define the same name, the **project** skill wins. List what's installed 
 - **On demand** — nanocode loads a skill itself when it's relevant to your request.
 - **Inline** — type `$name` in a message (Tab-completes) to load a skill yourself for that turn.
 
+```{figure} ../snapshots/nanocode-skill-mention.png
+:alt: Using $skill mention to load a skill's instructions inline
+:width: 600px
+:align: center
+
+Loading a skill with $name inline.
+```
+
 ### Bundled scripts
 
 A skill can ship helper scripts alongside `SKILL.md`. Inside the body, `{skill_dir}` (or
