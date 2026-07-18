@@ -62,7 +62,6 @@ mcp
 skills
 configuration
 safety
-follow-ups
 ```
 
 ```{toctree}
