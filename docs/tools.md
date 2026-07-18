@@ -7,8 +7,8 @@ know what it's capable of.
   files.
 - **Navigate code** — jump to definitions, callers, and implementations using the
   [code symbol index](#code-symbol-index). Build it with `/index`.
-- **Edit files** safely — before applying a change it checks the file hasn't changed
-  underneath, so it won't patch the wrong place.
+- **Edit files** safely — <span class="marked">before applying a change it checks the file hasn't changed
+  underneath, so it won't patch the wrong place.</span>
 - **Run commands**, including long-running ones in the background (list them with `/ps`).
 - **Keep working notes** — a goal, a plan, and facts it has learned — so it stays on track
   through a long task.
@@ -26,7 +26,7 @@ a connected server exposes tools or resources.
 | `Search` | Search text with regular expressions, skipping hidden, binary, and gitignored files | Only outside the project |
 | `InspectCode` | Find symbols, references, implementations, callers, callees, and file outlines through the code index | No |
 | `Edit` | Create or patch one UTF-8 file using anchored edits | Yes |
-| `Bash` | Run one shell command with live output | Only when the command is not conservatively classified as read-only |
+| `Bash` | <span class="marked">Run one shell command with live output</span> | Only when the command is not conservatively classified as read-only |
 | `Job` | Start, inspect, wait for, list, or stop background shell jobs | Start, wait, and stop only |
 | `Recall` | Retrieve complete stored tool output, optionally by line range | No |
 | `Note` | Maintain the agent's durable goal, plan, checks, and learned facts | No |
