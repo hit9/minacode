@@ -4470,7 +4470,11 @@ class MCPManager:
             has_tokens = self._oauth_token_store.has_server_tokens(config.url)
             if not interactive and not has_tokens:
                 message = f"authentication required; run `/mcp connect {name}` interactively"
-                return f"{self.STATUS_MARKER} error  `{name}` — {message}" if _compact else f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
+                return (
+                    f"{self.STATUS_MARKER} error  `{name}` — {message}"
+                    if _compact
+                    else f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
+                )
             if interactive:
                 if has_tokens:
                     self.discover_server(name)
@@ -4527,10 +4531,7 @@ class MCPManager:
         results: dict[str, str] = {}
         workers = min(self.MAX_DISCOVERY_WORKERS, len(selected))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcp-connect") as executor:
-            futures = {
-                name: executor.submit(self.connect_server, name, interactive=interactive, notify=notify, _compact=True)
-                for name in selected
-            }
+            futures = {name: executor.submit(self.connect_server, name, interactive=interactive, notify=notify, _compact=True) for name in selected}
             for name, future in futures.items():
                 results[name] = future.result()
         items = ("- " + results[name].replace("\n", "\n    ") for name in selected)
@@ -8249,9 +8250,7 @@ Tools:
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
             mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs()),
-            mcp_connected_servers=lambda: tuple(
-                config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)
-            ),
+            mcp_connected_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)),
             mcp_tools=lambda server: tuple(tool.name for tool in self.session.mcp.tools.get(server, [])),
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
