@@ -10,6 +10,10 @@
 
 <p align="center"><a href="README.md">English</a></p>
 
+## 安全
+
+**使用风险自负。** nanocode 会在启动环境中编辑文件并执行 shell 命令，不提供 sandbox 隔离。需要隔离时，请使用容器或虚拟机。
+
 ## 安装
 
 需要 macOS 或 Linux、Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
@@ -65,7 +69,3 @@ nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 
 - [文档](https://nanocode.readthedocs.io) — 完整的使用指南和参考。
 - [博客](https://hit9.dev/post/nanocode) — 设计动机与实现过程。
 - [code-symbol-index](https://github.com/hit9/code-symbol-index) — nanocode 使用的代码索引库。
-
-## 安全
-
-**使用风险自负。** nanocode 会在启动环境中编辑文件并执行 shell 命令，不提供 sandbox 隔离。需要隔离时，请使用容器或虚拟机。

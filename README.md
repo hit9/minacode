@@ -10,6 +10,10 @@
 
 <p align="center"><a href="README.zh-CN.md">中文</a></p>
 
+## Safety
+
+**Use at your own risk.** nanocode can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
+
 ## Install
 
 Requires macOS or Linux, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
@@ -65,7 +69,3 @@ It works on real repositories, including its own: I use nanocode to build and ma
 - [Documentation](https://nanocode.readthedocs.io) — full usage guide and reference.
 - [Blog post](https://hit9.dev/post/nanocode) — why and how it was built.
 - [code-symbol-index](https://github.com/hit9/code-symbol-index) — the code index library nanocode uses.
-
-## Safety
-
-**Use at your own risk.** nanocode can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
