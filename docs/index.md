@@ -1,6 +1,6 @@
 # nanocode
 
-**A small terminal coding agent — the whole thing in one Python file you can read and change.**
+A small terminal coding agent
 
 nanocode works in your terminal: you describe a task, and it reads code, edits files, runs
 commands, and reports back. It keeps a searchable code index, runs background jobs, tracks
@@ -58,7 +58,6 @@ Working through a repository task in an interactive session.
 getting-started
 usage
 tools
-tool-reference
 mcp
 skills
 configuration

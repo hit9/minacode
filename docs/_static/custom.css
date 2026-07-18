@@ -37,6 +37,16 @@ h1 { font-size: 2.4rem; line-height: 1.2; }
 h2 { font-size: 1.8rem; margin-top: 2rem; }
 h3 { font-size: 1.35rem; margin-top: 1.5rem; }
 
+/* The project name belongs to the sidebar; keep the index title for Sphinx
+   metadata while showing only the subtitle in the content column. */
+.body section#nanocode > h1 { display: none; }
+.body section#nanocode > p:first-of-type {
+    margin-top: 2.4rem;
+    font-size: 2rem;
+    font-weight: 400;
+    line-height: 1.2;
+}
+
 /* Links */
 a, a:visited { color: var(--nc-link); }
 a:hover { color: var(--nc-link-hover); }
@@ -68,23 +78,28 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 .sphinxsidebar {
     font-size: 1.0625rem;
     position: fixed;
-    top: 0;
+    top: 1.5rem;
     left: max(0px, calc((100vw - 60rem) / 2));
     margin-left: 0;
     float: none;
-    max-height: 100vh;
+    max-height: calc(100vh - 1.5rem);
     overflow-y: auto;
     scrollbar-color: #3a4048 transparent;
 }
 .sphinxsidebar, .sphinxsidebar a, .sphinxsidebar a:visited { color: var(--nc-fg); }
 .sphinxsidebar h3, .sphinxsidebar h3 a, .sphinxsidebar h3 a:visited { color: var(--nc-muted); }
 .sphinxsidebar h3.site-title {
-    font-size: 2rem;
-    margin-bottom: 1rem;
+    font-size: 2.5rem;
+    margin-bottom: 0.35rem;
 }
 .sphinxsidebar h3.site-title a,
 .sphinxsidebar h3.site-title a:visited { color: var(--nc-fg-strong); }
 .sphinxsidebar a:hover { color: var(--nc-link); }
+
+.sphinxsidebar .github-star {
+    display: block;
+    margin: 0 0 1.25rem;
+}
 
 /* Separate documentation pages from sections within the current page. */
 .sphinxsidebar .toctree-l1 > a {

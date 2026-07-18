@@ -52,7 +52,7 @@ html_theme_options = {
 html_sidebars = {
     # The global TOC shows the current page's sections, so a separate local TOC
     # would duplicate them.
-    "**": ["globaltoc.html", "nc_links.html", "searchbox.html"],
+    "**": ["globaltoc.html", "searchbox.html"],
 }
 html_title = f"{project} {release}"
 html_short_title = project
