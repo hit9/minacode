@@ -1,0 +1,157 @@
+/* Small tweaks layered on top of sphinx-better-theme. */
+
+/* Typography: a refined serif for headings paired with a clean modern sans for
+   body text. System-font stacks so it renders identically offline and on RTD. */
+:root {
+    --nc-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --nc-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --nc-mono: ui-monospace, "SF Mono", "SFMono-Regular", "JetBrains Mono", "Fira Code",
+        "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+
+    /* Dark theme palette */
+    --nc-bg: #1b1e23;
+    --nc-surface: #22272e;
+    --nc-fg: #c9ccd1;
+    --nc-fg-strong: #e8eaed;
+    --nc-muted: #8b929c;
+    --nc-border: #2c3138;
+    --nc-link: #8ab4f8;
+    --nc-link-hover: #adc8fb;
+}
+
+/* Serif body, a touch larger, on a dark page. */
+html, body { background: var(--nc-bg); }
+body {
+    font-family: var(--nc-serif);
+    font-size: 1.0625rem;   /* ~17px */
+    color: var(--nc-fg);
+    line-height: 1.6;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--nc-serif);
+    color: var(--nc-fg-strong);
+    letter-spacing: -0.01em;
+}
+
+/* Links */
+a, a:visited { color: var(--nc-link); }
+a:hover { color: var(--nc-link-hover); }
+
+/* Header, relbars, footer */
+header#pageheader h1 a, header#pageheader h1 a:visited { color: var(--nc-fg-strong); }
+.related.top { border-bottom-color: var(--nc-border); }
+.related.bottom { border-top-color: var(--nc-border); }
+.related, .related a, .related a:visited,
+footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var(--nc-muted); }
+.related a:hover, footer#pagefooter a:hover { color: var(--nc-fg); }
+
+/* Sidebar */
+.sphinxsidebar, .sphinxsidebar a, .sphinxsidebar a:visited { color: var(--nc-fg); }
+.sphinxsidebar h3, .sphinxsidebar h3 a, .sphinxsidebar h3 a:visited { color: var(--nc-muted); }
+.sphinxsidebar a:hover { color: var(--nc-link); }
+.sphinxsidebar input {
+    background: var(--nc-surface);
+    border: 1px solid var(--nc-border);
+    color: var(--nc-fg);
+}
+
+/* Tables */
+table.docutils, table.docutils td, table.docutils th {
+    border-color: var(--nc-border) !important;
+}
+table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
+
+/* Admonitions */
+.admonition, .note, .topic, .seealso {
+    background: var(--nc-surface) !important;
+    border: 1px solid var(--nc-border) !important;
+    color: var(--nc-fg);
+}
+.admonition.warning {
+    background: #2a2620 !important;
+    border-color: #5a4a2a !important;
+}
+.admonition.warning p.admonition-title { color: #d9b45f; }
+.admonition.warning tt, .admonition.warning code { background: #3a3324; color: #e8dcc0; }
+blockquote { color: var(--nc-muted); }
+
+/* Code: modern monospace, soft card-like blocks, tidy inline chips. */
+pre, tt, code, kbd, .highlight pre {
+    font-family: var(--nc-mono);
+}
+
+/* Fenced/highlighted code blocks — dark, to match the One Dark syntax theme. */
+div.highlight {
+    background: #282c34;
+    border: 1px solid #21252b;
+    border-radius: 8px;
+    margin: 1rem 0;
+    overflow-x: auto;
+}
+div.highlight pre {
+    margin: 0;
+    padding: 0.85rem 1rem;
+    background: transparent;
+    border: 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: #abb2bf;
+}
+
+/* Plain (unhighlighted) pre blocks */
+pre {
+    background: #282c34;
+    border: 1px solid #21252b;
+    border-radius: 8px;
+    margin: 1rem 0;
+    padding: 0.85rem 1rem;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: #abb2bf;
+    overflow-x: auto;
+}
+
+/* Inline code */
+code.docutils.literal, tt.docutils.literal, code.literal {
+    background: #2d333b;
+    border: 1px solid var(--nc-border);
+    border-radius: 5px;
+    padding: 0.06em 0.36em;
+    font-size: 0.9em;
+    color: #e6e6e6;
+}
+code.docutils.literal .pre { color: inherit; }
+
+/* Figures: centered, softly framed screenshots with a quiet caption. */
+figure.align-center { text-align: center; margin: 1.5rem 0; }
+figure img {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--nc-border);
+    border-radius: 10px;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+}
+figure figcaption {
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    font-style: italic;
+    color: var(--nc-muted);
+}
+
+/* Don't select shell prompts / doctest markers when copying code. */
+.highlight .gp { user-select: none; }
+
+/* Soften warning admonitions: the theme's default red reads as "danger".
+   A calm amber still signals "read this" without alarming the reader. */
+.admonition.warning {
+    background-color: #fdf6e3;
+    border: 1px solid #e6d29a;
+}
+.admonition.warning p.admonition-title {
+    color: #8a6d17;
+}
+.admonition.warning tt,
+.admonition.warning code {
+    background: #f3e8c4;
+}

@@ -1,0 +1,85 @@
+# The interactive session
+
+nanocode runs as a conversation in your terminal. You type a request, the agent works
+through it with [tools](tools.md), and you stay in the loop the whole time — steering,
+answering questions, and reviewing changes.
+
+## Follow-ups: typing while it works
+
+You don't have to wait for the agent to finish. Anything you type while it's working is
+queued and picked up on the next step, so you can add context or correct course without
+interrupting. Press `Up` (or `Ctrl-P`) to bring back the message you just queued and edit it.
+
+## Commands
+
+Type `/` commands at the prompt. Run `/help` for the built-in reference.
+
+| Command | What it does |
+|---|---|
+| `/help` | Show the command and tool reference |
+| `/status` | Runtime status: model, context use, token/cache usage, index, jobs |
+| `/config` | Show the active configuration |
+| `/diff` | Review the latest edits and the whole-session diff |
+| `/ps` | List active background jobs |
+| `/skills` | List installed skills |
+| `/compact` | Summarize and shrink the conversation now |
+| `/index [force]` | Sync or rebuild the code symbol index |
+| `/provider [NAME]` | Show or switch the active provider |
+| `/model [MODEL]` | Show or switch the model |
+| `/reason [EFFORT]` | Show or set reasoning effort (`minimal`…`xhigh`, or `off`) |
+| `/set KEY VALUE` | Set a `provider.*` or `runtime.*` value for this session |
+| `/yolo` | Toggle confirmation prompts on or off |
+| `/strict` | Toggle strict tool-call schemas (OpenAI / DeepSeek) |
+| `/mcp` | Manage [MCP](mcp.md) server connections |
+| `/resend` | Re-send the in-flight model request (while a turn is working) |
+| `/exit`, `/quit` | Leave nanocode |
+
+## Mentions
+
+Two inline references, both Tab-completed as you type:
+
+- `@server` or `@server.tool` — point the agent at an [MCP](mcp.md) server or tool, connecting
+  it on demand for this message.
+- `$skill` — inject a [skill](skills.md)'s full instructions into the current turn.
+
+## Keys and input editing
+
+**Interactive selectors** (model picker, MCP manager, diff viewer) support:
+
+- `j` / `k` or arrow keys to move
+- `g` / `G` to jump to top / bottom
+- `/` to search, `Enter` to accept, `Esc` to cancel
+
+**The input line** supports:
+
+- history recall and completion
+- `Ctrl-R` — reverse-search your history
+- `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)
+
+## Sessions
+
+Your work is saved automatically — the conversation, edits, and diffs are tied to the
+project directory you started in, so an interrupted session picks up where it stopped.
+
+Resume from the command line:
+
+```sh
+nanocode -c            # resume the latest session in this project
+nanocode --resume      # same, explicit
+nanocode --resume UID  # resume a specific session by id
+```
+
+## Reviewing changes
+
+`/diff` opens an interactive, tabbed viewer with two views:
+
+- **Latest** — what changed during the most recent round of your requests
+- **Session** — the net diff for everything since the session began
+
+Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close.
+
+## Long sessions
+
+nanocode keeps long conversations within a working budget on its own, summarizing older
+context as needed so a session can run indefinitely. Run `/compact` to trim it now, or
+`/status` to see current context and token usage.
