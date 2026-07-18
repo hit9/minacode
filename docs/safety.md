@@ -16,7 +16,7 @@ isolation, so treat it with the same care as running those commands yourself.
   calls — ask before they act. This is on by default; `--yolo` and `/yolo` turn it off.
 - **Anchored edits.** Edits are tied to `line:hash` anchors and rejected if the file changed
   underneath, so the agent can't silently patch the wrong lines. See
-  [what the agent can do](tools.md).
+  [Tools](tools.md).
 - **Reviewable changes.** `/diff` shows exactly what changed this round and across the
   session before you rely on it.
 

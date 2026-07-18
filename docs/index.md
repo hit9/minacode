@@ -45,13 +45,11 @@ Working through a repository task in an interactive session.
 
 | Area | In short |
 |---|---|
-| **[Interactive session](usage.md)** | Describe a task; keep typing while it works to steer or add context. |
-| **[What it can do](tools.md)** | Read, search, and navigate code; edit files; run commands and background jobs. |
+| **[Interaction](usage.md)** | Follow-ups, commands, keys — how you drive the agent. |
+| **[Tools](tools.md)** | Read, search, navigate code; edit files; run commands; background jobs. |
 | **[Sessions](usage.md#sessions)** | Your work is saved and resumable with `-c` or `--resume`. |
 | **[MCP](mcp.md)** | Connect external Model Context Protocol servers and use their tools. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |
-| **[Code symbol index](code-index.md)** | Pre-built symbol database that powers code navigation. Build with `/index`. |
-| **[Slash commands](commands.md)** | Complete reference for every `/` command, from `/status` to `/exit`. |
 | **[Providers](configuration.md#providers)** | Any OpenAI-compatible API, plus Anthropic. |
 
 ```{toctree}
@@ -64,8 +62,6 @@ mcp
 skills
 configuration
 safety
-code-index
-commands
 follow-ups
 ```
 

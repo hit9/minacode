@@ -1,4 +1,4 @@
-# What the agent can do
+# Tools
 
 You don't run tools yourself — you describe a goal and nanocode does the work. It helps to
 know what it's capable of.
@@ -6,13 +6,60 @@ know what it's capable of.
 - **Read and search** files across your project. Search skips hidden, binary, and gitignored
   files.
 - **Navigate code** — jump to definitions, callers, and implementations using the
-  [code symbol index](code-index.md). Build it with `/index`.
+  [code symbol index](#code-symbol-index). Build it with `/index`.
 - **Edit files** safely — before applying a change it checks the file hasn't changed
   underneath, so it won't patch the wrong place.
 - **Run commands**, including long-running ones in the background (list them with `/ps`).
 - **Keep working notes** — a goal, a plan, and facts it has learned — so it stays on track
   through a long task.
 - **Ask you** when a decision is genuinely yours to make.
+
+## Code symbol index
+
+nanocode ships with a pre-built **code symbol index** that lets the agent navigate
+your codebase — jump to definitions, find callers, list implementations — without
+relying on slow, real-time file scans or external language servers.
+
+### What it is
+
+The index is a static database of symbols (functions, classes, methods, variables,
+etc.) extracted from your project's source files. It is built by a library called
+[code-symbol-index](https://github.com/hit9/code-symbol-index), which supports a
+broad set of languages.
+
+When the index is available, the `InspectCode` tool can:
+
+- **Find symbols** by name with fuzzy matching
+- **Inspect a symbol** — show its definition and members
+- **List references** — call, read, write, and type references across the project
+- **Walk call chains** — transitive callers and callees
+- **File outlines** — symbol tree of a single file
+
+```{note}
+Without the index `InspectCode` returns nothing. Run `/index` once after opening a
+project to build it.
+```
+
+### Building and syncing
+
+Run `/index` to build or rebuild the index. The first build walks every source file;
+subsequent builds sync from the previous snapshot and are much faster. Add `force`
+to rebuild from scratch.
+
+When the index already exists, nanocode refreshes it automatically in the background
+at startup and after source-file edits. The `/status` command shows the current
+index state:
+
+| State | Meaning |
+|---|---|
+| **available** | Index is current and ready |
+| **stale** | Out of date; wait for background refresh or run `/index` |
+| **syncing** | A background refresh is in progress |
+| **missing** (or **error**) | No index exists yet; run `/index` |
+
+The index lives in `.nanocode/code-index/` as a set of sqlite databases. It covers
+Python, JavaScript, TypeScript, Go, Rust, C, C++, Java, and more.
+
 
 ## Built-in tools
 

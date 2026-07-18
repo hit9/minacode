@@ -1,42 +1,101 @@
-# The interactive session
+# Interaction
 
 nanocode runs as a conversation in your terminal. You type a request, the agent works
 through it with [tools](tools.md), and you stay in the loop the whole time — steering,
 answering questions, and reviewing changes.
 
-## Interaction
-
-### Follow-ups: typing while it works
+## Follow-ups
 
 Press `Enter` while the agent works to queue a message for the next turn, or
 `Ctrl-C` to interrupt and take over immediately. See [Follow-ups](follow-ups.md)
 for a full walkthrough with keyboard reference.
-### Commands
 
-Type `/` commands at the prompt. Run `/help` for the built-in reference.
-See [Slash commands](commands.md) for detailed explanations of every command.
+## Commands
 
-| Command | What it does |
+Type `/` commands at the prompt to inspect state, switch models, manage the
+session, or configure runtime behavior on the fly. Run `/help` for the built-in
+reference.
+
+### Looking around
+
+**`/status`** — Shows everything about the runtime at a glance: workspace path,
+session id, active provider and model, context window fill percentage,
+conversation history, prompt-cache hit ratio, code index state, background jobs,
+and whether an update is available.
+
+**`/diff`** — Opens an interactive diff viewer with two tabs:
+
+- **Latest** — what changed during the most recent turn
+- **Session** — the net diff for everything since the session began
+
+Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close. Outside of
+interactive mode it prints the diffs as plain text.
+
+**`/ps`** — Lists active background jobs (see [Tools](tools.md#built-in-tools)).
+Each row shows job id, state, command, and elapsed time.
+
+**`/skills`** — Lists every installed [skill](skills.md) by name, source, and
+description.
+
+**`/config`** — Shows the active configuration: provider blocks, runtime settings,
+and their resolved values.
+
+### The code index
+
+**`/index [force]`** — Build or rebuild the code symbol index that powers
+`InspectCode`. The first build walks every source file; later syncs are fast. Add
+`force` to rebuild from scratch. See [Code symbol index](tools.md#code-symbol-index)
+for details.
+
+### Switching models
+
+**`/provider [NAME]`** — Show or switch the active provider. Without an argument it
+lists every configured provider (from your [configuration](configuration.md#providers))
+and lets you pick one interactively. With a name it switches immediately.
+
+**`/model [MODEL]`** — Show or switch the model for the current provider. Without
+an argument it opens an interactive picker with configured and discovered models.
+Changing the model also prompts you to pick a reasoning effort.
+
+**`/reason [EFFORT]`** — Show or set reasoning effort (OpenAI o-series and DeepSeek
+R1). Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Without an
+argument it opens a picker.
+
+### Managing the session
+
+**`/compact`** — Summarize and shrink the conversation immediately. nanocode keeps
+long sessions within budget on its own, but `/compact` trims on demand.
+
+**`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before turning
+this off permanently.
+
+**`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
+
+**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session. Example:
+`/set provider.model deepseek-v4-flash`.
+
+**`/resend`** — Re-send the in-flight model request. Type this while a turn is
+working.
+
+### MCP
+
+**`/mcp`** — Manage [MCP](mcp.md) server connections. Sub-commands:
+
+| Usage | Effect |
 |---|---|
-| `/help` | Show the command and tool reference |
-| `/status` | Runtime status: model, context and cache use, MCP, index, jobs, updates |
-| `/config` | Show the active configuration |
-| `/diff` | Review the latest edits and the whole-session diff |
-| `/ps` | List active background jobs |
-| `/skills` | List installed skills |
-| `/compact` | Summarize and shrink the conversation now |
-| `/index [force]` | Sync or rebuild the code symbol index |
-| `/provider [NAME]` | Show or switch the active provider |
-| `/model [MODEL]` | Show or switch the model |
-| `/reason [EFFORT]` | Show or set reasoning effort (`minimal`…`xhigh`, or `off`) |
-| `/set KEY VALUE` | Set a supported provider or runtime tuning value for this session |
-| `/yolo` | Toggle confirmation prompts on or off |
-| `/strict` | Toggle strict tool-call schemas (OpenAI / DeepSeek) |
-| `/mcp` | Manage [MCP](mcp.md) server connections |
-| `/resend` | Re-send the in-flight model request (while a turn is working) |
-| `/exit`, `/quit` | Leave nanocode |
+| `/mcp` | List servers and connection status |
+| `/mcp connect <server> [server ...]` | Connect servers now |
+| `/mcp disconnect <server>` | Disconnect a server |
+| `/mcp tools [server]` | List tools from a connected server |
 
-### Mentions
+### Help and exit
+
+**`/help`** — Show the built-in command and tool reference.
+
+**`/exit`, `/quit`** — Leave nanocode. Your session is saved automatically and can
+be resumed with `-c` or `--resume`.
+
+## Mentions
 
 Two inline references, both Tab-completed as you type:
 
@@ -44,7 +103,7 @@ Two inline references, both Tab-completed as you type:
   it on demand for this message.
 - `$skill` — inject a [skill](skills.md)'s full instructions into the current turn.
 
-### Keys and input editing
+## Keys and input editing
 
 **Interactive selectors** (model picker, MCP manager, diff viewer) support:
 
