@@ -11,7 +11,11 @@
 uv tool install nanocode-cli
 ```
 
-Upgrade later with `uv tool upgrade nanocode-cli`.
+## Upgrade
+
+```sh
+uv tool upgrade nanocode-cli
+```
 
 ## Create a config file
 

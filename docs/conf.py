@@ -48,11 +48,14 @@ html_theme_options = {
     "globaltoc_includehidden": True,
 }
 html_sidebars = {
-    "**": ["localtoc.html", "globaltoc.html", "nc_links.html", "searchbox.html"],
+    # globaltoc is expanded (globaltoc_collapse above), so it already shows the current
+    # page's sub-sections — a separate localtoc would just duplicate the heading.
+    "**": ["globaltoc.html", "nc_links.html", "searchbox.html"],
 }
 html_title = f"{project} {release}"
 html_short_title = project
 html_static_path = ["_static"]
+html_js_files = ["scrollspy.js"]
 html_show_sphinx = False
 html_copy_source = False
 html_show_sourcelink = False

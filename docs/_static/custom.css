@@ -46,14 +46,40 @@ header#pageheader h1 a, header#pageheader h1 a:visited { color: var(--nc-fg-stro
 footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var(--nc-muted); }
 .related a:hover, footer#pagefooter a:hover { color: var(--nc-fg); }
 
-/* Sidebar */
+/* Sidebar: stays in view while the content scrolls; a long nav scrolls internally. */
+.sphinxsidebar {
+    font-size: 1rem;
+    position: sticky;
+    top: 1rem;
+    align-self: flex-start;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+    scrollbar-color: #3a4048 transparent;
+}
 .sphinxsidebar, .sphinxsidebar a, .sphinxsidebar a:visited { color: var(--nc-fg); }
 .sphinxsidebar h3, .sphinxsidebar h3 a, .sphinxsidebar h3 a:visited { color: var(--nc-muted); }
 .sphinxsidebar a:hover { color: var(--nc-link); }
+
+/* Highlight the current page (section): a filled pill with a left bar. */
+.sphinxsidebar a.current {
+    color: var(--nc-fg-strong);
+    font-weight: 600;
+    background: rgba(138, 180, 248, 0.14);
+    border-left: 2px solid var(--nc-link);
+    padding: 0.02rem 0.45rem;
+    border-radius: 0 4px 4px 0;
+}
+
+/* Highlight the sub-section currently in view (set by scrollspy.js). */
+.sphinxsidebar a.nc-active {
+    color: var(--nc-link);
+    font-weight: 600;
+}
 .sphinxsidebar input {
     background: var(--nc-surface);
     border: 1px solid var(--nc-border);
     color: var(--nc-fg);
+    font-size: 0.95rem;
 }
 
 /* Tables */
@@ -142,16 +168,14 @@ figure figcaption {
 /* Don't select shell prompts / doctest markers when copying code. */
 .highlight .gp { user-select: none; }
 
-/* Soften warning admonitions: the theme's default red reads as "danger".
-   A calm amber still signals "read this" without alarming the reader. */
-.admonition.warning {
-    background-color: #fdf6e3;
-    border: 1px solid #e6d29a;
+/* Text selection tinted to the theme instead of the browser default blue. */
+::selection { background: #3a5680; color: #fff; }
+
+/* Subtle scrollbars for code that overflows, so they don't flash light on dark. */
+div.highlight::-webkit-scrollbar, pre::-webkit-scrollbar { height: 10px; }
+div.highlight::-webkit-scrollbar-thumb, pre::-webkit-scrollbar-thumb {
+    background: #3a4048;
+    border-radius: 6px;
 }
-.admonition.warning p.admonition-title {
-    color: #8a6d17;
-}
-.admonition.warning tt,
-.admonition.warning code {
-    background: #f3e8c4;
-}
+div.highlight::-webkit-scrollbar-track, pre::-webkit-scrollbar-track { background: transparent; }
+div.highlight, pre { scrollbar-color: #3a4048 transparent; }
