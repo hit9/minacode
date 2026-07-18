@@ -286,10 +286,34 @@ def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch
 
 def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
     received: list[str] = []
-    app = n.TuiApp(on_chat_submit=received.append)
+    cleared_before_callback = []
+    app = None
+
+    def submit(text):
+        received.append(text)
+        cleared_before_callback.append(app.input_buffer.text)
+
+    app = n.TuiApp(on_chat_submit=submit)
     app.input_buffer.insert_text("hello")
     app.input_buffer.validate_and_handle()
     assert received == ["hello"]
+    assert cleared_before_callback == [""]
+    assert app.input_buffer.text == ""
+
+
+def test_tui_running_submit_clears_buffer_before_callback():
+    received = []
+    app = None
+
+    def submit(text):
+        received.append((text, app.input_buffer.text))
+
+    app = n.TuiApp(on_running_submit=submit)
+    app.set_running("working")
+    app.input_buffer.insert_text("queued task")
+    app.input_buffer.validate_and_handle()
+
+    assert received == [("queued task", "")]
     assert app.input_buffer.text == ""
 
 
@@ -492,6 +516,54 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     assert marked_followup in requests[0]
     assert requests[0].index("queued one") < requests[0].index(marked_followup)
     assert restored.pending_user_inputs == []
+
+
+def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    first_request = threading.Event()
+    release_first = threading.Event()
+    requests = []
+
+    class RecordingModel:
+        def request(self, messages, tools=None):
+            requests.append([message.get("content") for message in messages if message.get("role") == "user"])
+            if len(requests) == 1:
+                first_request.set()
+                assert release_first.wait(timeout=1)
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+        def cancel(self):
+            pass
+
+    command_loop.agent.model = RecordingModel()
+    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
+    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
+    real_application = n.Application
+
+    with create_pipe_input() as pipe_input:
+        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+
+        def drive():
+            wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
+            pipe_input.send_text("first task\r")
+            assert first_request.wait(timeout=1)
+            pipe_input.send_text("queued task\r")
+            wait_until(lambda: [item.text for item in command_loop.session.pending_user_inputs] == ["queued task"])
+            release_first.set()
+            wait_until(lambda: len(requests) == 2)
+            wait_until(lambda: command_loop.tui.input_mode == "chat")
+            assert command_loop.tui.input_buffer.text == ""
+            pipe_input.send_text("\x04")
+
+        driver = threading.Thread(target=drive, daemon=True)
+        driver.start()
+        assert command_loop.run_tui() == 0
+        driver.join(timeout=1)
+
+    assert not driver.is_alive()
+    assert "queued task" in requests[1]
 
 
 def test_interactive_tui_control_backslash_forces_exit(monkeypatch):

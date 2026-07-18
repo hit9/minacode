@@ -6787,13 +6787,19 @@ class TuiApp:
             return False
         if self.input_mode == "running":
             if text.strip():
+                buffer.append_to_history()
+                buffer.reset()
                 self.on_running_submit(text)
+                return True
             return False
         if self.input_mode == "chat":
             if not text.strip():
                 return False
+            buffer.append_to_history()
+            buffer.reset()
             self.set_dispatching()
             self.on_chat_submit(text)
+            return True
         return False
 
     def show_modal(
