@@ -61,9 +61,9 @@ It works on real repositories, including its own: I use nanocode to build and ma
 
 ## Links
 
-- [Documentation](https://nanocode.readthedocs.io)
-- [Blog post](https://hit9.dev/post/nanocode)
-- [code-symbol-index](https://github.com/hit9/code-symbol-index)
+- [Documentation](https://nanocode.readthedocs.io) — full usage guide and reference.
+- [Blog post](https://hit9.dev/post/nanocode) — why and how it was built.
+- [code-symbol-index](https://github.com/hit9/code-symbol-index) — the code index library nanocode uses.
 
 ## Safety
 

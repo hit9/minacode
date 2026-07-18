@@ -61,9 +61,9 @@ nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 
 
 ## 链接
 
-- [文档](https://nanocode.readthedocs.io)
-- [博客](https://hit9.dev/post/nanocode)
-- [code-symbol-index](https://github.com/hit9/code-symbol-index)
+- [文档](https://nanocode.readthedocs.io) — 完整的使用指南和参考。
+- [博客](https://hit9.dev/post/nanocode) — 设计动机与实现过程。
+- [code-symbol-index](https://github.com/hit9/code-symbol-index) — nanocode 使用的代码索引库。
 
 ## 安全
 
