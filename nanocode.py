@@ -360,7 +360,7 @@ class RuntimeSettings:
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             bash_wait_timeout=max(0, Config.int(runtime, "bash_wait_timeout", 10)),
-            max_steps=max(1, Config.int(runtime, "max_agent_steps", Config.int(runtime, "max_steps", 200))),
+            max_steps=max(1, Config.int(runtime, "max_agent_steps", 200)),
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
@@ -4465,16 +4465,14 @@ class MCPManager:
     ) -> str:
         config = self.find_config(name)
         if config is None:
-            return f"{self.STATUS_MARKER} error  `{name}` — server not found" if _compact else "MCP server not found: " + name
+            return self._compact_line("error", name, "server not found") if _compact else "MCP server not found: " + name
         if not config.error and config.auth == "oauth":
             has_tokens = self._oauth_token_store.has_server_tokens(config.url)
             if not interactive and not has_tokens:
                 message = f"authentication required; run `/mcp connect {name}` interactively"
-                return (
-                    f"{self.STATUS_MARKER} error  `{name}` — {message}"
-                    if _compact
-                    else f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
-                )
+                if _compact:
+                    return self._compact_line("error", name, message)
+                return f"MCP server authentication required: {name}; run /mcp connect {name} interactively"
             if interactive:
                 if has_tokens:
                     self.discover_server(name)
@@ -4488,10 +4486,14 @@ class MCPManager:
                     if error := self._authenticate_oauth(config, notify=notify):
                         if _compact:
                             prefix = f"MCP OAuth authentication failed for {name}: "
-                            return f"{self.STATUS_MARKER} error  `{name}` — " + error.removeprefix(prefix)
+                            return self._compact_line("error", name, error.removeprefix(prefix))
                         return error
         self.discover_server(name)
         return self._connect_result(name, compact=_compact)
+
+    def _compact_line(self, kind: str, name: str, detail: str) -> str:
+        """One-line server status used by the batch connect/manager UIs: '● kind  `name` — detail'."""
+        return f"{self.STATUS_MARKER} {kind}  `{name}` — {detail}"
 
     def _oauth_reauthorization_required(self, name: str) -> bool:
         issue = self.server_issue(name)
@@ -4505,7 +4507,7 @@ class MCPManager:
         if issue := self.server_issue(name):
             kind, message = issue
             if compact:
-                return f"{self.STATUS_MARKER} {kind}  `{name}` — {message}"
+                return self._compact_line(kind, name, message)
             return f"MCP server {kind}: {name}: {message}"
         tool_count = len(self.tools.get(name, []))
         resource_count = len(self.resources.get(name, []))
@@ -4513,7 +4515,7 @@ class MCPManager:
             assets = f"{tool_count} tool" + ("" if tool_count == 1 else "s")
             if resource_count:
                 assets += f", {resource_count} resource" + ("" if resource_count == 1 else "s")
-            return f"{self.STATUS_MARKER} connected  `{name}` — {assets}"
+            return self._compact_line("connected", name, assets)
         return f"MCP server connected: {name}; tools={tool_count}; resources={resource_count}"
 
     def connect_servers(
@@ -5110,6 +5112,20 @@ class MCPManager:
         self.index_truncated = True
         return text[: self.INDEX_TOTAL_LIMIT - 10] + "\n... MCP tools truncated; use /mcp tools for full list."
 
+    def _resources_block(self, server: str, resources: list["MCPResourceInfo"]) -> list[str]:
+        """The 'resources (N) — read with ...' header plus one line per resource, or [] if none."""
+        if not resources:
+            return []
+        header = f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(server)}, uri=...):'
+        return [header, *(self._format_resource_line(res) for res in resources)]
+
+    def _server_lines(self, server: str, tools: list["MCPToolInfo"], resources: list["MCPResourceInfo"], *, include_schema: bool = True) -> list[str]:
+        """A server's header, tool lines, and resources block — shared by the tools index and mentions."""
+        lines = [f"[{server}] {server.capitalize()}"]
+        lines.extend(line for info in tools if (line := self._format_tool_line(server, info, include_schema=include_schema)))
+        lines.extend(self._resources_block(server, resources))
+        return lines
+
     def _index_body(self, configs: list["MCPServerConfig"], *, detail: str = "schema") -> list[str]:
         """Render the per-server body lines of the tools index at one detail level.
 
@@ -5128,18 +5144,13 @@ class MCPManager:
             if not tools and not resources:
                 pending.append(f"- {config.name}: {self._pending_status(config.name)}")
                 continue
-            lines.append(f"[{config.name}] {config.name.capitalize()}")
             if detail == "names":
+                lines.append(f"[{config.name}] {config.name.capitalize()}")
                 if tools:
                     lines.append("tools: " + ", ".join(tool.name for tool in tools))
+                lines.extend(self._resources_block(config.name, resources))
             else:
-                for tool in tools:
-                    line = self._format_tool_line(config.name, tool, include_schema=detail == "schema")
-                    if line:
-                        lines.append(line)
-            if resources:
-                lines.append(f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(config.name)}, uri=...):')
-                lines.extend(self._format_resource_line(res) for res in resources)
+                lines.extend(self._server_lines(config.name, tools, resources, include_schema=detail == "schema"))
             lines.append("")
 
         if pending:
@@ -5209,15 +5220,7 @@ class MCPManager:
                 return self._render_describe(server, info)
             available = ", ".join(t.name for t in tools) or "(none)"
             return f"[{server}] tool '{tool}' not found; available: {available}"
-        lines = [f"[{server}] {server.capitalize()}"]
-        for info in tools:
-            line = self._format_tool_line(server, info)
-            if line:
-                lines.append(line)
-        if resources:
-            lines.append(f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(server)}, uri=...):')
-            lines.extend(self._format_resource_line(res) for res in resources)
-        return "\n".join(lines)
+        return "\n".join(self._server_lines(server, tools, resources))
 
     def _format_tool_line(self, server: str, info: MCPToolInfo, *, include_schema: bool = True) -> str:
         args_str = self._tool_args_summary(info)
