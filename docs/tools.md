@@ -20,16 +20,16 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 
     A shortened result looks like this:
 
-    ```text
+    ```html
     <Read path="nanocode.py">
-    <file_stat mtime_ns="..." size="222039"/>
-    <total_lines>5031</total_lines>
-    <range>684:687</range>
-    <content hashline-numbered>
-    anchor=684:234ew | class Tool:
-    anchor=685:7xy0d |     NAME: ClassVar[str] = ""
-    anchor=686:5exvk |     DESCRIPTION: ClassVar[str] = ""
-    </content>
+      <file_stat mtime_ns="..." size="222039"/>
+      <total_lines>5031</total_lines>
+      <range>684:687</range>
+      <content hashline-numbered>
+        anchor=684:234ew | class Tool:
+        anchor=685:7xy0d |     NAME: ClassVar[str] = ""
+        anchor=686:5exvk |     DESCRIPTION: ClassVar[str] = ""
+      </content>
     </Read>
     ```
 
@@ -59,6 +59,14 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 * - **`Bash`**
   - Runs one shell command in the project with live output. Commands still running after
     `runtime.bash_wait_timeout` <span class="marker">become background jobs automatically</span>.
+
+    :::{figure} ../snapshots/nanocode-bash-live-preview.gif
+    :alt: A Bash tool call streaming command output in nanocode
+    :width: 100%
+    :align: center
+
+    Bash output appears as the command runs.
+    :::
 * - **`Job`**
   - Starts or manages background commands: check output, wait, list, or stop. The same jobs are
     visible through `/ps`.

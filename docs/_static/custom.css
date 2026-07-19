@@ -135,6 +135,99 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .tool-reference { width: 100%; table-layout: fixed; }
 .tool-reference figure { margin: 1rem 0 0; }
 
+/* Context and cache diagrams. Each visual explains one idea: ordered content
+   or prefix reuse. */
+.context-stack {
+    display: grid;
+    gap: 0.4rem;
+    margin: 1.25rem 0 1.5rem;
+    padding: 1rem;
+    background: var(--nc-surface);
+    border: 1px solid var(--nc-border);
+    border-radius: 10px;
+    font-family: var(--nc-sans);
+}
+.context-stack-layer {
+    display: flex;
+    flex-direction: column;
+    padding: 0.7rem 0.8rem;
+    background: var(--nc-bg);
+    border: 1px solid var(--nc-border);
+    border-radius: 6px;
+}
+.context-stack-layer span {
+    color: var(--nc-muted);
+    font-size: 0.82rem;
+    line-height: 1.35;
+}
+.context-stack-optional { border-left: 3px solid #9a7b3f; }
+.context-stack-edge {
+    color: var(--nc-muted);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.cache-comparison {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.55rem 0.75rem;
+    align-items: center;
+    margin: 1.25rem 0;
+    padding: 1rem;
+    background: var(--nc-surface);
+    border: 1px solid var(--nc-border);
+    border-radius: 10px;
+    font-family: var(--nc-sans);
+}
+.cache-comparison-label { color: var(--nc-muted); font-size: 0.82rem; }
+.cache-comparison-bar { display: flex; min-width: 0; }
+.cache-comparison-bar span {
+    box-sizing: border-box;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.8rem;
+    line-height: 1.25;
+}
+.cache-comparison-hit {
+    flex: 3;
+    color: #dfc58f;
+    background: rgba(154, 123, 63, 0.22);
+    border: 1px solid #9a7b3f;
+    border-radius: 5px 0 0 5px;
+}
+.cache-comparison-tail {
+    flex: 1;
+    color: var(--nc-muted);
+    background: var(--nc-bg);
+    border: 1px solid var(--nc-border);
+    border-left: 0;
+    border-radius: 0 5px 5px 0;
+}
+@media (max-width: 520px) {
+    .cache-comparison { grid-template-columns: 1fr; }
+    .cache-comparison-label { margin-top: 0.25rem; }
+}
+
+/* Follow-up queue: a picture of the terminal while the agent works, so the
+   queue region below the divider is recognisable on sight. */
+.followup-shot {
+    margin: 1.25rem 0 1.5rem;
+    padding: 0.9rem 1.1rem;
+    background: #282c34;
+    border: 1px solid #21252b;
+    border-radius: 8px;
+    font-family: var(--nc-mono);
+    font-size: 0.9rem;
+    line-height: 1.7;
+    white-space: pre;
+    overflow-x: auto;
+}
+.followup-shot span { display: block; }
+.followup-shot .fs-caret { display: inline; }
+.fs-user, .fs-queued { color: #d19a66; }
+.fs-tool { color: #98c379; }
+.fs-prompt { color: #abb2bf; }
+.fs-divider, .fs-hint { color: #5c6370; }
+
 /* Admonitions */
 .admonition, .note, .topic, .seealso {
     background: var(--nc-surface) !important;
