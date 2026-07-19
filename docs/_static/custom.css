@@ -103,22 +103,21 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 .sphinxsidebar .doc-language {
     margin: -0.55rem 0 1.1rem;
     font-family: var(--nc-sans);
-    font-size: 0.95rem;
-    font-weight: 700;
+    font-size: 0.92rem;
+    font-weight: 400;
 }
 .sphinxsidebar .doc-language a,
 .sphinxsidebar .doc-language a:visited {
-    display: inline-block;
-    color: #1b1e23;
-    background: #c4a66a;
-    border: 1px solid #c4a66a;
-    border-radius: 4px;
-    padding: 0.24rem 0.62rem;
+    color: var(--nc-link);
 }
 .sphinxsidebar .doc-language a:hover {
-    color: #1b1e23;
-    background: #dcc48c;
-    border-color: #dcc48c;
+    color: var(--nc-link-hover);
+    text-decoration: underline;
+}
+.sphinxsidebar .doc-language-current { color: var(--nc-fg-strong); }
+.sphinxsidebar .doc-language-sep {
+    margin: 0 0.4rem;
+    color: var(--nc-muted);
 }
 
 /* Separate documentation pages from sections within the current page. */
