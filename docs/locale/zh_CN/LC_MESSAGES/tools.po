@@ -1,0 +1,344 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the nanocode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: nanocode 0.9\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-19 02:56-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../tools.md:1
+msgid "Tools"
+msgstr "工具"
+
+#: ../../tools.md:3
+msgid ""
+"nanocode uses tools to inspect your project and act on it. You describe the outcome you want; the"
+" agent chooses the tools. Tool calls are shown in the terminal as they run. They are separate "
+"from the `/` commands you type yourself. Read-only tools may run concurrently; actions that can "
+"change your system ask for confirmation unless `--yolo` or `/yolo` is active."
+msgstr ""
+"nanocode 使用工具检查项目并执行操作。你描述目标，由 agent 选择工具。工具调用会在运行时显示在终端中，它们与你输入的 `/` "
+"命令不同。只读工具可以并发运行；可能改变系统的操作会请求确认，除非已启用 `--yolo` 或 `/yolo`。"
+
+#: ../../tools.md:8
+msgid "Built-in tools"
+msgstr "内置工具"
+
+#: ../../tools.md:15
+msgid "Tool"
+msgstr "工具"
+
+#: ../../tools.md:16
+msgid "What it does"
+msgstr "作用"
+
+#: ../../tools.md:17
+msgid "**`Read`**"
+msgstr "**`Read`**"
+
+#: ../../tools.md:18
+msgid ""
+"Opens selected line ranges from one or several UTF-8 files. Every returned line has an anchor "
+"that later edits can verify."
+msgstr "读取一个或多个 UTF-8 文件中的指定行范围。返回的每一行都有可供后续编辑验证的锚点。"
+
+#: ../../tools.md:21
+msgid "A shortened result looks like this:"
+msgstr "缩短后的结果如下："
+
+#: ../../tools.md:36
+msgid ""
+"In `684:234ew`, `684` is the zero-based line number and `234ew` is a short hash of that line's "
+"content. The line number locates the edit; the hash proves that the line has not changed since it"
+" was read."
+msgstr "在 `684:234ew` 中，`684` 是从零开始的行号，`234ew` 是该行内容的短 hash。行号用于定位编辑位置，hash 用于确认该行自读取后没有变化。"
+
+#: ../../tools.md:39
+msgid "**`Search`**"
+msgstr "**`Search`**"
+
+#: ../../tools.md:40
+msgid ""
+"Finds text with case-insensitive regular expressions, optionally limited by path or filename "
+"pattern. It skips hidden, binary, and gitignored files and returns editable anchors."
+msgstr "使用不区分大小写的正则表达式搜索文本，也可限制路径或文件名模式。它会跳过隐藏文件、二进制文件和被 gitignore 的文件，并返回可编辑锚点。"
+
+#: ../../tools.md:42
+msgid "**`InspectCode`**"
+msgstr "**`InspectCode`**"
+
+#: ../../tools.md:43
+msgid ""
+"Finds definitions, references, implementations, callers, callees, and file outlines through the "
+"[code index](#code-symbol-index). Use it for code structure rather than exact text."
+msgstr "通过[代码索引](#code-symbol-index)查找定义、引用、实现、调用者、被调用者和文件 outline。它适合分析代码结构，而不是精确文本搜索。"
+
+#: ../../tools.md:45
+msgid "**`Edit`**"
+msgstr "**`Edit`**"
+
+#: ../../tools.md:46
+msgid ""
+"Creates or changes one UTF-8 file by inserting, replacing, or deleting content. For an anchored "
+"change, `Edit` sends back the `line:hash` value returned by `Read`, `Search`, or `InspectCode`. "
+"nanocode checks the current line immediately before writing and <span class=\"marker\">refuses "
+"the edit if the hash no longer matches</span>. Successful edits appear in [`/diff`](usage.md"
+"#reviewing-changes)."
+msgstr ""
+"通过插入、替换或删除内容来创建或修改一个 UTF-8 文件。执行锚点编辑时，`Edit` 会回传 `Read`、`Search` 或 `InspectCode` 返回的 "
+"`line:hash`。nanocode 会在写入前立即检查当前行；如果 hash 不再匹配，<span class=\"marker\">编辑会被拒绝</span>。成功的编辑会出现在 "
+"[`/diff`](usage.md#reviewing-changes) 中。"
+
+#: ../../tools.md:52
+msgid "An Edit confirmation previewing the proposed diff"
+msgstr "Edit 确认界面预览拟议 diff"
+
+#: ../../tools.md:57
+msgid "An Edit confirmation previews the proposed change before approval."
+msgstr "确认前，Edit 会预览拟议修改。"
+
+#: ../../tools.md:59
+msgid "**`Bash`**"
+msgstr "**`Bash`**"
+
+#: ../../tools.md:60
+msgid ""
+"Runs one shell command in the project with live output. Commands still running after "
+"`runtime.bash_wait_timeout` <span class=\"marker\">become background jobs automatically</span>."
+msgstr ""
+"在项目中运行一条 shell 命令，并实时显示输出。运行超过 `runtime.bash_wait_timeout` 的命令会<span "
+"class=\"marker\">自动转为后台任务</span>。"
+
+#: ../../tools.md:63
+msgid "A Bash tool call streaming command output in nanocode"
+msgstr "Bash 工具调用在 nanocode 中流式显示命令输出"
+
+#: ../../tools.md:68
+msgid "Bash output appears as the command runs."
+msgstr "Bash 输出会随命令运行实时出现。"
+
+#: ../../tools.md:70
+msgid "**`Job`**"
+msgstr "**`Job`**"
+
+#: ../../tools.md:71
+msgid ""
+"Starts or manages background commands: check output, wait, list, or stop. The same jobs are "
+"visible through `/ps`."
+msgstr "启动或管理后台命令：查看输出、等待、列出或停止。相同任务也可通过 `/ps` 查看。"
+
+#: ../../tools.md:73
+msgid "**`Recall`**"
+msgstr "**`Recall`**"
+
+#: ../../tools.md:74
+msgid ""
+"Retrieves a <span class=\"marker\">complete earlier tool result</span>, or selected line ranges, "
+"when only a shortened result was placed in the conversation."
+msgstr "当对话中只有缩短结果时，取回<span class=\"marker\">完整的早期工具结果</span>或指定行范围。"
+
+#: ../../tools.md:76
+msgid "**`Note`**"
+msgstr "**`Note`**"
+
+#: ../../tools.md:77
+msgid ""
+"Maintains the task's goal, plan, success check, and learned facts. It keeps long tasks organized "
+"but does not edit project files."
+msgstr "维护任务 goal、plan、成功检查和已知事实。它帮助组织长任务，但不会编辑项目文件。"
+
+#: ../../tools.md:82
+msgid "Plan items are marked `[x]` done, `[~]` in progress, `[ ]` waiting, or `[-]` blocked."
+msgstr "Plan 条目使用 `[x]` 表示完成、`[~]` 表示进行中、`[ ]` 表示等待、`[-]` 表示阻塞。"
+
+#: ../../tools.md:83
+msgid "**`Ask`**"
+msgstr "**`Ask`**"
+
+#: ../../tools.md:84
+msgid ""
+"Pauses for a decision that genuinely needs you. A question may include choices and a recommended "
+"option."
+msgstr "在确实需要用户决定时暂停。问题可以包含选项和推荐项。"
+
+#: ../../tools.md:89
+msgid "Pressing `Esc` declines the question; typing instead of choosing answers in free text."
+msgstr "按 `Esc` 可拒绝问题；直接输入文字可自由回答，而不必选择预设项。"
+
+#: ../../tools.md:90
+msgid "**`Skill`**"
+msgstr "**`Skill`**"
+
+#: ../../tools.md:91
+msgid ""
+"Loads an installed skill's full instructions when needed. It appears only when skills are "
+"installed; see [Skills](skills.md)."
+msgstr "按需加载已安装 skill 的完整指令。仅当存在已安装 skill 时才会出现；见 [Skills](skills.md)。"
+
+#: ../../tools.md:93
+msgid "**`MCP`**"
+msgstr "**`MCP`**"
+
+#: ../../tools.md:94
+msgid ""
+"Describes or calls tools and reads resources from a connected MCP server. It appears only after a"
+" server is connected; see [MCP](mcp.md)."
+msgstr "描述或调用已连接 MCP server 的工具，并读取其资源。仅在 server 连接后出现；见 [MCP](mcp.md)。"
+
+#: ../../tools.md:98
+msgid "Code symbol index"
+msgstr "代码符号索引"
+
+#: ../../tools.md:100
+msgid ""
+"nanocode includes a **code symbol index** for <span class=\"marker\">structured navigation</span>"
+" — finding definitions, callers, references, and implementations without relying on an external "
+"language server. The index is <span class=\"marker\">built separately for each project</span>."
+msgstr ""
+"nanocode 内置**代码符号索引**，用于<span class=\"marker\">结构化导航</span>：无需外部 language server "
+"即可查找定义、调用者、引用和实现。索引会<span class=\"marker\">按项目分别构建</span>。"
+
+#: ../../tools.md:104
+msgid "What it is"
+msgstr "它是什么"
+
+#: ../../tools.md:106
+msgid ""
+"The index is a static database of symbols (functions, classes, methods, variables, etc.) "
+"extracted from your project's source files. It is built by a library called [code-symbol-"
+"index](https://github.com/hit9/code-symbol-index), which supports a broad set of languages."
+msgstr ""
+"索引是从项目源文件中提取的符号（function、class、method、variable 等）静态数据库。它由 [code-symbol-"
+"index](https://github.com/hit9/code-symbol-index) 构建，支持多种语言。"
+
+#: ../../tools.md:111
+msgid "When the index is available, the `InspectCode` tool can:"
+msgstr "索引可用时，`InspectCode` 可以："
+
+#: ../../tools.md:113
+msgid "**Find symbols** by name with fuzzy matching"
+msgstr "按名称进行模糊匹配，**查找符号**"
+
+#: ../../tools.md:114
+msgid "**Inspect a symbol** — show its definition and members"
+msgstr "**检查符号** — 显示其定义和成员"
+
+#: ../../tools.md:115
+msgid "**List references** — call, read, write, and type references across the project"
+msgstr "**列出引用** — 项目中的 call、read、write 和 type 引用"
+
+#: ../../tools.md:116
+msgid "**Walk call chains** — transitive callers and callees"
+msgstr "**遍历调用链** — 递归查找调用者和被调用者"
+
+#: ../../tools.md:117
+msgid "**File outlines** — symbol tree of a single file"
+msgstr "**文件 outline** — 显示单个文件的符号树"
+
+#: ../../tools.md:119
+msgid ""
+"Asking where `MCPManager` is defined returns the symbol itself, not every line that mentions the "
+"word:"
+msgstr "询问 `MCPManager` 在哪里定义时，返回的是符号本身，而不是所有提到该单词的行："
+
+#: ../../tools.md:124
+msgid ""
+"Each hit carries its file and line range, so the agent can open exactly the right lines. The same"
+" index answers \"who calls this\" and \"what implements this\" the same way."
+msgstr "每个结果都包含文件和行范围，因此 agent 可以只打开准确位置。同一索引也可以回答“谁调用它”和“谁实现它”。"
+
+#: ../../tools.md:128
+msgid ""
+"Without an index, `InspectCode` reports that the index is unavailable. Run `/index` once in a "
+"project to build it."
+msgstr "没有索引时，`InspectCode` 会报告索引不可用。在项目中运行一次 `/index` 即可构建。"
+
+#: ../../tools.md:132
+msgid "Building and syncing"
+msgstr "构建与同步"
+
+#: ../../tools.md:134
+msgid ""
+"<span class=\"marker\">Run `/index` to build or rebuild the index.</span> The first build walks "
+"every source file; subsequent builds sync from the previous snapshot and are much faster. Add "
+"`force` to rebuild from scratch."
+msgstr ""
+"<span class=\"marker\">运行 `/index` 构建或重建索引。</span>首次构建会扫描所有源文件；后续构建会基于之前的快照同步，因此快得多。加上 `force` "
+"可从头重建。"
+
+#: ../../tools.md:138
+msgid ""
+"When an index already exists, nanocode refreshes it in the background at startup. After an agent "
+"turn, it <span class=\"marker\">automatically updates small batches of changed source "
+"files</span>; run `/index` when a large set of changes leaves it stale. `/status` shows the "
+"current state:"
+msgstr ""
+"索引已存在时，nanocode 会在启动时后台刷新。Agent 完成一轮后，会<span "
+"class=\"marker\">自动更新少量已修改的源文件</span>；如果大量改动导致索引过期，请运行 `/index`。`/status` 会显示当前状态："
+
+#: ../../tools.md:127
+msgid "State"
+msgstr "状态"
+
+#: ../../tools.md:127
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../tools.md:127
+msgid "**synced**"
+msgstr "**synced**"
+
+#: ../../tools.md:127
+msgid "Index is current and ready"
+msgstr "索引已同步，可以使用"
+
+#: ../../tools.md:127
+msgid "**stale**"
+msgstr "**stale**"
+
+#: ../../tools.md:127
+msgid "Out of date; wait for background refresh or run `/index`"
+msgstr "索引已过期；等待后台刷新或运行 `/index`"
+
+#: ../../tools.md:127
+msgid "**syncing**"
+msgstr "**syncing**"
+
+#: ../../tools.md:127
+msgid "A background refresh is in progress"
+msgstr "正在后台刷新"
+
+#: ../../tools.md:127
+msgid "**missing**"
+msgstr "**missing**"
+
+#: ../../tools.md:127
+msgid "No index exists yet; run `/index`"
+msgstr "索引尚未创建；运行 `/index`"
+
+#: ../../tools.md:127
+msgid "**error**"
+msgstr "**error**"
+
+#: ../../tools.md:127
+msgid "The index failed to build or sync; `/status` shows the details"
+msgstr "索引构建或同步失败；`/status` 会显示详情"
+
+#: ../../tools.md:151
+msgid ""
+"The project index is stored in `.code-symbol-index/index.sqlite`. It covers Python, JavaScript, "
+"TypeScript, Go, Rust, C, C++, Java, and more."
+msgstr "项目索引保存在 `.code-symbol-index/index.sqlite`。支持 Python、JavaScript、TypeScript、Go、Rust、C、C++、Java 等语言。"
+

@@ -67,6 +67,6 @@ Upgrade with `uv tool upgrade nanocode-cli`.
 
 ## Links
 
-- [Documentation](https://nanocode.readthedocs.io) — full usage guide and reference.
+- [Documentation](https://nanocode.readthedocs.io/en/latest/) — full usage guide and reference.
 - [Blog post](https://hit9.dev/post/nanocode) — why and how it was built.
 - [code-symbol-index](https://github.com/hit9/code-symbol-index) — the code index library nanocode uses.

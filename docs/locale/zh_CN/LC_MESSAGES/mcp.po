@@ -1,0 +1,236 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the nanocode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: nanocode 0.9\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-19 03:02-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../mcp.md:1
+msgid "MCP"
+msgstr "MCP"
+
+#: ../../mcp.md:3
+msgid ""
+"nanocode can connect to [Model Context "
+"Protocol](https://modelcontextprotocol.io) servers and call their tools "
+"through its `MCP` tool. Servers can be **remote** (HTTP) or **local** "
+"(stdio), and <span class=\"marker\">nothing about a server reaches the "
+"model until you connect it</span>."
+msgstr ""
+"nanocode 可以连接 [Model Context Protocol](https://modelcontextprotocol.io) "
+"server，并通过 `MCP` 工具调用其工具。Server "
+"可以是**远程**（HTTP）或**本地**（stdio）；在主动连接之前，<span class=\"marker\">该 server "
+"的任何信息都不会进入模型 context</span>。"
+
+#: ../../mcp.md:8
+msgid "Configuring servers"
+msgstr "配置 server"
+
+#: ../../mcp.md:10
+msgid "Each server is an `[mcp.<name>]` block."
+msgstr "每个 server 对应一个 `[mcp.<name>]` 配置块。"
+
+#: ../../mcp.md:12
+msgid "Remote (HTTP)"
+msgstr "远程（HTTP）"
+
+#: ../../mcp.md:22
+msgid "Local (stdio)"
+msgstr "本地（stdio）"
+
+#: ../../mcp.md:32
+msgid "Options"
+msgstr "选项"
+
+#: ../../mcp.md
+msgid "Key"
+msgstr "配置项"
+
+#: ../../mcp.md
+msgid "Applies to"
+msgstr "适用范围"
+
+#: ../../mcp.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../mcp.md
+msgid "`url`"
+msgstr "`url`"
+
+#: ../../mcp.md
+msgid "remote"
+msgstr "远程"
+
+#: ../../mcp.md
+msgid "Server endpoint (mutually exclusive with `command`)"
+msgstr "Server endpoint（不能与 `command` 同时设置）"
+
+#: ../../mcp.md
+msgid "`command`, `args`"
+msgstr "`command`, `args`"
+
+#: ../../mcp.md
+msgid "local"
+msgstr "本地"
+
+#: ../../mcp.md
+msgid "Program and arguments to launch"
+msgstr "要启动的程序和参数"
+
+#: ../../mcp.md
+msgid "`env`"
+msgstr "`env`"
+
+#: ../../mcp.md
+msgid "Extra environment variables for the subprocess"
+msgstr "传给子进程的额外环境变量"
+
+#: ../../mcp.md
+msgid "`auth = \"oauth\"`"
+msgstr "`auth = \"oauth\"`"
+
+#: ../../mcp.md
+msgid "Authenticate via interactive OAuth"
+msgstr "通过交互式 OAuth 认证"
+
+#: ../../mcp.md
+msgid "`bearer_token_env_var`"
+msgstr "`bearer_token_env_var`"
+
+#: ../../mcp.md
+msgid "Send `Authorization: Bearer <env var>`"
+msgstr "发送 `Authorization: Bearer <env var>`"
+
+#: ../../mcp.md
+msgid "`env_http_headers`"
+msgstr "`env_http_headers`"
+
+#: ../../mcp.md
+msgid "Map of HTTP header → env var holding its value"
+msgstr "HTTP header 到保存其值的环境变量映射"
+
+#: ../../mcp.md
+msgid "`auto_connect`"
+msgstr "`auto_connect`"
+
+#: ../../mcp.md
+msgid "both"
+msgstr "两者"
+
+#: ../../mcp.md
+msgid "Connect at startup instead of on demand (default `false`)"
+msgstr "启动时连接，而不是按需连接（默认 `false`）"
+
+#: ../../mcp.md:44
+msgid "Connecting"
+msgstr "连接"
+
+#: ../../mcp.md:46
+msgid ""
+"Servers are <span class=\"marker\"><strong>manual by "
+"default</strong></span> — they stay inactive, and cost nothing, until you"
+" connect them. Set `auto_connect = true` for servers you always want. "
+"Ways to connect:"
+msgstr ""
+"Server <span "
+"class=\"marker\"><strong>默认手动连接</strong></span>：连接前保持未激活，也不会占用 "
+"token。对始终需要的 server，可设置 `auto_connect = true`。连接方式包括："
+
+#: ../../mcp.md:50
+msgid "**`/mcp`** — open the interactive manager and toggle a server on or off."
+msgstr "**`/mcp`** — 打开交互式管理器，切换 server 的连接状态。"
+
+#: ../../mcp.md:52
+msgid ""
+"MCP server manager listing all configured servers and their connection "
+"status"
+msgstr "MCP server 管理器列出全部已配置 server 及其连接状态"
+
+#: ../../mcp.md:57
+msgid "The /mcp interactive server manager."
+msgstr "`/mcp` 交互式 server 管理器。"
+
+#: ../../mcp.md:59
+msgid ""
+"**`@server`** in a message — connect on demand. The connection remains "
+"active until you disconnect it."
+msgstr "在消息中输入 **`@server`** — 按需连接。连接会保持，直到主动断开。"
+
+#: ../../mcp.md:62
+msgid "Using @server mention to connect an MCP server on demand"
+msgstr "使用 `@server` 引用按需连接 MCP server"
+
+#: ../../mcp.md:67
+msgid "Connecting a server on demand with an @-mention."
+msgstr "通过 `@` 引用按需连接 server。"
+
+#: ../../mcp.md:69
+msgid ""
+"**`/mcp connect <server> [server ...]`** / **`/mcp disconnect <server>`**"
+" — terminal fallbacks."
+msgstr ""
+"**`/mcp connect <server> [server ...]`** / **`/mcp disconnect <server>`**"
+" — 终端命令形式。"
+
+#: ../../mcp.md:71
+msgid "**`/mcp tools [server]`** — list the tools of connected servers."
+msgstr "**`/mcp tools [server]`** — 列出已连接 server 的工具。"
+
+#: ../../mcp.md:73
+msgid ""
+"Connecting several servers in one command runs them concurrently; "
+"interactive OAuth browser flows are serialized so they do not interfere "
+"with each other."
+msgstr "一条命令连接多个 server 时会并发执行；交互式 OAuth 浏览器流程会串行进行，避免互相干扰。"
+
+#: ../../mcp.md:76
+#, python-brace-format
+msgid ""
+"Once a server is connected, nanocode can use its tools like any other. "
+"Tools the server marks read-only run without a prompt; anything that may "
+"change state asks for {ref}`confirmation <built-in-guardrails>` first."
+msgstr ""
+"连接后，nanocode 可以像使用其他工具一样使用该 server 的工具。Server "
+"标记为只读的工具无需确认即可运行；可能改变状态的操作会先请求{ref}`确认 <built-in-guardrails>`。"
+
+#: ../../mcp.md:80
+msgid "Authentication"
+msgstr "认证"
+
+#: ../../mcp.md:82
+msgid ""
+"**Bearer token** — set `bearer_token_env_var` (or a custom header via "
+"`env_http_headers`)."
+msgstr ""
+"**Bearer token** — 设置 `bearer_token_env_var`，或通过 `env_http_headers` 设置自定义"
+" header。"
+
+#: ../../mcp.md:83
+msgid ""
+"**OAuth** — set `auth = \"oauth\"`. Connecting runs the authorization "
+"flow; disconnecting clears the saved login."
+msgstr "**OAuth** — 设置 `auth = \"oauth\"`。连接时执行授权流程；断开连接会清除已保存的登录信息。"
+
+#: ../../mcp.md:86
+msgid "Trust"
+msgstr "信任边界"
+
+#: ../../mcp.md:88
+msgid ""
+"Local (stdio) servers run programs on your machine, and remote servers "
+"receive whatever the agent sends them. Only connect servers you trust."
+msgstr "本地（stdio）server 会在你的机器上运行程序，远程 server 会收到 agent 发给它的内容。只连接可信的 server。"

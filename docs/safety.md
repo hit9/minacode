@@ -11,6 +11,7 @@ nanocode acts directly in your environment. Through its [tools](tools.md) it can
 command</span>. There is no built-in isolation, so treat it with the same care as running those
 commands yourself.
 
+(built-in-guardrails)=
 ## Built-in guardrails
 
 - **Confirmations.** File-changing and command-running tools — Edit, Bash, Job, and MCP

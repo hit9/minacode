@@ -27,6 +27,8 @@ source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
 root_doc = "index"
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 templates_path = ["_templates"]
+locale_dirs = ["locale/"]
+gettext_compact = False
 
 myst_enable_extensions = ["colon_fence", "deflist", "linkify", "substitution"]
 myst_heading_anchors = 3
@@ -68,3 +70,11 @@ pygments_style = "one-dark"
 copybutton_prompt_text = r"\$ |>>> "
 
 copybutton_prompt_is_regexp = True
+
+
+def _add_language_context(app, _pagename, _templatename, context, _doctree):
+    context["doc_language"] = app.config.language.replace("-", "_")
+
+
+def setup(app):
+    app.connect("html-page-context", _add_language_context)

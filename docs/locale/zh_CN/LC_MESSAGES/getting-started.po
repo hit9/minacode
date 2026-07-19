@@ -1,0 +1,214 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the nanocode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: nanocode 0.9\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-19 02:56-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../getting-started.md:1
+msgid "Getting started"
+msgstr "快速开始"
+
+#: ../../getting-started.md:3
+msgid "Install"
+msgstr "安装"
+
+#: ../../getting-started.md:5
+msgid "nanocode supports <span class=\"marker\">macOS and Linux only</span>"
+msgstr "nanocode <span class=\"marker\">仅支持 macOS 和 Linux</span>"
+
+#: ../../getting-started.md:6
+msgid "Python 3.11 or newer"
+msgstr "Python 3.11 或更新版本"
+
+#: ../../getting-started.md:7
+msgid "[uv](https://docs.astral.sh/uv/) to install and run"
+msgstr "使用 [uv](https://docs.astral.sh/uv/) 安装和运行"
+
+#: ../../getting-started.md:13
+msgid "Upgrade"
+msgstr "升级"
+
+#: ../../getting-started.md:19
+msgid ""
+"nanocode checks PyPI at most once a day and reports an available update at startup and in "
+"`/status`."
+msgstr "nanocode 每天最多检查一次 PyPI；有新版本时，会在启动时和 `/status` 中提示。"
+
+#: ../../getting-started.md:22
+msgid "Configure"
+msgstr "配置"
+
+#: ../../getting-started.md:24
+msgid ""
+"nanocode needs one thing to start: <span class=\"marker\">a provider to talk to</span>. Generate "
+"a starter config:"
+msgstr "nanocode 启动只需要一项配置：<span class=\"marker\">用于通信的 provider</span>。先生成配置文件："
+
+#: ../../getting-started.md:31
+msgid ""
+"This writes `~/.nanocode/config.toml`. Only the `[provider]` block is required; every other "
+"setting has a built-in default, and the file lists the common ones as comments."
+msgstr "该命令会写入 `~/.nanocode/config.toml`。只有 `[provider]` 是必需的；其他设置都有内置默认值，常用选项会以注释形式列在文件中。"
+
+#: ../../getting-started.md:34
+msgid "Point it at a provider"
+msgstr "设置 provider"
+
+#: ../../getting-started.md:36
+msgid ""
+"nanocode speaks to any OpenAI-compatible API (and to Anthropic). Open the config and fill in a "
+"provider — for example [DeepSeek](https://api-docs.deepseek.com/):"
+msgstr ""
+"nanocode 支持任何 OpenAI-compatible API，也直接支持 Anthropic。打开配置文件并填写一个 provider，例如 [DeepSeek](https"
+"://api-docs.deepseek.com/)："
+
+#: ../../getting-started.md
+msgid "Key"
+msgstr "配置项"
+
+#: ../../getting-started.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../getting-started.md
+msgid "`url`"
+msgstr "`url`"
+
+#: ../../getting-started.md
+msgid "Base URL of the API"
+msgstr "API 的 base URL"
+
+#: ../../getting-started.md
+msgid "`key`"
+msgstr "`key`"
+
+#: ../../getting-started.md
+msgid "Your API key"
+msgstr "你的 API key"
+
+#: ../../getting-started.md
+msgid "`model`"
+msgstr "`model`"
+
+#: ../../getting-started.md
+msgid "Model name to use"
+msgstr "使用的模型名称"
+
+#: ../../getting-started.md:55
+msgid ""
+"You can define several `[provider.<name>]` blocks and switch between them with `active` (or "
+"`/provider` inside a session). See [Configuration](configuration.md) for every option, including "
+"reasoning effort and per-host tuning."
+msgstr ""
+"可以定义多个 `[provider.<name>]`，通过 `active` 选择；也可以在 session 中使用 `/provider` 切换。所有选项（包括 reasoning "
+"effort 和 host 专属设置）见[配置](configuration.md)。"
+
+#: ../../getting-started.md:59
+msgid "Start a session"
+msgstr "启动 session"
+
+#: ../../getting-started.md:65
+msgid ""
+"Type a request in plain language and the agent starts working — reading files, proposing edits, "
+"running commands. Before anything that changes files or runs a command, it asks for confirmation "
+"(unless you pass `--yolo`). You can keep typing while it works; see [Follow-ups](usage.md#follow-"
+"ups)."
+msgstr ""
+"直接用自然语言输入任务，agent 就会开始读取文件、提出修改并运行命令。任何会修改文件或执行命令的操作都会先请求确认，除非使用 `--yolo`。agent "
+"工作时仍可继续输入；见[追加指令](usage.md#follow-ups)。"
+
+#: ../../getting-started.md:70
+msgid "Exit with `/exit`, `/quit`, or `Ctrl-D`."
+msgstr "使用 `/exit`、`/quit` 或 `Ctrl-D` 退出。"
+
+#: ../../getting-started.md:72
+msgid "Command-line flags"
+msgstr "命令行参数"
+
+#: ../../getting-started.md
+msgid "Flag"
+msgstr "参数"
+
+#: ../../getting-started.md
+msgid "Effect"
+msgstr "作用"
+
+#: ../../getting-started.md
+msgid "`-c`, `--last`, `--latest`"
+msgstr "`-c`, `--last`, `--latest`"
+
+#: ../../getting-started.md
+msgid "Resume the most recent session in this project"
+msgstr "恢复当前项目最近一次 session"
+
+#: ../../getting-started.md
+msgid "`--resume [UID]`"
+msgstr "`--resume [UID]`"
+
+#: ../../getting-started.md
+msgid "Resume a saved session; with no `UID`, resumes the latest"
+msgstr "恢复保存的 session；不提供 `UID` 时恢复最近一次"
+
+#: ../../getting-started.md
+msgid "`--yolo`"
+msgstr "`--yolo`"
+
+#: ../../getting-started.md
+msgid "Skip confirmation prompts for mutating tools"
+msgstr "跳过修改型工具的确认提示"
+
+#: ../../getting-started.md
+#, python-brace-format
+msgid "`--theme {auto,light,dark}`"
+msgstr "`--theme {auto,light,dark}`"
+
+#: ../../getting-started.md
+msgid "Override the configured terminal color theme"
+msgstr "覆盖终端颜色主题"
+
+#: ../../getting-started.md
+msgid "`--config <path>`"
+msgstr "`--config <path>`"
+
+#: ../../getting-started.md
+msgid "Use a specific config file instead of `~/.nanocode/config.toml`"
+msgstr "使用指定配置文件，而不是 `~/.nanocode/config.toml`"
+
+#: ../../getting-started.md
+msgid "`--init-config`"
+msgstr "`--init-config`"
+
+#: ../../getting-started.md
+msgid "Write a starter config file and exit"
+msgstr "写入初始配置后退出"
+
+#: ../../getting-started.md
+msgid "`-h`, `--help`"
+msgstr "`-h`, `--help`"
+
+#: ../../getting-started.md
+msgid "Show command-line help and exit"
+msgstr "显示命令行帮助后退出"
+
+#: ../../getting-started.md
+msgid "`-v`, `--version`"
+msgstr "`-v`, `--version`"
+
+#: ../../getting-started.md
+msgid "Print the version and exit"
+msgstr "输出版本号后退出"
+

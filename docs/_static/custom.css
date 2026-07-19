@@ -100,6 +100,20 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
     display: block;
     margin: 0 0 1.25rem;
 }
+.sphinxsidebar .doc-language {
+    margin: -0.65rem 0 1rem;
+    font-family: var(--nc-sans);
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+.sphinxsidebar .doc-language a,
+.sphinxsidebar .doc-language a:visited {
+    display: inline-block;
+    color: var(--nc-fg-strong);
+    border-bottom: 1px solid #9a7b3f;
+    padding-bottom: 1px;
+}
+.sphinxsidebar .doc-language a:hover { color: var(--nc-link); }
 
 /* Separate documentation pages from sections within the current page. */
 .sphinxsidebar .toctree-l1 > a {

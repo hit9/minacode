@@ -75,7 +75,7 @@ flows are serialized so they do not interfere with each other.
 
 Once a server is connected, nanocode can use its tools like any other. Tools the server marks
 read-only run without a prompt; anything that may change state asks for
-[confirmation](safety.md#built-in-guardrails) first.
+{ref}`confirmation <built-in-guardrails>` first.
 
 ### Authentication
 

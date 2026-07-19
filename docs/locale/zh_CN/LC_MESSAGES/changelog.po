@@ -1,0 +1,2730 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the nanocode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: nanocode 0.9\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-19 02:56-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../../CHANGELOG.md:2
+msgid "Changelog"
+msgstr ""
+
+#: ../../../CHANGELOG.md:5
+msgid "0.9.10 - 2026-07-18"
+msgstr ""
+
+#: ../../../CHANGELOG.md:7 ../../../CHANGELOG.md:40 ../../../CHANGELOG.md:49
+#: ../../../CHANGELOG.md:55 ../../../CHANGELOG.md:80 ../../../CHANGELOG.md:107
+#: ../../../CHANGELOG.md:146 ../../../CHANGELOG.md:155
+#: ../../../CHANGELOG.md:192 ../../../CHANGELOG.md:197
+#: ../../../CHANGELOG.md:207 ../../../CHANGELOG.md:231
+#: ../../../CHANGELOG.md:271 ../../../CHANGELOG.md:286
+#: ../../../CHANGELOG.md:314 ../../../CHANGELOG.md:347
+#: ../../../CHANGELOG.md:356 ../../../CHANGELOG.md:390
+#: ../../../CHANGELOG.md:398 ../../../CHANGELOG.md:413
+#: ../../../CHANGELOG.md:433 ../../../CHANGELOG.md:465
+#: ../../../CHANGELOG.md:486 ../../../CHANGELOG.md:495
+#: ../../../CHANGELOG.md:528 ../../../CHANGELOG.md:545
+#: ../../../CHANGELOG.md:567 ../../../CHANGELOG.md:682
+#: ../../../CHANGELOG.md:707 ../../../CHANGELOG.md:722
+msgid "Added"
+msgstr ""
+
+#: ../../../CHANGELOG.md:8
+msgid ""
+"Add `g`/`G` jumps to the top/bottom in the `/diff` viewer and interactive"
+" selectors, matching the `less` pager convention."
+msgstr ""
+
+#: ../../../CHANGELOG.md:9
+msgid ""
+"Add an interactive `/mcp` connection manager and per-server "
+"`auto_connect` configuration for explicit startup connections."
+msgstr ""
+
+#: ../../../CHANGELOG.md:11 ../../../CHANGELOG.md:58 ../../../CHANGELOG.md:64
+#: ../../../CHANGELOG.md:69 ../../../CHANGELOG.md:83 ../../../CHANGELOG.md:95
+#: ../../../CHANGELOG.md:113 ../../../CHANGELOG.md:159
+#: ../../../CHANGELOG.md:202 ../../../CHANGELOG.md:213
+#: ../../../CHANGELOG.md:226 ../../../CHANGELOG.md:236
+#: ../../../CHANGELOG.md:254 ../../../CHANGELOG.md:278
+#: ../../../CHANGELOG.md:294 ../../../CHANGELOG.md:320
+#: ../../../CHANGELOG.md:329 ../../../CHANGELOG.md:341
+#: ../../../CHANGELOG.md:363 ../../../CHANGELOG.md:393
+#: ../../../CHANGELOG.md:401 ../../../CHANGELOG.md:408
+#: ../../../CHANGELOG.md:416 ../../../CHANGELOG.md:426
+#: ../../../CHANGELOG.md:437 ../../../CHANGELOG.md:447
+#: ../../../CHANGELOG.md:455 ../../../CHANGELOG.md:469
+#: ../../../CHANGELOG.md:478 ../../../CHANGELOG.md:500
+#: ../../../CHANGELOG.md:512 ../../../CHANGELOG.md:516
+#: ../../../CHANGELOG.md:521 ../../../CHANGELOG.md:531
+#: ../../../CHANGELOG.md:538 ../../../CHANGELOG.md:550
+#: ../../../CHANGELOG.md:571 ../../../CHANGELOG.md:586
+#: ../../../CHANGELOG.md:596 ../../../CHANGELOG.md:601
+#: ../../../CHANGELOG.md:609 ../../../CHANGELOG.md:620
+#: ../../../CHANGELOG.md:636 ../../../CHANGELOG.md:642
+#: ../../../CHANGELOG.md:648 ../../../CHANGELOG.md:662
+#: ../../../CHANGELOG.md:677 ../../../CHANGELOG.md:686
+#: ../../../CHANGELOG.md:693 ../../../CHANGELOG.md:698
+#: ../../../CHANGELOG.md:712 ../../../CHANGELOG.md:728
+msgid "Changed"
+msgstr ""
+
+#: ../../../CHANGELOG.md:12
+msgid ""
+"Replace the in-flight model retry keybinding with `/resend` in the "
+"running follow-up input, and show a `/resend` hint during long requests."
+msgstr ""
+
+#: ../../../CHANGELOG.md:13
+msgid ""
+"Open the current input in `$VISUAL`/`$EDITOR` with `Ctrl-X Ctrl-E` or "
+"`Ctrl-G`; a lone `Ctrl-X` no longer opens the editor."
+msgstr ""
+
+#: ../../../CHANGELOG.md:14
+msgid ""
+"Make `Ctrl-P` mirror the Up arrow when recalling the latest queued "
+"message for editing."
+msgstr ""
+
+#: ../../../CHANGELOG.md:15
+msgid ""
+"Connect MCP servers on demand through targeted mentions or `/mcp connect "
+"NAME`, keeping disconnected servers entirely out of model context. "
+"Connecting handles OAuth authorization when required; disconnecting "
+"unloads the server and clears its saved OAuth authentication."
+msgstr ""
+
+#: ../../../CHANGELOG.md:16
+msgid ""
+"Let `/mcp connect` accept multiple server names, connect them "
+"concurrently, and complete each successive server argument."
+msgstr ""
+
+#: ../../../CHANGELOG.md:17
+msgid ""
+"Align `/mcp` status columns and add compact connection-state markers for "
+"faster scanning."
+msgstr ""
+
+#: ../../../CHANGELOG.md:18
+msgid ""
+"Render multi-server connection results as a compact vertical list instead"
+" of one wrapped paragraph."
+msgstr ""
+
+#: ../../../CHANGELOG.md:19
+msgid ""
+"Color a consistent solid-circle MCP status marker green when connected, "
+"yellow when disconnected, red on error, and dim when skipped."
+msgstr ""
+
+#: ../../../CHANGELOG.md:20
+msgid "Show the number of connected MCP servers in the `/status` context row."
+msgstr ""
+
+#: ../../../CHANGELOG.md:21
+msgid ""
+"Make each selection in `/mcp` toggle that server in place, showing "
+"connection progress without closing the selector, and limit `/mcp tools` "
+"listings and completion to connected servers."
+msgstr ""
+
+#: ../../../CHANGELOG.md:23
+msgid "Removed"
+msgstr ""
+
+#: ../../../CHANGELOG.md:24
+msgid ""
+"Remove the unreachable non-TUI `Ctrl-\\` model-request retry; interactive"
+" retries use `/resend`, while transient errors still retry automatically."
+msgstr ""
+
+#: ../../../CHANGELOG.md:25
+msgid ""
+"Remove `/debug` cache-prefix diagnostics and persisted prefix "
+"fingerprints; prompt caching and `/status` cache-hit metrics remain "
+"unchanged."
+msgstr ""
+
+#: ../../../CHANGELOG.md:26
+msgid ""
+"Remove startup tips and the built-in `nanocode-help` skill; `/help` and "
+"project/user skills remain available."
+msgstr ""
+
+#: ../../../CHANGELOG.md:27
+msgid ""
+"Remove the `--mcp` per-run selector and per-server `enabled` behavior; "
+"comment out unwanted server sections instead. Legacy `enabled` keys are "
+"ignored."
+msgstr ""
+
+#: ../../../CHANGELOG.md:29 ../../../CHANGELOG.md:43 ../../../CHANGELOG.md:75
+#: ../../../CHANGELOG.md:89 ../../../CHANGELOG.md:126 ../../../CHANGELOG.md:149
+#: ../../../CHANGELOG.md:172 ../../../CHANGELOG.md:187
+#: ../../../CHANGELOG.md:218 ../../../CHANGELOG.md:244
+#: ../../../CHANGELOG.md:266 ../../../CHANGELOG.md:281
+#: ../../../CHANGELOG.md:302 ../../../CHANGELOG.md:323
+#: ../../../CHANGELOG.md:333 ../../../CHANGELOG.md:350
+#: ../../../CHANGELOG.md:379 ../../../CHANGELOG.md:385
+#: ../../../CHANGELOG.md:420 ../../../CHANGELOG.md:441
+#: ../../../CHANGELOG.md:450 ../../../CHANGELOG.md:459
+#: ../../../CHANGELOG.md:472 ../../../CHANGELOG.md:481
+#: ../../../CHANGELOG.md:489 ../../../CHANGELOG.md:506
+#: ../../../CHANGELOG.md:559 ../../../CHANGELOG.md:580
+#: ../../../CHANGELOG.md:591 ../../../CHANGELOG.md:604
+#: ../../../CHANGELOG.md:615 ../../../CHANGELOG.md:624
+#: ../../../CHANGELOG.md:631 ../../../CHANGELOG.md:656
+#: ../../../CHANGELOG.md:667 ../../../CHANGELOG.md:673
+#: ../../../CHANGELOG.md:702 ../../../CHANGELOG.md:717
+#: ../../../CHANGELOG.md:734
+msgid "Fixed"
+msgstr ""
+
+#: ../../../CHANGELOG.md:30
+msgid ""
+"Retry OpenAI and Anthropic connection/timeout failures, retryable client "
+"statuses, and every provider `5xx` response."
+msgstr ""
+
+#: ../../../CHANGELOG.md:31
+msgid ""
+"Bound MCP calls by timeout, recreate failed async loops, and close the "
+"MCP loop safely during shutdown."
+msgstr ""
+
+#: ../../../CHANGELOG.md:32
+msgid ""
+"Keep concurrent MCP discovery status accurate, serialize OAuth "
+"authorization in the manager, and expose resource-only servers through "
+"`@server` mentions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:33
+msgid ""
+"Let explicit OAuth MCP connections validate cached credentials and "
+"reauthorize interactively when the server rejects them."
+msgstr ""
+
+#: ../../../CHANGELOG.md:34
+msgid ""
+"Treat redirects to paths that merely start with `/dev/null` as writes "
+"requiring confirmation; only the exact device remains auto-approved."
+msgstr ""
+
+#: ../../../CHANGELOG.md:35
+msgid ""
+"Prevent the plain CLI Bash live preview from accessing a nonexistent "
+"command-loop reference."
+msgstr ""
+
+#: ../../../CHANGELOG.md:38
+msgid "0.9.9 - 2026-07-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:41
+msgid ""
+"Show a one-line notice at startup when a newer version is available on "
+"PyPI, pointing to `uv tool upgrade nanocode-cli`. The update check stays "
+"cached and rate-limited to once per 24h, and never blocks startup."
+msgstr ""
+
+#: ../../../CHANGELOG.md:44
+msgid ""
+"README pointed at a `nanocode upgrade` command that no longer exists; the"
+" upgrade instructions now use `uv tool upgrade nanocode-cli`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:47
+msgid "0.9.8 - 2026-07-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:50
+msgid ""
+"`Ctrl-X` at the input prompt opens the current input in "
+"`$VISUAL`/`$EDITOR` (falling back to vim) and loads the edited text back;"
+" a non-zero exit or a failed launch leaves the input untouched."
+msgstr ""
+
+#: ../../../CHANGELOG.md:53
+msgid "0.9.7 - 2026-07-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:56
+msgid ""
+"Resume this project's latest session with `-c` (also `--last`, "
+"`--latest`), matched by working directory. Mutually exclusive with "
+"`--resume`, which still takes a UID or resolves the most recent session "
+"across all projects."
+msgstr ""
+
+#: ../../../CHANGELOG.md:59
+msgid ""
+"Rebuild the interactive REPL around a single persistent prompt-toolkit "
+"application: live activity, input, approval prompts, selectors, the "
+"`/diff` viewer, and the status bar now share one app, while completed "
+"output prints above it into native terminal scrollback."
+msgstr ""
+
+#: ../../../CHANGELOG.md:60
+msgid ""
+"Define `Ctrl-C` uniformly across that app: cancel an approval prompt, "
+"clear the current input at an idle prompt, or interrupt a running turn. "
+"Exit stays on `Ctrl-D` at an empty prompt and `/exit`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:62
+msgid "0.9.6 - 2026-07-14"
+msgstr ""
+
+#: ../../../CHANGELOG.md:65
+msgid ""
+"Revert unified diff background fill: the live `/diff` viewer spans the "
+"pane width, while scrollback output keeps its natural width."
+msgstr ""
+
+#: ../../../CHANGELOG.md:67
+msgid "0.9.5 - 2026-07-14"
+msgstr ""
+
+#: ../../../CHANGELOG.md:70
+msgid ""
+"Disable Rich Markdown hyperlinks so OSC 8 terminal escape sequences don't"
+" leak as visible text."
+msgstr ""
+
+#: ../../../CHANGELOG.md:71
+msgid ""
+"Strip Markdown link URLs from assistant output for cleaner scrollback; "
+"revert and re-apply with narrower scope."
+msgstr ""
+
+#: ../../../CHANGELOG.md:72
+msgid ""
+"Defensively strip unknown terminal escapes from assistant output and add "
+"a tip about hyperlink behavior."
+msgstr ""
+
+#: ../../../CHANGELOG.md:73
+msgid ""
+"Update the system prompt to note that Markdown links won't render as "
+"hyperlinks in this terminal."
+msgstr ""
+
+#: ../../../CHANGELOG.md:76
+msgid ""
+"Prevent OSC 8 payload from leaking as visible text in assistant Markdown "
+"output."
+msgstr ""
+
+#: ../../../CHANGELOG.md:78
+msgid "0.9.4 - 2026-07-14"
+msgstr ""
+
+#: ../../../CHANGELOG.md:81
+msgid ""
+"Auto-promote long-running Bash commands to background jobs after a "
+"configurable timeout."
+msgstr ""
+
+#: ../../../CHANGELOG.md:84
+msgid "Show sub-second precision in the Bash live-preview `running…` label."
+msgstr ""
+
+#: ../../../CHANGELOG.md:85
+msgid ""
+"Color the `·N` batch counter gray via `LogLine.meta` instead of syntax-"
+"highlighted arguments."
+msgstr ""
+
+#: ../../../CHANGELOG.md:86
+msgid ""
+"Pad diff backgrounds to pane width everywhere for solid Edit previews and"
+" a full-width live `/diff` viewer."
+msgstr ""
+
+#: ../../../CHANGELOG.md:87
+msgid ""
+"Add breathing room to queued-message flushes so they match interactive "
+"echo spacing."
+msgstr ""
+
+#: ../../../CHANGELOG.md:90
+msgid ""
+"Size diff background bands to the width after the outer log prefix so "
+"indented diffs render cleanly."
+msgstr ""
+
+#: ../../../CHANGELOG.md:91
+msgid ""
+"Preserve background-colored padding when stripping Rich's line-fill "
+"whitespace on pane resize."
+msgstr ""
+
+#: ../../../CHANGELOG.md:93
+msgid "0.9.3 - 2026-07-13"
+msgstr ""
+
+#: ../../../CHANGELOG.md:96
+msgid ""
+"Unify the live input prompt prefix to `>` and historical/queued user "
+"message prefix to `•`, extracting both as `UiPrinter` constants."
+msgstr ""
+
+#: ../../../CHANGELOG.md:97
+msgid ""
+"Add a `Theme.user.log` color key with a muted desert-orange palette and "
+"resolve it through `UiPrinter.user_log_style()`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:98
+msgid ""
+"Render resumed user messages with a `•` prefix and theme-aware orange "
+"text, add a blank line above each user message, and drop the `user:` role"
+" label."
+msgstr ""
+
+#: ../../../CHANGELOG.md:99
+msgid "Render resumed assistant messages without a role label or prefix."
+msgstr ""
+
+#: ../../../CHANGELOG.md:100
+msgid ""
+"Keep nanocode's interactive theme active when the parent environment "
+"exports `NO_COLOR`; redirected and headless output remains plain."
+msgstr ""
+
+#: ../../../CHANGELOG.md:101
+msgid ""
+"Add a separate `replay_prefix` to `read_input` so the main user message "
+"is echoed with `•` while the live prompt stays `>`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:102
+msgid ""
+"Drop the gray `inflight` styling from queued follow-up messages so they "
+"keep a consistent user color while pending."
+msgstr ""
+
+#: ../../../CHANGELOG.md:103
+msgid ""
+"Update the system prompt to first acknowledge or briefly answer follow-"
+"ups before carrying out the request."
+msgstr ""
+
+#: ../../../CHANGELOG.md:105
+msgid "0.9.2 - 2026-07-13"
+msgstr ""
+
+#: ../../../CHANGELOG.md:108
+msgid ""
+"Add `/diff`, a read-only viewer for edits made by nanocode. It shows the "
+"latest user round and the overall net session diff in `Latest` and "
+"`Session` tabs, supports keyboard navigation and paging, and persists "
+"edit snapshots across `--resume`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:109
+msgid ""
+"Add a standalone animated progress row for manual `/compact` operations "
+"while keeping the normal status line visible."
+msgstr ""
+
+#: ../../../CHANGELOG.md:110
+msgid ""
+"Show a bounded Bash stdout/stderr preview in finished tool summaries when"
+" no live preview was already kept visible."
+msgstr ""
+
+#: ../../../CHANGELOG.md:111
+msgid ""
+"Add light-terminal theme support with automatic `COLORFGBG` detection and"
+" a `runtime.theme` override."
+msgstr ""
+
+#: ../../../CHANGELOG.md:114
+msgid ""
+"Use recursive internal layout boxes for turn hierarchy both live and "
+"after resume: user and final-assistant messages stay at column zero, "
+"intermediate-assistant messages and tool calls use two spaces, and tool "
+"details use four. Restored role labels share their message indentation, "
+"with a blank separator between turns."
+msgstr ""
+
+#: ../../../CHANGELOG.md:115
+msgid ""
+"Add two-level hierarchy to CLI tool logs: indented tool calls are root "
+"events, approvals/output/errors/stored results use dim tree guides, Bash "
+"commands use a background-neutral GitHub Dark syntax palette, commands "
+"are shown once, compact tools remain single-line leaves, and flushed "
+"follow-ups use a `nano+` prompt."
+msgstr ""
+
+#: ../../../CHANGELOG.md:116
+msgid ""
+"Replace the `--debug`/`runtime.debug` mode and `/debug on|off` toggle "
+"with an always-on, read-only `/debug` report. It keeps only the latest "
+"three cache-prefix mismatch records in memory, including changed region "
+"hashes and sizes, without retaining raw prompt content."
+msgstr ""
+
+#: ../../../CHANGELOG.md:117
+msgid ""
+"Replace blank Enter as the queued-input send-now shortcut with Ctrl-C. "
+"Enter queues a follow-up for the next model request; when follow-ups are "
+"queued, Ctrl-C interrupts the active request so they can be sent "
+"immediately. Queue guidance now appears as a contextual `+>` placeholder "
+"and disappears while typing."
+msgstr ""
+
+#: ../../../CHANGELOG.md:118
+msgid ""
+"Remove the synthesized FILE STATE context projection. `Read` and `Edit` "
+"outputs now remain as bounded, recallable conversation messages, and "
+"`/context` shows only Environment and Memory."
+msgstr ""
+
+#: ../../../CHANGELOG.md:119
+msgid ""
+"Show each Bash command once before execution, keep live output visible "
+"without repeating the command, and use a compact dimmed `stored tr.N` "
+"result marker after live runs."
+msgstr ""
+
+#: ../../../CHANGELOG.md:120
+msgid ""
+"Render changed diff code with equal-width saturated dark green/red "
+"backgrounds while leaving line-number gutters and context rows unfilled."
+msgstr ""
+
+#: ../../../CHANGELOG.md:121
+msgid ""
+"Keep multiline queue pastes as one message; Up recalls the newest queued "
+"follow-up for editing or deletion before the model claims it."
+msgstr ""
+
+#: ../../../CHANGELOG.md:122
+msgid ""
+"Render `/ps` as a Markdown table and print resume commands on their own "
+"line for easier copying."
+msgstr ""
+
+#: ../../../CHANGELOG.md:123
+msgid ""
+"Show per-file addition/deletion counts in `/diff`, restore the previous "
+"CLI view after closing it, and syntax-highlight non-Bash tool arguments "
+"as well as Bash and Job commands."
+msgstr ""
+
+#: ../../../CHANGELOG.md:124
+msgid ""
+"Refine the agent prompt around read-first engineering judgment, concise "
+"progress updates, review behavior, follow-up responsiveness, and using "
+"background jobs for potentially long-running work."
+msgstr ""
+
+#: ../../../CHANGELOG.md:127
+msgid ""
+"Keep transient approval state (`approval required` and `[Y/n or reason]`)"
+" out of terminal scrollback after a tool decision."
+msgstr ""
+
+#: ../../../CHANGELOG.md:128
+msgid ""
+"Follow edited files across unambiguous Bash moves so `/diff` reports "
+"their final paths and logical net changes."
+msgstr ""
+
+#: ../../../CHANGELOG.md:129
+msgid ""
+"Prevent transient working dividers from leaking into CLI history during "
+"Bash previews and approval handoffs."
+msgstr ""
+
+#: ../../../CHANGELOG.md:130
+msgid "Prioritize queued follow-ups when building the next model request."
+msgstr ""
+
+#: ../../../CHANGELOG.md:131
+msgid ""
+"Keep Bash preview colors consistent, preserve literal closing-tag text, "
+"show bounded output when no live frame is available, and avoid repeating "
+"commands or output around live runs and failures."
+msgstr ""
+
+#: ../../../CHANGELOG.md:132
+msgid ""
+"Coalesce capped fallback edits into one `/diff` entry per file, count "
+"only real hunk changes, and report `No changes` when a round has no net "
+"effect."
+msgstr ""
+
+#: ../../../CHANGELOG.md:133
+msgid ""
+"Reject directory paths passed to `Edit` with a tool error instead of "
+"crashing during edit planning."
+msgstr ""
+
+#: ../../../CHANGELOG.md:134
+msgid ""
+"Persist the safe prefix of an active turn before each model request so "
+"completed messages and tool calls survive interruption and `--resume`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:135
+msgid ""
+"Drain background-job output continuously so pipe buffers cannot deadlock "
+"verbose commands, refresh completed job state before capacity and `/ps` "
+"checks, and keep bounded output tails correct for small limits."
+msgstr ""
+
+#: ../../../CHANGELOG.md:136
+msgid ""
+"Clip Bash previews and status lines by terminal display width, preventing"
+" CJK and emoji output from wrapping unexpectedly and desynchronizing live"
+" rendering."
+msgstr ""
+
+#: ../../../CHANGELOG.md:137
+msgid ""
+"Keep assistant tool-call messages together with their tool results when "
+"compacting context, preventing invalid orphaned `tool` messages from "
+"reaching model APIs."
+msgstr ""
+
+#: ../../../CHANGELOG.md:138
+msgid ""
+"Correct dark-terminal detection for ANSI bright-black backgrounds and "
+"keep the status line stable during manual compaction."
+msgstr ""
+
+#: ../../../CHANGELOG.md:139
+msgid ""
+"Stop dropping files with oversized edit snapshots from the `/diff` "
+"Session view; fall back to the recorded per-turn diffs so the file still "
+"appears."
+msgstr ""
+
+#: ../../../CHANGELOG.md:140
+msgid ""
+"Raise `TurnDiff.SNAPSHOT_CHAR_LIMIT` from 200KB to 1MB so typical large "
+"source files (including nanocode.py itself) keep their before/after "
+"snapshots and render as one clean unified diff instead of the "
+"concatenated per-Edit fallback."
+msgstr ""
+
+#: ../../../CHANGELOG.md:141
+msgid ""
+"Reconstruct legacy `/diff` for oversized-snapshot files by reverse-"
+"applying stored per-Edit hunks against the on-disk content; produces one "
+"clean unified diff when disk still matches the last tracked edit, "
+"otherwise falls back to the raw hunks."
+msgstr ""
+
+#: ../../../CHANGELOG.md:142
+msgid ""
+"Close the raw file descriptor if `os.fdopen` fails inside "
+"`MCPFileTokenStore.save`, preventing a descriptor leak on token-store "
+"write errors."
+msgstr ""
+
+#: ../../../CHANGELOG.md:144
+msgid "0.9.1 - 2026-07-09"
+msgstr ""
+
+#: ../../../CHANGELOG.md:147
+msgid ""
+"Add immediate queued-input flushing while the agent is waiting on a model"
+" request. Pressing Enter in the `+>` queue still records text for the "
+"next LLM request; pressing blank Enter with newly queued text interrupts "
+"the active model request and retries it with that queued input included."
+msgstr ""
+
+#: ../../../CHANGELOG.md:150
+msgid ""
+"Harden queued-input flushing so stale SIGINT delivery cannot cancel the "
+"whole turn after a model request already returned."
+msgstr ""
+
+#: ../../../CHANGELOG.md:151
+msgid ""
+"Avoid needless duplicate retries when the active model request already "
+"contains the queued input, prevent repeated blank Enter from stacking "
+"retry counts, and clear whitespace-only queue input on Enter."
+msgstr ""
+
+#: ../../../CHANGELOG.md:153
+msgid "0.9.0 - 2026-07-07"
+msgstr ""
+
+#: ../../../CHANGELOG.md:156
+msgid ""
+"Syntax-highlight inline Edit diff previews with Pygments. Added and "
+"context lines (the \"new\" file version) are lexed together as one code "
+"block so multiline strings and indentation-sensitive languages highlight "
+"correctly; removed lines stay plain diff-red. Degrades gracefully to "
+"plain diff coloring when Pygments is unavailable, the file extension is "
+"unknown, or the lexer fails."
+msgstr ""
+
+#: ../../../CHANGELOG.md:157
+msgid ""
+"Add background jobs via a `Job` tool "
+"(`start`/`status`/`wait`/`list`/`kill`). Long-running or non-blocking "
+"work — dev servers, watchers, long builds and test suites — runs in its "
+"own process group without blocking the agent; output is buffered (capped "
+"per stream), drained non-blockingly on `status`, and returned as a tail. "
+"Concurrency is capped (`MAX_JOBS`), running jobs surface in the status "
+"bar (`jobs N`), the `/status` row, and a new read-only `/ps` command; "
+"`kill` sends SIGTERM then SIGKILL to the group. Jobs run until they exit "
+"or are killed (no foreground `shell_timeout` cap), and "
+"`Job(action=\"wait\")` with no/zero timeout blocks until the process "
+"exits."
+msgstr ""
+
+#: ../../../CHANGELOG.md:161
+msgid ""
+"Rename the interactive `Question` tool to `Ask`; the old `Question` tool "
+"name is no longer registered."
+msgstr ""
+
+#: ../../../CHANGELOG.md:162
+msgid ""
+"Replace the status-bar `+N` queued-message counter with a live queue "
+"region. While the agent works, messages you type sit below the +> input "
+"under a dim \"── queued\" divider with a left→right sweep animation, "
+"instead of being echoed into the scrollback log; when the turn flushes "
+"them they move up into the log as `+ <text>` lines and the region shrinks"
+" (the divider disappears once nothing is queued)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:163
+msgid ""
+"Cache the Anthropic request's stable `tools`+`system` prefix with a "
+"`cache_control` breakpoint on the system block, so each turn no longer "
+"reprocesses the system prompt and tool schemas from scratch (Anthropic "
+"prompt caching only activates at an explicit breakpoint)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:164
+msgid ""
+"Strengthen the system prompt for faster convergence: batch independent "
+"reads/searches into one parallel request by default, and drive each Bash "
+"call to complete in a single pass (chain known steps, split only on "
+"genuinely unpredictable dependencies)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:165
+msgid ""
+"Replace the dedicated `LineCount`, `List`, `Find`, and `Git` tools with "
+"Bash-driven equivalents. The model now sees available shell commands near"
+" the top of Environment, read-only Bash commands (including safe `git "
+"status`/`diff`/`log` style commands) auto-run without confirmation, and "
+"mutating shell/git commands still require approval."
+msgstr ""
+
+#: ../../../CHANGELOG.md:166
+msgid ""
+"Bash output is no longer erased from the terminal after the command "
+"finishes; the live preview output stays in the scrollback history."
+msgstr ""
+
+#: ../../../CHANGELOG.md:167
+msgid ""
+"Edit diff previews and approve messages remain visible in the CLI history"
+" instead of being transiently cleared."
+msgstr ""
+
+#: ../../../CHANGELOG.md:168
+msgid ""
+"Remove the Ctrl-A expanded Edit preview and fixed-height transient "
+"preview window. Edit approvals still show the full inline diff preview in"
+" the CLI history, with Pygments highlighting preserved."
+msgstr ""
+
+#: ../../../CHANGELOG.md:169
+msgid ""
+"Git branch is no longer shown in the environment context sent to the "
+"model."
+msgstr ""
+
+#: ../../../CHANGELOG.md:170
+msgid ""
+"Removed branch-change detection protection that prevented `git commit` "
+"after an external branch switch."
+msgstr ""
+
+#: ../../../CHANGELOG.md:173
+msgid ""
+"Close a hole in Bash read-only auto-approval: `&&`/`||` were flattened to"
+" spaces and only the first command in a chain was validated, so `git log "
+"&& rm -rf x` auto-ran without confirmation. Every stage of a `&& || | ; "
+"newline` chain is now validated independently, a lone background `&` is "
+"rejected, and a `cd` prefix (a benign builtin the model routinely adds) "
+"no longer forces a prompt on an otherwise read-only command."
+msgstr ""
+
+#: ../../../CHANGELOG.md:174
+msgid ""
+"Follow common sense in the Bash read-only classifier rather than blanket "
+"strictness: `sort`, `uniq`, `sed`, and `tree` auto-run (with guards only "
+"on their real file-writing forms — `sort -o`, `uniq IN OUT`, `sed -i`, "
+"`tree -o`), and the ubiquitous harmless redirections (`2>/dev/null`, "
+"`>/dev/null`, `< /dev/null`, `2>&1`, `>&2`) no longer trigger a prompt. "
+"Real writes to a file and command substitution still ask."
+msgstr ""
+
+#: ../../../CHANGELOG.md:175
+msgid ""
+"Suppress prompt-toolkit's CPR warning in terminals that do not answer "
+"cursor position requests by disabling CPR probing for nanocode's prompt "
+"applications."
+msgstr ""
+
+#: ../../../CHANGELOG.md:176
+msgid ""
+"Stop closed stdin from escaping as an unhandled exception in the queue-"
+"input background thread."
+msgstr ""
+
+#: ../../../CHANGELOG.md:177
+msgid ""
+"Stable Edit anchors, eliminating spurious \"stale anchor\" errors. "
+"`line_hash` no longer folds the trailing newline into the hash, so a "
+"line's anchor stays valid when only its final newline changes (e.g. the "
+"last line gaining or losing its `\\n`) and Read/Search/Edit anchors now "
+"agree with InspectCode's. Edit also numbers lines exactly like Read — "
+"both split on `\\n` only via a shared `ReadTool.split_lines`, replacing "
+"`str.splitlines(True)`, which additionally breaks on `\\r`, `\\v`, `\\f`,"
+" `\\x1c`–`\\x1e`, `\\x85`, `\\u2028`, `\\u2029` and desynced line "
+"numbering (and thus anchors) for any file containing those characters."
+msgstr ""
+
+#: ../../../CHANGELOG.md:178
+msgid ""
+"Bump `code-symbol-index` to `>=0.3.5`, fixing a tree-sitter range "
+"extraction crash that could terminate `nanocode --resume last` with "
+"SIGSEGV and leave a core dump during background index refresh, while "
+"using the package's validated tree-sitter dependency floor."
+msgstr ""
+
+#: ../../../CHANGELOG.md:179
+msgid ""
+"Render Ask choice previews with escaped `\\n` sequences expanded into "
+"real lines, allow the choice window to use available vertical space above"
+" the status bar, and stop repeating the full raw question text when "
+"switching to \"Type freely...\"."
+msgstr ""
+
+#: ../../../CHANGELOG.md:180
+msgid ""
+"Render intermediate assistant markdown correctly while the `+>` queue "
+"prompt is active; Rich ANSI output is now replayed through prompt-toolkit"
+" instead of leaking as `?[90m`-style text."
+msgstr ""
+
+#: ../../../CHANGELOG.md:181
+msgid ""
+"Move the active-turn elapsed timer into the animated `working` divider; "
+"the sweep now scans only the horizontal rule so the label stays readable."
+msgstr ""
+
+#: ../../../CHANGELOG.md:182
+msgid ""
+"Show saved tool summaries on `--resume` even when the compacted "
+"transcript no longer contains the original assistant tool-call messages."
+msgstr ""
+
+#: ../../../CHANGELOG.md:183
+msgid ""
+"Add regression coverage for Ask preview/free-text rendering, whole-second"
+" working timers, and restored saved tool summaries."
+msgstr ""
+
+#: ../../../CHANGELOG.md:185
+msgid "0.8.2 - 2026-07-03"
+msgstr ""
+
+#: ../../../CHANGELOG.md:188
+msgid ""
+"Auto-submit queued input you already pressed Enter on. While the agent is"
+" working, typing in the `+>` queue and pressing Enter records the line "
+"into `pending_user_inputs`; if the turn ended before a step consumed it, "
+"that already-entered text was pre-filled back into the prompt and sat "
+"there waiting for a *second* Enter (and could feel like a very delayed "
+"send). Now, in interactive mode, Enter-committed queue input auto-submits"
+" as the next turn with no second keypress, while text you were still "
+"typing (never Enter'd) is still pre-filled into the prompt for review. "
+"Mid-turn injection and the headless combined-submit path are unchanged."
+msgstr ""
+
+#: ../../../CHANGELOG.md:190
+msgid "0.8.1 - 2026-07-02"
+msgstr ""
+
+#: ../../../CHANGELOG.md:193
+msgid ""
+"Add a `nanocode update` (alias `upgrade`) command that upgrades nanocode "
+"to the latest PyPI release. It first checks the latest version, reports "
+"and exits when already current, then detects how nanocode was installed "
+"and runs the matching upgrade command: `uv tool upgrade nanocode-cli` for"
+" uv-tool installs, `pipx upgrade nanocode-cli` for pipx, and `python -m "
+"pip install --upgrade nanocode-cli` otherwise. Editable/dev installs are "
+"detected (via the distribution's `direct_url.json`) and refused with a "
+"hint to update the source instead."
+msgstr ""
+
+#: ../../../CHANGELOG.md:195
+msgid "0.8.0 - 2026-07-01"
+msgstr ""
+
+#: ../../../CHANGELOG.md:198
+#, python-brace-format
+msgid ""
+"Add Skills: reusable instruction packs discovered from "
+"`.nanocode/skills/<name>/SKILL.md` (project) and "
+"`~/.nanocode/skills/<name>/SKILL.md` (user; project wins on name clash). "
+"Each skill is a Markdown file with `name`/`description` frontmatter and "
+"may bundle helper scripts in its folder. A compact `SKILLS` index (name +"
+" description) rides the cache-stable request prefix so the model knows "
+"what exists, and the full body is pulled into the conversation only on "
+"demand — either when the model calls the new `Skill(name)` tool or when "
+"the user references a skill inline with `$name` (Tab-completed). A "
+"`{skill_dir}` / `${SKILL_DIR}` placeholder in the body expands to the "
+"skill's absolute folder path when loaded, so bundled scripts are runnable"
+" via `Bash` without hardcoded paths. Repeated `Skill(name)` loads "
+"collapse to a one-line pointer (like MCP `describe`), keeping the first "
+"full body cached and not re-billing the instructions. A built-in "
+"`nanocode-help` skill ships by default (out of the box, no install) that "
+"answers questions about nanocode itself — how to use it, its features, "
+"and common problems — from a self-contained manual, so it does not read "
+"the source per question. The body is an authored manual (concepts, "
+"workflows, troubleshooting) plus lists assembled at load time from the "
+"same in-code constants the app uses (the `/help` text, each tool's "
+"description, the settable config keys), so the prose is rich while the "
+"lists cannot drift from the running version; the raw source is named only"
+" as a last-resort fallback. A project/user skill of the same name "
+"overrides it. Because a built-in is always present, the `SKILLS` section "
+"and `Skill` tool ride every request; only a session with its skills "
+"explicitly cleared drops back to the prior byte-identical prefix. "
+"Installed skills are surfaced in the status bar (`skills N`), the "
+"`/status` context row (`skills N`), a read-only `/skills` command, and "
+"`/help` now documents the `$skill` inline mention."
+msgstr ""
+
+#: ../../../CHANGELOG.md:199
+msgid ""
+"Replace `/memory` with `/context`, a viewer for the model's synthesized "
+"context frame — the Environment, Memory (goal, plan, known facts, check, "
+"code-index status), and File State sections that wrap the conversation on"
+" every request. At an interactive prompt, bare `/context` opens a tabbed "
+"viewer (`←/→` or `h/l` switch Environment/Memory/File State, `↑/↓` or "
+"`j/k` scroll, `1`–`3` jump, `Esc`/`q` close) with the sections rendered "
+"as Markdown tables/headings and a scroll-position indicator; while the "
+"agent is working or without a TTY it prints the same content as a static "
+"Markdown dump. `/context <path>` shows one in-context file's current "
+"anchored lines (matched by exact path, basename, or suffix) inside a "
+"fenced block. Unlike the old `/memory`, the Memory section now renders "
+"exactly as the model receives it (so it includes `check` and code-index "
+"status and omits the transcript-only summary)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:200
+msgid ""
+"Detect prompt-prefix drift via fingerprinting. The cache-stable request "
+"prefix (system prompt + environment + MCP tool index + sorted tool "
+"schemas) is fingerprinted (SHA-256) each turn against a baseline pinned "
+"to the first one seen; a healthy session keeps a single fingerprint start"
+" to finish, while a second one means every token from the change onward "
+"is a cache miss that previously failed silently and only surfaced on the "
+"bill. `/status` shows a `⚠ prefix churn` warning with the distinct-"
+"fingerprint count when more than one is seen, `--debug` writes a unified "
+"diff of exactly what changed (`cache-prefix-drift`), and the fingerprints"
+" persist across `--resume`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:203
+msgid ""
+"Track and show the context compaction count in `/status`. `AgentState` "
+"gains a persisted `compaction_count` incremented on every compaction path"
+" (history, turn, and their fallbacks), surfaced in the `/status` context "
+"row and preserved across session save/load."
+msgstr ""
+
+#: ../../../CHANGELOG.md:205
+msgid "0.7.2 - 2026-06-26"
+msgstr ""
+
+#: ../../../CHANGELOG.md:208
+msgid ""
+"Show a short, context-aware tip on startup (a curated set covering "
+"sessions, context, model/reasoning, tools, and config). Tips whose "
+"feature is unavailable are filtered out (e.g. `/strict` only shows when "
+"the provider supports strict tools; MCP tips only when MCP is "
+"configured). The line is styled as a muted hint with highlighted `code` "
+"spans and can be disabled with `runtime.tips = false` (or `/set "
+"runtime.tips off`)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:209
+msgid ""
+"Add per-property `description` fields to every built-in tool's JSON "
+"Schema (`Read`, `LineCount`, `List`, `Find`, `Search`, `InspectCode`, "
+"`Edit`, `Bash`, `Git`, `Recall`, `Note`). The argument contract now lives"
+" in the schema the model parses natively rather than only in the prose "
+"signature, improving tool-call argument accuracy across providers."
+msgstr ""
+
+#: ../../../CHANGELOG.md:210
+msgid ""
+"Add a `/strict` command to toggle `provider.strict_tools` for the active "
+"provider, reporting when it is enabled but inactive (the provider does "
+"not support strict tool calling)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:211
+msgid ""
+"Add a `provider.strict_tools` option (default `false`, also settable via "
+"`/set`) that constrains tool-call arguments to each tool's JSON Schema. "
+"When enabled it is only active on hosts whose profile supports strict "
+"mode (`api.openai.com`, `api.deepseek.com`) and on the chat path; every "
+"other provider is unaffected. Activating it emits a strict-compliant "
+"schema (all properties required, genuine optionals made nullable, "
+"`additionalProperties: false`, and the unsupported "
+"`minItems`/`maxItems`/`minLength`/`maxLength` keywords dropped) with "
+"`strict: true` per function, and on DeepSeek it routes the client to the "
+"`/beta` endpoint where the feature lives. Because optionals become "
+"nullable, the model may send explicit `null` for an omitted argument; "
+"nanocode now strips `null` values (recursively) before dispatching to a "
+"tool, where `null` has always meant \"absent\"."
+msgstr ""
+
+#: ../../../CHANGELOG.md:214
+msgid ""
+"Add a `provider.max_tokens` option (also settable via `/set`) capping "
+"chat-completion output. It defaults to `0` (unset) for generic OpenAI-"
+"compatible providers, so their requests are unchanged, and resolves to a "
+"profile default of `32768` on `api.deepseek.com` so DeepSeek thinking "
+"mode has enough room for `reasoning_content` plus the answer."
+msgstr ""
+
+#: ../../../CHANGELOG.md:215
+msgid ""
+"Map `reasoning = \"high\"` to DeepSeek's agent-recommended `max` effort "
+"in the thinking effort table (was `high`); `xhigh` still maps to `max` "
+"and the default `medium` still maps to `high`. Only the DeepSeek/Qwen "
+"`thinking` style is affected."
+msgstr ""
+
+#: ../../../CHANGELOG.md:216
+msgid ""
+"Skip the OpenAI-only `prompt_cache_key` parameter for `api.deepseek.com`,"
+" which caches by prefix automatically and ignores the key. All other "
+"hosts keep emitting it as before."
+msgstr ""
+
+#: ../../../CHANGELOG.md:219
+msgid ""
+"Keep the Bash live preview alive during blocking commands so the terminal"
+" no longer looks frozen. A command that buffers its output (e.g. a quiet "
+"long-runner, or `... | tail` that emits nothing until EOF) previously "
+"left the screen completely static — the status bar is stopped while a "
+"command runs and the preview only drew when output arrived. The preview "
+"now renders an immediate frame showing the command being executed (`$ "
+"<command>`) and a live elapsed timer (`running… 12.3s`), ticked by a "
+"daemon heartbeat so the timer advances even with no output, and switches "
+"to `output · 12.3s` once output streams. On finish the frame is now "
+"erased (it previously lingered as dimmed ghost lines), and a full-width "
+"line can no longer auto-wrap and desync the redraw cursor math."
+msgstr ""
+
+#: ../../../CHANGELOG.md:220
+msgid ""
+"Set an explicit output ceiling for DeepSeek thinking mode so long "
+"`reasoning_content` no longer exhausts the server-side default and "
+"truncates the response or drops the tool call."
+msgstr ""
+
+#: ../../../CHANGELOG.md:221
+msgid ""
+"Stop sending `temperature` on the chat path when a native thinking style "
+"(`thinking`/`enable_thinking`) is enabled, since DeepSeek and Qwen reject"
+" or ignore it in that mode. Other reasoning styles and providers are "
+"untouched."
+msgstr ""
+
+#: ../../../CHANGELOG.md:222
+msgid ""
+"Drain the MCP background event loop on exit. MCP work runs on a daemon "
+"loop thread; at interpreter shutdown the `concurrent.futures` atexit hook"
+" tore down the default executors before that thread was joined, so an in-"
+"flight client cleanup (HTTP session termination, DNS via "
+"`run_in_executor`) raced the teardown and printed `cannot schedule new "
+"futures after shutdown` / `Session termination failed`. "
+"`MCPManager.close()` now cancels pending tasks, stops the loop, and joins"
+" the thread (5s timeout) from `main()`'s `finally` before the interpreter"
+" tears down its executors."
+msgstr ""
+
+#: ../../../CHANGELOG.md:224
+msgid "0.7.1 - 2026-06-25"
+msgstr ""
+
+#: ../../../CHANGELOG.md:227
+msgid ""
+"Run the code-symbol-index working-tree check off the UI critical path. "
+"`/status` previously forced a synchronous `csi.status(check=True)` full-"
+"tree scan (~1.5s on large repos) before rendering, and the same scan ran "
+"inline at the end of every turn, delaying the answer. `/status` now reads"
+" the last-known status instantly (`check=False`) and triggers the scan "
+"asynchronously, and the per-turn `update_pending()` runs in a guarded "
+"one-shot daemon thread, so neither blocks the UI. A new transient "
+"`code_index_checking` guard prevents overlapping scans."
+msgstr ""
+
+#: ../../../CHANGELOG.md:229
+msgid "0.7.0 - 2026-06-24"
+msgstr ""
+
+#: ../../../CHANGELOG.md:232
+msgid ""
+"Execute a model's batch of read-only tool calls concurrently. Within one "
+"assistant turn, maximal runs of auto-approved, non-interactive read tools"
+" (`Read`, `Search`, `Find`, `List`, `Recall`, `InspectCode`, read-only "
+"`Git`, read-only `MCP`) now run in a bounded thread pool, while results "
+"are finalized on the main thread in the exact order the model issued "
+"them. Mutating tools, `Edit` batches, confirmations, `Bash` (live "
+"output), and `Question` (interactive) stay serial. Bounded by the new "
+"`runtime.max_parallel_tools` setting (default `4`; set to `1` to disable "
+"and restore fully serial execution)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:233
+msgid ""
+"Store `Note` plan items as explicit objects with `status` (`todo`, "
+"`doing`, `done`, `blocked`) and `text`, while preserving old string plans"
+" as `todo` during load/compaction. Model-visible memory renders readable "
+"status text; CLI memory and Note previews keep compact `[ ]`, `[~]`, "
+"`[x]`, `[-]` symbols."
+msgstr ""
+
+#: ../../../CHANGELOG.md:234
+msgid ""
+"Added a concise system-prompt `GUIDE` section covering `THINK BEFORE "
+"CODING`, `SIMPLICITY FIRST`, `SURGICAL CHANGES`, and `GOAL-DRIVEN "
+"EXECUTION`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:237
+msgid ""
+"Stop auto-approved (yolo) tool calls from logging two near-identical CLI "
+"lines. The pre-execution `auto …` line duplicated the result line's "
+"header for tools without a preview (MCP, Bash, Git); it is now suppressed"
+" in that case and the auto-approval is recorded by an `[auto]` tag on the"
+" single result line. `Edit` still shows its `auto …` pre-line because it "
+"carries the diff preview the result line omits."
+msgstr ""
+
+#: ../../../CHANGELOG.md:238
+msgid ""
+"Depend on `fastmcp-slim[client]` instead of the full `fastmcp` meta-"
+"package, since only the MCP client is used. This drops the unused "
+"server/CLI stack (cyclopts, griffelib, uvicorn-side bits, "
+"openapi/jsonschema tooling, the keyring/py-key-value cluster, etc.) for a"
+" much smaller install."
+msgstr ""
+
+#: ../../../CHANGELOG.md:239
+msgid ""
+"Switched Read/Search/Edit/InspectCode anchors to the explicit "
+"`anchor=line:hash | text` format and documented the hash as "
+"`hash(line_content)` in FILE STATE."
+msgstr ""
+
+#: ../../../CHANGELOG.md:240
+msgid ""
+"Bumped the `code-symbol-index` dependency floor to `>=0.3.1` and use its "
+"upstream explicit InspectCode anchor formatter instead of local "
+"normalization."
+msgstr ""
+
+#: ../../../CHANGELOG.md:241
+msgid ""
+"Reduced `nanocode.py` by removing dead code, thin wrappers, and over-"
+"complex helper paths without changing behavior."
+msgstr ""
+
+#: ../../../CHANGELOG.md:242
+msgid ""
+"Render Note success output with user-facing `goal:`, `check:`, `plan:`, "
+"and `known:` labels, plus status-aware colors in the CLI, instead of "
+"exposing internal field names like `set_goal` and `replace_plan`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:245
+msgid ""
+"Keep every MCP server visible in the tools index. It previously built "
+"full per-tool schemas and then hard-truncated the whole block at the size"
+" cap, so one verbose server could consume the entire budget and silently "
+"drop every later server, leaving the model blind to them. The index now "
+"degrades by shedding detail rather than entities — inline schemas, then "
+"schemas-dropped, then name-only — keeping all servers and tool names "
+"visible (the model can re-fetch a schema via `describe`); only at "
+"thousands of tools does it truncate, and that case now warns via a post-"
+"discovery notice and a `!` status-line marker."
+msgstr ""
+
+#: ../../../CHANGELOG.md:246
+msgid ""
+"Declare `websockets` as a direct dependency. The MCP client transport "
+"imports it at runtime, but `fastmcp` only declared it under its server "
+"extra, so trimming that extra broke MCP connections (including OAuth "
+"login)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:247
+msgid ""
+"Render structured plan items in `/memory` and Note previews as status "
+"symbols/text instead of leaking `PlanItem(...)` repr strings."
+msgstr ""
+
+#: ../../../CHANGELOG.md:248
+#, python-brace-format
+msgid ""
+"Resume sessions whose transcript contains tool calls with multi-line "
+"argument strings (e.g. a multi-line `git commit` message). Strict "
+"`json.loads` rejected the literal newlines and dropped the args to `{}`, "
+"which then failed the tool's own validation (`Git requires a non-empty "
+"'argv' list`) and aborted `--resume`. Tool-call arguments now parse with "
+"`strict=False`, and a malformed historical call renders without args "
+"instead of crashing."
+msgstr ""
+
+#: ../../../CHANGELOG.md:249
+msgid ""
+"Stop malformed live tool-call arguments from aborting the whole turn. "
+"Argument validation that ran while parsing a model response (e.g. `Git` "
+"with an empty `argv`) raised outside the tool-execution boundary, ending "
+"the turn with an error the model never saw. The error is now captured on "
+"the call and surfaced as a normal failed tool result, so the model can "
+"self-correct."
+msgstr ""
+
+#: ../../../CHANGELOG.md:250
+msgid ""
+"Decode `Bash` output with a per-stream incremental UTF-8 decoder. Each "
+"4096-byte read was decoded independently, so a multibyte character split "
+"across a read boundary (common with CJK output) was mangled into "
+"replacement characters."
+msgstr ""
+
+#: ../../../CHANGELOG.md:252
+msgid "0.6.6 - 2026-06-23"
+msgstr ""
+
+#: ../../../CHANGELOG.md:255
+msgid ""
+"Report the prompt-cache hit rate in `/status` against input/prompt tokens"
+" instead of total tokens (which folded in completion/reasoning output and"
+" structurally understated the rate), and show the `cached/prompt` split "
+"for both the cumulative and last-call figures."
+msgstr ""
+
+#: ../../../CHANGELOG.md:256
+msgid ""
+"Land MCP `describe` results inline in the conversation history (bounded "
+"and recallable like any tool output) instead of stripping them into a "
+"recomputed `MCP TOOL DETAILS` tail block. The schema is now written once "
+"and cached as the conversation grows, rather than re-billed uncached on "
+"every request; the tools index tells the model not to describe a tool "
+"again once its schema is already shown."
+msgstr ""
+
+#: ../../../CHANGELOG.md:257
+msgid ""
+"Collapse repeated MCP `describe` results for the same tool to a one-line "
+"pointer when building the request, keeping only the first full schema per"
+" `(server, tool)`. This is a stateless send-time transform that never "
+"mutates stored history and only ever collapses the newer occurrence, so "
+"it reclaims duplicate-schema tokens without disturbing the cached prefix."
+msgstr ""
+
+#: ../../../CHANGELOG.md:259
+msgid ""
+"Tighten the final-answer style guidance: default to a few lines, scale "
+"length to the task, lead with the result, and drop preamble / request-"
+"restatement / step-by-step recaps, replacing the soft \"be concise\" "
+"wording that models tended to ignore."
+msgstr ""
+
+#: ../../../CHANGELOG.md:260
+msgid ""
+"Add Tab/Shift-Tab completion (commands, paths, mentions) and a completion"
+" menu to the queue-input area, matching the main prompt."
+msgstr ""
+
+#: ../../../CHANGELOG.md:261
+msgid ""
+"Run read-only slash commands (`/help`, `/status`, `/memory`, read-only "
+"`/mcp`) plus `/yolo` typed in the queue-input area while the agent is "
+"working, instead of sending them to the model as literal text. `/yolo` is"
+" allowed because it is a single atomic flag the agent reads at the next "
+"approval; other state-mutating or control commands are refused with a "
+"hint to interrupt first, since they would race the in-flight turn."
+msgstr ""
+
+#: ../../../CHANGELOG.md:262
+msgid ""
+"Pre-fill leftover queued input into the prompt for review/edit when a "
+"turn finishes, instead of auto-submitting it as the next turn. Input "
+"typed while the agent is working is still injected into the running task;"
+" only input left over at the turn boundary now waits at an editable "
+"prompt (non-interactive/piped input keeps auto-submitting, since there is"
+" no one to confirm)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:264
+msgid ""
+"Collapse argument/usage tool-call rejections to a quiet dim one-liner "
+"(`tool X · rejected: <reason>`) in non-debug mode, instead of the full "
+"red `[failed]` + error block. These are usually self-corrected on retry; "
+"the full error still goes to the model and shows in debug, and real "
+"execution failures stay fully visible."
+msgstr ""
+
+#: ../../../CHANGELOG.md:267
+msgid ""
+"Moved the volatile `code_index` status out of the early `Environment` "
+"block (which sits ahead of the conversation history) into the late "
+"`Memory` section, so its `synced ↔ stale` churn no longer invalidates the"
+" cached conversation prefix every time files change or the indexer runs."
+msgstr ""
+
+#: ../../../CHANGELOG.md:269
+msgid "0.6.5 - 2026-06-22"
+msgstr ""
+
+#: ../../../CHANGELOG.md:272
+msgid ""
+"Surface each MCP tool's input JSON Schema to the model: the tools index "
+"now carries a compact (capped) schema per tool and "
+"`MCP(action=\"describe\")` emits the full schema, so the model can build "
+"nested arguments correctly instead of guessing."
+msgstr ""
+
+#: ../../../CHANGELOG.md:273
+msgid ""
+"Added MCP resource support: discover resources alongside tools "
+"(concurrently, best-effort), list them in the tools index, and read them "
+"via `MCP(action=\"list_resources\")` and `MCP(action=\"read_resource\", "
+"uri=...)`. Resource reads flow through the normal tool-result path so "
+"they land in cached conversation history."
+msgstr ""
+
+#: ../../../CHANGELOG.md:274
+msgid ""
+"Surface resource-like URIs referenced in MCP tool descriptions on the "
+"tool's index line, so doc references survive description truncation and "
+"stay discoverable."
+msgstr ""
+
+#: ../../../CHANGELOG.md:275
+msgid ""
+"List a server's resources in `@server` mention blocks, matching the tools"
+" index."
+msgstr ""
+
+#: ../../../CHANGELOG.md:276
+msgid ""
+"Auto-read a resource referenced by an MCP tool's description on the first"
+" call to that tool (once per uri per session, best-effort, web links "
+"skipped), attaching it to the call result on success and to the error on "
+"failure so argument-grammar docs reach the model on the first attempt and"
+" land in cached history."
+msgstr ""
+
+#: ../../../CHANGELOG.md:279
+msgid ""
+"Default the `MCP` tool `action` to `\"call\"` when omitted but "
+"`tool`/`arguments` are present, and make the unknown-action error "
+"actionable (lists valid actions and shows how to invoke a remote tool by "
+"name)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:282
+msgid ""
+"Render connected MCP servers that advertise resources but no tools in the"
+" tools index (previously gated on having ≥1 tool, so resource-only "
+"servers were mislabeled \"not connected\" and their resources hidden); "
+"`_pending_status` now distinguishes a connected-but-empty server from a "
+"disconnected one."
+msgstr ""
+
+#: ../../../CHANGELOG.md:284
+msgid "0.6.4 - 2026-06-21"
+msgstr ""
+
+#: ../../../CHANGELOG.md:287
+msgid ""
+"Added JSONL session persistence with append-only deltas for the normal "
+"save path and `nanocode --resume [UID]` for restoring saved sessions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:288
+msgid ""
+"Added a `latest` session pointer and a resume command hint printed when "
+"nanocode exits."
+msgstr ""
+
+#: ../../../CHANGELOG.md:289
+msgid ""
+"Added `nanocode --resume last` as an alias for resuming the latest saved "
+"session."
+msgstr ""
+
+#: ../../../CHANGELOG.md:290
+msgid ""
+"Render restored session history once on resume without re-running tools "
+"or commands."
+msgstr ""
+
+#: ../../../CHANGELOG.md:291
+msgid "Show the active session id in `/status`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:292
+msgid ""
+"Added session persistence coverage for snapshot/delta save/load, "
+"`latest`, usage/state/tool record roundtrips, missing snapshots, and exit"
+" resume hints."
+msgstr ""
+
+#: ../../../CHANGELOG.md:295
+msgid ""
+"Kept persisted session snapshots focused on necessary recovery data only,"
+" deriving runtime tool-result lookup state from saved tool records "
+"instead of storing config, settings, timestamps, git branch, or other "
+"rebuildable runtime data."
+msgstr ""
+
+#: ../../../CHANGELOG.md:296
+msgid ""
+"Skip first-save persistence for sessions with no recoverable content, "
+"avoiding empty snapshots and stale `latest` pointers."
+msgstr ""
+
+#: ../../../CHANGELOG.md:297
+msgid ""
+"Delete session files older than the configurable "
+"`runtime.session_retention_days` retention window on startup; the default"
+" is `7` days."
+msgstr ""
+
+#: ../../../CHANGELOG.md:298
+msgid ""
+"Treat retention and update-check interval settings as config-file policy "
+"rather than `/set` runtime mutations."
+msgstr ""
+
+#: ../../../CHANGELOG.md:299
+msgid ""
+"Split session snapshot encoding/merging from JSONL file storage, keeping "
+"`Session` as a thin owner of runtime state."
+msgstr ""
+
+#: ../../../CHANGELOG.md:300
+msgid ""
+"Resume now applies the current config/runtime flags (`--config`, "
+"`--yolo`, `--debug`, `--mcp`) while loading only conversation state from "
+"the snapshot."
+msgstr ""
+
+#: ../../../CHANGELOG.md:303
+msgid ""
+"Fixed command dispatch so ordinary non-command input reaches the agent "
+"instead of being treated as an unknown slash command."
+msgstr ""
+
+#: ../../../CHANGELOG.md:304
+msgid ""
+"Changed the resume marker to an internal system message so it does not "
+"affect latest-user compaction behavior."
+msgstr ""
+
+#: ../../../CHANGELOG.md:305
+msgid "Report resume/load errors as CLI errors instead of uncaught exceptions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:307
+msgid ""
+"Auto-submit queued input at round end: `queue_input_text` (typed but not "
+"confirmed) and unconsumed `pending_user_inputs` both get drained and "
+"submitted as the next user input; extracted as "
+"`CommandLoop.drain_queued_input()`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:308
+msgid ""
+"Clear blank `queue_input_text` even when it contains only whitespace, "
+"preventing stale whitespace from lingering in the input area."
+msgstr ""
+
+#: ../../../CHANGELOG.md:310
+msgid ""
+"Record auto-submitted queued input in CLI history via "
+"`FileHistory.append_string()`, so previously-queued text appears in "
+"prompt history like any manually typed input."
+msgstr ""
+
+#: ../../../CHANGELOG.md:312
+msgid "0.6.3 - 2026-06-21"
+msgstr ""
+
+#: ../../../CHANGELOG.md:315
+msgid ""
+"Added `Question` tool that pauses the agent to ask the user one or more "
+"questions (asked in sequence) when intent is genuinely ambiguous, a "
+"design choice affects the external shape (module structure, public API, "
+"naming), or prioritization is needed. Each question supports structured "
+"choices with optional dynamic previews and an optional `recommended` "
+"choice index (pre-selected and marked)."
+msgstr ""
+
+#: ../../../CHANGELOG.md:316
+msgid ""
+"Wired `Question` tool into the shared interactive selector with `j`/`k` "
+"navigation, dynamic per-choice preview, Rich markdown rendering of the "
+"question text, and a free-text fallback."
+msgstr ""
+
+#: ../../../CHANGELOG.md:317
+msgid ""
+"Echo the selected choice in the CLI after the interactive selector "
+"closes, giving clear feedback on what was chosen."
+msgstr ""
+
+#: ../../../CHANGELOG.md:318
+msgid ""
+"Prefix a position indicator (e.g. `(1/3)`) onto each question when "
+"several are asked in one `Question` call."
+msgstr ""
+
+#: ../../../CHANGELOG.md:321
+msgid ""
+"Refined `Question` tool DESCRIPTION, SYSTEM_PROMPT usage guidance, and "
+"README with clear principles: question only when intent is truly "
+"ambiguous, design affects external shape, or prioritization is needed. "
+"Skip internal details, contextually-determinable items, and already-"
+"specified matters."
+msgstr ""
+
+#: ../../../CHANGELOG.md:324
+msgid ""
+"GitTool: validate non-empty `argv` in `payload_args` with a clear error "
+"message when the model sends an empty command list."
+msgstr ""
+
+#: ../../../CHANGELOG.md:325
+msgid ""
+"Update the tracked commit-target branch (renamed `initial_git_branch` → "
+"`expected_git_branch`) after a tool-driven branch switch so commits on a "
+"branch nanocode switched to are not rejected, while still guarding "
+"against unexpected external switches."
+msgstr ""
+
+#: ../../../CHANGELOG.md:327
+msgid "0.6.2 - 2026-06-21"
+msgstr ""
+
+#: ../../../CHANGELOG.md:330
+msgid ""
+"Simplified the agent system prompt while preserving the main `TOOLS`, "
+"`FLOW`, `FILE STATE`, and `FINAL` sections."
+msgstr ""
+
+#: ../../../CHANGELOG.md:331
+msgid ""
+"Simplified MCP command handling and server config parsing by sharing "
+"command metadata and config field parsing helpers."
+msgstr ""
+
+#: ../../../CHANGELOG.md:334
+msgid ""
+"Reused one manager-owned MCP event loop for async MCP operations, "
+"including calls made while another event loop is already running."
+msgstr ""
+
+#: ../../../CHANGELOG.md:335
+msgid ""
+"Made MCP OAuth token storage reuse one store and shared path lock to "
+"avoid concurrent token file writes racing each other."
+msgstr ""
+
+#: ../../../CHANGELOG.md:336
+msgid ""
+"Allowed `env_http_headers.Authorization` when it is the only configured "
+"authorization source."
+msgstr ""
+
+#: ../../../CHANGELOG.md:337
+msgid ""
+"Rejected extra `/mcp` subcommand arguments instead of silently ignoring "
+"them."
+msgstr ""
+
+#: ../../../CHANGELOG.md:339
+msgid "0.6.1 - 2026-06-19"
+msgstr ""
+
+#: ../../../CHANGELOG.md:342
+msgid ""
+"Renamed `Note` fields: `goal` → `set_goal`, `plan` → `replace_plan`, "
+"`known` → `append_known`, `check` → `set_check`; added `replace_known` "
+"for full replacement of known facts."
+msgstr ""
+
+#: ../../../CHANGELOG.md:343
+msgid ""
+"Aligned `Note` schemas and prompt guidance so `replace_plan`, "
+"`append_known`, and `replace_known` are always arrays and can be empty "
+"when replacing state."
+msgstr ""
+
+#: ../../../CHANGELOG.md:344
+msgid ""
+"Split FILE STATE into its own prompt section and clarified it as the "
+"working view for visible file content and Edit anchors, while noting it "
+"may be partial."
+msgstr ""
+
+#: ../../../CHANGELOG.md:345
+msgid ""
+"MCP tool calls now confirm by default, auto-approving only tools "
+"explicitly marked read-only (`readOnlyHint`) or non-destructive "
+"(`destructiveHint: false`); undiscovered tools also require confirmation."
+msgstr ""
+
+#: ../../../CHANGELOG.md:348
+msgid ""
+"New Note field `replace_known` that completely replaces the known list, "
+"with test coverage."
+msgstr ""
+
+#: ../../../CHANGELOG.md:351
+msgid ""
+"Made `Note` updates transactional, so invalid fields no longer partially "
+"mutate session notes before returning a tool error."
+msgstr ""
+
+#: ../../../CHANGELOG.md:352
+msgid ""
+"Guarded MCP `login`/discovery error paths with the manager lock so they "
+"no longer race background discovery while mutating server tool/error "
+"state."
+msgstr ""
+
+#: ../../../CHANGELOG.md:354
+msgid "0.6.0 - 2026-06-18"
+msgstr ""
+
+#: ../../../CHANGELOG.md:357
+msgid ""
+"Added MCP client router support through a single `MCP` tool, with URL-"
+"based server configuration, bearer-token environment variable support, "
+"OAuth login/logout with persistent tokens, asynchronous tool discovery, "
+"compact model-visible MCP tool indexes, on-demand tool details, and "
+"`/mcp` inspection/refresh commands."
+msgstr ""
+
+#: ../../../CHANGELOG.md:358
+msgid ""
+"Added local stdio MCP servers via `command`/`args`/`env`, alongside the "
+"existing streamable-HTTP transport; each server is `url` or `command`, "
+"and stdio servers reject the HTTP-only auth options."
+msgstr ""
+
+#: ../../../CHANGELOG.md:359
+msgid ""
+"Added `@server` and `@server.tool` mentions in user input that inject a "
+"server's tool list or a tool's details into the turn, force discovery of "
+"undiscovered servers, report login/errors inline, and tab-complete server"
+" and tool names."
+msgstr ""
+
+#: ../../../CHANGELOG.md:360
+msgid ""
+"Added MCP coverage for result normalization, successful tool calls, "
+"context pruning, `/mcp tools NAME`, missing-server refresh handling, and "
+"stdio config parsing/validation."
+msgstr ""
+
+#: ../../../CHANGELOG.md:361
+msgid ""
+"Added bounded MCP connection timeouts, concise MCP connection-failure "
+"logs, a `--debug` flag for starting with debug mode enabled, and a "
+"`--mcp` selector for choosing MCP servers by name glob."
+msgstr ""
+
+#: ../../../CHANGELOG.md:364
+msgid ""
+"Refined the status bar with lowercase `mcp`, right-side loading "
+"animation, and semantic per-section colors."
+msgstr ""
+
+#: ../../../CHANGELOG.md:365
+msgid "Show MCP discovery progress in the status bar while servers are loading."
+msgstr ""
+
+#: ../../../CHANGELOG.md:366
+msgid ""
+"Render `/mcp` server and tool listings as Markdown tables for clearer "
+"terminal display."
+msgstr ""
+
+#: ../../../CHANGELOG.md:367
+msgid "Load configured MCP servers in parallel during discovery."
+msgstr ""
+
+#: ../../../CHANGELOG.md:368
+msgid ""
+"Include the MCP endpoint URL when OAuth login fails before an "
+"authorization URL is available."
+msgstr ""
+
+#: ../../../CHANGELOG.md:369
+msgid ""
+"Suppress duplicate FastMCP OAuth URL logs and omit OAuth-login-required "
+"notices from startup MCP error logs."
+msgstr ""
+
+#: ../../../CHANGELOG.md:370
+msgid ""
+"Skip MCP server discovery without startup error logs when bearer-token "
+"environment variables are missing."
+msgstr ""
+
+#: ../../../CHANGELOG.md:371
+msgid ""
+"List all enabled MCP servers in the model-visible index, adding a \"not "
+"yet available\" section for servers that are still discovering, need "
+"login, or errored, so the model never assumes a configured server is "
+"absent."
+msgstr ""
+
+#: ../../../CHANGELOG.md:372
+msgid ""
+"Enriched MCP tool-call logging with compact `key=value` arguments in the "
+"header (also shown in the approval preview), a success result summary "
+"(shape and payload size), and round-trip latency."
+msgstr ""
+
+#: ../../../CHANGELOG.md:373
+msgid ""
+"Steered the agent toward `InspectCode` for symbol navigation with a "
+"`SEARCH/NAV` prompt section, and surfaced the code-index status in the "
+"Environment context so it knows when the tool is usable."
+msgstr ""
+
+#: ../../../CHANGELOG.md:374
+msgid ""
+"Separated each round with a blank line after the user input and a rule "
+"before the agent's answer."
+msgstr ""
+
+#: ../../../CHANGELOG.md:375
+msgid ""
+"Clarified prompt guidance around FILE STATE snapshots, automatic "
+"Read/Edit refreshes, stale-anchor retries, and avoiding unchanged failed "
+"tool-call retries."
+msgstr ""
+
+#: ../../../CHANGELOG.md:376
+msgid ""
+"Tightened the system prompt's tool-choice guidance to prefer `Edit` for "
+"file changes, `Read` for known file ranges, `Search` for text lookup, and"
+" `InspectCode` for symbol navigation."
+msgstr ""
+
+#: ../../../CHANGELOG.md:377
+msgid ""
+"Added current git branch to Environment context while keeping branch-"
+"specific data out of the stable system prompt."
+msgstr ""
+
+#: ../../../CHANGELOG.md:380
+msgid ""
+"Expanded `Edit` no-op errors with current target-range content when "
+"anchored edits produce no changes, so agents can distinguish already-"
+"applied edits from wrong replacement content."
+msgstr ""
+
+#: ../../../CHANGELOG.md:381
+msgid ""
+"Guarded git branch safety so yolo mode cannot auto-approve branch-"
+"changing commands, and git commits refuse to run after the branch changes"
+" from the session start."
+msgstr ""
+
+#: ../../../CHANGELOG.md:383
+msgid "0.5.12 - 2026-06-15"
+msgstr ""
+
+#: ../../../CHANGELOG.md:386
+msgid ""
+"Preserved queued input typed during a running turn and prefilled it into "
+"the next prompt instead of dropping it at turn completion."
+msgstr ""
+
+#: ../../../CHANGELOG.md:388
+msgid "0.5.11 - 2026-06-12"
+msgstr ""
+
+#: ../../../CHANGELOG.md:391
+msgid ""
+"`InspectCode` gained `refs`, `impls`, `callers`, and `callees` modes, "
+"backed by `code-symbol-index` 0.3.0: behavior-classified references, "
+"implementor listing, and transitive call-chain walks (`depth`). `refs` "
+"hides import/attribute noise by default, with `ref_kind` to filter to an "
+"explicit subset or `all_kinds` to show everything; `callees` takes "
+"`loose` to include ambiguous cross-module matches; `refs`/`impls` page "
+"with `offset`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:394
+msgid "Bumped `code-symbol-index` floor to `>=0.3.0`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:396
+msgid "0.5.10 - 2026-06-02"
+msgstr ""
+
+#: ../../../CHANGELOG.md:399
+msgid "Cached gitignore patterns across tool calls with mtime-based invalidation."
+msgstr ""
+
+#: ../../../CHANGELOG.md:402
+msgid "Clarified Bash tool output limits in its description."
+msgstr ""
+
+#: ../../../CHANGELOG.md:403
+msgid ""
+"Strengthened assistant language prompt to reduce unnecessary `cd` "
+"commands."
+msgstr ""
+
+#: ../../../CHANGELOG.md:404
+msgid ""
+"Clarified Git tool description so the model sees it defaults to the cwd "
+"from Environment."
+msgstr ""
+
+#: ../../../CHANGELOG.md:406
+msgid "0.5.9 - 2026-06-01"
+msgstr ""
+
+#: ../../../CHANGELOG.md:409
+msgid "Colorized `Ctrl-A` full edit previews when shown through `less`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:411
+msgid "0.5.8 - 2026-06-01"
+msgstr ""
+
+#: ../../../CHANGELOG.md:414
+msgid "Added `Ctrl-A` full edit preview in an external pager during approval."
+msgstr ""
+
+#: ../../../CHANGELOG.md:417
+msgid "Compact oversized current turns instead of only prior history."
+msgstr ""
+
+#: ../../../CHANGELOG.md:418
+msgid "Removed thin internal wrappers without changing behavior."
+msgstr ""
+
+#: ../../../CHANGELOG.md:421
+msgid "Rejected broad `git add` commands unless explicit file paths are supplied."
+msgstr ""
+
+#: ../../../CHANGELOG.md:422
+msgid ""
+"Stopped exposing the output-language sentinel inside model-visible file "
+"state."
+msgstr ""
+
+#: ../../../CHANGELOG.md:424
+msgid "0.5.7 - 2026-05-30"
+msgstr ""
+
+#: ../../../CHANGELOG.md:427
+msgid ""
+"Encouraged early `Note` usage for multi-step work with goal and plan "
+"updates."
+msgstr ""
+
+#: ../../../CHANGELOG.md:428
+msgid ""
+"Added lightweight empty-memory guidance when goal or plan has not been "
+"set."
+msgstr ""
+
+#: ../../../CHANGELOG.md:429
+msgid ""
+"Ordered `FILE STATE` files by most recent visible Read/Edit source before"
+" stable path fallback."
+msgstr ""
+
+#: ../../../CHANGELOG.md:431
+msgid "0.5.6 - 2026-05-30"
+msgstr ""
+
+#: ../../../CHANGELOG.md:434
+msgid "Added a visible purple approval wait indicator."
+msgstr ""
+
+#: ../../../CHANGELOG.md:435
+msgid ""
+"Expanded compact logic tests around latest-turn retention, recent-message"
+" windows, fallback trimming, and tool-result preservation."
+msgstr ""
+
+#: ../../../CHANGELOG.md:438
+msgid "Clarified prompt rules for user-visible interim output and final answers."
+msgstr ""
+
+#: ../../../CHANGELOG.md:439
+msgid ""
+"Simplified core flow by removing thin wrappers and duplicate tool-schema "
+"name extraction."
+msgstr ""
+
+#: ../../../CHANGELOG.md:442
+msgid ""
+"Preserved raw tool results referenced from compact summaries so `tr.N` "
+"keys remain recallable."
+msgstr ""
+
+#: ../../../CHANGELOG.md:443
+msgid "Improved transient model error retry detection and final retry reporting."
+msgstr ""
+
+#: ../../../CHANGELOG.md:445
+msgid "0.5.5 - 2026-05-30"
+msgstr ""
+
+#: ../../../CHANGELOG.md:448
+msgid ""
+"Tightened the system prompt around FILE STATE, anchored edits, and final-"
+"answer flow."
+msgstr ""
+
+#: ../../../CHANGELOG.md:451
+msgid ""
+"Added limited automatic retries for transient model request failures such"
+" as 5xx, rate limits, and timeouts."
+msgstr ""
+
+#: ../../../CHANGELOG.md:453
+msgid "0.5.4 - 2026-05-29"
+msgstr ""
+
+#: ../../../CHANGELOG.md:456
+msgid ""
+"Reworked running-turn context as a current turn conversation, preserving "
+"mid-turn assistant text and appended user input."
+msgstr ""
+
+#: ../../../CHANGELOG.md:457
+msgid ""
+"Made running-turn appended input visible through a `+>` prompt and "
+"compact `+N` status indicator."
+msgstr ""
+
+#: ../../../CHANGELOG.md:460
+msgid ""
+"Started Bash live preview before command output so the `+>` prompt cannot"
+" cover it."
+msgstr ""
+
+#: ../../../CHANGELOG.md:461
+msgid "Avoided extra approval prompt line clearing after confirmation."
+msgstr ""
+
+#: ../../../CHANGELOG.md:463
+msgid "0.5.3 - 2026-05-29"
+msgstr ""
+
+#: ../../../CHANGELOG.md:466
+msgid "Added support for additional user input during running agent turns."
+msgstr ""
+
+#: ../../../CHANGELOG.md:467
+msgid "Added multiline approval input for pasted refusal reasons."
+msgstr ""
+
+#: ../../../CHANGELOG.md:470
+msgid ""
+"Simplified approval handling so direct non-yes input is treated as a "
+"refusal reason."
+msgstr ""
+
+#: ../../../CHANGELOG.md:473
+msgid ""
+"Fixed CreateFile escaped-newline handling so preview and written content "
+"stay multiline."
+msgstr ""
+
+#: ../../../CHANGELOG.md:474
+msgid ""
+"Made CreateFile/Edit code-index updates use the tool call path as a "
+"fallback."
+msgstr ""
+
+#: ../../../CHANGELOG.md:476
+msgid "0.5.2 - 2026-05-29"
+msgstr ""
+
+#: ../../../CHANGELOG.md:479
+msgid ""
+"Animated the statusbar code-index refresh indicator while keeping "
+"`/status` semantic."
+msgstr ""
+
+#: ../../../CHANGELOG.md:482
+msgid ""
+"Switched startup code-index refresh to the `code-symbol-index` async "
+"refresh API to avoid parser thread ownership errors."
+msgstr ""
+
+#: ../../../CHANGELOG.md:484
+msgid "0.5.1 - 2026-05-29"
+msgstr ""
+
+#: ../../../CHANGELOG.md:487
+msgid ""
+"Added the current date to context immediately before the current user "
+"request."
+msgstr ""
+
+#: ../../../CHANGELOG.md:490
+msgid ""
+"Sanitized context/debug/model-request text so surrogate characters from "
+"terminal input cannot break UTF-8 encoding."
+msgstr ""
+
+#: ../../../CHANGELOG.md:491
+msgid ""
+"Made Search ignore hidden paths and `.gitignore` paths consistently "
+"across ripgrep and Python fallback paths."
+msgstr ""
+
+#: ../../../CHANGELOG.md:493
+msgid "0.5.0 - 2026-05-28"
+msgstr ""
+
+#: ../../../CHANGELOG.md:496
+msgid ""
+"Added cached system information to the top of model context: cwd, OS, "
+"arch, shell timeout, and detected commands."
+msgstr ""
+
+#: ../../../CHANGELOG.md:497
+msgid "Added configurable `runtime.max_context_tokens`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:498
+msgid ""
+"Added key behavior tests for tools, agent loop, context management, "
+"provider adaptation, and code index integration."
+msgstr ""
+
+#: ../../../CHANGELOG.md:501
+msgid ""
+"Replaced the legacy implementation with the smaller v1 core in "
+"`nanocode.py`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:502
+msgid ""
+"Rebuilt README around the current command set, context design, and "
+"screenshot."
+msgstr ""
+
+#: ../../../CHANGELOG.md:503
+msgid "Simplified tool schemas for broader OpenAI-compatible provider support."
+msgstr ""
+
+#: ../../../CHANGELOG.md:504
+msgid ""
+"Improved tool-call display for Search and Recall, and surfaced "
+"intermediate assistant progress before tool calls."
+msgstr ""
+
+#: ../../../CHANGELOG.md:507
+msgid ""
+"Fixed Moonshot/Kimi-compatible tool schemas by avoiding unsupported "
+"schema forms."
+msgstr ""
+
+#: ../../../CHANGELOG.md:508
+msgid ""
+"Fixed repeated command probing in context rendering by caching system "
+"command detection per session."
+msgstr ""
+
+#: ../../../CHANGELOG.md:510
+msgid "0.4.11 - 2026-05-24"
+msgstr ""
+
+#: ../../../CHANGELOG.md:513
+msgid "Bumped version from 0.4.10 to 0.4.11."
+msgstr ""
+
+#: ../../../CHANGELOG.md:514
+msgid "0.4.8 - 2026-05-23"
+msgstr ""
+
+#: ../../../CHANGELOG.md:517
+msgid "Renamed the `EditFile` tool to `Edit` across the codebase and tests."
+msgstr ""
+
+#: ../../../CHANGELOG.md:519
+msgid "0.4.5 - 2026-05-21"
+msgstr ""
+
+#: ../../../CHANGELOG.md:522
+msgid "Updated the built-in code index integration for `code-symbol-index` 0.1.7."
+msgstr ""
+
+#: ../../../CHANGELOG.md:523
+msgid "Added indexed symbol filters for kind, path, and exact matching."
+msgstr ""
+
+#: ../../../CHANGELOG.md:524
+msgid ""
+"Added file-local symbol outlines and bounded pending-index details in "
+"`/status`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:526
+msgid "0.4.4 - 2026-05-20"
+msgstr ""
+
+#: ../../../CHANGELOG.md:529
+msgid ""
+"Added built-in indexed code navigation backed by project data and "
+"`/index` for manual init/sync."
+msgstr ""
+
+#: ../../../CHANGELOG.md:532
+msgid ""
+"Replaced the external code-navigation CLI integration with the bundled "
+"code index API."
+msgstr ""
+
+#: ../../../CHANGELOG.md:533
+msgid ""
+"Hid code navigation tools until an index exists, while lightly updating "
+"existing indexes at startup."
+msgstr ""
+
+#: ../../../CHANGELOG.md:534
+msgid ""
+"Updated status/docs to describe code index availability without exposing "
+"dependency-install wording."
+msgstr ""
+
+#: ../../../CHANGELOG.md:536
+msgid "0.4.3 - 2026-05-20"
+msgstr ""
+
+#: ../../../CHANGELOG.md:539
+msgid "Removed stable knowledge state while keeping current-task known facts."
+msgstr ""
+
+#: ../../../CHANGELOG.md:540
+msgid ""
+"Extracted shared numbered-content and line-range helpers for tool "
+"output/range handling."
+msgstr ""
+
+#: ../../../CHANGELOG.md:541
+msgid "Trimmed thin helper wrappers in List and indexed code-inspection tools."
+msgstr ""
+
+#: ../../../CHANGELOG.md:543
+msgid "0.4.2 - 2026-05-19"
+msgstr ""
+
+#: ../../../CHANGELOG.md:546
+msgid ""
+"Added indexed code inspection tools for symbol lookup, symbol "
+"investigation, and file outlines when the local index is available."
+msgstr ""
+
+#: ../../../CHANGELOG.md:547
+msgid "Added queued user feedback during long-running turns."
+msgstr ""
+
+#: ../../../CHANGELOG.md:548
+msgid "Added `PatchFile` for multi-location file edits."
+msgstr ""
+
+#: ../../../CHANGELOG.md:551
+msgid "Moved model calls to the OpenAI SDK and function-tool protocol."
+msgstr ""
+
+#: ../../../CHANGELOG.md:552
+msgid "Reworked task-shape prompts for chat, one-shot tasks, and tracked tasks."
+msgstr ""
+
+#: ../../../CHANGELOG.md:553
+msgid ""
+"Prioritized indexed code inspection for structural lookup while keeping "
+"Search/Read for exact literals and edit ranges."
+msgstr ""
+
+#: ../../../CHANGELOG.md:554
+msgid ""
+"Improved terminal UX with persistent status, queued-input handling, Bash "
+"live preview, and terminal-friendly assistant output rules."
+msgstr ""
+
+#: ../../../CHANGELOG.md:555
+msgid "Renamed `ListDir` to `List`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:556
+msgid ""
+"Improved `Read`, `Edit`, `ReplaceRange`, `PatchFile`, `Bash`, and `Git` "
+"tool guidance."
+msgstr ""
+
+#: ../../../CHANGELOG.md:557
+msgid ""
+"Simplified gate behavior so only deterministic, correctable model errors "
+"are refused."
+msgstr ""
+
+#: ../../../CHANGELOG.md:560
+msgid "Fixed duplicate final replies for goal-only text answers."
+msgstr ""
+
+#: ../../../CHANGELOG.md:561
+msgid ""
+"Fixed repeated recall loops and several format/tool-name compatibility "
+"issues."
+msgstr ""
+
+#: ../../../CHANGELOG.md:562
+msgid "Fixed PatchFile diagnostics and empty-hunk handling."
+msgstr ""
+
+#: ../../../CHANGELOG.md:563
+msgid ""
+"Fixed queued feedback delivery, Ctrl-C/Ctrl-D handling, and Bash "
+"interrupt reporting."
+msgstr ""
+
+#: ../../../CHANGELOG.md:565
+msgid "0.3.35 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:568
+msgid ""
+"Added batched `ReplaceRange` edits for multiple independent ranges in the"
+" same file."
+msgstr ""
+
+#: ../../../CHANGELOG.md:569
+msgid ""
+"Added a design document covering agent state, context construction, tool-"
+"result storage, observe policy, and verification."
+msgstr ""
+
+#: ../../../CHANGELOG.md:572
+msgid "Aligned tool-result context layout with the design document."
+msgstr ""
+
+#: ../../../CHANGELOG.md:573
+msgid ""
+"Refined tool-result context reduction around unreduced raw results, "
+"retained results, and checkpoint-based pruning."
+msgstr ""
+
+#: ../../../CHANGELOG.md:574
+msgid "Compressed ACT and OBSERVE system prompts."
+msgstr ""
+
+#: ../../../CHANGELOG.md:575
+msgid ""
+"Reduced routine OBSERVE triggers by raising the pending-result threshold "
+"and keeping ordinary tool failures in ACT for repair."
+msgstr ""
+
+#: ../../../CHANGELOG.md:576
+msgid ""
+"Simplified agent gate and feedback handling, including single active plan"
+" item normalization."
+msgstr ""
+
+#: ../../../CHANGELOG.md:577
+msgid ""
+"Added soft feedback for state-update-only ACT turns so models continue "
+"with frontier tools, verification, or completion."
+msgstr ""
+
+#: ../../../CHANGELOG.md:578
+msgid ""
+"Highlighted recognized slash commands and reported unknown slash commands"
+" directly."
+msgstr ""
+
+#: ../../../CHANGELOG.md:581
+msgid ""
+"Accepted harmless model output variants including trailing progress text,"
+" action type casing, and `message` action aliases."
+msgstr ""
+
+#: ../../../CHANGELOG.md:582
+msgid ""
+"Ignored pending verification requests instead of treating them as "
+"blocking model output."
+msgstr ""
+
+#: ../../../CHANGELOG.md:584
+msgid "0.3.34 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:587
+msgid ""
+"Trigger observe by unresolved pending tool-result count only, instead of "
+"consecutive tool batch count."
+msgstr ""
+
+#: ../../../CHANGELOG.md:589
+msgid "0.3.33 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:592
+msgid ""
+"Keep unresolved pending tool results visible as raw ACT context until "
+"observe mode explicitly keeps or forgets them."
+msgstr ""
+
+#: ../../../CHANGELOG.md:594
+msgid "0.3.32 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:597
+msgid ""
+"Removed the pending tool-result character threshold for observe mode; "
+"observe now triggers from failures, pending result count, or consecutive "
+"tool turns."
+msgstr ""
+
+#: ../../../CHANGELOG.md:599
+msgid "0.3.31 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:602
+msgid ""
+"Require a new user turn with retained task context to align via `start`, "
+"`goal`, or `plan` before running more tools."
+msgstr ""
+
+#: ../../../CHANGELOG.md:605
+msgid "Removed an unused pytest import from bash tool tests."
+msgstr ""
+
+#: ../../../CHANGELOG.md:607
+msgid "0.3.30 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:610
+msgid ""
+"Status bar now shows compact token totals and model stream rate, "
+"including `turn:` duration labeling."
+msgstr ""
+
+#: ../../../CHANGELOG.md:611
+msgid ""
+"Stream rate uses live character-based estimation and completion-token "
+"usage when available."
+msgstr ""
+
+#: ../../../CHANGELOG.md:613
+msgid "0.3.29 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:616
+msgid ""
+"Ignored code-fence-only text when converting interleaved model output "
+"into progress actions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:618
+msgid "0.3.28 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:621
+msgid ""
+"Status bar now labels model calls as `working`, `observing`, or "
+"`compacting`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:622
+msgid ""
+"Removed the hard gate for multiple `doing` plan items while keeping "
+"prompt guidance to prefer a single active item."
+msgstr ""
+
+#: ../../../CHANGELOG.md:625
+msgid ""
+"Preserved specific retry notices such as `err:format` instead of "
+"overwriting them with generic gate notices."
+msgstr ""
+
+#: ../../../CHANGELOG.md:626
+msgid ""
+"Accepted unmarked action streams with interleaved progress text between "
+"JSON actions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:627
+msgid ""
+"Normalized tool-name action types such as `Search` or `ListDir` into tool"
+" actions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:629
+msgid "0.3.27 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:632
+msgid ""
+"Added a nanocode `User-Agent` header to provider requests so OpenAI-"
+"compatible gateways that reject Python urllib defaults can accept chat "
+"and model-list requests."
+msgstr ""
+
+#: ../../../CHANGELOG.md:634
+msgid "0.3.26 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:637
+msgid ""
+"Generated configs now leave `reasoning_payload` unset by default for "
+"broader provider compatibility."
+msgstr ""
+
+#: ../../../CHANGELOG.md:638
+msgid ""
+"Documented when to enable `reasoning_payload`, including OpenRouter-style"
+" reasoning providers."
+msgstr ""
+
+#: ../../../CHANGELOG.md:640
+msgid "0.3.25 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:643
+msgid ""
+"Added Vim-style selector search with `/keyword`, `j`/`k` navigation, and "
+"step-back Esc behavior."
+msgstr ""
+
+#: ../../../CHANGELOG.md:644
+msgid ""
+"Made `/model` reasoning selection transactional so Esc returns to model "
+"selection instead of applying a partial change."
+msgstr ""
+
+#: ../../../CHANGELOG.md:646
+msgid "0.3.24 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:649
+msgid ""
+"`/model` now groups configured `available_models` first and appends "
+"deduplicated models discovered from the provider."
+msgstr ""
+
+#: ../../../CHANGELOG.md:650
+msgid ""
+"Default generated config now documents `available_models` without writing"
+" an empty setting."
+msgstr ""
+
+#: ../../../CHANGELOG.md:651
+msgid ""
+"Split latest/recent and kept tool-result context budgets for steadier "
+"context growth."
+msgstr ""
+
+#: ../../../CHANGELOG.md:652
+msgid "Compacted tool-result CLI output while keeping result keys visible."
+msgstr ""
+
+#: ../../../CHANGELOG.md:653
+msgid ""
+"Removed `ApplyPatch`; editing now uses `Edit` for tiny literal changes "
+"and `ReplaceRange` for read-backed focused ranges."
+msgstr ""
+
+#: ../../../CHANGELOG.md:654
+msgid ""
+"Refined editing prompts to prefer minimal new-file skeletons followed by "
+"focused `ReplaceRange` chunks."
+msgstr ""
+
+#: ../../../CHANGELOG.md:657
+msgid ""
+"Stopped executing later tool calls after the first failed tool call in a "
+"batch."
+msgstr ""
+
+#: ../../../CHANGELOG.md:658
+msgid ""
+"Reported Ctrl-C interrupted Bash runs as explicit interrupted tool "
+"results."
+msgstr ""
+
+#: ../../../CHANGELOG.md:660
+msgid "0.3.23 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:663
+msgid ""
+"Reworked tool-result context around latest, recent, pending, and kept "
+"results."
+msgstr ""
+
+#: ../../../CHANGELOG.md:664
+msgid "Increased default provider and plan-mode response timeouts."
+msgstr ""
+
+#: ../../../CHANGELOG.md:665
+msgid ""
+"Simplified result keep/forget handling and removed stale evidence naming "
+"from agent context."
+msgstr ""
+
+#: ../../../CHANGELOG.md:668
+msgid ""
+"Kept non-argument tool failures visible to observe mode while treating "
+"argument errors as immediate feedback."
+msgstr ""
+
+#: ../../../CHANGELOG.md:669
+msgid ""
+"Preserved Recall access to stored tool logs while allowing noisy context "
+"entries to be forgotten."
+msgstr ""
+
+#: ../../../CHANGELOG.md:671
+msgid "0.3.22 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:674
+msgid ""
+"Preserved tool-result store entries referenced by Known, Hypotheses, and "
+"Evidence."
+msgstr ""
+
+#: ../../../CHANGELOG.md:675
+msgid ""
+"Aligned plan-mode verify guidance with the implemented verify action "
+"shape."
+msgstr ""
+
+#: ../../../CHANGELOG.md:678
+msgid ""
+"Generated hypothesis status prompt schema from the enum to avoid prompt "
+"drift."
+msgstr ""
+
+#: ../../../CHANGELOG.md:680
+msgid "0.3.21 - 2026-05-16"
+msgstr ""
+
+#: ../../../CHANGELOG.md:683
+msgid ""
+"Added investigation hypotheses, including `dropped` for branches that are"
+" no longer worth tracking."
+msgstr ""
+
+#: ../../../CHANGELOG.md:684
+msgid ""
+"Added evidence forgetting so ruled-out or dropped branches can release "
+"old tool results from context."
+msgstr ""
+
+#: ../../../CHANGELOG.md:687
+msgid ""
+"Tightened completion gates, verification blockers, and compact state "
+"update grouping."
+msgstr ""
+
+#: ../../../CHANGELOG.md:688
+msgid ""
+"Simplified Search argument parsing and removed legacy knowledge-update "
+"behavior."
+msgstr ""
+
+#: ../../../CHANGELOG.md:689
+msgid "Made provider reasoning payload shape configurable."
+msgstr ""
+
+#: ../../../CHANGELOG.md:691
+msgid "0.3.20 - 2026-05-15"
+msgstr ""
+
+#: ../../../CHANGELOG.md:694
+msgid ""
+"Clarified Search tool guidance so models use at most one `glob=` per "
+"Search action and split multiple globs into multiple actions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:696
+msgid "0.3.19 - 2026-05-15"
+msgstr ""
+
+#: ../../../CHANGELOG.md:699
+msgid ""
+"Observe mode now requires every latest tool-result key to be covered by "
+"either `evidence` or `discard`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:700
+msgid ""
+"Verification pass/fail/block tool results are treated as decision-"
+"changing evidence until verification is recorded."
+msgstr ""
+
+#: ../../../CHANGELOG.md:703
+msgid ""
+"Prevented partial observe checkpoints from silently dropping unhandled "
+"tool results."
+msgstr ""
+
+#: ../../../CHANGELOG.md:705
+msgid "0.3.18 - 2026-05-15"
+msgstr ""
+
+#: ../../../CHANGELOG.md:708
+msgid ""
+"Added `provider.<name>.available_models` and an interactive `/model` "
+"selector."
+msgstr ""
+
+#: ../../../CHANGELOG.md:709
+msgid "Added an interactive `/provider` selector."
+msgstr ""
+
+#: ../../../CHANGELOG.md:710
+msgid "Added reasoning effort selection after changing models."
+msgstr ""
+
+#: ../../../CHANGELOG.md:713
+msgid ""
+"Selection prompts now use a subtle selected-item background, support "
+"`j`/`k`, and clear after completion."
+msgstr ""
+
+#: ../../../CHANGELOG.md:714
+msgid ""
+"Removed the redundant `keep current` option from selection prompts; "
+"current values are marked inline."
+msgstr ""
+
+#: ../../../CHANGELOG.md:715
+msgid ""
+"Removed the startup status snapshot now that the persistent status bar is"
+" always shown."
+msgstr ""
+
+#: ../../../CHANGELOG.md:718
+msgid "Disallowed no-value `/set provider.key` and `/set provider.url` queries."
+msgstr ""
+
+#: ../../../CHANGELOG.md:720
+msgid "0.3.17 - 2026-05-15"
+msgstr ""
+
+#: ../../../CHANGELOG.md:723
+msgid ""
+"Added plan mode with readonly tool limits, plan-specific timeouts, and "
+"stricter plan-mode completion formatting."
+msgstr ""
+
+#: ../../../CHANGELOG.md:724
+msgid ""
+"Added persistent prompt status display while keeping active status "
+"updates during agent work."
+msgstr ""
+
+#: ../../../CHANGELOG.md:725
+msgid ""
+"Added completion pressure gates so settled tasks finish by default unless"
+" the plan is reopened with context."
+msgstr ""
+
+#: ../../../CHANGELOG.md:726
+msgid ""
+"Added global runtime data storage under `~/.nanocode`, with per-session "
+"debug/tool-result logs and per-project user rules."
+msgstr ""
+
+#: ../../../CHANGELOG.md:729
+msgid "Replaced project-local `[paths].nanocode_dir` with `[paths].data_dir`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:730
+msgid "Moved prompt history to global `~/.nanocode/history`."
+msgstr ""
+
+#: ../../../CHANGELOG.md:731
+msgid ""
+"Replaced `/clean-logs` with `/clean`, which removes tool-result logs "
+"across all stored sessions."
+msgstr ""
+
+#: ../../../CHANGELOG.md:732
+msgid ""
+"Compact observed tool-call results after they have been digested into "
+"agent state."
+msgstr ""
+
+#: ../../../CHANGELOG.md:735
+msgid "Rejected chat actions in plan mode."
+msgstr ""
+
+#: ../../../CHANGELOG.md:736
+msgid ""
+"Tightened blocked verification completion so it requires explicit "
+"user/manual confirmation context."
+msgstr ""
+
+#: ../../../CHANGELOG.md:737
+msgid ""
+"Kept unbounded tool-result logs available on disk while bounded results "
+"stay in model context."
+msgstr ""
+

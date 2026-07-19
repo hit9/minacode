@@ -1,0 +1,110 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the nanocode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: nanocode 0.9\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-19 02:56-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../skills.md:1
+msgid "Skills"
+msgstr "Skills"
+
+#: ../../skills.md:3
+msgid ""
+"A **skill** is a reusable pack of instructions the agent loads only when it's needed — a release "
+"checklist, a project convention, a multi-step procedure. Keeping the <span class=\"marker\">full "
+"text out of context until it's used</span> means you can have many skills without bloating every "
+"request."
+msgstr ""
+"**Skill** 是一组按需加载的可复用指令，例如 release checklist、项目约定或多步流程。在真正使用前，<span class=\"marker\">完整内容不会进入 "
+"context</span>，因此安装很多 skill 也不会让每次请求都变大。"
+
+#: ../../skills.md:8
+msgid "Creating and installing skills"
+msgstr "创建和安装 skill"
+
+#: ../../skills.md:10
+msgid "What a skill looks like"
+msgstr "Skill 的结构"
+
+#: ../../skills.md:12
+msgid "A skill is a folder containing a `SKILL.md` file with `name` and `description` frontmatter:"
+msgstr "每个 skill 是一个包含 `SKILL.md` 的目录。文件 frontmatter 中必须有 `name` 和 `description`："
+
+#: ../../skills.md:32
+msgid ""
+"nanocode only sees the `name` and `description` until the skill is used — the full body loads on "
+"demand."
+msgstr "使用 skill 前，nanocode 只会看到它的 `name` 和 `description`；正文会按需加载。"
+
+#: ../../skills.md:35
+msgid "Where skills come from"
+msgstr "Skill 的来源"
+
+#: ../../skills.md:37
+msgid "nanocode discovers skills from two places:"
+msgstr "nanocode 从两个位置发现 skill："
+
+#: ../../skills.md:39
+msgid "`.nanocode/skills/` — project-local, checked in with the repo"
+msgstr "`.nanocode/skills/` — 项目级 skill，可随仓库提交"
+
+#: ../../skills.md:40
+msgid ""
+"`~/.nanocode/skills/` — your personal skills, available everywhere (under `<data_dir>/skills/` "
+"when `paths.data_dir` is customized)"
+msgstr "`~/.nanocode/skills/` — 个人 skill，在所有项目中可用；自定义 `paths.data_dir` 后位于 `<data_dir>/skills/`"
+
+#: ../../skills.md:43
+msgid "If both define the same name, the **project** skill wins. List what's installed with `/skills`."
+msgstr "如果两处存在同名 skill，**项目级**版本优先。使用 `/skills` 查看已安装列表。"
+
+#: ../../skills.md:46
+msgid "Using skills"
+msgstr "使用 skill"
+
+#: ../../skills.md:48
+msgid "**On demand** — nanocode loads a skill itself when it's relevant to your request."
+msgstr "**按需加载** — 当请求与某个 skill 相关时，nanocode 会自行加载。"
+
+#: ../../skills.md:49
+msgid ""
+"**Inline** — type `$name` in a message (Tab-completes) to load a skill yourself <span "
+"class=\"marker\">for that turn</span>."
+msgstr "**行内引用** — 在消息中输入 `$name`（支持 Tab 补全），为<span class=\"marker\">当前一轮</span>显式加载该 skill。"
+
+#: ../../skills.md:52
+msgid "Using $skill mention to load a skill's instructions inline"
+msgstr "使用 `$skill` 引用行内加载 skill 指令"
+
+#: ../../skills.md:57
+msgid "Loading a skill with $name inline."
+msgstr "通过 `$name` 行内加载 skill。"
+
+#: ../../skills.md:60
+msgid "Bundled scripts"
+msgstr "配套脚本"
+
+#: ../../skills.md:62
+#, python-brace-format
+msgid ""
+"A skill can ship helper scripts alongside `SKILL.md`. Inside the body, `{skill_dir}` (or "
+"`${SKILL_DIR}`) expands to the skill's absolute path, so instructions can point the agent at a "
+"script to run through Bash:"
+msgstr ""
+"Skill 可以在 `SKILL.md` 旁附带辅助脚本。正文中的 `{skill_dir}`（或 `${SKILL_DIR}`）会展开为 skill 的绝对目录，因此可以让 agent 通过 "
+"Bash 运行脚本："
+

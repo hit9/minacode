@@ -1,5 +1,6 @@
 build
 docs/_build/
+docs/locale/**/*.mo
 demo*/
 *.egg-info
 __pycache__/

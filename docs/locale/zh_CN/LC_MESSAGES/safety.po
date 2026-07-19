@@ -1,0 +1,89 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the nanocode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: nanocode 0.9\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-19 02:56-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../safety.md:1
+msgid "Safety"
+msgstr "安全"
+
+#: ../../safety.md:3
+msgid "Use at your own risk"
+msgstr "使用风险自负"
+
+#: ../../safety.md:5
+msgid ""
+"nanocode edits files and runs shell commands in the environment where you start it. It does "
+"**not** sandbox itself."
+msgstr "nanocode 会在启动环境中编辑文件并执行 shell 命令，**自身不提供 sandbox**。"
+
+#: ../../safety.md:9
+msgid ""
+"nanocode acts directly in your environment. Through its [tools](tools.md) it can <span "
+"class=\"marker\">read and edit files beyond the working directory and run any shell "
+"command</span>. There is no built-in isolation, so treat it with the same care as running those "
+"commands yourself."
+msgstr ""
+"nanocode 直接在你的环境中工作。它可以通过[工具](tools.md)<span class=\"marker\">读取和编辑工作目录之外的文件，并运行任何 shell "
+"命令</span>。由于没有内置隔离，请像对待自己执行的命令一样谨慎使用。"
+
+#: ../../safety.md:14
+msgid "Built-in guardrails"
+msgstr "内置保护"
+
+#: ../../safety.md:16
+msgid ""
+"**Confirmations.** File-changing and command-running tools — Edit, Bash, Job, and MCP calls — ask"
+" before they act. <span class=\"marker\">This is on by default</span>; `--yolo` and `/yolo` turn "
+"it off."
+msgstr ""
+"**操作确认。** Edit、Bash、Job 和 MCP call 等修改文件或执行命令的工具，在行动前会请求确认。<span "
+"class=\"marker\">该保护默认启用</span>；`--yolo` 和 `/yolo` 会将其关闭。"
+
+#: ../../safety.md:19
+msgid ""
+"**Anchored edits.** Edits are tied to `line:hash` anchors and rejected if the file changed "
+"underneath, so the agent can't silently patch the wrong lines. See [Tools](tools.md)."
+msgstr "**锚点编辑。** Edit 使用 `line:hash` 锚点；如果文件内容已变化，编辑会被拒绝，避免 agent 静默修改错误位置。参见[工具](tools.md)。"
+
+#: ../../safety.md:22
+msgid ""
+"**Reviewable changes.** `/diff` shows exactly what changed this round and across the session "
+"before you rely on it."
+msgstr "**可审查的修改。** `/diff` 会显示本轮和整个 session 的所有修改，便于在依赖结果前进行检查。"
+
+#: ../../safety.md:25
+msgid "Reducing risk"
+msgstr "降低风险"
+
+#: ../../safety.md:27
+msgid "Work inside a **git repository** so every edit is reviewable and reversible."
+msgstr "在 **git 仓库**中工作，确保每次修改都能审查和恢复。"
+
+#: ../../safety.md:28
+msgid "Keep **confirmations on** until you trust a workflow; only reach for `--yolo` when you do."
+msgstr "在确认工作流可信之前保持**操作确认**开启；谨慎使用 `--yolo`。"
+
+#: ../../safety.md:29
+msgid "Only connect [MCP](mcp.md) servers you trust — local servers run programs on your machine."
+msgstr "只连接可信的 [MCP](mcp.md) server；本地 server 会在你的机器上运行程序。"
+
+#: ../../safety.md:30
+msgid "For untrusted repositories, or when running unattended, put nanocode inside a **container or VM**."
+msgstr "对不可信仓库或无人值守任务，请在**容器或虚拟机**中运行 nanocode。"
+
