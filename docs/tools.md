@@ -1,55 +1,83 @@
 # Tools
 
-You don't run tools yourself — you describe a goal and nanocode does the work. It helps to
-know what it's capable of.
-
-- **Read and search** files across your project. Search skips hidden, binary, and gitignored
-  files.
-- **Navigate code** — jump to definitions, callers, and implementations using the
-  [code symbol index](#code-symbol-index). Build it with `/index`.
-- **Edit files** safely — before applying a change it
-  <span class="marker">checks the file hasn't changed underneath</span>, so it won't patch the
-  wrong place.
-- **Run commands**, including long-running ones in the background (list them with `/ps`).
-- **Keep working notes** — a goal, a plan, and facts it has learned — so it stays on track
-  through a long task.
-- **Ask you** when a decision is genuinely yours to make.
+nanocode uses tools to inspect your project and act on it. You describe the outcome you want;
+the agent chooses the tools. Tool calls are shown in the terminal as they run. They are separate
+from the `/` commands you type yourself. Read-only tools may run concurrently; actions that can
+change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 
 ## Built-in tools
 
-These are the tools nanocode exposes to the model. They are separate from the `/` commands
-you type at the prompt. `Skill` appears only when skills are installed; `MCP` appears after
-a connected server exposes tools or resources.
+::::{list-table}
+:header-rows: 1
+:widths: 18 82
+:class: tool-reference
 
-| Tool | Purpose | Confirmation |
-|---|---|---|
-| `Read` | Read anchored line ranges from UTF-8 files | Only outside the project |
-| `Search` | Search text with regular expressions, skipping hidden, binary, and gitignored files | Only outside the project |
-| `InspectCode` | Find symbols, references, implementations, callers, callees, and file outlines through the code index | No |
-| `Edit` | Create or patch one UTF-8 file using anchored edits | Yes |
-| `Bash` | Run one shell command with live output | Only when the command is not conservatively classified as read-only |
-| `Job` | Start, inspect, wait for, list, or stop background shell jobs | Start, wait, and stop only |
-| `Recall` | Retrieve complete stored tool output, optionally by line range | No |
-| `Note` | Maintain the agent's durable goal, plan, checks, and learned facts | No |
-| `Ask` | Pause and ask you one or more questions | No |
-| `Skill` | Load an installed skill's full instructions | No |
-| `MCP` | Describe or call connected MCP tools and list or read their resources | Calls prompt unless the server marks the tool read-only |
+* - Tool
+  - What it does
+* - **`Read`**
+  - Opens selected line ranges from one or several UTF-8 files. Every returned line has an
+    anchor that later edits can verify.
 
-## Execution behavior
+    A shortened result looks like this:
 
-Read-only calls may run concurrently, up to `runtime.max_parallel_tools`. File edits run in
-order and verify their anchors before changing content. <span class="marker">Large tool results
-are stored outside the conversation</span>; the model receives a bounded result and can retrieve
-the full output with `Recall`.
+    ```text
+    <Read path="nanocode.py">
+    <file_stat mtime_ns="..." size="222039"/>
+    <total_lines>5031</total_lines>
+    <range>684:687</range>
+    <content hashline-numbered>
+    anchor=684:234ew | class Tool:
+    anchor=685:7xy0d |     NAME: ClassVar[str] = ""
+    anchor=686:5exvk |     DESCRIPTION: ClassVar[str] = ""
+    </content>
+    </Read>
+    ```
 
-## Confirmations
+    In `684:234ew`, `684` is the zero-based line number and `234ew` is a short hash of that
+    line's content. The line number locates the edit; the hash proves that the line has not
+    changed since it was read.
+* - **`Search`**
+  - Finds text with case-insensitive regular expressions, optionally limited by path or filename
+    pattern. It skips hidden, binary, and gitignored files and returns editable anchors.
+* - **`InspectCode`**
+  - Finds definitions, references, implementations, callers, callees, and file outlines through
+    the [code index](#code-symbol-index). Use it for code structure rather than exact text.
+* - **`Edit`**
+  - Creates or changes one UTF-8 file by inserting, replacing, or deleting content.
+    For an anchored change, `Edit` sends back the `line:hash` value returned by `Read`, `Search`,
+    or `InspectCode`. nanocode checks the current line immediately before writing and
+    <span class="marker">refuses the edit if the hash no longer matches</span>. Successful edits
+    appear in [`/diff`](usage.md#reviewing-changes).
 
-Before anything that changes your system — editing a file, running a mutating shell command,
-or calling an external [MCP](mcp.md) tool not marked read-only — nanocode asks you to
-confirm. Read-only actions, including safe shell commands, never prompt.
+    :::{figure} ../snapshots/nanocode-edit-preview.png
+    :alt: An Edit confirmation previewing the proposed diff
+    :width: 100%
+    :align: center
 
-Turn confirmations off once you trust a workflow with `--yolo` (at startup) or `/yolo`
-(in a session). See [Safety](safety.md) before doing so.
+    An Edit confirmation previews the proposed change before approval.
+    :::
+* - **`Bash`**
+  - Runs one shell command in the project with live output. Commands still running after
+    `runtime.bash_wait_timeout` <span class="marker">become background jobs automatically</span>.
+* - **`Job`**
+  - Starts or manages background commands: check output, wait, list, or stop. The same jobs are
+    visible through `/ps`.
+* - **`Recall`**
+  - Retrieves a <span class="marker">complete earlier tool result</span>, or selected line ranges,
+    when only a shortened result was placed in the conversation.
+* - **`Note`**
+  - Maintains the task's goal, plan, success check, and learned facts. It keeps long tasks
+    organized but does not edit project files.
+* - **`Ask`**
+  - Pauses for a decision that genuinely needs you. A question may include choices and a
+    recommended option.
+* - **`Skill`**
+  - Loads an installed skill's full instructions when needed. It appears only when skills are
+    installed; see [Skills](skills.md).
+* - **`MCP`**
+  - Describes or calls tools and reads resources from a connected MCP server. It appears only
+    after a server is connected; see [MCP](mcp.md).
+::::
 
 ## Code symbol index
 

@@ -132,6 +132,8 @@ table.docutils, table.docutils td, table.docutils th {
     border-color: var(--nc-border) !important;
 }
 table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
+.tool-reference { width: 100%; table-layout: fixed; }
+.tool-reference figure { margin: 1rem 0 0; }
 
 /* Admonitions */
 .admonition, .note, .topic, .seealso {
