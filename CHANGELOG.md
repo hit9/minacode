@@ -1,6 +1,15 @@
 # Changelog
 
 
+## 0.9.11 - 2026-07-19
+
+### Fixed
+- Discover `auto_connect` MCP servers in the background at startup, so an unreachable server no longer holds up the prompt for the discovery timeout.
+
+### Removed
+- Remove the undocumented `runtime.max_steps` configuration alias; set `runtime.max_agent_steps` instead.
+
+
 ## 0.9.10 - 2026-07-18
 
 ### Added
