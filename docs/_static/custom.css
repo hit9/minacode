@@ -135,91 +135,8 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .tool-reference { width: 100%; table-layout: fixed; }
 .tool-reference figure { margin: 1rem 0 0; }
 
-/* Context and cache diagrams. Each visual explains one idea: ordered content
-   or prefix reuse. */
-.context-stack {
-    display: grid;
-    margin: 1rem 0 1.25rem;
-    border-left: 1px solid #9a7b3f;
-    font-family: var(--nc-sans);
-}
-.context-stack-layer {
-    display: grid;
-    grid-template-columns: minmax(9rem, 0.8fr) minmax(12rem, 1.6fr);
-    gap: 0.75rem;
-    padding: 0.38rem 0.75rem;
-    border-bottom: 1px solid var(--nc-border);
-}
-.context-stack-layer span {
-    color: var(--nc-muted);
-    font-size: 0.82rem;
-    line-height: 1.35;
-}
-.context-stack-optional strong::after {
-    content: " optional";
-    color: #a98c55;
-    font-size: 0.7rem;
-    font-weight: 400;
-}
-.context-stack-edge {
-    color: var(--nc-muted);
-    padding: 0.2rem 0.75rem;
-    font-size: 0.68rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-}
-.cache-comparison {
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
-    gap: 0.42rem 0.7rem;
-    align-items: center;
-    margin: 1rem 0 1.25rem;
-    padding-left: 0.75rem;
-    border-left: 1px solid var(--nc-border);
-    font-family: var(--nc-sans);
-}
-.cache-comparison-label { color: var(--nc-muted); font-size: 0.76rem; }
-.cache-comparison-bar { display: flex; min-width: 0; }
-.cache-comparison-bar span {
-    box-sizing: border-box;
-    padding: 0.32rem 0.55rem;
-    font-size: 0.76rem;
-    line-height: 1.25;
-}
-.cache-comparison-hit {
-    flex: 3;
-    color: #c4a66a;
-    border-bottom: 2px solid #9a7b3f;
-}
-.cache-comparison-tail {
-    flex: 1;
-    color: var(--nc-muted);
-    border-bottom: 2px solid var(--nc-border);
-}
-.cache-match {
-    grid-column: 1 / -1;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    align-items: baseline;
-    margin-top: 0.3rem;
-    color: var(--nc-muted);
-    font-size: 0.76rem;
-}
-.cache-match b { color: #9a7b3f; font-weight: 400; }
-.cache-comparison > small {
-    grid-column: 1 / -1;
-    color: var(--nc-muted);
-    font-size: 0.7rem;
-}
-@media (max-width: 520px) {
-    .context-stack-layer { grid-template-columns: 1fr; gap: 0.1rem; }
-    .cache-comparison { grid-template-columns: 1fr; }
-    .cache-comparison-label { margin-top: 0.25rem; }
-}
-
-/* Terminal pictures: small faithful renderings of a nanocode screen, so a
-   feature is recognisable on sight. Shared by the follow-up queue and /diff. */
+/* Terminal pictures: small faithful renderings of a nanocode screen or output,
+   so a feature is recognisable on sight. Shared by every diagram in the docs. */
 .term-shot {
     margin: 1.25rem 0 1.5rem;
     padding: 0.9rem 1.1rem;
@@ -243,6 +160,8 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-sel { color: #56b6c2; }
 .fs-tab-on { color: #282c34; background: #56b6c2; }
 .fs-tab-off { color: #56b6c2; }
+.fs-goal { color: #c678dd; }
+.fs-doing { color: #e5c07b; }
 
 /* Admonitions */
 .admonition, .note, .topic, .seealso {

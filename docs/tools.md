@@ -76,9 +76,17 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 * - **`Note`**
   - Maintains the task's goal, plan, success check, and learned facts. It keeps long tasks
     organized but does not edit project files.
+
+    <div class="term-shot" role="img" aria-label="A Note update printed in the terminal: goal and check lines, a plan whose items are marked done, in progress, or waiting, and a list of learned facts."><span class="fs-goal">goal: ship the tokenizer fix</span><span class="fs-goal">check: pytest -q passes</span><span class="fs-sel">plan:</span><span class="fs-add">  - [x] reproduce the failing test</span><span class="fs-doing">  - [~] fix the tokenizer</span><span>  - [ ] update the changelog</span><span class="fs-sel">known:</span><span class="fs-add">  + tests run with pytest -q</span></div>
+
+    Plan items are marked `[x]` done, `[~]` in progress, `[ ]` waiting, or `[-]` blocked.
 * - **`Ask`**
   - Pauses for a decision that genuinely needs you. A question may include choices and a
     recommended option.
+
+    <div class="term-shot" role="img" aria-label="An Ask prompt: the question, then a selector listing two choices with the recommended one pre-selected, and a preview line for the highlighted choice."><span class="fs-user">Which approach?</span><span> </span><span>Select:</span><span class="fs-dim">  j/k move, / search, Esc/q back/cancel</span><span class="fs-sel">&gt;  1. Refactor <span class="fs-i fs-add">(recommended)</span></span><span class="fs-dim">   2. Rewrite</span><span class="fs-dim">  │ Extract module +87 -12</span></div>
+
+    Pressing `Esc` declines the question; typing instead of choosing answers in free text.
 * - **`Skill`**
   - Loads an installed skill's full instructions when needed. It appears only when skills are
     installed; see [Skills](skills.md).
@@ -107,6 +115,14 @@ When the index is available, the `InspectCode` tool can:
 - **List references** — call, read, write, and type references across the project
 - **Walk call chains** — transitive callers and callees
 - **File outlines** — symbol tree of a single file
+
+Asking where `MCPManager` is defined returns the symbol itself, not every line that mentions
+the word:
+
+<div class="term-shot" role="img" aria-label="An InspectCode find query for MCPManager returning matching symbols with their kind, file, line range, and whether the match was exact or fuzzy."><span><span class="fs-i fs-dim">query:</span> MCPManager</span><span><span class="fs-i fs-dim">count:</span> 3</span><span> </span><span class="fs-dim">symbols:</span><span>  - <span class="fs-i fs-dim">name:</span> <span class="fs-i fs-sel">MCPManager</span></span><span>    <span class="fs-i fs-dim">kind:</span> class</span><span>    <span class="fs-i fs-dim">file:</span> nanocode.py</span><span>    <span class="fs-i fs-dim">range:</span> 4271:5374</span><span>    <span class="fs-i fs-dim">score:</span> <span class="fs-i fs-add">exact</span></span><span>  - <span class="fs-i fs-dim">name:</span> <span class="fs-i fs-sel">TestMCPManagerDiscovery</span></span><span>    <span class="fs-i fs-dim">kind:</span> class</span><span>    <span class="fs-i fs-dim">file:</span> tests/test_mcp.py</span><span>    <span class="fs-i fs-dim">range:</span> 272:573</span><span>    <span class="fs-i fs-dim">score:</span> <span class="fs-i fs-dim">fuzzy</span></span></div>
+
+Each hit carries its file and line range, so the agent can open exactly the right lines. The
+same index answers "who calls this" and "what implements this" the same way.
 
 ```{note}
 Without an index, `InspectCode` reports that the index is unavailable. Run `/index` once in a

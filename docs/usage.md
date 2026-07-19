@@ -10,7 +10,7 @@ You can keep typing while nanocode works. A submitted follow-up joins the curren
 another model step begins; otherwise it becomes the next task. Interrupting does not submit a
 draft that is still in the editor.
 
-<div class="followup-shot" role="img" aria-label="Terminal view: nanocode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read nanocode.py</span><span class="fs-tool">  Edit nanocode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C sends now</span></div>
+<div class="term-shot" role="img" aria-label="Terminal view: nanocode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read nanocode.py</span><span class="fs-tool">  Edit nanocode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C sends now</span></div>
 
 Everything below the divider is waiting. The agent picks those messages up at its next step,
 and they move up into the log above the divider once they are in.
@@ -45,6 +45,11 @@ The /status output at a glance.
 
 **`/diff`** — Review changes from the latest turn or the whole session. See
 [Reviewing changes](#reviewing-changes) below.
+
+<div class="term-shot" role="img" aria-label="The diff viewer: a Latest and Session tab above a list of changed files, each with added and removed line counts, and a key hint along the bottom."><span><span class="fs-i fs-tab-on"> Latest </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-off"> Session </span></span><span> </span><span class="fs-sel">&gt; <span class="fs-i fs-add">+45</span> <span class="fs-i fs-del">-12</span> docs/usage.md</span><span class="fs-dim">  <span class="fs-i fs-add">+12</span> <span class="fs-i fs-del">- 3</span> nanocode.py</span><span class="fs-dim">  <span class="fs-i fs-add">+ 4</span> <span class="fs-i fs-del">- 0</span> tests/test_mcp.py</span><span> </span><span class="fs-dim">  [list] ↑/↓ or j/k move · ←/→ or h/l tab · Enter open · r refresh · Esc/q close [1/3]</span></div>
+
+The two tabs pick the range; each row is one changed file with its added and removed line
+counts. `Enter` opens the selected file's diff.
 
 **`/ps`** — Lists active background jobs (see [Tools](tools.md#built-in-tools)).
 Each row shows job id, state, command, and elapsed time.
