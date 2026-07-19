@@ -8,7 +8,7 @@ reusable prompt prefix.
 ## What the model receives
 
 <div class="context-stack" role="img" aria-label="The message context, ordered from system instructions first to task memory last.">
-  <div class="context-stack-edge">First</div>
+  <div class="context-stack-edge">Context begins</div>
   <div class="context-stack-layer"><strong>System instructions</strong><span>How the agent should operate</span></div>
   <div class="context-stack-layer"><strong>Project environment</strong><span>Directory · OS · shell · detected commands</span></div>
   <div class="context-stack-layer context-stack-optional"><strong>Installed skills</strong><span>Index only · omitted when none are installed</span></div>
@@ -16,7 +16,7 @@ reusable prompt prefix.
   <div class="context-stack-layer"><strong>Conversation history</strong><span>User messages · agent replies · tool calls and results</span></div>
   <div class="context-stack-layer"><strong>Current turn</strong><span>The latest messages and tool results</span></div>
   <div class="context-stack-layer"><strong>Task memory</strong><span>Goal · plan · facts · checks · recent errors</span></div>
-  <div class="context-stack-edge">Last</div>
+  <div class="context-stack-edge">Context ends</div>
 </div>
 
 Tool definitions are sent beside this message stack: built-in tools, `Skill` when skills are
@@ -45,10 +45,13 @@ models, or otherwise changing an early section can reduce the next request's cac
   <div class="cache-comparison-bar"><span class="cache-comparison-hit">Unchanged prefix</span><span class="cache-comparison-tail">Previous tail</span></div>
   <div class="cache-comparison-label">Next request</div>
   <div class="cache-comparison-bar"><span class="cache-comparison-hit">Reused by provider</span><span class="cache-comparison-tail">New or changed tail</span></div>
+  <div class="cache-match"><span>stable key<sup>*</sup></span><b>→</b><span>provider compares exact prefix</span><b>→</b><span>cached tokens in <code>/status</code></span></div>
+  <small><sup>*</sup> Where supported; Anthropic uses an explicit cacheable prefix.</small>
 </div>
 
-The provider reuses the request only up to the first difference. A change near the beginning,
-such as connecting an MCP server, shortens the reusable prefix.
+The provider reuses the request only up to the first difference. Its reported cached-token count,
+shown by `/status`, confirms how much matched. A change near the beginning, such as connecting an
+MCP server, shortens the reusable prefix.
 
 OpenAI-compatible providers may reuse matching prefixes automatically; nanocode supplies a stable
 cache key where the provider supports one. For Anthropic, nanocode explicitly marks the tools and
