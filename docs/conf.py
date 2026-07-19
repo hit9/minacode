@@ -44,7 +44,6 @@ html_theme_options = {
     "showrelbartop": False,
     "showrelbarbottom": True,
     "sidebarwidth": "16rem",
-    "cssfiles": ["_static/custom.css"],
     # Show every page's major sections while keeping third-level headings out
     # of the global navigation.
     "globaltoc_collapse": False,
@@ -59,6 +58,9 @@ html_sidebars = {
 html_title = f"{project} {release}"
 html_short_title = project
 html_static_path = ["_static"]
+# Loaded via html_css_files (not the theme's cssfiles option) so Sphinx appends a
+# ?v=<checksum> cache buster; without it browsers keep a stale custom.css.
+html_css_files = ["custom.css"]
 html_js_files = ["scrollspy.js"]
 html_show_sphinx = False
 html_copy_source = False

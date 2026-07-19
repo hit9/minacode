@@ -109,14 +109,16 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 .sphinxsidebar .doc-language a,
 .sphinxsidebar .doc-language a:visited {
     display: inline-block;
-    color: var(--nc-fg-strong);
-    border: 1px solid #9a7b3f;
+    color: #1b1e23;
+    background: #c4a66a;
+    border: 1px solid #c4a66a;
     border-radius: 4px;
-    padding: 0.22rem 0.55rem;
+    padding: 0.24rem 0.62rem;
 }
 .sphinxsidebar .doc-language a:hover {
-    color: var(--nc-link);
-    border-color: var(--nc-link);
+    color: #1b1e23;
+    background: #dcc48c;
+    border-color: #dcc48c;
 }
 
 /* Separate documentation pages from sections within the current page. */
