@@ -8466,7 +8466,9 @@ Tools:
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
-        self.session.mcp.discover_auto()
+        # Discover auto_connect servers in the background so an unreachable one cannot block the
+        # prompt for the discovery timeout; the tools index picks them up as they connect.
+        threading.Thread(target=self.session.mcp.discover_auto, name="mcp-discover", daemon=True).start()
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()

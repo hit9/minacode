@@ -1825,3 +1825,47 @@ def test_choice_view_state_fragments_preserve_headers_and_preview():
     assert "  ---- Models ----" in rendered
     assert ">  1. Alpha" in rendered
     assert "  │ first\n  │ second\n" in rendered
+
+
+def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
+    """start_session must dispatch auto_connect MCP discovery in the background: an unreachable
+    server otherwise blocks the prompt for the whole discovery timeout. Regression guard for the
+    lifecycle refactor that had briefly made discover_auto a synchronous startup call."""
+    config = n.Config.from_dict(
+        {
+            "provider": {"active": "d", "d": {"url": "u", "key": "k", "model": "m"}},
+            "mcp": {"slow": {"url": "http://unreachable/mcp", "auto_connect": True}},
+            "paths": {"data_dir": str(tmp_path / "data")},
+        }
+    )
+    s = n.Session(cwd=str(tmp_path), config=config)
+    command_loop = n.CommandLoop(
+        n.Agent(s, output_fn=lambda text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda text: None,
+    )
+
+    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
+
+    discover_started = threading.Event()
+    allow_finish = threading.Event()
+    ran_on: list[threading.Thread] = []
+
+    def blocking_discover() -> None:
+        ran_on.append(threading.current_thread())
+        discover_started.set()
+        allow_finish.wait(timeout=5)
+
+    monkeypatch.setattr(s.mcp, "discover_auto", blocking_discover)
+
+    try:
+        command_loop.start_session()
+        # Discovery was dispatched, but start_session returned while it is still blocked —
+        # i.e. it ran on a background thread rather than blocking the main (prompt) thread.
+        assert discover_started.wait(timeout=2), "discover_auto was never dispatched"
+        assert not allow_finish.is_set()
+        assert ran_on and ran_on[0] is not threading.main_thread()
+    finally:
+        allow_finish.set()
