@@ -154,7 +154,7 @@ def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, 
     s.store_turn_diff("tr.1", 1, "large.py", "-old\n+new\n", before="old\n" * 1000, after="new\n" * 1000, round=1)
     s.save_snapshot()  # init
 
-    def fail_turn_diff(_diff):
+    def fail_turn_diff(_diff, _blobs):
         raise AssertionError("unchanged turn diffs should not be serialized")
 
     monkeypatch.setattr(n.SessionSnapshotCodec, "turn_diff", fail_turn_diff)
@@ -164,6 +164,84 @@ def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, 
     lines = read_jsonl(log_path(s))
     assert "turn_diffs" not in lines[1]
     assert "turn_diffs_replace" not in lines[1]
+
+
+def test_file_snapshots_are_stored_once_by_content_hash(tmp_path):
+    """Editing a file repeatedly makes each version appear twice — one edit's `after` is the next
+    edit's `before`. The log stores each version once and references it by hash."""
+    s = session_with_data_dir(tmp_path)
+    versions = [f"v{i}\n" for i in range(4)]
+    for turn, (before, after) in enumerate(zip(versions, versions[1:]), start=1):
+        s.store_turn_diff(f"tr.{turn}", turn, "x.py", f"-{before}+{after}", before=before, after=after, round=turn)
+        s.save_snapshot()
+
+    lines = read_lines(log_path(s))
+    blobs = [line for line in lines if "blob" in line]
+
+    assert sorted(line["text"] for line in blobs) == versions
+    assert len({line["blob"] for line in blobs}) == len(blobs)  # each hash written once
+    entry = [line for line in lines if "turn_diffs" in line][-1]["turn_diffs"][0]
+    assert entry["before_blob"] and entry["after_blob"]
+    assert "before" not in entry and "after" not in entry
+
+
+def test_turn_diff_snapshots_survive_a_roundtrip(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.store_turn_diff("tr.1", 1, "x.py", "-old\n+new\n", before="old\n", after="new\n", round=1)
+    s.save_snapshot()
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+
+    assert [(d.key, d.path, d.before, d.after) for d in restored.turn_diffs] == [("tr.1", "x.py", "old\n", "new\n")]
+
+
+def test_oversized_snapshots_are_dropped_before_reaching_the_log(tmp_path):
+    """Snapshots over the size limit are still discarded, and leave no blob behind."""
+    s = session_with_data_dir(tmp_path)
+    huge = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT // 2 + 1)
+    s.store_turn_diff("tr.1", 1, "big.py", "-o\n+n\n", before=huge, after=huge, round=1)
+    s.save_snapshot()
+
+    lines = read_lines(log_path(s))
+    entry = [line for line in lines if "turn_diffs" in line][-1]["turn_diffs"][0]
+
+    assert not [line for line in lines if "blob" in line]
+    assert (entry["before_blob"], entry["after_blob"]) == ("", "")
+    assert n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path)).turn_diffs[0].before == ""
+
+
+def test_rewriting_the_retained_window_does_not_rewrite_snapshots(tmp_path):
+    """Once the 100-entry cap starts evicting, every save rewrites the whole window. It must
+    rewrite references only — the snapshots are already in the log."""
+    s = session_with_data_dir(tmp_path)
+    big = "x" * 100_000
+    for i in range(100):
+        s.store_turn_diff(f"tr.{i}", i, "a.py", "-o\n+n\n", before=big, after=big + str(i), round=i)
+    s.save_snapshot()
+    size_before = os.path.getsize(log_path(s))
+
+    s.store_turn_diff("tr.100", 100, "a.py", "-o\n+n\n", before=big, after=big + "100", round=100)
+    s.save_snapshot()
+
+    lines = read_lines(log_path(s))
+    assert "turn_diffs_replace" in lines[-1]  # the window was rewritten in full
+    assert len(lines[-1]["turn_diffs_replace"]) == 100
+    # One new snapshot (~100KB), not 100 of them (~10MB).
+    assert os.path.getsize(log_path(s)) - size_before < 400_000
+
+
+def test_resumed_session_does_not_rewrite_existing_blobs(tmp_path):
+    """A resumed session knows which snapshots its log already holds."""
+    s = session_with_data_dir(tmp_path)
+    s.store_turn_diff("tr.1", 1, "x.py", "-old\n+new\n", before="old\n", after="new\n", round=1)
+    s.save_snapshot()
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored.store_turn_diff("tr.2", 2, "x.py", "-new\n+newer\n", before="new\n", after="newer\n", round=2)
+    restored.save_snapshot()
+
+    blobs = [line["text"] for line in read_lines(log_path(s)) if "blob" in line]
+    assert sorted(blobs) == ["new\n", "newer\n", "old\n"]  # "new\n" not stored a second time
 
 
 def test_load_merges_init_and_deltas(tmp_path):

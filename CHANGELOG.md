@@ -7,6 +7,7 @@
 - Store sessions per project under `<data_dir>/projects/<project>/`, each with its own `latest` pointer, instead of a single flat `<data_dir>/sessions/` directory shared by every project. Resolving this project's latest session is now a pointer read rather than a scan that opens every stored session, and a project directory is pruned once its last session expires.
 - Scope `--resume latest` and `--resume last` to the current project. They previously resolved a single global pointer and could resume a session belonging to a different directory; they now behave like `-c`.
 - Begin each session log with a compact header line recording the format version, UID, working directory, and creation time, so project-level lookups read a bounded record instead of parsing a snapshot that may hold the whole conversation.
+- Store the file snapshots behind `/diff` by content hash instead of inline in every edit record. Editing one file repeatedly stored each version twice, once as an edit's `after` and again as the next edit's `before`; each version is now written to the log once. Past 100 edits, where every save rewrites the whole retained window, a save rewrote every snapshot again — it now rewrites only the references.
 
 ### Removed
 - Drop reading of pre-existing session files. Sessions written by earlier versions are not migrated and are no longer loadable; `<data_dir>/sessions/` can be deleted. This also removes the recovery of edit diffs from legacy `Edit` tool records and the tolerance for retired cache-prefix state keys.

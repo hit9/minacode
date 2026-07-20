@@ -854,18 +854,29 @@ class SessionSnapshotCodec:
         }
         # fmt: on
 
-    @staticmethod
-    def turn_diff(diff: TurnDiff) -> Json:
+    @classmethod
+    def turn_diff(cls, diff: TurnDiff, blobs: dict[str, str]) -> Json:
+        """File snapshots are stored by content hash, not inline. Editing one file repeatedly makes
+        each version appear twice — as one edit's `after` and the next edit's `before` — and a
+        rewrite of the retained window would otherwise re-serialize every snapshot again."""
         before, after = TurnDiff.bounded_snapshots(diff.before, diff.after)
         return {
             "key": diff.key,
             "turn": diff.turn,
             "path": diff.path,
             "diff": diff.diff,
-            "before": before,
-            "after": after,
+            "before_blob": cls.blob_ref(before, blobs),
+            "after_blob": cls.blob_ref(after, blobs),
             "round": diff.round,
         }
+
+    @staticmethod
+    def blob_ref(text: str, blobs: dict[str, str]) -> str:
+        if not text:
+            return ""
+        ref = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        blobs[ref] = text
+        return ref
 
     @staticmethod
     def tool_record(record: ToolResultRecord) -> Json:
@@ -876,10 +887,14 @@ class SessionSnapshotCodec:
         return asdict(error)
 
     @staticmethod
-    def turn_diffs(data: list[Json]) -> list[TurnDiff]:
+    def turn_diffs(data: list[Json], blobs: dict[str, str]) -> list[TurnDiff]:
         diffs: list[TurnDiff] = []
         for d in data:
-            before, after = TurnDiff.bounded_snapshots(d.get("before", ""), d.get("after", ""))
+            # A blob missing from the log leaves the snapshot empty, which `net_diff_sections`
+            # already handles by reconstructing that path's diff from its recorded hunks.
+            before = blobs.get(d.get("before_blob", ""), "")
+            after = blobs.get(d.get("after_blob", ""), "")
+            before, after = TurnDiff.bounded_snapshots(before, after)
             diffs.append(TurnDiff(key=d["key"], turn=d["turn"], path=d["path"], diff=d["diff"], before=before, after=after, round=d.get("round", 0)))
         return diffs
 
@@ -930,19 +945,19 @@ class SessionSnapshotCodec:
         return asdict(usage)
 
     @classmethod
-    def snapshot(cls, session: "Session") -> Json:
+    def snapshot(cls, session: "Session", blobs: dict[str, str]) -> Json:
         # fmt: off
         return {
             "uid": session.uid, "cwd": session.cwd, "messages": cls.snapshot_messages(session),
             "pending_user_inputs": [item.text for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
-            "turn_diffs": [cls.turn_diff(diff) for diff in session.turn_diffs],
+            "turn_diffs": [cls.turn_diff(diff, blobs) for diff in session.turn_diffs],
         }
         # fmt: on
 
     @classmethod
-    def delta(cls, session: "Session", saved: Json) -> Json:
+    def delta(cls, session: "Session", saved: Json, blobs: dict[str, str]) -> Json:
         delta: Json = {
             "tool_counter": session.tool_counter,
             "usage": cls.usage(session.usage),
@@ -968,7 +983,7 @@ class SessionSnapshotCodec:
             "tool_errors_len",
             "tool_errors_digest",
         )
-        cls.add_turn_diffs_delta(delta, session.turn_diffs, saved)
+        cls.add_turn_diffs_delta(delta, session.turn_diffs, saved, blobs)
         return delta
 
     @classmethod
@@ -981,15 +996,17 @@ class SessionSnapshotCodec:
             delta[key + "_replace"] = current
 
     @classmethod
-    def add_turn_diffs_delta(cls, delta: Json, current: list[TurnDiff], saved: Json) -> None:
+    def add_turn_diffs_delta(cls, delta: Json, current: list[TurnDiff], saved: Json, blobs: dict[str, str]) -> None:
         keys = [diff.key for diff in current]
         last_len = int(saved.get("turn_diffs_len", 0) or 0)
         saved_digest = saved.get("turn_diffs_keys_digest")
         if cls.digest(keys[:last_len]) == saved_digest:
             if len(current) > last_len:
-                delta["turn_diffs"] = [cls.turn_diff(diff) for diff in current[last_len:]]
+                delta["turn_diffs"] = [cls.turn_diff(diff, blobs) for diff in current[last_len:]]
         elif cls.digest(keys) != saved_digest:
-            delta["turn_diffs_replace"] = [cls.turn_diff(diff) for diff in current]
+            # Only the references are rewritten here; the snapshots they point at are already
+            # in the log, so a window rewrite stays small however large the files were.
+            delta["turn_diffs_replace"] = [cls.turn_diff(diff, blobs) for diff in current]
 
     @classmethod
     def merge(cls, data: Json, delta: Json) -> None:
@@ -1058,14 +1075,26 @@ class SessionSnapshotStore:
             return ""
         path = self.session_path(self.session.config.data_dir, self.session.cwd, self.session.uid)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        blobs: dict[str, str] = {}
         if not self.session._snapshot_saved:
             self.write_jsonl(path, self.header(self.session), mode="w")
-            self.write_jsonl(path, SessionSnapshotCodec.snapshot(self.session), mode="a")
+            record = SessionSnapshotCodec.snapshot(self.session, blobs)
         else:
-            self.write_jsonl(path, SessionSnapshotCodec.delta(self.session, self.session._snapshot_saved), mode="a")
+            record = SessionSnapshotCodec.delta(self.session, self.session._snapshot_saved, blobs)
+        self.write_blobs(path, blobs)
+        self.write_jsonl(path, record, mode="a")
         self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
         self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
         return self.session.uid
+
+    def write_blobs(self, path: str, blobs: dict[str, str]) -> None:
+        """Blob lines precede the record that references them, and each content hash is written to
+        the log once. Content the session has already stored costs nothing to reference again."""
+        for ref, text in blobs.items():
+            if ref in self.session._blobs_written:
+                continue
+            self.write_jsonl(path, {"blob": ref, "text": text}, mode="a")
+            self.session._blobs_written.add(ref)
 
     @classmethod
     def header(cls, session: "Session") -> Json:
@@ -1203,7 +1232,7 @@ class SessionSnapshotStore:
         path = cls.find_session_path(config.data_dir, uid)
         if not path:
             raise NanocodeError(f"Session snapshot not found: {uid} under {cls.path_for(config.data_dir, cls.PROJECTS_DIR)}")
-        data = cls.read_merged(path, uid)
+        data, blobs = cls.read_merged(path, uid)
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
         session = Session(
             cwd=data.get("cwd", cwd),
@@ -1216,13 +1245,14 @@ class SessionSnapshotStore:
             tool_results={record.key: record.output for record in tool_records},
             tool_records=tool_records,
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
-            turn_diffs=SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", [])),
+            turn_diffs=SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", []), blobs),
             pending_user_inputs=[QueuedInput(str(text)) for text in data.get("pending_user_inputs", []) if str(text).strip()],
             uid=data.get("uid", uid),
             resumed=True,
         )
         session.messages.append({"role": "system", "content": f"[Session resumed: uid={session.uid}]"})
         session._snapshot_saved = SessionSnapshotCodec.marker(session)
+        session._blobs_written = set(blobs)
         return session
 
     @classmethod
@@ -1236,8 +1266,9 @@ class SessionSnapshotStore:
         return resolved
 
     @classmethod
-    def read_merged(cls, path: str, uid: str) -> Json:
+    def read_merged(cls, path: str, uid: str) -> tuple[Json, dict[str, str]]:
         merged: Json | None = None
+        blobs: dict[str, str] = {}
         with open(path, encoding="utf-8") as file:
             for index, line in enumerate(file):
                 line = line.strip()
@@ -1246,13 +1277,15 @@ class SessionSnapshotStore:
                 parsed = json.loads(line)
                 if index == 0:
                     cls.check_header(parsed, path)
+                elif "blob" in parsed:
+                    blobs[parsed["blob"]] = parsed.get("text", "")
                 elif merged is None:
                     merged = parsed
                 else:
                     SessionSnapshotCodec.merge(merged, parsed)
         if merged is None:
             raise NanocodeError(f"Empty session file: {path}")
-        return merged
+        return merged, blobs
 
     @classmethod
     def check_header(cls, header: Json, path: str) -> None:
@@ -1492,6 +1525,7 @@ class Session:
     uid: str = ""
     resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
+    _blobs_written: set[str] = field(default_factory=set)
     _active_turn_messages: list[Json] = field(default_factory=list)
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
     _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
