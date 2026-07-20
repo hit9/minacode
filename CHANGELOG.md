@@ -9,6 +9,9 @@
 - Begin each session log with a compact header line recording the format version, UID, working directory, and creation time, so project-level lookups read a bounded record instead of parsing a snapshot that may hold the whole conversation.
 - Store the file snapshots behind `/diff` by content hash instead of inline in every edit record. Editing one file repeatedly stored each version twice, once as an edit's `after` and again as the next edit's `before`; each version is now written to the log once. Past 100 edits, where every save rewrites the whole retained window, a save rewrote every snapshot again — it now rewrites only the references.
 
+### Fixed
+- Isolate `HOME` in the test suite. Tests that built a config without an explicit `paths.data_dir` and then saved a session wrote into the developer's real `~/.nanocode`.
+
 ### Removed
 - Drop reading of pre-existing session files. Sessions written by earlier versions are not migrated and are no longer loadable; `<data_dir>/sessions/` can be deleted. This also removes the recovery of edit diffs from legacy `Edit` tool records and the tolerance for retired cache-prefix state keys.
 

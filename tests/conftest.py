@@ -5,6 +5,18 @@ from rich.style import Style
 
 
 @pytest.fixture(autouse=True)
+def isolate_home(tmp_path_factory, monkeypatch):
+    # `paths.data_dir` defaults to `~/.nanocode`, so any test that builds a config without setting
+    # it and then saves a session writes into the developer's real home directory. Point HOME at a
+    # per-test directory so `expanduser` resolves somewhere disposable.
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # expanduser prefers this on Windows
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    return home
+
+
+@pytest.fixture(autouse=True)
 def reset_rich_style_cache():
     # Rich caches parsed/combined Style objects globally (Style.parse, Style._add, ... are
     # @lru_cache'd) and each Style memoizes its rendered SGR in `_ansi` keyed on the first
