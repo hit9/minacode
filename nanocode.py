@@ -1060,9 +1060,9 @@ class SessionSnapshotStore:
     directory, each holding its own `latest` pointer. Sharding keeps a resume scoped to the project
     it belongs to and makes per-project listing and deletion a directory operation.
 
-    Each log starts with a small header line (`{"v": 2, "uid", "cwd", "created_at"}`) so the
-    project-level queries read a bounded record instead of parsing a snapshot that may carry the
-    whole conversation. The full snapshot is line 2; deltas append from line 3."""
+    Each log starts with a header line (`{"v": 2, "uid", "cwd", "created_at"}`) that gates the
+    format version and makes a log self-describing when read by hand. The full snapshot is line 2;
+    `blob` lines and deltas append from line 3."""
 
     FORMAT_VERSION: ClassVar[int] = 2
     PROJECTS_DIR: ClassVar[str] = "projects"
@@ -1213,10 +1213,6 @@ class SessionSnapshotStore:
         return newest.name[:-6] if newest else ""
 
     @classmethod
-    def clear_latest(cls, data_dir: str, cwd: str) -> None:
-        cls.clear_latest_dir(cls.project_dir(data_dir, cwd))
-
-    @classmethod
     def clear_latest_dir(cls, directory: str) -> None:
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(directory, "latest"))
@@ -1292,15 +1288,6 @@ class SessionSnapshotStore:
         version = header.get("v")
         if version != cls.FORMAT_VERSION:
             raise NanocodeError(f"Unsupported session format v{version} (expected v{cls.FORMAT_VERSION}): {path}")
-
-    @classmethod
-    def read_header(cls, path: str) -> Json:
-        """The header alone, without parsing the snapshot behind it."""
-        try:
-            with open(path, encoding="utf-8") as file:
-                return next((json.loads(line) for line in file if line.strip()), {})
-        except (OSError, json.JSONDecodeError):
-            return {}
 
     @staticmethod
     def path_for(data_dir: str, *parts: str) -> str:

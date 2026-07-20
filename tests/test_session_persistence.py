@@ -405,7 +405,6 @@ def test_header_line_precedes_the_snapshot(tmp_path):
 
     assert header == {"v": n.SessionSnapshotStore.FORMAT_VERSION, "uid": s.uid, "cwd": s.cwd, "created_at": header["created_at"]}
     assert "messages" not in header
-    assert n.SessionSnapshotStore.read_header(log_path(s))["cwd"] == s.cwd
 
 
 def test_load_rejects_an_unknown_format_version(tmp_path):
