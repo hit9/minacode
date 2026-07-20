@@ -356,6 +356,52 @@ def test_resume_renders_turn_diffs_from_the_snapshot(tmp_path):
     assert result.count("+new") == 2
 
 
+def _diff(key, turn, path, before, after, text):
+    return n.TurnDiff(key, turn, path, text, before=before, after=after, round=turn)
+
+
+def test_net_diff_emits_one_description_per_path_when_snapshots_stop(tmp_path):
+    """A file that grows past the snapshot size limit partway through leaves some edits with
+    snapshots and some without. Both describe the same file, so only one may be emitted."""
+    (tmp_path / "x.py").write_text("c\n")
+    kept = _diff("tr.1", 1, "x.py", "a\n", "b\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
+    dropped = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
+
+    sections = n.Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
+
+    assert len(sections) == 1
+    text = sections[0][2]
+    assert text.count("--- ") == 1  # one diff for the file, not one per description
+    assert [line for line in text.splitlines() if line[:1] in "+-" and not line.startswith(("---", "+++"))] == ["-a", "+c"]
+
+
+def test_net_diff_prefers_snapshots_when_the_last_edit_has_them(tmp_path):
+    """A snapshot-less edit in the middle is already reflected in the next snapshot's `after`."""
+    (tmp_path / "x.py").write_text("unused\n")
+    first = _diff("tr.1", 1, "x.py", "a\n", "b\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
+    dropped = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
+    last = _diff("tr.3", 3, "x.py", "b\n", "c\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
+
+    sections = n.Session.net_diff_sections([first, dropped, last], "overall", cwd=str(tmp_path))
+
+    # The on-disk content is ignored here: the recorded snapshots already cover the whole history.
+    assert len(sections) == 1
+    text = sections[0][2]
+    assert text.count("--- ") == 1
+    assert [line for line in text.splitlines() if line[:1] in "+-" and not line.startswith(("---", "+++"))] == ["-a", "+c"]
+
+
+def test_net_diff_falls_back_to_hunks_when_the_file_is_gone(tmp_path):
+    """With snapshots stopping and no file on disk, the recorded hunks are all that is left."""
+    kept = _diff("tr.1", 1, "gone.py", "a\n", "b\n", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-a\n+b\n")
+    dropped = _diff("tr.2", 2, "gone.py", "", "", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-b\n+c\n")
+
+    sections = n.Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
+
+    assert len(sections) == 1
+    assert sections[0][2].count("--- ") == 1
+
+
 def test_turn_diff_bounded_snapshots_under_limit():
     assert n.TurnDiff.bounded_snapshots("a", "b") == ("a", "b")
     assert n.TurnDiff.bounded_snapshots("", "") == ("", "")

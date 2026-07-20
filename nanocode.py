@@ -1624,10 +1624,15 @@ class Session:
     def net_diff_sections(cls, diffs: list[TurnDiff], status: str, *, cwd: str = "") -> list[tuple[str, str, str]]:
         states: dict[str, tuple[str, str]] = {}
         legacy: dict[str, list[str]] = {}
+        # Whether the most recent edit to each path carried snapshots. A path can hold both kinds
+        # when a file grows past the snapshot size limit partway through a session, and the two
+        # descriptions overlap — emitting both would repeat the file's changes.
+        snapshot_tail: dict[str, bool] = {}
         paths: list[str] = []
         for diff in diffs:
             if diff.path not in paths:
                 paths.append(diff.path)
+            snapshot_tail[diff.path] = bool(diff.before or diff.after)
             if not diff.before and not diff.after:
                 legacy.setdefault(diff.path, []).append(diff.diff)
                 continue
@@ -1644,32 +1649,61 @@ class Session:
 
         sections = []
         for path in paths:
-            chunks = []
-            if path in states and (section := cls.net_diff_for_path(status, path, *states[path])):
-                chunks.append(section[2])
-            legacy_chunks = legacy.get(path, [])
-            if legacy_chunks:
-                # No snapshots for this file (oversized). Best effort: reconstruct the pre-edit content
-                # by reverse-applying the recorded per-Edit hunks to the file's current on-disk state,
-                # then emit one clean synthesized diff. Falls back to the raw per-Edit hunks concatenated
-                # when reconstruction can't uniquely locate a hunk (e.g. the file was mutated outside Edit).
-                reconstructed = cls._reconstruct_legacy_diff(cwd, path, legacy_chunks, status) if cwd else None
-                chunks.append(reconstructed if reconstructed is not None else "\n".join(chunk.rstrip("\n") for chunk in legacy_chunks))
-            if chunks:
-                sections.append((status, path, "\n".join(chunk.rstrip("\n") for chunk in chunks) + "\n"))
+            chunk = cls.net_diff_chunk(path, status, states, legacy, snapshot_tail, cwd)
+            if chunk:
+                sections.append((status, path, chunk.rstrip("\n") + "\n"))
         return sections
+
+    @classmethod
+    def net_diff_chunk(
+        cls,
+        path: str,
+        status: str,
+        states: dict[str, tuple[str, str]],
+        legacy: dict[str, list[str]],
+        snapshot_tail: dict[str, bool],
+        cwd: str,
+    ) -> str:
+        """One diff per path, from exactly one description of its history."""
+        if path in states and snapshot_tail.get(path):
+            # The last edit carried snapshots, so the recorded `after` is the file's final content
+            # and already contains whatever the snapshot-less edits before it changed.
+            section = cls.net_diff_for_path(status, path, *states[path])
+            return section[2] if section else ""
+        if path in states and (final := cls._current_content(cwd, path)) is not None:
+            # Snapshots stop partway through the path's history. The starting content is still known
+            # exactly, and the final content is on disk, so one net diff covers the whole path.
+            section = cls.net_diff_for_path(status, path, states[path][0], final)
+            return section[2] if section else ""
+        legacy_chunks = legacy.get(path, [])
+        if not legacy_chunks:
+            return ""
+        # No usable snapshots for this file. Best effort: reconstruct the pre-edit content by
+        # reverse-applying the recorded per-Edit hunks to the file's current on-disk state, then emit
+        # one clean synthesized diff. Falls back to the raw per-Edit hunks concatenated when
+        # reconstruction can't uniquely locate a hunk (e.g. the file was mutated outside Edit).
+        reconstructed = cls._reconstruct_legacy_diff(cwd, path, legacy_chunks, status) if cwd else None
+        if reconstructed is not None:
+            return reconstructed
+        return "\n".join(chunk.rstrip("\n") for chunk in legacy_chunks)
+
+    @staticmethod
+    def _current_content(cwd: str, path: str) -> str | None:
+        if not cwd:
+            return None
+        abspath = path if os.path.isabs(path) else os.path.join(cwd, path)
+        try:
+            with open(abspath, encoding="utf-8") as file:
+                return file.read()
+        except (OSError, UnicodeDecodeError):
+            return None
 
     _HUNK_RE: ClassVar[re.Pattern[str]] = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
 
     @classmethod
     def _reconstruct_legacy_diff(cls, cwd: str, path: str, chunks: list[str], status: str) -> str | None:
-        abspath = path if os.path.isabs(path) else os.path.join(cwd, path)
-        if not os.path.isfile(abspath):
-            return None
-        try:
-            with open(abspath, encoding="utf-8") as file:
-                final = file.read()
-        except (OSError, UnicodeDecodeError):
+        final = cls._current_content(cwd, path)
+        if final is None:
             return None
         hunk_pairs: list[tuple[str, str]] = []
         for chunk in chunks:
