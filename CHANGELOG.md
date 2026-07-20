@@ -1,6 +1,17 @@
 # Changelog
 
 
+## Unreleased
+
+### Changed
+- Store sessions per project under `<data_dir>/projects/<project>/`, each with its own `latest` pointer, instead of a single flat `<data_dir>/sessions/` directory shared by every project. Resolving this project's latest session is now a pointer read rather than a scan that opens every stored session, and a project directory is pruned once its last session expires.
+- Scope `--resume latest` and `--resume last` to the current project. They previously resolved a single global pointer and could resume a session belonging to a different directory; they now behave like `-c`.
+- Begin each session log with a compact header line recording the format version, UID, working directory, and creation time, so project-level lookups read a bounded record instead of parsing a snapshot that may hold the whole conversation.
+
+### Removed
+- Drop reading of pre-existing session files. Sessions written by earlier versions are not migrated and are no longer loadable; `<data_dir>/sessions/` can be deleted. This also removes the recovery of edit diffs from legacy `Edit` tool records and the tolerance for retired cache-prefix state keys.
+
+
 ## 0.9.11 - 2026-07-19
 
 ### Fixed

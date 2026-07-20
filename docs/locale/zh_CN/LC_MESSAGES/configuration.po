@@ -303,6 +303,13 @@ msgid "Data location"
 msgstr "数据目录"
 
 #: ../../configuration.md:75
-msgid "Sessions live under `<data_dir>/sessions/`."
-msgstr "Session 保存在 `<data_dir>/sessions/`。"
+msgid ""
+"Sessions live under `<data_dir>/projects/<project>/`, one directory per "
+"working directory. Each holds that project's session logs and a `latest` "
+"pointer, so a resume stays scoped to the project it belongs to. A project "
+"directory is removed once its last session expires."
+msgstr ""
+"Session 保存在 `<data_dir>/projects/<project>/`，每个工作目录对应一个子目录，"
+"其中存放该项目的 session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。"
+"当某个项目的最后一个 session 过期后，对应目录会被一并删除。"
 

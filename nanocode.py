@@ -883,39 +883,6 @@ class SessionSnapshotCodec:
             diffs.append(TurnDiff(key=d["key"], turn=d["turn"], path=d["path"], diff=d["diff"], before=before, after=after, round=d.get("round", 0)))
         return diffs
 
-    @staticmethod
-    def turn_diffs_from_tool_records(records: list[ToolResultRecord]) -> list[TurnDiff]:
-        diffs: list[TurnDiff] = []
-        for turn, record in enumerate(records, start=1):
-            if record.name != "Edit":
-                continue
-            path, diff = SessionSnapshotCodec.edit_diff_from_output(record.output)
-            if path and diff:
-                diffs.append(TurnDiff(record.key, turn, path, diff, round=turn))
-        return diffs
-
-    @staticmethod
-    def edit_diff_from_output(output: str) -> tuple[str, str]:
-        lines = output.splitlines()
-        if not lines:
-            return "", ""
-        match = re.match(r"<Edit path=(.+)>", lines[0])
-        if match is None:
-            return "", ""
-        try:
-            path = str(json.loads(match.group(1)))
-        except (json.JSONDecodeError, ValueError):
-            return "", ""
-        diff_start = next((index for index, line in enumerate(lines) if line.startswith(("--- ", "diff --git "))), -1)
-        if diff_start < 0:
-            return "", ""
-        diff_end = len(lines)
-        for index in range(diff_start, len(lines)):
-            if lines[index].startswith("<invalidate>") or lines[index] == "</Edit>":
-                diff_end = index
-                break
-        return path, "\n".join(lines[diff_start:diff_end]).rstrip() + "\n"
-
     @classmethod
     def has_content(cls, session: "Session") -> bool:
         state = session.state
@@ -1017,7 +984,7 @@ class SessionSnapshotCodec:
     def add_turn_diffs_delta(cls, delta: Json, current: list[TurnDiff], saved: Json) -> None:
         keys = [diff.key for diff in current]
         last_len = int(saved.get("turn_diffs_len", 0) or 0)
-        saved_digest = saved.get("turn_diffs_keys_digest", saved.get("turn_diffs_digest"))
+        saved_digest = saved.get("turn_diffs_keys_digest")
         if cls.digest(keys[:last_len]) == saved_digest:
             if len(current) > last_len:
                 delta["turn_diffs"] = [cls.turn_diff(diff) for diff in current[last_len:]]
@@ -1072,22 +1039,37 @@ class SessionSnapshotCodec:
 
 
 class SessionSnapshotStore:
+    """Session logs live at `<data_dir>/projects/<project>/<uid>.jsonl`, one directory per working
+    directory, each holding its own `latest` pointer. Sharding keeps a resume scoped to the project
+    it belongs to and makes per-project listing and deletion a directory operation.
+
+    Each log starts with a small header line (`{"v": 2, "uid", "cwd", "created_at"}`) so the
+    project-level queries read a bounded record instead of parsing a snapshot that may carry the
+    whole conversation. The full snapshot is line 2; deltas append from line 3."""
+
+    FORMAT_VERSION: ClassVar[int] = 2
+    PROJECTS_DIR: ClassVar[str] = "projects"
+
     def __init__(self, session: "Session"):
         self.session = session
 
     def save(self) -> str:
         if not self.session._snapshot_saved and not SessionSnapshotCodec.has_content(self.session):
             return ""
-        path = self.session.data_path("sessions", self.session.uid + ".jsonl")
+        path = self.session_path(self.session.config.data_dir, self.session.cwd, self.session.uid)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if not self.session._snapshot_saved:
-            self.write_jsonl(path, SessionSnapshotCodec.snapshot(self.session), mode="w")
+            self.write_jsonl(path, self.header(self.session), mode="w")
+            self.write_jsonl(path, SessionSnapshotCodec.snapshot(self.session), mode="a")
         else:
             self.write_jsonl(path, SessionSnapshotCodec.delta(self.session, self.session._snapshot_saved), mode="a")
         self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
-        with open(self.session.data_path("latest"), "w", encoding="utf-8") as file:
-            file.write(self.session.uid)
+        self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
         return self.session.uid
+
+    @classmethod
+    def header(cls, session: "Session") -> Json:
+        return {"v": cls.FORMAT_VERSION, "uid": session.uid, "cwd": session.cwd, "created_at": time.time()}
 
     @staticmethod
     def write_jsonl(path: str, data: Json, *, mode: str) -> None:
@@ -1095,101 +1077,146 @@ class SessionSnapshotStore:
             file.write(json.dumps(data, ensure_ascii=False) + "\n")
 
     @classmethod
+    def project_slug(cls, cwd: str) -> str:
+        """Readable basename plus a hash of the real path: browsable, and still unique across
+        same-named directories."""
+        real = os.path.realpath(cwd)
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(real)).strip("-") or "root"
+        return name + "-" + hashlib.sha256(real.encode("utf-8")).hexdigest()[:10]
+
+    @classmethod
+    def project_dir(cls, data_dir: str, cwd: str) -> str:
+        return cls.path_for(data_dir, cls.PROJECTS_DIR, cls.project_slug(cwd))
+
+    @classmethod
+    def session_path(cls, data_dir: str, cwd: str, uid: str) -> str:
+        return os.path.join(cls.project_dir(data_dir, cwd), uid + ".jsonl")
+
+    @classmethod
+    def project_dirs(cls, data_dir: str) -> list[str]:
+        try:
+            return [entry.path for entry in os.scandir(cls.path_for(data_dir, cls.PROJECTS_DIR)) if entry.is_dir()]
+        except OSError:
+            return []
+
+    @classmethod
+    def find_session_path(cls, data_dir: str, uid: str) -> str:
+        """Locate a session by UID alone. Projects are few, so a scan beats an index file that can
+        drift out of sync with the directories it describes."""
+        for directory in cls.project_dirs(data_dir):
+            path = os.path.join(directory, uid + ".jsonl")
+            if os.path.isfile(path):
+                return path
+        return ""
+
+    @classmethod
     def clean_expired(cls, session: "Session") -> int:
         days = session.settings.session_retention_days
         if days <= 0:
             return 0
-        sessions_dir = session.data_path("sessions")
-        try:
-            entries = list(os.scandir(sessions_dir))
-        except FileNotFoundError:
-            return 0
-        except OSError:
-            return 0
         cutoff = time.time() - days * 86400
-        removed_latest, removed = False, 0
-        for entry in entries:
-            if not entry.name.endswith(".jsonl") or not entry.is_file():
-                continue
-            uid = entry.name[:-6]
-            if uid == session.uid:
-                continue
+        removed = 0
+        for directory in cls.project_dirs(session.config.data_dir):
             try:
-                if entry.stat().st_mtime >= cutoff:
-                    continue
-                os.unlink(entry.path)
-                removed += 1
-                removed_latest = removed_latest or cls.latest_uid(session.config.data_dir) == uid
+                entries = list(os.scandir(directory))
             except OSError:
                 continue
-        if removed_latest:
-            cls.clear_latest(session.config.data_dir)
+            stale_latest = False
+            for entry in entries:
+                if not entry.name.endswith(".jsonl") or not entry.is_file():
+                    continue
+                uid = entry.name[:-6]
+                if uid == session.uid:
+                    continue
+                try:
+                    if entry.stat().st_mtime >= cutoff:
+                        continue
+                    os.unlink(entry.path)
+                    removed += 1
+                    stale_latest = stale_latest or cls.read_latest(directory) == uid
+                except OSError:
+                    continue
+            if stale_latest:
+                cls.clear_latest_dir(directory)
+            cls.prune_empty(directory)
         return removed
 
     @classmethod
-    def latest_uid(cls, data_dir: str) -> str:
+    def prune_empty(cls, directory: str) -> None:
+        """Drop a project directory once its last session expires, so the store does not accumulate
+        an entry for every directory nanocode was ever started in."""
+        with contextlib.suppress(OSError):
+            if not any(entry.name.endswith(".jsonl") for entry in os.scandir(directory)):
+                cls.clear_latest_dir(directory)
+                os.rmdir(directory)
+
+    @classmethod
+    def write_latest(cls, data_dir: str, cwd: str, uid: str) -> None:
+        with open(os.path.join(cls.project_dir(data_dir, cwd), "latest"), "w", encoding="utf-8") as file:
+            file.write(uid)
+
+    @classmethod
+    def read_latest(cls, directory: str) -> str:
         try:
-            with open(cls.path_for(data_dir, "latest"), encoding="utf-8") as file:
+            with open(os.path.join(directory, "latest"), encoding="utf-8") as file:
                 return file.read().strip()
         except OSError:
             return ""
 
     @classmethod
-    def latest_uid_for_cwd(cls, data_dir: str, cwd: str) -> str:
-        sessions_dir = cls.path_for(data_dir, "sessions")
+    def latest_uid(cls, data_dir: str, cwd: str) -> str:
+        """The most recent session for `cwd`. A single pointer read: no directory scan, and a
+        resume can never cross into another project."""
+        directory = cls.project_dir(data_dir, cwd)
+        uid = cls.read_latest(directory)
+        if uid and os.path.isfile(os.path.join(directory, uid + ".jsonl")):
+            return uid
+        return cls.newest_uid(directory)
+
+    @classmethod
+    def newest_uid(cls, directory: str) -> str:
+        """Fallback for a missing or stale pointer: newest log in the project by mtime."""
         try:
-            entries = sorted(
-                (entry for entry in os.scandir(sessions_dir) if entry.name.endswith(".jsonl") and entry.is_file()),
-                key=lambda entry: entry.stat().st_mtime,
-                reverse=True,
-            )
+            entries = [entry for entry in os.scandir(directory) if entry.name.endswith(".jsonl") and entry.is_file()]
         except OSError:
             return ""
-        target = os.path.realpath(cwd)
-        for entry in entries:
-            try:
-                with open(entry.path, encoding="utf-8") as file:
-                    snapshot = next((json.loads(line) for line in file if line.strip()), {})
-            except (OSError, json.JSONDecodeError):
-                continue
-            if snapshot.get("cwd") and os.path.realpath(str(snapshot["cwd"])) == target:
-                return entry.name[:-6]
-        return ""
+        newest = max(entries, key=lambda entry: entry.stat().st_mtime, default=None)
+        return newest.name[:-6] if newest else ""
 
     @classmethod
-    def clear_latest(cls, data_dir: str) -> None:
+    def clear_latest(cls, data_dir: str, cwd: str) -> None:
+        cls.clear_latest_dir(cls.project_dir(data_dir, cwd))
+
+    @classmethod
+    def clear_latest_dir(cls, directory: str) -> None:
         with contextlib.suppress(OSError):
-            os.unlink(cls.path_for(data_dir, "latest"))
+            os.unlink(os.path.join(directory, "latest"))
 
     @classmethod
-    def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
+    def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> "Session":
         if config is None:
             config = Config.from_dict(ConfigFile.load())
         if settings is None:
             settings = RuntimeSettings()
-        uid = cls.resolve_uid(uid, config.data_dir)
-        data = cls.read_merged(cls.path_for(config.data_dir, "sessions", uid + ".jsonl"), uid)
+        cwd = cwd or os.getcwd()
+        uid = cls.resolve_uid(uid, config.data_dir, cwd)
+        path = cls.find_session_path(config.data_dir, uid)
+        if not path:
+            raise NanocodeError(f"Session snapshot not found: {uid} under {cls.path_for(config.data_dir, cls.PROJECTS_DIR)}")
+        data = cls.read_merged(path, uid)
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
-        tool_results = {record.key: record.output for record in tool_records}
-        tool_results.update(data.get("tool_results", {}))
-        turn_diffs = SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", []))
-        if not turn_diffs:
-            turn_diffs = SessionSnapshotCodec.turn_diffs_from_tool_records(tool_records)
-        state_data = dict(data.get("state", {}))
-        state_data.pop("prefix_fingerprint", None)
-        state_data.pop("prefix_fingerprints", None)
         session = Session(
-            cwd=data.get("cwd", os.getcwd()),
+            cwd=data.get("cwd", cwd),
             config=config,
             settings=settings,
             messages=SessionSnapshotCodec.persistable_messages(data.get("messages", [])),
-            state=AgentState(**state_data),
+            state=AgentState(**data.get("state", {})),
             usage=SessionSnapshotCodec.model_usage(data.get("usage", {})),
             tool_counter=data.get("tool_counter", 0),
-            tool_results=tool_results,
+            tool_results={record.key: record.output for record in tool_records},
             tool_records=tool_records,
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
-            turn_diffs=turn_diffs,
+            turn_diffs=SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", [])),
             pending_user_inputs=[QueuedInput(str(text)) for text in data.get("pending_user_inputs", []) if str(text).strip()],
             uid=data.get("uid", uid),
             resumed=True,
@@ -1199,34 +1226,48 @@ class SessionSnapshotStore:
         return session
 
     @classmethod
-    def resolve_uid(cls, uid: str, data_dir: str = "~/.nanocode") -> str:
+    def resolve_uid(cls, uid: str, data_dir: str, cwd: str) -> str:
+        """`latest`/`last` mean the latest session *in this project*, never one from elsewhere."""
         if uid not in {"latest", "last"}:
             return uid
-        resolved = cls.latest_uid(data_dir)
-        if not resolved and not os.path.exists(cls.path_for(data_dir, "latest")):
-            raise NanocodeError("No latest session to resume; start a new session instead")
+        resolved = cls.latest_uid(data_dir, cwd)
         if not resolved:
-            raise NanocodeError("Latest session file is empty")
+            raise NanocodeError(f"No previous session for this project: {cwd}")
         return resolved
 
     @classmethod
     def read_merged(cls, path: str, uid: str) -> Json:
-        if not os.path.exists(path):
-            raise NanocodeError(f"Session snapshot not found: {uid} at {path}")
-        merged = None
+        merged: Json | None = None
         with open(path, encoding="utf-8") as file:
-            for line in file:
+            for index, line in enumerate(file):
                 line = line.strip()
                 if not line:
                     continue
                 parsed = json.loads(line)
-                if merged is None:
+                if index == 0:
+                    cls.check_header(parsed, path)
+                elif merged is None:
                     merged = parsed
                 else:
                     SessionSnapshotCodec.merge(merged, parsed)
         if merged is None:
             raise NanocodeError(f"Empty session file: {path}")
         return merged
+
+    @classmethod
+    def check_header(cls, header: Json, path: str) -> None:
+        version = header.get("v")
+        if version != cls.FORMAT_VERSION:
+            raise NanocodeError(f"Unsupported session format v{version} (expected v{cls.FORMAT_VERSION}): {path}")
+
+    @classmethod
+    def read_header(cls, path: str) -> Json:
+        """The header alone, without parsing the snapshot behind it."""
+        try:
+            with open(path, encoding="utf-8") as file:
+                return next((json.loads(line) for line in file if line.strip()), {})
+        except (OSError, json.JSONDecodeError):
+            return {}
 
     @staticmethod
     def path_for(data_dir: str, *parts: str) -> str:
@@ -1695,8 +1736,8 @@ class Session:
             return SessionSnapshotStore(self).save()
 
     @classmethod
-    def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None) -> "Session":
-        return SessionSnapshotStore.load(uid, config=config, settings=settings)
+    def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> "Session":
+        return SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=cwd)
 
 
 class UpdateChecker:
@@ -9556,7 +9597,7 @@ def main(argv: list[str] | None = None) -> int:
         "--theme", choices=["auto", "light", "dark"], default="", help="Color theme (defaults to runtime.theme, then auto-detect via COLORFGBG)"
     )
     resume = parser.add_mutually_exclusive_group()
-    resume.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for most recent')
+    resume.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for this project\'s most recent')
     resume.add_argument("-c", "--last", "--latest", dest="continue_project", action="store_true", help="Resume the latest session in the current project")
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
     args = parser.parse_args(argv)
@@ -9571,13 +9612,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.resume or args.continue_project:
             data = ConfigFile.load(args.config)
             config = Config.from_dict(data)
-            uid = args.resume or SessionSnapshotStore.latest_uid_for_cwd(config.data_dir, os.getcwd())
-            if not uid:
-                raise NanocodeError(f"No previous session for this project: {os.getcwd()}")
             session = Session.load_snapshot(
-                uid,
+                args.resume or "latest",
                 config=config,
                 settings=RuntimeSettings.from_dict(data, yolo=args.yolo, theme=args.theme),
+                cwd=os.getcwd(),
             )
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)

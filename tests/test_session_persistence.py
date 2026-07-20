@@ -15,8 +15,22 @@ def session_with_data_dir(tmp_path):
     )
 
 
+def log_path(s):
+    """Path of a session's log inside its project shard."""
+    return n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid)
+
+
+def project_dir(s):
+    return n.SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd)
+
+
 def read_jsonl(path) -> list[dict]:
-    """Read all JSON lines from a JSONL file."""
+    """Snapshot and delta lines, with the header line dropped."""
+    return read_lines(path)[1:]
+
+
+def read_lines(path) -> list[dict]:
+    """Every JSON line, header included."""
     with open(path) as f:
         return [json.loads(line) for line in f if line.strip()]
 
@@ -28,7 +42,7 @@ def test_first_save_writes_init_line(tmp_path):
     s.store_tool_result("Read", ["foo.py"], "# content")
     s.save_snapshot()
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert len(lines) == 1
     init = lines[0]
     assert init["uid"] == s.uid
@@ -50,7 +64,7 @@ def test_pending_user_inputs_persist_and_restore(tmp_path):
 
     s.save_snapshot()
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert lines[0]["pending_user_inputs"] == ["queued one", "queued two"]
     restored = n.Session.load_snapshot(s.uid, config=s.config)
     assert [item.text for item in restored.pending_user_inputs] == ["queued one", "queued two"]
@@ -66,7 +80,7 @@ def test_pending_user_input_delta_replaces_queue_state(tmp_path):
     s.pending_user_inputs.clear()
     s.save_snapshot()
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert lines[1]["pending_user_inputs"] == ["queued"]
     assert lines[2]["pending_user_inputs"] == []
     restored = n.Session.load_snapshot(s.uid, config=s.config)
@@ -78,9 +92,10 @@ def test_latest_pointer_created_on_first_save(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    latest_path = tmp_path / "latest"
-    assert latest_path.exists()
-    assert latest_path.read_text().strip() == s.uid
+    latest_path = os.path.join(project_dir(s), "latest")
+    assert os.path.exists(latest_path)
+    with open(latest_path) as file:
+        assert file.read().strip() == s.uid
 
 
 def test_second_save_writes_delta_with_only_new_data(tmp_path):
@@ -94,7 +109,7 @@ def test_second_save_writes_delta_with_only_new_data(tmp_path):
     s.store_tool_result("Search", ["pat"], "result")
     s.save_snapshot()  # delta
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert len(lines) == 2
     delta = lines[1]
     # Only new data in delta
@@ -113,7 +128,7 @@ def test_delta_omits_messages_when_nothing_new(tmp_path):
     # No new messages
     s.save_snapshot()  # delta
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     delta = lines[1]
     assert "messages" not in delta
 
@@ -127,7 +142,7 @@ def test_delta_omits_tool_records_when_nothing_new(tmp_path):
     s.messages.append({"role": "user", "content": "more"})
     s.save_snapshot()  # delta
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     delta = lines[1]
     assert "messages" in delta
     assert "tool_records" not in delta  # No new tool calls since init
@@ -146,7 +161,7 @@ def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, 
     s.messages.append({"role": "user", "content": "next"})
     s.save_snapshot()  # delta
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert "turn_diffs" not in lines[1]
     assert "turn_diffs_replace" not in lines[1]
 
@@ -187,26 +202,26 @@ def test_load_preserves_uid(tmp_path):
 
 
 def test_load_with_latest_alias(tmp_path):
-    """load_snapshot with uid='latest' resolves from the latest pointer file."""
+    """load_snapshot with uid='latest' resolves this project's latest pointer."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot("latest", config=s.config)
+    s2 = n.Session.load_snapshot("latest", config=s.config, cwd=str(tmp_path))
     assert s2.uid == s.uid
 
 
 def test_load_with_last_alias(tmp_path):
-    """load_snapshot with uid='last' resolves from the latest pointer file."""
+    """load_snapshot with uid='last' resolves this project's latest pointer."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot("last", config=s.config)
+    s2 = n.Session.load_snapshot("last", config=s.config, cwd=str(tmp_path))
     assert s2.uid == s.uid
 
 
-def test_latest_uid_for_cwd_ignores_newer_sessions_from_other_projects(tmp_path):
+def test_latest_uid_ignores_newer_sessions_from_other_projects(tmp_path):
     data_dir = tmp_path / "data"
     project = tmp_path / "project"
     other = tmp_path / "other"
@@ -221,14 +236,111 @@ def test_latest_uid_for_cwd_ignores_newer_sessions_from_other_projects(tmp_path)
     other_session = n.Session(cwd=str(other), config=config)
     other_session.messages.append({"role": "user", "content": "other"})
     other_session.save_snapshot()
-    os.utime(data_dir / "sessions" / f"{project_session.uid}.jsonl", (1, 1))
-    os.utime(data_dir / "sessions" / f"{other_session.uid}.jsonl", (2, 2))
+    os.utime(log_path(project_session), (1, 1))
+    os.utime(log_path(other_session), (2, 2))
 
-    assert n.SessionSnapshotStore.latest_uid_for_cwd(str(data_dir), str(project)) == project_session.uid
+    assert n.SessionSnapshotStore.latest_uid(str(data_dir), str(project)) == project_session.uid
+    assert n.SessionSnapshotStore.latest_uid(str(data_dir), str(other)) == other_session.uid
 
 
-def test_latest_uid_for_cwd_returns_empty_without_project_session(tmp_path):
-    assert n.SessionSnapshotStore.latest_uid_for_cwd(str(tmp_path / "missing"), str(tmp_path)) == ""
+def test_latest_uid_returns_empty_without_project_session(tmp_path):
+    assert n.SessionSnapshotStore.latest_uid(str(tmp_path / "missing"), str(tmp_path)) == ""
+
+
+def test_sessions_are_sharded_per_project(tmp_path):
+    """Two projects sharing a data_dir get separate directories, so listing or deleting one
+    project's history never touches the other's."""
+    data_dir, project, other = tmp_path / "data", tmp_path / "project", tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    config = n.Config(data_dir=str(data_dir))
+
+    first = n.Session(cwd=str(project), config=config)
+    first.messages.append({"role": "user", "content": "project"})
+    first.save_snapshot()
+    second = n.Session(cwd=str(other), config=config)
+    second.messages.append({"role": "user", "content": "other"})
+    second.save_snapshot()
+
+    assert project_dir(first) != project_dir(second)
+    assert sorted(os.listdir(project_dir(first))) == sorted(["latest", first.uid + ".jsonl"])
+    assert sorted(os.listdir(project_dir(second))) == sorted(["latest", second.uid + ".jsonl"])
+
+
+def test_project_slug_separates_same_named_directories(tmp_path):
+    """Two checkouts named alike hash to different shards."""
+    left, right = tmp_path / "a" / "repo", tmp_path / "b" / "repo"
+    left.mkdir(parents=True)
+    right.mkdir(parents=True)
+    slugs = [n.SessionSnapshotStore.project_slug(str(path)) for path in (left, right)]
+
+    assert all(slug.startswith("repo-") for slug in slugs)
+    assert slugs[0] != slugs[1]
+
+
+def test_load_finds_a_session_by_uid_from_any_directory(tmp_path):
+    """An explicit UID resolves regardless of which project it belongs to."""
+    data_dir, project = tmp_path / "data", tmp_path / "project"
+    project.mkdir()
+    config = n.Config(data_dir=str(data_dir))
+    s = n.Session(cwd=str(project), config=config)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.save_snapshot()
+
+    loaded = n.Session.load_snapshot(s.uid, config=config, cwd=str(tmp_path))
+
+    assert loaded.uid == s.uid
+    assert loaded.cwd == str(project)
+
+
+def test_latest_never_crosses_into_another_project(tmp_path):
+    """The regression the shard layout closes: a newer session elsewhere must not be resumable
+    as this project's latest."""
+    data_dir, project, other = tmp_path / "data", tmp_path / "project", tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    config = n.Config(data_dir=str(data_dir))
+    elsewhere = n.Session(cwd=str(other), config=config)
+    elsewhere.messages.append({"role": "user", "content": "other"})
+    elsewhere.save_snapshot()
+
+    with pytest.raises(n.NanocodeError, match="No previous session for this project"):
+        n.Session.load_snapshot("latest", config=config, cwd=str(project))
+
+
+def test_latest_falls_back_to_newest_log_when_pointer_is_missing(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.save_snapshot()
+    os.unlink(os.path.join(project_dir(s), "latest"))
+
+    assert n.SessionSnapshotStore.latest_uid(str(tmp_path), str(tmp_path)) == s.uid
+
+
+def test_header_line_precedes_the_snapshot(tmp_path):
+    """Line 1 is a bounded header, so project queries never parse the conversation behind it."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.save_snapshot()
+
+    header = read_lines(log_path(s))[0]
+
+    assert header == {"v": n.SessionSnapshotStore.FORMAT_VERSION, "uid": s.uid, "cwd": s.cwd, "created_at": header["created_at"]}
+    assert "messages" not in header
+    assert n.SessionSnapshotStore.read_header(log_path(s))["cwd"] == s.cwd
+
+
+def test_load_rejects_an_unknown_format_version(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.save_snapshot()
+    lines = read_lines(log_path(s))
+    lines[0]["v"] = 99
+    with open(log_path(s), "w") as file:
+        file.write("\n".join(json.dumps(line) for line in lines) + "\n")
+
+    with pytest.raises(n.NanocodeError, match="Unsupported session format v99"):
+        n.Session.load_snapshot(s.uid, config=s.config)
 
 
 def test_load_appends_resume_marker(tmp_path):
@@ -253,7 +365,7 @@ def test_save_after_load_produces_a_delta(tmp_path):
     s2.messages.append({"role": "assistant", "content": "post-resume"})
     s2.save_snapshot()  # delta (line 2)
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert len(lines) == 2
     delta = lines[1]
     # The delta should contain the post-resume message, NOT the resume marker
@@ -292,7 +404,7 @@ def test_resume_marker_is_never_persisted(tmp_path):
     ]
     resumed.save_snapshot()
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert lines[-1]["messages_replace"] == [{"role": "user", "content": "rewritten"}]
     assert "[Session resumed:" not in json.dumps(lines)
 
@@ -300,17 +412,18 @@ def test_resume_marker_is_never_persisted(tmp_path):
 def test_load_discards_persisted_resume_markers(tmp_path):
     """Older or malformed snapshots may contain resume markers; load should not keep them."""
     s = session_with_data_dir(tmp_path)
-    path = tmp_path / "sessions" / f"{s.uid}.jsonl"
-    path.parent.mkdir(parents=True)
+    path = log_path(s)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     marker = {"role": "system", "content": f"[Session resumed: uid={s.uid}]"}
+    n.SessionSnapshotStore.write_jsonl(path, n.SessionSnapshotStore.header(s), mode="w")
     n.SessionSnapshotStore.write_jsonl(
-        str(path),
+        path,
         {
             "uid": s.uid,
             "cwd": str(tmp_path),
             "messages": [{"role": "user", "content": "m1"}, marker, {"role": "assistant", "content": "a1"}],
         },
-        mode="w",
+        mode="a",
     )
 
     loaded = n.Session.load_snapshot(s.uid, config=s.config)
@@ -324,8 +437,7 @@ def test_empty_session_first_save_is_skipped(tmp_path):
     s = session_with_data_dir(tmp_path)
     assert s.save_snapshot() == ""
 
-    assert not (tmp_path / "latest").exists()
-    assert not (tmp_path / "sessions" / f"{s.uid}.jsonl").exists()
+    assert not os.path.exists(project_dir(s))
 
 
 def test_tool_results_roundtrip(tmp_path):
@@ -411,19 +523,6 @@ def test_agent_state_roundtrip(tmp_path):
     assert s2.state.round_count == 7
 
 
-def test_load_ignores_retired_cache_prefix_state(tmp_path):
-    s = session_with_data_dir(tmp_path)
-    s.state.goal = "resume"
-    s.save_snapshot()
-    path = tmp_path / "sessions" / f"{s.uid}.jsonl"
-    lines = read_jsonl(path)
-    lines[0]["state"].update(prefix_fingerprint="old", prefix_fingerprints=["old", "new"])
-    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
-
-    restored = n.Session.load_snapshot(s.uid, config=s.config)
-
-    assert restored.uid == s.uid
-
 def test_multiple_deltas_accumulate_correctly(tmp_path):
     """Multiple delta saves accumulate data correctly."""
     s = session_with_data_dir(tmp_path)
@@ -465,22 +564,16 @@ def test_load_missing_snapshot_raises_error(tmp_path):
         n.Session.load_snapshot("nonexistent-uid", config=n.Config(data_dir=str(tmp_path)))
 
 
-def test_resolve_uid_missing_latest_file(tmp_path):
-    """Resolving 'latest' when no latest file exists raises NanocodeError."""
-    with pytest.raises(n.NanocodeError, match="No latest session to resume"):
-        n.SessionSnapshotStore.resolve_uid("latest", data_dir=str(tmp_path))
-
-
-def test_resolve_uid_missing_last_file(tmp_path):
-    """Resolving 'last' when no latest file exists raises NanocodeError."""
-    with pytest.raises(n.NanocodeError, match="No latest session to resume"):
-        n.SessionSnapshotStore.resolve_uid("last", data_dir=str(tmp_path))
+@pytest.mark.parametrize("alias", ["latest", "last"])
+def test_resolve_uid_without_a_project_session(tmp_path, alias):
+    """Resolving an alias in a project with no sessions raises NanocodeError."""
+    with pytest.raises(n.NanocodeError, match="No previous session for this project"):
+        n.SessionSnapshotStore.resolve_uid(alias, str(tmp_path), str(tmp_path))
 
 
 def test_resolve_uid_passthrough_normal_uid(tmp_path):
-    """Resolving a normal uid (not 'latest') returns it as-is."""
-    result = n.SessionSnapshotStore.resolve_uid("my-uid", data_dir=str(tmp_path))
-    assert result == "my-uid"
+    """Resolving a normal uid (not an alias) returns it as-is."""
+    assert n.SessionSnapshotStore.resolve_uid("my-uid", str(tmp_path), str(tmp_path)) == "my-uid"
 
 
 def test_jsonl_file_is_append_only(tmp_path):
@@ -492,7 +585,7 @@ def test_jsonl_file_is_append_only(tmp_path):
     s.save_snapshot()  # l3
     s.save_snapshot()  # l4
 
-    lines = read_jsonl(tmp_path / "sessions" / f"{s.uid}.jsonl")
+    lines = read_jsonl(log_path(s))
     assert len(lines) == 4
     # First line has all fields (init)
     assert "uid" in lines[0]
@@ -512,27 +605,28 @@ def test_clean_expired_sessions_removes_old_files_and_latest(tmp_path):
     old = session_with_data_dir(tmp_path)
     old.messages.append({"role": "user", "content": "old"})
     old.save_snapshot()
-    old_path = tmp_path / "sessions" / f"{old.uid}.jsonl"
+    old_path = log_path(old)
     stale_time = time.time() - 8 * 86400
     os.utime(old_path, (stale_time, stale_time))
 
     assert n.SessionSnapshotStore.clean_expired(s) == 1
 
-    assert not old_path.exists()
-    assert not (tmp_path / "latest").exists()
+    assert not os.path.exists(old_path)
+    # The pointer named the expired session, and the emptied shard is pruned with it.
+    assert not os.path.exists(project_dir(old))
 
 
 def test_clean_expired_sessions_skips_current_session(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "current"})
     s.save_snapshot()
-    path = tmp_path / "sessions" / f"{s.uid}.jsonl"
+    path = log_path(s)
     stale_time = time.time() - 8 * 86400
     os.utime(path, (stale_time, stale_time))
 
     assert n.SessionSnapshotStore.clean_expired(s) == 0
 
-    assert path.exists()
+    assert os.path.exists(path)
 
 
 # ---------------------------------------------------------------------------

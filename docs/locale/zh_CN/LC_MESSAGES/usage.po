@@ -388,6 +388,17 @@ msgid "Resume from the command line:"
 msgstr "从命令行恢复："
 
 #: ../../usage.md:174
+msgid ""
+"Sessions are stored per project, so `-c` and a bare `--resume` never reach "
+"into another project's history — even when your most recent session anywhere "
+"was somewhere else. A `UID` is looked up across every project, so you can "
+"resume one by id from wherever you are."
+msgstr ""
+"Session 按项目分开存储，因此 `-c` 和不带参数的 `--resume` 不会读取其他项目的历史，"
+"即使你最近一次 session 发生在别处也是如此。而 `UID` 会在所有项目中查找，"
+"所以你可以在任意目录下按 id 恢复某个 session。"
+
+#: ../../usage.md:174
 msgid "Reviewing changes"
 msgstr "审查修改"
 

@@ -26,14 +26,9 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
     monkeypatch.setattr(n.Config, "from_dict", classmethod(lambda _cls, _data: config))
     monkeypatch.setattr(n.RuntimeSettings, "from_dict", classmethod(lambda _cls, _data, **_kwargs: settings))
     monkeypatch.setattr(
-        n.SessionSnapshotStore,
-        "latest_uid_for_cwd",
-        classmethod(lambda _cls, data_dir, cwd: selected.append((data_dir, cwd)) or "project-session"),
-    )
-    monkeypatch.setattr(
         n.Session,
         "load_snapshot",
-        classmethod(lambda _cls, uid, config=None, settings=None: selected.append((uid, config, settings)) or resumed),
+        classmethod(lambda _cls, uid, config=None, settings=None, cwd="": selected.append((uid, config, settings, cwd)) or resumed),
     )
     monkeypatch.setattr(n, "Agent", lambda session: session)
 
@@ -48,7 +43,8 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
     monkeypatch.chdir(tmp_path)
 
     assert n.main([flag]) == 0
-    assert selected == [(str(tmp_path / "data"), str(tmp_path)), ("project-session", config, settings)]
+    # The alias is resolved against the current project, not a global pointer.
+    assert selected == [("latest", config, settings, str(tmp_path))]
 
 
 def test_runtime_settings_reads_limits_and_yolo_override():

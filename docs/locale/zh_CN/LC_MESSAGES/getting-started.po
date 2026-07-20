@@ -160,8 +160,8 @@ msgid "`--resume [UID]`"
 msgstr "`--resume [UID]`"
 
 #: ../../getting-started.md
-msgid "Resume a saved session; with no `UID`, resumes the latest"
-msgstr "恢复保存的 session；不提供 `UID` 时恢复最近一次"
+msgid "Resume a saved session; with no `UID`, resumes this project's latest"
+msgstr "恢复保存的 session；不提供 `UID` 时恢复本项目最近一次"
 
 #: ../../getting-started.md
 msgid "`--yolo`"

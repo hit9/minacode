@@ -168,8 +168,12 @@ Resume from the command line:
 ```sh
 nanocode -c            # resume the latest session in this project
 nanocode --resume      # same, explicit
-nanocode --resume UID  # resume a specific session by id
+nanocode --resume UID  # resume a specific session by id, from any directory
 ```
+
+Sessions are stored per project, so `-c` and a bare `--resume` never reach into another project's
+history — even when your most recent session anywhere was somewhere else. A `UID` is looked up
+across every project, so you can resume one by id from wherever you are.
 
 ### Reviewing changes
 

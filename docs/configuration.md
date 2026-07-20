@@ -72,4 +72,6 @@ lists the supported keys). `/yolo` toggles `yolo`.
 data_dir = "~/.nanocode"   # sessions, code index, OAuth tokens, user skills, update cache
 ```
 
-Sessions live under `<data_dir>/sessions/`.
+Sessions live under `<data_dir>/projects/<project>/`, one directory per working directory. Each
+holds that project's session logs and a `latest` pointer, so a resume stays scoped to the project
+it belongs to. A project directory is removed once its last session expires.

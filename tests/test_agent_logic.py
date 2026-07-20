@@ -893,7 +893,7 @@ def test_exit_command_prints_resume_command(tmp_path):
 
     assert (handled, exit_now) == (True, True)
     assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
-    assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+    assert os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
 def test_empty_exit_does_not_print_resume_command(tmp_path):
@@ -905,7 +905,7 @@ def test_empty_exit_does_not_print_resume_command(tmp_path):
 
     assert (handled, exit_now) == (True, True)
     assert output == []
-    assert not os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+    assert not os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
 def test_resumed_session_does_not_render_tool_results(tmp_path):
@@ -1024,7 +1024,7 @@ def test_eof_exit_prints_resume_command(tmp_path):
     assert loop.run() == 0
 
     assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
-    assert os.path.exists(s.data_path("sessions", f"{s.uid}.jsonl"))
+    assert os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
 def test_select_choice_noninteractive_does_not_prompt(tmp_path):
