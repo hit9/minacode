@@ -75,7 +75,7 @@ msgid "`Ctrl-C`"
 msgstr "`Ctrl-C`"
 
 #: ../../usage.md
-msgid "Interrupt the current task; keep any draft in the editor"
+msgid "Discard a draft in the editor; with the editor empty, interrupt the current task"
 msgstr "中断当前任务，并保留编辑器中的草稿"
 
 #: ../../usage.md
@@ -360,7 +360,7 @@ msgid ""
 "editor alike"
 msgstr "`Ctrl-U` — 清空整行输入，空闲提示符和后续消息编辑器中行为一致"
 
-msgid "`Ctrl-C` — clear idle input; while running, interrupt the current turn"
+msgid "`Ctrl-C` — clear the current input; with the input empty while running, interrupt the turn"
 msgstr "`Ctrl-C` — 空闲时清空输入；运行时中断当前任务"
 
 #: ../../usage.md:147

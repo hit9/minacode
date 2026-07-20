@@ -7,8 +7,8 @@ answering questions, and reviewing changes.
 ## Follow-ups
 
 You can keep typing while nanocode works. A submitted follow-up joins the current task if
-another model step begins; otherwise it becomes the next task. Interrupting does not submit a
-draft that is still in the editor.
+another model step begins; otherwise it becomes the next task. A draft still in the editor is
+never submitted by interrupting — the first `Ctrl-C` discards it instead.
 
 <div class="term-shot" role="img" aria-label="Terminal view: nanocode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read nanocode.py</span><span class="fs-tool">  Edit nanocode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C interrupts</span></div>
 
@@ -18,7 +18,7 @@ and they move up into the log above the divider once they are in.
 | Key | When | Effect |
 |---|---|---|
 | `Enter` | While the agent works | Queue a follow-up for the next model step |
-| `Ctrl-C` | While the agent works | Interrupt the current task; keep any draft in the editor |
+| `Ctrl-C` | While the agent works | Discard a draft in the editor; with the editor empty, interrupt the current task |
 | `Ctrl-C` | Idle prompt | Clear input line |
 | `Ctrl-U` | Any prompt | Clear the whole input line, leaving the turn running |
 | `Up` / `Ctrl-P` | While working, with an empty editor | Recall the newest queued message |
@@ -144,7 +144,7 @@ Two inline references, both Tab-completed as you type:
 **The input line** supports:
 
 - history recall and completion
-- `Ctrl-C` — clear idle input; while running, interrupt the current turn
+- `Ctrl-C` — clear the current input; with the input empty while running, interrupt the turn
 - `Ctrl-U` — clear the whole input line, in the idle prompt and the follow-up editor alike
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history

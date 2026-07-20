@@ -92,7 +92,7 @@ def ctrl_c_queue_scenario(cwd, results):
     first_running = threading.Event()
     cancel_calls = []
     requests = []
-    preserved = []
+    draft_after_ctrl_c = []
     elapsed = []
     driver_errors = []
 
@@ -137,8 +137,9 @@ def ctrl_c_queue_scenario(cwd, results):
                     wait_until(lambda: not first_running.is_set())
                     wait_until(lambda: len(requests) == 2)
                     wait_until(lambda: command_loop.tui is not None and command_loop.tui.input_mode == "chat")
-                    wait_until(lambda: command_loop.tui.input_buffer.text == "unfinished draft")
-                    preserved.append(command_loop.tui.input_buffer.text)
+                    # The first Ctrl-C consumes the draft, the next interrupts the turn.
+                    wait_until(lambda: command_loop.tui.input_buffer.text == "")
+                    draft_after_ctrl_c.append(command_loop.tui.input_buffer.text)
                     elapsed.append(time.monotonic() - began)
                     command_loop.tui.input_buffer.reset(n.Document(""))
                     pipe_input.send_text("\x04")
@@ -163,7 +164,7 @@ def ctrl_c_queue_scenario(cwd, results):
                 "cancel_calls": len(cancel_calls),
                 "driver_errors": driver_errors,
                 "elapsed": elapsed,
-                "preserved": preserved,
+                "draft_after_ctrl_c": draft_after_ctrl_c,
                 "persisted_user_inputs": [message.get("content") for message in restored_session.messages if message.get("role") == "user"],
                 "restored_queue": [item.text for item in restored_session.pending_user_inputs],
                 "requests": requests,
@@ -348,6 +349,49 @@ def test_interactive_tui_ctrl_c_cancels_idle_input_like_master(monkeypatch, draf
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert cancelled == [True]
+
+
+def test_tui_ctrl_c_consumes_a_running_draft_before_interrupting(monkeypatch):
+    """While the agent works, a draft absorbs the first Ctrl-C; the turn keeps running."""
+    events = []
+    app = n.TuiApp(on_interrupt=lambda: events.append("interrupt"))
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        app.set_running("working")
+        pipe_input.send_text("queued draft")
+        wait_until(lambda: app.input_buffer.text == "queued draft")
+        pipe_input.send_text("\x03")
+        wait_until(lambda: app.input_buffer.text == "")
+        assert events == []
+        # With the draft gone the next press interrupts.
+        pipe_input.send_text("\x03")
+        wait_until(lambda: events == ["interrupt"])
+        app.set_idle()
+        pipe_input.send_text("\x04")
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert events == ["interrupt"]
+
+
+def test_tui_ctrl_c_interrupts_immediately_with_an_empty_running_input(monkeypatch):
+    """The queue hint renders only on an empty buffer, so "Ctrl-C interrupts" is shown exactly
+    when a single press interrupts."""
+    events = []
+    app = n.TuiApp(on_interrupt=lambda: events.append("interrupt"))
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        app.set_running("working")
+        pipe_input.send_text("\x03")
+        wait_until(lambda: events == ["interrupt"])
+        app.set_idle()
+        pipe_input.send_text("\x04")
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert events == ["interrupt"]
 
 
 def test_tui_ctrl_u_clears_the_idle_draft_without_cancelling(monkeypatch):
@@ -1092,7 +1136,7 @@ def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path
     marked_followup = n.Agent.LIVE_FOLLOWUP_PREFIX + "queued two"
     assert marked_followup in queued_request
     assert queued_request.index("queued one") < queued_request.index(marked_followup)
-    assert outcome["preserved"] == ["unfinished draft"]
+    assert outcome["draft_after_ctrl_c"] == [""]
     assert outcome["persisted_user_inputs"] == ["long request", "queued one", "queued two"]
     assert outcome["restored_queue"] == []
 

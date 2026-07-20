@@ -7218,6 +7218,12 @@ class TuiApp:
                 self.on_input_cancel()
                 return
             if self.input_mode in {"dispatch", "running"}:
+                # A draft absorbs the first press, the way it already does at the idle prompt. The
+                # queue hint only renders on an empty buffer, so "Ctrl-C interrupts" is shown
+                # exactly when the next press interrupts.
+                if self.input_buffer.text:
+                    self.input_buffer.reset(Document(""))
+                    return
                 self.on_interrupt()
 
         @bindings.add("c-u", filter=~modal & edits_input, eager=True)
