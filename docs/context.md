@@ -7,7 +7,7 @@ reusable prompt prefix.
 
 ## What the model receives
 
-<div class="term-shot" role="img" aria-label="The message context from first to last: system instructions, project environment, skills index, MCP servers and conversation history form the reused prefix; the current turn and task memory change every turn."><span class="fs-goal">─ reused prefix ─────────────────────────────────────</span><span>  system instructions      <span class="fs-i fs-dim">how the agent should operate</span></span><span>  project environment      <span class="fs-i fs-dim">directory · OS · shell · commands</span></span><span>  skills index             <span class="fs-i fs-dim">only when skills are installed</span></span><span>  MCP servers              <span class="fs-i fs-dim">only when a server is connected</span></span><span>  conversation history     <span class="fs-i fs-dim">messages · tool calls · results</span></span><span class="fs-dim">─ changes each turn ─────────────────────────────────</span><span>  current turn             <span class="fs-i fs-dim">the latest messages and results</span></span><span>  task memory              <span class="fs-i fs-dim">goal · plan · facts · checks</span></span><span>  history index            <span class="fs-i fs-dim">after compaction; recallable by seg.N</span></span></div>
+<div class="term-shot" role="img" aria-label="The message context from first to last: system instructions, project environment, skills, MCP servers, history index, and conversation history form the reused prefix; task memory follows the conversation, and the current turn is last."><span class="fs-goal">─ reused prefix ─────────────────────────────────────</span><span>  system instructions      <span class="fs-i fs-dim">how the agent should operate</span></span><span>  project environment      <span class="fs-i fs-dim">directory · OS · shell · commands</span></span><span>  skills index             <span class="fs-i fs-dim">only when skills are installed</span></span><span>  MCP servers              <span class="fs-i fs-dim">only when a server is connected</span></span><span>  history index            <span class="fs-i fs-dim">grows when compaction creates seg.N</span></span><span>  conversation history     <span class="fs-i fs-dim">reused until compaction</span></span><span class="fs-dim">─ dynamic tail ──────────────────────────────────────</span><span>  task memory              <span class="fs-i fs-dim">goal · plan · facts · checks</span></span><span>  current turn             <span class="fs-i fs-dim">the latest messages and results</span></span></div>
 
 Tool definitions are sent beside this message stack: built-in tools, `Skill` when skills are
 installed, and MCP tools and resources from <span class="marker">currently connected servers</span>.
@@ -31,9 +31,10 @@ repeated compaction cannot compound the loss.
 
 <div class="term-shot" role="img" aria-label="Compaction moves the older conversation out of the active context into numbered history segments. The active context keeps a short summary and a history index of seg.N titles; RecallContext pulls a segment's full text back on demand."><span class="fs-goal">─ active context ─────────────────────</span><span>  summary          <span class="fs-i fs-dim">short rewrite of older talk</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span>  history index    <span class="fs-i fs-dim">seg.1 · seg.2 · …  (titles)</span></span><span class="fs-dim">─ session log (cold) ─────────────────</span><span>  seg.1            <span class="fs-i fs-dim">verbatim evicted messages</span></span><span>  seg.2            <span class="fs-i fs-dim">verbatim evicted messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(seg.N)</span> pulls a segment back</span></div>
 
-The history index lives in task memory, one line per segment. The agent calls `RecallContext` with
-a `seg.N` key to retrieve that segment's full text when it needs earlier detail. Task memory (goal,
-plan, facts, checks) is carried across untouched, which is why decisions worth keeping belong there.
+The history index is a separate context section before conversation history, one line per segment.
+The agent calls `RecallContext` with a `seg.N` key to retrieve that segment's full text when it
+needs earlier detail. Task memory (goal, plan, facts, checks) follows conversation history and is
+carried across untouched, which is why decisions worth keeping belong there.
 
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.
@@ -41,9 +42,11 @@ starting a large refactor. `/status` reports how many compactions a session has 
 ## Prompt caching
 
 Prompt caching lets a provider reuse work for an unchanged beginning of a request. The next request
-usually begins with the same instructions, environment, tools, and earlier conversation, so only
-the new tail needs to be processed. Connecting an MCP server, changing installed skills, switching
-models, or otherwise changing an early section can reduce the next request's cache hit.
+usually begins with the same instructions, environment, tools, history index, and earlier
+conversation, so only the new tail needs to be processed. Task memory follows conversation history
+so updating it does not invalidate that larger prefix. Connecting an MCP server, changing installed
+skills, switching models, or otherwise changing an early section can reduce the next request's
+cache hit.
 
 <div class="term-shot" role="img" aria-label="Two request bars. Both start with the same long shaded prefix, which the provider reuses; only the shorter tail of each request is processed again."><span>previous  <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░</span></span><span>next      <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░░░░░</span></span><span> </span><span class="fs-dim">          <span class="fs-i fs-goal">█</span> reused prefix    ░ processed again</span></div>
 

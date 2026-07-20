@@ -44,9 +44,10 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert messages[0]["content"] == "system"
     assert messages[1]["content"].startswith("--- Environment ---")
     assert "- cwd: " + str(tmp_path) in messages[1]["content"]
-    assert [message["content"] for message in messages[2:7]] == ["old request", "old answer", "current request", "extra one", "extra two"]
-    assert messages[-1]["content"].startswith("--- Memory ---")
-    assert "Date:" in messages[-1]["content"]
+    assert [message["content"] for message in messages[2:4]] == ["old request", "old answer"]
+    assert messages[4]["content"].startswith("--- Memory ---")
+    assert "Date:" in messages[4]["content"]
+    assert [message["content"] for message in messages[5:]] == ["current request", "extra one", "extra two"]
     assert not any("FILE STATE" in message["content"] for message in messages)
 
 
@@ -405,15 +406,20 @@ def test_history_title_skips_summary_blocks(tmp_path):
     assert context.history_title(messages) == "the real request"
 
 
-def test_memory_context_lists_history_index(tmp_path):
+def test_history_index_precedes_conversation_and_memory_excludes_it(tmp_path):
     s = session(tmp_path)
+    s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
     s.history.append(n.HistorySegment(key="seg.1", title="find the bug", text="..."))
     context = n.ContextManager(s)
 
+    messages = context.model_messages("system", [{"role": "user", "content": "current request"}])
     memory = context.memory_context()
 
-    assert "History index (recall with RecallContext):" in memory
-    assert "- seg.1: find the bug" in memory
+    assert messages[2]["content"] == "--- History index ---\n- seg.1: find the bug"
+    assert [message["content"] for message in messages[3:5]] == ["old request", "old answer"]
+    assert messages[5]["content"].startswith("--- Memory ---")
+    assert messages[6]["content"] == "current request"
+    assert "History index" not in memory
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
@@ -483,10 +489,10 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
     assert [len(messages) for messages in agent.model.messages] == [4, 6]
-    assert agent.model.messages[1][3]["role"] == "assistant"
-    assert agent.model.messages[1][3]["tool_calls"][0]["id"] == "Read-id"
-    assert agent.model.messages[1][4]["role"] == "tool"
-    assert agent.model.messages[1][4]["tool_call_id"] == "Read-id"
+    assert agent.model.messages[1][4]["role"] == "assistant"
+    assert agent.model.messages[1][4]["tool_calls"][0]["id"] == "Read-id"
+    assert agent.model.messages[1][5]["role"] == "tool"
+    assert agent.model.messages[1][5]["tool_call_id"] == "Read-id"
     assert any("tool tr.1 Read a.txt 0:1" in (message.get("content") or "") for message in agent.model.messages[1])
     assert any(message["role"] == "tool" and "<Read" in message["content"] for message in agent.model.messages[1])
     assert not any("FILE STATE" in (message.get("content") or "") for message in agent.model.messages[1])

@@ -4107,8 +4107,14 @@ class ContextManager:
         if mcp_tools:
             messages.append({"role": "user", "content": mcp_tools})
 
-        messages.extend(self.dedup_skill_loads(self.dedup_mcp_describes([*self.session.messages, *(turn_messages or [])])))
-        messages.append({"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")})
+        if history_index := self.history_index_context():
+            messages.append({"role": "user", "content": "--- History index ---\n" + history_index})
+        conversation = [
+            *self.session.messages,
+            {"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")},
+            *(turn_messages or []),
+        ]
+        messages.extend(self.dedup_skill_loads(self.dedup_mcp_describes(conversation)))
         return Text.value(messages)
 
     def dedup_mcp_describes(self, messages: list[Json]) -> list[Json]:
@@ -4219,13 +4225,14 @@ class ContextManager:
             "Check: " + (self.session.state.check or "(empty)"),
             f"Code index: {index_status} (InspectCode usable: {index_usable})",
         ]
-        if self.session.history:
-            rows.append("History index (recall with RecallContext):\n" + "\n".join(f"- {seg.key}: {seg.title}" for seg in self.session.history))
         if errors := self.recent_tool_errors():
             rows.append("Recent tool errors:\n" + "\n".join(errors))
         if with_date:
             rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
         return "\n\n".join(rows)
+
+    def history_index_context(self) -> str:
+        return "\n".join(f"- {seg.key}: {seg.title}" for seg in self.session.history)
 
     def recent_tool_errors(self) -> list[str]:
         return [
