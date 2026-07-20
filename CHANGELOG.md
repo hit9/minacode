@@ -15,6 +15,7 @@
 - Store the file snapshots behind `/diff` by content hash instead of inline in every edit record. Editing one file repeatedly stored each version twice, once as an edit's `after` and again as the next edit's `before`; each version is now written to the log once. Past 100 edits, where every save rewrites the whole retained window, a save rewrote every snapshot again — it now rewrites only the references.
 
 ### Fixed
+- Summarize the work that followed the current request during `/compact`, not just the conversation before it. One request can drive dozens of tool calls, and keeping that tail whole left the context nearly as large as it started — compacting a 93-message session summarized 47 messages holding 101k characters while keeping 46 messages holding 209k, so the context stayed at 43%.
 - Show one diff per file in `/diff` when a file's edits are only partly covered by stored snapshots, which happens once a file grows past the snapshot size limit mid-session. The snapshot-derived diff and the reconstructed one were both emitted, repeating the file's changes under two headers.
 - Isolate `HOME` in the test suite. Tests that built a config without an explicit `paths.data_dir` and then saved a session wrote into the developer's real `~/.nanocode`.
 - Describe `Ctrl-C` in the running follow-up hint as interrupting the turn rather than "sending immediately". `Ctrl-C` interrupts the current task and keeps any draft in the editor; it does not submit the draft, so the previous hint advertised an action that does not exist.

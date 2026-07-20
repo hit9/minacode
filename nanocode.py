@@ -4171,8 +4171,15 @@ class ContextManager:
         )
 
     def compaction_parts(self) -> tuple[list[Json], list[Json]]:
-        index = self.latest_user_index(self.session.messages)
-        return (self.session.messages, []) if index is None else (self.session.messages[:index], self.session.messages[index:])
+        """Manual `/compact`. Everything before the current request is summarized, and so is the
+        work that followed it beyond a recent window — a single request can drive dozens of tool
+        calls, and keeping that tail whole leaves the context as large as it started."""
+        messages = self.session.messages
+        index = self.latest_user_index(messages)
+        if index is None:
+            return messages, []
+        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :])
+        return messages[:index] + compacted_tail, [messages[index]] + keep_tail
 
     def turn_compaction_parts(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
         index = self.latest_user_index(messages)

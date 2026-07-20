@@ -205,6 +205,27 @@ def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
     assert keep == []
 
 
+def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
+    """One request can drive dozens of tool calls. /compact must summarize that tail too, or a
+    long turn leaves the context as large as it started."""
+    s = session(tmp_path)
+    s.messages = [{"role": "user", "content": "older"}, {"role": "assistant", "content": "older answer"}]
+    s.messages.append({"role": "user", "content": "do the big thing"})
+    for i in range(30):
+        s.messages.append({"role": "assistant", "content": f"step {i}", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]})
+        s.messages.append({"role": "tool", "content": f"tool tr.{i}"})
+
+    compacted, keep = n.ContextManager(s).compaction_parts()
+
+    # The request that started the work is kept, plus a bounded window of what followed.
+    assert keep[0] == {"role": "user", "content": "do the big thing"}
+    assert len(keep) <= n.ContextManager.COMPACT_RECENT_MESSAGES + 1
+    assert len(compacted) == len(s.messages) - len(keep)
+    # A kept tool result never loses the call it answers.
+    if keep[1].get("role") == "tool":
+        raise AssertionError("kept tail starts with an orphaned tool result")
+
+
 def test_compaction_parts_for_uses_last_fixed_window(tmp_path):
     messages = [{"role": "assistant", "content": f"m{index}"} for index in range(10)]
 
