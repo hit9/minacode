@@ -752,6 +752,12 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
     persisted = n.SessionSnapshotCodec.persistable_messages(restored.messages)
     assert len(persisted) == len(s.messages)
     assert any("a compacted summary" in str(m.get("content") or "") for m in persisted)
+    # /compact also captures the evicted conversation as a recallable segment, and persists it.
+    assert [segment.key for segment in s.history] == ["seg.1"]
+    assert s.history[0].title == "older request"
+    assert "older request" in s.history[0].text
+    assert [segment.key for segment in restored.history] == ["seg.1"]
+    assert "older request" in restored.history[0].text
 
 
 def test_history_segments_persist_and_restore(tmp_path):
@@ -784,6 +790,27 @@ def test_history_delta_appends_new_segments(tmp_path):
     lines = read_jsonl(log_path(s))
     assert any("history" in line and [seg["key"] for seg in line["history"]] == ["seg.2"] for line in lines)
     assert not any("history_replace" in line for line in lines)
+
+
+def test_history_delta_rewrites_when_saved_segments_change(tmp_path):
+    """History is append-only in practice, so the digest-delta normally appends. If the saved segments
+    ever disagree with the current ones (a reordered or trimmed history), the save must fall back to a
+    full history_replace so the log still reconstructs the current set."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.history.append(n.HistorySegment(key="seg.1", title="first", text="one"))
+    s.history.append(n.HistorySegment(key="seg.2", title="second", text="two"))
+    s.save_snapshot()
+
+    # Mutate the saved history out of band: the prefix digest no longer matches the last save.
+    s.history[0], s.history[1] = s.history[1], s.history[0]
+    s.save_snapshot()
+
+    lines = read_jsonl(log_path(s))
+    assert any("history_replace" in line and [seg["key"] for seg in line["history_replace"]] == ["seg.2", "seg.1"] for line in lines)
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert [segment.key for segment in restored.history] == ["seg.2", "seg.1"]
 
 
 def test_resume_recomputes_the_context_percent(tmp_path):

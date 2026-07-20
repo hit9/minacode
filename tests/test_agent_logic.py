@@ -495,6 +495,40 @@ def test_compaction_without_compacted_messages_captures_nothing(tmp_path):
     assert s.history == []
 
 
+def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_path):
+    """An over-budget request can cross both compaction stages in one prepare: the history before the
+    latest request becomes seg.1, then the oversized current turn itself becomes seg.2."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    s.messages = [
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest request"},
+    ]
+    context = n.ContextManager(s)
+    turn = [{"role": "user", "content": "current request"}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def compact(self, text):
+            self.calls += 1
+            return {"summary": f"summary {self.calls}"}
+
+    model = FakeModel()
+    context.prepare_messages(model, "system", turn)
+
+    assert model.calls == 2
+    assert [segment.key for segment in s.history] == ["seg.1", "seg.2"]
+    assert "old request" in s.history[0].text
+    assert "step 0" in s.history[1].text
+    assert "step 11" in s.history[1].text
+    # The turn keeps its request and recent window; the compacted prefix is replaced by the summary.
+    assert turn[0]["content"] == "current request"
+    assert turn[1]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+
+
 def test_history_title_skips_summary_blocks(tmp_path):
     context = n.ContextManager(session(tmp_path))
     messages = [
@@ -1397,6 +1431,11 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
     assert "deterministically trimmed" in s.messages[0]["content"]
     assert s.messages[1]["content"] == "9"
+    # Even though summarization failed, the evicted conversation is still captured as a recallable
+    # segment: the fallback summary is only a trim note, so this is the only way to recover it.
+    assert [segment.key for segment in s.history] == ["seg.1"]
+    assert "user:\n0" in s.history[0].text
+    assert "user:\n8" in s.history[0].text
 
 
 def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
