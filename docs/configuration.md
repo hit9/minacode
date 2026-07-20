@@ -39,7 +39,7 @@ Switch providers within a session with `/provider [NAME]` and models with `/mode
 | `timeout` | `180` | Request timeout, in seconds |
 | `available_models` | — | Models offered by `/model`'s picker |
 | `temperature` | — | Sampling temperature (omit to use the server default) |
-| `max_tokens` | — | Cap on output tokens (omit to use the server default) |
+| `max_tokens` | — | Cap on output tokens and reserve that space during automatic compaction |
 | `strict_tools` | `false` | Emit strict tool-call schemas where supported (OpenAI, DeepSeek); toggle live with `/strict` |
 
 For well-known hosts, `auto` settings pick sensible defaults for you, so
@@ -54,7 +54,7 @@ Optional; the defaults shown are used when omitted.
 | Key | Default | Meaning |
 |---|---|---|
 | `yolo` | `false` | Start without confirmation prompts |
-| `max_context_tokens` | `245760` (240K) | Context budget before automatic compaction |
+| `max_context_tokens` | `245760` (240K) | Total context ceiling used to calculate the automatic-compaction budget |
 | `max_agent_steps` | `200` | Maximum tool steps in one turn |
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |
 | `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |

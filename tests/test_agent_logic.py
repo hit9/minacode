@@ -173,6 +173,46 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert all("recent 7" not in str(message.get("content") or "") for message in s.messages)
 
 
+def test_compaction_budget_reserves_output_and_safety(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 100_000
+    context = n.ContextManager(s)
+
+    assert context.request_token_budget() == 100_000 - n.DEFAULT_OUTPUT_RESERVE_TOKENS - n.MIN_CONTEXT_SAFETY_TOKENS
+
+    s.config.provider.max_tokens = 10_000
+    assert context.request_token_budget() == 100_000 - 10_000 - n.MIN_CONTEXT_SAFETY_TOKENS
+
+
+def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 30_000
+    s.messages = [
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest request"},
+    ]
+    context = n.ContextManager(s)
+    turn = [{"role": "user", "content": "continue"}]
+    tools = [{"type": "function", "function": {"name": "Large", "description": "x" * 40_000, "parameters": {}}}]
+    messages = context.model_messages("system", turn)
+    assert context.request_tokens(messages) < context.request_token_budget()
+    assert context.request_token_budget() <= context.request_tokens(messages, tools) < s.settings.max_context_tokens
+
+    class FakeModel:
+        def __init__(self):
+            self.called = False
+
+        def compact(self, text):
+            self.called = True
+            return {"summary": "summary"}
+
+    model = FakeModel()
+    context.prepare_messages(model, "system", turn, tools)
+
+    assert model.called is True
+
+
 def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
     s = session(tmp_path)
     summary = n.ContextManager.COMPACT_TITLE + "\nold summary"
@@ -1448,12 +1488,16 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     # system is a cache_control-marked block so the tools+system prefix is cached across turns.
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert params["temperature"] == 0.2
+    assert params["max_tokens"] == n.DEFAULT_OUTPUT_RESERVE_TOKENS
     assert "thinking" not in params
     assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}
     assert params["messages"][1]["content"][1]["type"] == "tool_use"
     assert params["messages"][2]["content"][0]["type"] == "tool_result"
     assert params["tools"][0]["name"] == "Read"
     assert params["tools"][0]["input_schema"]["additionalProperties"] is False
+
+    provider.max_tokens = 2_048
+    assert client.anthropic_params(messages, None)["max_tokens"] == 2_048
 
     result = SimpleNamespace(
         content=[
@@ -1740,6 +1784,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert "mcp `1`" in status
     assert f"skills `{count}`" in status
     assert "max context tokens `245760`" in status
+    assert f"compaction budget `{loop.agent.context.request_token_budget()}`" in status
     bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
@@ -1750,8 +1795,9 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
     context = n.ContextManager(s)
     active_messages = context.model_messages(n.Agent.SYSTEM_PROMPT, s._active_turn_messages)
-    active_percent = context.update_percent(active_messages)
-    persisted_percent = context.estimated_tokens(context.model_messages(n.Agent.SYSTEM_PROMPT)) * 100 // s.settings.max_context_tokens
+    tools = n.resolved_tool_schemas(s)
+    active_percent = context.update_percent(active_messages, tools)
+    persisted_percent = context.request_tokens(context.model_messages(n.Agent.SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
     assert active_percent > persisted_percent
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 

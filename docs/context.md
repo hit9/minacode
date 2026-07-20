@@ -21,9 +21,11 @@ with references to their first full copy instead of being sent in full again.
 
 ### Compaction
 
-When the estimated context reaches `runtime.max_context_tokens`, nanocode **compacts**: the older
-part of the conversation is replaced by a short summary, and the most recent messages are kept
-as they are. The session continues in the same turn, so a long task does not have to stop.
+As the estimated request approaches `runtime.max_context_tokens`, nanocode **compacts**: the older
+part of the conversation is replaced by a short summary, and the most recent messages are kept as
+they are. The trigger reserves the configured provider output cap (16K when unspecified), tool
+schemas, and a safety margin of at least 4K. The session continues in the same turn, so a long task
+does not have to stop.
 
 The summary in the active context is lossy, but each compaction also captures a bounded verbatim
 excerpt of the evicted messages as a **history segment**. Earlier snapshots in the append-only

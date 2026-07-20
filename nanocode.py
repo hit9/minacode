@@ -99,6 +99,8 @@ REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
 DEEPSEEK_DEFAULT_MAX_TOKENS = 32_768
+DEFAULT_OUTPUT_RESERVE_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS
+MIN_CONTEXT_SAFETY_TOKENS = 4_096
 CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
     "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "max", "xhigh": "max"},
     "enable_thinking": {"minimal": 256, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
@@ -314,6 +316,9 @@ class ProviderConfig:
     def resolved_max_tokens(self) -> int:
         # Generic OpenAI-compatible providers keep their own server-side cap; only opted-in profiles get a ceiling.
         return self.max_tokens or int(self._profile().get("max_tokens", 0))
+
+    def output_token_budget(self) -> int:
+        return self.resolved_max_tokens() or DEFAULT_OUTPUT_RESERVE_TOKENS
 
     def supports_prompt_cache_key(self) -> bool:
         # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
@@ -4248,17 +4253,27 @@ class ContextManager:
     def skills_context(self) -> str:
         return self.session.skills.index() if self.session.skills else ""
 
-    def update_percent(self, messages: list[Json]) -> int:
-        tokens = self.estimated_tokens(messages)
-        self.session.state.context_percent = min(100, tokens * 100 // self.session.settings.max_context_tokens)
+    def request_token_budget(self) -> int:
+        limit = self.session.settings.max_context_tokens
+        output_reserve = self.session.config.provider.output_token_budget()
+        safety_reserve = max(MIN_CONTEXT_SAFETY_TOKENS, (limit + 49) // 50)
+        return max(1, limit - output_reserve - safety_reserve)
+
+    def request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
+        return self.estimated_tokens(messages) + (self.estimated_tokens(tools) if tools else 0)
+
+    def update_percent(self, messages: list[Json], tools: list[Json] | None = None) -> int:
+        tokens = self.request_tokens(messages, tools)
+        self.session.state.context_percent = min(100, tokens * 100 // self.request_token_budget())
         return self.session.state.context_percent
 
     def update_current_percent(self, base_system: str) -> int:
-        return self.update_percent(self.model_messages(base_system, self.session._active_turn_messages))
+        return self.update_percent(self.model_messages(base_system, self.session._active_turn_messages), resolved_tool_schemas(self.session))
 
-    def prepare_messages(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
+    def prepare_messages(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
-        if self.estimated_tokens(messages) < self.session.settings.max_context_tokens:
+        budget = self.request_token_budget()
+        if self.request_tokens(messages, tools) < budget:
             return messages
         compacted, keep = self.compaction_parts()
         if compacted:
@@ -4267,7 +4282,7 @@ class ContextManager:
             except Exception:
                 self.apply_compaction(None, keep, turn_messages, fallback_note="Previous context was deterministically trimmed.", compacted=compacted)
             messages = self.model_messages(base_system, turn_messages)
-        if turn_messages is not None and self.estimated_tokens(messages) >= self.session.settings.max_context_tokens:
+        if turn_messages is not None and self.request_tokens(messages, tools) >= budget:
             compacted, keep = self.turn_compaction_parts(turn_messages)
             if compacted:
                 try:
@@ -6413,7 +6428,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             "model": provider.model,
             "system": system,
             "messages": self.anthropic_messages(messages),
-            "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
+            "max_tokens": provider.output_token_budget(),
         }
         if provider.temperature is not None:
             params["temperature"] = provider.temperature
@@ -6764,9 +6779,9 @@ FINAL:
         pending = self.session.claim_user_inputs()
         request_turn = [*turn_messages, *({"role": "user", "content": self.LIVE_FOLLOWUP_PREFIX + item.text} for item in pending)]
         self.session.state.turn_messages = len(request_turn)
-        messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn)
         tools = resolved_tool_schemas(self.session)
-        self.context.update_percent(messages)
+        messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn, tools)
+        self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending)
 
     def accept_pending_inputs(self, turn_messages: list[Json], pending: list[QueuedInput]) -> None:
@@ -9387,7 +9402,7 @@ Tools:
             ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; mcp `{connected_mcp}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"),
-            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`; max context tokens `{self.session.settings.max_context_tokens}`"),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`; max context tokens `{self.session.settings.max_context_tokens}`; compaction budget `{self.agent.context.request_token_budget()}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("jobs", f"running `{len(self.session.running_jobs())}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),

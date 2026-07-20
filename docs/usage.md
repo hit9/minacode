@@ -32,7 +32,7 @@ reference.
 ### Looking around
 
 **`/status`** — Shows everything about the runtime at a glance: workspace path,
-session id, active provider and model, context window fill percentage,
+session id, active provider and model, calculated compaction-budget fill percentage,
 conversation history, prompt-cache hit ratio, code index state, background jobs,
 and whether an update is available.
 

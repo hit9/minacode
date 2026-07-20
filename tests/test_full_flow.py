@@ -117,8 +117,10 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
         {"role": "assistant", "content": "latest retained answer"},
     ]
     baseline = _session(tmp_path / "baseline")
-    baseline_messages = n.ContextManager(baseline).model_messages(n.Agent.SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
-    session.settings.max_context_tokens = n.ContextManager(baseline).estimated_tokens(baseline_messages) + 500
+    baseline_context = n.ContextManager(baseline)
+    baseline_messages = baseline_context.model_messages(n.Agent.SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
+    baseline_tokens = baseline_context.request_tokens(baseline_messages, n.resolved_tool_schemas(baseline))
+    session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + n.MIN_CONTEXT_SAFETY_TOKENS
 
     compacted_state = json.dumps(
         {"summary": "Archived work was completed.", "goal": "continue", "plan": [], "known": ["durable fact"], "check": "tests"}
