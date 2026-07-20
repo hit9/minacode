@@ -728,6 +728,32 @@ def _resumed_transcript(tmp_path, diff_text, *, lines_cap=None):
     return "\n".join(str(item) for item in output)
 
 
+def test_compact_command_persists_the_compacted_history(tmp_path):
+    """/compact rewrites the history in place; without a save, leaving the session would resume
+    from the pre-compaction log."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "older request"})
+    for i in range(12):
+        s.messages.append({"role": "assistant", "content": f"step {i}"})
+    s.messages.append({"role": "user", "content": "current request"})
+    s.messages.append({"role": "assistant", "content": "working on it"})
+    s.save_snapshot()
+    before = len(s.messages)
+
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop.agent.model.compact = lambda _context: {"summary": "a compacted summary"}
+    result = loop.compact("")
+
+    assert "Compacted context" in result
+    assert len(s.messages) < before
+
+    # The compacted history is on disk, not just in memory.
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    persisted = n.SessionSnapshotCodec.persistable_messages(restored.messages)
+    assert len(persisted) == len(s.messages)
+    assert any("a compacted summary" in str(m.get("content") or "") for m in persisted)
+
+
 def test_resume_recomputes_the_context_percent(tmp_path):
     """`context_percent` is derived rather than persisted, so a resumed session would report an
     empty context until its first turn."""

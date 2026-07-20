@@ -9386,6 +9386,9 @@ Tools:
         if data is not None:
             self.agent.context.apply_compaction(data, keep)
         self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
+        # Compaction rewrites the history in place. Persist it now: leaving the session without
+        # running another turn would otherwise resume from the log's pre-compaction state.
+        self.session.save_snapshot()
         fallback_note = " (fallback)" if fallback else ""
         return (
             f"Compacted context: messages {before} -> {len(self.session.messages)}, "
