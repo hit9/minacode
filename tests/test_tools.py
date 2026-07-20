@@ -577,6 +577,57 @@ def test_recall_history_rejects_bad_key_format(tmp_path):
         n.RecallContextTool(s, [{"keys": ["tr.1"]}]).call()
 
 
+def test_recall_history_regex_searches_titles_and_text(tmp_path):
+    s = session(tmp_path)
+    s.history.extend(
+        [
+            n.HistorySegment(key="seg.1", title="cache work", text="user:\nStable prefix design"),
+            n.HistorySegment(key="seg.2", title="notes", text="assistant:\nTask Memory placement"),
+            n.HistorySegment(key="seg.3", title="unrelated", text="assistant:\nNothing relevant"),
+        ]
+    )
+
+    result = n.RecallContextTool(s, [{"query": "stable prefix|task memory"}]).call()
+
+    assert '<RecallContextSearchResult query="stable prefix|task memory" matches=2>' in result
+    assert "seg.1 2" in result
+    assert "Stable prefix design" in result
+    assert "seg.2 2" in result
+    assert "Task Memory placement" in result
+    assert "seg.3" not in result
+
+
+def test_recall_history_regex_supports_key_scope_case_and_limit(tmp_path):
+    s = session(tmp_path)
+    s.history.extend(
+        [
+            n.HistorySegment(key="seg.1", title="one", text="Needle first"),
+            n.HistorySegment(key="seg.2", title="two", text="needle second\nneedle third"),
+            n.HistorySegment(key="seg.3", title="three", text="needle fourth"),
+        ]
+    )
+
+    result = n.RecallContextTool(
+        s,
+        [{"keys": ["seg.1", "seg.2"], "query": "needle", "case_sensitive": True, "limit": 1}],
+    ).call()
+
+    assert "matches=1" in result
+    assert "seg.1" not in result
+    assert "seg.2 1" in result
+    assert "needle second" in result
+    assert "needle third" not in result
+    assert "seg.3" not in result
+
+
+def test_recall_history_regex_validates_search_arguments(tmp_path):
+    s = session(tmp_path)
+
+    for payload in ({}, {"query": "["}, {"query": "x", "limit": 0}, {"keys": ["seg.1"], "case_sensitive": True}):
+        with pytest.raises(n.ToolError):
+            n.RecallContextTool(s, [payload]).call()
+
+
 def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)

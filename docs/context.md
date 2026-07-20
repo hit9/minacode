@@ -32,9 +32,9 @@ session log remain the cold source of truth, so compaction does not rewrite them
 <div class="term-shot" role="img" aria-label="Compaction moves older conversation out of the active context. The active context keeps a short summary and bounded history index; RecallContext retrieves bounded verbatim excerpts, while the append-only session log retains earlier snapshots as the cold source of truth."><span class="fs-goal">─ active context (hot) ────────────────</span><span>  history index    <span class="fs-i fs-dim">bounded seg.N titles</span></span><span>  summary          <span class="fs-i fs-dim">short rewrite of older talk</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span class="fs-dim">─ recallable segments (warm) ──────────</span><span>  seg.1 · seg.2    <span class="fs-i fs-dim">bounded verbatim excerpts</span></span><span class="fs-dim">─ append-only session log (cold) ──────</span><span>  earlier snapshots<span class="fs-i fs-dim"> original messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(seg.N)</span> pulls an excerpt back</span></div>
 
 The bounded history index is a separate context section before conversation history. The agent
-calls `RecallContext` with a `seg.N` key to retrieve that segment's stored excerpt when it needs
-earlier detail. Task memory (goal, plan, facts, checks) follows conversation history and is carried
-across untouched, which is why decisions worth keeping belong there.
+uses `RecallContext` to retrieve a `seg.N` excerpt directly or regex-search stored segment titles
+and text for earlier detail. Task memory (goal, plan, facts, checks) follows conversation history
+and is carried across untouched, which is why decisions worth keeping belong there.
 
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.

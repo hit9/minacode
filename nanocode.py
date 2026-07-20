@@ -2087,6 +2087,14 @@ class Tool:
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
     @staticmethod
+    def compile_regex(pattern: str, *, case_sensitive: bool = False, multiline: bool = False) -> re.Pattern[str]:
+        try:
+            flags = (0 if case_sensitive else re.IGNORECASE) | (re.MULTILINE if multiline else 0)
+            return re.compile(pattern, flags)
+        except re.error as error:
+            raise ToolError(f"invalid regex: {error}") from error
+
+    @staticmethod
     def process_result(tag: str, code: int, stdout: str, stderr: str) -> str:
         lines = [f"<{tag}>", f"* exit_code: {code}"]
         for name, text in (("stdout", stdout), ("stderr", stderr)):
@@ -2425,10 +2433,7 @@ class SearchTool(Tool):
         return found
 
     def python_matches(self, request: Json) -> list[str]:
-        try:
-            regex = re.compile(str(request["pattern"]), re.IGNORECASE | re.MULTILINE)
-        except re.error as error:
-            raise ToolError(f"invalid regex: {error}") from error
+        regex = self.compile_regex(str(request["pattern"]), multiline=True)
         rows = []
         for path in self.files(str(request["path"]), str(request["glob"])):
             for row, _matched in self.file_matches(path, regex, int(request["context"])):
@@ -3617,12 +3622,17 @@ class RecallTool(Tool):
 
 class RecallContextTool(Tool):
     NAME = "RecallContext"
-    DESCRIPTION = "Recall stored compacted-conversation excerpts by seg.N key from the history index."
-    SIGNATURE = "RecallContext(keys=[seg.N,...])"
+    DESCRIPTION = "Recall stored compacted-conversation excerpts by seg.N key, or regex-search their titles and text; query alternation A|B|C is allowed."
+    SIGNATURE = "RecallContext(keys=[seg.N,...]) or RecallContext(query=REGEX,keys?,case_sensitive?,limit?)"
+    DEFAULT_LIMIT = 20
+    MAX_LIMIT = 100
+    MAX_QUERY_LENGTH = 500
     # fmt: off
     EXAMPLE = (
         'Recall one segment. Example: {"keys":["seg.1"]}',
         'Recall several segments. Example: {"keys":["seg.1","seg.3"]}',
+        'Search all segments. Example: {"query":"cache prefix|task memory","limit":10}',
+        'Search selected segments. Example: {"keys":["seg.1","seg.3"],"query":"compaction","case_sensitive":false}',
     )
     # fmt: on
     STORES_RESULT = False
@@ -3630,15 +3640,23 @@ class RecallContextTool(Tool):
     # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({"keys": {"type": "array", "items": {"type": "string", "pattern": "^seg\\.\\d+$"}, "minItems": 1, "description": "History segment keys to recall, e.g. [\"seg.1\",\"seg.3\"]"}}, ["keys"])
+        return cls.object_schema({
+            "keys": {"type": "array", "items": {"type": "string", "pattern": "^seg\\.\\d+$"}, "minItems": 1, "description": "Segment keys to retrieve, or to restrict query search"},
+            "query": {"type": "string", "maxLength": cls.MAX_QUERY_LENGTH, "description": "Case-insensitive regex over segment titles and text; A|B|C is allowed"},
+            "case_sensitive": {"type": "boolean", "description": "Make query matching case-sensitive; default false"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Maximum matching lines to return; default {cls.DEFAULT_LIMIT}"},
+        })
     # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> list[Any]:
-        return [{"keys": payload.get("keys", [])}]
+        return [payload]
 
     def call(self) -> str:
-        keys = self.segment_keys()
+        request = self.request()
+        if request["query"]:
+            return self.search(request)
+        keys = request["keys"]
         segments = {segment.key: segment for segment in self.session.history}
         chunks = ["<RecallContextResult>"]
         for key in keys:
@@ -3653,22 +3671,65 @@ class RecallContextTool(Tool):
         return "\n".join(chunks)
 
     def short_args(self) -> list[str]:
-        return ["; ".join(self.segment_keys())]
+        request = self.request()
+        if request["query"]:
+            scope = " in " + ",".join(request["keys"]) if request["keys"] else ""
+            return [json.dumps(request["query"], ensure_ascii=False) + scope]
+        return ["; ".join(request["keys"])]
 
-    def segment_keys(self) -> list[str]:
-        payload = self.single_dict_arg("RecallContext requires keys")
-        if unexpected := sorted(set(payload) - {"keys"}):
+    def request(self) -> Json:
+        payload = self.single_dict_arg("RecallContext requires keys or query")
+        if unexpected := sorted(set(payload) - {"keys", "query", "case_sensitive", "limit"}):
             raise ToolError("RecallContext unexpected field: " + ", ".join(unexpected))
         raw_keys = payload.get("keys")
-        if not isinstance(raw_keys, list) or not raw_keys:
-            raise ToolError("RecallContext requires keys")
+        if raw_keys is not None and (not isinstance(raw_keys, list) or not raw_keys):
+            raise ToolError("RecallContext keys must be a non-empty array")
         keys = []
-        for item in raw_keys:
+        for item in raw_keys or []:
             key = str(item).strip()
             if not re.fullmatch(r"seg\.\d+", key):
                 raise ToolError("RecallContext key must look like seg.N")
             keys.append(key)
-        return list(dict.fromkeys(keys))
+        query = payload.get("query")
+        if query is not None and (not isinstance(query, str) or not query.strip()):
+            raise ToolError("RecallContext query must be a non-empty regex")
+        query = query.strip() if isinstance(query, str) else ""
+        if len(query) > self.MAX_QUERY_LENGTH:
+            raise ToolError(f"RecallContext query must be at most {self.MAX_QUERY_LENGTH} characters")
+        case_sensitive = payload.get("case_sensitive", False)
+        if not isinstance(case_sensitive, bool):
+            raise ToolError("RecallContext case_sensitive must be boolean")
+        limit = payload.get("limit", self.DEFAULT_LIMIT)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > self.MAX_LIMIT:
+            raise ToolError(f"RecallContext limit must be 1..{self.MAX_LIMIT}")
+        if not keys and not query:
+            raise ToolError("RecallContext requires keys or query")
+        if not query and ("case_sensitive" in payload or "limit" in payload):
+            raise ToolError("RecallContext case_sensitive and limit require query")
+        return {"keys": list(dict.fromkeys(keys)), "query": query, "case_sensitive": case_sensitive, "limit": limit}
+
+    def search(self, request: Json) -> str:
+        regex = self.compile_regex(request["query"], case_sensitive=request["case_sensitive"])
+        by_key = {segment.key: segment for segment in self.session.history}
+        segments = [by_key[key] for key in request["keys"] if key in by_key] if request["keys"] else self.session.history
+        rows = []
+        for segment in segments:
+            if regex.search(segment.title):
+                rows.append(self.match_row(segment, "title", segment.title))
+            for line_number, line in enumerate(segment.text.splitlines(), 1):
+                if regex.search(line):
+                    rows.append(self.match_row(segment, str(line_number), line))
+                if len(rows) >= request["limit"]:
+                    break
+            if len(rows) >= request["limit"]:
+                break
+        rows = rows[: request["limit"]]
+        header = f"<RecallContextSearchResult query={json.dumps(request['query'])} matches={len(rows)}>"
+        return "\n".join([header, *rows, "</RecallContextSearchResult>"])
+
+    @staticmethod
+    def match_row(segment: HistorySegment, location: str, text: str) -> str:
+        return f"- {segment.key} {location} title={json.dumps(segment.title)}: {Tool.compact(text, 300)}"
 
 
 class NoteTool(Tool):
@@ -6562,7 +6623,7 @@ TOOLS:
 - Read inspects files; Search finds text and returns editable anchors; prefer InspectCode over Search for symbols (defs/refs/impls/callers/callees/outline) when the code index is usable. Edit writes files.
 - Bash runs everything else — `ls`, `find`, `wc -l`, git, etc. Search text first with `rg` and `rg --files`; fall back to `grep` only if `rg` is unavailable. Do not create or edit files with shell write tricks (e.g., `cat` heredocs, `echo >> file`); use Edit for that. Do not use Python to read/write files when a simple shell command or Edit suffices. Drive each call to finish in one pass: chain known steps with `&&`/`;`/pipelines/a heredoc; split only when a later step needs output you cannot predict.
 - Job for long builds/tests, dev servers, and watchers; poll/kill when done. Bash for quick commands. Do not finish the turn while a Job needed for the request is still running.
-- Recall retrieves tr.N outputs; RecallContext retrieves stored seg.N excerpts from the history index (conversation evicted by compaction); Note maintains goal/plan/known/check; MCP calls external tools. Before Ask, make progress with other tools; ask only when truly blocked, batching related questions.
+- Recall retrieves tr.N outputs; RecallContext retrieves or regex-searches stored seg.N excerpts from the history index (conversation evicted by compaction); Note maintains goal/plan/known/check; MCP calls external tools. Before Ask, make progress with other tools; ask only when truly blocked, batching related questions.
 
 FLOW:
 - Act when clear. Unless the user explicitly asks for a plan, a question about the code, or brainstorming, assume they want implementation and the tools run to solve the problem. Carry the work through implementation, verification, and a clear outcome; do not stop at analysis or half-finished fixes.

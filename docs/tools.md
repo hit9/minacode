@@ -75,7 +75,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     when only a shortened result was placed in the conversation.
 * - **`RecallContext`**
   - Retrieves a stored <span class="marker">compacted conversation excerpt</span> by its seg.N key
-    when earlier detail was evicted by compaction. Segment keys are listed in the history index.
+    when earlier detail was evicted by compaction. It can also search segment titles and text with
+    a case-insensitive regex such as `cache prefix|task memory`, optionally restricted to selected
+    keys. Search results are capped matching lines; segment keys are listed in the history index.
 * - **`Note`**
   - Maintains the task's goal, plan, success check, and learned facts. It keeps long tasks
     organized but does not edit project files.
