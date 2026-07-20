@@ -3,7 +3,11 @@
 
 ## 0.10.0 - 2026-07-19
 
+### Added
+- Replay the diff each `Edit` made when a session is resumed, instead of only the call line. Long diffs are trimmed to a readable window with a pointer to `/diff`.
+
 ### Changed
+- Apply the `/diff` snapshot size limit to each file snapshot rather than to the before-and-after pair. Snapshots are stored once per unique content, so the pair no longer costs twice a file's size, and the old test held the ceiling at half the file size it could afford — files up to roughly 1 MB are now tracked.
 - Store sessions per project under `<data_dir>/projects/<project>/`, each with its own `latest` pointer, instead of a single flat `<data_dir>/sessions/` directory shared by every project. Resolving this project's latest session is now a pointer read rather than a scan that opens every stored session, and a project directory is pruned once its last session expires.
 - Scope `--resume latest` and `--resume last` to the current project. They previously resolved a single global pointer and could resume a session belonging to a different directory; they now behave like `-c`.
 - Begin each session log with a header line recording the format version, UID, working directory, and creation time. The version gate turns an unreadable log into a clear error instead of a misparse, and the log describes itself when read by hand.

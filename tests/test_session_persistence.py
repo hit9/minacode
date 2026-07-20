@@ -198,7 +198,7 @@ def test_turn_diff_snapshots_survive_a_roundtrip(tmp_path):
 def test_oversized_snapshots_are_dropped_before_reaching_the_log(tmp_path):
     """Snapshots over the size limit are still discarded, and leave no blob behind."""
     s = session_with_data_dir(tmp_path)
-    huge = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT // 2 + 1)
+    huge = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
     s.store_turn_diff("tr.1", 1, "big.py", "-o\n+n\n", before=huge, after=huge, round=1)
     s.save_snapshot()
 
@@ -704,6 +704,58 @@ def test_clean_expired_sessions_skips_current_session(tmp_path):
     assert n.SessionSnapshotStore.clean_expired(s) == 0
 
     assert os.path.exists(path)
+
+
+def _resumed_transcript(tmp_path, diff_text, *, lines_cap=None):
+    """Save a session holding one Edit call plus its diff, resume it, and capture the replay."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "change it"})
+    s.messages.append(
+        {
+            "role": "assistant",
+            "content": "Updating.",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Edit", "arguments": '{"path": "x.py"}'}}],
+        }
+    )
+    s.store_tool_result("Edit", ["x.py"], '<Edit path="x.py"/>')
+    s.store_turn_diff("tr.1", 1, "x.py", diff_text, before="a\n", after="b\n", round=1)
+    s.save_snapshot()
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    output = []
+    loop = n.CommandLoop(n.Agent(restored, output_fn=output.append), output_fn=output.append)
+    if lines_cap is not None:
+        loop.TRANSCRIPT_DIFF_LINES = lines_cap
+    loop.render_resumed_session()
+    return "\n".join(str(item) for item in output)
+
+
+def test_resumed_transcript_replays_the_edit_diff(tmp_path):
+    """A resumed session shows what each Edit changed, not just that an Edit ran."""
+    text = _resumed_transcript(tmp_path, "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
+
+    assert "preview" in text
+    assert "-a" in text and "+b" in text
+    assert "stored tr.1" in text
+    # The preview block carries the call line, so it is not repeated by the result line.
+    assert text.count("Edit") == 1
+
+
+def test_resumed_transcript_trims_long_diffs(tmp_path):
+    diff = "--- x.py\n+++ x.py\n" + "\n".join(f"+line {i}" for i in range(40))
+    text = _resumed_transcript(tmp_path, diff, lines_cap=10)
+
+    assert "+line 7" in text
+    assert "+line 30" not in text
+    assert "more lines, see /diff" in text
+
+
+def test_resumed_transcript_without_a_stored_diff_shows_the_call_only(tmp_path):
+    """Edits whose diff has been evicted still render as a plain call line."""
+    text = _resumed_transcript(tmp_path, "")
+
+    assert "preview" not in text
+    assert "Edit" in text
 
 
 # ---------------------------------------------------------------------------

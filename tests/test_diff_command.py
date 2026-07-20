@@ -408,15 +408,21 @@ def test_turn_diff_bounded_snapshots_under_limit():
 
 
 def test_turn_diff_bounded_snapshots_over_limit_drops_both():
+    """Either snapshot exceeding the cap drops the pair — one alone would read as a whole-file
+    creation or deletion."""
     limit = n.TurnDiff.SNAPSHOT_CHAR_LIMIT
-    large = "x" * (limit // 2 + 1)
+    large = "x" * (limit + 1)
     assert n.TurnDiff.bounded_snapshots(large, large) == ("", "")
+    assert n.TurnDiff.bounded_snapshots(large, "small\n") == ("", "")
+    assert n.TurnDiff.bounded_snapshots("small\n", large) == ("", "")
 
 
 def test_turn_diff_bounded_snapshots_at_limit_keeps_both():
+    """The cap applies per snapshot, not to the two summed: a file just under it is still tracked
+    even though the pair is twice the cap."""
     limit = n.TurnDiff.SNAPSHOT_CHAR_LIMIT
-    before = "x" * (limit // 2)
-    after = "y" * (limit // 2)
+    before = "x" * limit
+    after = "y" * limit
     result = n.TurnDiff.bounded_snapshots(before, after)
     assert result == (before, after)
 

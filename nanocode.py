@@ -670,7 +670,11 @@ class TurnDiff:
 
     @classmethod
     def bounded_snapshots(cls, before: str, after: str) -> tuple[str, str]:
-        return ("", "") if len(before) + len(after) > cls.SNAPSHOT_CHAR_LIMIT else (before, after)
+        """Cap each snapshot on its own. Snapshots are stored once per unique content, so a pair
+        usually costs one new version rather than two, and summing the two would hold the ceiling at
+        half the file size it can actually afford. Both are dropped together when either is too
+        large: one alone would read as the file being created or deleted wholesale."""
+        return ("", "") if max(len(before), len(after)) > cls.SNAPSHOT_CHAR_LIMIT else (before, after)
 
 
 @dataclass
@@ -8240,6 +8244,7 @@ class ChoiceViewState:
 class CommandLoop:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C send immediately"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C sends now"
+    TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
@@ -8581,15 +8586,16 @@ Tools:
         if not messages:
             return
         self.emit(f"Restored session: {self.session.uid}")
+        diffs = {diff.key: diff.diff for diff in self.session.turn_diffs if diff.key and diff.diff}
         tool_record_index = 0
         for index, turn in enumerate(TurnBox.group(messages)):
             if index:
                 self.emit("")
             for message in turn.messages:
-                tool_record_index = self.render_transcript_message(message, tool_record_index)
-        self.render_remaining_tool_records(tool_record_index)
+                tool_record_index = self.render_transcript_message(message, tool_record_index, diffs)
+        self.render_remaining_tool_records(tool_record_index, diffs)
 
-    def render_transcript_message(self, message: Json, tool_record_index: int = 0) -> int:
+    def render_transcript_message(self, message: Json, tool_record_index: int = 0, diffs: dict[str, str] | None = None) -> int:
         role = str(message.get("role") or "")
         content = str(message.get("content") or "").strip()
         raw_calls = message.get("tool_calls")
@@ -8597,12 +8603,12 @@ Tools:
         if role == "assistant" and content:
             self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL if has_tool_calls else TurnBox.ROOT_LEVEL)
         if role == "assistant":
-            return self.render_transcript_tool_calls(message, tool_record_index)
+            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {})
         if role == "user" and content:
             self.ui.emit_answer(content, role=role, rule=False)
         return tool_record_index
 
-    def render_transcript_tool_calls(self, message: Json, tool_record_index: int) -> int:
+    def render_transcript_tool_calls(self, message: Json, tool_record_index: int, diffs: dict[str, str]) -> int:
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
             return tool_record_index
@@ -8611,13 +8617,40 @@ Tools:
             if call is None:
                 continue
             record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
-            self.emit(self.agent.tools.finish_display(call, record.key if record else "", "", failed=False))
+            self.emit_transcript_tool(call, record.key if record else "", diffs)
         return tool_record_index
 
-    def render_remaining_tool_records(self, tool_record_index: int) -> None:
+    def render_remaining_tool_records(self, tool_record_index: int, diffs: dict[str, str]) -> None:
         for record in self.session.tool_records[tool_record_index:]:
             call = ToolCall(id="", name=record.name, args=record.args)
-            self.emit(self.agent.tools.finish_display(call, record.key, "", failed=False))
+            self.emit_transcript_tool(call, record.key, diffs)
+
+    def emit_transcript_tool(self, call: ToolCall, key: str, diffs: dict[str, str]) -> None:
+        """An Edit shows the diff it made, the way it did when the edit ran live. Live, that preview
+        comes from the approval block; here the stored diff text is the same string, so replaying it
+        needs no reconstruction."""
+        preview = diffs.get(key, "") if call.name == "Edit" else ""
+        if not preview:
+            self.emit(self.agent.tools.finish_display(call, key, "", failed=False))
+            return
+        # The preview block carries the call line, so the result collapses to its trailing marker
+        # underneath it — the same nesting the live approval block produces.
+        self.emit(self.transcript_edit_preview(call, preview))
+        self.emit(self.agent.tools.finish_display(call, key, "", failed=False, d=ToolDisplay(nested_display=True)))
+
+    def transcript_edit_preview(self, call: ToolCall, preview: str) -> LogBlock:
+        tools = self.agent.tools
+        lines = preview.rstrip().splitlines()
+        # A long replay would bury the prompt under diffs, so each one is trimmed to a readable
+        # window; `/diff` still holds the full text.
+        hidden = max(0, len(lines) - self.TRANSCRIPT_DIFF_LINES)
+        if hidden:
+            lines = lines[: self.TRANSCRIPT_DIFF_LINES]
+        children = [LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH)]
+        children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in lines)
+        if hidden:
+            children.append(LogLine("", f"… {hidden} more lines, see /diff", LogRole.META, LogEdge.CONTINUE))
+        return LogBlock.hierarchy(tools.log_root(tools.short_call(call), LogRole.AUTO, "", call), children)
 
     @staticmethod
     def transcript_tool_call(raw: Any) -> ToolCall | None:
