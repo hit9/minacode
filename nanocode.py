@@ -7202,7 +7202,7 @@ class TuiApp:
             # Never quit on Ctrl-C. Instead:
             #   * approval mode → cancel this specific prompt (empty reply back to the agent).
             #   * idle chat → cancel and clear the current input.
-            #   * agent running → interrupt the running turn.
+            #   * agent running → discard a draft, or interrupt the turn when the input is empty.
             # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
             if self.modal is not None:
                 result = self.modal.key_fn("c-c", event.data)
@@ -7229,8 +7229,8 @@ class TuiApp:
         @bindings.add("c-u", filter=~modal & edits_input, eager=True)
         def _clear_input(event):  # pragma: no cover — interactive path
             # The readline convention for discarding the line, and the one key that means the same
-            # thing in every editor here. Ctrl-C cannot take this on: while the agent runs it has to
-            # keep meaning "interrupt", which is not something to make conditional on a draft.
+            # thing in every editor here. Ctrl-C also clears, but while the agent runs it spends a
+            # press that would otherwise interrupt; this one never competes with stopping the turn.
             self.input_buffer.reset(Document(""))
 
         @bindings.add("c-d", filter=~modal, eager=True)
