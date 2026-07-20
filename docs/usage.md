@@ -175,6 +175,9 @@ Sessions are stored per project, so `-c` and a bare `--resume` never reach into 
 history — even when your most recent session anywhere was somewhere else. A `UID` is looked up
 across every project, so you can resume one by id from wherever you are.
 
+Resuming replays the conversation into your scrollback, including the diff each edit made. Long
+diffs are trimmed there; `/diff` always has the full text.
+
 ### Reviewing changes
 
 `/diff` opens an interactive, tabbed viewer with two views:

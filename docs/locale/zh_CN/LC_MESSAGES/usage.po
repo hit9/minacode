@@ -398,6 +398,15 @@ msgstr ""
 "即使你最近一次 session 发生在别处也是如此。而 `UID` 会在所有项目中查找，"
 "所以你可以在任意目录下按 id 恢复某个 session。"
 
+#: ../../usage.md:178
+msgid ""
+"Resuming replays the conversation into your scrollback, including the diff "
+"each edit made. Long diffs are trimmed there; `/diff` always has the full "
+"text."
+msgstr ""
+"恢复 session 时会把对话重新输出到终端回滚缓冲区，其中也包含每次编辑产生的 diff。"
+"这里的长 diff 会被截断；`/diff` 中始终保留完整内容。"
+
 #: ../../usage.md:174
 msgid "Reviewing changes"
 msgstr "审查修改"
