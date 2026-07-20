@@ -1684,11 +1684,18 @@ class Session:
                     before = original
             section = cls.net_diff_for_path(status, path, before, after)
             return section[2] if section else ""
-        if path in states and (final := cls._current_content(cwd, path)) is not None:
-            # Snapshots stop partway through the path's history. The starting content is still known
-            # exactly, and the final content is on disk, so one net diff covers the whole path.
-            section = cls.net_diff_for_path(status, path, states[path][0], final)
-            return section[2] if section else ""
+        if path in states and not snapshot_tail.get(path):
+            # Snapshots stop partway through the path's history (the file grew past the limit); the
+            # starting content is still known exactly. The end state is the file's current on-disk
+            # content; if the file is gone, forward-apply the trailing snapshot-less hunks onto the
+            # last snapshot's `after` to recover it, so the exactly-known snapshot history isn't
+            # discarded. If neither is available, fall through to the raw-hunks fallback below.
+            final = cls._current_content(cwd, path)
+            if final is None:
+                final = cls._forward_apply(states[path][1], legacy.get(path, []))
+            if final is not None:
+                section = cls.net_diff_for_path(status, path, states[path][0], final)
+                return section[2] if section else ""
         legacy_chunks = legacy.get(path, [])
         if not legacy_chunks:
             return ""
@@ -1732,6 +1739,27 @@ class Session:
             if current.count(after_text) != 1:
                 return None
             current = current.replace(after_text, before_text, 1)
+        return current
+
+    @classmethod
+    def _forward_apply(cls, current: str, chunks: list[str]) -> str | None:
+        """Apply the given per-Edit hunks forward to `current` in chronological order, deriving the
+        content they produce. Each hunk's before-text must occur uniquely in the buffer; if not
+        (external mutation or ambiguous context), return None so the caller can fall back. The mirror
+        of `_reverse_apply`: used to recover a file's final content from its last snapshot when the
+        file is no longer on disk."""
+        hunk_pairs: list[tuple[str, str]] = []
+        for chunk in chunks:
+            pairs = cls._split_hunks(chunk)
+            if pairs is None:
+                return None
+            hunk_pairs.extend(pairs)
+        for after_text, before_text in hunk_pairs:
+            if not after_text or not before_text:
+                return None
+            if current.count(before_text) != 1:
+                return None
+            current = current.replace(before_text, after_text, 1)
         return current
 
     @classmethod

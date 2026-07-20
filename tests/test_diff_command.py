@@ -408,15 +408,18 @@ def test_net_diff_recovers_legacy_prefix_when_the_file_shrinks(tmp_path):
     assert [line for line in text.splitlines() if line[:1] in "+-" and not line.startswith(("---", "+++"))] == ["-a", "+d"]
 
 
-def test_net_diff_falls_back_to_hunks_when_the_file_is_gone(tmp_path):
-    """With snapshots stopping and no file on disk, the recorded hunks are all that is left."""
+def test_net_diff_recovers_snapshot_history_when_the_file_is_gone(tmp_path):
+    """With snapshots stopping and no file on disk, the trailing hunks forward-apply onto the last
+    snapshot's `after` to recover the final content, so the whole history survives the missing file."""
     kept = _diff("tr.1", 1, "gone.py", "a\n", "b\n", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-a\n+b\n")
     dropped = _diff("tr.2", 2, "gone.py", "", "", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-b\n+c\n")
 
     sections = n.Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
 
     assert len(sections) == 1
-    assert sections[0][2].count("--- ") == 1
+    text = sections[0][2]
+    assert text.count("--- ") == 1
+    assert [line for line in text.splitlines() if line[:1] in "+-" and not line.startswith(("---", "+++"))] == ["-a", "+c"]
 
 
 def test_turn_diff_bounded_snapshots_under_limit():
