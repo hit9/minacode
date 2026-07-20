@@ -60,8 +60,8 @@ def test_runtime_settings_reads_limits_and_yolo_override():
 
 
 def test_runtime_settings_default_context_budget_is_240k():
-    assert n.RuntimeSettings().max_context_tokens == 240_000
-    assert n.RuntimeSettings.from_dict({}).max_context_tokens == 240_000
+    assert n.RuntimeSettings().max_context_tokens == 240 * 1024
+    assert n.RuntimeSettings.from_dict({}).max_context_tokens == 240 * 1024
 
 
 def test_runtime_settings_reads_theme_from_config():

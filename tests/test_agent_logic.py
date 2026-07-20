@@ -1739,7 +1739,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     status = loop.status("")
     assert "mcp `1`" in status
     assert f"skills `{count}`" in status
-    assert "max context tokens `240000`" in status
+    assert "max context tokens `245760`" in status
     bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 

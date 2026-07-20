@@ -90,7 +90,7 @@ logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # actionable "authentication required" message; suppress this logger's ERROR-level
 # traceback spam (incl. the RuntimeError nanocode raises as control flow).
 logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
-DEFAULT_MAX_CONTEXT_TOKENS = 240_000
+DEFAULT_MAX_CONTEXT_TOKENS = 240 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 2
 PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
@@ -466,7 +466,7 @@ model = ""
 
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false
-# max_context_tokens = 240000
+# max_context_tokens = 245760      # 240K
 # max_agent_steps = 200
 # shell_timeout = 60
 

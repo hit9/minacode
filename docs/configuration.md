@@ -54,7 +54,7 @@ Optional; the defaults shown are used when omitted.
 | Key | Default | Meaning |
 |---|---|---|
 | `yolo` | `false` | Start without confirmation prompts |
-| `max_context_tokens` | `240000` | Context budget before automatic compaction |
+| `max_context_tokens` | `245760` (240K) | Context budget before automatic compaction |
 | `max_agent_steps` | `200` | Maximum tool steps in one turn |
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |
 | `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |
