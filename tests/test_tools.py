@@ -553,6 +553,30 @@ def test_recall_behaviors(tmp_path):
         n.RecallTool(s, [{"key": first, "ranges": [[2, "bad"]]}]).call()
 
 
+def test_recall_history_returns_segment_text(tmp_path):
+    s = session(tmp_path)
+    s.history.append(n.HistorySegment(key="seg.1", title="task", text="user:\nfind bug"))
+
+    result = n.RecallContextTool(s, [{"keys": ["seg.1"]}]).call()
+
+    assert "<RecallContextResult>" in result
+    assert 'key="seg.1"' in result
+    assert "find bug" in result
+
+
+def test_recall_history_reports_missing_segment(tmp_path):
+    s = session(tmp_path)
+
+    assert "seg.9: missing" in n.RecallContextTool(s, [{"keys": ["seg.9"]}]).call()
+
+
+def test_recall_history_rejects_bad_key_format(tmp_path):
+    s = session(tmp_path)
+
+    with pytest.raises(n.ToolError):
+        n.RecallContextTool(s, [{"keys": ["tr.1"]}]).call()
+
+
 def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)

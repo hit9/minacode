@@ -357,6 +357,65 @@ def test_compaction_drops_unreferenced_read_edit_records(tmp_path):
     assert s.tool_records == []
 
 
+def test_compaction_captures_a_history_segment(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+    compacted = [
+        {"role": "user", "content": "find the parser bug"},
+        {"role": "assistant", "content": "looking into it"},
+    ]
+
+    context.apply_compaction({"summary": "summary"}, [], compacted=compacted)
+
+    assert len(s.history) == 1
+    segment = s.history[0]
+    assert segment.key == "seg.1"
+    assert segment.title == "find the parser bug"
+    assert "find the parser bug" in segment.text
+    assert "looking into it" in segment.text
+
+
+def test_compaction_history_keys_increment(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    context.apply_compaction({"summary": "s"}, [], compacted=[{"role": "user", "content": "first task"}])
+    context.apply_compaction({"summary": "s"}, [], compacted=[{"role": "user", "content": "second task"}])
+
+    assert [segment.key for segment in s.history] == ["seg.1", "seg.2"]
+
+
+def test_compaction_without_compacted_messages_captures_nothing(tmp_path):
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    context.apply_compaction({"summary": "summary"}, [])
+
+    assert s.history == []
+
+
+def test_history_title_skips_summary_blocks(tmp_path):
+    context = n.ContextManager(session(tmp_path))
+    messages = [
+        {"role": "user", "content": n.ContextManager.COMPACT_TITLE + "\nold summary"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "the real request"},
+    ]
+
+    assert context.history_title(messages) == "the real request"
+
+
+def test_memory_context_lists_history_index(tmp_path):
+    s = session(tmp_path)
+    s.history.append(n.HistorySegment(key="seg.1", title="find the bug", text="..."))
+    context = n.ContextManager(s)
+
+    memory = context.memory_context()
+
+    assert "History index (recall with RecallContext):" in memory
+    assert "- seg.1: find the bug" in memory
+
+
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)

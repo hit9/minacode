@@ -754,6 +754,38 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
     assert any("a compacted summary" in str(m.get("content") or "") for m in persisted)
 
 
+def test_history_segments_persist_and_restore(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.history.append(n.HistorySegment(key="seg.1", title="earlier task", text="user:\nfind the bug\n\nassistant:\nfixed it"))
+    s.save_snapshot()
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+
+    assert len(restored.history) == 1
+    segment = restored.history[0]
+    assert segment.key == "seg.1"
+    assert segment.title == "earlier task"
+    assert "find the bug" in segment.text
+
+
+def test_history_delta_appends_new_segments(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.history.append(n.HistorySegment(key="seg.1", title="first", text="one"))
+    s.save_snapshot()
+    s.history.append(n.HistorySegment(key="seg.2", title="second", text="two"))
+    s.save_snapshot()
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert [segment.key for segment in restored.history] == ["seg.1", "seg.2"]
+
+    # The second save appended only seg.2 (digest-delta), not a full rewrite.
+    lines = read_jsonl(log_path(s))
+    assert any("history" in line and [seg["key"] for seg in line["history"]] == ["seg.2"] for line in lines)
+    assert not any("history_replace" in line for line in lines)
+
+
 def test_resume_recomputes_the_context_percent(tmp_path):
     """`context_percent` is derived rather than persisted, so a resumed session would report an
     empty context until its first turn."""
