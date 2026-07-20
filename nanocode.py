@@ -4171,9 +4171,10 @@ class ContextManager:
         )
 
     def compaction_parts(self) -> tuple[list[Json], list[Json]]:
-        """Manual `/compact`. Everything before the current request is summarized, and so is the
-        work that followed it beyond a recent window — a single request can drive dozens of tool
-        calls, and keeping that tail whole leaves the context as large as it started."""
+        """History compaction pass, shared by manual `/compact` and the automatic first stage.
+        Everything before the current request is summarized, and so is the work that followed it
+        beyond a recent window — a single request can drive dozens of tool calls, and keeping that
+        tail whole leaves the context as large as it started."""
         messages = self.session.messages
         index = self.latest_user_index(messages)
         if index is None:
