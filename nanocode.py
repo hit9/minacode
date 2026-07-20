@@ -4160,19 +4160,13 @@ class ContextManager:
         self.session = session
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
-        skills_index = self.skills_context()
-        mcp_tools = self.mcp_tools_context()
-
         messages: list[Json] = [
             {"role": "system", "content": base_system.strip()},
             {"role": "user", "content": "--- Environment ---\n" + (self.environment() or "(empty)")},
         ]
-
-        if skills_index:
-            messages.append({"role": "user", "content": skills_index})
-        if mcp_tools:
-            messages.append({"role": "user", "content": mcp_tools})
-
+        for context in (self.skills_context(), self.mcp_tools_context()):
+            if context:
+                messages.append({"role": "user", "content": context})
         if history_index := self.history_index_context():
             messages.append({"role": "user", "content": "--- History index ---\n" + history_index})
         conversation = [
@@ -4184,14 +4178,7 @@ class ContextManager:
         return Text.value(messages)
 
     def dedup_mcp_describes(self, messages: list[Json]) -> list[Json]:
-        """Collapse repeated MCP describe results to a pointer, keeping the first per (server, tool).
-
-        Pure send-time transform — stored history is never mutated. The first describe of a tool keeps
-        its full schema (and stays in the cached prefix); a later duplicate shrinks to a one-line pointer
-        the moment it appears, so the sent prefix stays byte-stable across calls and we reclaim the
-        repeated schema tokens. Only ever collapses the newer occurrence, never an earlier (cached) one;
-        if the first occurrence is later compacted away, the next one is promoted to full on its own.
-        """
+        """Point repeats at the first full description, promoting the next after compaction."""
         return self._dedup_tool_blocks(
             messages,
             self.MCP_DESCRIBE_BLOCK,
@@ -4200,11 +4187,6 @@ class ContextManager:
         )
 
     def dedup_skill_loads(self, messages: list[Json]) -> list[Json]:
-        """Collapse repeated Skill(name) loads to a pointer, keeping the first full body per skill.
-
-        Same send-time transform as dedup_mcp_describes: a re-load of an already-shown skill shrinks to
-        a one-line marker so the instructions are not re-billed, while the first (cached) copy is left
-        untouched. If that first copy is later compacted away, the next occurrence stands on its own."""
         return self._dedup_tool_blocks(
             messages,
             self.SKILL_BLOCK,
@@ -4246,25 +4228,21 @@ class ContextManager:
         return result
 
     def mcp_tools_context(self) -> str:
-        if self.session.mcp is None:
-            return ""
-        return self.session.mcp.render_tools_index()
+        return self.session.mcp.render_tools_index() if self.session.mcp else ""
 
     def skills_context(self) -> str:
         return self.session.skills.index() if self.session.skills else ""
 
     def request_token_budget(self) -> int:
         limit = self.session.settings.max_context_tokens
-        output_reserve = self.session.config.provider.output_token_budget()
-        safety_reserve = max(MIN_CONTEXT_SAFETY_TOKENS, (limit + 49) // 50)
-        return max(1, limit - output_reserve - safety_reserve)
+        safety = max(MIN_CONTEXT_SAFETY_TOKENS, (limit + 49) // 50)
+        return max(1, limit - self.session.config.provider.output_token_budget() - safety)
 
     def request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         return self.estimated_tokens(messages) + (self.estimated_tokens(tools) if tools else 0)
 
     def update_percent(self, messages: list[Json], tools: list[Json] | None = None) -> int:
-        tokens = self.request_tokens(messages, tools)
-        self.session.state.context_percent = min(100, tokens * 100 // self.request_token_budget())
+        self.session.state.context_percent = min(100, self.request_tokens(messages, tools) * 100 // self.request_token_budget())
         return self.session.state.context_percent
 
     def update_current_percent(self, base_system: str) -> int:
@@ -4276,23 +4254,32 @@ class ContextManager:
         if self.request_tokens(messages, tools) < budget:
             return messages
         compacted, keep = self.compaction_parts()
-        if compacted:
-            try:
-                self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages, compacted=compacted)
-            except Exception:
-                self.apply_compaction(None, keep, turn_messages, fallback_note="Previous context was deterministically trimmed.", compacted=compacted)
+        if self._compact_messages(model, compacted, keep, "Previous context was deterministically trimmed.", tool_messages=turn_messages):
             messages = self.model_messages(base_system, turn_messages)
         if turn_messages is not None and self.request_tokens(messages, tools) >= budget:
             compacted, keep = self.turn_compaction_parts(turn_messages)
-            if compacted:
-                try:
-                    self.apply_compaction(model.compact(self.compaction_input(compacted)), keep, turn_messages=turn_messages, compacted=compacted)
-                except Exception:
-                    self.apply_compaction(
-                        None, keep, turn_messages=turn_messages, fallback_note="Current turn context was deterministically trimmed.", compacted=compacted
-                    )
+            if self._compact_messages(model, compacted, keep, "Current turn context was deterministically trimmed.", turn_messages=turn_messages):
                 messages = self.model_messages(base_system, turn_messages)
         return messages
+
+    def _compact_messages(
+        self,
+        model: "ModelClient",
+        compacted: list[Json],
+        keep: list[Json],
+        fallback_note: str,
+        *,
+        tool_messages: list[Json] | None = None,
+        turn_messages: list[Json] | None = None,
+    ) -> bool:
+        if not compacted:
+            return False
+        try:
+            data = model.compact(self.compaction_input(compacted))
+        except Exception:
+            data = None
+        self.apply_compaction(data, keep, tool_messages, turn_messages=turn_messages, fallback_note=fallback_note if data is None else "", compacted=compacted)
+        return True
 
     def memory_context(self, *, with_date: bool = False) -> str:
         index_status = self.session.state.code_index_status or "missing"
@@ -4324,8 +4311,7 @@ class ContextManager:
         info = self.session.system_info
         rows = [
             f"- cwd: {info.cwd}",
-            # Front-ranked so the model knows which executables it may drive via Bash (e.g. git, wc,
-            # find, ls, rg) — these replace the removed List/Find/LineCount/read-only-Git tools.
+            # Tell the model which executables it may drive through Bash.
             "- detected_commands (available via Bash): " + (", ".join(info.commands) or "(none)"),
             f"- os: {info.os}",
             f"- arch: {info.arch}",
@@ -4358,10 +4344,7 @@ class ContextManager:
         )
 
     def compaction_parts(self) -> tuple[list[Json], list[Json]]:
-        """History compaction pass, shared by manual `/compact` and the automatic first stage.
-        Everything before the current request is summarized, and so is the work that followed it
-        beyond a recent window — a single request can drive dozens of tool calls, and keeping that
-        tail whole leaves the context as large as it started."""
+        """Split history for manual compaction and the first automatic pass."""
         messages = self.session.messages
         index = self.latest_user_index(messages)
         if index is None:
