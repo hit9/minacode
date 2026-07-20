@@ -337,6 +337,25 @@ def test_session_snapshot_turn_diff_roundtrip(tmp_path):
     assert loaded.turn_diffs[0].round == 1
 
 
+def test_resume_renders_turn_diffs_from_the_snapshot(tmp_path):
+    """Edit diffs survive a resume: `/diff` rebuilds both tabs from the persisted turn_diffs,
+    file snapshots included."""
+    s = session(tmp_path)
+    (tmp_path / "x.py").write_text("new\n")
+    s.messages.append({"role": "user", "content": "edit it"})
+    s.store_turn_diff("tr.1", 1, "x.py", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-old\n+new\n", before="old\n", after="new\n", round=1)
+    s.save_snapshot()
+
+    loaded = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings, cwd=str(tmp_path))
+    result = loop(loaded).diff_command("")
+
+    assert [(diff.key, diff.path, diff.before, diff.after) for diff in loaded.turn_diffs] == [("tr.1", "x.py", "old\n", "new\n")]
+    assert "### Latest" in result
+    assert "### Session" in result
+    assert result.count("-old") == 2
+    assert result.count("+new") == 2
+
+
 def test_turn_diff_bounded_snapshots_under_limit():
     assert n.TurnDiff.bounded_snapshots("a", "b") == ("a", "b")
     assert n.TurnDiff.bounded_snapshots("", "") == ("", "")
