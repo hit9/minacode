@@ -10,7 +10,7 @@ You can keep typing while nanocode works. A submitted follow-up joins the curren
 another model step begins; otherwise it becomes the next task. Interrupting does not submit a
 draft that is still in the editor.
 
-<div class="term-shot" role="img" aria-label="Terminal view: nanocode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read nanocode.py</span><span class="fs-tool">  Edit nanocode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C sends now</span></div>
+<div class="term-shot" role="img" aria-label="Terminal view: nanocode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read nanocode.py</span><span class="fs-tool">  Edit nanocode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C interrupts</span></div>
 
 Everything below the divider is waiting. The agent picks those messages up at its next step,
 and they move up into the log above the divider once they are in.

@@ -801,13 +801,13 @@ def test_tui_running_input_shows_contextual_placeholder():
     assert transform("draft") == []
 
 
-def test_tui_running_queue_hint_matches_legacy_send_now_behavior(tmp_path):
+def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = n.TuiApp()
     command_loop.tui.set_running("working")
     command_loop.session.enqueue_user_input("queued")
 
-    assert command_loop.tui_input_hint() == "↑ recalls queued · Ctrl-C sends now"
+    assert command_loop.tui_input_hint() == "↑ recalls queued · Ctrl-C interrupts"
 
 
 def test_tui_sigint_interrupts_dispatch_and_running_modes():

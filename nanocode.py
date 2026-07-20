@@ -8292,8 +8292,8 @@ class ChoiceViewState:
 
 
 class CommandLoop:
-    QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C send immediately"
-    QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C sends now"
+    QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
+    QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {

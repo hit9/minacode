@@ -17,6 +17,7 @@
 ### Fixed
 - Show one diff per file in `/diff` when a file's edits are only partly covered by stored snapshots, which happens once a file grows past the snapshot size limit mid-session. The snapshot-derived diff and the reconstructed one were both emitted, repeating the file's changes under two headers.
 - Isolate `HOME` in the test suite. Tests that built a config without an explicit `paths.data_dir` and then saved a session wrote into the developer's real `~/.nanocode`.
+- Describe `Ctrl-C` in the running follow-up hint as interrupting the turn rather than "sending immediately". `Ctrl-C` interrupts the current task and keeps any draft in the editor; it does not submit the draft, so the previous hint advertised an action that does not exist.
 
 ### Removed
 - Drop reading of pre-existing session files. Sessions written by earlier versions are not migrated and are no longer loadable; `<data_dir>/sessions/` can be deleted. This also removes the recovery of edit diffs from legacy `Edit` tool records and the tolerance for retired cache-prefix state keys.
