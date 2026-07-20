@@ -90,7 +90,7 @@ logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # actionable "authentication required" message; suppress this logger's ERROR-level
 # traceback spam (incl. the RuntimeError nanocode raises as control flow).
 logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
-DEFAULT_MAX_CONTEXT_TOKENS = 128_000
+DEFAULT_MAX_CONTEXT_TOKENS = 240_000
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 2
 PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
@@ -466,7 +466,7 @@ model = ""
 
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false
-# max_context_tokens = 128000
+# max_context_tokens = 240000
 # max_agent_steps = 200
 # shell_timeout = 60
 
@@ -9323,7 +9323,7 @@ Tools:
             ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; mcp `{connected_mcp}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"),
-            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`"),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`; max context tokens `{self.session.settings.max_context_tokens}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("jobs", f"running `{len(self.session.running_jobs())}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
