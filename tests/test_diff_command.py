@@ -391,6 +391,23 @@ def test_net_diff_prefers_snapshots_when_the_last_edit_has_them(tmp_path):
     assert [line for line in text.splitlines() if line[:1] in "+-" and not line.startswith(("---", "+++"))] == ["-a", "+c"]
 
 
+def test_net_diff_recovers_legacy_prefix_when_the_file_shrinks(tmp_path):
+    """A file that starts above the snapshot limit records its early edits without snapshots, then
+    keeps snapshots once it shrinks below it. The snapshot span starts at the first kept edit, so the
+    snapshot-less prefix must be recovered from its hunks or the early changes vanish from the diff."""
+    (tmp_path / "x.py").write_text("d\n")
+    prefix = _diff("tr.1", 1, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
+    shrink = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
+    last = _diff("tr.3", 3, "x.py", "c\n", "d\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-c\n+d\n")
+
+    sections = n.Session.net_diff_sections([prefix, shrink, last], "overall", cwd=str(tmp_path))
+
+    assert len(sections) == 1
+    text = sections[0][2]
+    assert text.count("--- ") == 1
+    assert [line for line in text.splitlines() if line[:1] in "+-" and not line.startswith(("---", "+++"))] == ["-a", "+d"]
+
+
 def test_net_diff_falls_back_to_hunks_when_the_file_is_gone(tmp_path):
     """With snapshots stopping and no file on disk, the recorded hunks are all that is left."""
     kept = _diff("tr.1", 1, "gone.py", "a\n", "b\n", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-a\n+b\n")

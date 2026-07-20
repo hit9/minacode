@@ -1670,9 +1670,19 @@ class Session:
     ) -> str:
         """One diff per path, from exactly one description of its history."""
         if path in states and snapshot_tail.get(path):
-            # The last edit carried snapshots, so the recorded `after` is the file's final content
-            # and already contains whatever the snapshot-less edits before it changed.
-            section = cls.net_diff_for_path(status, path, *states[path])
+            # The last edit carried snapshots, so the recorded `after` is the file's final content.
+            before, after = states[path]
+            if legacy_chunks := legacy.get(path, []):
+                # Snapshots cover only a suffix: snapshot-less edits ran before the first snapshot
+                # (the file shrank past the limit mid-session), and their starting content isn't in
+                # `states`. Walk their hunks back from the first snapshot's `before` to recover it so
+                # the net diff spans the whole path. If they don't apply cleanly — they were
+                # interleaved between snapshots, so the snapshot span already reflects them, or the
+                # file was mutated outside Edit — the snapshot span stands as-is.
+                original = cls._reverse_apply(before, legacy_chunks)
+                if original is not None:
+                    before = original
+            section = cls.net_diff_for_path(status, path, before, after)
             return section[2] if section else ""
         if path in states and (final := cls._current_content(cwd, path)) is not None:
             # Snapshots stop partway through the path's history. The starting content is still known
@@ -1705,27 +1715,34 @@ class Session:
     _HUNK_RE: ClassVar[re.Pattern[str]] = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
 
     @classmethod
-    def _reconstruct_legacy_diff(cls, cwd: str, path: str, chunks: list[str], status: str) -> str | None:
-        final = cls._current_content(cwd, path)
-        if final is None:
-            return None
+    def _reverse_apply(cls, current: str, chunks: list[str]) -> str | None:
+        """Walk `current` back to the state before the given per-Edit hunks by reverse-applying them
+        in reverse chronological order. Each hunk's after-text must occur uniquely in the buffer; if
+        not (external mutation, ambiguous context, or hunks that don't belong to this buffer's
+        history), return None so the caller can fall back."""
         hunk_pairs: list[tuple[str, str]] = []
         for chunk in chunks:
             pairs = cls._split_hunks(chunk)
             if pairs is None:
                 return None
             hunk_pairs.extend(pairs)
-        # Reverse-apply each hunk in reverse chronological order so `current` walks back to the state
-        # before the first tracked edit. Each hunk's after-text must occur uniquely in the buffer; if
-        # not (external mutation, ambiguous context), give up and let the caller fall back.
-        current = final
         for after_text, before_text in reversed(hunk_pairs):
             if not after_text or not before_text:
                 return None
             if current.count(after_text) != 1:
                 return None
             current = current.replace(after_text, before_text, 1)
-        section = cls.net_diff_for_path(status, path, current, final)
+        return current
+
+    @classmethod
+    def _reconstruct_legacy_diff(cls, cwd: str, path: str, chunks: list[str], status: str) -> str | None:
+        final = cls._current_content(cwd, path)
+        if final is None:
+            return None
+        original = cls._reverse_apply(final, chunks)
+        if original is None:
+            return None
+        section = cls.net_diff_for_path(status, path, original, final)
         return section[2] if section else ""
 
     @classmethod
