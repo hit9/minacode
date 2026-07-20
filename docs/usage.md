@@ -20,6 +20,7 @@ and they move up into the log above the divider once they are in.
 | `Enter` | While the agent works | Queue a follow-up for the next model step |
 | `Ctrl-C` | While the agent works | Interrupt the current task; keep any draft in the editor |
 | `Ctrl-C` | Idle prompt | Clear input line |
+| `Ctrl-U` | Any prompt | Clear the whole input line, leaving the turn running |
 | `Up` / `Ctrl-P` | While working, with an empty editor | Recall the newest queued message |
 
 ## Commands
@@ -144,6 +145,7 @@ Two inline references, both Tab-completed as you type:
 
 - history recall and completion
 - `Ctrl-C` — clear idle input; while running, interrupt the current turn
+- `Ctrl-U` — clear the whole input line, in the idle prompt and the follow-up editor alike
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)

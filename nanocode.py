@@ -7220,6 +7220,13 @@ class TuiApp:
             if self.input_mode in {"dispatch", "running"}:
                 self.on_interrupt()
 
+        @bindings.add("c-u", filter=~modal & edits_input, eager=True)
+        def _clear_input(event):  # pragma: no cover — interactive path
+            # The readline convention for discarding the line, and the one key that means the same
+            # thing in every editor here. Ctrl-C cannot take this on: while the agent runs it has to
+            # keep meaning "interrupt", which is not something to make conditional on a draft.
+            self.input_buffer.reset(Document(""))
+
         @bindings.add("c-d", filter=~modal, eager=True)
         def _ctrl_d(event):  # pragma: no cover — interactive path
             if self.input_mode == "approval" and self._input_pending is not None:

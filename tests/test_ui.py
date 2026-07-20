@@ -350,6 +350,52 @@ def test_interactive_tui_ctrl_c_cancels_idle_input_like_master(monkeypatch, draf
     assert cancelled == [True]
 
 
+def test_tui_ctrl_u_clears_the_idle_draft_without_cancelling(monkeypatch):
+    """Ctrl-U discards the line. Unlike Ctrl-C it carries no other meaning, so nothing is
+    cancelled."""
+    cancelled = []
+    app = n.TuiApp(on_input_cancel=lambda: cancelled.append(True))
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("half typed")
+        wait_until(lambda: app.input_buffer.text == "half typed")
+        # Cursor into the middle: prompt_toolkit's stock Ctrl-U only discards to the left, so this
+        # is what distinguishes clearing the line from clearing part of it.
+        pipe_input.send_text("\x1b[D" * 5)
+        wait_until(lambda: app.input_buffer.cursor_position == len("half typed") - 5)
+        pipe_input.send_text("\x15")
+        wait_until(lambda: app.input_buffer.text == "")
+        pipe_input.send_text("\x04")
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert cancelled == []
+
+
+def test_tui_ctrl_u_clears_the_running_draft_without_interrupting(monkeypatch):
+    """In the queued-input editor Ctrl-C interrupts the turn, so clearing a draft there needs its
+    own key."""
+    interrupted = []
+    app = n.TuiApp(on_interrupt=lambda: interrupted.append(True))
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        app.set_running("working")
+        pipe_input.send_text("queued draft")
+        wait_until(lambda: app.input_buffer.text == "queued draft")
+        pipe_input.send_text("\x1b[D" * 6)
+        wait_until(lambda: app.input_buffer.cursor_position == len("queued draft") - 6)
+        pipe_input.send_text("\x15")
+        wait_until(lambda: app.input_buffer.text == "")
+        app.set_idle()
+        pipe_input.send_text("\x04")
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert interrupted == []
+
+
 def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monkeypatch):
     scenario_session = session(tmp_path)
     scenario_session.messages.append({"role": "user", "content": "persist me"})

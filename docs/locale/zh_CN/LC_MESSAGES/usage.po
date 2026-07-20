@@ -83,6 +83,15 @@ msgid "Idle prompt"
 msgstr "空闲 prompt"
 
 #: ../../usage.md
+msgid "`Ctrl-U`"
+msgstr "`Ctrl-U`"
+
+msgid "Any prompt"
+msgstr "任意提示符"
+
+msgid "Clear the whole input line, leaving the turn running"
+msgstr "清空整行输入，当前 turn 继续运行"
+
 msgid "Clear input line"
 msgstr "清空输入行"
 
@@ -346,6 +355,11 @@ msgid "history recall and completion"
 msgstr "历史记录与补全"
 
 #: ../../usage.md:146
+msgid ""
+"`Ctrl-U` — clear the whole input line, in the idle prompt and the follow-up "
+"editor alike"
+msgstr "`Ctrl-U` — 清空整行输入，空闲提示符和后续消息编辑器中行为一致"
+
 msgid "`Ctrl-C` — clear idle input; while running, interrupt the current turn"
 msgstr "`Ctrl-C` — 空闲时清空输入；运行时中断当前任务"
 
