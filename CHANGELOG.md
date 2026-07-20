@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.10.0 - 2026-07-19
 
 ### Changed
 - Store sessions per project under `<data_dir>/projects/<project>/`, each with its own `latest` pointer, instead of a single flat `<data_dir>/sessions/` directory shared by every project. Resolving this project's latest session is now a pointer read rather than a scan that opens every stored session, and a project directory is pruned once its last session expires.
