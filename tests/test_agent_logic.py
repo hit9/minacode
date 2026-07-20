@@ -1744,6 +1744,23 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"skills {count}" in bar_text
 
 
+def test_status_keeps_active_turn_in_context_percentage(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 100_000
+    s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
+    context = n.ContextManager(s)
+    active_messages = context.model_messages(n.Agent.SYSTEM_PROMPT, s._active_turn_messages)
+    active_percent = context.update_percent(active_messages)
+    persisted_percent = context.estimated_tokens(context.model_messages(n.Agent.SYSTEM_PROMPT)) * 100 // s.settings.max_context_tokens
+    assert active_percent > persisted_percent
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    status = loop.status("")
+
+    assert s.state.context_percent == active_percent
+    assert f"ctx `{active_percent}%`" in status
+
+
 def test_session_from_config_file_theme_param(tmp_path):
     cfg = tmp_path / "nanocode.toml"
     cfg.write_text("[runtime]\ntheme = \"light\"\n")

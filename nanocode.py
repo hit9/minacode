@@ -4253,6 +4253,9 @@ class ContextManager:
         self.session.state.context_percent = min(100, tokens * 100 // self.session.settings.max_context_tokens)
         return self.session.state.context_percent
 
+    def update_current_percent(self, base_system: str) -> int:
+        return self.update_percent(self.model_messages(base_system, self.session._active_turn_messages))
+
     def prepare_messages(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
         if self.estimated_tokens(messages) < self.session.settings.max_context_tokens:
@@ -8847,7 +8850,7 @@ Tools:
         self.session.resumed = False
         # The percent is derived, not persisted, so a resumed session carries a full history with a
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
-        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
+        self.agent.context.update_current_percent(self.agent.SYSTEM_PROMPT)
         messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         if not messages:
             return
@@ -9361,7 +9364,7 @@ Tools:
     def status(self, args: str) -> str:
         usage = self.session.usage
         provider = self.session.config.provider
-        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
+        self.agent.context.update_current_percent(self.agent.SYSTEM_PROMPT)
         index = CodeIndex(self.session)
         index_status, index_message = index.status(check=False)
         index.update_pending_async()
@@ -9594,7 +9597,7 @@ Tools:
                 self.status_bar.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep, compacted=compacted)
-        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
+        self.agent.context.update_current_percent(self.agent.SYSTEM_PROMPT)
         # Compaction rewrites the history in place. Persist it now: leaving the session without
         # running another turn would otherwise resume from the log's pre-compaction state.
         self.session.save_snapshot()
