@@ -74,8 +74,8 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
   - Retrieves a <span class="marker">complete earlier tool result</span>, or selected line ranges,
     when only a shortened result was placed in the conversation.
 * - **`RecallContext`**
-  - Retrieves a <span class="marker">compacted conversation segment</span> by its seg.N key when
-    earlier detail was evicted by compaction. Available segments are listed in Memory's history index.
+  - Retrieves a stored <span class="marker">compacted conversation excerpt</span> by its seg.N key
+    when earlier detail was evicted by compaction. Segment keys are listed in the history index.
 * - **`Note`**
   - Maintains the task's goal, plan, success check, and learned facts. It keeps long tasks
     organized but does not edit project files.

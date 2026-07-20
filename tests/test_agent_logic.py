@@ -182,13 +182,14 @@ def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
         {"role": "user", "content": "old request"},
         {"role": "assistant", "content": "old answer"},
         {"role": "user", "content": "latest request"},
+        {"role": "user", "content": summary},
         {"role": "assistant", "content": "working"},
         {"role": "tool", "content": "tool tr.1"},
     ]
 
     compacted, keep = n.ContextManager(s).compaction_parts()
 
-    assert [message["content"] for message in compacted] == [summary, "before", "old request", "old answer"]
+    assert [message["content"] for message in compacted] == ["before", "old request", "old answer"]
     assert [message["content"] for message in keep] == ["latest request", "working", "tool tr.1"]
 
 
@@ -202,8 +203,56 @@ def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
 
     compacted, keep = n.ContextManager(s).compaction_parts()
 
-    assert compacted == s.messages
+    assert compacted == s.messages[1:]
     assert keep == []
+
+
+def test_compaction_selection_keeps_assistant_text_that_quotes_summary_marker(tmp_path):
+    s = session(tmp_path)
+    quoted = n.ContextManager.COMPACT_TITLE + "\nquoted by assistant"
+    s.messages = [
+        {"role": "user", "content": n.ContextManager.COMPACT_TITLE + "\nold summary"},
+        {"role": "assistant", "content": quoted},
+    ]
+
+    compacted, keep = n.ContextManager(s).compaction_parts()
+
+    assert compacted == [{"role": "assistant", "content": quoted}]
+    assert keep == []
+
+
+def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    summary = n.ContextManager.COMPACT_TITLE + "\nold summary"
+    s.state.summary = "old summary"
+    s.messages = [{"role": "user", "content": summary}]
+
+    class FakeModel:
+        def compact(self, text):
+            raise AssertionError(f"synthetic summary was compacted again: {text}")
+
+    n.ContextManager(s).prepare_messages(FakeModel(), "system")
+
+    assert s.messages == [{"role": "user", "content": summary}]
+    assert s.state.compaction_count == 0
+    assert s.history == []
+
+
+def test_turn_compaction_does_not_recompact_a_prior_summary(tmp_path):
+    context = n.ContextManager(session(tmp_path))
+    summary = n.ContextManager.COMPACT_TITLE + "\nold summary"
+    messages = [
+        {"role": "user", "content": "current request"},
+        {"role": "user", "content": summary},
+        *({"role": "assistant", "content": f"step {index}"} for index in range(10)),
+    ]
+
+    compacted, keep = context.turn_compaction_parts(messages)
+
+    assert [message["content"] for message in compacted] == ["step 0", "step 1"]
+    assert keep[0]["content"] == "current request"
+    assert all(message.get("content") != summary for message in [*compacted, *keep])
 
 
 def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
@@ -376,6 +425,17 @@ def test_compaction_captures_a_history_segment(tmp_path):
     assert "looking into it" in segment.text
 
 
+def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(n, "MAX_TOOL_OUTPUT_TOKENS", 10)
+    s = session(tmp_path)
+    context = n.ContextManager(s)
+
+    context.apply_compaction({"summary": "summary"}, [], compacted=[{"role": "user", "content": "x" * 1000}])
+
+    assert "<bounded_output" in s.history[0].text
+    assert 'recall="seg.1"' not in s.history[0].text
+
+
 def test_compaction_history_keys_increment(tmp_path):
     s = session(tmp_path)
     context = n.ContextManager(s)
@@ -420,6 +480,38 @@ def test_history_index_precedes_conversation_and_memory_excludes_it(tmp_path):
     assert messages[5]["content"].startswith("--- Memory ---")
     assert messages[6]["content"] == "current request"
     assert "History index" not in memory
+
+
+def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch):
+    monkeypatch.setattr(n, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    s = session(tmp_path)
+    for index in range(1, 51):
+        s.history.append(n.HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
+
+    history_index = n.ContextManager(s).history_index_context()
+
+    assert "<bounded_output" in history_index
+    assert "seg.1" in history_index
+    assert "seg.50" in history_index
+    assert "recall=" not in history_index
+
+
+def test_bounded_history_index_marker_stays_stable_when_appended(tmp_path, monkeypatch):
+    monkeypatch.setattr(n, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    s = session(tmp_path)
+    for index in range(1, 51):
+        s.history.append(n.HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
+    context = n.ContextManager(s)
+
+    before = context.history_index_context()
+    s.history.append(n.HistorySegment(key="seg.51", title="task 51 " + "x" * 20))
+    after = context.history_index_context()
+
+    before_head, before_marker, _ = before.split("\n", 2)
+    after_head, after_marker, _ = after.split("\n", 2)
+    assert before_head == after_head
+    assert before_marker == after_marker == '<bounded_output omitted="middle" max_tokens="40"/>'
+    assert "seg.51" in after
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):

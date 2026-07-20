@@ -103,3 +103,50 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
     tool_messages = [m for m in second if m["role"] == "tool"]
     assert tool_messages and tool_messages[0]["tool_call_id"] == "call_1"
     assert "<Edit" in tool_messages[0]["content"]
+
+
+def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
+    """An over-budget request first crosses the compactor wire, then the normal agent wire with
+    the rebuilt context: history index, compacted conversation, task memory, and current turn."""
+    session = _session(tmp_path)
+    old_request = "archive request " + "x" * 200 + " OLD_BODY_SENTINEL " + "x" * 8000
+    session.messages = [
+        {"role": "user", "content": old_request},
+        {"role": "assistant", "content": "archived answer " + "y" * 8000},
+        {"role": "user", "content": "latest retained request"},
+        {"role": "assistant", "content": "latest retained answer"},
+    ]
+    baseline = _session(tmp_path / "baseline")
+    baseline_messages = n.ContextManager(baseline).model_messages(n.Agent.SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
+    session.settings.max_context_tokens = n.ContextManager(baseline).estimated_tokens(baseline_messages) + 500
+
+    compacted_state = json.dumps(
+        {"summary": "Archived work was completed.", "goal": "continue", "plan": [], "known": ["durable fact"], "check": "tests"}
+    )
+    llm = ScriptedLLM([_answer_response(compacted_state), _answer_response("Continued successfully.")])
+    monkeypatch.setattr(n.ModelClient, "client", lambda self: llm.client())
+
+    answer = n.Agent(session, output_fn=lambda text: None).run("continue")
+
+    assert answer == "Continued successfully."
+    assert len(llm.requests) == 2
+
+    compactor_request, agent_request = llm.requests
+    assert "Compact the nanocode working context." in compactor_request["messages"][0]["content"]
+    assert "tools" not in compactor_request
+    assert "OLD_BODY_SENTINEL" in compactor_request["messages"][1]["content"]
+
+    active_messages = agent_request["messages"]
+    contents = [str(message.get("content") or "") for message in active_messages]
+    history_index = next(index for index, content in enumerate(contents) if content.startswith("--- History index ---"))
+    conversation = next(index for index, content in enumerate(contents) if content.startswith(n.ContextManager.COMPACT_TITLE))
+    memory = next(index for index, content in enumerate(contents) if content.startswith("--- Memory ---"))
+    current_turn = max(index for index, content in enumerate(contents) if content == "continue")
+    assert history_index < conversation < memory < current_turn
+    assert "OLD_BODY_SENTINEL" not in "\n".join(contents)
+    assert agent_request["tools"]
+
+    assert session.state.summary == "Archived work was completed."
+    assert session.state.compaction_count == 1
+    assert [segment.key for segment in session.history] == ["seg.1"]
+    assert "OLD_BODY_SENTINEL" in session.history[0].text
