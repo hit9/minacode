@@ -5,6 +5,7 @@
 
 ### Added
 - Replay the diff each `Edit` made when a session is resumed, instead of only the call line. Long diffs are trimmed to a readable window with a pointer to `/diff`.
+- Add a `provider.extra_body` option (a JSON object, default empty) merged verbatim into the outgoing chat request's `extra_body`, so provider-specific extensions reach the wire without nanocode knowing about them. This is how a server-side built-in capability such as Qianwen/DashScope web search is enabled (`{"enable_search": true, "search_options": {...}}` against `https://dashscope.aliyuncs.com/compatible-mode/v1`). nanocode's own reasoning fields are layered on top, so they stay authoritative on key conflicts, and the configured value is surfaced in `/config`.
 
 ### Changed
 - Apply the `/diff` snapshot size limit to each file snapshot rather than to the before-and-after pair. Snapshots are stored once per unique content, so the pair no longer costs twice a file's size, and the old test held the ceiling at half the file size it could afford — files up to roughly 1 MB are now tracked.

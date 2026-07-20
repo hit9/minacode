@@ -245,6 +245,7 @@ class ProviderConfig:
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
     timeout: int = 180
+    extra_body: Json = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Json) -> "ProviderConfig":
@@ -272,6 +273,7 @@ class ProviderConfig:
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
             timeout=Config.int(data, "timeout", 180),
+            extra_body=Config.table(data, "extra_body"),
         )
 
     def _stripped_url(self) -> str:
@@ -6330,8 +6332,11 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             if reasoning_enabled:
                 values = CHAT_REASONING_EFFORT_VALUES["enable_thinking"]
                 extra["thinking_budget"] = values.get(effort, values["medium"])
-        if extra:
-            params["extra_body"] = extra
+        # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; nanocode's
+        # own reasoning fields are layered on top so they stay authoritative on key conflicts.
+        extra_body = {**provider.extra_body, **extra}
+        if extra_body:
+            params["extra_body"] = extra_body
 
     def assistant_message(self, message: Any) -> Json:
         data: Json = {"role": "assistant", "content": self.message_field(message, "content")}
@@ -9333,6 +9338,7 @@ Tools:
                 f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
                 f"provider.max_tokens: {provider.max_tokens or ('(resolved ' + str(provider.resolved_max_tokens() or 'server default') + ')')}",
                 f"provider.strict_tools: {provider.strict_tools} (active {provider.resolved_strict_tools()})",
+                f"provider.extra_body: {json.dumps(provider.extra_body, ensure_ascii=False, sort_keys=True) if provider.extra_body else '(off)'}",
                 f"provider.timeout: {provider.timeout}",
                 f"paths.data_dir: {self.session.data_path()}",
                 f"runtime.shell_timeout: {self.session.settings.shell_timeout}",

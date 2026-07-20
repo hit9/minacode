@@ -122,6 +122,32 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert "reasoning_effort" not in params
 
 
+def test_chat_provider_extra_body_passthrough(tmp_path):
+    client = n.ModelClient(session(tmp_path))
+
+    # Vendor extensions (e.g. Qianwen web search) pass through verbatim into extra_body.
+    params = {}
+    search = {"enable_search": True, "search_options": {"forced_search": True, "search_strategy": "max"}}
+    provider = n.ProviderConfig(url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3-max", reasoning="off", extra_body=search)
+    client.apply_provider_params(params, provider)
+    assert params["extra_body"] == search
+
+    # Configured extra_body merges with nanocode-managed reasoning fields...
+    params = {}
+    client.apply_provider_params(params, n.ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"enable_search": True}))
+    assert params["extra_body"] == {"enable_search": True, "reasoning": {"effort": "high"}}
+
+    # ...and reasoning wins on key conflict so nanocode stays in control of its own fields.
+    params = {}
+    client.apply_provider_params(params, n.ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"reasoning": {"effort": "low"}}))
+    assert params["extra_body"] == {"reasoning": {"effort": "high"}}
+
+    # extra_body round-trips through config; non-object values are ignored.
+    assert n.ProviderConfig.from_dict({"extra_body": search}).extra_body == search
+    assert n.ProviderConfig.from_dict({"extra_body": "nope"}).extra_body == {}
+    assert n.ProviderConfig().extra_body == {}
+
+
 def _strict_check(node, path="root"):
     if isinstance(node, dict):
         for key in ("minItems", "maxItems", "minLength", "maxLength"):
