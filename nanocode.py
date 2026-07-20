@@ -509,7 +509,6 @@ class ModelUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_prompt_tokens: int = 0
-    last_total_tokens: int = 0
     last_prompt_tokens: int = 0
     last_cached_prompt_tokens: int = 0
 
@@ -538,7 +537,6 @@ class ModelUsage:
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
         self.cached_prompt_tokens += cached_tokens
-        self.last_total_tokens = total_tokens
         self.last_prompt_tokens = prompt_tokens
         self.last_cached_prompt_tokens = cached_tokens
 
@@ -1047,7 +1045,6 @@ class SessionSnapshotCodec:
         usage.cached_prompt_tokens = data.get("cached_prompt_tokens", 0)
         usage.last_cached_prompt_tokens = data.get("last_cached_prompt_tokens", 0)
         usage.last_prompt_tokens = data.get("last_prompt_tokens", 0)
-        usage.last_total_tokens = data.get("last_total_tokens", 0)
         return usage
 
     @staticmethod
@@ -1234,7 +1231,7 @@ class SessionSnapshotStore:
         path = cls.find_session_path(config.data_dir, uid)
         if not path:
             raise NanocodeError(f"Session snapshot not found: {uid} under {cls.path_for(config.data_dir, cls.PROJECTS_DIR)}")
-        data, blobs = cls.read_merged(path, uid)
+        data, blobs = cls.read_merged(path)
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
         session = Session(
             cwd=data.get("cwd", cwd),
@@ -1268,7 +1265,7 @@ class SessionSnapshotStore:
         return resolved
 
     @classmethod
-    def read_merged(cls, path: str, uid: str) -> tuple[Json, dict[str, str]]:
+    def read_merged(cls, path: str) -> tuple[Json, dict[str, str]]:
         merged: Json | None = None
         blobs: dict[str, str] = {}
         with open(path, encoding="utf-8") as file:

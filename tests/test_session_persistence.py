@@ -567,7 +567,6 @@ def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     s.usage.total_tokens = 150
     s.usage.cached_prompt_tokens = 20
     s.usage.last_cached_prompt_tokens = 5
-    s.usage.last_total_tokens = 60
     s.save_snapshot()
 
     s2 = n.Session.load_snapshot(s.uid, config=s.config)
@@ -577,7 +576,6 @@ def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     assert s2.usage.total_tokens == 150
     assert s2.usage.cached_prompt_tokens == 20
     assert s2.usage.last_cached_prompt_tokens == 5
-    assert s2.usage.last_total_tokens == 60
 
 
 def test_agent_state_roundtrip(tmp_path):
