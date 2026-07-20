@@ -8636,6 +8636,9 @@ Tools:
         if not self.session.resumed:
             return
         self.session.resumed = False
+        # The percent is derived, not persisted, so a resumed session carries a full history with a
+        # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
+        self.agent.context.update_percent(self.agent.context.model_messages(self.agent.SYSTEM_PROMPT))
         messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         if not messages:
             return

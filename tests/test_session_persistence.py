@@ -728,6 +728,22 @@ def _resumed_transcript(tmp_path, diff_text, *, lines_cap=None):
     return "\n".join(str(item) for item in output)
 
 
+def test_resume_recomputes_the_context_percent(tmp_path):
+    """`context_percent` is derived rather than persisted, so a resumed session would report an
+    empty context until its first turn."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "x" * 40000})
+    s.save_snapshot()
+
+    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert restored.state.context_percent == 0
+
+    loop = n.CommandLoop(n.Agent(restored, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop.render_resumed_session()
+
+    assert restored.state.context_percent > 0
+
+
 def test_resumed_transcript_replays_the_edit_diff(tmp_path):
     """A resumed session shows what each Edit changed, not just that an Edit ran."""
     text = _resumed_transcript(tmp_path, "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
