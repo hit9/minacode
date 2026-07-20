@@ -9,7 +9,7 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 
 ::::{list-table}
 :header-rows: 1
-:widths: 18 82
+:widths: 24 76
 :class: tool-reference
 
 * - Tool
@@ -73,6 +73,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 * - **`Recall`**
   - Retrieves a <span class="marker">complete earlier tool result</span>, or selected line ranges,
     when only a shortened result was placed in the conversation.
+* - **`RecallContext`**
+  - Retrieves a <span class="marker">compacted conversation segment</span> by its seg.N key when
+    earlier detail was evicted by compaction. Available segments are listed in Memory's history index.
 * - **`Note`**
   - Maintains the task's goal, plan, success check, and learned facts. It keeps long tasks
     organized but does not edit project files.

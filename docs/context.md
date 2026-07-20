@@ -7,7 +7,7 @@ reusable prompt prefix.
 
 ## What the model receives
 
-<div class="term-shot" role="img" aria-label="The message context from first to last: system instructions, project environment, skills index, MCP servers and conversation history form the reused prefix; the current turn and task memory change every turn."><span class="fs-goal">─ reused prefix ─────────────────────────────────────</span><span>  system instructions      <span class="fs-i fs-dim">how the agent should operate</span></span><span>  project environment      <span class="fs-i fs-dim">directory · OS · shell · commands</span></span><span>  skills index             <span class="fs-i fs-dim">only when skills are installed</span></span><span>  MCP servers              <span class="fs-i fs-dim">only when a server is connected</span></span><span>  conversation history     <span class="fs-i fs-dim">messages · tool calls · results</span></span><span class="fs-dim">─ changes each turn ─────────────────────────────────</span><span>  current turn             <span class="fs-i fs-dim">the latest messages and results</span></span><span>  task memory              <span class="fs-i fs-dim">goal · plan · facts · checks</span></span></div>
+<div class="term-shot" role="img" aria-label="The message context from first to last: system instructions, project environment, skills index, MCP servers and conversation history form the reused prefix; the current turn and task memory change every turn."><span class="fs-goal">─ reused prefix ─────────────────────────────────────</span><span>  system instructions      <span class="fs-i fs-dim">how the agent should operate</span></span><span>  project environment      <span class="fs-i fs-dim">directory · OS · shell · commands</span></span><span>  skills index             <span class="fs-i fs-dim">only when skills are installed</span></span><span>  MCP servers              <span class="fs-i fs-dim">only when a server is connected</span></span><span>  conversation history     <span class="fs-i fs-dim">messages · tool calls · results</span></span><span class="fs-dim">─ changes each turn ─────────────────────────────────</span><span>  current turn             <span class="fs-i fs-dim">the latest messages and results</span></span><span>  task memory              <span class="fs-i fs-dim">goal · plan · facts · checks</span></span><span>  history index            <span class="fs-i fs-dim">after compaction; recallable by seg.N</span></span></div>
 
 Tool definitions are sent beside this message stack: built-in tools, `Skill` when skills are
 installed, and MCP tools and resources from <span class="marker">currently connected servers</span>.
@@ -25,8 +25,15 @@ When the estimated context reaches `runtime.max_context_tokens`, nanocode **comp
 part of the conversation is replaced by a short summary, and the most recent messages are kept
 as they are. The session continues in the same turn, so a long task does not have to stop.
 
-Compaction is lossy — detail in the summarized messages is gone. Task memory (goal, plan, facts,
-checks) is carried across untouched, which is why decisions worth keeping belong there.
+The summary in the active context is lossy, but the conversation itself is not thrown away. Each
+compaction captures the evicted messages verbatim as a **history segment** in the session log, so
+repeated compaction cannot compound the loss.
+
+<div class="term-shot" role="img" aria-label="Compaction moves the older conversation out of the active context into numbered history segments. The active context keeps a short summary and a history index of seg.N titles; RecallContext pulls a segment's full text back on demand."><span class="fs-goal">─ active context ─────────────────────</span><span>  summary          <span class="fs-i fs-dim">short rewrite of older talk</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span>  history index    <span class="fs-i fs-dim">seg.1 · seg.2 · …  (titles)</span></span><span class="fs-dim">─ session log (cold) ─────────────────</span><span>  seg.1            <span class="fs-i fs-dim">verbatim evicted messages</span></span><span>  seg.2            <span class="fs-i fs-dim">verbatim evicted messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(seg.N)</span> pulls a segment back</span></div>
+
+The history index lives in task memory, one line per segment. The agent calls `RecallContext` with
+a `seg.N` key to retrieve that segment's full text when it needs earlier detail. Task memory (goal,
+plan, facts, checks) is carried across untouched, which is why decisions worth keeping belong there.
 
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.

@@ -57,7 +57,7 @@ Working through a repository task in an interactive session.
 
 getting-started
 configuration
-cache
+context
 usage
 tools
 mcp
