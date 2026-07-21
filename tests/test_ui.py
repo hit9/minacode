@@ -1566,24 +1566,30 @@ class ModalHarness:
         return None
 
 
-def test_bash_output_viewer_shows_latest_bounded_preview(tmp_path):
+def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path):
     command_loop = loop(tmp_path)
-    older = n.Tool.process_result("BashToolResult", 0, "older", "")
-    latest_stdout = "\n".join(f"latest line {index}" for index in range(20))
-    latest = n.Tool.process_result("BashToolResult", 0, latest_stdout, "latest stderr")
-    command_loop.session.store_tool_result("Bash", ["printf older"], older)
-    command_loop.session.store_tool_result("Bash", ["printf latest"], latest)
-    modal = ModalHarness(["c-o"])
+    for index in range(12):
+        stdout = "\n".join(f"line {line}" for line in range(20)) if index == 10 else f"output {index}"
+        stderr = "detail stderr" if index == 10 else ""
+        command_loop.session.store_tool_result("Bash", [f"printf command-{index}"], n.Tool.process_result("BashToolResult", 0, stdout, stderr))
+    command_loop.session.store_tool_result("Bash", ["true"], n.Tool.process_result("BashToolResult", 0, "", ""))
+    modal = ModalHarness(["j", "enter", "escape", "G", "enter", "c-o"])
     command_loop.tui = modal
 
     command_loop.bash_output_viewer()
 
-    text = "".join(value for style, value in modal.frames[0])
-    assert "Bash printf latest" in text
-    assert "latest line 0" in text and "latest line 19" in text
-    assert "... 8 lines omitted ..." in text
-    assert "latest stderr" in text
-    assert "older" not in text
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert "Bash outputs · latest 10" in listing
+    assert "command-11" in listing and "command-2" in listing
+    assert "Bash printf command-1\n" not in listing and "Bash printf command-0\n" not in listing and "Bash true" not in listing
+    second_detail = "".join(value for _style, value in modal.frames[2])
+    assert "command-10" in second_detail
+    assert "line 0" in second_detail and "line 19" in second_detail
+    assert "... 8 lines omitted ..." in second_detail
+    assert "detail stderr" in second_detail
+    assert "Bash outputs · latest 10" in "".join(value for _style, value in modal.frames[3])
+    oldest_detail = "".join(value for _style, value in modal.frames[5])
+    assert "command-2" in oldest_detail and "output 2" in oldest_detail
     assert modal.exclusive == [False]
 
 
@@ -1595,6 +1601,22 @@ def test_bash_output_viewer_is_noop_without_stored_bash_output(tmp_path):
     command_loop.bash_output_viewer()
 
     assert modal.frames == []
+
+
+def test_bash_output_viewer_reads_resumed_history(tmp_path):
+    saved = session(tmp_path)
+    saved.store_tool_result("Bash", ["printf persisted"], n.Tool.process_result("BashToolResult", 0, "persisted output", ""))
+    saved.save_snapshot()
+    restored = n.Session.load_snapshot(saved.uid, config=saved.config)
+    command_loop = n.CommandLoop(n.Agent(restored, output_fn=lambda _text: None), input_fn=lambda prompt="": "", output_fn=lambda _text: None)
+    modal = ModalHarness(["enter", "q"])
+    command_loop.tui = modal
+
+    command_loop.bash_output_viewer()
+
+    detail = "".join(value for _style, value in modal.frames[1])
+    assert "Bash printf persisted" in detail
+    assert "persisted output" in detail
 
 
 def test_choice_navigation_uses_shared_modal_protocol(tmp_path):

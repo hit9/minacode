@@ -133,13 +133,15 @@ msgstr "Bash 输出"
 msgid ""
 "While Bash runs, its live output stays above the `working` divider. When the command "
 "finishes, minacode keeps the transcript quiet by folding that preview into a gray `output · "
-"Ctrl-O to expand` row. Press `Ctrl-O` to open the latest completed Bash preview; press "
-"`Ctrl-O`, `Esc`, or `q` to close it. The complete result remains stored under its `tr.N` key "
-"even when the preview is folded."
+"Ctrl-O to expand` row. Press `Ctrl-O` to browse the ten most recent completed Bash previews, "
+"newest first. Use `j`/`k` or the arrows to select one and `Enter` to open it; `Esc` returns to "
+"the list, while `Ctrl-O` or `q` closes the viewer. The complete result remains stored under "
+"its `tr.N` key even when the preview is folded."
 msgstr ""
 "Bash 运行时，实时输出会留在 `working` 分隔线上方。命令结束后，minacode 会将预览折叠为灰色的 "
-"`output · Ctrl-O to expand` 行，让 transcript 保持简洁。按 `Ctrl-O` 打开最近一次已完成的 Bash "
-"预览；按 `Ctrl-O`、`Esc` 或 `q` 关闭。即使预览已折叠，完整结果仍保存在对应的 `tr.N` key 下。"
+"`output · Ctrl-O to expand` 行，让 transcript 保持简洁。按 `Ctrl-O` 浏览最近十次已完成的 Bash "
+"预览，并按从新到旧排列。使用 `j`/`k` 或方向键选择，按 `Enter` 打开；按 `Esc` 返回列表，按 "
+"`Ctrl-O` 或 `q` 关闭 viewer。即使预览已折叠，完整结果仍保存在对应的 `tr.N` key 下。"
 
 #: ../../usage.md:32
 msgid "Commands"
@@ -413,8 +415,8 @@ msgid "`Ctrl-R` — reverse-search your history"
 msgstr "`Ctrl-R` — 反向搜索历史记录"
 
 #: ../../usage.md:157
-msgid "`Ctrl-O` — open the latest completed Bash output preview; press it again to close"
-msgstr "`Ctrl-O` — 打开最近一次已完成的 Bash 输出预览；再次按下即可关闭"
+msgid "`Ctrl-O` — browse the ten most recent completed Bash output previews; press it again to close"
+msgstr "`Ctrl-O` — 浏览最近十次已完成的 Bash 输出预览；再次按下即可关闭"
 
 #: ../../usage.md:157
 msgid ""

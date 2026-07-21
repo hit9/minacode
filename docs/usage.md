@@ -33,11 +33,12 @@ marked as interrupted so minacode knows it ended early.
 
 While Bash runs, its live output stays above the `working` divider. When the command
 finishes, minacode keeps the transcript quiet by folding that preview into a gray
-`output · Ctrl-O to expand` row. Press `Ctrl-O` to open the latest completed Bash
-preview; press `Ctrl-O`, `Esc`, or `q` to close it. The complete result remains stored
-under its `tr.N` key even when the preview is folded.
+`output · Ctrl-O to expand` row. Press `Ctrl-O` to browse the ten most recent completed
+Bash previews, newest first. Use `j`/`k` or the arrows to select one and `Enter` to open
+it; `Esc` returns to the list, while `Ctrl-O` or `q` closes the viewer. The complete
+result remains stored under its `tr.N` key even when the preview is folded.
 
-<div class="term-shot" role="img" aria-label="A completed Bash command with its output folded into a gray Ctrl-O row, followed by the expanded Bash output viewer."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O to expand</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-dim">  Bash  pytest -q</span><span class="fs-dim"> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    704 passed in 14.69s</span><span class="fs-dim"> </span><span class="fs-dim">  Ctrl-O / Esc / q closes</span></div>
+<div class="term-shot" role="img" aria-label="A completed Bash command with folded output, followed by the Ctrl-O list of recent Bash commands and one expanded output preview."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O to expand</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-sel">Bash outputs · latest 3</span><span class="fs-sel">&gt;  1. tr.18  Bash pytest -q</span><span class="fs-dim">   2. tr.17  Bash git diff --check</span><span class="fs-dim">   3. tr.16  Bash git status --short</span><span> </span><span class="fs-dim">  tr.18  Bash pytest -q</span><span class="fs-dim"> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    707 passed in 17.40s</span><span class="fs-dim"> </span><span class="fs-dim">  Esc / ← back · Ctrl-O / q closes</span></div>
 
 ## Commands
 
@@ -169,7 +170,7 @@ Two inline references, both Tab-completed as you type:
 - `Ctrl-U` — clear the whole input line, in the idle prompt and the follow-up editor alike
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history
-- `Ctrl-O` — open the latest completed Bash output preview; press it again to close
+- `Ctrl-O` — browse the ten most recent completed Bash output previews; press it again to close
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)
 
 ```{figure} ../snapshots/minacode-working-input-editor.png

@@ -2745,25 +2745,54 @@ Tools:
         return f"### Active jobs · {len(running)}\n\n{table}"
 
     def bash_output_viewer(self) -> None:
-        """Show the latest completed Bash preview without copying it into scrollback."""
+        """Browse recent completed Bash previews without copying them into scrollback."""
         if self.tui is None:
             return
-        record = next((item for item in reversed(self.session.tool_records) if item.name == "Bash" and item.output), None)
-        preview = self.agent.tools.bash_result_preview(record.output) if record is not None else ""
-        if not preview:
+        records = []
+        for record in reversed(self.session.tool_records):
+            if record.name != "Bash":
+                continue
+            preview = self.agent.tools.bash_result_preview(record.output)
+            if preview:
+                records.append((record, preview))
+            if len(records) == 10:
+                break
+        if not records:
             return
-        call = ToolCall("", "Bash", record.args)
-        title = self.agent.tools.short_call(call)
+        width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
+        labels = {}
+        for index, (record, _preview) in enumerate(records):
+            call = self.agent.tools.short_call(ToolCall("", "Bash", record.args))
+            labels[str(index)] = Text.clip_width(f"{record.key}  {call}", width)
+        choices = tuple(labels)
+        state = ChoiceViewState(choices, labels, set())
+        opened: str | None = None
 
         def fragments() -> list[tuple[str, str]]:
-            width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
-            parts = [("ansibrightblack", f"\n  {Text.clip_width(title, width)}\n\n")]
-            parts.extend(("ansibrightblack", f"  {Text.clip_width(line, width)}\n") for line in preview.splitlines())
-            parts.append(("class:choice.disabled", "\n  Ctrl-O / Esc / q closes\n"))
+            if opened is None:
+                return state.fragments(f"Bash outputs · latest {len(records)}")
+            preview = records[int(opened)][1]
+            title = labels[opened]
+            detail_width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
+            parts = [("ansibrightblack", f"\n  {Text.clip_width(title, detail_width)}\n\n")]
+            parts.extend(("ansibrightblack", f"  {Text.clip_width(line, detail_width)}\n") for line in preview.splitlines())
+            parts.append(("class:choice.disabled", "\n  Esc / ← back · Ctrl-O / q closes\n"))
             return parts
 
-        def handle_key(key: str, _data: str) -> Any:
-            return None if key in {"c-o", "escape", "q"} else TUI_MODAL_PENDING
+        def handle_key(key: str, data: str) -> Any:
+            nonlocal opened
+            if key in {"c-o", "q"}:
+                return None
+            if opened is not None:
+                if key in {"escape", "left", "h"}:
+                    opened = None
+                return TUI_MODAL_PENDING
+            result = state.handle_key(key, data)
+            if result is SELECTION_BACK:
+                return None
+            if isinstance(result, str):
+                opened = result
+            return TUI_MODAL_PENDING
 
         self.tui.show_modal(fragments, handle_key)
 
