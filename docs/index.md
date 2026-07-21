@@ -7,6 +7,8 @@ commands, and reports back. It keeps <span class="marker">stable prompt prefixes
 supported providers can reuse work, maintains a searchable code index, runs background jobs,
 tracks its own working notes, and <span class="marker">resumes where you left off</span>.
 
+minacode is the former nanocode, renamed once it outgrew the single file that made it *nano*.
+
 ```{figure} ../snapshots/minacode1.gif
 :alt: minacode editing code and running tools in one interactive session
 :width: 600px

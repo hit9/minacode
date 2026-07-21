@@ -20,6 +20,8 @@ minacode 并不想发明一种新的 coding agent。它只是把熟悉的能力 
 
 它不仅用于真实项目，也用于自身开发：我用 minacode 来构建和维护 minacode。所有功能都在一个小而聚焦的 Python 包中，所以我可以随时直接修改行为，让工作流按我想要的方式运行。
 
+minacode 即原来的 nanocode。它最初是一个小到可以称作 *nano* 的单文件 agent，但如今已不再 nano，所以改名为 minacode。
+
 <p align="center">
   <img src="snapshots/minacode2.gif" alt="minacode 恢复保存的 session" width="600">
 </p>

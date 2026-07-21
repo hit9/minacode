@@ -20,6 +20,8 @@ minacode does not introduce a new kind of coding agent. It combines familiar fea
 
 It works on real repositories, including its own: I use minacode to build and maintain minacode. Everything ships in a small, focused Python package, so I can change the behavior directly whenever I want the workflow to work differently.
 
+minacode is the former nanocode. It started as a single-file agent small enough to be called *nano*, but has since grown beyond a single file, so it now goes by minacode.
+
 <p align="center">
   <img src="snapshots/minacode2.gif" alt="minacode resuming a saved session" width="600">
 </p>

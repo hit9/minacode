@@ -6,6 +6,10 @@
 ### Changed
 - Ctrl-C while the agent runs now distinguishes a *retract* from an *interrupt*. If the agent has not produced any output yet, the turn is retracted — the message is discarded and leaves no trace in the model context or the persisted session (the input history still recalls it via Ctrl-P), as if it was never sent. Once the agent has spoken or called a tool, the partial turn stands and an interrupt marker is appended (with a cancelled result for any tool call the interrupt left unanswered), so the context stays valid and the model knows the turn ended early.
 
+### Fixed
+- Background jobs (`Job(start)`) now capture every stage of a compound command such as `configure && make && pytest`; previously only the final stage was logged and earlier output leaked to the terminal.
+- Opening the external editor no longer truncates a draft at a git-style scissors line you typed yourself — only the reference context minacode appends below its own marker is stripped.
+
 
 ## 0.11.0 - 2026-07-20
 

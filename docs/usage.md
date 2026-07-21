@@ -164,6 +164,12 @@ Two inline references, both Tab-completed as you type:
 Typing a follow-up message in an external editor.
 ```
 
+When you open the editor in reply to the agent, its most recent reply is appended below a git-style scissors line, so you can read what you are answering while you compose (the full-screen editor hides that scrollback):
+
+<div class="term-shot" role="img" aria-label="External editor view: the draft being composed on top, a git-style scissors line, then the agent's most recent reply below it for reference; everything below the scissors line is stripped before the message is sent."><span class="fs-user">yes, add the reconnect test and cap the backoff at 30s</span><span class="fs-dim">&nbsp;</span><span class="fs-divider"># ------------------------ &gt;8 ------------------------</span><span class="fs-dim"># Reference only: everything below the scissors line is stripped before your</span><span class="fs-dim"># message is sent. The agent's most recent reply follows for reference.</span><span class="fs-dim">&nbsp;</span><span class="fs-prompt">I split McpManager into StdioTransport and HttpTransport, each closing its own</span><span class="fs-prompt">client in close(). Want me to add a test for the reconnect path?</span></div>
+
+Everything from the scissors line down is stripped before the message is sent; a scissors line you type yourself is left untouched. Long replies are capped to their most recent lines.
+
 ## Sessions
 
 <span class="marker">Your work is saved automatically</span> — the conversation, edits, and diffs
