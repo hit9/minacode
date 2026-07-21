@@ -109,8 +109,13 @@ this off permanently.
 **`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session. Example:
 `/set provider.model deepseek-v4-flash`.
 
-**`/resend`** — Re-send the in-flight model request. Type this while a turn is
-working.
+**`/resend`** — Cancel and re-send the in-flight model request without restarting the
+turn. Type it while a model request is waiting; it has no effect while the agent is
+running a tool or otherwise between model calls. The divider briefly reports the retry,
+keeps its elapsed timer and waiting pulse, then returns to `working` for the replacement
+request:
+
+<div class="term-shot" role="img" aria-label="The running divider briefly changes from working to retrying while preserving its green waiting pulse and elapsed timer, then returns to working as the replacement model request continues."><span class="fs-divider">──── <span class="fs-i fs-add">●</span> working (11s) ────────────────────</span><span class="fs-prompt">+&gt; /resend</span><span class="fs-divider">──── <span class="fs-i fs-add">●</span> retrying (12s) ──────────────────</span><span class="fs-divider">──── <span class="fs-i fs-add">●</span> working (14s) ────────────────────</span></div>
 
 ### MCP
 

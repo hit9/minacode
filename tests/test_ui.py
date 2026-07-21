@@ -1033,6 +1033,49 @@ def test_resend_command_only_resends_while_running(tmp_path):
     assert retried == [True]
 
 
+def test_manual_resend_uses_transient_retry_status(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = n.TuiApp()
+    command_loop.tui.set_running("working")
+    command_loop.session.state.current_model_call_started_at = 1.0
+    runtime = n.TuiRuntime(command_loop)
+    monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
+
+    runtime._request_model_retry("working")
+
+    assert command_loop.tui.status_label == "working"
+    assert command_loop.session.state.manual_model_retry_requested is True
+    assert command_loop.session.state.model_retry_count == 1
+
+
+def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = n.TuiApp()
+    command_loop.tui.set_running("working")
+    command_loop.status_bar.started_at = 90.0
+    command_loop.session.state.current_model_call_started_at = 99.0
+    now = [100.0]
+    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
+
+    command_loop.session.state.model_retry_count += 1
+    retrying = command_loop.queue_divider_fragments()
+    retrying_text = "".join(text for _style, text in retrying)
+    assert "retrying (10s)" in retrying_text
+    assert any(text == "● " for _style, text in retrying)
+    assert ("retrying", "warn") in command_loop.status_bar.entries(show_elapsed=True)
+
+    now[0] = 102.1
+    working = command_loop.queue_divider_fragments()
+    working_text = "".join(text for _style, text in working)
+    assert "working (12s)" in working_text
+    assert "retrying" not in working_text
+    assert any(text == "● " for _style, text in working)
+    assert ("retrying", "warn") not in command_loop.status_bar.entries(show_elapsed=True)
+
+    command_loop.session.state.current_model_call_started_at = 0.0
+    assert all(text != "● " for _style, text in command_loop.queue_divider_fragments())
+
+
 def test_tui_ctrl_g_and_ctrl_x_ctrl_e_open_editor():
     opened = []
     app = n.TuiApp()

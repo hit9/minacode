@@ -1394,6 +1394,7 @@ class BashLivePreview:
 
 class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
+    RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
     ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn", "runtime")
 
@@ -1455,11 +1456,15 @@ class StatusBar:
     def display_fragments(self, *, active: bool) -> list[tuple[str, str]]:
         if not active:
             return self.fragments(sweep=False, show_elapsed=False)
+        return self.fragments(sweep=True, show_elapsed=True)
+
+    def retry_notice_active(self) -> bool:
+        now = time.monotonic()
         count = self.session.state.model_retry_count
         if count != self.seen_retry_count:
             self.seen_retry_count = count
-            self.retry_notice_until = time.monotonic() + 2.0
-        return self.fragments(sweep=True, show_elapsed=True)
+            self.retry_notice_until = now + self.RETRY_NOTICE_DURATION
+        return self.retry_notice_until > now
 
     def fragments(self, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
         entries = self.entries(show_elapsed=show_elapsed)
@@ -1501,7 +1506,7 @@ class StatusBar:
                     ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
                 ]
             )
-            if self.retry_notice_until > time.monotonic():
+            if self.retry_notice_active():
                 parts.append(("retrying", "warn"))
             elif self.model_elapsed() >= self.stress_after():
                 parts.append(("/resend to re-request", "warn"))
@@ -2018,7 +2023,11 @@ Tools:
 
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
-        label = f"working ({Text.elapsed_since(self.status_bar.started_at)})" if status == "working" else status
+        if status == "working":
+            activity = "retrying" if self.status_bar.retry_notice_active() else "working"
+            label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
+        else:
+            label = status
         label = f"{label} [ {queued} queued ]" if queued else label
         return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
 
@@ -3107,13 +3116,13 @@ class TuiRuntime:
         self.tui.set_running("cancelling")
         self._interrupt_active(self.loop.agent.cancel)
 
-    def _request_model_retry(self, label: str) -> None:
+    def _request_model_retry(self, status_label: str) -> None:
         state = self.loop.session.state
         if state.current_model_call_started_at <= 0 or state.manual_model_retry_requested:
             return
         state.manual_model_retry_requested = True
         state.model_retry_count += 1
-        self.tui.status_label = label
+        self.tui.status_label = status_label
         self.tui.invalidate()
         self._interrupt_active(self.loop.agent.model.cancel)
 
@@ -3151,7 +3160,7 @@ class TuiRuntime:
             on_force_exit=self.force_exit,
             on_interrupt=self.interrupt,
             on_input_cancel=lambda: self.loop.emit("Cancelled"),
-            on_retry=lambda: self._request_model_retry("retrying"),
+            on_retry=lambda: self._request_model_retry("working"),
             on_recall=self.recall,
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
             activity_fragments_fn=self.loop.tui_activity_fragments,
