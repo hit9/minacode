@@ -945,11 +945,14 @@ def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
     assert command_loop.tui_input_hint() == "↑ recalls queued · Ctrl-C interrupts"
 
 
-def test_tui_chat_input_shows_editor_placeholder(tmp_path):
+def test_tui_chat_input_shows_random_idle_placeholder(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = n.TuiApp()
 
-    assert command_loop.tui_input_hint() == "Ctrl-X Ctrl-E opens $EDITOR"
+    assert "Ctrl-X Ctrl-E opens $EDITOR" in n.CommandLoop.IDLE_HINTS
+    hint = command_loop.tui_input_hint()
+    assert hint in n.CommandLoop.IDLE_HINTS
+    assert command_loop.tui_input_hint() == hint  # stable within a session (no flicker)
 
 
 def test_tui_sigint_interrupts_dispatch_and_running_modes():

@@ -5,7 +5,7 @@
 
 ### Added
 - Ctrl-X Ctrl-E (and Ctrl-G) now opens the external editor with the agent's most recent reply appended below a git-style scissors line, so you can read what you are answering while you compose; everything from the scissors line down is stripped before the message is sent. Long replies are capped to their most recent lines.
-- Show a `Ctrl-X Ctrl-E opens $EDITOR` placeholder in the idle input while it is empty, so the external-editor shortcut is discoverable; it disappears as soon as you start typing and gives way to the queue hints while the agent runs.
+- Show a placeholder tip in the idle input while it is empty, picked at random for the session from a few shortcuts (`Ctrl-X Ctrl-E opens $EDITOR`, `Type / for commands`, `Ctrl-U clears the line`) so they stay discoverable without cluttering the prompt; it disappears as soon as you start typing and gives way to the queue hints while the agent runs.
 
 ### Changed
 - Renamed the project from `nanocode` to `minacode`: the package and import (`import minacode`), the `minacode` console script and `python -m minacode`, and the PyPI distribution (`minacode`, formerly `nanocode-cli`). The data dir moved from `~/.nanocode` to `~/.minacode`; when the new directory is absent the old one is still read, so existing sessions, skills, and config keep working without a migration step.

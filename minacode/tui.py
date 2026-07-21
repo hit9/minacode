@@ -1759,7 +1759,11 @@ class ChoiceViewState:
 class CommandLoop:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
-    EDITOR_HINT = "Ctrl-X Ctrl-E opens $EDITOR"
+    IDLE_HINTS = (
+        "Ctrl-X Ctrl-E opens $EDITOR",
+        "Type / for commands",
+        "Ctrl-U clears the line",
+    )
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     # fmt: off
@@ -1855,6 +1859,9 @@ Tools:
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
         self.agent = agent
         self.session = agent.session
+        # A single idle-input tip, chosen once per session so the empty prompt stays stable
+        # (no per-render flicker) while still surfacing different shortcuts across sessions.
+        self._idle_hint = random.choice(self.IDLE_HINTS)
         self.input_fn = input_fn
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
@@ -2001,7 +2008,7 @@ Tools:
                 has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
             return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
         if self.tui.input_mode == "chat":
-            return self.EDITOR_HINT
+            return self._idle_hint
         return ""
 
     def editor_context(self) -> str:
