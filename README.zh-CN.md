@@ -70,5 +70,5 @@ minacode
 ## 链接
 
 - [文档](https://minacode.readthedocs.io/zh-cn/latest/) — 完整的使用指南和参考。
-- [博客](https://hit9.dev/post/minacode) — 设计动机与实现过程。
+- [博客](https://hit9.dev/post/nanocode) — 设计动机与实现过程。
 - [code-symbol-index](https://github.com/hit9/code-symbol-index) — minacode 使用的代码索引库。
