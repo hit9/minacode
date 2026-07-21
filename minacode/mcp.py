@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from minacode.skill import *
+import asyncio
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 @dataclass

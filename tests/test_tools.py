@@ -847,6 +847,25 @@ def test_job_start_runs_shell_builtins_and_compound_commands(tmp_path):
     assert "marker" in job.tail(100)
 
 
+def test_job_start_captures_every_stage_of_a_compound_command(tmp_path):
+    """The whole command is grouped before redirection, so output from early stages (not just the
+    last) lands in the job log instead of leaking to the inherited stdout."""
+    s = session(tmp_path)
+    n.JobTool(s, [{"action": "start", "command": "printf first; printf second && printf third"}]).call()
+    job = s.jobs["job.1"]
+
+    try:
+        job.process.wait(timeout=2)
+    finally:
+        if job.process.poll() is None:
+            job.kill(grace=0.1)
+
+    job.update_status()
+    assert job.status == "done"
+    log = job.tail(1000)
+    assert "first" in log and "second" in log and "third" in log
+
+
 def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
     s = session(tmp_path)
     n.JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()

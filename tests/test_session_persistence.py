@@ -86,6 +86,7 @@ def test_pending_user_input_delta_replaces_queue_state(tmp_path):
     restored = n.Session.load_snapshot(s.uid, config=s.config)
     assert restored.pending_user_inputs == []
 
+
 def test_latest_pointer_created_on_first_save(tmp_path):
     """First save creates the latest pointer file."""
     s = session_with_data_dir(tmp_path)
@@ -862,6 +863,7 @@ def test_resumed_transcript_without_a_stored_diff_shows_the_call_only(tmp_path):
 # a Bash command with embedded newlines must not crash --resume rendering)
 # ---------------------------------------------------------------------------
 
+
 def _bash_raw_call(arguments: str) -> dict:
     return {"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": arguments}}
 
@@ -869,7 +871,7 @@ def _bash_raw_call(arguments: str) -> dict:
 def test_transcript_tool_call_parses_multiline_arguments():
     """Argument strings with literal newlines (invalid strict JSON) still parse, so the
     Bash command survives instead of being dropped to {}."""
-    raw = _bash_raw_call("{\"command\": \"printf 'line one\nline two'\"}")
+    raw = _bash_raw_call('{"command": "printf \'line one\nline two\'"}')
     call = n.CommandLoop.transcript_tool_call(raw)
     assert call is not None
     assert call.args == ["printf 'line one\nline two'"]
@@ -885,14 +887,18 @@ def test_transcript_tool_call_does_not_crash_on_unparseable_args():
 
 def test_chat_tool_calls_parse_multiline_commit_message():
     """The live chat path recovers args from a multi-line Bash command too."""
+
     class _Fn:
         name = "Bash"
-        arguments = "{\"command\": \"printf 'subject\n\nbody line'\"}"
+        arguments = '{"command": "printf \'subject\n\nbody line\'"}'
+
     class _Raw:
         id = "x1"
         function = _Fn()
+
     class _Msg:
         tool_calls = [_Raw()]
+
     s = n.Session(cwd="/tmp")
     calls = n.ModelClient(s).tool_calls(_Msg())
     assert len(calls) == 1

@@ -48,30 +48,28 @@ def _session(tmp_path, **provider_kwargs):
     config = n.Config()
     config.data_dir = str(tmp_path / "data")
     provider_kwargs.setdefault("model", "gpt-4")
-    config.providers = {
-        "default": n.ProviderConfig(url="http://test", key="sk-test", **provider_kwargs)
-    }
+    config.providers = {"default": n.ProviderConfig(url="http://test", key="sk-test", **provider_kwargs)}
     return n.Session(cwd=str(tmp_path), config=config)
 
 
 def test_chat_request_success(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = n.ModelClient(s)
-    factory = _MockClientFactory([
-        (
-            200,
-            {
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "created": 1,
-                "model": "gpt-4",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}
-                ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-            },
-        )
-    ])
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                },
+            )
+        ]
+    )
     monkeypatch.setattr(model, "client", factory)
 
     assistant, calls, content = model.chat_request([{"role": "user", "content": "hi"}], None)
@@ -88,35 +86,37 @@ def test_chat_request_success(tmp_path, monkeypatch):
 def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = n.ModelClient(s)
-    factory = _MockClientFactory([
-        (
-            200,
-            {
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "created": 1,
-                "model": "gpt-4",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {"name": "Bash", "arguments": '{"command": "echo hi"}'},
-                                }
-                            ],
-                        },
-                        "finish_reason": "tool_calls",
-                    }
-                ],
-                "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
-            },
-        )
-    ])
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {"name": "Bash", "arguments": '{"command": "echo hi"}'},
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+                },
+            )
+        ]
+    )
     monkeypatch.setattr(model, "client", factory)
 
     assistant, calls, content = model.chat_request([{"role": "user", "content": "run"}], [])
@@ -133,19 +133,21 @@ def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
 def test_anthropic_request_success(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic")
     model = n.ModelClient(s)
-    factory = _AnthropicMockClientFactory([
-        (
-            200,
-            {
-                "id": "msg_test",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude-3",
-                "content": [{"type": "text", "text": "hello from claude"}],
-                "usage": {"input_tokens": 8, "output_tokens": 4},
-            },
-        )
-    ])
+    factory = _AnthropicMockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": [{"type": "text", "text": "hello from claude"}],
+                    "usage": {"input_tokens": 8, "output_tokens": 4},
+                },
+            )
+        ]
+    )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
     assistant, calls, content = model.anthropic_request([{"role": "user", "content": "hi"}], None)
@@ -161,22 +163,22 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
 def test_request_retries_then_succeeds(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = n.ModelClient(s)
-    factory = _MockClientFactory([
-        (429, {"error": {"message": "rate limited", "type": "rate_limit_error"}}),
-        (
-            200,
-            {
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "created": 1,
-                "model": "gpt-4",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
-                ],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-            },
-        ),
-    ])
+    factory = _MockClientFactory(
+        [
+            (429, {"error": {"message": "rate limited", "type": "rate_limit_error"}}),
+            (
+                200,
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+            ),
+        ]
+    )
     monkeypatch.setattr(model, "client", factory)
     monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
 
@@ -190,11 +192,13 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
 def test_request_retry_exhausted(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = n.ModelClient(s)
-    factory = _MockClientFactory([
-        (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
-        (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
-        (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
-    ])
+    factory = _MockClientFactory(
+        [
+            (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
+            (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
+            (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
+        ]
+    )
     monkeypatch.setattr(model, "client", factory)
     monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
 

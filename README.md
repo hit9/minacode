@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A coding agent I use, maintain, and customize in one Python file.
+  A coding agent I use, maintain, and customize, shipped as a small, focused Python package.
 </p>
 
 <p align="center"><a href="README.zh-CN.md">中文</a></p>
@@ -18,7 +18,7 @@
 
 minacode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
 
-It works on real repositories, including its own: I use minacode to build and maintain minacode. Everything ships in one Python module, so I can change the behavior directly whenever I want the workflow to work differently.
+It works on real repositories, including its own: I use minacode to build and maintain minacode. Everything ships in a small, focused Python package, so I can change the behavior directly whenever I want the workflow to work differently.
 
 <p align="center">
   <img src="snapshots/minacode2.gif" alt="minacode resuming a saved session" width="600">

@@ -245,8 +245,10 @@ def test_legacy_diff_reconstructed_from_disk(tmp_path):
 
     s = session(tmp_path)
     s.cwd = str(tmp_path)
+
     def unified(before: str, after: str) -> str:
         return "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile="big.py", tofile="big.py"))
+
     s.store_turn_diff("t1", 1, "big.py", unified(original, v1), round=1)
     s.store_turn_diff("t2", 2, "big.py", unified(v1, v2), round=1)
     s.store_turn_diff("t3", 3, "big.py", unified(v2, v3), round=1)

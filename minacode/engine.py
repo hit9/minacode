@@ -5,6 +5,10 @@ from __future__ import annotations
 from minacode.tools import *
 from minacode.base import __version__
 from minacode.tools import _resolved_tool_schemas, _validate_edit_target
+from enum import Enum
+from urllib.request import Request, urlopen
+from anthropic import Anthropic
+from json_repair import repair_json
 
 
 class UpdateChecker:

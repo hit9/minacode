@@ -2,79 +2,27 @@
 
 from __future__ import annotations
 
-import argparse
-import codecs
-import contextlib
-import copy
-import difflib
-import asyncio
-import fnmatch
-import hashlib
-import json
 import logging
 import os
 import platform
-import queue
-import random
 import re
-import selectors
-import shlex
 import shutil
-import signal
-import subprocess
 import sys
-import tempfile
-import threading
 import time
 import tomllib
-import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import concurrent.futures
-from collections.abc import Callable
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
-from enum import Enum, auto
+from dataclasses import dataclass, field
+from enum import auto
 from typing import Any, ClassVar
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
-import code_symbol_index as csi
 import anthropic
 import openai
-from anthropic import Anthropic
-from json_repair import repair_json
 from openai import OpenAI
-from prompt_toolkit import print_formatted_text, search as pt_search
-from prompt_toolkit.application import Application, run_in_terminal
-from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import CompleteEvent, Completer, Completion
-from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Condition, has_completions, is_done
-from prompt_toolkit.formatted_text import ANSI, FormattedText
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer, HSplit, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
-from prompt_toolkit.output import create_output
-from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.widgets import SearchToolbar
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.padding import Padding
-from rich.rule import Rule
-from rich.text import Text as RichText
 
 try:
     import pygments
-    from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
-    from pygments.styles import get_style_by_name
     from pygments.token import Token
 except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None

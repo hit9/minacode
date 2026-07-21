@@ -4,6 +4,39 @@ from __future__ import annotations
 
 from minacode.engine import *
 from minacode.base import __version__
+import queue
+import random
+from prompt_toolkit import print_formatted_text, search as pt_search
+from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition, has_completions, is_done
+from prompt_toolkit.formatted_text import ANSI, FormattedText
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer, HSplit, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
+from prompt_toolkit.output import create_output
+from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import SearchToolbar
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.rule import Rule
+from rich.text import Text as RichText
+
+try:
+    from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
+    from pygments.styles import get_style_by_name
+except ImportError:  # pragma: no cover - optional highlighting dependency
+    get_lexer_by_name = get_lexer_for_filename = get_style_by_name = None
 
 
 class CommandCompleter(Completer):
@@ -678,28 +711,37 @@ class TuiApp:
     EDITOR_CONTEXT_MARKER = "# ------------------------ >8 ------------------------"
 
     @classmethod
-    def _compose_editor_text(cls, draft: str, context: str) -> str:
+    def _compose_editor_text(cls, draft: str, context: str) -> tuple[str, str]:
         """Text handed to the external editor: the draft, then (when context is available) a
         scissors line and the agent's recent reply for reference, since the full-screen editor
-        hides the scrollback the reply is printed into."""
+        hides the scrollback the reply is printed into. Returns the composed text together with
+        the unique marker that separates the draft from the reference context (empty when no
+        context was appended), so stripping later removes only the context this call added and
+        never a scissors line the user typed themselves."""
         context = context.strip()
         if not context:
-            return draft
-        return (
+            return draft, ""
+        marker = f"{cls.EDITOR_CONTEXT_MARKER} ({uuid.uuid4().hex[:12]})"
+        composed = (
             draft
             + "\n\n"
-            + cls.EDITOR_CONTEXT_MARKER
+            + marker
             + "\n"
             + "# Reference only: everything below the scissors line is stripped before your\n"
             + "# message is sent. The agent's most recent reply follows for reference.\n"
             + "\n"
             + context
         )
+        return composed, marker
 
     @classmethod
-    def _strip_editor_context(cls, text: str) -> str:
-        """Drop the reference context (scissors line and everything below it) from edited text."""
-        return text.split(cls.EDITOR_CONTEXT_MARKER, 1)[0].rstrip("\n")
+    def _strip_editor_context(cls, text: str, marker: str) -> str:
+        """Drop the reference context this composition added (its unique scissors line and
+        everything below it). When no marker was appended there is nothing to strip, so a scissors
+        line the user typed themselves is left untouched."""
+        if marker:
+            text = text.split(marker, 1)[0]
+        return text.rstrip("\n")
 
     def _edit_text_in_editor(self, text: str) -> str | None:
         """Run the editor on `text` via a temp file and return the edited content, or None if the
@@ -729,11 +771,11 @@ class TuiApp:
         # also receives the agent's recent reply below a scissors line for reference (the
         # full-screen editor hides the scrollback); that context is stripped back out on return.
         original = self.input_buffer.text
-        composed = self._compose_editor_text(original, self.editor_context_fn())
+        composed, marker = self._compose_editor_text(original, self.editor_context_fn())
         edited = await run_in_terminal(lambda: self._edit_text_in_editor(composed), in_executor=True)
         if edited is None:
             return
-        edited = self._strip_editor_context(edited)
+        edited = self._strip_editor_context(edited, marker)
         if edited != original:
             self.input_buffer.reset(Document(edited, cursor_position=len(edited)))
             self.invalidate()

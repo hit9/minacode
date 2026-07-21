@@ -221,19 +221,29 @@ def test_edit_text_in_editor_leaves_input_untouched_on_nonzero_exit(monkeypatch)
 def test_editor_text_compose_and_strip_roundtrip():
     # The editor receives the draft plus the agent's reply below a scissors line; stripping
     # drops the reference context and returns exactly the (possibly edited) draft.
-    composed = n.TuiApp._compose_editor_text("my draft", "reply line one\nline two")
+    composed, marker = n.TuiApp._compose_editor_text("my draft", "reply line one\nline two")
     assert "my draft" in composed
     assert n.TuiApp.EDITOR_CONTEXT_MARKER in composed
+    assert marker and marker in composed
     assert "reply line one" in composed
-    assert n.TuiApp._strip_editor_context(composed) == "my draft"
+    assert n.TuiApp._strip_editor_context(composed, marker) == "my draft"
     # Editing above the scissors line survives; everything below it is dropped.
-    assert n.TuiApp._strip_editor_context(composed.replace("my draft", "edited draft")) == "edited draft"
+    assert n.TuiApp._strip_editor_context(composed.replace("my draft", "edited draft"), marker) == "edited draft"
 
 
 def test_editor_text_compose_without_context_is_identity():
-    assert n.TuiApp._compose_editor_text("draft", "") == "draft"
-    assert n.TuiApp._compose_editor_text("draft", "   ") == "draft"
-    assert n.TuiApp._strip_editor_context("plain text\n") == "plain text"
+    assert n.TuiApp._compose_editor_text("draft", "") == ("draft", "")
+    assert n.TuiApp._compose_editor_text("draft", "   ") == ("draft", "")
+    assert n.TuiApp._strip_editor_context("plain text\n", "") == "plain text"
+
+
+def test_editor_strip_preserves_a_scissors_line_the_user_typed():
+    # Only the marker this composition added is stripped; a scissors line already in the draft
+    # (pasted Markdown or code) survives, whether or not reference context was appended.
+    draft = f"before\n{n.TuiApp.EDITOR_CONTEXT_MARKER}\nafter"
+    assert n.TuiApp._strip_editor_context(draft, "") == draft
+    composed, marker = n.TuiApp._compose_editor_text(draft, "reply")
+    assert n.TuiApp._strip_editor_context(composed, marker) == draft
 
 
 def test_editor_context_returns_last_assistant_reply(tmp_path):

@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from minacode.mcp import *
+import codecs
+import copy
+import fnmatch
+import selectors
+import shlex
+import tempfile
+import code_symbol_index as csi
 
 
 class Tool:
@@ -1507,13 +1514,16 @@ class JobTool(Tool):
         self.session.job_counter += 1
         job_id = f"job.{self.session.job_counter}"
         # Log to disk (stdout+stderr merged) so we don't need a threaded drainer to keep the
-        # subprocess's OS-level pipe buffers from filling. `start_new_session` makes this shell its
-        # own process-group leader and the command inherits that group, so killpg(pid) reaches the
-        # command and its children; running it directly (no `exec`) keeps builtins like `cd` working.
+        # subprocess's OS-level pipe buffers from filling. The command is wrapped in a `{ ...; }`
+        # group so the redirection captures every stage of a compound command, not just the last
+        # (`a; b && c` would otherwise leak its earlier stages to the inherited stdout).
+        # `start_new_session` makes this shell its own process-group leader and the command inherits
+        # that group, so killpg(pid) reaches the command and its children; running it directly (no
+        # `exec`) keeps builtins like `cd` working.
         fd, log_path = tempfile.mkstemp(prefix=f"nc-{job_id}-", suffix=".log")
         os.close(fd)
         proc = subprocess.Popen(
-            ["bash", "-lc", f"{command} > {shlex.quote(log_path)} 2>&1"],
+            ["bash", "-lc", f"{{ {command}; }} > {shlex.quote(log_path)} 2>&1"],
             cwd=self.session.cwd,
             stdin=subprocess.DEVNULL,
             start_new_session=True,

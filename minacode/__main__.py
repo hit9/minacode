@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from minacode.tui import *
 from minacode.base import __version__
+import argparse
 
 
 def main(argv: list[str] | None = None) -> int:
