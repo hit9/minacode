@@ -3845,7 +3845,7 @@ class AskTool(Tool):
     SIGNATURE = "Ask(questions=[{question, choices?, previews?, recommended?}, ...])"
     # fmt: off
     EXAMPLE = (
-        'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["Extract module +87 -12","Rewrite from scratch"],"recommended":0}]}',
+        'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["auth/\\n  session.py  (new, +87)\\n  views.py    (-12)","auth.py -> deleted\\nauth/*      all new (+430)"],"recommended":0}]}',
         'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',
     )
     # fmt: on
@@ -3859,7 +3859,7 @@ class AskTool(Tool):
         question = cls.object_schema({
             "question": {"type": "string", "description": "The question to ask the user"},
             "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
-            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview text per choice, shown as the user navigates"},
+            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview per choice, shown as the user navigates. Make it graphic and concrete, not a restatement of the label: a short code/diff snippet, an ASCII layout or tree, or a file/API shape. Multi-line is fine (use \\n); keep under ~10 lines"},
             "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
         }, ["question"])
         return cls.object_schema({
@@ -6660,7 +6660,7 @@ FINAL:
 - Use GitHub-flavored Markdown: flat lists (`1. 2. 3.`), backticks for code/paths, info strings on code blocks, clickable file links `[app.py](/abs/path/app.py:12)` without backticks or file://, vscode://, https://. Write http(s) URLs bare (terminal auto-links them); `[text](url)` prints as `text (url)` here.
 - No emoji/em dash unless asked; no "X rather than Y" framing; no trailing "If you want".
 - The user doesn't see raw outputs; summarize when asked. If you couldn't do something, say so.
-- LANGUAGE (strict): write in the user's current natural language, detected per turn. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
+- LANGUAGE (strict): write in the user's current natural language, detected per turn. This covers every visible message, including mid-task progress updates, follow-up acknowledgements, and Ask questions/choices/previews — not just the final answer. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
