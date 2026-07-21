@@ -126,6 +126,22 @@ msgstr ""
 "召回）。一旦 agent 已经开口或运行过工具，`Ctrl-C` 会*中断*：已经展示的内容保留，该轮被标记为已中断，让 minacode 知道它提前结束了。"
 
 #: ../../usage.md:32
+msgid "Bash output"
+msgstr "Bash 输出"
+
+#: ../../usage.md:34
+msgid ""
+"While Bash runs, its live output stays above the `working` divider. When the command "
+"finishes, minacode keeps the transcript quiet by folding that preview into a gray `output · "
+"Ctrl-O to expand` row. Press `Ctrl-O` to open the latest completed Bash preview; press "
+"`Ctrl-O`, `Esc`, or `q` to close it. The complete result remains stored under its `tr.N` key "
+"even when the preview is folded."
+msgstr ""
+"Bash 运行时，实时输出会留在 `working` 分隔线上方。命令结束后，minacode 会将预览折叠为灰色的 "
+"`output · Ctrl-O to expand` 行，让 transcript 保持简洁。按 `Ctrl-O` 打开最近一次已完成的 Bash "
+"预览；按 `Ctrl-O`、`Esc` 或 `q` 关闭。即使预览已折叠，完整结果仍保存在对应的 `tr.N` key 下。"
+
+#: ../../usage.md:32
 msgid "Commands"
 msgstr "命令"
 
@@ -395,6 +411,10 @@ msgstr "`Ctrl-D` — 在空 prompt 中退出"
 #: ../../usage.md:156
 msgid "`Ctrl-R` — reverse-search your history"
 msgstr "`Ctrl-R` — 反向搜索历史记录"
+
+#: ../../usage.md:157
+msgid "`Ctrl-O` — open the latest completed Bash output preview; press it again to close"
+msgstr "`Ctrl-O` — 打开最近一次已完成的 Bash 输出预览；再次按下即可关闭"
 
 #: ../../usage.md:157
 msgid ""

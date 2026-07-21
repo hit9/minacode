@@ -257,7 +257,7 @@ class TuiApp:
     blocking approvals, while completed output is printed above the app into terminal scrollback.
     """
 
-    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l g G up down left right tab enter escape q r pagedown pageup c-d c-u backspace c-h /".split())
+    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l g G up down left right tab enter escape q r pagedown pageup c-d c-u c-o backspace c-h /".split())
 
     def __init__(
         self,
@@ -270,6 +270,7 @@ class TuiApp:
         on_input_cancel: Callable[[], None] | None = None,
         on_retry: Callable[[], None] | None = None,
         on_recall: Callable[[], str] | None = None,
+        on_expand_output: Callable[[], None] | None = None,
         status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
         activity_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
         input_hint_fn: Callable[[], str] | None = None,
@@ -285,6 +286,7 @@ class TuiApp:
         self.on_input_cancel = on_input_cancel or (lambda: None)
         self.on_retry = on_retry or (lambda: None)
         self.on_recall = on_recall or (lambda: "")
+        self.on_expand_output = on_expand_output or (lambda: None)
         self.status_fragments_fn = status_fragments_fn or list
         self.activity_fragments_fn = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
@@ -618,6 +620,8 @@ class TuiApp:
                 pt_search.do_incremental_search(direction, count=event.arg)
             else:
                 pt_search.start_search(direction=direction)
+
+        bindings.add("c-o", filter=~modal, eager=True)(lambda _event: self.on_expand_output())
 
         # Ctrl-P mirrors Up here: readline treats them as synonyms, and both recall the latest
         # queued follow-up (or move the cursor up / walk history) while a turn is working.
@@ -994,7 +998,7 @@ class UiPrinter:
         LogRole.TOOL: ("ansigreen", "fg:default"),
         LogRole.AUTO: ("ansiblue", "fg:default"),
         LogRole.META: ("ansibrightblack", "ansibrightblack"),
-        LogRole.OUTPUT: ("fg:default", "fg:default"),
+        LogRole.OUTPUT: ("ansibrightblack", "ansibrightblack"),
         LogRole.ERROR: ("ansired", "fg:default"),
         LogRole.MUTED: ("ansibrightblack", "ansibrightblack"),
         LogRole.DIFF: ("fg:default", "fg:default"),
@@ -2740,6 +2744,29 @@ Tools:
         table = ContextManager.md_table(["id", "status", "elapsed", "command"], rows)
         return f"### Active jobs · {len(running)}\n\n{table}"
 
+    def bash_output_viewer(self) -> None:
+        """Show the latest completed Bash preview without copying it into scrollback."""
+        if self.tui is None:
+            return
+        record = next((item for item in reversed(self.session.tool_records) if item.name == "Bash" and item.output), None)
+        preview = self.agent.tools.bash_result_preview(record.output) if record is not None else ""
+        if not preview:
+            return
+        call = ToolCall("", "Bash", record.args)
+        title = self.agent.tools.short_call(call)
+
+        def fragments() -> list[tuple[str, str]]:
+            width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
+            parts = [("ansibrightblack", f"\n  {Text.clip_width(title, width)}\n\n")]
+            parts.extend(("ansibrightblack", f"  {Text.clip_width(line, width)}\n") for line in preview.splitlines())
+            parts.append(("class:choice.disabled", "\n  Ctrl-O / Esc / q closes\n"))
+            return parts
+
+        def handle_key(key: str, _data: str) -> Any:
+            return None if key in {"c-o", "escape", "q"} else TUI_MODAL_PENDING
+
+        self.tui.show_modal(fragments, handle_key)
+
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
@@ -3127,6 +3154,9 @@ class TuiRuntime:
     def recall(self) -> str:
         return self.loop.recall_pending_input(lambda: self._request_model_retry("revising queued input"))
 
+    def expand_output(self) -> None:
+        threading.Thread(target=self.loop.bash_output_viewer, name="bash-output", daemon=True).start()
+
     def request_exit(self) -> None:
         self.stop.set()
         self.loop.save_and_emit_resume()
@@ -3149,6 +3179,7 @@ class TuiRuntime:
             on_input_cancel=lambda: self.loop.emit("Cancelled"),
             on_retry=lambda: self._request_model_retry("working"),
             on_recall=self.recall,
+            on_expand_output=self.expand_output,
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
             activity_fragments_fn=self.loop.tui_activity_fragments,
             input_hint_fn=self.loop.tui_input_hint,

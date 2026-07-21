@@ -991,8 +991,7 @@ class ToolRunner:
             preview = self.bash_result_preview(output)
             if preview:
                 duration = f" · {elapsed:.1f}s" if elapsed is not None else ""
-                children.append(LogLine("output" + duration, role=LogRole.META, edge=LogEdge.BRANCH))
-                children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
+                children.append(LogLine("output" + duration, "Ctrl-O to expand", LogRole.META, LogEdge.BRANCH))
         elif call.name == "Ask":
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         if tree and not failed:

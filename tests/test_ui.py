@@ -980,6 +980,16 @@ def test_tui_sigint_interrupts_dispatch_and_running_modes():
     assert interrupted == [True, True]
 
 
+def test_tui_ctrl_o_opens_latest_bash_output():
+    expanded = []
+    app = n.TuiApp(on_expand_output=lambda: expanded.append(True))
+    binding = next(binding for binding in app.make_bindings().bindings if binding.keys == (n.Keys.ControlO,) and binding.filter())
+
+    binding.handler(type("Event", (), {})())
+
+    assert expanded == [True]
+
+
 @pytest.mark.parametrize("mode", ["chat", "running"])
 def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
     app = n.TuiApp()
@@ -1554,6 +1564,37 @@ class ModalHarness:
             if result is not n.TUI_MODAL_PENDING:
                 return result
         return None
+
+
+def test_bash_output_viewer_shows_latest_bounded_preview(tmp_path):
+    command_loop = loop(tmp_path)
+    older = n.Tool.process_result("BashToolResult", 0, "older", "")
+    latest_stdout = "\n".join(f"latest line {index}" for index in range(20))
+    latest = n.Tool.process_result("BashToolResult", 0, latest_stdout, "latest stderr")
+    command_loop.session.store_tool_result("Bash", ["printf older"], older)
+    command_loop.session.store_tool_result("Bash", ["printf latest"], latest)
+    modal = ModalHarness(["c-o"])
+    command_loop.tui = modal
+
+    command_loop.bash_output_viewer()
+
+    text = "".join(value for style, value in modal.frames[0])
+    assert "Bash printf latest" in text
+    assert "latest line 0" in text and "latest line 19" in text
+    assert "... 8 lines omitted ..." in text
+    assert "latest stderr" in text
+    assert "older" not in text
+    assert modal.exclusive == [False]
+
+
+def test_bash_output_viewer_is_noop_without_stored_bash_output(tmp_path):
+    command_loop = loop(tmp_path)
+    modal = ModalHarness([])
+    command_loop.tui = modal
+
+    command_loop.bash_output_viewer()
+
+    assert modal.frames == []
 
 
 def test_choice_navigation_uses_shared_modal_protocol(tmp_path):

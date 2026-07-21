@@ -29,6 +29,16 @@ if it was never sent (your input history still recalls it with `Ctrl-P`). Once t
 spoken or run a tool, `Ctrl-C` *interrupts*: the work already shown stays, and the turn is
 marked as interrupted so minacode knows it ended early.
 
+## Bash output
+
+While Bash runs, its live output stays above the `working` divider. When the command
+finishes, minacode keeps the transcript quiet by folding that preview into a gray
+`output · Ctrl-O to expand` row. Press `Ctrl-O` to open the latest completed Bash
+preview; press `Ctrl-O`, `Esc`, or `q` to close it. The complete result remains stored
+under its `tr.N` key even when the preview is folded.
+
+<div class="term-shot" role="img" aria-label="A completed Bash command with its output folded into a gray Ctrl-O row, followed by the expanded Bash output viewer."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O to expand</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-dim">  Bash  pytest -q</span><span class="fs-dim"> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    704 passed in 14.69s</span><span class="fs-dim"> </span><span class="fs-dim">  Ctrl-O / Esc / q closes</span></div>
+
 ## Commands
 
 Type `/` commands at the prompt to inspect state, switch models, manage the
@@ -159,6 +169,7 @@ Two inline references, both Tab-completed as you type:
 - `Ctrl-U` — clear the whole input line, in the idle prompt and the follow-up editor alike
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history
+- `Ctrl-O` — open the latest completed Bash output preview; press it again to close
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)
 
 ```{figure} ../snapshots/minacode-working-input-editor.png

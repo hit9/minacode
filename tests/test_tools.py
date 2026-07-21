@@ -917,7 +917,7 @@ def test_uiprinter_renders_note_memory_status_colors():
     assert ("ansigreen", "  + pytest") in segs
 
 
-def test_uiprinter_keeps_bash_preview_output_white():
+def test_uiprinter_renders_bash_preview_like_live_output():
     ui = n.UiPrinter(output_fn=lambda text: None)
     block = n.LogBlock.hierarchy(
         n.LogLine("Bash", "cmd", n.LogRole.TOOL),
@@ -930,10 +930,10 @@ def test_uiprinter_keeps_bash_preview_output_white():
     )
     segs = ui.log_segments(block)
 
-    assert ("fg:default", "stderr:") in segs
-    assert ("fg:default", "  Traceback") in segs
-    assert ("fg:default", "    File x") in segs
-    assert ("fg:default", "  AttributeError") in segs
+    assert ("ansibrightblack", "stderr:") in segs
+    assert ("ansibrightblack", "  Traceback") in segs
+    assert ("ansibrightblack", "    File x") in segs
+    assert ("ansibrightblack", "  AttributeError") in segs
 
 
 def test_uiprinter_renders_stored_result_dim():
@@ -1647,10 +1647,12 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     assert ("stdout", "live") in events
     assert events[-1][0] == "display"
     assert "    ├ output" in events[-1][1]
-    assert "    │   live" in events[-1][1]
+    assert "Ctrl-O to expand" in events[-1][1]
+    assert "live" not in events[-1][1]
     assert "    └ stored tr." in events[-1][1]
     assert sum("printf live" in text for kind, text in events if kind == "display") == 1
     assert sum("Bash" in text for kind, text in events if kind == "display") == 1
+    assert "live" in s.tool_records[-1].output
 
 
 def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
@@ -1666,14 +1668,14 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     assert display[0].startswith("  Bash  ")
     assert "approval required" not in display[0]
     assert display[-1].startswith("    ├ output")
-    assert "    │   approved" in display[-1]
+    assert "Ctrl-O to expand" in display[-1]
     assert "    └ stored tr." in display[-1]
     assert display[-1].endswith("[approved]")
     assert sum(text.startswith("  Bash  ") for text in display) == 1
     assert sum("printf approved" in text for text in display) == 1
 
 
-def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
+def test_tool_runner_finish_display_collapses_bash_output(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
     stdout = "\n".join(f"out {index}" for index in range(20))
@@ -1682,13 +1684,9 @@ def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
     display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
 
     assert display.startswith("  Bash  printf lots\n")
-    assert "    ├ output" in display
-    assert "    │ stdout:" in display
-    assert "    │   out 0" in display
-    assert "    │   ... 8 lines omitted ..." in display
-    assert "    │   out 19" in display
-    assert "    │ stderr:" in display
-    assert "    │   err" in display
+    assert "    ├ output Ctrl-O to expand" in display
+    assert "out 0" not in display
+    assert "err" not in display
     assert display.endswith("    └ stored tr.1")
 
 
@@ -1699,12 +1697,12 @@ def test_tool_runner_finish_display_keeps_bash_output_after_live_preview(tmp_pat
 
     display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
 
-    assert "    ├ output" in display
-    assert "    │   live output" in display
+    assert "    ├ output Ctrl-O to expand" in display
+    assert "live output" not in display
     assert display.endswith("    └ stored tr.1")
 
 
-def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_path):
+def test_tool_runner_compact_bash_result_keeps_fold_without_live_frame(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
     output = n.Tool.process_result("BashToolResult", 0, "visible output", "")
@@ -1719,9 +1717,8 @@ def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_pa
         )
     )
 
-    assert display.startswith("    ├ output")
-    assert "stdout:" in display
-    assert "visible output" in display
+    assert display.startswith("    ├ output Ctrl-O to expand")
+    assert "visible output" not in display
 
 
 def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypatch):
