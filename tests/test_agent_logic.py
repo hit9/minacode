@@ -1121,6 +1121,7 @@ def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
     text = "".join(fragment for _, fragment in loop.tui_activity_fragments())
 
     assert text.index("live output") < text.index("working") < text.index("+ follow up")
+    assert "live output\n\n---" in text
 
 
 def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):

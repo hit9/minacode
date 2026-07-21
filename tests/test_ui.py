@@ -1580,13 +1580,13 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     command_loop.bash_output_viewer()
 
     listing = "".join(value for _style, value in modal.frames[0])
-    assert listing.startswith("──── Bash outputs · latest 10 ")
-    assert get_cwidth(listing.splitlines()[0]) == 48
+    assert listing.startswith("\n──── Bash outputs · latest 10 ")
+    assert get_cwidth(listing.splitlines()[1]) == 48
     assert "command-11" in listing and "command-2" in listing
     assert "Bash printf command-1\n" not in listing and "Bash printf command-0\n" not in listing and "Bash true" not in listing
     second_detail = "".join(value for _style, value in modal.frames[2])
-    assert second_detail.startswith("──── Bash output · tr.11 ")
-    assert get_cwidth(second_detail.splitlines()[0]) == 48
+    assert second_detail.startswith("\n──── Bash output · tr.11 ")
+    assert get_cwidth(second_detail.splitlines()[1]) == 48
     assert "command-10" in second_detail
     assert "line 0" in second_detail and "line 19" in second_detail
     assert "... 8 lines omitted ..." in second_detail

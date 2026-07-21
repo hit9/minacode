@@ -2051,6 +2051,8 @@ Tools:
         fragments = []
         for line in lines:
             fragments.extend([("ansibrightblack", line), ("", "\n")])
+        if lines:
+            fragments.append(("", "\n"))
         fragments.extend(self.queue_region_fragments())
         return fragments
 
@@ -2776,7 +2778,7 @@ Tools:
             rule_width = max(20, min(72, cols - 2))
             lead = "──── "
             trail = " " + "─" * max(3, rule_width - get_cwidth(lead + label) - 1)
-            return [("class:choice.disabled", lead + label + trail + "\n")]
+            return [("", "\n"), ("class:choice.disabled", lead + label + trail + "\n")]
 
         def fragments() -> list[tuple[str, str]]:
             if opened is None:
