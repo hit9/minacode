@@ -10,7 +10,7 @@ import pytest
 from anthropic import Anthropic
 from openai import OpenAI
 
-import nanocode as n
+import minacode as n
 
 
 class _MockClientFactory:

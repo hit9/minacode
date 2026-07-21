@@ -1,6 +1,6 @@
 # Context and caching
 
-Each request contains more than the latest message. nanocode arranges the model's context so
+Each request contains more than the latest message. minacode arranges the model's context so
 the stable parts come first, the active conversation follows, and frequently changing task
 state comes last. This keeps the agent informed while giving supported providers a long,
 reusable prompt prefix.
@@ -21,7 +21,7 @@ with references to their first full copy instead of being sent in full again.
 
 ### Compaction
 
-As the estimated request approaches `runtime.max_context_tokens`, nanocode **compacts**: the older
+As the estimated request approaches `runtime.max_context_tokens`, minacode **compacts**: the older
 part of the conversation is replaced by a short summary, and the most recent messages are kept as
 they are. The trigger reserves the configured provider output cap (16K when unspecified), tool
 schemas, and a safety margin of at least 4K. The session continues in the same turn, so a long task
@@ -56,8 +56,8 @@ A request is reused only up to its first difference, so a change near the beginn
 an MCP server, installing a skill, switching models — shortens the reusable prefix. That is why
 the stable sections are placed first.
 
-OpenAI-compatible providers may reuse matching prefixes automatically; nanocode supplies a stable
-cache key where the provider supports one. For Anthropic, nanocode explicitly marks the tools and
+OpenAI-compatible providers may reuse matching prefixes automatically; minacode supplies a stable
+cache key where the provider supports one. For Anthropic, minacode explicitly marks the tools and
 system instructions as an ephemeral cacheable prefix. Provider support and accounting differ.
 
 ### Checking the hit rate

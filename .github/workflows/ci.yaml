@@ -29,8 +29,8 @@ jobs:
 
       - name: Run lint
         run: |
-          uv run ruff check nanocode.py
-          uv run ruff format --check nanocode.py
+          uv run ruff check minacode
+          uv run ruff format --check minacode
 
       - name: Run tests
         run: uv run pytest

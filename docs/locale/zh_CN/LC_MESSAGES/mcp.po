@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 03:02-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -24,13 +24,13 @@ msgstr "MCP"
 
 #: ../../mcp.md:3
 msgid ""
-"nanocode can connect to [Model Context "
+"minacode can connect to [Model Context "
 "Protocol](https://modelcontextprotocol.io) servers and call their tools "
 "through its `MCP` tool. Servers can be **remote** (HTTP) or **local** "
 "(stdio), and <span class=\"marker\">nothing about a server reaches the "
 "model until you connect it</span>."
 msgstr ""
-"nanocode 可以连接 [Model Context Protocol](https://modelcontextprotocol.io) "
+"minacode 可以连接 [Model Context Protocol](https://modelcontextprotocol.io) "
 "server，并通过 `MCP` 工具调用其工具。Server "
 "可以是**远程**（HTTP）或**本地**（stdio）；在主动连接之前，<span class=\"marker\">该 server "
 "的任何信息都不会进入模型 context</span>。"
@@ -200,11 +200,11 @@ msgstr "一条命令连接多个 server 时会并发执行；交互式 OAuth 浏
 #: ../../mcp.md:76
 #, python-brace-format
 msgid ""
-"Once a server is connected, nanocode can use its tools like any other. "
+"Once a server is connected, minacode can use its tools like any other. "
 "Tools the server marks read-only run without a prompt; anything that may "
 "change state asks for {ref}`confirmation <built-in-guardrails>` first."
 msgstr ""
-"连接后，nanocode 可以像使用其他工具一样使用该 server 的工具。Server "
+"连接后，minacode 可以像使用其他工具一样使用该 server 的工具。Server "
 "标记为只读的工具无需确认即可运行；可能改变状态的操作会先请求{ref}`确认 <built-in-guardrails>`。"
 
 #: ../../mcp.md:80

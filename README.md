@@ -1,7 +1,7 @@
-<h1 align="center">nanocode-cli</h1>
+<h1 align="center">minacode</h1>
 
 <p align="center">
-  <img src="snapshots/nanocode1.gif" alt="nanocode editing code and running tools" width="600">
+  <img src="snapshots/minacode1.gif" alt="minacode editing code and running tools" width="600">
 </p>
 
 <p align="center">
@@ -12,16 +12,16 @@
 
 ## Safety
 
-**Use at your own risk.** nanocode can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
+**Use at your own risk.** minacode can edit files and run shell commands in the environment where it starts. It does not provide sandbox isolation; use a container or VM when needed.
 
 ## What it is
 
-nanocode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
+minacode does not introduce a new kind of coding agent. It combines familiar features — reading and editing files, running commands, follow-ups, sessions, diffs, MCP, and skills — into a tool I use personally.
 
-It works on real repositories, including its own: I use nanocode to build and maintain nanocode. Everything ships in one Python module, so I can change the behavior directly whenever I want the workflow to work differently.
+It works on real repositories, including its own: I use minacode to build and maintain minacode. Everything ships in one Python module, so I can change the behavior directly whenever I want the workflow to work differently.
 
 <p align="center">
-  <img src="snapshots/nanocode2.gif" alt="nanocode resuming a saved session" width="600">
+  <img src="snapshots/minacode2.gif" alt="minacode resuming a saved session" width="600">
 </p>
 <p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
 
@@ -41,11 +41,11 @@ It works on real repositories, including its own: I use nanocode to build and ma
 Requires macOS or Linux, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-uv tool install nanocode-cli
-nanocode --init-config
+uv tool install minacode
+minacode --init-config
 ```
 
-Add your provider to `~/.nanocode/config.toml`:
+Add your provider to `~/.minacode/config.toml`:
 
 ```toml
 [provider]
@@ -60,13 +60,13 @@ model = "deepseek-v4-flash"
 Then run:
 
 ```sh
-nanocode
+minacode
 ```
 
-Upgrade with `uv tool upgrade nanocode-cli`.
+Upgrade with `uv tool upgrade minacode`.
 
 ## Links
 
-- [Documentation](https://nanocode.readthedocs.io/en/latest/) — full usage guide and reference.
-- [Blog post](https://hit9.dev/post/nanocode) — why and how it was built.
-- [code-symbol-index](https://github.com/hit9/code-symbol-index) — the code index library nanocode uses.
+- [Documentation](https://minacode.readthedocs.io/en/latest/) — full usage guide and reference.
+- [Blog post](https://hit9.dev/post/minacode) — why and how it was built.
+- [code-symbol-index](https://github.com/hit9/code-symbol-index) — the code index library minacode uses.

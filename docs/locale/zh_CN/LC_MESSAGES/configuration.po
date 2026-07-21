@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 02:56-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -24,10 +24,10 @@ msgstr "配置"
 
 #: ../../configuration.md:3
 msgid ""
-"nanocode reads a single TOML file, `~/.nanocode/config.toml` by default. Generate a commented "
-"starter with `nanocode --init-config`, or point at another file with `--config <path>`."
+"minacode reads a single TOML file, `~/.minacode/config.toml` by default. Generate a commented "
+"starter with `minacode --init-config`, or point at another file with `--config <path>`."
 msgstr ""
-"nanocode 默认读取 `~/.nanocode/config.toml`。使用 `nanocode --init-config` 生成带注释的初始配置，或通过 `--config "
+"minacode 默认读取 `~/.minacode/config.toml`。使用 `minacode --init-config` 生成带注释的初始配置，或通过 `--config "
 "<path>` 指定其他文件。"
 
 #: ../../configuration.md:7

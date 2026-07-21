@@ -13,7 +13,7 @@ import json
 import httpx
 from openai import OpenAI
 
-import nanocode as n
+import minacode as n
 
 
 class ScriptedLLM:
@@ -132,7 +132,7 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     assert len(llm.requests) == 2
 
     compactor_request, agent_request = llm.requests
-    assert "Compact the nanocode working context." in compactor_request["messages"][0]["content"]
+    assert "Compact the minacode working context." in compactor_request["messages"][0]["content"]
     assert "tools" not in compactor_request
     assert "OLD_BODY_SENTINEL" in compactor_request["messages"][1]["content"]
 

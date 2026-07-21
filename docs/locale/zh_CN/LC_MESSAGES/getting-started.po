@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 02:56-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -27,8 +27,8 @@ msgid "Install"
 msgstr "安装"
 
 #: ../../getting-started.md:5
-msgid "nanocode supports <span class=\"marker\">macOS and Linux only</span>"
-msgstr "nanocode <span class=\"marker\">仅支持 macOS 和 Linux</span>"
+msgid "minacode supports <span class=\"marker\">macOS and Linux only</span>"
+msgstr "minacode <span class=\"marker\">仅支持 macOS 和 Linux</span>"
 
 #: ../../getting-started.md:6
 msgid "Python 3.11 or newer"
@@ -44,9 +44,9 @@ msgstr "升级"
 
 #: ../../getting-started.md:19
 msgid ""
-"nanocode checks PyPI at most once a day and reports an available update at startup and in "
+"minacode checks PyPI at most once a day and reports an available update at startup and in "
 "`/status`."
-msgstr "nanocode 每天最多检查一次 PyPI；有新版本时，会在启动时和 `/status` 中提示。"
+msgstr "minacode 每天最多检查一次 PyPI；有新版本时，会在启动时和 `/status` 中提示。"
 
 #: ../../getting-started.md:22
 msgid "Configure"
@@ -54,15 +54,15 @@ msgstr "配置"
 
 #: ../../getting-started.md:24
 msgid ""
-"nanocode needs one thing to start: <span class=\"marker\">a provider to talk to</span>. Generate "
+"minacode needs one thing to start: <span class=\"marker\">a provider to talk to</span>. Generate "
 "a starter config:"
-msgstr "nanocode 启动只需要一项配置：<span class=\"marker\">用于通信的 provider</span>。先生成配置文件："
+msgstr "minacode 启动只需要一项配置：<span class=\"marker\">用于通信的 provider</span>。先生成配置文件："
 
 #: ../../getting-started.md:31
 msgid ""
-"This writes `~/.nanocode/config.toml`. Only the `[provider]` block is required; every other "
+"This writes `~/.minacode/config.toml`. Only the `[provider]` block is required; every other "
 "setting has a built-in default, and the file lists the common ones as comments."
-msgstr "该命令会写入 `~/.nanocode/config.toml`。只有 `[provider]` 是必需的；其他设置都有内置默认值，常用选项会以注释形式列在文件中。"
+msgstr "该命令会写入 `~/.minacode/config.toml`。只有 `[provider]` 是必需的；其他设置都有内置默认值，常用选项会以注释形式列在文件中。"
 
 #: ../../getting-started.md:34
 msgid "Point it at a provider"
@@ -70,10 +70,10 @@ msgstr "设置 provider"
 
 #: ../../getting-started.md:36
 msgid ""
-"nanocode speaks to any OpenAI-compatible API (and to Anthropic). Open the config and fill in a "
+"minacode speaks to any OpenAI-compatible API (and to Anthropic). Open the config and fill in a "
 "provider — for example [DeepSeek](https://api-docs.deepseek.com/):"
 msgstr ""
-"nanocode 支持任何 OpenAI-compatible API，也直接支持 Anthropic。打开配置文件并填写一个 provider，例如 [DeepSeek](https"
+"minacode 支持任何 OpenAI-compatible API，也直接支持 Anthropic。打开配置文件并填写一个 provider，例如 [DeepSeek](https"
 "://api-docs.deepseek.com/)："
 
 #: ../../getting-started.md
@@ -185,8 +185,8 @@ msgid "`--config <path>`"
 msgstr "`--config <path>`"
 
 #: ../../getting-started.md
-msgid "Use a specific config file instead of `~/.nanocode/config.toml`"
-msgstr "使用指定配置文件，而不是 `~/.nanocode/config.toml`"
+msgid "Use a specific config file instead of `~/.minacode/config.toml`"
+msgstr "使用指定配置文件，而不是 `~/.minacode/config.toml`"
 
 #: ../../getting-started.md
 msgid "`--init-config`"

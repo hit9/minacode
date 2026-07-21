@@ -1,4 +1,4 @@
-"""Tests for nanocode MCP client integration."""
+"""Tests for minacode MCP client integration."""
 
 import asyncio
 import os
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import nanocode as n
+import minacode as n
 
 
 # ---------------------------------------------------------------------------
@@ -2876,5 +2876,5 @@ def test_py_compile():
     import py_compile
     from pathlib import Path
 
-    for source in sorted(Path("nanocode").glob("*.py")):
+    for source in sorted(Path("minacode").glob("*.py")):
         py_compile.compile(str(source), doraise=True)

@@ -1,6 +1,6 @@
 # Tools
 
-nanocode uses tools to inspect your project and act on it. You describe the outcome you want;
+minacode uses tools to inspect your project and act on it. You describe the outcome you want;
 the agent chooses the tools. Tool calls are shown in the terminal as they run. They are separate
 from the `/` commands you type yourself. Read-only tools may run concurrently; actions that can
 change your system ask for confirmation unless `--yolo` or `/yolo` is active.
@@ -21,7 +21,7 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     A shortened result looks like this:
 
     ```html
-    <Read path="nanocode.py">
+    <Read path="minacode.py">
       <file_stat mtime_ns="..." size="222039"/>
       <total_lines>5031</total_lines>
       <range>684:687</range>
@@ -45,11 +45,11 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 * - **`Edit`**
   - Creates or changes one UTF-8 file by inserting, replacing, or deleting content.
     For an anchored change, `Edit` sends back the `line:hash` value returned by `Read`, `Search`,
-    or `InspectCode`. nanocode checks the current line immediately before writing and
+    or `InspectCode`. minacode checks the current line immediately before writing and
     <span class="marker">refuses the edit if the hash no longer matches</span>. Successful edits
     appear in [`/diff`](usage.md#reviewing-changes).
 
-    :::{figure} ../snapshots/nanocode-edit-preview.png
+    :::{figure} ../snapshots/minacode-edit-preview.png
     :alt: An Edit confirmation previewing the proposed diff
     :width: 100%
     :align: center
@@ -60,8 +60,8 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
   - Runs one shell command in the project with live output. Commands still running after
     `runtime.bash_wait_timeout` <span class="marker">become background jobs automatically</span>.
 
-    :::{figure} ../snapshots/nanocode-bash-live-preview.gif
-    :alt: A Bash tool call streaming command output in nanocode
+    :::{figure} ../snapshots/minacode-bash-live-preview.gif
+    :alt: A Bash tool call streaming command output in minacode
     :width: 100%
     :align: center
 
@@ -102,7 +102,7 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 
 ## Code symbol index
 
-nanocode includes a **code symbol index** for <span class="marker">structured navigation</span> —
+minacode includes a **code symbol index** for <span class="marker">structured navigation</span> —
 finding definitions, callers, references, and implementations without relying on an external
 language server. The index is <span class="marker">built separately for each project</span>.
 
@@ -124,7 +124,7 @@ When the index is available, the `InspectCode` tool can:
 Asking where `MCPManager` is defined returns the symbol itself, not every line that mentions
 the word:
 
-<div class="term-shot" role="img" aria-label="An InspectCode find query for MCPManager returning matching symbols with their kind, file, line range, and whether the match was exact or fuzzy."><span><span class="fs-i fs-dim">query:</span> MCPManager</span><span><span class="fs-i fs-dim">count:</span> 3</span><span> </span><span class="fs-dim">symbols:</span><span>  - <span class="fs-i fs-dim">name:</span> <span class="fs-i fs-sel">MCPManager</span></span><span>    <span class="fs-i fs-dim">kind:</span> class</span><span>    <span class="fs-i fs-dim">file:</span> nanocode.py</span><span>    <span class="fs-i fs-dim">range:</span> 4271:5374</span><span>    <span class="fs-i fs-dim">score:</span> <span class="fs-i fs-add">exact</span></span><span>  - <span class="fs-i fs-dim">name:</span> <span class="fs-i fs-sel">TestMCPManagerDiscovery</span></span><span>    <span class="fs-i fs-dim">kind:</span> class</span><span>    <span class="fs-i fs-dim">file:</span> tests/test_mcp.py</span><span>    <span class="fs-i fs-dim">range:</span> 272:573</span><span>    <span class="fs-i fs-dim">score:</span> <span class="fs-i fs-dim">fuzzy</span></span></div>
+<div class="term-shot" role="img" aria-label="An InspectCode find query for MCPManager returning matching symbols with their kind, file, line range, and whether the match was exact or fuzzy."><span><span class="fs-i fs-dim">query:</span> MCPManager</span><span><span class="fs-i fs-dim">count:</span> 3</span><span> </span><span class="fs-dim">symbols:</span><span>  - <span class="fs-i fs-dim">name:</span> <span class="fs-i fs-sel">MCPManager</span></span><span>    <span class="fs-i fs-dim">kind:</span> class</span><span>    <span class="fs-i fs-dim">file:</span> minacode.py</span><span>    <span class="fs-i fs-dim">range:</span> 4271:5374</span><span>    <span class="fs-i fs-dim">score:</span> <span class="fs-i fs-add">exact</span></span><span>  - <span class="fs-i fs-dim">name:</span> <span class="fs-i fs-sel">TestMCPManagerDiscovery</span></span><span>    <span class="fs-i fs-dim">kind:</span> class</span><span>    <span class="fs-i fs-dim">file:</span> tests/test_mcp.py</span><span>    <span class="fs-i fs-dim">range:</span> 272:573</span><span>    <span class="fs-i fs-dim">score:</span> <span class="fs-i fs-dim">fuzzy</span></span></div>
 
 Each hit carries its file and line range, so the agent can open exactly the right lines. The
 same index answers "who calls this" and "what implements this" the same way.
@@ -140,7 +140,7 @@ project to build it.
 source file; subsequent builds sync from the previous snapshot and are much faster. Add
 `force` to rebuild from scratch.
 
-When an index already exists, nanocode refreshes it in the background at startup. After an
+When an index already exists, minacode refreshes it in the background at startup. After an
 agent turn, it <span class="marker">automatically updates small batches of changed source
 files</span>; run `/index` when a large set of changes leaves it stale. `/status` shows the
 current state:

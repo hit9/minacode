@@ -1,4 +1,4 @@
-"""Sphinx configuration for the nanocode documentation."""
+"""Sphinx configuration for the minacode documentation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _meta = _pyproject["project"]
 
 # -- Project information -----------------------------------------------------
 
-project = "nanocode"
+project = "minacode"
 author = _meta["authors"][0]["name"]
 copyright = f"{author}"
 release = _meta["version"]

@@ -1,12 +1,12 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 02:56-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -164,7 +164,7 @@ msgstr ""
 
 #: ../../../CHANGELOG.md:26
 msgid ""
-"Remove startup tips and the built-in `nanocode-help` skill; `/help` and "
+"Remove startup tips and the built-in `minacode-help` skill; `/help` and "
 "project/user skills remain available."
 msgstr ""
 
@@ -241,14 +241,14 @@ msgstr ""
 #: ../../../CHANGELOG.md:41
 msgid ""
 "Show a one-line notice at startup when a newer version is available on "
-"PyPI, pointing to `uv tool upgrade nanocode-cli`. The update check stays "
+"PyPI, pointing to `uv tool upgrade minacode`. The update check stays "
 "cached and rate-limited to once per 24h, and never blocks startup."
 msgstr ""
 
 #: ../../../CHANGELOG.md:44
 msgid ""
-"README pointed at a `nanocode upgrade` command that no longer exists; the"
-" upgrade instructions now use `uv tool upgrade nanocode-cli`."
+"README pointed at a `minacode upgrade` command that no longer exists; the"
+" upgrade instructions now use `uv tool upgrade minacode`."
 msgstr ""
 
 #: ../../../CHANGELOG.md:47
@@ -406,7 +406,7 @@ msgstr ""
 
 #: ../../../CHANGELOG.md:100
 msgid ""
-"Keep nanocode's interactive theme active when the parent environment "
+"Keep minacode's interactive theme active when the parent environment "
 "exports `NO_COLOR`; redirected and headless output remains plain."
 msgstr ""
 
@@ -434,7 +434,7 @@ msgstr ""
 
 #: ../../../CHANGELOG.md:108
 msgid ""
-"Add `/diff`, a read-only viewer for edits made by nanocode. It shows the "
+"Add `/diff`, a read-only viewer for edits made by minacode. It shows the "
 "latest user round and the overall net session diff in `Latest` and "
 "`Session` tabs, supports keyboard navigation and paging, and persists "
 "edit snapshots across `--resume`."
@@ -624,7 +624,7 @@ msgstr ""
 #: ../../../CHANGELOG.md:140
 msgid ""
 "Raise `TurnDiff.SNAPSHOT_CHAR_LIMIT` from 200KB to 1MB so typical large "
-"source files (including nanocode.py itself) keep their before/after "
+"source files (including minacode.py itself) keep their before/after "
 "snapshots and render as one clean unified diff instead of the "
 "concatenated per-Edit fallback."
 msgstr ""
@@ -793,7 +793,7 @@ msgstr ""
 #: ../../../CHANGELOG.md:175
 msgid ""
 "Suppress prompt-toolkit's CPR warning in terminals that do not answer "
-"cursor position requests by disabling CPR probing for nanocode's prompt "
+"cursor position requests by disabling CPR probing for minacode's prompt "
 "applications."
 msgstr ""
 
@@ -819,7 +819,7 @@ msgstr ""
 #: ../../../CHANGELOG.md:178
 msgid ""
 "Bump `code-symbol-index` to `>=0.3.5`, fixing a tree-sitter range "
-"extraction crash that could terminate `nanocode --resume last` with "
+"extraction crash that could terminate `minacode --resume last` with "
 "SIGSEGV and leave a core dump during background index refresh, while "
 "using the package's validated tree-sitter dependency floor."
 msgstr ""
@@ -880,12 +880,12 @@ msgstr ""
 
 #: ../../../CHANGELOG.md:193
 msgid ""
-"Add a `nanocode update` (alias `upgrade`) command that upgrades nanocode "
+"Add a `minacode update` (alias `upgrade`) command that upgrades minacode "
 "to the latest PyPI release. It first checks the latest version, reports "
-"and exits when already current, then detects how nanocode was installed "
-"and runs the matching upgrade command: `uv tool upgrade nanocode-cli` for"
-" uv-tool installs, `pipx upgrade nanocode-cli` for pipx, and `python -m "
-"pip install --upgrade nanocode-cli` otherwise. Editable/dev installs are "
+"and exits when already current, then detects how minacode was installed "
+"and runs the matching upgrade command: `uv tool upgrade minacode` for"
+" uv-tool installs, `pipx upgrade minacode` for pipx, and `python -m "
+"pip install --upgrade minacode` otherwise. Editable/dev installs are "
 "detected (via the distribution's `direct_url.json`) and refused with a "
 "hint to update the source instead."
 msgstr ""
@@ -898,8 +898,8 @@ msgstr ""
 #, python-brace-format
 msgid ""
 "Add Skills: reusable instruction packs discovered from "
-"`.nanocode/skills/<name>/SKILL.md` (project) and "
-"`~/.nanocode/skills/<name>/SKILL.md` (user; project wins on name clash). "
+"`.minacode/skills/<name>/SKILL.md` (project) and "
+"`~/.minacode/skills/<name>/SKILL.md` (user; project wins on name clash). "
 "Each skill is a Markdown file with `name`/`description` frontmatter and "
 "may bundle helper scripts in its folder. A compact `SKILLS` index (name +"
 " description) rides the cache-stable request prefix so the model knows "
@@ -911,8 +911,8 @@ msgid ""
 " via `Bash` without hardcoded paths. Repeated `Skill(name)` loads "
 "collapse to a one-line pointer (like MCP `describe`), keeping the first "
 "full body cached and not re-billing the instructions. A built-in "
-"`nanocode-help` skill ships by default (out of the box, no install) that "
-"answers questions about nanocode itself — how to use it, its features, "
+"`minacode-help` skill ships by default (out of the box, no install) that "
+"answers questions about minacode itself — how to use it, its features, "
 "and common problems — from a self-contained manual, so it does not read "
 "the source per question. The body is an authored manual (concepts, "
 "workflows, troubleshooting) plus lists assembled at load time from the "
@@ -1011,7 +1011,7 @@ msgid ""
 "`strict: true` per function, and on DeepSeek it routes the client to the "
 "`/beta` endpoint where the feature lives. Because optionals become "
 "nullable, the model may send explicit `null` for an omitted argument; "
-"nanocode now strips `null` values (recursively) before dispatching to a "
+"minacode now strips `null` values (recursively) before dispatching to a "
 "tool, where `null` has always meant \"absent\"."
 msgstr ""
 
@@ -1166,7 +1166,7 @@ msgstr ""
 
 #: ../../../CHANGELOG.md:241
 msgid ""
-"Reduced `nanocode.py` by removing dead code, thin wrappers, and over-"
+"Reduced `minacode.py` by removing dead code, thin wrappers, and over-"
 "complex helper paths without changing behavior."
 msgstr ""
 
@@ -1383,18 +1383,18 @@ msgstr ""
 #: ../../../CHANGELOG.md:287
 msgid ""
 "Added JSONL session persistence with append-only deltas for the normal "
-"save path and `nanocode --resume [UID]` for restoring saved sessions."
+"save path and `minacode --resume [UID]` for restoring saved sessions."
 msgstr ""
 
 #: ../../../CHANGELOG.md:288
 msgid ""
 "Added a `latest` session pointer and a resume command hint printed when "
-"nanocode exits."
+"minacode exits."
 msgstr ""
 
 #: ../../../CHANGELOG.md:289
 msgid ""
-"Added `nanocode --resume last` as an alias for resuming the latest saved "
+"Added `minacode --resume last` as an alias for resuming the latest saved "
 "session."
 msgstr ""
 
@@ -1544,7 +1544,7 @@ msgstr ""
 msgid ""
 "Update the tracked commit-target branch (renamed `initial_git_branch` → "
 "`expected_git_branch`) after a tool-driven branch switch so commits on a "
-"branch nanocode switched to are not rejected, while still guarding "
+"branch minacode switched to are not rejected, while still guarding "
 "against unexpected external switches."
 msgstr ""
 
@@ -2057,7 +2057,7 @@ msgstr ""
 #: ../../../CHANGELOG.md:501
 msgid ""
 "Replaced the legacy implementation with the smaller v1 core in "
-"`nanocode.py`."
+"`minacode.py`."
 msgstr ""
 
 #: ../../../CHANGELOG.md:502
@@ -2419,7 +2419,7 @@ msgstr ""
 
 #: ../../../CHANGELOG.md:632
 msgid ""
-"Added a nanocode `User-Agent` header to provider requests so OpenAI-"
+"Added a minacode `User-Agent` header to provider requests so OpenAI-"
 "compatible gateways that reject Python urllib defaults can accept chat "
 "and model-list requests."
 msgstr ""
@@ -2688,16 +2688,16 @@ msgstr ""
 
 #: ../../../CHANGELOG.md:726
 msgid ""
-"Added global runtime data storage under `~/.nanocode`, with per-session "
+"Added global runtime data storage under `~/.minacode`, with per-session "
 "debug/tool-result logs and per-project user rules."
 msgstr ""
 
 #: ../../../CHANGELOG.md:729
-msgid "Replaced project-local `[paths].nanocode_dir` with `[paths].data_dir`."
+msgid "Replaced project-local `[paths].minacode_dir` with `[paths].data_dir`."
 msgstr ""
 
 #: ../../../CHANGELOG.md:730
-msgid "Moved prompt history to global `~/.nanocode/history`."
+msgid "Moved prompt history to global `~/.minacode/history`."
 msgstr ""
 
 #: ../../../CHANGELOG.md:731

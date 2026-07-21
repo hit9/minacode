@@ -1,6 +1,6 @@
 import subprocess
 
-import nanocode as n
+import minacode as n
 
 
 def session(tmp_path):

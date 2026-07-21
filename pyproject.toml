@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nanocode-cli"
+name = "minacode"
 version = "0.11.0"
 description = "A small terminal coding agent written in Python"
 readme = "README.md"
@@ -43,13 +43,13 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/hit9/nanocode"
-Repository = "https://github.com/hit9/nanocode"
-Issues = "https://github.com/hit9/nanocode/issues"
-Documentation = "https://nanocode.readthedocs.io"
+Homepage = "https://github.com/hit9/minacode"
+Repository = "https://github.com/hit9/minacode"
+Issues = "https://github.com/hit9/minacode/issues"
+Documentation = "https://minacode.readthedocs.io"
 
 [project.scripts]
-nanocode = "nanocode:main"
+minacode = "minacode:main"
 
 [project.optional-dependencies]
 dev = [
@@ -58,7 +58,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["nanocode"]
+packages = ["minacode"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -73,4 +73,4 @@ target-version = "py311"
 # re-exports it. base.py carries the whole import header, so many of its imports are
 # only used by downstream modules through the star chain; star-import warnings and
 # re-export "unused" imports are therefore expected rather than dead code.
-per-file-ignores = { "nanocode/*.py" = ["F403", "F405"], "nanocode/__init__.py" = ["F401"], "nanocode/base.py" = ["F401"] }
+per-file-ignores = { "minacode/*.py" = ["F403", "F405"], "minacode/__init__.py" = ["F401"], "minacode/base.py" = ["F401"] }

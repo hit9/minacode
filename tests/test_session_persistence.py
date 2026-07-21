@@ -4,11 +4,11 @@ import time
 
 import pytest
 
-import nanocode as n
+import minacode as n
 
 
 def session_with_data_dir(tmp_path):
-    """Session targeting tmp_path as data_dir (avoids touching ~/.nanocode)."""
+    """Session targeting tmp_path as data_dir (avoids touching ~/.minacode)."""
     return n.Session(
         cwd=str(tmp_path),
         config=n.Config(data_dir=str(tmp_path)),
@@ -382,7 +382,7 @@ def test_latest_never_crosses_into_another_project(tmp_path):
     elsewhere.messages.append({"role": "user", "content": "other"})
     elsewhere.save_snapshot()
 
-    with pytest.raises(n.NanocodeError, match="No previous session for this project"):
+    with pytest.raises(n.MinacodeError, match="No previous session for this project"):
         n.Session.load_snapshot("latest", config=config, cwd=str(project))
 
 
@@ -416,7 +416,7 @@ def test_load_rejects_an_unknown_format_version(tmp_path):
     with open(log_path(s), "w") as file:
         file.write("\n".join(json.dumps(line) for line in lines) + "\n")
 
-    with pytest.raises(n.NanocodeError, match="Unsupported session format v99"):
+    with pytest.raises(n.MinacodeError, match="Unsupported session format v99"):
         n.Session.load_snapshot(s.uid, config=s.config)
 
 
@@ -634,15 +634,15 @@ def test_multiple_deltas_with_tool_calls(tmp_path):
 
 
 def test_load_missing_snapshot_raises_error(tmp_path):
-    """Loading a non-existent session raises NanocodeError."""
-    with pytest.raises(n.NanocodeError, match="Session snapshot not found"):
+    """Loading a non-existent session raises MinacodeError."""
+    with pytest.raises(n.MinacodeError, match="Session snapshot not found"):
         n.Session.load_snapshot("nonexistent-uid", config=n.Config(data_dir=str(tmp_path)))
 
 
 @pytest.mark.parametrize("alias", ["latest", "last"])
 def test_resolve_uid_without_a_project_session(tmp_path, alias):
-    """Resolving an alias in a project with no sessions raises NanocodeError."""
-    with pytest.raises(n.NanocodeError, match="No previous session for this project"):
+    """Resolving an alias in a project with no sessions raises MinacodeError."""
+    with pytest.raises(n.MinacodeError, match="No previous session for this project"):
         n.SessionSnapshotStore.resolve_uid(alias, str(tmp_path), str(tmp_path))
 
 

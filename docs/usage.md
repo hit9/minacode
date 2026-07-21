@@ -1,16 +1,16 @@
 # Interaction
 
-nanocode runs as a conversation in your terminal. You type a request, the agent works
+minacode runs as a conversation in your terminal. You type a request, the agent works
 through it with [tools](tools.md), and you stay in the loop the whole time — steering,
 answering questions, and reviewing changes.
 
 ## Follow-ups
 
-You can keep typing while nanocode works. A submitted follow-up joins the current task if
+You can keep typing while minacode works. A submitted follow-up joins the current task if
 another model step begins; otherwise it becomes the next task. A draft still in the editor is
 never submitted by interrupting — the first `Ctrl-C` discards it instead.
 
-<div class="term-shot" role="img" aria-label="Terminal view: nanocode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read nanocode.py</span><span class="fs-tool">  Edit nanocode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C interrupts</span></div>
+<div class="term-shot" role="img" aria-label="Terminal view: minacode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read minacode.py</span><span class="fs-tool">  Edit minacode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C interrupts</span></div>
 
 Everything below the divider is waiting. The agent picks those messages up at its next step,
 and they move up into the log above the divider once they are in.
@@ -36,7 +36,7 @@ session id, active provider and model, calculated compaction-budget fill percent
 conversation history, prompt-cache hit ratio, code index state, background jobs,
 and whether an update is available.
 
-```{figure} ../snapshots/nanocode-status-command.png
+```{figure} ../snapshots/minacode-status-command.png
 :alt: The /status command showing workspace, session, provider, context, and code index state
 :width: 600px
 :align: center
@@ -47,7 +47,7 @@ The /status output at a glance.
 **`/diff`** — Review changes from the latest turn or the whole session. See
 [Reviewing changes](#reviewing-changes) below.
 
-<div class="term-shot" role="img" aria-label="The diff viewer: a Latest and Session tab above a list of changed files, each with added and removed line counts, and a key hint along the bottom."><span><span class="fs-i fs-tab-on"> Latest </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-off"> Session </span></span><span> </span><span class="fs-sel">&gt; <span class="fs-i fs-add">+45</span> <span class="fs-i fs-del">-12</span> docs/usage.md</span><span class="fs-dim">  <span class="fs-i fs-add">+12</span> <span class="fs-i fs-del">- 3</span> nanocode.py</span><span class="fs-dim">  <span class="fs-i fs-add">+ 4</span> <span class="fs-i fs-del">- 0</span> tests/test_mcp.py</span><span> </span><span class="fs-dim">  [list] ↑/↓ or j/k move · ←/→ or h/l tab · Enter open · r refresh · Esc/q close [1/3]</span></div>
+<div class="term-shot" role="img" aria-label="The diff viewer: a Latest and Session tab above a list of changed files, each with added and removed line counts, and a key hint along the bottom."><span><span class="fs-i fs-tab-on"> Latest </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-off"> Session </span></span><span> </span><span class="fs-sel">&gt; <span class="fs-i fs-add">+45</span> <span class="fs-i fs-del">-12</span> docs/usage.md</span><span class="fs-dim">  <span class="fs-i fs-add">+12</span> <span class="fs-i fs-del">- 3</span> minacode.py</span><span class="fs-dim">  <span class="fs-i fs-add">+ 4</span> <span class="fs-i fs-del">- 0</span> tests/test_mcp.py</span><span> </span><span class="fs-dim">  [list] ↑/↓ or j/k move · ←/→ or h/l tab · Enter open · r refresh · Esc/q close [1/3]</span></div>
 
 The two tabs pick the range; each row is one changed file with its added and removed line
 counts. `Enter` opens the selected file's diff.
@@ -82,7 +82,7 @@ Changing the model also prompts you to pick a reasoning effort.
 R1). Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Without an
 argument it opens a picker.
 
-```{figure} ../snapshots/nanocode-demo-switching-providers-models.gif
+```{figure} ../snapshots/minacode-demo-switching-providers-models.gif
 :alt: Switching providers and models interactively during a session
 :width: 600px
 :align: center
@@ -92,7 +92,7 @@ Switching providers and models mid-session.
 
 ### Managing the session
 
-**`/compact`** — Summarize and shrink the conversation immediately. nanocode keeps
+**`/compact`** — Summarize and shrink the conversation immediately. minacode keeps
 long sessions within budget on its own, but `/compact` trims on demand.
 
 **`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before turning
@@ -121,7 +121,7 @@ working.
 
 **`/help`** — Show the built-in command and tool reference.
 
-**`/exit`, `/quit`** — Leave nanocode. Your session is saved automatically and can
+**`/exit`, `/quit`** — Leave minacode. Your session is saved automatically and can
 be resumed with `-c` or `--resume`.
 
 ## Mentions
@@ -150,7 +150,7 @@ Two inline references, both Tab-completed as you type:
 - `Ctrl-R` — reverse-search your history
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)
 
-```{figure} ../snapshots/nanocode-working-input-editor.png
+```{figure} ../snapshots/minacode-working-input-editor.png
 :alt: Editing a follow-up message in an external editor
 :width: 600px
 :align: center
@@ -168,9 +168,9 @@ stopped. Inactive sessions older than seven days are removed at startup by defau
 Resume from the command line:
 
 ```sh
-nanocode -c            # resume the latest session in this project
-nanocode --resume      # same, explicit
-nanocode --resume UID  # resume a specific session by id, from any directory
+minacode -c            # resume the latest session in this project
+minacode --resume      # same, explicit
+minacode --resume UID  # resume a specific session by id, from any directory
 ```
 
 Sessions are stored per project, so `-c` and a bare `--resume` never reach into another project's
@@ -189,7 +189,7 @@ diffs are trimmed there; `/diff` always has the full text.
 
 Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close.
 
-```{figure} ../snapshots/nanocode-diff-list.png
+```{figure} ../snapshots/minacode-diff-list.png
 :alt: Interactive diff list showing changed files from the latest turn
 :width: 600px
 :align: center
@@ -197,7 +197,7 @@ Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close.
 Choosing a file to diff.
 ```
 
-```{figure} ../snapshots/nanocode-diff-file-detail.png
+```{figure} ../snapshots/minacode-diff-file-detail.png
 :alt: Side-by-side file diff with syntax highlighting
 :width: 600px
 :align: center
@@ -207,6 +207,6 @@ Side-by-side detail view of a changed file.
 
 ### Long sessions
 
-nanocode keeps long conversations within a working budget on its own, summarizing older
+minacode keeps long conversations within a working budget on its own, summarizing older
 context as needed so a session can run indefinitely. Run `/compact` to trim it now, or
 `/status` to see current context and token usage.

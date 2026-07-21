@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 02:56-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -19,8 +19,8 @@ msgstr ""
 "Generated-By: Babel 2.18.0\n"
 
 #: ../../index.md:1
-msgid "nanocode"
-msgstr "nanocode"
+msgid "minacode"
+msgstr "minacode"
 
 #: ../../index.md:3
 msgid "A small terminal coding agent"
@@ -28,17 +28,17 @@ msgstr "一个小巧的终端 coding agent"
 
 #: ../../index.md:5
 msgid ""
-"nanocode works in your terminal: you describe a task, and it reads code, edits files, runs "
+"minacode works in your terminal: you describe a task, and it reads code, edits files, runs "
 "commands, and reports back. It keeps <span class=\"marker\">stable prompt prefixes</span> so "
 "supported providers can reuse work, maintains a searchable code index, runs background jobs, "
 "tracks its own working notes, and <span class=\"marker\">resumes where you left off</span>."
 msgstr ""
-"nanocode 在终端中工作：你描述任务，它读取代码、编辑文件、运行命令并汇报结果。它维护<span class=\"marker\">稳定的 prompt 前缀</span>，让支持缓存的 "
+"minacode 在终端中工作：你描述任务，它读取代码、编辑文件、运行命令并汇报结果。它维护<span class=\"marker\">稳定的 prompt 前缀</span>，让支持缓存的 "
 "provider 复用计算；同时维护可搜索的代码索引、运行后台任务、记录工作笔记，并能<span class=\"marker\">从上次中断处继续</span>。"
 
 #: ../../index.md:10
-msgid "nanocode editing code and running tools in one interactive session"
-msgstr "nanocode 在一个交互式 session 中编辑代码并运行工具"
+msgid "minacode editing code and running tools in one interactive session"
+msgstr "minacode 在一个交互式 session 中编辑代码并运行工具"
 
 #: ../../index.md:15
 msgid "Editing code and running tools in one interactive session."
@@ -50,10 +50,10 @@ msgstr "使用风险自负"
 
 #: ../../index.md:20
 msgid ""
-"nanocode edits files and runs shell commands in the directory where you start it. It has **no "
+"minacode edits files and runs shell commands in the directory where you start it. It has **no "
 "sandbox of its own**. Run it inside a container, VM, or another isolated environment when you "
 "need isolation. See [Safety](safety.md)."
-msgstr "nanocode 会在启动目录中编辑文件并执行 shell 命令，**自身不提供 sandbox**。需要隔离时，请在容器、虚拟机或其他隔离环境中运行。参见[安全](safety.md)。"
+msgstr "minacode 会在启动目录中编辑文件并执行 shell 命令，**自身不提供 sandbox**。需要隔离时，请在容器、虚拟机或其他隔离环境中运行。参见[安全](safety.md)。"
 
 #: ../../index.md:25
 msgid "Install and run"
@@ -68,8 +68,8 @@ msgid "What it does"
 msgstr "能做什么"
 
 #: ../../index.md:38
-msgid "nanocode working through a repository task"
-msgstr "nanocode 在代码仓库中完成任务"
+msgid "minacode working through a repository task"
+msgstr "minacode 在代码仓库中完成任务"
 
 #: ../../index.md:43
 msgid "Working through a repository task in an interactive session."

@@ -1,4 +1,4 @@
-"""nanocode base: errors, text helpers, configuration, and shared data types."""
+"""minacode base: errors, text helpers, configuration, and shared data types."""
 
 from __future__ import annotations
 
@@ -84,11 +84,11 @@ __version__ = "0.11.0"
 Json = dict[str, Any]
 
 
-HTTP_USER_AGENT = "nanocode/" + __version__
+HTTP_USER_AGENT = "minacode/" + __version__
 logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
-# Refresh failures / re-auth fall back to nanocode's own handling, which surfaces an
+# Refresh failures / re-auth fall back to minacode's own handling, which surfaces an
 # actionable "authentication required" message; suppress this logger's ERROR-level
-# traceback spam (incl. the RuntimeError nanocode raises as control flow).
+# traceback spam (incl. the RuntimeError minacode raises as control flow).
 logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 240 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
@@ -110,19 +110,19 @@ SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"
 
 
-class NanocodeError(Exception): ...
+class MinacodeError(Exception): ...
 
 
-class ConfigError(NanocodeError): ...
+class ConfigError(MinacodeError): ...
 
 
-class ModelError(NanocodeError): ...
+class ModelError(MinacodeError): ...
 
 
-class ModelRequestRetry(NanocodeError): ...
+class ModelRequestRetry(MinacodeError): ...
 
 
-class ToolError(NanocodeError): ...
+class ToolError(MinacodeError): ...
 
 
 class Text:
@@ -380,8 +380,22 @@ class RuntimeSettings:
 class Config:
     active_provider: str = "default"
     providers: dict[str, ProviderConfig] = field(default_factory=lambda: {"default": ProviderConfig()})
-    data_dir: str = "~/.nanocode"
+    data_dir: str = "~/.minacode"
     mcp: Json = field(default_factory=dict)
+
+    # Backward compatibility: the data dir moved from ~/.nanocode to ~/.minacode.
+    LEGACY_DATA_DIR: ClassVar[str] = "~/.nanocode"
+
+    def __post_init__(self) -> None:
+        # When the data dir is still the new default but does not exist yet and the legacy
+        # ~/.nanocode dir does, keep using the legacy dir so existing sessions, skills, and
+        # cache are found without a migration step.
+        if (
+            self.data_dir == "~/.minacode"
+            and not os.path.exists(os.path.expanduser(self.data_dir))
+            and os.path.exists(os.path.expanduser(self.LEGACY_DATA_DIR))
+        ):
+            self.data_dir = self.LEGACY_DATA_DIR
 
     @property
     def provider(self) -> ProviderConfig:
@@ -397,7 +411,7 @@ class Config:
         if active not in providers:
             raise ConfigError(f"provider.active `{active}` does not exist")
         paths = cls.table(data, "paths")
-        return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.nanocode"), mcp=cls.table(data, "mcp"))
+        return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.minacode"), mcp=cls.table(data, "mcp"))
 
     @staticmethod
     def table(data: Json, key: str) -> Json:
@@ -452,10 +466,11 @@ class Config:
 
 
 class ConfigFile:
-    DEFAULT_PATH: ClassVar[str] = os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
+    DEFAULT_PATH: ClassVar[str] = os.path.join(os.path.expanduser("~"), ".minacode", "config.toml")
+    LEGACY_PATH: ClassVar[str] = os.path.join(os.path.expanduser("~"), ".nanocode", "config.toml")
     # Only the provider block is required; every other key falls back to its built-in default, so the
     # commented lines below just document the common knobs and their defaults.
-    DEFAULT_TEXT: ClassVar[str] = """# nanocode configuration — unset keys use built-in defaults.
+    DEFAULT_TEXT: ClassVar[str] = """# minacode configuration — unset keys use built-in defaults.
 
 [provider]
 active = "default"
@@ -482,7 +497,13 @@ model = ""
 
     @classmethod
     def resolve_path(cls, path: str | None) -> str:
-        return os.path.expanduser(path or cls.DEFAULT_PATH)
+        if path:
+            return os.path.expanduser(path)
+        # Backward compatibility: read the legacy ~/.nanocode/config.toml when the new
+        # ~/.minacode/config.toml does not exist yet.
+        if not os.path.exists(cls.DEFAULT_PATH) and os.path.exists(cls.LEGACY_PATH):
+            return cls.LEGACY_PATH
+        return cls.DEFAULT_PATH
 
     @classmethod
     def init(cls, path: str | None = None) -> tuple[str, bool]:

@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 02:56-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -24,10 +24,10 @@ msgstr "交互"
 
 #: ../../usage.md:3
 msgid ""
-"nanocode runs as a conversation in your terminal. You type a request, the agent works through it "
+"minacode runs as a conversation in your terminal. You type a request, the agent works through it "
 "with [tools](tools.md), and you stay in the loop the whole time — steering, answering questions, "
 "and reviewing changes."
-msgstr "nanocode 以终端对话的形式运行。你输入任务，agent 使用[工具](tools.md)完成工作；整个过程中你都可以继续引导、回答问题并审查修改。"
+msgstr "minacode 以终端对话的形式运行。你输入任务，agent 使用[工具](tools.md)完成工作；整个过程中你都可以继续引导、回答问题并审查修改。"
 
 #: ../../usage.md:7
 msgid "Follow-ups"
@@ -35,10 +35,10 @@ msgstr "追加指令"
 
 #: ../../usage.md:9
 msgid ""
-"You can keep typing while nanocode works. A submitted follow-up joins the current task if another"
+"You can keep typing while minacode works. A submitted follow-up joins the current task if another"
 " model step begins; otherwise it becomes the next task. Interrupting does not submit a draft that"
 " is still in the editor."
-msgstr "nanocode 工作时仍可继续输入。如果下一次模型 step 尚未开始，提交的追加指令会加入当前任务；否则会成为下一个任务。中断任务不会提交编辑器中尚未发送的草稿。"
+msgstr "minacode 工作时仍可继续输入。如果下一次模型 step 尚未开始，提交的追加指令会加入当前任务；否则会成为下一个任务。中断任务不会提交编辑器中尚未发送的草稿。"
 
 #: ../../usage.md:15
 msgid ""
@@ -221,9 +221,9 @@ msgstr "管理 session"
 
 #: ../../usage.md:94
 msgid ""
-"**`/compact`** — Summarize and shrink the conversation immediately. nanocode keeps long sessions "
+"**`/compact`** — Summarize and shrink the conversation immediately. minacode keeps long sessions "
 "within budget on its own, but `/compact` trims on demand."
-msgstr "**`/compact`** — 立即总结并缩短对话。nanocode 会自动控制长 session 的预算；`/compact` 用于按需压缩。"
+msgstr "**`/compact`** — 立即总结并缩短对话。minacode 会自动控制长 session 的预算；`/compact` 用于按需压缩。"
 
 #: ../../usage.md:97
 msgid ""
@@ -301,9 +301,9 @@ msgstr "**`/help`** — 显示内置命令和工具参考。"
 
 #: ../../usage.md:123
 msgid ""
-"**`/exit`, `/quit`** — Leave nanocode. Your session is saved automatically and can be resumed "
+"**`/exit`, `/quit`** — Leave minacode. Your session is saved automatically and can be resumed "
 "with `-c` or `--resume`."
-msgstr "**`/exit`, `/quit`** — 退出 nanocode。Session 会自动保存，可使用 `-c` 或 `--resume` 恢复。"
+msgstr "**`/exit`, `/quit`** — 退出 minacode。Session 会自动保存，可使用 `-c` 或 `--resume` 恢复。"
 
 #: ../../usage.md:126
 msgid "Mentions"
@@ -463,10 +463,10 @@ msgstr "长 session"
 
 #: ../../usage.md:201
 msgid ""
-"nanocode keeps long conversations within a working budget on its own, summarizing older context "
+"minacode keeps long conversations within a working budget on its own, summarizing older context "
 "as needed so a session can run indefinitely. Run `/compact` to trim it now, or `/status` to see "
 "current context and token usage."
 msgstr ""
-"nanocode 会按需总结较早的 context，自动将长对话控制在可工作预算内，因此 session 可以持续运行。使用 `/compact` 立即压缩，或使用 `/status` 查看当前"
+"minacode 会按需总结较早的 context，自动将长对话控制在可工作预算内，因此 session 可以持续运行。使用 `/compact` 立即压缩，或使用 `/status` 查看当前"
 " context 和 token 使用情况。"
 

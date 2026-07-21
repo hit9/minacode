@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-20 08:00-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -24,13 +24,13 @@ msgstr "Context 与缓存"
 
 #: ../../context.md:3
 msgid ""
-"Each request contains more than the latest message. nanocode arranges the"
+"Each request contains more than the latest message. minacode arranges the"
 " model's context so the stable parts come first, the active conversation "
 "follows, and frequently changing task state comes last. This keeps the "
 "agent informed while giving supported providers a long, reusable prompt "
 "prefix."
 msgstr ""
-"每次请求包含的不只是最新消息。nanocode 将较稳定的内容放在前面，接着是当前对话，频繁变化的任务状态放在最后。这样既能让 agent "
+"每次请求包含的不只是最新消息。minacode 将较稳定的内容放在前面，接着是当前对话，频繁变化的任务状态放在最后。这样既能让 agent "
 "掌握完整信息，也能为支持缓存的 provider 保留一段较长、可复用的 prompt 前缀。"
 
 #: ../../context.md:8
@@ -68,12 +68,12 @@ msgstr "Compaction"
 
 #: ../../context.md:24
 msgid ""
-"When the estimated context reaches `runtime.max_context_tokens`, nanocode"
+"When the estimated context reaches `runtime.max_context_tokens`, minacode"
 " **compacts**: the older part of the conversation is replaced by a short "
 "summary, and the most recent messages are kept as they are. The session "
 "continues in the same turn, so a long task does not have to stop."
 msgstr ""
-"当估算的 context 达到 `runtime.max_context_tokens` 时，nanocode 会执行 "
+"当估算的 context 达到 `runtime.max_context_tokens` 时，minacode 会执行 "
 "**compact**：较早的对话被替换为简短摘要，最近的消息保持原样。Session 会在同一轮中继续，因此长任务无需停止。"
 
 #: ../../context.md:28
@@ -139,12 +139,12 @@ msgstr ""
 #: ../../context.md:57
 msgid ""
 "OpenAI-compatible providers may reuse matching prefixes automatically; "
-"nanocode supplies a stable cache key where the provider supports one. For"
-" Anthropic, nanocode explicitly marks the tools and system instructions "
+"minacode supplies a stable cache key where the provider supports one. For"
+" Anthropic, minacode explicitly marks the tools and system instructions "
 "as an ephemeral cacheable prefix. Provider support and accounting differ."
 msgstr ""
-"OpenAI-compatible provider 可以自动复用匹配的前缀；provider 支持时，nanocode 会提供稳定的 cache"
-" key。对于 Anthropic，nanocode 会显式将工具和 system 指令标记为临时可缓存前缀。不同 provider "
+"OpenAI-compatible provider 可以自动复用匹配的前缀；provider 支持时，minacode 会提供稳定的 cache"
+" key。对于 Anthropic，minacode 会显式将工具和 system 指令标记为临时可缓存前缀。不同 provider "
 "的支持方式和统计口径可能不同。"
 
 #: ../../context.md:61

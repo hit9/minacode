@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-20 07:17-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -24,14 +24,14 @@ msgstr "工具"
 
 #: ../../tools.md:3
 msgid ""
-"nanocode uses tools to inspect your project and act on it. You describe "
+"minacode uses tools to inspect your project and act on it. You describe "
 "the outcome you want; the agent chooses the tools. Tool calls are shown "
 "in the terminal as they run. They are separate from the `/` commands you "
 "type yourself. Read-only tools may run concurrently; actions that can "
 "change your system ask for confirmation unless `--yolo` or `/yolo` is "
 "active."
 msgstr ""
-"nanocode 使用工具检查项目并执行操作。你描述目标，由 agent 选择工具。工具调用会在运行时显示在终端中，它们与你输入的 `/` "
+"minacode 使用工具检查项目并执行操作。你描述目标，由 agent 选择工具。工具调用会在运行时显示在终端中，它们与你输入的 `/` "
 "命令不同。只读工具可以并发运行；可能改变系统的操作会请求确认，除非已启用 `--yolo` 或 `/yolo`。"
 
 #: ../../tools.md:8
@@ -101,13 +101,13 @@ msgstr "**`Edit`**"
 msgid ""
 "Creates or changes one UTF-8 file by inserting, replacing, or deleting "
 "content. For an anchored change, `Edit` sends back the `line:hash` value "
-"returned by `Read`, `Search`, or `InspectCode`. nanocode checks the "
+"returned by `Read`, `Search`, or `InspectCode`. minacode checks the "
 "current line immediately before writing and <span "
 "class=\"marker\">refuses the edit if the hash no longer matches</span>. "
 "Successful edits appear in [`/diff`](usage.md#reviewing-changes)."
 msgstr ""
 "通过插入、替换或删除内容来创建或修改一个 UTF-8 文件。执行锚点编辑时，`Edit` 会回传 `Read`、`Search` 或 "
-"`InspectCode` 返回的 `line:hash`。nanocode 会在写入前立即检查当前行；如果 hash 不再匹配，<span "
+"`InspectCode` 返回的 `line:hash`。minacode 会在写入前立即检查当前行；如果 hash 不再匹配，<span "
 "class=\"marker\">编辑会被拒绝</span>。成功的编辑会出现在 [`/diff`](usage.md#reviewing-"
 "changes) 中。"
 
@@ -133,8 +133,8 @@ msgstr ""
 "class=\"marker\">自动转为后台任务</span>。"
 
 #: ../../tools.md:63
-msgid "A Bash tool call streaming command output in nanocode"
-msgstr "Bash 工具调用在 nanocode 中流式显示命令输出"
+msgid "A Bash tool call streaming command output in minacode"
+msgstr "Bash 工具调用在 minacode 中流式显示命令输出"
 
 #: ../../tools.md:68
 msgid "Bash output appears as the command runs."
@@ -230,13 +230,13 @@ msgstr "代码符号索引"
 
 #: ../../tools.md:103
 msgid ""
-"nanocode includes a **code symbol index** for <span "
+"minacode includes a **code symbol index** for <span "
 "class=\"marker\">structured navigation</span> — finding definitions, "
 "callers, references, and implementations without relying on an external "
 "language server. The index is <span class=\"marker\">built separately for"
 " each project</span>."
 msgstr ""
-"nanocode 内置**代码符号索引**，用于<span class=\"marker\">结构化导航</span>：无需外部 language"
+"minacode 内置**代码符号索引**，用于<span class=\"marker\">结构化导航</span>：无需外部 language"
 " server 即可查找定义、调用者、引用和实现。索引会<span class=\"marker\">按项目分别构建</span>。"
 
 #: ../../tools.md:107
@@ -314,12 +314,12 @@ msgstr ""
 
 #: ../../tools.md:141
 msgid ""
-"When an index already exists, nanocode refreshes it in the background at "
+"When an index already exists, minacode refreshes it in the background at "
 "startup. After an agent turn, it <span class=\"marker\">automatically "
 "updates small batches of changed source files</span>; run `/index` when a"
 " large set of changes leaves it stale. `/status` shows the current state:"
 msgstr ""
-"索引已存在时，nanocode 会在启动时后台刷新。Agent 完成一轮后，会<span "
+"索引已存在时，minacode 会在启动时后台刷新。Agent 完成一轮后，会<span "
 "class=\"marker\">自动更新少量已修改的源文件</span>；如果大量改动导致索引过期，请运行 `/index`。`/status`"
 " 会显示当前状态："
 

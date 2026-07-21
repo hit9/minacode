@@ -1,14 +1,14 @@
-# nanocode
+# minacode
 
 A small terminal coding agent
 
-nanocode works in your terminal: you describe a task, and it reads code, edits files, runs
+minacode works in your terminal: you describe a task, and it reads code, edits files, runs
 commands, and reports back. It keeps <span class="marker">stable prompt prefixes</span> so
 supported providers can reuse work, maintains a searchable code index, runs background jobs,
 tracks its own working notes, and <span class="marker">resumes where you left off</span>.
 
-```{figure} ../snapshots/nanocode1.gif
-:alt: nanocode editing code and running tools in one interactive session
+```{figure} ../snapshots/minacode1.gif
+:alt: minacode editing code and running tools in one interactive session
 :width: 600px
 :align: center
 
@@ -17,7 +17,7 @@ Editing code and running tools in one interactive session.
 
 ```{admonition} Use at your own risk
 :class: warning
-nanocode edits files and runs shell commands in the directory where you start it. It has
+minacode edits files and runs shell commands in the directory where you start it. It has
 **no sandbox of its own**. Run it inside a container, VM, or another isolated environment
 when you need isolation. See [Safety](safety.md).
 ```
@@ -25,18 +25,18 @@ when you need isolation. See [Safety](safety.md).
 ## Install and run
 
 ```sh
-uv tool install nanocode-cli
-nanocode --init-config          # write ~/.nanocode/config.toml
+uv tool install minacode
+minacode --init-config          # write ~/.minacode/config.toml
 # add your provider's url, key, and model to that file
-nanocode
+minacode
 ```
 
 Full walkthrough: [Getting started](getting-started.md).
 
 ## What it does
 
-```{figure} ../snapshots/nanocode2.gif
-:alt: nanocode working through a repository task
+```{figure} ../snapshots/minacode2.gif
+:alt: minacode working through a repository task
 :width: 600px
 :align: center
 

@@ -1,8 +1,8 @@
-"""nanocode tools: the built-in tool set exposed to the model."""
+"""minacode tools: the built-in tool set exposed to the model."""
 
 from __future__ import annotations
 
-from nanocode.mcp import *
+from minacode.mcp import *
 
 
 class Tool:
@@ -1110,7 +1110,7 @@ class BashTool(Tool):
     # fmt: off
     EXAMPLE = (
         'Check environment. Example: {"command":"python3 --version"}',
-        'Run a project command. Example: {"command":"python3 -m py_compile nanocode.py"}',
+        'Run a project command. Example: {"command":"python3 -m py_compile minacode.py"}',
     )
     # fmt: on
     MUTATES = True

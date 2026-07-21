@@ -1,8 +1,8 @@
-"""nanocode skills: Markdown instruction packs loaded on demand."""
+"""minacode skills: Markdown instruction packs loaded on demand."""
 
 from __future__ import annotations
 
-from nanocode.session import *
+from minacode.session import *
 
 
 @dataclass
@@ -15,7 +15,7 @@ class Skill:
 
 
 class SkillLibrary:
-    """Skills discovered from `.nanocode/skills/<name>/SKILL.md` (project) and the user data dir.
+    """Skills discovered from `.minacode/skills/<name>/SKILL.md` (project) and the user data dir.
 
     Each skill is a Markdown file with `name`/`description` frontmatter; the index (name + description)
     rides the cache-stable prefix so the model knows what exists, and the full body is pulled into the
@@ -32,7 +32,12 @@ class SkillLibrary:
     def load(cls, session: "Session") -> "SkillLibrary":
         skills: dict[str, Skill] = {}
         # User skills load before project skills so a project skill of the same name overrides them.
-        for root, source in ((session.data_path("skills"), "user"), (os.path.join(session.cwd, ".nanocode", "skills"), "project")):
+        project_skills = os.path.join(session.cwd, ".minacode", "skills")
+        if not os.path.isdir(project_skills):
+            legacy_skills = os.path.join(session.cwd, ".nanocode", "skills")
+            if os.path.isdir(legacy_skills):
+                project_skills = legacy_skills
+        for root, source in ((session.data_path("skills"), "user"), (project_skills, "project")):
             if not os.path.isdir(root):
                 continue
             for entry in sorted(os.listdir(root)):

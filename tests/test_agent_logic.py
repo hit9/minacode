@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import nanocode as n
+import minacode as n
 
 
 def session(tmp_path):
-    # Isolate the data dir so tests never read the developer's real ~/.nanocode (sessions, skills).
+    # Isolate the data dir so tests never read the developer's real ~/.minacode (sessions, skills).
     config = n.Config()
     config.data_dir = str(tmp_path / "data")
     return n.Session(cwd=str(tmp_path), config=config)
@@ -1153,7 +1153,7 @@ def test_exit_command_prints_resume_command(tmp_path):
     handled, exit_now = loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
-    assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
+    assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
     assert os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
@@ -1211,7 +1211,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
             {"role": "assistant", "content": "compacted answer\nfinal detail"},
         ]
     )
-    s.tool_records.append(n.ToolResultRecord("tr.1", "Bash", ["wc -l nanocode.py"], "999 nanocode.py", "wc -l nanocode.py"))
+    s.tool_records.append(n.ToolResultRecord("tr.1", "Bash", ["wc -l minacode.py"], "999 minacode.py", "wc -l minacode.py"))
     output = []
     loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
 
@@ -1221,8 +1221,8 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
     assert f"Restored session: {s.uid}" in text
     assert "compacted answer\nfinal detail" in text
     assert "user:" not in text and "assistant:" not in text
-    assert "  Bash  wc -l nanocode.py\n    └ stored tr.1" in text
-    assert "999 nanocode.py" not in text
+    assert "  Bash  wc -l minacode.py\n    └ stored tr.1" in text
+    assert "999 minacode.py" not in text
 
 
 def test_resumed_session_separates_turn_boxes(tmp_path):
@@ -1282,7 +1282,7 @@ def test_eof_exit_prints_resume_command(tmp_path):
 
     assert loop.run() == 0
 
-    assert output[-1] == f"Resume with:\nnanocode --resume {s.uid}"
+    assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
     assert os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
@@ -1514,7 +1514,7 @@ def test_provider_profiles_and_prompt_cache_key(tmp_path):
     first = client.prompt_cache_key(provider, [n.BashTool.schema(), n.ReadTool.schema()])
     second = client.prompt_cache_key(provider, [n.ReadTool.schema(), n.BashTool.schema()])
     assert first == second
-    assert first.startswith("nanocode-")
+    assert first.startswith("minacode-")
 
     provider.prompt_cache_key = "fixed-key"
     assert client.prompt_cache_key(provider, None) == "fixed-key"
@@ -1707,7 +1707,7 @@ def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
 
 
 def _write_skill(root, name, description, body, *, scripts=None):
-    folder = os.path.join(root, ".nanocode", "skills", name)
+    folder = os.path.join(root, ".minacode", "skills", name)
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
         handle.write(f"---\nname: {name}\ndescription: {description}\n---\n{body}\n")
@@ -1732,7 +1732,7 @@ def test_skill_library_index_and_lookup(tmp_path):
 
 def test_skill_project_overrides_user(tmp_path, monkeypatch):
     user_home = tmp_path / "home"
-    user_skill = user_home / ".nanocode" / "skills" / "shared"
+    user_skill = user_home / ".minacode" / "skills" / "shared"
     user_skill.mkdir(parents=True)
     (user_skill / "SKILL.md").write_text("---\nname: shared\ndescription: user version\n---\nuser body\n", encoding="utf-8")
     _write_skill(tmp_path, "shared", "project version", "project body")
@@ -1859,7 +1859,7 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
 
 
 def test_session_from_config_file_theme_param(tmp_path):
-    cfg = tmp_path / "nanocode.toml"
+    cfg = tmp_path / "minacode.toml"
     cfg.write_text('[runtime]\ntheme = "light"\n')
     s = n.Session.from_config_file(path=str(cfg), theme="dark")
     assert s.settings.theme == "dark"

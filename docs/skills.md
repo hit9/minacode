@@ -12,7 +12,7 @@ skills without bloating every request.
 A skill is a folder containing a `SKILL.md` file with `name` and `description` frontmatter:
 
 ```
-~/.nanocode/skills/
+~/.minacode/skills/
   release-notes/
     SKILL.md
     generate.py        # optional bundled script
@@ -29,15 +29,15 @@ description: Draft release notes from the git log since the last tag.
 3. If a bundled script is needed, run it with Bash — see paths below.
 ```
 
-nanocode only sees the `name` and `description` until the skill is used — the full body loads
+minacode only sees the `name` and `description` until the skill is used — the full body loads
 on demand.
 
 ### Where skills come from
 
-nanocode discovers skills from two places:
+minacode discovers skills from two places:
 
-- `.nanocode/skills/` — project-local, checked in with the repo
-- `~/.nanocode/skills/` — your personal skills, available everywhere (under
+- `.minacode/skills/` — project-local, checked in with the repo
+- `~/.minacode/skills/` — your personal skills, available everywhere (under
   `<data_dir>/skills/` when `paths.data_dir` is customized)
 
 If both define the same name, the **project** skill wins. List what's installed with
@@ -45,11 +45,11 @@ If both define the same name, the **project** skill wins. List what's installed 
 
 ## Using skills
 
-- **On demand** — nanocode loads a skill itself when it's relevant to your request.
+- **On demand** — minacode loads a skill itself when it's relevant to your request.
 - **Inline** — type `$name` in a message (Tab-completes) to load a skill yourself
   <span class="marker">for that turn</span>.
 
-```{figure} ../snapshots/nanocode-skill-mention.png
+```{figure} ../snapshots/minacode-skill-mention.png
 :alt: Using $skill mention to load a skill's instructions inline
 :width: 600px
 :align: center

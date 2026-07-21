@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 02:56-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -46,27 +46,27 @@ msgstr "每个 skill 是一个包含 `SKILL.md` 的目录。文件 frontmatter �
 
 #: ../../skills.md:32
 msgid ""
-"nanocode only sees the `name` and `description` until the skill is used — the full body loads on "
+"minacode only sees the `name` and `description` until the skill is used — the full body loads on "
 "demand."
-msgstr "使用 skill 前，nanocode 只会看到它的 `name` 和 `description`；正文会按需加载。"
+msgstr "使用 skill 前，minacode 只会看到它的 `name` 和 `description`；正文会按需加载。"
 
 #: ../../skills.md:35
 msgid "Where skills come from"
 msgstr "Skill 的来源"
 
 #: ../../skills.md:37
-msgid "nanocode discovers skills from two places:"
-msgstr "nanocode 从两个位置发现 skill："
+msgid "minacode discovers skills from two places:"
+msgstr "minacode 从两个位置发现 skill："
 
 #: ../../skills.md:39
-msgid "`.nanocode/skills/` — project-local, checked in with the repo"
-msgstr "`.nanocode/skills/` — 项目级 skill，可随仓库提交"
+msgid "`.minacode/skills/` — project-local, checked in with the repo"
+msgstr "`.minacode/skills/` — 项目级 skill，可随仓库提交"
 
 #: ../../skills.md:40
 msgid ""
-"`~/.nanocode/skills/` — your personal skills, available everywhere (under `<data_dir>/skills/` "
+"`~/.minacode/skills/` — your personal skills, available everywhere (under `<data_dir>/skills/` "
 "when `paths.data_dir` is customized)"
-msgstr "`~/.nanocode/skills/` — 个人 skill，在所有项目中可用；自定义 `paths.data_dir` 后位于 `<data_dir>/skills/`"
+msgstr "`~/.minacode/skills/` — 个人 skill，在所有项目中可用；自定义 `paths.data_dir` 后位于 `<data_dir>/skills/`"
 
 #: ../../skills.md:43
 msgid "If both define the same name, the **project** skill wins. List what's installed with `/skills`."
@@ -77,8 +77,8 @@ msgid "Using skills"
 msgstr "使用 skill"
 
 #: ../../skills.md:48
-msgid "**On demand** — nanocode loads a skill itself when it's relevant to your request."
-msgstr "**按需加载** — 当请求与某个 skill 相关时，nanocode 会自行加载。"
+msgid "**On demand** — minacode loads a skill itself when it's relevant to your request."
+msgstr "**按需加载** — 当请求与某个 skill 相关时，minacode 会自行加载。"
 
 #: ../../skills.md:49
 msgid ""

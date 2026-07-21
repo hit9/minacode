@@ -1,8 +1,8 @@
-"""nanocode session: agent state, records, and session persistence."""
+"""minacode session: agent state, records, and session persistence."""
 
 from __future__ import annotations
 
-from nanocode.base import *
+from minacode.base import *
 
 
 @dataclass
@@ -502,7 +502,7 @@ class SessionSnapshotStore:
     @classmethod
     def prune_empty(cls, directory: str) -> None:
         """Drop a project directory once its last session expires, so the store does not accumulate
-        an entry for every directory nanocode was ever started in."""
+        an entry for every directory minacode was ever started in."""
         with contextlib.suppress(OSError):
             if not any(entry.name.endswith(".jsonl") for entry in os.scandir(directory)):
                 cls.clear_latest_dir(directory)
@@ -556,7 +556,7 @@ class SessionSnapshotStore:
         uid = cls.resolve_uid(uid, config.data_dir, cwd)
         path = cls.find_session_path(config.data_dir, uid)
         if not path:
-            raise NanocodeError(f"Session snapshot not found: {uid} under {cls.path_for(config.data_dir, cls.PROJECTS_DIR)}")
+            raise MinacodeError(f"Session snapshot not found: {uid} under {cls.path_for(config.data_dir, cls.PROJECTS_DIR)}")
         data, blobs = cls.read_merged(path)
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
         session = Session(
@@ -588,7 +588,7 @@ class SessionSnapshotStore:
             return uid
         resolved = cls.latest_uid(data_dir, cwd)
         if not resolved:
-            raise NanocodeError(f"No previous session for this project: {cwd}")
+            raise MinacodeError(f"No previous session for this project: {cwd}")
         return resolved
 
     @classmethod
@@ -610,14 +610,14 @@ class SessionSnapshotStore:
                 else:
                     SessionSnapshotCodec.merge(merged, parsed)
         if merged is None:
-            raise NanocodeError(f"Empty session file: {path}")
+            raise MinacodeError(f"Empty session file: {path}")
         return merged, blobs
 
     @classmethod
     def check_header(cls, header: Json, path: str) -> None:
         version = header.get("v")
         if version != cls.FORMAT_VERSION:
-            raise NanocodeError(f"Unsupported session format v{version} (expected v{cls.FORMAT_VERSION}): {path}")
+            raise MinacodeError(f"Unsupported session format v{version} (expected v{cls.FORMAT_VERSION}): {path}")
 
     @staticmethod
     def path_for(data_dir: str, *parts: str) -> str:
@@ -744,11 +744,11 @@ class Session:
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
         if self.mcp is None:
-            from nanocode.mcp import MCPManager  # local import: mcp is built on top of session
+            from minacode.mcp import MCPManager  # local import: mcp is built on top of session
 
             self.mcp = MCPManager(self)
         if self.skills is None:
-            from nanocode.skill import SkillLibrary  # local import: skill is built on top of session
+            from minacode.skill import SkillLibrary  # local import: skill is built on top of session
 
             self.skills = SkillLibrary.load(self)
 
@@ -838,7 +838,7 @@ class Session:
 
     @staticmethod
     def net_diff_for_path(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
-        from nanocode.tools import ReadTool  # local import: tools is built on top of session
+        from minacode.tools import ReadTool  # local import: tools is built on top of session
 
         if before == after:
             return None

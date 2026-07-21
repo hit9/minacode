@@ -6,6 +6,7 @@ demo*/
 __pycache__/
 *.pyc
 .env*
+.minacode
 .nanocode
 .codegraph/
 .venv/

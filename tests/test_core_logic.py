@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import nanocode as n
+import minacode as n
 
 
 def session(tmp_path):
@@ -137,12 +137,12 @@ def test_chat_provider_extra_body_passthrough(tmp_path):
     client.apply_provider_params(params, provider)
     assert params["extra_body"] == search
 
-    # Configured extra_body merges with nanocode-managed reasoning fields...
+    # Configured extra_body merges with minacode-managed reasoning fields...
     params = {}
     client.apply_provider_params(params, n.ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"enable_search": True}))
     assert params["extra_body"] == {"enable_search": True, "reasoning": {"effort": "high"}}
 
-    # ...and reasoning wins on key conflict so nanocode stays in control of its own fields.
+    # ...and reasoning wins on key conflict so minacode stays in control of its own fields.
     params = {}
     client.apply_provider_params(
         params, n.ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"reasoning": {"effort": "low"}})

@@ -1,20 +1,20 @@
-"""nanocode entry point: command-line argument parsing and dispatch.
+"""minacode entry point: command-line argument parsing and dispatch.
 
-Invoked through the ``nanocode`` console script or ``python -m nanocode``.
+Invoked through the ``minacode`` console script or ``python -m minacode``.
 """
 
 from __future__ import annotations
 
-from nanocode.tui import *
-from nanocode.base import __version__
+from minacode.tui import *
+from minacode.base import __version__
 
 
 def main(argv: list[str] | None = None) -> int:
     if sys.platform == "win32":
-        print("Error: nanocode does not support native Windows; use WSL instead.", file=sys.stderr)
+        print("Error: minacode does not support native Windows; use WSL instead.", file=sys.stderr)
         return 1
 
-    parser = argparse.ArgumentParser(prog="nanocode")
+    parser = argparse.ArgumentParser(prog="minacode")
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2
-    except NanocodeError as error:
+    except MinacodeError as error:
         print("Error: " + str(error), file=sys.stderr)
         return 1
 

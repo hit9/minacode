@@ -1,9 +1,9 @@
-"""nanocode TUI: terminal rendering, command loop, and entry point."""
+"""minacode TUI: terminal rendering, command loop, and entry point."""
 
 from __future__ import annotations
 
-from nanocode.engine import *
-from nanocode.base import __version__
+from minacode.engine import *
+from minacode.base import __version__
 
 
 class CommandCompleter(Completer):
@@ -704,7 +704,7 @@ class TuiApp:
     def _edit_text_in_editor(self, text: str) -> str | None:
         """Run the editor on `text` via a temp file and return the edited content, or None if the
         editor could not launch or exited non-zero. Runs off the event loop, inside run_in_terminal."""
-        fd, path = tempfile.mkstemp(prefix="nanocode-input-", suffix=".md")
+        fd, path = tempfile.mkstemp(prefix="minacode-input-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
@@ -942,7 +942,7 @@ class UiPrinter:
             return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
         if text.startswith("[done in "):
             return [("ansibrightblack", text + "\n")]
-        if text.startswith("nanocode "):
+        if text.startswith("minacode "):
             return [("ansicyan", text + "\n")]
         if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
             return [("ansired", text + "\n")]
@@ -2084,7 +2084,7 @@ Tools:
                 except KeyboardInterrupt:
                     self.emit("Cancelled")
                     continue
-                except NanocodeError as error:
+                except MinacodeError as error:
                     answer = f"Error: {error}"
             finally:
                 CodeIndex(self.session).update_pending_async()
@@ -2096,10 +2096,10 @@ Tools:
 
     def start_session(self) -> None:
         """Initialize output and background services shared by both command-loop frontends."""
-        self.emit(f"nanocode {__version__}. /help for commands.")
+        self.emit(f"minacode {__version__}. /help for commands.")
         UpdateChecker(self.session).start()
         if self.session.update.newer_than(__version__):
-            self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `uv tool upgrade nanocode-cli`.")
+            self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `uv tool upgrade minacode`.")
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
@@ -2226,7 +2226,7 @@ Tools:
     def save_and_emit_resume(self) -> None:
         uid = self.session.save_snapshot()
         if uid:
-            self.emit(f"Resume with:\nnanocode --resume {uid}")
+            self.emit(f"Resume with:\nminacode --resume {uid}")
 
     def style(self) -> Style:
         return Style.from_dict(
@@ -2672,7 +2672,7 @@ Tools:
         library = self.session.skills
         skills = library.all() if library else []
         if not skills:
-            return "No skills installed. Add `<name>/SKILL.md` under `.nanocode/skills/` (project) or `~/.nanocode/skills/` (user)."
+            return "No skills installed. Add `<name>/SKILL.md` under `.minacode/skills/` (project) or `~/.minacode/skills/` (user)."
         table = ContextManager.md_table(
             ["skill", "source", "description"],
             [(f"`{skill.name}`", skill.source, skill.description or "(no description)") for skill in skills],
@@ -3124,7 +3124,7 @@ class TuiRuntime:
         self.loop.ui.emit_answer(user_input, role="user", rule=False)
         try:
             handled, exit_now = self.loop.command(user_input.strip())
-        except (KeyboardInterrupt, NanocodeError) as error:
+        except (KeyboardInterrupt, MinacodeError) as error:
             self.loop.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
             self.reset_turn()
             return True
@@ -3149,7 +3149,7 @@ class TuiRuntime:
             self.submit_next(self.loop.take_pending_inputs())
             self.loop.emit("Cancelled")
             return
-        except NanocodeError as error:
+        except MinacodeError as error:
             answer = f"Error: {error}"
         finally:
             self.reset_turn()

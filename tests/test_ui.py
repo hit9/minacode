@@ -10,7 +10,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.utils import get_cwidth
 
-import nanocode as n
+import minacode as n
 
 
 def session(tmp_path):
@@ -519,7 +519,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
         assert command_loop.run_tui() == 0
         driver.join(timeout=1)
 
-    assert any(f"nanocode --resume {scenario_session.uid}" in line for line in output)
+    assert any(f"minacode --resume {scenario_session.uid}" in line for line in output)
     assert full_screen_modes == [False]
     assert tui_daemon == [False]
 
@@ -1440,7 +1440,7 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
     monkeypatch.setattr(n.tui, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
 
     ui = n.UiPrinter()
-    # Interactive TTY output stays colored regardless of NO_COLOR — nanocode owns its theming and
+    # Interactive TTY output stays colored regardless of NO_COLOR — minacode owns its theming and
     # renders through prompt_toolkit's ANSI path, so the parent env var is not honored.
     assert ui.color
     ui.emit_answer("sent message", role="user", rule=False)

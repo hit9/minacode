@@ -1,14 +1,14 @@
-"""nanocode engine: context management, model client, and the agent loop."""
+"""minacode engine: context management, model client, and the agent loop."""
 
 from __future__ import annotations
 
-from nanocode.tools import *
-from nanocode.base import __version__
-from nanocode.tools import _resolved_tool_schemas, _validate_edit_target
+from minacode.tools import *
+from minacode.base import __version__
+from minacode.tools import _resolved_tool_schemas, _validate_edit_target
 
 
 class UpdateChecker:
-    PYPI_URL = "https://pypi.org/pypi/nanocode-cli/json"
+    PYPI_URL = "https://pypi.org/pypi/minacode/json"
     CACHE_FILE = "update.json"
     TIMEOUT = 5
     INTERVAL_SECONDS = 24 * 3600
@@ -56,7 +56,7 @@ class UpdateChecker:
             data = json.loads(response.read().decode("utf-8", "replace"))
         version = data.get("info", {}).get("version") if isinstance(data, dict) else ""
         if not isinstance(version, str) or not UpdateStatus.version_tuple(version):
-            raise NanocodeError("invalid PyPI version response")
+            raise MinacodeError("invalid PyPI version response")
         return version
 
     def status_line(self) -> str:
@@ -1220,7 +1220,7 @@ class ModelClient:
     def compact(self, context: str) -> Json:
         self.cancel_requested.clear()
         prompt = """
-Compact the nanocode working context.
+Compact the minacode working context.
 Return one JSON object only. No markdown, prose, code fences, or comments.
 Use keys: summary, goal, plan, known, check.
 Plan must be an array of objects: {"status":"todo|doing|done|blocked","text":"..."}.
@@ -1297,7 +1297,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             or "(none)",
         }
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-        return "nanocode-" + digest[:24]
+        return "minacode-" + digest[:24]
 
     def anthropic_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
@@ -1441,7 +1441,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             if reasoning_enabled:
                 values = CHAT_REASONING_EFFORT_VALUES["enable_thinking"]
                 extra["thinking_budget"] = values.get(effort, values["medium"])
-        # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; nanocode's
+        # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; minacode's
         # own reasoning fields are layered on top so they stay authoritative on key conflicts.
         extra_body = {**provider.extra_body, **extra}
         if extra_body:
@@ -1493,7 +1493,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
     def tool_payload(cls, name: str, payload: Any) -> list[Any]:
         if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
             # Strict schemas express optional params as nullable, so the model may send explicit
-            # null for an omitted argument. In every nanocode tool null means "absent", so drop it.
+            # null for an omitted argument. In every minacode tool null means "absent", so drop it.
             return tool.payload_args(cls.drop_nulls(payload))
         return [payload]
 
@@ -1521,7 +1521,7 @@ class Agent:
 REQUIRED: Your next assistant message must include a brief visible text response to this follow-up, not only tool calls. Then continue the active task; this response is a progress update, not the final answer.
 """
     SYSTEM_PROMPT = """\
-You are nanocode, a concise terminal coding agent.
+You are minacode, a concise terminal coding agent.
 
 ATTITUDE:
 - Bring senior engineering judgment, but let it arrive through attention rather than premature certainty. Read the codebase first, resist easy assumptions, and let the existing system teach you how to move.

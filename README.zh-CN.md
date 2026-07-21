@@ -1,7 +1,7 @@
-<h1 align="center">nanocode-cli</h1>
+<h1 align="center">minacode</h1>
 
 <p align="center">
-  <img src="snapshots/nanocode1.gif" alt="nanocode 编辑代码并运行工具" width="600">
+  <img src="snapshots/minacode1.gif" alt="minacode 编辑代码并运行工具" width="600">
 </p>
 
 <p align="center">
@@ -12,16 +12,16 @@
 
 ## 安全
 
-**使用风险自负。** nanocode 会在启动环境中编辑文件并执行 shell 命令，不提供 sandbox 隔离。需要隔离时，请使用容器或虚拟机。
+**使用风险自负。** minacode 会在启动环境中编辑文件并执行 shell 命令，不提供 sandbox 隔离。需要隔离时，请使用容器或虚拟机。
 
 ## 它是什么
 
-nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 — 读取和编辑文件、运行命令、追加指令、session 恢复、diff、MCP 和 skill — 整合成我自己真正在用的工具。
+minacode 并不想发明一种新的 coding agent。它只是把熟悉的能力 — 读取和编辑文件、运行命令、追加指令、session 恢复、diff、MCP 和 skill — 整合成我自己真正在用的工具。
 
-它不仅用于真实项目，也用于自身开发：我用 nanocode 来构建和维护 nanocode。所有功能都在一个 Python 模块中，所以我可以随时直接修改行为，让工作流按我想要的方式运行。
+它不仅用于真实项目，也用于自身开发：我用 minacode 来构建和维护 minacode。所有功能都在一个 Python 模块中，所以我可以随时直接修改行为，让工作流按我想要的方式运行。
 
 <p align="center">
-  <img src="snapshots/nanocode2.gif" alt="nanocode 恢复保存的 session" width="600">
+  <img src="snapshots/minacode2.gif" alt="minacode 恢复保存的 session" width="600">
 </p>
 <p align="center"><sub>恢复保存的 session，包括对话和工具调用历史。</sub></p>
 
@@ -41,11 +41,11 @@ nanocode 并不想发明一种新的 coding agent。它只是把熟悉的能力 
 需要 macOS 或 Linux、Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
 
 ```sh
-uv tool install nanocode-cli
-nanocode --init-config
+uv tool install minacode
+minacode --init-config
 ```
 
-在 `~/.nanocode/config.toml` 中填写 provider：
+在 `~/.minacode/config.toml` 中填写 provider：
 
 ```toml
 [provider]
@@ -60,13 +60,13 @@ model = "deepseek-v4-flash"
 然后运行：
 
 ```sh
-nanocode
+minacode
 ```
 
-升级：`uv tool upgrade nanocode-cli`。
+升级：`uv tool upgrade minacode`。
 
 ## 链接
 
-- [文档](https://nanocode.readthedocs.io/zh-cn/latest/) — 完整的使用指南和参考。
-- [博客](https://hit9.dev/post/nanocode) — 设计动机与实现过程。
-- [code-symbol-index](https://github.com/hit9/code-symbol-index) — nanocode 使用的代码索引库。
+- [文档](https://minacode.readthedocs.io/zh-cn/latest/) — 完整的使用指南和参考。
+- [博客](https://hit9.dev/post/minacode) — 设计动机与实现过程。
+- [code-symbol-index](https://github.com/hit9/code-symbol-index) — minacode 使用的代码索引库。

@@ -1,11 +1,11 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) hit9
-# This file is distributed under the same license as the nanocode package.
+# This file is distributed under the same license as the minacode package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: nanocode 0.9\n"
+"Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-19 02:56-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -28,18 +28,18 @@ msgstr "使用风险自负"
 
 #: ../../safety.md:5
 msgid ""
-"nanocode edits files and runs shell commands in the environment where you start it. It does "
+"minacode edits files and runs shell commands in the environment where you start it. It does "
 "**not** sandbox itself."
-msgstr "nanocode 会在启动环境中编辑文件并执行 shell 命令，**自身不提供 sandbox**。"
+msgstr "minacode 会在启动环境中编辑文件并执行 shell 命令，**自身不提供 sandbox**。"
 
 #: ../../safety.md:9
 msgid ""
-"nanocode acts directly in your environment. Through its [tools](tools.md) it can <span "
+"minacode acts directly in your environment. Through its [tools](tools.md) it can <span "
 "class=\"marker\">read and edit files beyond the working directory and run any shell "
 "command</span>. There is no built-in isolation, so treat it with the same care as running those "
 "commands yourself."
 msgstr ""
-"nanocode 直接在你的环境中工作。它可以通过[工具](tools.md)<span class=\"marker\">读取和编辑工作目录之外的文件，并运行任何 shell "
+"minacode 直接在你的环境中工作。它可以通过[工具](tools.md)<span class=\"marker\">读取和编辑工作目录之外的文件，并运行任何 shell "
 "命令</span>。由于没有内置隔离，请像对待自己执行的命令一样谨慎使用。"
 
 #: ../../safety.md:14
@@ -84,6 +84,6 @@ msgid "Only connect [MCP](mcp.md) servers you trust — local servers run progra
 msgstr "只连接可信的 [MCP](mcp.md) server；本地 server 会在你的机器上运行程序。"
 
 #: ../../safety.md:30
-msgid "For untrusted repositories, or when running unattended, put nanocode inside a **container or VM**."
-msgstr "对不可信仓库或无人值守任务，请在**容器或虚拟机**中运行 nanocode。"
+msgid "For untrusted repositories, or when running unattended, put minacode inside a **container or VM**."
+msgstr "对不可信仓库或无人值守任务，请在**容器或虚拟机**中运行 minacode。"
 

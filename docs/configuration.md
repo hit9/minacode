@@ -1,7 +1,7 @@
 # Configuration
 
-nanocode reads a single TOML file, `~/.nanocode/config.toml` by default. Generate a
-commented starter with `nanocode --init-config`, or point at another file with
+minacode reads a single TOML file, `~/.minacode/config.toml` by default. Generate a
+commented starter with `minacode --init-config`, or point at another file with
 `--config <path>`.
 
 <span class="marker">Only the `[provider]` block is required.</span> Every other key falls back to
@@ -69,7 +69,7 @@ lists the supported keys). `/yolo` toggles `yolo`.
 
 ```toml
 [paths]
-data_dir = "~/.nanocode"   # sessions, code index, OAuth tokens, user skills, update cache
+data_dir = "~/.minacode"   # sessions, code index, OAuth tokens, user skills, update cache
 ```
 
 Sessions live under `<data_dir>/projects/<project>/`, one directory per working directory. Each

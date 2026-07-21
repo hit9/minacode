@@ -6,7 +6,7 @@ from rich.style import Style
 
 @pytest.fixture(autouse=True)
 def isolate_home(tmp_path_factory, monkeypatch):
-    # `paths.data_dir` defaults to `~/.nanocode`, so any test that builds a config without setting
+    # `paths.data_dir` defaults to `~/.minacode`, so any test that builds a config without setting
     # it and then saves a session writes into the developer's real home directory. Point HOME at a
     # per-test directory so `expanduser` resolves somewhere disposable.
     home = tmp_path_factory.mktemp("home")

@@ -5,7 +5,7 @@ These tests exercise the stateful parts of the TUI without requiring a real term
 
 import time
 
-import nanocode as n
+import minacode as n
 
 
 def test_diff_view_state_tab_switching():

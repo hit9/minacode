@@ -1,15 +1,15 @@
 PYTHON ?= python3
 VERSION := $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-DIST_FILES := dist/nanocode_cli-$(VERSION)*
+DIST_FILES := dist/minacode-$(VERSION)*
 
 .PHONY: lint test clean-dist build publish-check publish
 
 lint:
-	$(PYTHON) -m ruff check nanocode
-	$(PYTHON) -m ruff format --check nanocode
+	$(PYTHON) -m ruff check minacode
+	$(PYTHON) -m ruff format --check minacode
 
 test:
-	$(PYTHON) -m compileall -q nanocode
+	$(PYTHON) -m compileall -q minacode
 	$(PYTHON) -m pytest
 
 clean-dist:

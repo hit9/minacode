@@ -39,8 +39,8 @@ h3 { font-size: 1.35rem; margin-top: 1.5rem; }
 
 /* The project name belongs to the sidebar; keep the index title for Sphinx
    metadata while showing only the subtitle in the content column. */
-.body section#nanocode > h1 { display: none; }
-.body section#nanocode > p:first-of-type {
+.body section#minacode > h1 { display: none; }
+.body section#minacode > p:first-of-type {
     margin-top: 2.4rem;
     font-size: 2rem;
     font-weight: 400;
@@ -154,7 +154,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .tool-reference { width: 100%; table-layout: fixed; }
 .tool-reference figure { margin: 1rem 0 0; }
 
-/* Terminal pictures: small faithful renderings of a nanocode screen or output,
+/* Terminal pictures: small faithful renderings of a minacode screen or output,
    so a feature is recognisable on sight. Shared by every diagram in the docs. */
 .term-shot {
     margin: 1.25rem 0 1.5rem;

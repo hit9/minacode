@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-import nanocode as n
+import minacode as n
 
 
 def session(tmp_path):
@@ -33,7 +33,7 @@ def test_validate_edit_target_branches(tmp_path):
     with pytest.raises(n.ToolError, match="does not exist"):
         n.tools._validate_edit_target(s, str(tmp_path / "missing.py"), creating=False)
     with pytest.raises(n.ToolError, match="outside workspace"):
-        n.tools._validate_edit_target(s, "/etc/nanocode_should_not_create.py", creating=True)
+        n.tools._validate_edit_target(s, "/etc/minacode_should_not_create.py", creating=True)
 
 
 def test_read_and_search_success_paths(tmp_path):
@@ -355,7 +355,7 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     # Safe read-only commands auto-run (no confirmation prompt in non-yolo mode).
     assert readonly("ls -la")
     assert readonly("cat file.txt")
-    assert readonly("wc -l nanocode.py")
+    assert readonly("wc -l minacode.py")
     assert readonly("find . -name '*.py'")
     assert readonly("rg needle src")
     assert readonly("git status --short")
@@ -717,12 +717,12 @@ def test_tool_runner_reject_records_error_and_returns_failed_message(tmp_path):
 
 
 def test_uiprinter_renders_tool_root_without_generic_prefix():
-    block = n.LogBlock([n.LogLine("Read", "nanocode.py 0:100 → tr.6 [auto]", n.LogRole.TOOL)])
+    block = n.LogBlock([n.LogLine("Read", "minacode.py 0:100 → tr.6 [auto]", n.LogRole.TOOL)])
     segments = n.UiPrinter(output_fn=lambda text: None).log_segments(block)
     text = "".join(value for _style, value in segments)
 
-    assert text == "  Read  nanocode.py 0:100 → tr.6 [auto]\n"
-    assert any(style == "fg:default" and "nanocode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
+    assert text == "  Read  minacode.py 0:100 → tr.6 [auto]\n"
+    assert any(style == "fg:default" and "minacode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
 
 
 def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
@@ -980,7 +980,7 @@ def test_single_and_batch_payload_shapes_are_supported():
     assert n.ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[0, 0]]}]
     assert n.ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
     assert n.ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
-    assert n.ReadTool(n.Session(cwd="."), [{"path": "nanocode.py"}]).targets()[0][1] == [(0, 0)]
+    assert n.ReadTool(n.Session(cwd="."), [{"path": "minacode.py"}]).targets()[0][1] == [(0, 0)]
     assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
     assert n.ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]

@@ -1,8 +1,8 @@
-"""nanocode MCP: Model Context Protocol server integration."""
+"""minacode MCP: Model Context Protocol server integration."""
 
 from __future__ import annotations
 
-from nanocode.skill import *
+from minacode.skill import *
 
 
 @dataclass
@@ -633,7 +633,7 @@ class MCPManager:
     def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
         from fastmcp.client.auth import OAuth
 
-        class NanocodeOAuth(OAuth):
+        class MinacodeOAuth(OAuth):
             async def redirect_handler(self, authorization_url: str) -> None:
                 if not interactive:
                     raise RuntimeError("authentication required; run /mcp connect " + config.name)
@@ -641,9 +641,9 @@ class MCPManager:
                     notify("Open this URL to authorize MCP server `" + config.name + "`:\n" + authorization_url)
                 await super().redirect_handler(authorization_url)
 
-        return NanocodeOAuth(
+        return MinacodeOAuth(
             token_storage=self._oauth_token_store,
-            client_name="nanocode",
+            client_name="minacode",
             callback_timeout=self.session.settings.shell_timeout,
         )
 
@@ -904,7 +904,7 @@ class MCPManager:
         return self._render_describe(server, info)
 
     def _render_describe(self, server: str, info: MCPToolInfo) -> str:
-        from nanocode.tools import Tool  # local import: tools is built on top of mcp
+        from minacode.tools import Tool  # local import: tools is built on top of mcp
 
         schema = info.input_schema or {}
         lines = [f"<MCPDescribe server={json.dumps(server)} tool={json.dumps(info.name)}>"]
@@ -1167,7 +1167,7 @@ class MCPManager:
         return "".join(parts)
 
     def render_tool_listing(self, server: str | None = None) -> str:
-        from nanocode.tools import Tool  # local import: tools is built on top of mcp
+        from minacode.tools import Tool  # local import: tools is built on top of mcp
 
         sections: list[str] = []
         configs = self.parse_configs()
