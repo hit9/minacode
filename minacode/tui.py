@@ -2761,20 +2761,30 @@ Tools:
             return
         width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
         labels = {}
+        calls = {}
         for index, (record, _preview) in enumerate(records):
             call = self.agent.tools.short_call(ToolCall("", "Bash", record.args))
-            labels[str(index)] = Text.clip_width(f"{record.key}  {call}", width)
+            choice = str(index)
+            calls[choice] = call
+            labels[choice] = Text.clip_width(f"{record.key}  {call}", width)
         choices = tuple(labels)
         state = ChoiceViewState(choices, labels, set())
         opened: str | None = None
 
+        def rule(label: str) -> list[tuple[str, str]]:
+            cols = shutil.get_terminal_size((80, 20)).columns
+            rule_width = max(20, min(72, cols - 2))
+            lead = "──── "
+            trail = " " + "─" * max(3, rule_width - get_cwidth(lead + label) - 1)
+            return [("class:choice.disabled", lead + label + trail + "\n")]
+
         def fragments() -> list[tuple[str, str]]:
             if opened is None:
-                return state.fragments(f"Bash outputs · latest {len(records)}")
-            preview = records[int(opened)][1]
-            title = labels[opened]
+                list_fragments = state.fragments("")
+                return [*rule(f"Bash outputs · latest {len(records)}"), *list_fragments[1:]]
+            record, preview = records[int(opened)]
             detail_width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
-            parts = [("ansibrightblack", f"\n  {Text.clip_width(title, detail_width)}\n\n")]
+            parts = [*rule(f"Bash output · {record.key}"), ("ansibrightblack", f"  {Text.clip_width(calls[opened], detail_width)}\n\n")]
             parts.extend(("ansibrightblack", f"  {Text.clip_width(line, detail_width)}\n") for line in preview.splitlines())
             parts.append(("class:choice.disabled", "\n  Esc / ← back · Ctrl-O / q closes\n"))
             return parts

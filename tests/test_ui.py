@@ -1566,7 +1566,8 @@ class ModalHarness:
         return None
 
 
-def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path):
+def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkeypatch):
+    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda _fallback: n.os.terminal_size((50, 20)))
     command_loop = loop(tmp_path)
     for index in range(12):
         stdout = "\n".join(f"line {line}" for line in range(20)) if index == 10 else f"output {index}"
@@ -1579,15 +1580,18 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path):
     command_loop.bash_output_viewer()
 
     listing = "".join(value for _style, value in modal.frames[0])
-    assert "Bash outputs · latest 10" in listing
+    assert listing.startswith("──── Bash outputs · latest 10 ")
+    assert get_cwidth(listing.splitlines()[0]) == 48
     assert "command-11" in listing and "command-2" in listing
     assert "Bash printf command-1\n" not in listing and "Bash printf command-0\n" not in listing and "Bash true" not in listing
     second_detail = "".join(value for _style, value in modal.frames[2])
+    assert second_detail.startswith("──── Bash output · tr.11 ")
+    assert get_cwidth(second_detail.splitlines()[0]) == 48
     assert "command-10" in second_detail
     assert "line 0" in second_detail and "line 19" in second_detail
     assert "... 8 lines omitted ..." in second_detail
     assert "detail stderr" in second_detail
-    assert "Bash outputs · latest 10" in "".join(value for _style, value in modal.frames[3])
+    assert "──── Bash outputs · latest 10 " in "".join(value for _style, value in modal.frames[3])
     oldest_detail = "".join(value for _style, value in modal.frames[5])
     assert "command-2" in oldest_detail and "output 2" in oldest_detail
     assert modal.exclusive == [False]
