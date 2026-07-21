@@ -1,6 +1,12 @@
 # Changelog
 
 
+## Unreleased
+
+### Changed
+- Ctrl-C while the agent runs now distinguishes a *retract* from an *interrupt*. If the agent has not produced any output yet, the turn is retracted — the message is discarded and leaves no trace in the model context or the persisted session (the input history still recalls it via Ctrl-P), as if it was never sent. Once the agent has spoken or called a tool, the partial turn stands and an interrupt marker is appended (with a cancelled result for any tool call the interrupt left unanswered), so the context stays valid and the model knows the turn ended early.
+
+
 ## 0.11.0 - 2026-07-20
 
 ### Added

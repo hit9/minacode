@@ -18,10 +18,16 @@ and they move up into the log above the divider once they are in.
 | Key | When | Effect |
 |---|---|---|
 | `Enter` | While the agent works | Queue a follow-up for the next model step |
-| `Ctrl-C` | While the agent works | Discard a draft in the editor; with the editor empty, interrupt the current task |
+| `Ctrl-C` | While the agent works | Discard a draft in the editor; with the editor empty, interrupt the task — retracting the message if the agent has not answered yet, or recording the interrupt once it has |
 | `Ctrl-C` | Idle prompt | Clear input line |
 | `Ctrl-U` | Any prompt | Clear the whole input line, leaving the turn running |
 | `Up` / `Ctrl-P` | While working, with an empty editor | Recall the newest queued message |
+
+Interrupting splits two ways. If the agent has not answered yet, `Ctrl-C` *retracts* the
+message: it is discarded and never reaches the conversation record or the saved session, as
+if it was never sent (your input history still recalls it with `Ctrl-P`). Once the agent has
+spoken or run a tool, `Ctrl-C` *interrupts*: the work already shown stays, and the turn is
+marked as interrupted so minacode knows it ended early.
 
 ## Commands
 
@@ -144,7 +150,7 @@ Two inline references, both Tab-completed as you type:
 **The input line** supports:
 
 - history recall and completion
-- `Ctrl-C` — clear the current input; with the input empty while running, interrupt the turn
+- `Ctrl-C` — clear the current input; with the input empty while running, interrupt the turn (retracting it if the agent has not answered yet)
 - `Ctrl-U` — clear the whole input line, in the idle prompt and the follow-up editor alike
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history

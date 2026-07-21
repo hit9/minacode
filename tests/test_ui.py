@@ -1192,7 +1192,9 @@ def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path
     assert marked_followup in queued_request
     assert queued_request.index("queued one") < queued_request.index(marked_followup)
     assert outcome["draft_after_ctrl_c"] == [""]
-    assert outcome["persisted_user_inputs"] == ["long request", "queued one", "queued two"]
+    # The interrupted first turn produced no output, so it is retracted: "long request" leaves no
+    # trace in the persisted conversation, while the queued follow-ups become the next turn.
+    assert outcome["persisted_user_inputs"] == ["queued one", "queued two"]
     assert outcome["restored_queue"] == []
 
 

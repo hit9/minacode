@@ -1520,6 +1520,7 @@ class Agent:
     LIVE_FOLLOWUP_PREFIX = """[Live follow-up received while you were working]
 REQUIRED: Your next assistant message must include a brief visible text response to this follow-up, not only tool calls. Then continue the active task; this response is a progress update, not the final answer.
 """
+    INTERRUPT_MARKER = "[The user interrupted this turn (Ctrl-C) before it completed.]"
     SYSTEM_PROMPT = """\
 You are minacode, a concise terminal coding agent.
 
@@ -1650,7 +1651,12 @@ FINAL:
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
             self.finish_turn(turn_messages, stopped)
             return stopped
-        except (Exception, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            self.session.release_user_inputs()
+            self.settle_interrupted_turn(turn_messages)
+            self.session.save_snapshot()
+            raise
+        except Exception:
             self.session.release_user_inputs()
             self.session.messages.extend(self.session._active_turn_messages)
             self.session._active_turn_messages.clear()
@@ -1666,6 +1672,33 @@ FINAL:
         self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
         self.session._active_turn_messages.clear()
         self.session.state.turn_messages = 0
+
+    def settle_interrupted_turn(self, turn_messages: list[Json]) -> None:
+        """Settle a turn the user interrupted with Ctrl-C.
+
+        Two cases, mirroring what the CLI shows. *Retract*: the agent had not said or done
+        anything yet, so the turn is discarded and it is as if the message was never sent —
+        nothing reaches the model context or the persisted session, though the input history
+        still recalls it for Ctrl-P. *Interrupt*: the agent already spoke or called a tool, so
+        the partial turn stands (what the CLI showed happened) and an interrupt marker is
+        appended, keeping the context valid and telling the model the turn ended early."""
+        self.session._active_turn_messages.clear()
+        self.session.state.turn_messages = 0
+        if not any(message.get("role") != "user" for message in turn_messages):
+            return
+        answered = {message.get("tool_call_id") for message in turn_messages if message.get("role") == "tool"}
+        for message in turn_messages:
+            if message.get("role") != "assistant":
+                continue
+            for call in message.get("tool_calls") or []:
+                call_id = call.get("id")
+                if call_id and call_id not in answered:
+                    turn_messages.append(
+                        {"role": "tool", "tool_call_id": call_id, "content": "Cancelled: the user interrupted before this tool call finished."}
+                    )
+                    answered.add(call_id)
+        turn_messages.append({"role": "user", "content": self.INTERRUPT_MARKER})
+        self.session.messages.extend(turn_messages)
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()

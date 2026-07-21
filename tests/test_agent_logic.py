@@ -709,15 +709,72 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         agent.run("read file")
 
-    assert [message["role"] for message in s.messages] == ["user", "assistant", "tool"]
+    assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
+    assert s.messages[-1]["content"] == n.Agent.INTERRUPT_MARKER
     assert s._active_turn_messages == []
     restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     messages = [message for message in restored.messages if not n.SessionSnapshotCodec.is_internal_message(message)]
-    assert [message["role"] for message in messages] == ["user", "assistant", "tool"]
+    assert [message["role"] for message in messages] == ["user", "assistant", "tool", "user"]
+    assert messages[-1]["content"] == n.Agent.INTERRUPT_MARKER
     assert messages[1]["tool_calls"][0]["id"] == "Read-id"
     assert messages[2]["tool_call_id"] == "Read-id"
     assert "<Read" in messages[2]["content"]
     assert [record.name for record in restored.tool_records] == ["Read"]
+
+
+def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
+    s = session(tmp_path)
+    s.skills = n.SkillLibrary({})
+    agent = n.Agent(s, output_fn=lambda text: None)
+
+    class InterruptingModel:
+        def request(self, messages, tools=None):
+            raise KeyboardInterrupt
+
+    agent.model = InterruptingModel()
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("never sent")
+
+    # Retract: the agent produced nothing, so the turn leaves no trace in the context or on disk,
+    # while the input history (a separate FileHistory) still recalls it for Ctrl-P.
+    assert s.messages == []
+    assert s._active_turn_messages == []
+    restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    messages = [message for message in restored.messages if not n.SessionSnapshotCodec.is_internal_message(message)]
+    assert messages == []
+
+
+def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
+    s = session(tmp_path)
+    s.skills = n.SkillLibrary({})
+    agent = n.Agent(s, output_fn=lambda text: None)
+
+    class Model:
+        def request(self, messages, tools=None):
+            return {}, [call("Read", [{"path": "missing", "ranges": [[0, 0]]}])], ""
+
+        def cancel(self):
+            pass
+
+    class Tools:
+        def run(self, calls, batch_suffix=""):
+            agent.cancel()
+            return []
+
+        def cancel(self):
+            pass
+
+    agent.model = Model()
+    agent.tools = Tools()
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("read missing")
+
+    # Interrupt: the partial turn stands, the unanswered tool call gets a cancelled result so the
+    # next request stays valid, and the marker records where the turn ended.
+    assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
+    assert s.messages[2]["tool_call_id"] == "Read-id"
+    assert "Cancelled" in s.messages[2]["content"]
+    assert s.messages[3]["content"] == n.Agent.INTERRUPT_MARKER
 
 
 def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
