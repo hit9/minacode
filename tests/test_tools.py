@@ -1639,7 +1639,6 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     )
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
-    runner.bash_live_preview_shown = lambda: True
 
     runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
 
@@ -1647,7 +1646,9 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     assert events[1] == ("start", "")
     assert ("stdout", "live") in events
     assert events[-1][0] == "display"
-    assert events[-1][1].startswith("    └ stored tr.")
+    assert "    ├ output" in events[-1][1]
+    assert "    │   live" in events[-1][1]
+    assert "    └ stored tr." in events[-1][1]
     assert sum("printf live" in text for kind, text in events if kind == "display") == 1
     assert sum("Bash" in text for kind, text in events if kind == "display") == 1
 
@@ -1658,14 +1659,15 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: events.append(("display", str(text))))
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
-    runner.bash_live_preview_shown = lambda: True
 
     runner.run([n.ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
 
     display = [text for kind, text in events if kind == "display"]
     assert display[0].startswith("  Bash  ")
     assert "approval required" not in display[0]
-    assert display[-1].startswith("    └ stored tr.")
+    assert display[-1].startswith("    ├ output")
+    assert "    │   approved" in display[-1]
+    assert "    └ stored tr." in display[-1]
     assert display[-1].endswith("[approved]")
     assert sum(text.startswith("  Bash  ") for text in display) == 1
     assert sum("printf approved" in text for text in display) == 1
@@ -1690,21 +1692,21 @@ def test_tool_runner_finish_display_shows_bounded_bash_output(tmp_path):
     assert display.endswith("    └ stored tr.1")
 
 
-def test_tool_runner_finish_display_skips_bash_preview_after_live_preview(tmp_path):
+def test_tool_runner_finish_display_keeps_bash_output_after_live_preview(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-    runner.bash_live_preview_shown = lambda: True
     output = n.Tool.process_result("BashToolResult", 0, "live output", "")
 
     display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
 
-    assert display == "  Bash  printf live\n    └ stored tr.1"
+    assert "    ├ output" in display
+    assert "    │   live output" in display
+    assert display.endswith("    └ stored tr.1")
 
 
 def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-    runner.bash_live_preview_shown = lambda: False
     output = n.Tool.process_result("BashToolResult", 0, "visible output", "")
 
     display = str(
@@ -2084,6 +2086,16 @@ def test_ask_tool_call_multiple_questions(tmp_path):
     result = tool.call()
     assert asked == [("Runtime?", "1/2"), ("Name?", "2/2")]  # sequential, with position
     assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
+
+
+def test_tool_runner_finish_display_keeps_ask_answer(tmp_path):
+    s = session(tmp_path)
+    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+
+    display = str(runner.finish_display(n.ToolCall("ask", "Ask", _q({"question": "Which?"})), "tr.1", "typed answer", failed=False))
+
+    assert display.startswith("  Ask  Which? → tr.1\n")
+    assert display.endswith("    └ answer typed answer")
 
 
 def test_ask_tool_validates_batch_before_asking(tmp_path):

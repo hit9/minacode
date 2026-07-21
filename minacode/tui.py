@@ -1913,7 +1913,6 @@ Tools:
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
-        self.bash_live_preview_rendered = False
         self.live_status_paused = False
         self.background_output_lock = threading.Lock()
         self.background_output_open = True
@@ -1941,7 +1940,6 @@ Tools:
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
-        self.agent.tools.bash_live_preview_shown = self.consume_bash_live_preview_rendered
         self.agent.tools.question_fn = self.question_interaction
 
     def flush_queued_to_log(self, texts: list[str]) -> None:
@@ -2044,11 +2042,12 @@ Tools:
         return fragments
 
     def tui_activity_fragments(self) -> list[tuple[str, str]]:
-        fragments = self.queue_region_fragments()
         with self.live_preview.lock:
             lines = self.live_preview.frame_lines() if self.live_preview.active else []
+        fragments = []
         for line in lines:
-            fragments.extend([("", "\n"), ("ansibrightblack", line)])
+            fragments.extend([("ansibrightblack", line), ("", "\n")])
+        fragments.extend(self.queue_region_fragments())
         return fragments
 
     def tui_input_hint(self) -> str:
@@ -2396,10 +2395,8 @@ Tools:
         if self.live_status_paused:
             self.status_bar.stop()
         self.live_preview.start()
-        self.bash_live_preview_rendered = self.live_preview.active
 
     def tool_live_start(self) -> None:
-        self.bash_live_preview_rendered = False
         if not self.ui.color:
             return
         if self.tui is not None:
@@ -2407,7 +2404,6 @@ Tools:
                 self.live_preview.active = True
                 self.live_preview.text = ""
                 self.live_preview.started_at = time.monotonic()
-            self.bash_live_preview_rendered = True
             self.tui.invalidate()
             return
         self._begin_cli_preview()
@@ -2435,11 +2431,6 @@ Tools:
         if self.live_status_paused:
             self.status_bar.start(reset=False)
             self.live_status_paused = False
-
-    def consume_bash_live_preview_rendered(self) -> bool:
-        rendered = self.bash_live_preview_rendered
-        self.bash_live_preview_rendered = False
-        return rendered
 
     def command(self, text: str) -> tuple[bool, bool]:
         if text in {"/exit", "/quit", "exit", "quit"}:
@@ -2675,12 +2666,8 @@ Tools:
         return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
 
     def question_interaction(self, spec: AskSpec, position: str = "") -> str:
-        """Entry point for Ask tool — shows the chosen answer in CLI after selection."""
-        result = self.question_application(spec, position)
-        # Echo the picked choice (free-text/dismissal are already surfaced elsewhere).
-        if spec.choices and result in spec.choices:
-            self.emit(result + "\n")
-        return result
+        """Entry point for Ask; the final tool log renders the returned answer."""
+        return self.question_application(spec, position)
 
     def select_reasoning(self) -> str | object | None:
         current = self.session.config.provider.reasoning

@@ -1110,6 +1110,19 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
 
+def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
+    s = session(tmp_path)
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    queue(s, "follow up")
+    loop.live_preview.active = True
+    loop.live_preview.text = "live output"
+    loop.live_preview.started_at = n.time.monotonic()
+
+    text = "".join(fragment for _, fragment in loop.tui_activity_fragments())
+
+    assert text.index("live output") < text.index("working") < text.index("+ follow up")
+
+
 def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     s = session(tmp_path)
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda _text: None)
@@ -1410,6 +1423,16 @@ def test_ask_without_choices_uses_shared_tui_input(tmp_path):
     assert prompts == ["\nExplain the issue"]
 
 
+def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    emitted = []
+    loop.emit = emitted.append
+    loop.question_application = lambda spec, position="": "B"
+
+    assert loop.question_interaction(n.AskSpec("Which?", choices=["A", "B"])) == "B"
+    assert emitted == []
+
+
 def test_elapsed_since_uses_whole_seconds(monkeypatch):
     monkeypatch.setattr(n.time, "monotonic", lambda: 104.9)
     assert n.Text.elapsed_since(100.0) == "4s"
@@ -1429,9 +1452,6 @@ def test_bash_live_start_pauses_standalone_status(tmp_path):
     loop.tool_live_start()
     assert loop.live_status_paused is True
     assert loop.status_bar.thread is None
-    assert loop.agent.tools.bash_live_preview_shown is not None
-    assert loop.agent.tools.bash_live_preview_shown() is True
-    assert loop.agent.tools.bash_live_preview_shown() is False
 
     loop.tool_live_output("", "")
     assert loop.live_status_paused is False

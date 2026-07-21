@@ -682,7 +682,6 @@ class ToolRunner:
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
-        self.bash_live_preview_shown: Callable[[], bool] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
         self._active_bash = ActiveResource()
 
@@ -977,7 +976,6 @@ class ToolRunner:
         d = d or ToolDisplay()
         if call.name == "Note" and not failed and d.display:
             return self.with_batch_suffix(d.display.removeprefix("Note ").strip(), d.batch_suffix)
-        bash_live_preview_shown = bool(call.name == "Bash" and self.bash_live_preview_shown and self.bash_live_preview_shown())
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
         tree = d.nested_display or call.name == "Bash"
         root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
@@ -989,12 +987,14 @@ class ToolRunner:
             summary = self.mcp_result_summary(call, output, elapsed)
             if summary:
                 children.append(LogLine("", summary, LogRole.META, LogEdge.END))
-        elif call.name == "Bash" and not bash_live_preview_shown:
+        elif call.name == "Bash":
             preview = self.bash_result_preview(output)
             if preview:
                 duration = f" · {elapsed:.1f}s" if elapsed is not None else ""
                 children.append(LogLine("output" + duration, role=LogRole.META, edge=LogEdge.BRANCH))
                 children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
+        elif call.name == "Ask":
+            children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree:
