@@ -812,6 +812,27 @@ def test_job_captures_large_output_via_log_file(tmp_path):
     assert job.tail(100) == "..." + "x" * 97
 
 
+def test_job_start_runs_shell_builtins_and_compound_commands(tmp_path):
+    """`Job(start)` must run commands through the shell rather than `exec` the first word, or
+    builtins like `cd` and compound commands like `cd dir && cmd` fail with `exec: cd: not found`."""
+    s = session(tmp_path)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    n.JobTool(s, [{"action": "start", "command": f"cd {shlex.quote(str(sub))} && printf marker"}]).call()
+    job = s.jobs["job.1"]
+
+    try:
+        job.process.wait(timeout=2)
+    finally:
+        if job.process.poll() is None:
+            job.kill(grace=0.1)
+
+    job.update_status()
+    assert job.status == "done"
+    assert job.exit_code == 0
+    assert "marker" in job.tail(100)
+
+
 def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
     s = session(tmp_path)
     n.JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()
