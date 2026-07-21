@@ -945,6 +945,13 @@ def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
     assert command_loop.tui_input_hint() == "↑ recalls queued · Ctrl-C interrupts"
 
 
+def test_tui_chat_input_shows_editor_placeholder(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = n.TuiApp()
+
+    assert command_loop.tui_input_hint() == "Ctrl-X Ctrl-E opens $EDITOR"
+
+
 def test_tui_sigint_interrupts_dispatch_and_running_modes():
     interrupted = []
     app = n.TuiApp(on_interrupt=lambda: interrupted.append(True))

@@ -1759,6 +1759,7 @@ class ChoiceViewState:
 class CommandLoop:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
+    EDITOR_HINT = "Ctrl-X Ctrl-E opens $EDITOR"
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     # fmt: off
@@ -1993,11 +1994,15 @@ Tools:
         return fragments
 
     def tui_input_hint(self) -> str:
-        if self.tui is None or self.tui.input_mode != "running":
+        if self.tui is None:
             return ""
-        with self.session._queue_lock:
-            has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
-        return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
+        if self.tui.input_mode == "running":
+            with self.session._queue_lock:
+                has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
+            return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
+        if self.tui.input_mode == "chat":
+            return self.EDITOR_HINT
+        return ""
 
     def editor_context(self) -> str:
         """The agent's most recent reply, restated as read-only reference inside the external
