@@ -218,6 +218,51 @@ def test_edit_text_in_editor_leaves_input_untouched_on_nonzero_exit(monkeypatch)
     assert n.TuiApp()._edit_text_in_editor("hello") is None
 
 
+def test_editor_text_compose_and_strip_roundtrip():
+    # The editor receives the draft plus the agent's reply below a scissors line; stripping
+    # drops the reference context and returns exactly the (possibly edited) draft.
+    composed = n.TuiApp._compose_editor_text("my draft", "reply line one\nline two")
+    assert "my draft" in composed
+    assert n.TuiApp.EDITOR_CONTEXT_MARKER in composed
+    assert "reply line one" in composed
+    assert n.TuiApp._strip_editor_context(composed) == "my draft"
+    # Editing above the scissors line survives; everything below it is dropped.
+    assert n.TuiApp._strip_editor_context(composed.replace("my draft", "edited draft")) == "edited draft"
+
+
+def test_editor_text_compose_without_context_is_identity():
+    assert n.TuiApp._compose_editor_text("draft", "") == "draft"
+    assert n.TuiApp._compose_editor_text("draft", "   ") == "draft"
+    assert n.TuiApp._strip_editor_context("plain text\n") == "plain text"
+
+
+def test_editor_context_returns_last_assistant_reply(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.messages = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {"role": "assistant", "content": None},  # a tool-call turn carries no text
+    ]
+    assert command_loop.editor_context() == "second answer"
+
+    command_loop.session.messages = [{"role": "user", "content": "only a question"}]
+    assert command_loop.editor_context() == ""
+
+
+def test_editor_context_caps_long_replies_to_recent_lines(tmp_path):
+    command_loop = loop(tmp_path)
+    total = command_loop.EDITOR_CONTEXT_MAX_LINES + 50
+    reply = "\n".join(f"line {index}" for index in range(total))
+    command_loop.session.messages = [{"role": "assistant", "content": reply}]
+    lines = command_loop.editor_context().splitlines()
+    assert len(lines) == command_loop.EDITOR_CONTEXT_MAX_LINES + 1  # omission note + kept lines
+    assert lines[0].startswith("# [...")
+    assert lines[1] == "line 50"
+    assert lines[-1] == f"line {total - 1}"
+
+
 def test_tui_app_build_layout_composes_input_and_status():
     app = n.TuiApp()
     layout = app.build_layout()

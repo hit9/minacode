@@ -240,6 +240,7 @@ class TuiApp:
         status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
         activity_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
         input_hint_fn: Callable[[], str] | None = None,
+        editor_context_fn: Callable[[], str] | None = None,
         history: FileHistory | None = None,
         completer: Completer | None = None,
     ) -> None:
@@ -254,6 +255,7 @@ class TuiApp:
         self.status_fragments_fn = status_fragments_fn or list
         self.activity_fragments_fn = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
+        self.editor_context_fn = editor_context_fn or (lambda: "")
         self.input_buffer = Buffer(
             history=history,
             completer=completer,
@@ -670,6 +672,35 @@ class TuiApp:
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vim"
         return shlex.split(editor)
 
+    # Scissors marker (the git "scissors" convention) separating the editable draft from the
+    # read-only reference context that Ctrl-X Ctrl-E appends below it. Everything from this
+    # line down is stripped before the message is sent.
+    EDITOR_CONTEXT_MARKER = "# ------------------------ >8 ------------------------"
+
+    @classmethod
+    def _compose_editor_text(cls, draft: str, context: str) -> str:
+        """Text handed to the external editor: the draft, then (when context is available) a
+        scissors line and the agent's recent reply for reference, since the full-screen editor
+        hides the scrollback the reply is printed into."""
+        context = context.strip()
+        if not context:
+            return draft
+        return (
+            draft
+            + "\n\n"
+            + cls.EDITOR_CONTEXT_MARKER
+            + "\n"
+            + "# Reference only: everything below the scissors line is stripped before your\n"
+            + "# message is sent. The agent's most recent reply follows for reference.\n"
+            + "\n"
+            + context
+        )
+
+    @classmethod
+    def _strip_editor_context(cls, text: str) -> str:
+        """Drop the reference context (scissors line and everything below it) from edited text."""
+        return text.split(cls.EDITOR_CONTEXT_MARKER, 1)[0].rstrip("\n")
+
     def _edit_text_in_editor(self, text: str) -> str | None:
         """Run the editor on `text` via a temp file and return the edited content, or None if the
         editor could not launch or exited non-zero. Runs off the event loop, inside run_in_terminal."""
@@ -694,12 +725,15 @@ class TuiApp:
     async def _run_input_editor(self) -> None:
         # `run_in_terminal` suspends the app and restores it afterward (the same primitive
         # prompt_toolkit uses for its own editor support), so a full-screen editor gets a clean
-        # terminal. A non-zero exit or a launch failure leaves the input untouched.
+        # terminal. A non-zero exit or a launch failure leaves the input untouched. The editor
+        # also receives the agent's recent reply below a scissors line for reference (the
+        # full-screen editor hides the scrollback); that context is stripped back out on return.
         original = self.input_buffer.text
-        edited = await run_in_terminal(lambda: self._edit_text_in_editor(original), in_executor=True)
+        composed = self._compose_editor_text(original, self.editor_context_fn())
+        edited = await run_in_terminal(lambda: self._edit_text_in_editor(composed), in_executor=True)
         if edited is None:
             return
-        edited = edited.rstrip("\n")
+        edited = self._strip_editor_context(edited)
         if edited != original:
             self.input_buffer.reset(Document(edited, cursor_position=len(edited)))
             self.invalidate()
@@ -1726,6 +1760,7 @@ class CommandLoop:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
+    EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
@@ -1963,6 +1998,23 @@ Tools:
         with self.session._queue_lock:
             has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
         return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
+
+    def editor_context(self) -> str:
+        """The agent's most recent reply, restated as read-only reference inside the external
+        editor (Ctrl-X Ctrl-E / Ctrl-G): the full-screen editor hides the terminal scrollback
+        the reply is printed into. Long replies keep only their most recent lines so the
+        editor's temp file stays small."""
+        for message in reversed(self.session.messages):
+            if message.get("role") != "assistant":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                lines = content.strip().splitlines()
+                if len(lines) > self.EDITOR_CONTEXT_MAX_LINES:
+                    drop = len(lines) - self.EDITOR_CONTEXT_MAX_LINES
+                    lines = ["# [... earlier lines of the reply omitted ...]"] + lines[drop:]
+                return "\n".join(lines)
+        return ""
 
     def run_queued_command(self, text: str) -> None:
         """Dispatch a read-only slash command while an agent turn is running."""
@@ -3050,6 +3102,7 @@ class TuiRuntime:
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
             activity_fragments_fn=self.loop.tui_activity_fragments,
             input_hint_fn=self.loop.tui_input_hint,
+            editor_context_fn=self.loop.editor_context,
             history=self.loop.input_history,
             completer=self.loop.input_completer,
         )
