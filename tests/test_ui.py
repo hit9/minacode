@@ -56,7 +56,7 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
         def application(**kwargs):
             return real_application(input=pipe_input, after_render=after_render, **(kwargs | {"output": output}))
 
-        monkeypatch.setattr(n, "Application", application)
+        monkeypatch.setattr(n.tui, "Application", application)
         if text:
             pipe_input.send_text(text)
         driver = None
@@ -121,7 +121,7 @@ def ctrl_c_queue_scenario(cwd, results):
 
     try:
         with create_pipe_input() as pipe_input:
-            n.Application = lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()}))
+            n.tui.Application = lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()}))
 
             def drive():
                 try:
@@ -462,7 +462,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
             full_screen_modes.append(kwargs["full_screen"])
             return real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()}))
 
-        monkeypatch.setattr(n, "Application", application)
+        monkeypatch.setattr(n.tui, "Application", application)
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -507,10 +507,10 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
             emitted_while_running.append(command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
             history_emitted.set()
 
-    monkeypatch.setattr(n, "print_formatted_text", print_formatted)
+    monkeypatch.setattr(n.tui, "print_formatted_text", print_formatted)
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+        monkeypatch.setattr(n.tui, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             assert history_emitted.wait(timeout=1)
@@ -587,7 +587,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     real_application = n.Application
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+        monkeypatch.setattr(n.tui, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -633,7 +633,7 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
     real_application = n.Application
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+        monkeypatch.setattr(n.tui, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -1294,7 +1294,7 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     )
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(n, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(n.tui, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
 
     command_loop.render_resumed_session()
 
@@ -1316,7 +1316,7 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     command_loop.ui.color = True
     monkeypatch.setattr(command_loop, "status", lambda _args: "status marker")
     printed = []
-    monkeypatch.setattr(n, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(n.tui, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
 
     assert command_loop.command("/help") == (True, False)
     assert command_loop.command("/status") == (True, False)
@@ -1392,7 +1392,7 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
     monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(n.Theme, "_mode", "dark")
     emitted = []
-    monkeypatch.setattr(n, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
+    monkeypatch.setattr(n.tui, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
 
     ui = n.UiPrinter()
     # Interactive TTY output stays colored regardless of NO_COLOR — nanocode owns its theming and
@@ -1745,7 +1745,7 @@ def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):
     now = [100.0]
     monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(n, "print_formatted_text", lambda *args, **kwargs: None)
+    monkeypatch.setattr(n.tui, "print_formatted_text", lambda *args, **kwargs: None)
     preview = n.BashLivePreview()
     preview.output = recording_output
     preview.active = True
@@ -1800,7 +1800,7 @@ def test_clip_width_handles_cjk_wide_characters():
 def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_output):
     now = [100.0]
     monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(n, "print_formatted_text", lambda *args, **kwargs: None)
+    monkeypatch.setattr(n.tui, "print_formatted_text", lambda *args, **kwargs: None)
     preview = n.BashLivePreview()
     preview.output = recording_output
     preview.active = True

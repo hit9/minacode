@@ -30,7 +30,7 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
         "load_snapshot",
         classmethod(lambda _cls, uid, config=None, settings=None, cwd="": selected.append((uid, config, settings, cwd)) or resumed),
     )
-    monkeypatch.setattr(n, "Agent", lambda session: session)
+    monkeypatch.setattr(n.tui, "Agent", lambda session: session)
 
     class Loop:
         def run(self):
@@ -39,7 +39,7 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
         def close_background_output(self):
             pass
 
-    monkeypatch.setattr(n, "CommandLoop", lambda _agent: Loop())
+    monkeypatch.setattr(n.tui, "CommandLoop", lambda _agent: Loop())
     monkeypatch.chdir(tmp_path)
 
     assert n.main([flag]) == 0
@@ -81,6 +81,7 @@ def test_runtime_settings_reads_theme_from_config():
     # keyword override even when config is absent
     settings = n.RuntimeSettings.from_dict({}, theme="light")
     assert settings.theme == "light"
+
 
 def test_config_validates_provider_selection_and_provider_fields():
     config = n.Config.from_dict(
@@ -143,7 +144,9 @@ def test_chat_provider_extra_body_passthrough(tmp_path):
 
     # ...and reasoning wins on key conflict so nanocode stays in control of its own fields.
     params = {}
-    client.apply_provider_params(params, n.ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"reasoning": {"effort": "low"}}))
+    client.apply_provider_params(
+        params, n.ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"reasoning": {"effort": "low"}})
+    )
     assert params["extra_body"] == {"reasoning": {"effort": "high"}}
 
     # extra_body round-trips through config; non-object values are ignored.
@@ -210,7 +213,6 @@ def test_strict_tools_gating_and_beta_routing():
     assert provider("https://api.openai.com/v1", strict=True).base_url() == "https://api.openai.com/v1"
 
 
-
 def test_stripped_url_removes_known_suffixes():
     def p(url):
         return n.ProviderConfig(url=url)._stripped_url()
@@ -221,6 +223,7 @@ def test_stripped_url_removes_known_suffixes():
     assert p("https://api.openai.com/v1") == "https://api.openai.com/v1"
     assert p("https://api.openai.com/v1/") == "https://api.openai.com/v1"
     assert p("https://api.openai.com/v1/chat/completions/") == "https://api.openai.com/v1"
+
 
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     before = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
@@ -401,8 +404,9 @@ def test_code_index_refresh_existing_uses_library_async_refresh(tmp_path, monkey
     monkeypatch.setattr(
         n.csi,
         "status",
-        lambda root, *, check=False, max_pending_files=20: calls.append(("status", check))
-        or SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=()),
+        lambda root, *, check=False, max_pending_files=20: (
+            calls.append(("status", check)) or SimpleNamespace(status="ready", message="", reason="", pending_changes=0, pending_files=())
+        ),
     )
     monkeypatch.setattr(n.csi, "refresh_async", lambda root: calls.append(("refresh_async", root)) or Worker())
 
@@ -486,7 +490,7 @@ def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch)
         seen["user_agent"] = request.get_header("User-agent")
         return Response()
 
-    monkeypatch.setattr(n, "urlopen", fake_urlopen)
+    monkeypatch.setattr(n.engine, "urlopen", fake_urlopen)
 
     assert n.UpdateChecker(data_session(tmp_path)).fetch_latest() == "9.8.7"
     assert seen == {"timeout": n.UpdateChecker.TIMEOUT, "user_agent": n.HTTP_USER_AGENT}

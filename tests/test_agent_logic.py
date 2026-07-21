@@ -142,7 +142,13 @@ def test_working_context_includes_recent_tool_errors(tmp_path):
 def test_compaction_uses_configured_context_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
-    s.messages = [{"role": "user", "content": "old user"}, {"role": "assistant", "content": "old answer"}, *({"role": "assistant", "content": f"recent {index}"} for index in range(8)), {"role": "user", "content": "latest"}, {"role": "tool", "content": "tool kept"}]
+    s.messages = [
+        {"role": "user", "content": "old user"},
+        {"role": "assistant", "content": "old answer"},
+        *({"role": "assistant", "content": f"recent {index}"} for index in range(8)),
+        {"role": "user", "content": "latest"},
+        {"role": "tool", "content": "tool kept"},
+    ]
     context = n.ContextManager(s)
 
     class FakeModel:
@@ -302,7 +308,9 @@ def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
     s.messages = [{"role": "user", "content": "older"}, {"role": "assistant", "content": "older answer"}]
     s.messages.append({"role": "user", "content": "do the big thing"})
     for i in range(30):
-        s.messages.append({"role": "assistant", "content": f"step {i}", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]})
+        s.messages.append(
+            {"role": "assistant", "content": f"step {i}", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]}
+        )
         s.messages.append({"role": "tool", "content": f"tool tr.{i}"})
 
     compacted, keep = n.ContextManager(s).compaction_parts()
@@ -466,7 +474,7 @@ def test_compaction_captures_a_history_segment(tmp_path):
 
 
 def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, monkeypatch):
-    monkeypatch.setattr(n, "MAX_TOOL_OUTPUT_TOKENS", 10)
+    monkeypatch.setattr(n.engine, "MAX_TOOL_OUTPUT_TOKENS", 10)
     s = session(tmp_path)
     context = n.ContextManager(s)
 
@@ -557,7 +565,7 @@ def test_history_index_precedes_conversation_and_memory_excludes_it(tmp_path):
 
 
 def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch):
-    monkeypatch.setattr(n, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    monkeypatch.setattr(n.engine, "MAX_TOOL_OUTPUT_TOKENS", 40)
     s = session(tmp_path)
     for index in range(1, 51):
         s.history.append(n.HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
@@ -571,7 +579,7 @@ def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch
 
 
 def test_bounded_history_index_marker_stays_stable_when_appended(tmp_path, monkeypatch):
-    monkeypatch.setattr(n, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    monkeypatch.setattr(n.engine, "MAX_TOOL_OUTPUT_TOKENS", 40)
     s = session(tmp_path)
     for index in range(1, 51):
         s.history.append(n.HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
@@ -888,7 +896,7 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
             self.received_tools = request_tools
             return {"role": "assistant", "content": "done"}, [], "done"
 
-    monkeypatch.setattr(n, "resolved_tool_schemas", resolve)
+    monkeypatch.setattr(n.engine, "_resolved_tool_schemas", resolve)
     agent.model = FakeModel()
 
     assert agent.run("hello") == "done"
@@ -1052,7 +1060,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
 
     echoed = []
-    monkeypatch.setattr(n, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _style, text in value)))
+    monkeypatch.setattr(n.tui, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _style, text in value)))
 
     loop.flush_queued_to_log(["do a thing", "then verify", "  "])
 
@@ -1135,6 +1143,7 @@ def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypa
     assert "preview truncated" not in outputs[0]
     assert any("[approved]" in output for output in outputs)
 
+
 def test_exit_command_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
@@ -1202,9 +1211,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
             {"role": "assistant", "content": "compacted answer\nfinal detail"},
         ]
     )
-    s.tool_records.append(
-        n.ToolResultRecord("tr.1", "Bash", ["wc -l nanocode.py"], "999 nanocode.py", "wc -l nanocode.py")
-    )
+    s.tool_records.append(n.ToolResultRecord("tr.1", "Bash", ["wc -l nanocode.py"], "999 nanocode.py", "wc -l nanocode.py"))
     output = []
     loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
 
@@ -1440,7 +1447,12 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
 
 def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     s = session(tmp_path)
-    s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "old answer"}, {"role": "user", "content": "latest"}, {"role": "tool", "content": "tool kept"}]
+    s.messages = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest"},
+        {"role": "tool", "content": "tool kept"},
+    ]
     s.state.context_percent = 80
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
     transitions = []
@@ -1768,7 +1780,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     _write_skill(tmp_path, "available", "available skill", "body")
     withskill = n.ContextManager(session(tmp_path))
     assert "--- SKILLS ---" in withskill.skills_context()
-    assert any(t["function"]["name"] == "Skill" for t in n.resolved_tool_schemas(withskill.session))
+    assert any(t["function"]["name"] == "Skill" for t in n.tools._resolved_tool_schemas(withskill.session))
     messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
     assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
 
@@ -1776,7 +1788,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     bare = n.ContextManager(session(tmp_path))
     bare.session.skills = n.SkillLibrary({})
     assert bare.skills_context() == ""
-    tools = n.resolved_tool_schemas(bare.session)
+    tools = n.tools._resolved_tool_schemas(bare.session)
     assert not any(t["function"]["name"] == "Skill" for t in tools)
     assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(n.Agent.SYSTEM_PROMPT))
 
@@ -1834,7 +1846,7 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
     context = n.ContextManager(s)
     active_messages = context.model_messages(n.Agent.SYSTEM_PROMPT, s._active_turn_messages)
-    tools = n.resolved_tool_schemas(s)
+    tools = n.tools._resolved_tool_schemas(s)
     active_percent = context.update_percent(active_messages, tools)
     persisted_percent = context.request_tokens(context.model_messages(n.Agent.SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
     assert active_percent > persisted_percent
@@ -1848,7 +1860,7 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
 
 def test_session_from_config_file_theme_param(tmp_path):
     cfg = tmp_path / "nanocode.toml"
-    cfg.write_text("[runtime]\ntheme = \"light\"\n")
+    cfg.write_text('[runtime]\ntheme = "light"\n')
     s = n.Session.from_config_file(path=str(cfg), theme="dark")
     assert s.settings.theme == "dark"
 

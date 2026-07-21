@@ -1,6 +1,16 @@
 # Changelog
 
 
+## 0.11.0 - 2026-07-20
+
+### Changed
+- Split the single `nanocode.py` module into a `nanocode` package of focused submodules — `base`, `session`, `skill`, `mcp`, `tools`, `engine`, `tui` — plus a `__main__` entry module (so `python -m nanocode` now works alongside the `nanocode` console script), all re-exported through `nanocode/__init__.py` so `import nanocode` keeps exposing the same namespace as before. Module-internal helpers (`_read_and_release`, `_validate_edit_target`, `_resolved_tool_schemas`) are underscore-prefixed and gathered at the bottom of `tools.py`. Behavior, the CLI entry point, and the public API are otherwise unchanged; this reorganizes the source so it is easier to navigate and to trim optional features later.
+- Ask previews now ask for concrete graphic content (snippets, directory trees, file shapes) instead of restating the choice label, with the built-in example updated to match.
+
+### Fixed
+- Run background job commands directly under `bash -lc` instead of `exec {command}`. The `exec` prefix failed for shell builtins and compound commands (`cd dir && cmd`) with `exec: cd: not found`; `start_new_session` already makes the shell the process-group leader, so `killpg` still reaches the command and its children.
+
+
 ## 0.10.0 - 2026-07-19
 
 ### Added

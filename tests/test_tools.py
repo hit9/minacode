@@ -22,18 +22,18 @@ def test_validate_edit_target_branches(tmp_path):
     (tmp_path / "sub").mkdir()
 
     # Existing file, editing -> True (caller should read it).
-    assert n.validate_edit_target(s, str(tmp_path / "a.py"), creating=False) is True
+    assert n.tools._validate_edit_target(s, str(tmp_path / "a.py"), creating=False) is True
     # Missing file, creating inside the workspace -> False (create fresh).
-    assert n.validate_edit_target(s, str(tmp_path / "new.py"), creating=True) is False
+    assert n.tools._validate_edit_target(s, str(tmp_path / "new.py"), creating=True) is False
     # Each invalid state raises the same ToolError both edit paths relied on.
     with pytest.raises(n.ToolError, match="file already exists"):
-        n.validate_edit_target(s, str(tmp_path / "a.py"), creating=True)
+        n.tools._validate_edit_target(s, str(tmp_path / "a.py"), creating=True)
     with pytest.raises(n.ToolError, match="path is a directory"):
-        n.validate_edit_target(s, str(tmp_path / "sub"), creating=False)
+        n.tools._validate_edit_target(s, str(tmp_path / "sub"), creating=False)
     with pytest.raises(n.ToolError, match="does not exist"):
-        n.validate_edit_target(s, str(tmp_path / "missing.py"), creating=False)
+        n.tools._validate_edit_target(s, str(tmp_path / "missing.py"), creating=False)
     with pytest.raises(n.ToolError, match="outside workspace"):
-        n.validate_edit_target(s, "/etc/nanocode_should_not_create.py", creating=True)
+        n.tools._validate_edit_target(s, "/etc/nanocode_should_not_create.py", creating=True)
 
 
 def test_read_and_search_success_paths(tmp_path):
@@ -167,8 +167,6 @@ def test_edit_creates_and_patches_file(tmp_path):
         n.EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 
 
-
-
 def test_diff_segments_syntax_highlights_python(tmp_path):
     ui = n.UiPrinter()
     diff = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42\n"
@@ -273,7 +271,7 @@ def test_edit_accepts_inspect_code_anchor(tmp_path):
 
     result = n.EditTool(s, ["note.txt", [{"op": "replace", "start": inspect_anchor, "end": inspect_anchor, "content": "new\n"}]]).call()
 
-    assert "<Edit path=\"note.txt\">" in result
+    assert '<Edit path="note.txt">' in result
     assert path.read_text(encoding="utf-8") == "new\n"
 
 
@@ -325,7 +323,7 @@ def test_bash_behaviors(tmp_path):
     # (regression: per-chunk decoding mangled split characters into replacement chars).
     wide = n.BashTool(s, ['python3 -c "print(chr(0x4e2d)*3000)"']).call()
     assert "�" not in wide
-    assert wide.count(chr(0x4e2d)) == 3000
+    assert wide.count(chr(0x4E2D)) == 3000
 
 
 def test_bash_cancel_kills_active_process(tmp_path):
@@ -364,14 +362,14 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     assert readonly("git --no-pager status --short")
     assert readonly("git diff HEAD~1")
     assert readonly("cat a | grep foo | wc -l")  # pipeline of safe commands
-    assert readonly("ls && cat README.md")       # sequence of safe commands
+    assert readonly("ls && cat README.md")  # sequence of safe commands
     assert readonly("cd /Users/x/proj && git log --oneline -10")  # cd prefix is a benign builtin
     assert readonly("cd a; ls")
     assert readonly("ls -la && find . -maxdepth 2 -type f | grep -v .git | sort | head -80")
     assert readonly("cat f | sort -u | uniq -c")  # sort/uniq are read-only in pipelines
-    assert readonly("grep foo f 2>/dev/null")            # discarding stderr is not a file write
-    assert readonly("ls -la >/dev/null 2>&1")            # /dev/null + stderr-merge
-    assert readonly("cat f | sed -n '1,20p'")            # sed for read-only filtering
+    assert readonly("grep foo f 2>/dev/null")  # discarding stderr is not a file write
+    assert readonly("ls -la >/dev/null 2>&1")  # /dev/null + stderr-merge
+    assert readonly("cat f | sed -n '1,20p'")  # sed for read-only filtering
     assert readonly("tree -L 2 src")
 
     # Anything that writes, executes code, mutates git, or hides execution still asks.
@@ -380,30 +378,29 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     assert not readonly("git log && rm -rf x")
     assert not readonly("ls ; rm x")
     assert not readonly("cat f && python3 evil.py")
-    assert not readonly("git log & rm x")             # backgrounding
+    assert not readonly("git log & rm x")  # backgrounding
     assert not readonly("git commit -m x")
     assert not readonly("git checkout main")
-    assert not readonly("echo hi > out.txt")          # redirection
-    assert not readonly("cat >/dev/nullx")            # /dev/null is only a prefix; writes real file /dev/nullx
-    assert not readonly("echo x >/dev/null.bak")      # /dev/null prefix of a real file
-    assert not readonly("cat 2>/dev/nullish")         # /dev/null prefix on a stderr redirect
-    assert not readonly("cat >/dev/null2>&1")         # writes /dev/null2, not the null device
-    assert not readonly("cat $(cmd)")                  # command substitution
-    assert not readonly("python3 script.py")          # arbitrary code
-    assert not readonly("find . -delete")             # destructive flag
-    assert not readonly("find . -name x -fprint0 out") # file-writing flag
-    assert not readonly("cat f > g")                   # redirection to a real file
-    assert not readonly("sed -i s/a/b/ f")             # in-place edit
-    assert not readonly("sort -o out.txt f")           # sort output file
-    assert not readonly("tree -o out.txt")             # tree output file
-    assert not readonly("sed -i s/a/b/ f")            # in-place edit
-    assert not readonly("git diff --output=patch.txt") # file-writing git option
-    assert not readonly("git grep -O needle")          # opens files via pager/editor
-    assert not readonly("git --paginate log")          # can invoke configured pager
-    assert not readonly("ls & rm x")                  # backgrounding
-    assert not readonly("ls; rm x")                   # unsafe stage in a sequence
-    assert not readonly("FOO=1 env")                  # env assignment / wrapper
-
+    assert not readonly("echo hi > out.txt")  # redirection
+    assert not readonly("cat >/dev/nullx")  # /dev/null is only a prefix; writes real file /dev/nullx
+    assert not readonly("echo x >/dev/null.bak")  # /dev/null prefix of a real file
+    assert not readonly("cat 2>/dev/nullish")  # /dev/null prefix on a stderr redirect
+    assert not readonly("cat >/dev/null2>&1")  # writes /dev/null2, not the null device
+    assert not readonly("cat $(cmd)")  # command substitution
+    assert not readonly("python3 script.py")  # arbitrary code
+    assert not readonly("find . -delete")  # destructive flag
+    assert not readonly("find . -name x -fprint0 out")  # file-writing flag
+    assert not readonly("cat f > g")  # redirection to a real file
+    assert not readonly("sed -i s/a/b/ f")  # in-place edit
+    assert not readonly("sort -o out.txt f")  # sort output file
+    assert not readonly("tree -o out.txt")  # tree output file
+    assert not readonly("sed -i s/a/b/ f")  # in-place edit
+    assert not readonly("git diff --output=patch.txt")  # file-writing git option
+    assert not readonly("git grep -O needle")  # opens files via pager/editor
+    assert not readonly("git --paginate log")  # can invoke configured pager
+    assert not readonly("ls & rm x")  # backgrounding
+    assert not readonly("ls; rm x")  # unsafe stage in a sequence
+    assert not readonly("FOO=1 env")  # env assignment / wrapper
 
 
 def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
@@ -461,26 +458,40 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     assert calls[4] == (
         "refs",
         "Example",
-        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text",
-         "limit": n.csi.DEFAULT_MAX_REFERENCES, "offset": 5, "ref_kinds": "all"},
+        {
+            "root": str(tmp_path),
+            "kind": None,
+            "path": None,
+            "exact_only": False,
+            "format": "text",
+            "limit": n.csi.DEFAULT_MAX_REFERENCES,
+            "offset": 5,
+            "ref_kinds": "all",
+        },
     )
     assert calls[5] == (
         "impls",
         "Example",
-        {"root": str(tmp_path), "kind": "class", "path": None, "exact_only": False, "format": "text",
-         "limit": n.csi.DEFAULT_MAX_IMPLEMENTORS, "offset": 0},
+        {"root": str(tmp_path), "kind": "class", "path": None, "exact_only": False, "format": "text", "limit": n.csi.DEFAULT_MAX_IMPLEMENTORS, "offset": 0},
     )
     assert calls[6] == (
         "callers",
         "Example",
-        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text",
-         "limit": n.csi.DEFAULT_MAX_CALLERS, "depth": 2},
+        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text", "limit": n.csi.DEFAULT_MAX_CALLERS, "depth": 2},
     )
     assert calls[7] == (
         "callees",
         "Example",
-        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text",
-         "limit": n.csi.DEFAULT_MAX_CALLEES, "depth": 3, "loose": False},
+        {
+            "root": str(tmp_path),
+            "kind": None,
+            "path": None,
+            "exact_only": False,
+            "format": "text",
+            "limit": n.csi.DEFAULT_MAX_CALLEES,
+            "depth": 3,
+            "loose": False,
+        },
     )
 
     assert "refs ok" in n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call,write"}]).call()
@@ -677,6 +688,7 @@ def test_reject_collapses_display(tmp_path):
     # model still receives the full error
     assert "Read requires non-empty ranges" in msg
 
+
 def test_uiprinter_renders_rejected_line_dim():
     ui = n.UiPrinter(output_fn=lambda text: None)
     segs = ui.log_segments(n.LogBlock([n.LogLine("Read", "· rejected: needs ranges", n.LogRole.MUTED)]))
@@ -783,6 +795,7 @@ def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
     assert "status=done" in result
     assert "exit_code=0" in result
 
+
 def test_job_status_accepts_bare_numeric_id(tmp_path):
     s = session(tmp_path)
     n.JobTool(s, [{"action": "start", "command": "true"}]).call()
@@ -792,6 +805,7 @@ def test_job_status_accepts_bare_numeric_id(tmp_path):
 
     assert "Status: done" in result
     assert "Exit code: 0" in result
+
 
 def test_job_captures_large_output_via_log_file(tmp_path):
     s = session(tmp_path)
@@ -940,6 +954,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     search_params = n.SearchTool.schema()["function"]["parameters"]
     assert {"pattern", "queries"} <= set(search_params["properties"])
     assert search_params["properties"]["queries"]["items"]["properties"]["context"]["type"] == "integer"
+
     def walk(value):
         if isinstance(value, dict):
             assert "anyOf" not in value
@@ -983,7 +998,13 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
             n.ToolCall(
                 "note",
                 "Note",
-                [{"set_goal": "ship", "replace_plan": [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}], "append_known": ["existing", "pytest"]}],
+                [
+                    {
+                        "set_goal": "ship",
+                        "replace_plan": [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}],
+                        "append_known": ["existing", "pytest"],
+                    }
+                ],
             )
         ]
     )
@@ -1043,6 +1064,7 @@ def test_note_tool_set_check(tmp_path):
     runner.run([n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
     assert s.state.check == "pytest -q passed"
     assert output == ["check: pytest -q passed"]
+
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
     s = session(tmp_path)
@@ -1574,7 +1596,9 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True
     events = []
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
+    runner = n.ToolRunner(
+        s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None
+    )
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
@@ -1588,7 +1612,12 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
 def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     s = session(tmp_path)
     events = []
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: events.append(("display", str(text))))
+    runner = n.ToolRunner(
+        s,
+        n.ContextManager(s),
+        input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
+        output_fn=lambda text: events.append(("display", str(text))),
+    )
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
     runner.bash_live_preview_shown = lambda: True
@@ -1659,13 +1688,15 @@ def test_tool_runner_compact_bash_result_keeps_preview_without_live_frame(tmp_pa
     runner.bash_live_preview_shown = lambda: False
     output = n.Tool.process_result("BashToolResult", 0, "visible output", "")
 
-    display = str(runner.finish_display(
-        n.ToolCall("bash", "Bash", ["printf visible"]),
-        "tr.1",
-        output,
-        failed=False,
-        d=n.ToolDisplay(nested_display=True),
-    ))
+    display = str(
+        runner.finish_display(
+            n.ToolCall("bash", "Bash", ["printf visible"]),
+            "tr.1",
+            output,
+            failed=False,
+            d=n.ToolDisplay(nested_display=True),
+        )
+    )
 
     assert display.startswith("    ├ output")
     assert "stdout:" in display
@@ -1713,7 +1744,7 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     printed = []
     now = [100.4]
     monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(n, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
+    monkeypatch.setattr(n.tui, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
 
     class FakeOut:
         def write_raw(self, s=""):
@@ -1747,7 +1778,9 @@ def test_code_index_updates_after_file_mutation_tools(tmp_path, monkeypatch):
     s.settings.yolo = True
     updated = []
     monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: updated.extend(paths) or "")
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
+    runner = n.ToolRunner(
+        s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None
+    )
 
     runner.run([n.ToolCall("empty", "Edit", ["empty.py", [{"op": "create", "content": ""}]])])
     runner.run([n.ToolCall("create", "Edit", ["made.py", [{"op": "create", "content": "print(1)\n"}]])])
@@ -1773,7 +1806,9 @@ def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_pa
 def test_yolo_approves_mutating_tools_without_prompt(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
+    runner = n.ToolRunner(
+        s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None
+    )
 
     runner.run([n.ToolCall("create", "Edit", ["auto.txt", [{"op": "create", "content": "ok\n"}]])])
 
@@ -1916,9 +1951,7 @@ def test_gitignore_cache_preserves_order(tmp_path):
 
 def test_gitignore_line_filtering_unchanged(tmp_path):
     """Cache still filters blank lines, comments, and negation patterns."""
-    (tmp_path / ".gitignore").write_text(
-        "keep.txt\n\n  # comment\n!negated.txt\n  \n", encoding="utf-8"
-    )
+    (tmp_path / ".gitignore").write_text("keep.txt\n\n  # comment\n!negated.txt\n  \n", encoding="utf-8")
     s = session(tmp_path)
     tool = n.SearchTool(s, [{"pattern": "x"}])
 
@@ -1926,6 +1959,7 @@ def test_gitignore_line_filtering_unchanged(tmp_path):
     assert patterns == ["keep.txt"]
 
     assert s.tool_errors == []
+
 
 # ---------------------------------------------------------------------------
 # AskTool
@@ -1980,11 +2014,16 @@ def test_ask_tool_call_with_choices(tmp_path):
 def test_ask_tool_call_with_choices_and_previews(tmp_path):
     """call() accepts choices + previews."""
     s = session(tmp_path)
-    tool = n.AskTool(s, _q({
-        "question": "Which?",
-        "choices": ["A", "B"],
-        "previews": ["Preview A", "Preview B"],
-    }))
+    tool = n.AskTool(
+        s,
+        _q(
+            {
+                "question": "Which?",
+                "choices": ["A", "B"],
+                "previews": ["Preview A", "Preview B"],
+            }
+        ),
+    )
     assert tool.call() == "Which?"
 
 
@@ -2015,10 +2054,13 @@ def test_ask_tool_call_multiple_questions(tmp_path):
         asked.append((spec.question, position))
         return {"Runtime?": "Node", "Name?": "core"}[spec.question]
 
-    tool = n.AskTool(s, _q(
-        {"question": "Runtime?", "choices": ["Node", "Deno"]},
-        {"question": "Name?"},
-    ))
+    tool = n.AskTool(
+        s,
+        _q(
+            {"question": "Runtime?", "choices": ["Node", "Deno"]},
+            {"question": "Name?"},
+        ),
+    )
     tool.question_fn = fake_fn
     result = tool.call()
     assert asked == [("Runtime?", "1/2"), ("Name?", "2/2")]  # sequential, with position
@@ -2034,10 +2076,13 @@ def test_ask_tool_validates_batch_before_asking(tmp_path):
         asked.append(spec.question)
         return "x"
 
-    tool = n.AskTool(s, _q(
-        {"question": "First?", "choices": ["A"]},
-        {"question": "Second?", "choices": ["A", "B"], "recommended": 5},  # out of range
-    ))
+    tool = n.AskTool(
+        s,
+        _q(
+            {"question": "First?", "choices": ["A"]},
+            {"question": "Second?", "choices": ["A", "B"], "recommended": 5},  # out of range
+        ),
+    )
     tool.question_fn = fake_fn
     with pytest.raises(n.ToolError, match="valid 0-based choice index"):
         tool.call()

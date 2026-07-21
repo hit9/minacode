@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanocode-cli"
-version = "0.10.0"
+version = "0.11.0"
 description = "A small terminal coding agent written in Python"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -58,7 +58,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["nanocode"]
+packages = ["nanocode"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -66,3 +66,11 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 160
 target-version = "py311"
+
+[tool.ruff.lint]
+# The package is a facade: submodules build one shared namespace via a star-import
+# chain (base <- session <- skill <- mcp <- tools <- engine <- tui) and __init__.py
+# re-exports it. base.py carries the whole import header, so many of its imports are
+# only used by downstream modules through the star chain; star-import warnings and
+# re-export "unused" imports are therefore expected rather than dead code.
+per-file-ignores = { "nanocode/*.py" = ["F403", "F405"], "nanocode/__init__.py" = ["F401"], "nanocode/base.py" = ["F401"] }
