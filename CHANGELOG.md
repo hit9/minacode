@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+### Changed
+- Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
+
 
 ## 0.12.0 - 2026-07-21
 

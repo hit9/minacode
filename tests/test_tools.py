@@ -1647,8 +1647,8 @@ def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     assert ("stdout", "live") in events
     assert events[-1][0] == "display"
     assert "    ├ output" in events[-1][1]
-    assert "Ctrl-O to expand" in events[-1][1]
-    assert "live" not in events[-1][1]
+    assert "Ctrl-O for more" in events[-1][1]
+    assert "live" in events[-1][1]
     assert "    └ stored tr." in events[-1][1]
     assert sum("printf live" in text for kind, text in events if kind == "display") == 1
     assert sum("Bash" in text for kind, text in events if kind == "display") == 1
@@ -1668,14 +1668,14 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     assert display[0].startswith("  Bash  ")
     assert "approval required" not in display[0]
     assert display[-1].startswith("    ├ output")
-    assert "Ctrl-O to expand" in display[-1]
+    assert "Ctrl-O for more" in display[-1]
     assert "    └ stored tr." in display[-1]
     assert display[-1].endswith("[approved]")
     assert sum(text.startswith("  Bash  ") for text in display) == 1
     assert sum("printf approved" in text for text in display) == 1
 
 
-def test_tool_runner_finish_display_collapses_bash_output(tmp_path):
+def test_tool_runner_finish_display_bounds_bash_output(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
     stdout = "\n".join(f"out {index}" for index in range(20))
@@ -1684,25 +1684,27 @@ def test_tool_runner_finish_display_collapses_bash_output(tmp_path):
     display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
 
     assert display.startswith("  Bash  printf lots\n")
-    assert "    ├ output Ctrl-O to expand" in display
-    assert "out 0" not in display
-    assert "err" not in display
+    assert "    ├ output Ctrl-O for more" in display
+    assert "out 0" in display
+    assert "... 17 lines omitted ..." in display
+    assert "out 18" in display and "out 19" in display
+    assert "err" in display
     assert display.endswith("    └ stored tr.1")
 
 
-def test_tool_runner_finish_display_keeps_bash_output_after_live_preview(tmp_path):
+def test_tool_runner_finish_display_keeps_bounded_bash_output_after_live_preview(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
     output = n.Tool.process_result("BashToolResult", 0, "live output", "")
 
     display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
 
-    assert "    ├ output Ctrl-O to expand" in display
-    assert "live output" not in display
+    assert "    ├ output Ctrl-O for more" in display
+    assert "live output" in display
     assert display.endswith("    └ stored tr.1")
 
 
-def test_tool_runner_compact_bash_result_keeps_fold_without_live_frame(tmp_path):
+def test_tool_runner_compact_bash_result_keeps_bounded_output_without_live_frame(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
     output = n.Tool.process_result("BashToolResult", 0, "visible output", "")
@@ -1717,8 +1719,8 @@ def test_tool_runner_compact_bash_result_keeps_fold_without_live_frame(tmp_path)
         )
     )
 
-    assert display.startswith("    ├ output Ctrl-O to expand")
-    assert "visible output" not in display
+    assert display.startswith("    ├ output Ctrl-O for more")
+    assert "visible output" in display
 
 
 def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypatch):
@@ -1748,14 +1750,17 @@ def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
     assert "before </stderr> after" in preview
 
 
-def test_tool_runner_bash_preview_does_not_omit_single_line(tmp_path):
+def test_tool_runner_bash_preview_omits_past_limit(tmp_path):
     s = session(tmp_path)
     runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
     lines = [f"line {index}" for index in range(n.ToolRunner.BASH_PREVIEW_LINES + 1)]
 
     preview = runner.preview_lines("\n".join(lines))
 
-    assert preview == lines
+    assert len(preview) == n.ToolRunner.BASH_PREVIEW_LINES + 1
+    assert preview[0] == "line 0"
+    assert preview[n.ToolRunner.BASH_PREVIEW_LINES // 2] == "... 1 line omitted ..."
+    assert preview[-1] == lines[-1]
 
 
 def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):

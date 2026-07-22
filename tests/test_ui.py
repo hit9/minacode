@@ -1570,7 +1570,7 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     monkeypatch.setattr(n.shutil, "get_terminal_size", lambda _fallback: n.os.terminal_size((50, 20)))
     command_loop = loop(tmp_path)
     for index in range(12):
-        stdout = "\n".join(f"line {line}" for line in range(20)) if index == 10 else f"output {index}"
+        stdout = "\n".join(f"line {line}" for line in range(40)) if index == 10 else f"output {index}"
         stderr = "detail stderr" if index == 10 else ""
         command_loop.session.store_tool_result("Bash", [f"printf command-{index}"], n.Tool.process_result("BashToolResult", 0, stdout, stderr))
     command_loop.session.store_tool_result("Bash", ["true"], n.Tool.process_result("BashToolResult", 0, "", ""))
@@ -1588,8 +1588,8 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     assert second_detail.startswith("\n──── Bash output · tr.11 ")
     assert get_cwidth(second_detail.splitlines()[1]) == 48
     assert "command-10" in second_detail
-    assert "line 0" in second_detail and "line 19" in second_detail
-    assert "... 8 lines omitted ..." in second_detail
+    assert "line 0" in second_detail and "line 39" in second_detail
+    assert "... 16 lines omitted ..." in second_detail
     assert "detail stderr" in second_detail
     assert "──── Bash outputs · latest 10 " in "".join(value for _style, value in modal.frames[3])
     oldest_detail = "".join(value for _style, value in modal.frames[5])

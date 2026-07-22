@@ -33,15 +33,14 @@ marked as interrupted so minacode knows it ended early.
 
 While Bash runs, its live output stays above the `working` divider. When the command
 is running, a blank row keeps its last live-output line clear of that divider. When the
-command finishes, minacode keeps the transcript quiet by folding that preview into a gray
-`output · Ctrl-O to expand` row. Press `Ctrl-O` to browse the ten most recent completed
-Bash previews, newest first. Use `j`/`k` or the arrows to select one and `Enter` to open
-it; `Esc` returns to the list, while `Ctrl-O` or `q` closes the viewer. The complete
-result remains stored under its `tr.N` key even when the preview is folded. Each viewer
-screen leaves a blank row above its subdued labeled rule, separating it from terminal
-scrollback.
+command finishes, minacode keeps up to three lines from each output stream in the transcript.
+The gray `output · Ctrl-O for more` row opens a larger, bounded preview: press `Ctrl-O`
+to browse the ten most recent completed Bash previews, newest first. Use `j`/`k` or the arrows
+to select one and `Enter` to open it; `Esc` returns to the list, while `Ctrl-O` or `q` closes
+the viewer. The complete result remains stored under its `tr.N` key. Each viewer screen leaves
+a blank row above its subdued labeled rule, separating it from terminal scrollback.
 
-<div class="term-shot" role="img" aria-label="A completed Bash command with folded output, followed by the Ctrl-O list of recent Bash commands and one expanded output preview, each separated from scrollback by a labeled rule."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O to expand</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-divider">──── Bash outputs · latest 3 ───────────────</span><span class="fs-sel">&gt;  1. tr.18  Bash pytest -q</span><span class="fs-dim">   2. tr.17  Bash git diff --check</span><span class="fs-dim">   3. tr.16  Bash git status --short</span><span> </span><span class="fs-divider">──── Bash output · tr.18 ──────────────────</span><span class="fs-dim">  Bash pytest -q</span><span class="fs-dim"> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    708 passed in 14.84s</span><span class="fs-dim"> </span><span class="fs-dim">  Esc / ← back · Ctrl-O / q closes</span></div>
+<div class="term-shot" role="img" aria-label="A completed Bash command with bounded output, followed by the Ctrl-O list of recent Bash commands and one larger output preview, each separated from scrollback by a labeled rule."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O for more</span><span class="fs-dim">    │ stdout:</span><span class="fs-output">    │   708 passed in 14.84s</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-divider">──── Bash outputs · latest 3 ───────────────</span><span class="fs-sel">&gt;  1. tr.18  Bash pytest -q</span><span class="fs-dim">   2. tr.17  Bash git diff --check</span><span class="fs-dim">   3. tr.16  Bash git status --short</span><span> </span><span class="fs-divider">──── Bash output · tr.18 ──────────────────</span><span class="fs-dim">  Bash pytest -q</span><span class="fs-dim"> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    708 passed in 14.84s</span><span class="fs-dim"> </span><span class="fs-dim">  Esc / ← back · Ctrl-O / q closes</span></div>
 
 ## Commands
 

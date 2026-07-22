@@ -672,7 +672,8 @@ class ToolDisplay:
 
 
 class ToolRunner:
-    BASH_PREVIEW_LINES: ClassVar[int] = 12
+    BASH_TRANSCRIPT_PREVIEW_LINES: ClassVar[int] = 3
+    BASH_PREVIEW_LINES: ClassVar[int] = 24
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
 
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
@@ -988,10 +989,11 @@ class ToolRunner:
             if summary:
                 children.append(LogLine("", summary, LogRole.META, LogEdge.END))
         elif call.name == "Bash":
-            preview = self.bash_result_preview(output)
+            preview = self.bash_result_preview(output, self.BASH_TRANSCRIPT_PREVIEW_LINES)
             if preview:
                 duration = f" · {elapsed:.1f}s" if elapsed is not None else ""
-                children.append(LogLine("output" + duration, "Ctrl-O to expand", LogRole.META, LogEdge.BRANCH))
+                children.append(LogLine("output" + duration, "Ctrl-O for more", LogRole.META, LogEdge.BRANCH))
+                children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         elif call.name == "Ask":
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         if tree and not failed:
@@ -1014,12 +1016,12 @@ class ToolRunner:
         meta = ("  " + batch_suffix) if batch_suffix else ""
         return LogLine(name, args, role, meta=meta, syntax=syntax)
 
-    def bash_result_preview(self, output: str) -> str:
+    def bash_result_preview(self, output: str, line_limit: int | None = None) -> str:
         sections = []
         for name in ("stdout", "stderr"):
             text = self.tagged_output(output, name).strip()
             if text:
-                sections.extend([name + ":", *("  " + line for line in self.preview_lines(text))])
+                sections.extend([name + ":", *("  " + line for line in self.preview_lines(text, line_limit))])
         return "\n".join(sections)
 
     @staticmethod
@@ -1039,13 +1041,14 @@ class ToolRunner:
         text = output[start:end]
         return text[:-1] if text.endswith("\n") else text
 
-    def preview_lines(self, text: str) -> list[str]:
+    def preview_lines(self, text: str, line_limit: int | None = None) -> list[str]:
+        line_limit = self.BASH_PREVIEW_LINES if line_limit is None else line_limit
         lines = [self.clip_preview_line(line) for line in text.splitlines()]
-        if len(lines) <= self.BASH_PREVIEW_LINES + 1:
+        if len(lines) <= line_limit:
             return lines
-        head = self.BASH_PREVIEW_LINES // 2
-        tail = self.BASH_PREVIEW_LINES - head
-        omitted = len(lines) - self.BASH_PREVIEW_LINES
+        head = line_limit // 2
+        tail = line_limit - head
+        omitted = len(lines) - line_limit
         noun = "line" if omitted == 1 else "lines"
         return [*lines[:head], f"... {omitted} {noun} omitted ...", *lines[-tail:]]
 
