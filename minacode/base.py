@@ -190,7 +190,7 @@ class ProviderConfig:
     strict_tools: bool = False
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
-    timeout: int = 180
+    timeout: int = 120
     extra_body: Json = field(default_factory=dict)
 
     @classmethod
@@ -218,7 +218,7 @@ class ProviderConfig:
             strict_tools=Config.bool(data, "strict_tools", False),
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
-            timeout=Config.int(data, "timeout", 180),
+            timeout=Config.int(data, "timeout", 120),
             extra_body=Config.table(data, "extra_body"),
         )
 
@@ -425,7 +425,7 @@ key = ""
 model = ""
 # api = "auto"                 # auto | anthropic | openai | ...
 # reasoning = "medium"
-# timeout = 180
+# timeout = 120
 # available_models = ["gpt-5", "gpt-5-mini"]
 
 # [runtime]                    # optional overrides (defaults shown)

@@ -1067,20 +1067,22 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
     now = [100.0]
     monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
 
+    command_loop.session.state.current_model_attempt = 2
+    command_loop.session.state.model_retry_reason = "timeout"
     command_loop.session.state.model_retry_count += 1
     retrying = command_loop.queue_divider_fragments()
     retrying_text = "".join(text for _style, text in retrying)
-    assert "retrying (10s)" in retrying_text
+    assert "retrying 2/3 · timeout (10s)" in retrying_text
     assert any(text == "● " for _style, text in retrying)
-    assert ("retrying", "warn") in command_loop.status_bar.entries(show_elapsed=True)
+    assert ("retrying 2/3 · timeout", "warn") in command_loop.status_bar.entries(show_elapsed=True)
 
     now[0] = 102.1
     working = command_loop.queue_divider_fragments()
     working_text = "".join(text for _style, text in working)
-    assert "working (12s)" in working_text
+    assert "working · attempt 2/3 (12s)" in working_text
     assert "retrying" not in working_text
     assert any(text == "● " for _style, text in working)
-    assert ("retrying", "warn") not in command_loop.status_bar.entries(show_elapsed=True)
+    assert ("attempt 2/3", "warn") in command_loop.status_bar.entries(show_elapsed=True)
 
     command_loop.session.state.current_model_call_started_at = 0.0
     assert all(text != "● " for _style, text in command_loop.queue_divider_fragments())

@@ -287,8 +287,8 @@ msgstr ""
 "deepseek-v4-flash`。"
 
 #: ../../usage.md:112
-msgid "**`/resend`** — Cancel and re-send the in-flight model request without restarting the turn. Type it while a model request is waiting; it has no effect while the agent is running a tool or otherwise between model calls. The divider briefly reports the retry, keeps its elapsed timer and waiting pulse, then returns to `working` for the replacement request:"
-msgstr "**`/resend`** — 取消并重新发送正在进行的模型请求，而不重新开始当前轮次。仅在模型请求等待响应时输入；agent 正在运行工具或处于两次模型调用之间时，该命令不会生效。分隔线会短暂显示重试状态，同时保留已用时间和等待脉冲，随后在替代请求继续期间恢复为 `working`："
+msgid "**`/resend`** — Cancel and re-send the in-flight model request without restarting the turn. Type it while a model request is waiting; it has no effect while the agent is running a tool or otherwise between model calls. The divider briefly reports the retry, keeps its elapsed timer and waiting pulse, then returns to `working` for the replacement request. Automatic retries also show their attempt and concise reason, such as `retrying 2/3 · timeout`, followed by `working · attempt 2/3` while that request continues:"
+msgstr "**`/resend`** — 取消并重新发送正在进行的模型请求，而不重新开始当前轮次。仅在模型请求等待响应时输入；agent 正在运行工具或处于两次模型调用之间时，该命令不会生效。分隔线会短暂显示重试状态，同时保留已用时间和等待脉冲，随后在替代请求继续期间恢复为 `working`。自动重试还会显示当前尝试次数和简短原因，例如 `retrying 2/3 · timeout`；随后在该请求继续时显示 `working · attempt 2/3`："
 
 #: ../../usage.md:115
 msgid "MCP"

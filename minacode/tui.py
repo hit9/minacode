@@ -52,6 +52,7 @@ from rich.text import Text as RichText
 from minacode.base import (
     DISMISSED,
     HTTP_USER_AGENT,
+    MODEL_REQUEST_RETRIES,
     REASONING_CHOICES,
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
@@ -1509,6 +1510,18 @@ class StatusBar:
             self.retry_notice_until = now + self.RETRY_NOTICE_DURATION
         return self.retry_notice_until > now
 
+    def model_attempt_status(self) -> str:
+        attempt = self.session.state.current_model_attempt
+        return f"attempt {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else ""
+
+    def retry_status(self) -> str:
+        if not self.retry_notice_active():
+            return ""
+        attempt = self.session.state.current_model_attempt
+        text = f"retrying {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else "retrying"
+        reason = self.session.state.model_retry_reason
+        return text + (" · " + reason if reason else "")
+
     def fragments(self, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
         entries = self.entries(show_elapsed=show_elapsed)
         text = " | ".join(text for text, _ in entries)
@@ -1549,8 +1562,10 @@ class StatusBar:
                     ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
                 ]
             )
-            if self.retry_notice_active():
-                parts.append(("retrying", "warn"))
+            if retry_status := self.retry_status():
+                parts.append((retry_status, "warn"))
+            elif attempt_status := self.model_attempt_status():
+                parts.append((attempt_status, "warn"))
             elif self.model_elapsed() >= self.stress_after():
                 parts.append(("/resend to re-request", "warn"))
         return parts
@@ -2065,7 +2080,9 @@ Tools:
     def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
         if status == "working":
-            activity = "retrying" if self.status_bar.retry_notice_active() else "working"
+            retry_status = self.status_bar.retry_status()
+            attempt_status = self.status_bar.model_attempt_status()
+            activity = retry_status or ("working · " + attempt_status if attempt_status else "working")
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:
             label = status

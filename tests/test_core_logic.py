@@ -64,6 +64,11 @@ def test_runtime_settings_default_context_budget_is_240k():
     assert n.RuntimeSettings.from_dict({}).max_context_tokens == 240 * 1024
 
 
+def test_provider_default_timeout_is_120_seconds():
+    assert n.ProviderConfig().timeout == 120
+    assert n.Config.from_dict({}).provider.timeout == 120
+
+
 def test_runtime_settings_reads_theme_from_config():
     settings = n.RuntimeSettings.from_dict(
         {"runtime": {"theme": "light"}},
@@ -285,19 +290,27 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     s.config.provider.model = "model"
     client = n.ModelClient(s)
     calls = []
+    retries = []
 
     def fail(_messages, _tools):
         calls.append(1)
         raise n.ModelError("Error code: 500 - provider failed")
 
     monkeypatch.setattr(client, "chat_request", fail)
-    monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        n.time,
+        "sleep",
+        lambda _seconds: retries.append((s.state.current_model_attempt, s.state.model_retry_reason)),
+    )
 
     with pytest.raises(n.ModelError, match="after 3 attempts"):
         client.request([{"role": "user", "content": "hi"}])
 
     assert len(calls) == 3
+    assert retries == [(2, "500"), (3, "500")]
     assert s.state.model_retry_count == 2
+    assert s.state.current_model_attempt == 0
+    assert s.state.model_retry_reason == ""
 
 
 def test_retryable_error_detects_status_codes_in_text(tmp_path):
@@ -306,6 +319,14 @@ def test_retryable_error_detects_status_codes_in_text(tmp_path):
     assert client.retryable_error(n.ModelError("Error code: 500 - provider failed"))
     assert client.retryable_error(n.ModelError("{'error': {'code': 503, 'message': 'busy'}}"))
     assert not client.retryable_error(n.ModelError("Error code: 400 - bad request"))
+
+
+def test_retry_reason_is_short_and_safe(tmp_path):
+    client = n.ModelClient(session(tmp_path))
+
+    assert client.retry_reason(n.ModelError("Error code: 429 - secret provider payload")) == "429"
+    assert client.retry_reason(n.ModelError("request timed out with secret provider payload")) == "timeout"
+    assert client.retry_reason(n.ModelError("connection reset by peer")) == "connection"
 
 
 def test_model_usage_counts_cached_tokens_from_multiple_shapes():

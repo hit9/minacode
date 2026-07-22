@@ -36,7 +36,7 @@ Switch providers within a session with `/provider [NAME]` and models with `/mode
 | `reasoning` | `medium` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `chat_reasoning` | `auto` | Chat-API reasoning format: `auto`, `off`, `reasoning`, `reasoning_effort`, `thinking`, or `enable_thinking` |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; use `off` to disable or provide a custom key |
-| `timeout` | `180` | Request timeout, in seconds |
+| `timeout` | `120` | Request timeout, in seconds |
 | `available_models` | — | Models offered by `/model`'s picker |
 | `temperature` | — | Sampling temperature (omit to use the server default) |
 | `max_tokens` | — | Cap on output tokens and reserve that space during automatic compaction |

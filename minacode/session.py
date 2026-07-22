@@ -74,6 +74,8 @@ class AgentState:
     current_model_call_started_at: float = 0.0
     manual_model_retry_requested: bool = False
     model_retry_count: int = 0
+    current_model_attempt: int = 0
+    model_retry_reason: str = ""
     compaction_count: int = 0
 
     def __post_init__(self) -> None:

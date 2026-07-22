@@ -1199,26 +1199,36 @@ class ModelClient:
             raise ModelError("missing config: " + ", ".join(missing))
         self.cancel_requested.clear()
         tools = tools if tools is not None else _resolved_tool_schemas(self.session)
-        for attempt in range(MODEL_REQUEST_RETRIES + 1):
-            self.session.state.current_model_call_started_at = time.monotonic()
-            try:
-                return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
-            except KeyboardInterrupt:
-                if self.session.state.manual_model_retry_requested:
-                    self.session.state.manual_model_retry_requested = False
-                    raise ModelRequestRetry() from None
-                raise
-            except ModelError as error:
-                retryable = self.retryable_error(error)
-                if attempt >= MODEL_REQUEST_RETRIES or not retryable:
-                    if attempt:
-                        raise ModelError(f"{error} (after {attempt + 1} attempts)") from error
+        state = self.session.state
+        state.current_model_attempt = 1
+        state.model_retry_reason = ""
+        try:
+            for attempt in range(MODEL_REQUEST_RETRIES + 1):
+                state.current_model_attempt = attempt + 1
+                state.current_model_call_started_at = time.monotonic()
+                try:
+                    return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
+                except KeyboardInterrupt:
+                    if state.manual_model_retry_requested:
+                        state.manual_model_retry_requested = False
+                        raise ModelRequestRetry() from None
                     raise
-                self.session.state.model_retry_count += 1
-                time.sleep(0.5 * (attempt + 1))
-            finally:
-                self.session.state.current_model_call_started_at = 0.0
-        raise ModelError("model request retry exhausted")
+                except ModelError as error:
+                    retryable = self.retryable_error(error)
+                    if attempt >= MODEL_REQUEST_RETRIES or not retryable:
+                        if attempt:
+                            raise ModelError(f"{error} (after {attempt + 1} attempts)") from error
+                        raise
+                    state.current_model_attempt = attempt + 2
+                    state.model_retry_reason = self.retry_reason(error)
+                    state.model_retry_count += 1
+                    time.sleep(0.5 * (attempt + 1))
+                finally:
+                    state.current_model_call_started_at = 0.0
+            raise ModelError("model request retry exhausted")
+        finally:
+            state.current_model_attempt = 0
+            state.model_retry_reason = ""
 
     @staticmethod
     def retryable_error(error: Exception) -> bool:
@@ -1250,6 +1260,25 @@ class ModelClient:
         return any(
             part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
         )
+
+    @staticmethod
+    def retry_reason(error: Exception) -> str:
+        cause = getattr(error, "__cause__", None)
+        status = getattr(cause, "status_code", None) or getattr(cause, "code", None)
+        with contextlib.suppress(Exception):
+            if 400 <= int(status) <= 599:
+                return str(int(status))
+        text = str(error).lower()
+        match = re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b", text)
+        if match:
+            return match.group(1)
+        if "timeout" in text or "timed out" in text:
+            return "timeout"
+        if any(part in text for part in ("connection", "reset", "aborted")):
+            return "connection"
+        if "internal server error" in text or "temporarily unavailable" in text:
+            return "server error"
+        return "transient error"
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)

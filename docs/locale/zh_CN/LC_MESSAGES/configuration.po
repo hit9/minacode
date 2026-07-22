@@ -149,8 +149,8 @@ msgid "`timeout`"
 msgstr "`timeout`"
 
 #: ../../configuration.md
-msgid "`180`"
-msgstr "`180`"
+msgid "`120`"
+msgstr "`120`"
 
 #: ../../configuration.md
 msgid "Request timeout, in seconds"
