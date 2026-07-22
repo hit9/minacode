@@ -2741,9 +2741,24 @@ Tools:
         return self.HELP.rstrip()
 
     def status(self, args: str) -> str:
+        def progress_bar(value: int, total: int, width: int = 20) -> str:
+            ratio = min(1.0, max(0.0, value / total)) if total else 0.0
+            eighths = int(ratio * width * 8 + 0.5)
+            full, partial = divmod(eighths, 8)
+            partials = "▏▎▍▌▋▊▉"
+            return "[" + "█" * full + (partials[partial - 1] if partial else "") + "░" * (width - full - bool(partial)) + "]"
+
+        def token_count(value: int) -> str:
+            if value >= 1_000_000:
+                return f"{value / 1_000_000:.1f}M"
+            if value >= 1_000:
+                return f"{value / 1_000:.1f}K"
+            return str(value)
+
         usage = self.session.usage
         provider = self.session.config.provider
-        self.agent.context.update_current_percent(self.agent.SYSTEM_PROMPT)
+        context_tokens = self.agent.context.update_current_tokens(self.agent.SYSTEM_PROMPT)
+        context_budget = self.agent.context.request_token_budget()
         index = CodeIndex(self.session)
         index_status, index_message = index.status(check=False)
         index.update_pending_async()
@@ -2763,10 +2778,11 @@ Tools:
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
-            ("context", f"ctx `{self.session.state.context_percent}%`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; mcp `{connected_mcp}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
+            ("context", f"`{progress_bar(context_tokens, context_budget)}` `~{token_count(context_tokens)} / {token_count(context_budget)} ({self.session.state.context_percent}%)`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; mcp `{connected_mcp}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
+            ("cache", f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`; session `{cache_ratio:.1f}%`"),
             ("goal", self.session.state.goal or "(empty)"),
-            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`; cached `{usage.cached_prompt_tokens}/{usage.prompt_tokens}` (`{cache_ratio:.1f}%`); last `{usage.last_cached_prompt_tokens}/{usage.last_prompt_tokens}` (`{last_cache_ratio:.1f}%`)"),
-            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`; max context tokens `{self.session.settings.max_context_tokens}`; compaction budget `{self.agent.context.request_token_budget()}`"),
+            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`"),
+            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`"),
             ("index", CodeIndex.status_line(index_status, index_message)),
             ("jobs", f"running `{len(self.session.running_jobs())}`; total `{len(self.session.jobs)}`"),
             ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),

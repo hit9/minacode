@@ -1912,8 +1912,8 @@ def test_status_and_bar_show_skill_count(tmp_path):
     status = loop.status("")
     assert "mcp `1`" in status
     assert f"skills `{count}`" in status
-    assert "max context tokens `245760`" in status
-    assert f"compaction budget `{loop.agent.context.request_token_budget()}`" in status
+    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K (" in status
+    assert "| cache | `[" in status
     bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
@@ -1933,7 +1933,8 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     status = loop.status("")
 
     assert s.state.context_percent == active_percent
-    assert f"ctx `{active_percent}%`" in status
+    context_row = next(line for line in status.splitlines() if line.startswith("| context |"))
+    assert f"({active_percent}%)" in context_row
 
 
 def test_session_from_config_file_theme_param(tmp_path):

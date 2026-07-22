@@ -314,8 +314,16 @@ class ContextManager:
         self.session.state.context_percent = min(100, self.request_tokens(messages, tools) * 100 // self.request_token_budget())
         return self.session.state.context_percent
 
+    def update_current_tokens(self, base_system: str) -> int:
+        messages = self.model_messages(base_system, self.session._active_turn_messages)
+        tools = _resolved_tool_schemas(self.session)
+        tokens = self.request_tokens(messages, tools)
+        self.session.state.context_percent = min(100, tokens * 100 // self.request_token_budget())
+        return tokens
+
     def update_current_percent(self, base_system: str) -> int:
-        return self.update_percent(self.model_messages(base_system, self.session._active_turn_messages), _resolved_tool_schemas(self.session))
+        self.update_current_tokens(base_system)
+        return self.session.state.context_percent
 
     def prepare_messages(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
