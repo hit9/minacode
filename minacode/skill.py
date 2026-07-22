@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from minacode.session import *
+import os
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from minacode.session import Session
 
 
 @dataclass

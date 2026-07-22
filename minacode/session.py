@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
-from minacode.base import *
 import contextlib
 import difflib
 import hashlib
 import json
+import os
+import re
 import signal
 import subprocess
 import threading
+import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from minacode.base import Config, ConfigFile, Json, MinacodeError, ModelUsage, RuntimeSettings, SystemInfo, Text, UpdateStatus
+
+if TYPE_CHECKING:
+    from minacode.mcp import MCPManager
+    from minacode.skill import SkillLibrary
 
 
 @dataclass

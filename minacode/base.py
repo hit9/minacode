@@ -10,15 +10,10 @@ import shutil
 import sys
 import time
 import tomllib
-import concurrent.futures
 from dataclasses import dataclass, field
-from enum import auto
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
-import anthropic
-import openai
-from openai import OpenAI
 from prompt_toolkit.utils import get_cwidth
 
 try:

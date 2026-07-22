@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
-from minacode.mcp import *
 import codecs
 import copy
+import contextlib
+import difflib
 import fnmatch
+import hashlib
+import json
+import os
+import re
 import selectors
 import shlex
+import shutil
+import signal
+import subprocess
 import tempfile
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, ClassVar
+
 import code_symbol_index as csi
+
+from minacode.base import Json, Text, ToolError
+from minacode.session import AgentState, BackgroundJob, HistorySegment, PlanItem, Session, TurnDiff
 
 
 class Tool:
