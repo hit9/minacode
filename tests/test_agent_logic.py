@@ -1578,13 +1578,16 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     assert "Bash" in second_context
 
 
-def test_provider_profiles_and_prompt_cache_key(tmp_path):
+def test_provider_compatibility_and_prompt_cache_key(tmp_path):
     opencode_claude = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="claude-sonnet", api="auto")
     assert opencode_claude.resolved_api() == "anthropic"
 
+    opencode_qwen = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="qwen3.7-max", api="auto")
+    assert opencode_qwen.resolved_api() == "anthropic"
+
     opencode_deepseek = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="deepseek-v4-flash", api="auto")
     assert opencode_deepseek.resolved_api() == "chat"
-    assert opencode_deepseek.resolved_chat_reasoning() == "reasoning"
+    assert opencode_deepseek.resolved_chat_reasoning() == "off"
 
     provider = n.ProviderConfig(url="https://api.openai.com/v1", key="k", model="gpt-5-mini", prompt_cache_key="auto")
     s = n.Session(cwd=str(tmp_path), config=n.Config(active_provider="p", providers={"p": provider}))
@@ -1627,6 +1630,9 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
 
     provider.max_tokens = 2_048
     assert client.anthropic_params(messages, None)["max_tokens"] == 2_048
+    provider.temperature = None
+    provider.reasoning = "minimal"
+    assert client.anthropic_params(messages, None)["thinking"] == {"type": "enabled", "budget_tokens": 1_024}
 
     result = SimpleNamespace(
         content=[

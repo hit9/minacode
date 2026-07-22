@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from prompt_toolkit.utils import get_cwidth
 
-from minacode.providers import PROVIDER_PROFILES
+from minacode.provider_compat import COMPATIBILITY_OVERRIDES
 
 try:
     import pygments
@@ -167,7 +167,7 @@ class Text:
 
 @dataclass
 class ProviderConfig:
-    PROFILES: ClassVar[dict[str, dict[str, Any]]] = PROVIDER_PROFILES
+    COMPATIBILITY: ClassVar[dict[str, dict[str, Any]]] = COMPATIBILITY_OVERRIDES
 
     url: str = ""
     key: str = ""
@@ -219,56 +219,68 @@ class ProviderConfig:
     def base_url(self) -> str:
         # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only when active.
         url = self._stripped_url()
-        return url + "/beta" if self.resolved_strict_tools() and self._profile().get("strict_beta") and not url.endswith("/beta") else url
+        return url + "/beta" if self.resolved_strict_tools() and self._compatibility().get("strict_beta") and not url.endswith("/beta") else url
 
     def host(self) -> str:
         return (urlparse(self._stripped_url()).hostname or "").lower()
 
-    def _profile(self) -> Json:
+    def _compatibility(self) -> Json:
         host = self.host()
-        matches = ((domain, profile) for domain, profile in self.PROFILES.items() if host == domain or host.endswith(f".{domain}"))
+        matches = ((domain, compat) for domain, compat in self.COMPATIBILITY.items() if host == domain or host.endswith(f".{domain}"))
         return max(matches, key=lambda item: len(item[0]), default=("", {}))[1]
 
     def resolved_chat_reasoning(self) -> str:
-        return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
+        return self.compatibility_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
 
     def resolved_api(self) -> str:
-        return self.profile_value(self.api, "chat", "api", "api_rules")
+        return self.compatibility_value(self.api, "chat", "api", "api_rules")
 
-    def profile_value(self, configured: str, default: str, profile_attr: str, rules_attr: str) -> str:
+    def compatibility_value(self, configured: str, default: str, compatibility_attr: str, rules_attr: str) -> str:
         if configured != "auto":
             return configured
-        if not (profile := self._profile()):
+        if not (compatibility := self._compatibility()):
             return default
         model = self.model.lower()
-        for value, prefixes in profile.get(rules_attr, ()):
+        for value, prefixes in compatibility.get(rules_attr, ()):
             if any(model.startswith(prefix) for prefix in prefixes):
                 return str(value)
-        return str(profile.get(profile_attr, default))
+        return str(compatibility.get(compatibility_attr, default))
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
 
     def resolved_reasoning_effort(self) -> str | None:
+        compatibility = self._compatibility()
         if self.reasoning != "off":
-            return self.reasoning_effort()
-        value = self._profile().get("reasoning_effort_off")
+            effort = self.reasoning_effort()
+            values = compatibility.get("reasoning_effort_values", {})
+            return str(values.get(effort, effort)) if isinstance(values, dict) else effort
+        value = compatibility.get("reasoning_effort_off")
         return str(value) if value is not None else None
 
+    def suppresses_temperature(self) -> bool:
+        compatibility = self._compatibility()
+        if "suppress_temperature" in compatibility:
+            return bool(compatibility["suppress_temperature"])
+        mode = self.resolved_chat_reasoning()
+        if mode == "off" or (self.reasoning == "off" and mode in ("thinking", "thinking_toggle", "enable_thinking")):
+            return False
+        return mode in ("thinking", "enable_thinking")
+
     def resolved_max_tokens(self) -> int:
-        # Generic OpenAI-compatible providers keep their own server-side cap; only opted-in profiles get a ceiling.
-        return self.max_tokens or int(self._profile().get("max_tokens", 0))
+        # Generic OpenAI-compatible providers keep their server-side cap; only explicit overrides get a ceiling.
+        return self.max_tokens or int(self._compatibility().get("max_tokens", 0))
 
     def output_token_budget(self) -> int:
         return self.resolved_max_tokens() or DEFAULT_OUTPUT_RESERVE_TOKENS
 
     def supports_prompt_cache_key(self) -> bool:
-        # Default on for unknown OpenAI-compatible hosts (status quo); profiles opt out
+        # Default on for unknown OpenAI-compatible hosts (status quo); compatibility overrides opt out
         # (e.g. DeepSeek caches automatically by prefix and ignores the key).
-        return bool(self._profile().get("prompt_cache_key", True))
+        return bool(self._compatibility().get("prompt_cache_key", True))
 
     def supports_strict_tools(self) -> bool:
-        return bool(self._profile().get("strict_tools"))
+        return bool(self._compatibility().get("strict_tools"))
 
     def resolved_strict_tools(self) -> bool:
         # Only emit strict schemas on the chat path of a host known to support strict mode.

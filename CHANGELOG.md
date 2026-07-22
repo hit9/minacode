@@ -7,8 +7,11 @@
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
 - Lower the default provider request timeout from 180 seconds to 120 seconds; explicitly configured values are unchanged.
 - Increase transient model retries from two to five, and show attempts with concise reasons in the running TUI, such as `retrying 2/6 · timeout`, then keep `attempt 2/6` visible while the replacement request continues.
-- Move built-in provider profiles into a dedicated module and match profiles across real subdomains. Aliyun-compatible endpoints under `aliyuncs.com` now send Qwen3.8 reasoning levels through `reasoning_effort`, including `none` for `/reason off`, so existing `chat_reasoning = "auto"` configurations work without provider-specific overrides.
-
+- Isolate only necessary provider compatibility overrides in a dedicated `provider_compat` module, keeping the default OpenAI-compatible path generic. Domain overrides match real subdomains, and OpenCode protocol routing uses broad Claude and Qwen families because its single base URL multiplexes different wire protocols by model.
+- Detect OpenAI reasoning through the `o` and `gpt-5` model families instead of enumerating releases. Aliyun endpoints under `aliyuncs.com` use `reasoning_effort` only for the documented Qwen3.8 family, including `none` for `/reason off`, so existing `chat_reasoning = "auto"` configurations work without per-model overrides.
+- Stop imposing the obsolete 32K output cap on DeepSeek; current models use the server-side default unless `provider.max_tokens` is explicitly configured.
+- Raise the normalized `minimal` manual-thinking budget to the provider-supported 1,024-token floor instead of sending an invalid 256-token Anthropic budget.
+- Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
 - Restore both cache scopes in `/status`: the visual bar is now explicitly labeled `last`, while `last` and `session` each show cached tokens, prompt tokens, and hit rate.

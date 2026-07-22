@@ -44,7 +44,7 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.providers import CHAT_REASONING_EFFORT_VALUES
+from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -1518,8 +1518,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         chat_reasoning = provider.resolved_chat_reasoning()
         reasoning_enabled = provider.reasoning != "off"
         effort = provider.reasoning_effort()
-        # Native thinking modes (DeepSeek, Qwen) ignore or reject temperature while thinking is on.
-        if provider.temperature is not None and not (reasoning_enabled and chat_reasoning in ("thinking", "enable_thinking")):
+        # Some native APIs fix or reject temperature for all or part of their thinking modes.
+        if provider.temperature is not None and not provider.suppresses_temperature():
             params["temperature"] = provider.temperature
         extra: Json = {}
         if reasoning_enabled and chat_reasoning == "reasoning":
@@ -1531,6 +1531,10 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
             if reasoning_enabled:
                 params["reasoning_effort"] = CHAT_REASONING_EFFORT_VALUES["thinking"].get(effort, "high")
+        elif chat_reasoning in ("thinking_toggle", "thinking_effort"):
+            extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
+            if reasoning_enabled and chat_reasoning == "thinking_effort":
+                params["reasoning_effort"] = provider.resolved_reasoning_effort()
         elif chat_reasoning == "enable_thinking":
             extra["enable_thinking"] = reasoning_enabled
             if reasoning_enabled:

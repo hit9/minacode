@@ -131,8 +131,22 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert params["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "reasoning_effort" not in params
 
+    deepseek = n.ProviderConfig(url="https://api.deepseek.com/v1", model="deepseek-v4-flash")
+    assert deepseek.resolved_max_tokens() == 0
 
-def test_qwen_token_plan_profile_uses_reasoning_effort(tmp_path):
+
+@pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6"))
+def test_openai_compatibility_recognizes_reasoning_model_families(model):
+    provider = n.ProviderConfig(url="https://api.openai.com/v1", model=model)
+    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+
+
+def test_openai_compatibility_leaves_non_reasoning_chat_models_off():
+    provider = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-4o")
+    assert provider.resolved_chat_reasoning() == "off"
+
+
+def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     client = n.ModelClient(session(tmp_path))
     provider = n.ProviderConfig.from_dict(
         {
@@ -162,6 +176,120 @@ def test_qwen_token_plan_profile_uses_reasoning_effort(tmp_path):
 
     provider.model = "other-model"
     assert provider.resolved_chat_reasoning() == "off"
+
+
+def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
+    client = n.ModelClient(session(tmp_path))
+    provider = n.ProviderConfig(url="https://api.moonshot.ai/v1", model="kimi-k3", reasoning="medium", temperature=0.2)
+    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+    assert provider.supports_prompt_cache_key() is True
+    assert provider.supports_strict_tools() is True
+    assert client.prompt_cache_key(provider, None).startswith("minacode-")
+
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"reasoning_effort": "high"}
+
+    provider.reasoning = "off"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"reasoning_effort": "low"}
+
+    provider.model = "kimi-k2.6"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"extra_body": {"thinking": {"type": "disabled"}}}
+
+    provider.reasoning = "low"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"extra_body": {"thinking": {"type": "enabled"}}}
+
+    provider.model = "kimi-k2.7-code-highspeed"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {}
+
+    provider.url = "https://api.moonshot.cn/v1"
+    assert provider.resolved_chat_reasoning() == "mandatory_thinking"
+
+
+def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
+    client = n.ModelClient(session(tmp_path))
+    provider = n.ProviderConfig(url="https://api.kimi.com/coding/v1", model="k3", reasoning="medium", temperature=0.2)
+    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+    assert provider.supports_prompt_cache_key() is True
+    assert client.prompt_cache_key(provider, None).startswith("minacode-")
+
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"temperature": 0.2, "reasoning_effort": "high"}
+
+    provider.reasoning = "off"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"temperature": 0.2, "reasoning_effort": "none"}
+
+    provider.model = "kimi-for-coding-highspeed"
+    provider.reasoning = "high"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert provider.resolved_chat_reasoning() == "mandatory_thinking"
+    assert params == {"temperature": 0.2}
+
+
+@pytest.mark.parametrize("url", ("https://api.z.ai/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"))
+def test_zai_regional_endpoints_share_documented_reasoning_effort(url, tmp_path):
+    client = n.ModelClient(session(tmp_path))
+    provider = n.ProviderConfig(url=url, model="glm-5.2", reasoning="xhigh", temperature=0.6)
+    assert provider.resolved_chat_reasoning() == "thinking_effort"
+    assert provider.supports_prompt_cache_key() is False
+    assert client.prompt_cache_key(provider, None) == ""
+
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {
+        "temperature": 0.6,
+        "reasoning_effort": "xhigh",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+
+    provider.reasoning = "off"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"temperature": 0.6, "extra_body": {"thinking": {"type": "disabled"}}}
+
+
+@pytest.mark.parametrize("url", ("https://api.z.ai/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"))
+def test_zai_older_reasoning_families_use_only_thinking_toggle(url, tmp_path):
+    client = n.ModelClient(session(tmp_path))
+    provider = n.ProviderConfig(url=url, model="glm-5.1", reasoning="high", temperature=0.6)
+    assert provider.resolved_chat_reasoning() == "thinking_toggle"
+
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"temperature": 0.6, "extra_body": {"thinking": {"type": "enabled"}}}
+
+
+@pytest.mark.parametrize(
+    ("url", "model"),
+    (
+        ("https://api.moonshot.ai.evil.test/v1", "kimi-k3"),
+        ("https://notmoonshot.cn/v1", "kimi-k3"),
+        ("https://api.kimi.com.evil.test/coding/v1", "k3"),
+        ("https://notz.ai/api/paas/v4", "glm-5.2"),
+        ("https://notbigmodel.cn/api/paas/v4", "glm-5.2"),
+    ),
+)
+def test_provider_compatibility_requires_a_real_domain_boundary(url, model, tmp_path):
+    client = n.ModelClient(session(tmp_path))
+    provider = n.ProviderConfig(url=url, model=model, reasoning="high", temperature=0.4)
+    assert provider.resolved_chat_reasoning() == "off"
+    assert provider.supports_prompt_cache_key() is True
+
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"temperature": 0.4}
 
 
 def test_chat_provider_extra_body_passthrough(tmp_path):

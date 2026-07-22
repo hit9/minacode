@@ -1,0 +1,112 @@
+"""Compatibility overrides for provider APIs that diverge from generic protocol defaults."""
+
+from typing import Any
+
+OPENAI_REASONING_MODEL_FAMILIES = ("o", "gpt-5")
+ZAI_THINKING_MODEL_FAMILIES = ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5")
+
+KIMI_PLATFORM_COMPATIBILITY: dict[str, Any] = {
+    "chat_reasoning_rules": (
+        ("reasoning_effort", ("kimi-k3",)),
+        ("thinking_toggle", ("kimi-k2.5", "kimi-k2.6")),
+        ("mandatory_thinking", ("kimi-k2.7-code",)),
+    ),
+    "reasoning_effort_values": {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"},
+    # K3 cannot disable thinking on the open platform, so /reason off selects its lowest valid tier.
+    "reasoning_effort_off": "low",
+    "strict_tools": True,
+    "suppress_temperature": True,
+}
+
+ZAI_COMPATIBILITY: dict[str, Any] = {
+    "chat_reasoning_rules": (
+        ("thinking_effort", ("glm-5.2",)),
+        ("thinking_toggle", ZAI_THINKING_MODEL_FAMILIES),
+    ),
+    "prompt_cache_key": False,
+}
+
+CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
+    # Why: DeepSeek accepts only high/max and documents these compatibility folds.
+    # Evidence: https://api-docs.deepseek.com/guides/thinking_mode/
+    "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "max", "xhigh": "max"},
+    # Why: manual thinking APIs require integer token budgets; these are minacode's normalized
+    # tiers, with Anthropic's documented 1,024-token minimum as the floor.
+    # Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
+    #           https://docs.qwencloud.com/api-reference/chat/openai-chat
+    "enable_thinking": {"minimal": 1024, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
+}
+
+COMPATIBILITY_OVERRIDES: dict[str, dict[str, Any]] = {
+    # Why: Chat Completions accepts reasoning_effort only for reasoning model families,
+    # while strict function schemas are an OpenAI capability rather than a generic default.
+    # Evidence: https://developers.openai.com/api/docs/guides/reasoning
+    #           https://developers.openai.com/api/docs/guides/function-calling#strict-mode
+    "api.openai.com": {
+        "chat_reasoning_rules": (("reasoning_effort", OPENAI_REASONING_MODEL_FAMILIES),),
+        "strict_tools": True,
+    },
+    # Why: OpenRouter normalizes providers behind its own top-level reasoning object.
+    # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+    "openrouter.ai": {"chat_reasoning": "reasoning"},
+    # Why: one OpenCode base URL routes Claude/Qwen through Messages while other supported
+    # families use different endpoints, so api=auto cannot infer the wire protocol from the URL.
+    # Evidence: https://opencode.ai/docs/zen
+    "opencode.ai": {
+        "api_rules": (("anthropic", ("claude-", "qwen")),),
+    },
+    # Why: DeepSeek uses thinking.type plus a reduced effort scale, does not define OpenAI's
+    # prompt_cache_key, and requires the /beta endpoint for strict function schemas.
+    # Evidence: https://api-docs.deepseek.com/guides/thinking_mode/
+    #           https://api-docs.deepseek.com/api/create-chat-completion/
+    #           https://api-docs.deepseek.com/guides/tool_calls
+    "api.deepseek.com": {
+        "chat_reasoning": "thinking",
+        "prompt_cache_key": False,
+        "strict_tools": True,
+        "strict_beta": True,
+    },
+    # Why: Qwen Chat documents top-level reasoning_effort for Qwen3.8, including none as
+    # the OpenAI-compatible spelling for disabling thinking; older families use other controls.
+    # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat
+    "aliyuncs.com": {
+        "chat_reasoning_rules": (("reasoning_effort", ("qwen3.8-",)),),
+        "reasoning_effort_off": "none",
+    },
+    # Why: the international and China Kimi open platforms expose the same model controls
+    # on different regional domains. K2.5/K2.6 use thinking.type, K2.7 is always-thinking,
+    # and K3 accepts only low/high/max; its lowest tier is the only valid fallback for off.
+    # Their temperature values are fixed, while prompt_cache_key is explicitly supported.
+    # Evidence: https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model
+    #           https://platform.kimi.com/docs/guide/use-kimi-k2-thinking-model
+    #           https://platform.kimi.ai/docs/api/models-overview
+    #           https://platform.kimi.ai/docs/api/chat
+    "moonshot.ai": KIMI_PLATFORM_COMPATIBILITY,
+    "moonshot.cn": KIMI_PLATFORM_COMPATIBILITY,
+    # Why: Kimi Code is a separate subscription API with different model IDs and K3 off
+    # semantics: k3 accepts low/high/max and maps none to disabled, while both
+    # kimi-for-coding variants are always-thinking K2.7 models. Its official client exposes
+    # request temperature, so it does not inherit the open platform's fixed-temperature rule.
+    # Evidence: https://www.kimi.com/code/docs/kimi-code/models.html
+    #           https://www.kimi.com/code/docs/
+    #           https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/env-vars.html
+    "kimi.com": {
+        "chat_reasoning_rules": (
+            ("reasoning_effort", ("k3",)),
+            ("mandatory_thinking", ("kimi-for-coding",)),
+        ),
+        "reasoning_effort_values": {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"},
+        "reasoning_effort_off": "none",
+    },
+    # Why: both Z.AI regions use thinking.type for GLM-4.5+ and reasoning_effort for
+    # GLM-5.2+. Their context caches are automatic and require no request cache key.
+    # Evidence: https://docs.z.ai/guides/capabilities/thinking
+    #           https://docs.z.ai/guides/overview/concept-param
+    #           https://docs.z.ai/guides/capabilities/cache
+    "z.ai": ZAI_COMPATIBILITY,
+    # Why: China's BigModel endpoint documents the same thinking and automatic-cache contract.
+    # Evidence: https://docs.bigmodel.cn/cn/guide/capabilities/thinking
+    #           https://docs.bigmodel.cn/cn/guide/start/concept-param
+    #           https://docs.bigmodel.cn/cn/guide/capabilities/cache
+    "bigmodel.cn": ZAI_COMPATIBILITY,
+}
