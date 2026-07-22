@@ -39,7 +39,7 @@ logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 240 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 5
-PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
+PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
@@ -233,6 +233,14 @@ class ProviderConfig:
         return self.compatibility_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
 
     def resolved_api(self) -> str:
+        if self.api == "auto":
+            path = urlparse(self.url.rstrip("/")).path
+            if path.endswith("/responses"):
+                return "responses"
+            if path.endswith("/messages"):
+                return "anthropic"
+            if path.endswith("/chat/completions"):
+                return "chat"
         return self.compatibility_value(self.api, "chat", "api", "api_rules")
 
     def compatibility_value(self, configured: str, default: str, compatibility_attr: str, rules_attr: str) -> str:
@@ -283,8 +291,8 @@ class ProviderConfig:
         return bool(self._compatibility().get("strict_tools"))
 
     def resolved_strict_tools(self) -> bool:
-        # Only emit strict schemas on the chat path of a host known to support strict mode.
-        return self.strict_tools and self.supports_strict_tools() and self.resolved_api() == "chat"
+        # Only emit strict schemas on OpenAI protocol paths of hosts known to support strict mode.
+        return self.strict_tools and self.supports_strict_tools() and self.resolved_api() in ("chat", "responses")
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
@@ -433,7 +441,7 @@ active = "default"
 url = ""
 key = ""
 model = ""
-# api = "auto"                 # auto | anthropic | openai | ...
+# api = "auto"                 # auto | chat | responses | anthropic
 # reasoning = "medium"
 # timeout = 120
 # available_models = ["gpt-5", "gpt-5-mini"]

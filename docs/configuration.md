@@ -32,7 +32,7 @@ Switch providers within a session with `/provider [NAME]` and models with `/mode
 | `url` | — | Base URL of the API |
 | `key` | — | API key |
 | `model` | — | Model name |
-| `api` | `auto` | Request format: `auto`, `anthropic`, or `chat`. `auto` picks the right one for the host and model. |
+| `api` | `auto` | Request format: `auto`, `chat`, `responses`, or `anthropic`. `auto` recognizes an explicit endpoint suffix and otherwise picks the compatible default for the host and model. |
 | `reasoning` | `medium` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `chat_reasoning` | `auto` | Chat-API reasoning format: `auto`, `off`, `reasoning`, `reasoning_effort`, `thinking`, or `enable_thinking` |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; use `off` to disable or provide a custom key |
@@ -46,6 +46,11 @@ For well-known hosts, `auto` settings pick sensible defaults for you, so
 <span class="marker">`url`, `key`, and `model` are usually all you need</span>. Anything you set
 explicitly is always respected. Tested with DeepSeek, OpenCode, Alibaba Cloud, and ZenMux;
 other OpenAI-compatible and Anthropic endpoints work too.
+
+Use `api = "responses"` for OpenAI's [Responses protocol](https://developers.openai.com/api/docs/guides/migrate-to-responses). A `url` ending in `/responses`
+selects it automatically; minacode strips the endpoint suffix before passing the base URL to
+the SDK. Responses requests are stateless (`store = false`), and minacode carries returned
+reasoning and function-call items forward in its own transcript so tool loops remain valid.
 
 ## Runtime
 

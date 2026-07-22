@@ -390,6 +390,20 @@ def test_stripped_url_removes_known_suffixes():
     assert p("https://api.openai.com/v1/chat/completions/") == "https://api.openai.com/v1"
 
 
+def test_provider_api_auto_recognizes_explicit_endpoint_suffixes():
+    assert n.ProviderConfig.from_dict({"api": "responses"}).api == "responses"
+    assert n.ProviderConfig(url="https://api.openai.com/v1/responses").resolved_api() == "responses"
+    assert n.ProviderConfig(url="https://api.openai.com/v1/chat/completions").resolved_api() == "chat"
+    assert n.ProviderConfig(url="https://api.anthropic.com/v1/messages").resolved_api() == "anthropic"
+    assert n.ProviderConfig(url="https://api.openai.com/v1").resolved_api() == "chat"
+    assert n.ProviderConfig(url="https://api.openai.com/v1/responses", api="chat").resolved_api() == "chat"
+
+
+def test_openai_responses_path_supports_strict_tools():
+    provider = n.ProviderConfig(url="https://api.openai.com/v1", api="responses", strict_tools=True)
+    assert provider.resolved_strict_tools() is True
+
+
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():
     before = {name: json.dumps(tool.params_schema()) for name, tool in n.TOOL_REGISTRY.items()}
     for name, tool in n.TOOL_REGISTRY.items():

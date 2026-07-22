@@ -690,6 +690,42 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert limited.messages[-1]["content"] == answer
 
 
+def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
+    s = session(tmp_path)
+    s.skills = n.SkillLibrary({})
+    agent = n.Agent(s, output_fn=lambda _text: None)
+
+    class FakeModel:
+        def request(self, messages, tools=None):
+            return (
+                {
+                    "role": "assistant",
+                    "content": "done",
+                    "_responses_output": [
+                        {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque", "summary": []},
+                        {
+                            "id": "msg_1",
+                            "type": "message",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done", "annotations": []}],
+                        },
+                    ],
+                },
+                [],
+                "done",
+            )
+
+    agent.model = FakeModel()
+
+    assert agent.run("finish") == "done"
+    assert s.messages[-1]["_responses_output"][0]["type"] == "reasoning"
+    s.save_snapshot()
+    restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    restored_assistant = next(message for message in reversed(restored.messages) if message.get("role") == "assistant")
+    assert restored_assistant["_responses_output"] == s.messages[-1]["_responses_output"]
+
+
 def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
@@ -919,7 +955,15 @@ def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_pa
             if len(self.requests) == 1:
                 return {}, [call("Bash", ["should-not-run"])], ""
             if len(self.requests) == 2:
-                return {"role": "assistant", "content": "I hear both follow-ups; checking now."}, [], "I hear both follow-ups; checking now."
+                return (
+                    {
+                        "role": "assistant",
+                        "content": "I hear both follow-ups; checking now.",
+                        "_responses_output": [{"id": "rs_followup", "type": "reasoning", "encrypted_content": "opaque", "summary": []}],
+                    },
+                    [],
+                    "I hear both follow-ups; checking now.",
+                )
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
@@ -932,6 +976,7 @@ def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_pa
     assert output == ["I hear both follow-ups; checking now."]
     assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant", "assistant"]
     assert s.messages[3]["content"] == "I hear both follow-ups; checking now."
+    assert s.messages[3]["_responses_output"][0]["id"] == "rs_followup"
     assert s.tool_records == []
     assert s.pending_user_inputs == []
 

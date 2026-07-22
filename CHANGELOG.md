@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+### Added
+- Support OpenAI's Responses protocol with `provider.api = "responses"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns.
+
 ### Changed
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
 - Lower the default provider request timeout from 180 seconds to 120 seconds; explicitly configured values are unchanged.

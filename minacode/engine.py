@@ -1176,6 +1176,8 @@ class PreparedRequest:
 
 
 class ModelClient:
+    RESPONSES_OUTPUT_KEY = "_responses_output"
+
     def __init__(self, session: Session):
         self.session = session
         self.cancel_requested = threading.Event()
@@ -1202,7 +1204,6 @@ class ModelClient:
                     client.close()
 
     def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
-        provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         self.cancel_requested.clear()
@@ -1215,7 +1216,7 @@ class ModelClient:
                 state.current_model_attempt = attempt + 1
                 state.current_model_call_started_at = time.monotonic()
                 try:
-                    return self.anthropic_request(messages, tools) if provider.resolved_api() == "anthropic" else self.chat_request(messages, tools)
+                    return self.api_request(messages, tools)
                 except KeyboardInterrupt:
                     if state.manual_model_retry_requested:
                         state.manual_model_retry_requested = False
@@ -1289,7 +1290,7 @@ class ModelClient:
         return "transient error"
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
-        messages = Text.value(messages)
+        messages = Text.value([{key: value for key, value in message.items() if key != self.RESPONSES_OUTPUT_KEY} for message in messages])
         provider = self.session.config.provider
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
         if (max_tokens := provider.resolved_max_tokens()) > 0:
@@ -1311,6 +1312,135 @@ class ModelClient:
         content = str(getattr(message, "content", None) or "")
         return assistant, calls, content
 
+    def api_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
+        api = self.session.config.provider.resolved_api()
+        if api == "anthropic":
+            return self.anthropic_request(messages, tools)
+        if api == "responses":
+            return self.responses_request(messages, tools)
+        return self.chat_request(messages, tools)
+
+    def responses_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
+        provider = self.session.config.provider
+        params: Json = {
+            "model": provider.model,
+            "input": self.responses_input(Text.value(messages)),
+            "stream": False,
+            "store": False,
+        }
+        if (max_tokens := provider.resolved_max_tokens()) > 0:
+            params["max_output_tokens"] = max_tokens
+        if tools:
+            params["tools"] = self.responses_tool_schemas(tools)
+            params["tool_choice"] = "auto"
+            params["parallel_tool_calls"] = True
+        if prompt_cache_key := self.prompt_cache_key(provider, tools):
+            params["prompt_cache_key"] = prompt_cache_key
+        if provider.reasoning != "off":
+            params["reasoning"] = {"effort": provider.reasoning_effort()}
+        if provider.temperature is not None and not provider.suppresses_temperature():
+            params["temperature"] = provider.temperature
+        if provider.extra_body:
+            params["extra_body"] = provider.extra_body
+        client = self.client()
+        result = self.call_client(client, lambda: client.responses.create(**params))
+        self.session.usage.add(self.message_field(result, "usage"))
+        return self.responses_result(result)
+
+    def responses_input(self, messages: list[Json]) -> list[Json]:
+        converted: list[Json] = []
+        for message in messages:
+            role = str(message.get("role") or "")
+            saved_output = message.get(self.RESPONSES_OUTPUT_KEY)
+            if role == "assistant" and isinstance(saved_output, list):
+                converted.extend(item for item in saved_output if isinstance(item, dict))
+                continue
+            if role == "tool":
+                converted.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(message.get("tool_call_id") or ""),
+                        "output": str(message.get("content") or ""),
+                    }
+                )
+                continue
+            if role not in ("system", "developer", "user", "assistant"):
+                continue
+            content = message.get("content")
+            if content is not None:
+                converted.append({"role": role, "content": str(content)})
+            if role == "assistant":
+                for raw in message.get("tool_calls") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+                    converted.append(
+                        {
+                            "type": "function_call",
+                            "call_id": str(raw.get("id") or uuid.uuid4().hex),
+                            "name": str(function.get("name") or ""),
+                            "arguments": str(function.get("arguments") or "{}"),
+                        }
+                    )
+        return converted
+
+    @staticmethod
+    def responses_tool_schemas(tools: list[Json]) -> list[Json]:
+        converted: list[Json] = []
+        for schema in tools:
+            function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
+            converted.append(
+                {
+                    "type": "function",
+                    "name": str(function.get("name") or ""),
+                    "description": str(function.get("description") or ""),
+                    "parameters": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
+                    "strict": bool(function.get("strict", False)),
+                }
+            )
+        return converted
+
+    def responses_result(self, result: Any) -> tuple[Json, list[ToolCall], str]:
+        output = self.message_field(result, "output") or []
+        saved_output = [self.dump_message_item(item) for item in output]
+        text_parts: list[str] = []
+        tool_calls: list[Json] = []
+        calls: list[ToolCall] = []
+        for item in output:
+            item_type = self.message_field(item, "type")
+            if item_type == "message":
+                for part in self.message_field(item, "content") or []:
+                    part_type = self.message_field(part, "type")
+                    if part_type == "output_text":
+                        text_parts.append(str(self.message_field(part, "text") or ""))
+                    elif part_type == "refusal":
+                        text_parts.append(str(self.message_field(part, "refusal") or ""))
+            elif item_type == "function_call":
+                name = str(self.message_field(item, "name") or "")
+                call_id = str(self.message_field(item, "call_id") or self.message_field(item, "id") or uuid.uuid4().hex)
+                arguments = str(self.message_field(item, "arguments") or "{}")
+                try:
+                    payload = json.loads(arguments, strict=False)
+                except json.JSONDecodeError:
+                    payload = {}
+                tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
+                calls.append(self.tool_call(call_id, name, payload))
+        text = "".join(text_parts) or str(self.message_field(result, "output_text") or "")
+        assistant: Json = {"role": "assistant", "content": text or None, self.RESPONSES_OUTPUT_KEY: saved_output}
+        if tool_calls:
+            assistant["tool_calls"] = tool_calls
+        return assistant, calls, text
+
+    @staticmethod
+    def dump_message_item(item: Any) -> Json:
+        if isinstance(item, dict):
+            return Text.value(item)
+        if hasattr(item, "model_dump"):
+            dumped = item.model_dump(mode="json", exclude_none=True)
+            if isinstance(dumped, dict):
+                return Text.value(dumped)
+        return {}
+
     def compact(self, context: str) -> Json:
         self.cancel_requested.clear()
         prompt = """
@@ -1322,9 +1452,7 @@ Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
-        _, _, content = (
-            self.anthropic_request(messages, None) if self.session.config.provider.resolved_api() == "anthropic" else self.chat_request(messages, None)
-        )
+        _, _, content = self.api_request(messages, None)
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")
@@ -1718,7 +1846,7 @@ FINAL:
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
                         self.raise_if_cancelled()
                         if request.pending and not content.strip():
-                            _, _, content = self.model.request(request.messages, [])
+                            assistant, _, content = self.model.request(request.messages, [])
                             self.raise_if_cancelled()
                             if not content.strip():
                                 raise ModelError("empty live follow-up response")
@@ -1729,7 +1857,7 @@ FINAL:
                         continue
                 if followup_response:
                     response = content.strip()
-                    turn_messages.append({"role": "assistant", "content": response})
+                    turn_messages.append(self.assistant_turn_message(assistant, [], response))
                     self.output_fn(response)
                     self.checkpoint_turn(turn_messages)
                     continue
@@ -1737,7 +1865,7 @@ FINAL:
                     if not content.strip():
                         raise ModelError("empty final response")
                     answer = content.strip()
-                    self.finish_turn(turn_messages, answer)
+                    self.finish_turn(turn_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)
                 turn_messages.append(assistant)
@@ -1748,7 +1876,7 @@ FINAL:
                 self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
-            self.finish_turn(turn_messages, stopped)
+            self.finish_turn(turn_messages, {"role": "assistant", "content": stopped})
             return stopped
         except KeyboardInterrupt:
             self.session.release_user_inputs()
@@ -1767,8 +1895,8 @@ FINAL:
         self.session._active_turn_messages = list(turn_messages)
         self.session.save_snapshot()
 
-    def finish_turn(self, turn_messages: list[Json], answer: str) -> None:
-        self.session.messages.extend([*turn_messages, {"role": "assistant", "content": answer}])
+    def finish_turn(self, turn_messages: list[Json], assistant: Json) -> None:
+        self.session.messages.extend([*turn_messages, assistant])
         self.session._active_turn_messages.clear()
         self.session.state.turn_messages = 0
 
