@@ -24,6 +24,11 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install terminal test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
       - name: Install dependencies
         run: uv sync --extra dev
 

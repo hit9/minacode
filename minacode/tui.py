@@ -506,6 +506,21 @@ class TuiApp:
         app.renderer.full_screen = enabled
         app._request_absolute_cursor_position()
 
+    @staticmethod
+    def alternate_screen_available() -> bool:
+        """Whether an exclusive modal can preserve the primary screen in this terminal."""
+        if not os.environ.get("TMUX"):
+            return True
+        command = ["tmux", "show-options", "-v"]
+        if pane := os.environ.get("TMUX_PANE"):
+            command.extend(["-t", pane])
+        command.append("alternate-screen")
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        return result.returncode != 0 or result.stdout.strip().lower() != "off"
+
     def modal_fragments(self) -> list[tuple[str, str]]:
         return self.modal.fragments_fn() if self.modal is not None else []
 
@@ -2883,7 +2898,7 @@ Tools:
     def diff_command(self, args: str) -> str | None:
         if args.strip():
             return "Usage: /diff"
-        if self.interactive_input and self.ui.color:
+        if self.interactive_input and self.ui.color and (self.tui is None or self.tui.alternate_screen_available()):
             self.diff_viewer()
             return None
         latest = self.agent.session.latest_round_diff_sections()

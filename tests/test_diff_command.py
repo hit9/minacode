@@ -1,4 +1,8 @@
+import shlex
+import shutil
 import subprocess
+import sys
+import time
 
 import minacode as n
 
@@ -29,6 +33,72 @@ def test_diff_appears_in_help():
 
 def test_diff_is_allowed_while_agent_works():
     assert "/diff" in n.CommandLoop.QUEUE_RUN_COMMANDS
+
+
+def test_diff_preserves_cli_history_when_tmux_alternate_screen_is_off(tmp_path):
+    executable = shutil.which("tmux")
+    if executable is None:
+        return
+    socket = "minacode-test-" + tmp_path.name
+    command = [executable, "-L", socket]
+    probe = tmp_path / "diff_tmux_probe.py"
+    probe.write_text(
+        """import tempfile
+import threading
+import time
+
+import minacode as n
+
+session = n.Session(cwd="/tmp", config=n.Config(data_dir=tempfile.mkdtemp()))
+session.store_turn_diff("tr.1", 1, "a.py", "-old\\n+new\\n", round=1)
+loop = n.CommandLoop(n.Agent(session))
+app = n.TuiApp()
+loop.tui = app
+
+
+def drive():
+    time.sleep(0.2)
+    print("HISTORY MARKER", flush=True)
+    time.sleep(0.2)
+    print(loop.diff_command(""), flush=True)
+
+
+threading.Thread(target=drive, daemon=True).start()
+app.run()
+"""
+    )
+    try:
+        subprocess.run([*command, "new-session", "-d", "-s", "probe", "sleep 30"], check=True)
+        subprocess.run([*command, "set-option", "-g", "remain-on-exit", "on"], check=True)
+        subprocess.run([*command, "set-option", "-t", "probe", "alternate-screen", "off"], check=True)
+        pane_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))}"
+        subprocess.run([*command, "respawn-pane", "-k", "-t", "probe", pane_command], check=True)
+        deadline = time.monotonic() + 2
+        screen = ""
+        while "### Latest · Round 1" not in screen and time.monotonic() < deadline:
+            time.sleep(0.01)
+            screen = subprocess.run([*command, "capture-pane", "-p", "-t", "probe", "-S", "-100"], check=True, capture_output=True, text=True).stdout
+        assert "HISTORY MARKER" in screen
+        assert "### Latest · Round 1" in screen
+    finally:
+        subprocess.run([*command, "kill-server"], check=False, capture_output=True)
+
+
+def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_path):
+    s = session(tmp_path)
+    s.store_turn_diff("tr.1", 1, "a.py", "-old\n+new\n", round=1)
+    lp = loop(s)
+    lp.interactive_input = True
+    lp.ui.color = True
+    lp.tui = type("Tui", (), {"alternate_screen_available": staticmethod(lambda: False)})()
+    opened = []
+    lp.diff_viewer = lambda: opened.append(True)
+
+    result = lp.diff_command("")
+
+    assert opened == []
+    assert "### Latest · Round 1" in result
+    assert "+new" in result
 
 
 def test_diff_rejects_args(tmp_path):
