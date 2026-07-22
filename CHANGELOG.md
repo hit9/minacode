@@ -10,6 +10,9 @@
 - Move built-in provider profiles into a dedicated module and match profiles across real subdomains. Aliyun-compatible endpoints under `aliyuncs.com` now send Qwen3.8 reasoning levels through `reasoning_effort`, including `none` for `/reason off`, so existing `chat_reasoning = "auto"` configurations work without provider-specific overrides.
 
 
+### Fixed
+- Restore both cache scopes in `/status`: the visual bar is now explicitly labeled `last`, while `last` and `session` each show cached tokens, prompt tokens, and hit rate.
+
 ## 0.12.0 - 2026-07-21
 
 ### Changed

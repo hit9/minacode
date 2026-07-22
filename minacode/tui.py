@@ -2794,7 +2794,7 @@ Tools:
             ("session", "`" + self.session.uid + "`"),
             ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
             ("context", f"`{progress_bar(context_tokens, context_budget)}` `~{token_count(context_tokens)} / {token_count(context_budget)} ({self.session.state.context_percent}%)`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; mcp `{connected_mcp}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
-            ("cache", f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`; session `{cache_ratio:.1f}%`"),
+            ("cache", f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` last `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`; session `{token_count(usage.cached_prompt_tokens)} / {token_count(usage.prompt_tokens)} ({cache_ratio:.1f}%)`"),
             ("goal", self.session.state.goal or "(empty)"),
             ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`"),
             ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`"),

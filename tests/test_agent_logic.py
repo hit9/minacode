@@ -1937,6 +1937,20 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     assert f"({active_percent}%)" in context_row
 
 
+def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
+    s = session(tmp_path)
+    s.usage.last_cached_prompt_tokens = 76_000
+    s.usage.last_prompt_tokens = 76_100
+    s.usage.cached_prompt_tokens = 83_400
+    s.usage.prompt_tokens = 100_000
+    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    cache_row = next(line for line in loop.status("").splitlines() if line.startswith("| cache |"))
+
+    assert "last `76.0K / 76.1K (99.9%)`" in cache_row
+    assert "session `83.4K / 100.0K (83.4%)`" in cache_row
+
+
 def test_session_from_config_file_theme_param(tmp_path):
     cfg = tmp_path / "minacode.toml"
     cfg.write_text('[runtime]\ntheme = "light"\n')
