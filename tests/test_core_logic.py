@@ -303,12 +303,12 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
         lambda _seconds: retries.append((s.state.current_model_attempt, s.state.model_retry_reason)),
     )
 
-    with pytest.raises(n.ModelError, match="after 3 attempts"):
+    with pytest.raises(n.ModelError, match="after 6 attempts"):
         client.request([{"role": "user", "content": "hi"}])
 
-    assert len(calls) == 3
-    assert retries == [(2, "500"), (3, "500")]
-    assert s.state.model_retry_count == 2
+    assert len(calls) == 6
+    assert retries == [(2, "500"), (3, "500"), (4, "500"), (5, "500"), (6, "500")]
+    assert s.state.model_retry_count == 5
     assert s.state.current_model_attempt == 0
     assert s.state.model_retry_reason == ""
 

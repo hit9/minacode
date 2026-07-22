@@ -192,18 +192,12 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
 def test_request_retry_exhausted(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = n.ModelClient(s)
-    factory = _MockClientFactory(
-        [
-            (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
-            (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
-            (500, {"error": {"message": "server error", "type": "internal_server_error"}}),
-        ]
-    )
+    factory = _MockClientFactory([(500, {"error": {"message": "server error", "type": "internal_server_error"}})] * 6)
     monkeypatch.setattr(model, "client", factory)
     monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
 
-    with pytest.raises(n.ModelError, match="after 3 attempts"):
+    with pytest.raises(n.ModelError, match="after 6 attempts"):
         model.request([{"role": "user", "content": "hi"}], None)
 
-    assert len(factory.calls) == 3
+    assert len(factory.calls) == 6
     assert s.usage.calls == 0

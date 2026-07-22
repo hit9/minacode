@@ -36,7 +36,7 @@ logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 240 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
-MODEL_REQUEST_RETRIES = 2
+MODEL_REQUEST_RETRIES = 5
 PROVIDER_API_CHOICES = ("auto", "chat", "anthropic")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)

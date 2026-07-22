@@ -127,7 +127,7 @@ turn. Type it while a model request is waiting; it has no effect while the agent
 running a tool or otherwise between model calls. The divider briefly reports the retry,
 keeps its elapsed timer and waiting pulse, then returns to `working` for the replacement
 request. Automatic retries also show their attempt and concise reason, such as
-`retrying 2/3 · timeout`, followed by `working · attempt 2/3` while that request continues:
+`retrying 2/6 · timeout`, followed by `working · attempt 2/6` while that request continues:
 
 <div class="term-shot" role="img" aria-label="The running divider briefly changes from working to retrying while preserving its green waiting pulse and elapsed timer, then returns to working as the replacement model request continues."><span class="fs-divider">──── <span class="fs-i fs-add">●</span> working (11s) ────────────────────</span><span class="fs-prompt">+&gt; /resend</span><span class="fs-divider">──── <span class="fs-i fs-add">●</span> retrying (12s) ──────────────────</span><span class="fs-divider">──── <span class="fs-i fs-add">●</span> working (14s) ────────────────────</span></div>
 

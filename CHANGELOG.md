@@ -6,7 +6,7 @@
 ### Changed
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
 - Lower the default provider request timeout from 180 seconds to 120 seconds; explicitly configured values are unchanged.
-- Show automatic model retry attempts and concise reasons in the running TUI, such as `retrying 2/3 · timeout`, then keep `attempt 2/3` visible while the replacement request continues.
+- Increase transient model retries from two to five, and show attempts with concise reasons in the running TUI, such as `retrying 2/6 · timeout`, then keep `attempt 2/6` visible while the replacement request continues.
 
 
 ## 0.12.0 - 2026-07-21
