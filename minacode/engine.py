@@ -29,7 +29,6 @@ from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
-    CHAT_REASONING_EFFORT_VALUES,
     HTTP_USER_AGENT,
     MAX_TOOL_OUTPUT_TOKENS,
     MIN_CONTEXT_SAFETY_TOKENS,
@@ -45,6 +44,7 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
+from minacode.providers import CHAT_REASONING_EFFORT_VALUES
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -1524,8 +1524,9 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         extra: Json = {}
         if reasoning_enabled and chat_reasoning == "reasoning":
             extra["reasoning"] = {"effort": effort}
-        elif reasoning_enabled and chat_reasoning == "reasoning_effort":
-            params["reasoning_effort"] = effort
+        elif chat_reasoning == "reasoning_effort":
+            if value := provider.resolved_reasoning_effort():
+                params["reasoning_effort"] = value
         elif chat_reasoning == "thinking":
             extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
             if reasoning_enabled:

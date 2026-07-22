@@ -7,6 +7,7 @@
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
 - Lower the default provider request timeout from 180 seconds to 120 seconds; explicitly configured values are unchanged.
 - Increase transient model retries from two to five, and show attempts with concise reasons in the running TUI, such as `retrying 2/6 · timeout`, then keep `attempt 2/6` visible while the replacement request continues.
+- Move built-in provider profiles into a dedicated module and match profiles across real subdomains. Aliyun-compatible endpoints under `aliyuncs.com` now send Qwen3.8 reasoning levels through `reasoning_effort`, including `none` for `/reason off`, so existing `chat_reasoning = "auto"` configurations work without provider-specific overrides.
 
 
 ## 0.12.0 - 2026-07-21

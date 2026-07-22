@@ -1,6 +1,6 @@
 """minacode: A small terminal coding agent written in Python.
 
-The implementation lives in focused submodules (``base``, ``session``,
+The implementation lives in focused submodules (``base``, ``providers``, ``session``,
 ``skill``, ``mcp``, ``tools``, ``engine``, ``tui``) plus a ``__main__`` entry
 point.  The public names are
 re-exported here so ``import minacode`` keeps exposing the same namespace the
@@ -29,8 +29,6 @@ from minacode import engine, tools, tui
 from minacode.base import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     CHAT_REASONING_CHOICES,
-    CHAT_REASONING_EFFORT_VALUES,
-    DEEPSEEK_DEFAULT_MAX_TOKENS,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_OUTPUT_RESERVE_TOKENS,
     DISMISSED,
@@ -60,6 +58,7 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
+from minacode.providers import CHAT_REASONING_EFFORT_VALUES, DEEPSEEK_DEFAULT_MAX_TOKENS
 from minacode.engine import (
     ActiveResource,
     Agent,

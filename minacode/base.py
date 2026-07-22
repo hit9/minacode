@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 
 from prompt_toolkit.utils import get_cwidth
 
+from minacode.providers import PROVIDER_PROFILES
+
 try:
     import pygments
     from pygments.token import Token
@@ -42,13 +44,8 @@ REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
-DEEPSEEK_DEFAULT_MAX_TOKENS = 32_768
 DEFAULT_OUTPUT_RESERVE_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS
 MIN_CONTEXT_SAFETY_TOKENS = 4_096
-CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
-    "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "max", "xhigh": "max"},
-    "enable_thinking": {"minimal": 256, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
-}
 SELECTION_BACK = object()
 SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"
@@ -170,14 +167,7 @@ class Text:
 
 @dataclass
 class ProviderConfig:
-    # fmt: off
-    PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
-        "api.openai.com": {"chat_reasoning_rules": (("reasoning_effort", ("o1", "o3", "o4", "gpt-5")),), "strict_tools": True},
-        "openrouter.ai": {"chat_reasoning": "reasoning"},
-        "opencode.ai": {"api_rules": (("anthropic", ("claude-", "qwen3.")),), "chat_reasoning_rules": (("reasoning", ("deepseek-v4",)),)},
-        "api.deepseek.com": {"chat_reasoning": "thinking", "max_tokens": DEEPSEEK_DEFAULT_MAX_TOKENS, "prompt_cache_key": False, "strict_tools": True, "strict_beta": True},
-    }
-    # fmt: on
+    PROFILES: ClassVar[dict[str, dict[str, Any]]] = PROVIDER_PROFILES
 
     url: str = ""
     key: str = ""
@@ -235,7 +225,9 @@ class ProviderConfig:
         return (urlparse(self._stripped_url()).hostname or "").lower()
 
     def _profile(self) -> Json:
-        return self.PROFILES.get(self.host()) or {}
+        host = self.host()
+        matches = ((domain, profile) for domain, profile in self.PROFILES.items() if host == domain or host.endswith(f".{domain}"))
+        return max(matches, key=lambda item: len(item[0]), default=("", {}))[1]
 
     def resolved_chat_reasoning(self) -> str:
         return self.profile_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
@@ -256,6 +248,12 @@ class ProviderConfig:
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
+
+    def resolved_reasoning_effort(self) -> str | None:
+        if self.reasoning != "off":
+            return self.reasoning_effort()
+        value = self._profile().get("reasoning_effort_off")
+        return str(value) if value is not None else None
 
     def resolved_max_tokens(self) -> int:
         # Generic OpenAI-compatible providers keep their own server-side cap; only opted-in profiles get a ceiling.

@@ -132,6 +132,38 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert "reasoning_effort" not in params
 
 
+def test_qwen_token_plan_profile_uses_reasoning_effort(tmp_path):
+    client = n.ModelClient(session(tmp_path))
+    provider = n.ProviderConfig.from_dict(
+        {
+            "url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "model": "qwen3.8-max-preview",
+            "reasoning": "medium",
+        }
+    )
+    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+
+    for reasoning in ("minimal", "low", "medium", "high", "xhigh"):
+        provider.reasoning = reasoning
+        params = {}
+        client.apply_provider_params(params, provider)
+        assert params == {"reasoning_effort": reasoning}
+
+    provider.reasoning = "off"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"reasoning_effort": "none"}
+
+    provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+
+    provider.url = "https://notaliyuncs.com/compatible-mode/v1"
+    assert provider.resolved_chat_reasoning() == "off"
+
+    provider.model = "other-model"
+    assert provider.resolved_chat_reasoning() == "off"
+
+
 def test_chat_provider_extra_body_passthrough(tmp_path):
     client = n.ModelClient(session(tmp_path))
 
