@@ -49,7 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("--resume", default="", nargs="?", const="latest", help='Resume a session by UID, or "latest"/"last" for this project\'s most recent')
     resume.add_argument("-c", "--last", "--latest", dest="continue_project", action="store_true", help="Resume the latest session in the current project")
     parser.add_argument("-v", "--version", action="store_true", help="Show version")
-    parser.add_argument("command", nargs="?", choices=["update", "upgrade"], default=None, help="Maintenance command: update/upgrade minacode to the latest version")
+    parser.add_argument(
+        "command", nargs="?", choices=["update", "upgrade"], default=None, help="Maintenance command: update/upgrade minacode to the latest version"
+    )
     args = parser.parse_args(argv)
     if args.version:
         print(__version__)
