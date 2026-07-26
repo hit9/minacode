@@ -204,7 +204,7 @@ class ProviderConfig:
     extra_body: Json = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Json) -> "ProviderConfig":
+    def from_dict(cls, data: Json) -> ProviderConfig:
         api = Config.str(data, "api", "auto")
         image_input = Config.str(data, "image_input", "auto")
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
@@ -322,7 +322,7 @@ class RuntimeSettings:
     theme: str = "auto"
 
     @classmethod
-    def from_dict(cls, data: Json, *, yolo: bool = False, theme: str = "") -> "RuntimeSettings":
+    def from_dict(cls, data: Json, *, yolo: bool = False, theme: str = "") -> RuntimeSettings:
         runtime = Config.table(data, "runtime")
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
@@ -362,7 +362,7 @@ class Config:
         return self.providers[self.active_provider]
 
     @classmethod
-    def from_dict(cls, data: Json) -> "Config":
+    def from_dict(cls, data: Json) -> Config:
         provider_root = cls.table(data, "provider")
         active = cls.str(provider_root, "active", "default")
         providers = {name: ProviderConfig.from_dict(value) for name, value in provider_root.items() if name != "active" and isinstance(value, dict)}
@@ -561,7 +561,7 @@ class SystemInfo:
     commands: tuple[str, ...]
 
     @classmethod
-    def detect(cls, cwd: str) -> "SystemInfo":
+    def detect(cls, cwd: str) -> SystemInfo:
         return cls(
             cwd=cwd,
             os=platform.system() or sys.platform,

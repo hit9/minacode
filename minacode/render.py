@@ -129,7 +129,7 @@ class Theme:
         if name not in cls._pygments_cache:
             try:
                 cls._pygments_cache[name] = get_style_by_name(name)
-            except Exception:
+            except Exception:  # noqa: BLE001 - optional Pygments styles must degrade to plain rendering.
                 cls._pygments_cache[name] = None
         return cls._pygments_cache[name]
 
@@ -304,7 +304,7 @@ class UiPrinter:
             return [("ansibrightblack", text + "\n")]
         if text.startswith("minacode "):
             return [("ansicyan", text + "\n")]
-        if text.startswith("Error:") or text.startswith("ConfigError:") or text.startswith("Unknown command:"):
+        if text.startswith(("Error:", "ConfigError:", "Unknown command:")):
             return [("ansired", text + "\n")]
         return [("fg:default", line + "\n") for line in text.splitlines() or [""]]
 
@@ -391,7 +391,7 @@ class UiPrinter:
         try:
             lexer = get_lexer_by_name(lexer_name, stripnl=False, ensurenl=False)
             return [(cls.pygments_style(token_type), value) for token_type, value in lexer.get_tokens(text) if value]
-        except Exception:
+        except Exception:  # noqa: BLE001 - third-party lexers must degrade to plain rendering.
             return [(fallback_style, text)]
 
     @classmethod
@@ -462,11 +462,11 @@ class UiPrinter:
             return None
         try:
             lexer = get_lexer_for_filename(path, stripnl=False)
-        except Exception:
+        except Exception:  # noqa: BLE001 - third-party lexer lookup must degrade to plain rendering.
             return None
         try:
             tokens = lexer.get_tokens(code_text)
-        except Exception:
+        except Exception:  # noqa: BLE001 - third-party lexer execution must degrade to plain rendering.
             return None
 
         lines: list[list[tuple[str, str]]] = [[]]

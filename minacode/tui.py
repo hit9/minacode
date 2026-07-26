@@ -10,9 +10,10 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, ClassVar, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 from prompt_toolkit import search as pt_search
 from prompt_toolkit.application import Application, run_in_terminal
@@ -119,7 +120,9 @@ class TuiApp:
     blocking approvals, while completed output is printed above the app into terminal scrollback.
     """
 
-    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple("j k h l g G up down left right tab enter escape q r pagedown pageup c-d c-u c-o backspace c-h /".split())
+    MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple(
+        "j k h l g G up down left right tab enter escape q r pagedown pageup c-d c-u c-o backspace c-h /".split()  # noqa: SIM905 - compact key table.
+    )
 
     def __init__(
         self,
@@ -421,7 +424,7 @@ class TuiApp:
             command.extend(["-t", pane])
         command.append("#{alternate-screen}")
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=1)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=1, check=False)
         except (OSError, subprocess.TimeoutExpired):
             return True
         return result.returncode != 0 or result.stdout.strip() != "0"
@@ -739,7 +742,7 @@ class TuiApp:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
             try:
-                completed = subprocess.run([*self.editor_command(), path])
+                completed = subprocess.run([*self.editor_command(), path], check=False)
             except OSError:
                 return None
             if completed.returncode != 0:

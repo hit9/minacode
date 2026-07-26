@@ -56,7 +56,7 @@ minacode = "minacode:main"
 dev = [
     "pyright>=1.1.411",
     "pytest>=8.0",
-    "ruff>=0.4.0",
+    "ruff==0.16.0",
 ]
 
 [tool.setuptools]

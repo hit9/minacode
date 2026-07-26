@@ -16,8 +16,7 @@ from collections.abc import Callable, Hashable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
-from enum import auto
+from enum import Enum, auto
 from typing import Any, ClassVar, Generic, TypeVar
 from urllib.request import Request, urlopen
 
@@ -49,12 +48,6 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.provider_compat import (
-    CHAT_REASONING_EFFORT_VALUES,
-    ResolvedProvider,
-    anthropic_thinking_always_on,
-    anthropic_thinking_params,
-)
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, UserInput
 from minacode.prompts import (
     COMPACTION_PROMPT,
@@ -64,7 +57,15 @@ from minacode.prompts import (
     LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
     SYSTEM_PROMPT,
+)
+from minacode.prompts import (
     compaction_input as format_compaction_input,
+)
+from minacode.provider_compat import (
+    CHAT_REASONING_EFFORT_VALUES,
+    ResolvedProvider,
+    anthropic_thinking_always_on,
+    anthropic_thinking_params,
 )
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
@@ -107,7 +108,7 @@ class UpdateChecker:
         try:
             self.session.update.latest = self.fetch_latest()
             self.session.update.error = ""
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - background update failures must not escape the worker.
             self.session.update.error = Text.clean(str(error))
         finally:
             self.session.update.checking = False
@@ -326,7 +327,7 @@ class ContextManager:
                 result.append(message)
                 continue
             marker = marker_for(identity, first_key)
-            result.append({**message, "content": block.sub(lambda _: marker, content)})
+            result.append({**message, "content": block.sub(lambda _, marker=marker: marker, content)})
         return result
 
     def mcp_tools_context(self) -> str:
@@ -354,7 +355,7 @@ class ContextManager:
         self.session.state.context_percent = min(100, tokens * 100 // self.request_token_budget())
         return tokens
 
-    def prepare_messages(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None) -> list[Json]:
+    def prepare_messages(self, model: ModelClient, base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
         budget = self.request_token_budget()
         if self.request_tokens(messages, tools) < budget:
@@ -370,7 +371,7 @@ class ContextManager:
 
     def _compact_messages(
         self,
-        model: "ModelClient",
+        model: ModelClient,
         compacted: list[Json],
         keep: list[Json],
         fallback_note: str,
@@ -382,7 +383,7 @@ class ContextManager:
             return False
         try:
             data = model.compact(self.compaction_input(compacted))
-        except Exception:
+        except Exception:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
             data = None
         self.apply_compaction(data, keep, tool_messages, turn_messages=turn_messages, fallback_note=fallback_note if data is None else "", compacted=compacted)
         return True
@@ -613,7 +614,7 @@ class EditBatchPlan:
     @dataclass
     class FileState:
         path: str
-        lines: list["EditBatchPlan.Line"]
+        lines: list[EditBatchPlan.Line]
         original: list[str]
         exists: bool
 
@@ -628,7 +629,7 @@ class EditBatchPlan:
 
     @dataclass
     class ApplyResult:
-        lines: list["EditBatchPlan.Line"]
+        lines: list[EditBatchPlan.Line]
         changes: list[tuple[int, int, int, int]]
         replacements: list[tuple[int, int, list[str]]]
         replace_all: bool = False
@@ -680,7 +681,7 @@ class EditBatchPlan:
         self.planned: dict[str, EditBatchPlan.PlannedEdit] = {}
         self.errors: dict[str, str] = {}
 
-    def build(self, calls: list[ToolCall]) -> "EditBatchPlan":
+    def build(self, calls: list[ToolCall]) -> EditBatchPlan:
         for call in calls:
             if call.name != "Edit":
                 continue
@@ -878,7 +879,7 @@ class ToolRunner:
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()
-        except Exception:
+        except Exception:  # noqa: BLE001 - malformed third-party tool implementations are never parallel-safe.
             return False
 
     def execute_readonly(self, call: ToolCall) -> tuple[str, str, str | None, float]:
@@ -898,7 +899,7 @@ class ToolRunner:
             output = tool.call()
         except ToolError as error:
             return "reject", f"ToolError: {error}", display, time.monotonic() - started
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
             return "error", f"ToolError: {error}", display, time.monotonic() - started
         return "ok", output, display, time.monotonic() - started
 
@@ -969,7 +970,7 @@ class ToolRunner:
             output = self.call_tool(tool, planned_edit)
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", d=d)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
             return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d)
         return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d)
 
@@ -978,7 +979,7 @@ class ToolRunner:
         call: ToolCall,
         output: str,
         *,
-        d: "ToolDisplay | None" = None,
+        d: ToolDisplay | None = None,
     ) -> str:
         d = d or ToolDisplay()
         self.session.record_tool_error("-", call.name, call.args, output)
@@ -989,7 +990,7 @@ class ToolRunner:
         )
         return self.tool_message(call, "", output, failed=True, display=d.display)
 
-    def reject_display(self, call: ToolCall, output: str, *, d: "ToolDisplay") -> LogBlock:
+    def reject_display(self, call: ToolCall, output: str, *, d: ToolDisplay) -> LogBlock:
         # Argument/usage rejections are usually self-corrected on retry, so show a quiet one-liner
         # (rendered dim by UiPrinter) instead of the full red failed block. The model still receives
         # the complete error so it can correct the call.
@@ -1004,8 +1005,8 @@ class ToolRunner:
         failed: bool = False,
         elapsed: float | None = None,
         store: bool = True,
-        turn_diff: "TurnDiff | None" = None,
-        d: "ToolDisplay | None" = None,
+        turn_diff: TurnDiff | None = None,
+        d: ToolDisplay | None = None,
     ) -> str:
         d = d or ToolDisplay()
         tool_class = TOOL_REGISTRY.get(call.name)
@@ -1080,7 +1081,7 @@ class ToolRunner:
         *,
         failed: bool,
         elapsed: float | None = None,
-        d: "ToolDisplay | None" = None,
+        d: ToolDisplay | None = None,
     ) -> str | LogBlock:
         d = d or ToolDisplay()
         if call.name == "Note" and not failed and d.display:
@@ -1147,7 +1148,7 @@ class ToolRunner:
         if end < 0:
             return ""
         text = output[start:end]
-        return text[:-1] if text.endswith("\n") else text
+        return text.removesuffix("\n")
 
     def preview_lines(self, text: str, line_limit: int | None = None) -> list[str]:
         line_limit = self.BASH_PREVIEW_LINES if line_limit is None else line_limit
@@ -1206,7 +1207,7 @@ class ToolRunner:
         if args is None:
             try:
                 args = tool_class(self.session, call.args).short_args() if tool_class is not None else [Tool.compact(arg) for arg in call.args]
-            except Exception:
+            except Exception:  # noqa: BLE001 - display formatting must fall back for malformed tool arguments.
                 args = [Tool.compact(arg) for arg in call.args]
         text = " ".join([call.name, *args]).strip()
         return text if "\n" in text else self.oneline(text, 200)
@@ -1691,7 +1692,7 @@ class ModelClient:
         url = provider.resolve().base_url.rstrip("/")
         return Anthropic(
             api_key=provider.key,
-            base_url=url[: -len("/v1")] if url.endswith("/v1") else url,
+            base_url=url.removesuffix("/v1"),
             timeout=provider.timeout,
             max_retries=0,
             default_headers={"User-Agent": HTTP_USER_AGENT},

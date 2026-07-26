@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import codecs
-import copy
 import contextlib
+import copy
 import difflib
 import fnmatch
 import hashlib
@@ -44,7 +44,7 @@ class Tool:
         self.session = session
         self.args = args
 
-    def turn_diff(self) -> "TurnDiff | None":
+    def turn_diff(self) -> TurnDiff | None:
         """The file diff this tool produced on its last run, or None if it made no edit. Overridden
         by EditTool; the runner records it against the stored result for the /diff viewer."""
         return None
@@ -477,10 +477,10 @@ class SearchTool(Tool):
         if request["glob"]:
             cmd.extend(["--glob", str(request["glob"])])
         cmd.extend([str(request["pattern"]), str(request["path"])])
-        proc = subprocess.run(cmd, cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout)
+        proc = subprocess.run(cmd, cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout, check=False)
         if proc.returncode == 2:
             proc = subprocess.run(
-                [*cmd[:1], "--pcre2", *cmd[1:]], cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout
+                [*cmd[:1], "--pcre2", *cmd[1:]], cwd=self.session.cwd, text=True, capture_output=True, timeout=self.session.settings.shell_timeout, check=False
             )
         if proc.returncode not in (0, 1):
             return None
@@ -614,7 +614,7 @@ class CodeIndex:
     def status(self, *, check: bool = False, max_pending_files: int = 20) -> tuple[str, str]:
         try:
             data = csi.status(self.session.cwd, check=check, max_pending_files=max_pending_files)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             self.set_status("error", str(error))
             return "error", str(error)
         status = str(getattr(data, "status", "") or "error")
@@ -637,7 +637,7 @@ class CodeIndex:
         self.notice("syncing", refreshing=True)
         try:
             csi.index(self.session.cwd)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             return "code_index: error\n" + self.fail(error)
         self.finish()
         status, message = self.status(check=True)
@@ -654,7 +654,7 @@ class CodeIndex:
         self.notice("updating", refreshing=True)
         try:
             csi.update(paths, root=self.session.cwd)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             return self.fail(error)
         self.finish()
         return "updated " + str(len(paths)) + " file(s)"
@@ -664,7 +664,7 @@ class CodeIndex:
             return ""
         try:
             data = csi.status(self.session.cwd, check=True, max_pending_files=self.AUTO_UPDATE_LIMIT + 1)
-        except Exception:
+        except Exception:  # noqa: BLE001 - background index freshness checks are best-effort.
             return ""
         self.set_status(str(getattr(data, "status", "") or "error"), str(getattr(data, "message", None) or getattr(data, "reason", None) or ""))
         if getattr(data, "status", "") != "stale":
@@ -703,7 +703,7 @@ class CodeIndex:
         self.notice("syncing", refreshing=True)
         try:
             worker = csi.refresh_async(self.session.cwd)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - isolate failures from the optional code-index integration.
             self.fail(error)
             return False
 
@@ -713,7 +713,7 @@ class CodeIndex:
                 self.session.state.code_index_refreshing = False
                 self.session.state.code_index_notice = ""
                 self.status(check=True)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - isolate background code-index failures.
                 self.fail(error)
 
         threading.Thread(target=finish, daemon=True).start()
@@ -934,7 +934,7 @@ class EditTool(Tool):
             ]
         )
 
-    def turn_diff(self) -> "TurnDiff | None":
+    def turn_diff(self) -> TurnDiff | None:
         path, diff = getattr(self, "last_path", ""), getattr(self, "last_diff", "")
         if not (path and diff):
             return None
@@ -1260,9 +1260,8 @@ class BashTool(Tool):
             return False  # `tree -o FILE` writes the listing to a file
         if cmd == "sort" and any(t.startswith(("-o", "--output")) for t in tokens):
             return False  # `sort -o FILE` / `--output=FILE` writes to a file
-        if cmd == "uniq" and cls._uniq_writes(tokens):
-            return False  # `uniq INPUT OUTPUT` writes the second file operand
-        return True
+        # `uniq INPUT OUTPUT` writes the second file operand.
+        return not (cmd == "uniq" and cls._uniq_writes(tokens))
 
     @staticmethod
     def _uniq_writes(tokens: list[str]) -> bool:
@@ -1293,9 +1292,7 @@ class BashTool(Tool):
         args = tokens[index + 1 :]
         if any(t == "--output" or t.startswith("--output=") for t in args):
             return False
-        if sub == "grep" and any(t.startswith(("-O", "--open-files-in-pager")) for t in args):
-            return False
-        return True
+        return not (sub == "grep" and any(t.startswith(("-O", "--open-files-in-pager")) for t in args))
 
     # fmt: off
     @classmethod

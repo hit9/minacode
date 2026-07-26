@@ -7,9 +7,8 @@ Chat, Responses, and Anthropic protocol paths remain responsible for their own w
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
-
 
 OPENAI_REASONING_MODEL_FAMILIES = ("o", "gpt-5")
 ZAI_THINKING_MODEL_FAMILIES = ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5")

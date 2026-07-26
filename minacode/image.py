@@ -10,8 +10,9 @@ import re
 import shlex
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Self
 
 from PIL import Image, UnidentifiedImageError
 
@@ -81,7 +82,7 @@ class UserInput(str):
 
     images: tuple[ImageRef, ...]
 
-    def __new__(cls, text: str, images: tuple[ImageRef, ...] = ()) -> UserInput:
+    def __new__(cls, text: str, images: tuple[ImageRef, ...] = ()) -> Self:
         value = super().__new__(cls, text)
         value.images = images
         if text.count(IMAGE_MARKER) != len(images):

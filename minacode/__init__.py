@@ -34,7 +34,6 @@ from minacode.base import (
     DISMISSED,
     HTTP_USER_AGENT,
     IMAGE_INPUT_CHOICES,
-    Json,
     MAX_TOOL_OUTPUT_TOKENS,
     MIN_CONTEXT_SAFETY_TOKENS,
     MODEL_REQUEST_RETRIES,
@@ -47,6 +46,7 @@ from minacode.base import (
     Config,
     ConfigError,
     ConfigFile,
+    Json,
     MinacodeError,
     ModelError,
     ModelRequestRetry,
@@ -61,8 +61,6 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES
-from minacode.prompts import COMPACTION_PROMPT, COMPACTION_SUMMARY_TITLE, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from minacode.engine import (
     ActiveResource,
     Agent,
@@ -79,8 +77,17 @@ from minacode.engine import (
     TurnBox,
     UpdateChecker,
 )
-from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig, MCPToolInfo
 from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
+from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
+from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig, MCPToolInfo
+from minacode.prompts import COMPACTION_PROMPT, COMPACTION_SUMMARY_TITLE, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
+from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES
+from minacode.render import (
+    BashLivePreview,
+    StatusBar,
+    Theme,
+    UiPrinter,
+)
 from minacode.session import (
     AgentState,
     BackgroundJob,
@@ -96,8 +103,8 @@ from minacode.session import (
 )
 from minacode.skill import Skill, SkillLibrary
 from minacode.tools import (
-    TOOLS,
     TOOL_REGISTRY,
+    TOOLS,
     AskSpec,
     AskTool,
     BashTool,
@@ -115,13 +122,6 @@ from minacode.tools import (
     SearchTool,
     SkillTool,
     Tool,
-)
-from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
-from minacode.render import (
-    BashLivePreview,
-    StatusBar,
-    Theme,
-    UiPrinter,
 )
 from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp, TuiModal
 

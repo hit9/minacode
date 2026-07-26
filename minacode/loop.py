@@ -12,16 +12,16 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 
+from openai import OpenAI
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
-from openai import OpenAI
 from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import (
@@ -44,10 +44,9 @@ from minacode.base import (
 from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolDisplay, TurnBox, UpdateChecker
 from minacode.image import ImageInputs, UserInput
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
-from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
-from minacode.tools import AskSpec, CodeIndex, TOOL_REGISTRY
-
 from minacode.render import BashLivePreview, StatusBar, UiPrinter
+from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
+from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 
 
@@ -960,7 +959,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                     result = mcp.connect_server(name, interactive=True, notify=self.emit)
                 else:
                     result = mcp.disconnect_server(name)
-            except Exception as error:  # Keep background failures visible in the selector.
+            except Exception as error:  # noqa: BLE001 - keep background MCP failures visible in the selector.
                 result = f"MCP server error: {name}: {error}"
 
             succeeded = mcp.connected(name) == connect
@@ -1448,7 +1447,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
-        except Exception:
+        except Exception:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.
             self.agent.context.apply_compaction(None, keep, fallback_note=PREVIOUS_CONTEXT_TRIMMED, compacted=compacted)
             fallback = True
             data = None
@@ -1554,7 +1553,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                 max_retries=0,
                 default_headers={"User-Agent": HTTP_USER_AGENT},
             ).models.list()
-        except Exception:
+        except Exception:  # noqa: BLE001 - remote model discovery is optional and provider SDKs expose varied failures.
             return ()
         names = []
         for item in getattr(page, "data", page) or []:
@@ -1815,7 +1814,7 @@ class TuiRuntime:
     def run_tui_app(self) -> None:
         try:
             self.tui.run(style=self.loop.style())
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - propagate every TUI-thread failure on the main thread.
             self.error = error
             self.stop.set()
 

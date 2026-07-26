@@ -35,7 +35,7 @@ class SkillLibrary:
         self.skills = skills
 
     @classmethod
-    def load(cls, session: "Session") -> "SkillLibrary":
+    def load(cls, session: Session) -> SkillLibrary:
         skills: dict[str, Skill] = {}
         # User skills load before project skills so a project skill of the same name overrides them.
         project_skills = os.path.join(session.cwd, ".minacode", "skills")
@@ -53,7 +53,7 @@ class SkillLibrary:
         return cls(skills)
 
     @classmethod
-    def parse(cls, path: str, folder: str, source: str) -> "Skill | None":
+    def parse(cls, path: str, folder: str, source: str) -> Skill | None:
         try:
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
@@ -80,7 +80,7 @@ class SkillLibrary:
     def all(self) -> list[Skill]:
         return sorted(self.skills.values(), key=lambda skill: skill.name)
 
-    def get(self, name: str) -> "Skill | None":
+    def get(self, name: str) -> Skill | None:
         if name in self.skills:
             return self.skills[name]
         resolved = {key.lower(): key for key in self.skills}.get(name.lower())

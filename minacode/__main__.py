@@ -22,7 +22,7 @@ def run_update() -> int:
     print(f"minacode {__version__}")
     try:
         latest = UpdateChecker.fetch_latest()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - update failures from any network/backend layer are reported uniformly.
         print(f"Error: could not check the latest version: {error}", file=sys.stderr)
         return 1
     if not UpdateStatus(latest=latest).newer_than(__version__):

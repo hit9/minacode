@@ -89,7 +89,7 @@ class MCPFileTokenStore:
             return dict(value) if isinstance(value, dict) else None
 
     # Called dynamically through the MCP OAuth token-storage protocol; static call graphs will not see it.
-    async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | int | None = None) -> None:
+    async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | None = None) -> None:
         collection = collection or self.DEFAULT_COLLECTION
         expires_at = time.time() + float(ttl) if ttl is not None else None
         with self.lock:
@@ -256,7 +256,7 @@ class MCPManager:
     def _has_header(headers: dict[str, str], name: str) -> bool:
         return any(header.lower() == name.lower() for header in headers)
 
-    def find_config(self, name: str) -> "MCPServerConfig | None":
+    def find_config(self, name: str) -> MCPServerConfig | None:
         return next((config for config in self.parse_configs() if config.name == name), None)
 
     @contextlib.contextmanager
@@ -320,7 +320,7 @@ class MCPManager:
                         futures = [executor.submit(self._discover_one, config) for config in discoverable]
                         for future in as_completed(futures):
                             future.result()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - discovery aggregates failures from arbitrary MCP transports.
             with self.lock:
                 self.server_errors["-"] = str(error)
 
@@ -643,11 +643,11 @@ class MCPManager:
                 asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=5)
             except concurrent.futures.TimeoutError:
                 pass
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - shutdown is best-effort after cancellation.
                 pass
             try:
                 loop.call_soon_threadsafe(loop.stop)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - the event loop may already be closed.
                 pass
         if thread.is_alive():
             thread.join(timeout=5)
@@ -762,7 +762,7 @@ class MCPManager:
 
         try:
             result = self.run_async(self._call_tool(config, headers, tool_name, arguments))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - normalize arbitrary MCP transport errors as ToolError.
             raise ToolError("MCP call failed: " + self.error_text(e))
 
         text = self.normalize_result(result)
@@ -785,7 +785,7 @@ class MCPManager:
         config, headers = self._resolve_server(server)
         try:
             result = self.run_async(self._read_resource(config, headers, uri))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - normalize arbitrary MCP transport errors as ToolError.
             raise ToolError("MCP resource read failed: " + self.error_text(e))
         text = self.normalize_resource(result)
         return f"<MCPResource server={json.dumps(server)} uri={json.dumps(uri)}>\n{text}\n</MCPResource>"
@@ -815,7 +815,7 @@ class MCPManager:
             self._auto_read_done.add((server, uri))  # mark before fetching so failures don't retry
             try:
                 blocks.append(self.read_resource(server, uri)[: self.AUTO_READ_LIMIT])
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 - referenced resources are injected best-effort.
                 continue
         if not blocks:
             return ""
@@ -900,7 +900,7 @@ class MCPManager:
             return headers
         try:
             self.run_async(self._run_op(config, headers, lambda c: c.list_tools(), interactive=True, notify=notify))
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - OAuth probes cross third-party MCP transports.
             text = self.error_text(error, timeout=self.call_timeout())
             self.set_server_error(config.name, text)
             return self.oauth_auth_failure(config, text)
@@ -1011,21 +1011,21 @@ class MCPManager:
         self.index_truncated = True
         return text[: self.INDEX_TOTAL_LIMIT - 10] + "\n... MCP tools truncated; use /mcp tools for full list."
 
-    def _resources_block(self, server: str, resources: list["MCPResourceInfo"]) -> list[str]:
+    def _resources_block(self, server: str, resources: list[MCPResourceInfo]) -> list[str]:
         """The 'resources (N) — read with ...' header plus one line per resource, or [] if none."""
         if not resources:
             return []
         header = f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(server)}, uri=...):'
         return [header, *(self._format_resource_line(res) for res in resources)]
 
-    def _server_lines(self, server: str, tools: list["MCPToolInfo"], resources: list["MCPResourceInfo"], *, include_schema: bool = True) -> list[str]:
+    def _server_lines(self, server: str, tools: list[MCPToolInfo], resources: list[MCPResourceInfo], *, include_schema: bool = True) -> list[str]:
         """A server's header, tool lines, and resources block — shared by the tools index and mentions."""
         lines = [f"[{server}] {server.capitalize()}"]
         lines.extend(line for info in tools if (line := self._format_tool_line(server, info, include_schema=include_schema)))
         lines.extend(self._resources_block(server, resources))
         return lines
 
-    def _index_body(self, configs: list["MCPServerConfig"], *, detail: str = "schema") -> list[str]:
+    def _index_body(self, configs: list[MCPServerConfig], *, detail: str = "schema") -> list[str]:
         """Render the per-server body lines of the tools index at one detail level.
 
         detail controls how much of each tool is emitted (richest to cheapest):

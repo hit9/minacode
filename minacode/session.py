@@ -8,8 +8,8 @@ import hashlib
 import json
 import os
 import re
-import signal
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -37,7 +37,7 @@ class PlanItem:
     text: str
 
     @classmethod
-    def parse(cls, value: object) -> "PlanItem | None":
+    def parse(cls, value: object) -> PlanItem | None:
         if isinstance(value, cls):
             status, text = value.status, value.text
         elif isinstance(value, dict):
@@ -166,7 +166,7 @@ class SessionSnapshotCodec:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     @classmethod
-    def marker(cls, session: "Session") -> Json:
+    def marker(cls, session: Session) -> Json:
         messages = cls.snapshot_messages(session)
         records = [cls.tool_record(record) for record in session.tool_records]
         errors = [cls.tool_error(error) for error in session.tool_errors]
@@ -237,7 +237,7 @@ class SessionSnapshotCodec:
         return [HistorySegment(key=d["key"], title=d.get("title", ""), text=blobs.get(d.get("blob", ""), "")) for d in data]
 
     @classmethod
-    def has_content(cls, session: "Session") -> bool:
+    def has_content(cls, session: Session) -> bool:
         state = session.state
         return any(
             (
@@ -260,7 +260,7 @@ class SessionSnapshotCodec:
         return [message for message in messages if not cls.is_internal_message(message)]
 
     @classmethod
-    def snapshot_messages(cls, session: "Session") -> list[Json]:
+    def snapshot_messages(cls, session: Session) -> list[Json]:
         return cls.persistable_messages([*session.messages, *session._active_turn_messages])
 
     @staticmethod
@@ -284,7 +284,7 @@ class SessionSnapshotCodec:
         return asdict(usage)
 
     @classmethod
-    def snapshot(cls, session: "Session", blobs: dict[str, str]) -> Json:
+    def snapshot(cls, session: Session, blobs: dict[str, str]) -> Json:
         # fmt: off
         return {
             "uid": session.uid, "cwd": session.cwd, "messages": cls.snapshot_messages(session),
@@ -297,7 +297,7 @@ class SessionSnapshotCodec:
         # fmt: on
 
     @classmethod
-    def delta(cls, session: "Session", saved: Json, blobs: dict[str, str]) -> Json:
+    def delta(cls, session: Session, saved: Json, blobs: dict[str, str]) -> Json:
         delta: Json = {
             "tool_counter": session.tool_counter,
             "usage": cls.usage(session.usage),
@@ -419,7 +419,7 @@ class SessionSnapshotStore:
     FORMAT_VERSION: ClassVar[int] = 2
     PROJECTS_DIR: ClassVar[str] = "projects"
 
-    def __init__(self, session: "Session"):
+    def __init__(self, session: Session):
         self.session = session
 
     def save(self) -> str:
@@ -469,7 +469,7 @@ class SessionSnapshotStore:
             self.session._blobs_written.add(ref)
 
     @classmethod
-    def header(cls, session: "Session") -> Json:
+    def header(cls, session: Session) -> Json:
         return {"v": cls.FORMAT_VERSION, "uid": session.uid, "cwd": session.cwd, "created_at": time.time()}
 
     @staticmethod
@@ -511,7 +511,7 @@ class SessionSnapshotStore:
         return ""
 
     @classmethod
-    def clean_expired(cls, session: "Session") -> int:
+    def clean_expired(cls, session: Session) -> int:
         days = session.settings.session_retention_days
         if days <= 0:
             return 0
@@ -591,7 +591,7 @@ class SessionSnapshotStore:
             os.unlink(os.path.join(directory, "latest"))
 
     @classmethod
-    def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> "Session":
+    def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> Session:
         if config is None:
             config = Config.from_dict(ConfigFile.load())
         if settings is None:
@@ -763,7 +763,7 @@ class QueuedInput:
         }
 
     @classmethod
-    def from_json(cls, value: object) -> "QueuedInput | None":
+    def from_json(cls, value: object) -> QueuedInput | None:
         if isinstance(value, str):
             return cls(value) if value.strip() else None
         if not isinstance(value, dict):
@@ -822,7 +822,7 @@ class Session:
     def __post_init__(self) -> None:
         self.images = ImageInputs(self)
         if not self.uid:
-            self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]
+            self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]  # noqa: DTZ005 - IDs intentionally use local wall time.
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
         if self.mcp is None:
@@ -851,7 +851,7 @@ class Session:
             self.turn_diffs.pop(0)
 
     @classmethod
-    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, theme: str = "") -> "Session":
+    def from_config_file(cls, *, path: str | None = None, yolo: bool = False, theme: str = "") -> Session:
         data = ConfigFile.load(path)
         return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, theme=theme))
 
@@ -1153,5 +1153,5 @@ class Session:
             return SessionSnapshotStore(self).save()
 
     @classmethod
-    def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> "Session":
+    def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> Session:
         return SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=cwd)
