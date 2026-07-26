@@ -1660,6 +1660,25 @@ def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
     assert "Set provider.model = model-b" in result
 
 
+
+def test_effort_is_an_alias_for_reason(tmp_path):
+    command_loop = loop(tmp_path)
+
+    # Registered as a command that dispatches to the same handler as /reason.
+    assert "/effort" in n.CommandLoop.COMMANDS
+    assert n.CommandLoop.COMMAND_HANDLERS["/effort"] == n.CommandLoop.COMMAND_HANDLERS["/reason"]
+
+    # Dispatch sets reasoning effort exactly like /reason.
+    command_loop.command("/effort high")
+    assert command_loop.session.config.provider.reasoning == "high"
+
+    # Tab completion offers the same reasoning choices.
+    from prompt_toolkit.document import Document
+
+    texts = [c.text for c in n.CommandCompleter().get_completions(Document("/effort "), None)]
+    assert set(texts) == set(n.REASONING_CHOICES)
+
+
 def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True

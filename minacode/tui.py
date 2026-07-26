@@ -130,6 +130,7 @@ class CommandCompleter(Completer):
             ("/model ", self.models),
             ("/provider ", self.providers),
             ("/reason ", lambda: REASONING_CHOICES),
+            ("/effort ", lambda: REASONING_CHOICES),
             ("/strict ", lambda: ("on", "off")),
         ):
             if text.startswith(command):
@@ -1891,7 +1892,7 @@ class CommandLoop:
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
         "/skills": "skills_command", "/config": "config",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
-        "/reason": "reason", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
+        "/reason": "reason", "/effort": "reason", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
         "/mcp": "mcp_command", "/resend": "resend_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
@@ -1922,7 +1923,7 @@ class CommandLoop:
   /index [force]      Sync or rebuild code symbol index.
   /provider [NAME]   Select or show the active provider.
   /model [MODEL]     Select or set the active model.
-  /reason [EFFORT]   Select or set reasoning effort.
+  /reason [EFFORT]   Select or set reasoning effort (alias: /effort).
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
   /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
