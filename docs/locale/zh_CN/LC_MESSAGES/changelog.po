@@ -50,6 +50,10 @@ msgstr ""
 msgid "Stream reasoning and answer text by default over OpenAI-compatible Chat Completions, OpenAI Responses, and Anthropic Messages. The running TUI now distinguishes `thinking` from `responding` while preserving the completed Rich transcript, tool-call replay, usage accounting, cancellation, and retry behavior."
 msgstr "默认通过 OpenAI-compatible Chat Completions、OpenAI Responses 和 Anthropic Messages 流式展示推理与回答文本。运行中的 TUI 现在会区分 `thinking` 和 `responding`，同时保留完整的 Rich transcript、工具调用回放、用量统计、中断和重试行为。"
 
+#: ../../../CHANGELOG.md:9
+msgid "Add the generic `provider.stream` setting, enabled by default and switchable for the current session with `/set provider.stream on|off`, so compatible endpoints that reject streaming or Chat `stream_options` retain a non-streaming path without provider specialization."
+msgstr "新增通用的 `provider.stream` 配置，默认启用，并可通过 `/set provider.stream on|off` 在当前 session 中切换，使拒绝流式请求或 Chat `stream_options` 的兼容 endpoint 无需 provider 特化也能保留非流式路径。"
+
 #: ../../../CHANGELOG.md:8
 msgid "Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization."
 msgstr "可直接在交互式 prompt 中输入本地图片路径，将识别到的文件显示为可编辑的内联标签，并在排队的追加指令和恢复后的 session 中保留图片；无需按 provider 或模型名称特化，即可通过 OpenAI-compatible Chat、OpenAI Responses 和 Anthropic Messages 发送对应的标准图片内容。"
@@ -171,6 +175,18 @@ msgstr "为 Kimi 和 Z.AI 的国际版与中国版 endpoint 添加有文档依�
 #: ../../../CHANGELOG.md:809 ../../../CHANGELOG.md:826
 msgid "Fixed"
 msgstr "修复"
+
+#: ../../../CHANGELOG.md:32
+msgid "Keep streamed Chat tool calls distinct when a compatible endpoint omits their indexes, and treat a repeated function name as the complete name instead of concatenating it into an unknown tool."
+msgstr "兼容 endpoint 省略 index 时仍保持各个 Chat 流式工具调用相互独立；重复出现的函数名按完整名称处理，不再拼接成未知工具。"
+
+#: ../../../CHANGELOG.md:33
+msgid "Return partial Responses output when a streamed response ends as `incomplete`, matching the non-streaming path, while rejecting genuinely `failed` responses consistently on both paths."
+msgstr "流式 Responses 以 `incomplete` 结束时返回部分输出，与非流式路径保持一致；真正的 `failed` response 则在两条路径中统一拒绝。"
+
+#: ../../../CHANGELOG.md:34
+msgid "Keep automatic and manual compaction output out of the live `responding` preview; only the user-facing model request streams into the TUI."
+msgstr "自动和手动 compaction 的输出不再进入实时 `responding` 预览；只有面向用户的模型请求会流式显示在 TUI 中。"
 
 #: ../../../CHANGELOG.md
 msgid "Learn image support only from requests that actually transmit images and resolve to an eligible 400, 415, or 422 response, preserving permission and unrelated provider errors; omit image-tile estimates when historical images are sent as labels."

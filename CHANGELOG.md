@@ -5,6 +5,7 @@
 
 ### Added
 - Stream reasoning and answer text by default over OpenAI-compatible Chat Completions, OpenAI Responses, and Anthropic Messages. The running TUI now distinguishes `thinking` from `responding` while preserving the completed Rich transcript, tool-call replay, usage accounting, cancellation, and retry behavior.
+- Add the generic `provider.stream` setting, enabled by default and switchable for the current session with `/set provider.stream on|off`, so compatible endpoints that reject streaming or Chat `stream_options` retain a non-streaming path without provider specialization.
 - Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization.
 - Allow the generic `provider.image_input` setting to force or disable image input, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft.
 - Add `/api` to select or set the request protocol during a session, and confirm it as a step in the `/provider` and `/model` selection chains. An endpoint serving several model families rarely serves them all over one protocol, and an OpenAI-compatible `/models` listing does not say which serves what, so a discovered model could be selected and then rejected as unsupported with no in-session way to change the wire. The reply names the protocol that took effect rather than echoing `auto` back.
@@ -30,6 +31,9 @@
 - Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
+- Keep streamed Chat tool calls distinct when a compatible endpoint omits their indexes, and treat a repeated function name as the complete name instead of concatenating it into an unknown tool.
+- Return partial Responses output when a streamed response ends as `incomplete`, matching the non-streaming path, while rejecting genuinely `failed` responses consistently on both paths.
+- Keep automatic and manual compaction output out of the live `responding` preview; only the user-facing model request streams into the TUI.
 - Learn image support only from requests that actually transmit images and resolve to an eligible 400, 415, or 422 response, preserving permission and unrelated provider errors; omit image-tile estimates when historical images are sent as labels.
 - Keep internal image-capability state out of the prompt, and render actionable image-input errors in their own TUI row instead of exposing the newline as `^J` inside the editable input.
 - Render Edit diff previews as solid red and green bands across every visual row, including line-number gutters and wrapped continuations, instead of dropping all padding whenever one changed line exceeded the terminal width.

@@ -191,6 +191,7 @@ class ProviderConfig:
     key: str = ""
     model: str = ""
     api: str = "auto"
+    stream: bool = True
     image_input: str = "auto"
     prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
@@ -222,6 +223,7 @@ class ProviderConfig:
             key=Config.str(data, "key"),
             model=Config.str(data, "model"),
             api=api,
+            stream=Config.bool(data, "stream", True),
             image_input=image_input,
             prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
@@ -437,6 +439,7 @@ url = ""
 key = ""
 model = ""
 # api = "auto"                 # auto | chat | responses | anthropic
+# stream = true
 # image_input = "auto"         # auto | on | off
 # reasoning = "medium"
 # timeout = 120

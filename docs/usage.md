@@ -40,7 +40,8 @@ divider: reasoning, when the model exposes it, uses `thinking`; the answer uses 
 The live text is a bounded preview, not a second conversation entry. On completion it clears
 and the final answer is rendered once in the normal Rich transcript. Tool-call arguments stay
 buffered until the call is complete, so partial JSON never appears as user-facing output. No
-streaming setting is required.
+streaming setting is required for the usual case; endpoints that reject streaming can disable it
+with `provider.stream = false` or `/set provider.stream off`.
 
 ## Bash output
 

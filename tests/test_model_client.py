@@ -91,8 +91,10 @@ def _session(tmp_path, **provider_kwargs):
 
 
 def test_chat_request_success(tmp_path, monkeypatch):
-    s = _session(tmp_path)
+    s = _session(tmp_path, stream=False)
     model = n.ModelClient(s)
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     factory = _MockClientFactory(
         [
             (
@@ -119,6 +121,11 @@ def test_chat_request_success(tmp_path, monkeypatch):
     assert s.usage.completion_tokens == 5
     assert s.usage.total_tokens == 15
     assert s.usage.calls == 1
+    body = json.loads(factory.calls[0].content)
+    assert factory.calls[0].url.path.endswith("/chat/completions")
+    assert body["stream"] is False
+    assert "stream_options" not in body
+    assert streamed == []
 
 
 def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
@@ -194,7 +201,7 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
             "choices": [
                 {
                     "index": 0,
-                    "delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "Ba", "arguments": '{"command":"echo'}}]},
+                    "delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"echo'}}]},
                     "finish_reason": None,
                 }
             ],
@@ -207,7 +214,7 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
             "choices": [
                 {
                     "index": 0,
-                    "delta": {"tool_calls": [{"index": 0, "function": {"name": "sh", "arguments": ' hi"}'}}]},
+                    "delta": {"tool_calls": [{"index": 0, "function": {"name": "Bash", "arguments": ' hi"}'}}]},
                     "finish_reason": "tool_calls",
                 }
             ],
@@ -229,6 +236,7 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     assistant, calls, content = model.chat_request([{"role": "user", "content": "run"}], [])
 
     body = json.loads(factory.calls[0].content)
+    assert factory.calls[0].url.path.endswith("/chat/completions")
     assert body["stream"] is True
     assert body["stream_options"] == {"include_usage": True}
     assert streamed == [("reasoning", "check"), ("output", "hello"), ("", "")]
@@ -237,6 +245,62 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     assert assistant["tool_calls"][0]["function"] == {"name": "Bash", "arguments": '{"command":"echo hi"}'}
     assert calls == [n.ToolCall("call_1", "Bash", ["echo hi"])]
     assert s.usage.total_tokens == 15
+
+
+def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_path, monkeypatch):
+    s = _session(tmp_path)
+    model = n.ModelClient(s)
+    chunks = [
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "Read", "arguments": '{"path":"a"}'}}]},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "Read", "arguments": '{"path":"'}}]},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"function": {"arguments": 'b"}'}}]},
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+    ]
+    factory = _StreamClientFactory(chunks)
+    model.on_stream = lambda _kind, _delta: None
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, calls, _content = model.chat_request([{"role": "user", "content": "read"}], [])
+
+    assert [call["id"] for call in assistant["tool_calls"]] == ["call_1", "call_2"]
+    assert [call.id for call in calls] == ["call_1", "call_2"]
+    assert [call.name for call in calls] == ["Read", "Read"]
+    assert [call["function"]["arguments"] for call in assistant["tool_calls"]] == ['{"path":"a"}', '{"path":"b"}']
 
 
 def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
@@ -277,8 +341,10 @@ def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
 
 
 def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_path, monkeypatch):
-    s = _session(tmp_path, api="responses", model="gpt-5")
+    s = _session(tmp_path, api="responses", model="gpt-5", stream=False)
     model = n.ModelClient(s)
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     factory = _MockClientFactory(
         [
             (
@@ -330,10 +396,12 @@ def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_p
     assert [item["type"] for item in assistant["_responses_output"]] == ["reasoning", "message"]
     assert assistant["_responses_output"][0]["encrypted_content"] == "encrypted"
     request = factory.calls[0]
+    assert request.url.path.endswith("/responses")
     assert request.url.path == "/responses"
     body = json.loads(request.content)
     assert body["input"] == [{"role": "user", "content": "hi"}]
     assert body["store"] is False
+    assert body["stream"] is False
     assert body["reasoning"] == {"effort": "medium"}
     assert body["tools"] == [
         {
@@ -348,6 +416,7 @@ def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_p
     assert s.usage.cached_prompt_tokens == 7
     assert s.usage.last_cached_prompt_tokens == 7
     assert s.usage.completion_tokens == 5
+    assert streamed == []
 
 
 def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, monkeypatch):
@@ -416,6 +485,7 @@ def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, mo
     assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
 
     assert json.loads(factory.calls[0].content)["stream"] is True
+    assert factory.calls[0].url.path.endswith("/responses")
     assert streamed == [("reasoning", "check"), ("output", "hel"), ("output", "lo"), ("", "")]
     assert content == "hello"
     assert assistant["content"] == "hello"
@@ -424,7 +494,7 @@ def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, mo
     assert s.usage.cached_prompt_tokens == 7
 
 
-def test_responses_stream_rejects_incomplete_terminal_response_and_clears_preview(tmp_path, monkeypatch):
+def test_responses_stream_returns_incomplete_terminal_response_and_clears_preview(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses", model="gpt-5")
     model = n.ModelClient(s)
     factory = _StreamClientFactory(
@@ -449,7 +519,15 @@ def test_responses_stream_rejects_incomplete_terminal_response_and_clears_previe
                     "parallel_tool_calls": True,
                     "tool_choice": "auto",
                     "tools": [],
-                    "output": [],
+                    "output": [
+                        {
+                            "id": "msg_stream",
+                            "type": "message",
+                            "status": "incomplete",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "partial", "annotations": []}],
+                        }
+                    ],
                     "incomplete_details": {"reason": "max_output_tokens"},
                 },
                 "sequence_number": 2,
@@ -460,10 +538,58 @@ def test_responses_stream_rejects_incomplete_terminal_response_and_clears_previe
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    with pytest.raises(n.ModelError, match="Responses stream incomplete"):
-        model.request([{"role": "user", "content": "hi"}], [])
+    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
 
     assert streamed == [("output", "partial"), ("", "")]
+    assert content == "partial"
+    assert assistant["content"] == "partial"
+    assert calls == []
+
+
+def test_responses_failed_result_raises_for_streaming_and_non_streaming_paths(tmp_path):
+    model = n.ModelClient(_session(tmp_path, api="responses"))
+
+    with pytest.raises(n.ModelError, match="Responses request failed"):
+        model.responses_result({"status": "failed", "error": {"message": "bad request"}, "output": []})
+
+
+def test_responses_failed_mock_servers_match_across_stream_modes(tmp_path, monkeypatch):
+    terminal = {
+        "id": "resp_failed",
+        "object": "response",
+        "created_at": 1,
+        "status": "failed",
+        "model": "gpt-5",
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "output": [],
+        "error": {"code": "server_error", "message": "provider failed"},
+    }
+
+    streaming = n.ModelClient(_session(tmp_path / "stream", api="responses", model="gpt-5"))
+    stream_factory = _StreamClientFactory([{"type": "response.failed", "response": terminal, "sequence_number": 1}])
+    streamed = []
+    streaming.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(streaming, "client", stream_factory)
+
+    with pytest.raises(n.ModelError, match="Responses request failed"):
+        streaming.request([{"role": "user", "content": "hi"}], [])
+
+    assert stream_factory.calls[0].url.path.endswith("/responses")
+    assert json.loads(stream_factory.calls[0].content)["stream"] is True
+    assert streamed == [("", "")]
+
+    non_streaming = n.ModelClient(_session(tmp_path / "plain", api="responses", model="gpt-5", stream=False))
+    plain_factory = _MockClientFactory([(200, terminal)])
+    non_streaming.on_stream = lambda _kind, _delta: pytest.fail("disabled stream callback was called")
+    monkeypatch.setattr(non_streaming, "client", plain_factory)
+
+    with pytest.raises(n.ModelError, match="Responses request failed"):
+        non_streaming.request([{"role": "user", "content": "hi"}], [])
+
+    assert plain_factory.calls[0].url.path.endswith("/responses")
+    assert json.loads(plain_factory.calls[0].content)["stream"] is False
 
 
 def test_responses_tool_items_are_converted_and_replayed(tmp_path):
@@ -737,8 +863,10 @@ def test_chat_request_drops_responses_only_metadata(tmp_path, monkeypatch):
 
 
 def test_anthropic_request_success(tmp_path, monkeypatch):
-    s = _session(tmp_path, model="claude-3", api="anthropic")
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
     model = n.ModelClient(s)
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     factory = _AnthropicMockClientFactory(
         [
             (
@@ -764,6 +892,9 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     assert s.usage.prompt_tokens == 8
     assert s.usage.completion_tokens == 4
     assert s.usage.total_tokens == 12
+    assert factory.calls[0].url.path.endswith("/messages")
+    assert json.loads(factory.calls[0].content).get("stream") is not True
+    assert streamed == []
 
 
 def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
@@ -848,6 +979,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     assistant, calls, content = model.anthropic_request([{"role": "user", "content": "hi"}], None)
 
     body = json.loads(factory.calls[0].content)
+    assert factory.calls[0].url.path.endswith("/messages")
     assert body["stream"] is True
     assert streamed == [("reasoning", "check"), ("output", "hello"), ("", "")]
     assert content == "hello"
@@ -859,6 +991,42 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     ]
     assert s.usage.prompt_tokens == 10
     assert s.usage.completion_tokens == 5
+
+
+def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):
+    s = _session(tmp_path)
+    model = n.ModelClient(s)
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": '{"summary":"short","goal":"","plan":[],"known":[],"check":""}'},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        ]
+    )
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", factory)
+
+    result = model.compact("long context")
+
+    body = json.loads(factory.calls[0].content)
+    assert body["stream"] is False
+    assert "stream_options" not in body
+    assert streamed == []
+    assert result["summary"] == "short"
 
 
 def test_request_retries_then_succeeds(tmp_path, monkeypatch):

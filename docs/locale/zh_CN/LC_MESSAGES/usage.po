@@ -127,8 +127,8 @@ msgid "Model output streams by default in the interactive terminal over OpenAI-c
 msgstr "交互终端默认通过 OpenAI-compatible Chat Completions、OpenAI Responses 和 Anthropic Messages 流式接收模型输出。文本到达后会立即显示在分隔线上方：如果模型提供推理过程，则显示为 `thinking`；回答显示为 `responding`。"
 
 #: ../../usage.md:40
-msgid "The live text is a bounded preview, not a second conversation entry. On completion it clears and the final answer is rendered once in the normal Rich transcript. Tool-call arguments stay buffered until the call is complete, so partial JSON never appears as user-facing output. No streaming setting is required."
-msgstr "实时文本只是有界预览，并非第二条对话记录。完成后预览会清空，最终回答只在正常的 Rich transcript 中渲染一次。工具调用参数会一直缓冲到调用完整，因此不会把不完整的 JSON 展示给用户。无需配置流式输出。"
+msgid "The live text is a bounded preview, not a second conversation entry. On completion it clears and the final answer is rendered once in the normal Rich transcript. Tool-call arguments stay buffered until the call is complete, so partial JSON never appears as user-facing output. No streaming setting is required for the usual case; endpoints that reject streaming can disable it with `provider.stream = false` or `/set provider.stream off`."
+msgstr "实时文本只是有界预览，并非第二条对话记录。完成后预览会清空，最终回答只在正常的 Rich transcript 中渲染一次。工具调用参数会一直缓冲到调用完整，因此不会把不完整的 JSON 展示给用户。通常无需配置流式输出；如果 endpoint 拒绝流式请求，可设置 `provider.stream = false` 或执行 `/set provider.stream off`。"
 
 #: ../../usage.md:32
 msgid "Bash output"

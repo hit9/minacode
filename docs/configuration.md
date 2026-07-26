@@ -51,6 +51,7 @@ Most users can leave these unset.
 | Key | Default | Meaning |
 |---|---|---|
 | `api` | `auto` | API protocol shown above |
+| `stream` | `true` | Stream model output; disable for endpoints that reject streaming or Chat `stream_options` |
 | `image_input` | `auto` | Image capability: learn automatically, force `on`, or disable with `off` |
 | `reasoning` | `medium` | Reasoning effort; change it during a session with `/reason` |
 | `available_models` | — | Additional models shown by `/model` |
@@ -61,6 +62,10 @@ Most users can leave these unset.
 | `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
 | `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
+
+Streaming is enabled by default for all three protocols. If a compatible endpoint does not
+support it, set `stream = false` in that provider block, or use `/set provider.stream off` for
+the current session.
 
 Unknown OpenAI-compatible endpoints stay on the generic path. If automatic protocol selection is
 wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage

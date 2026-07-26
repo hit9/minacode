@@ -1338,7 +1338,7 @@ class ModelClient:
             return "server error"
         return "transient error"
 
-    def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
+    def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
         converted: list[Json] = []
         for message in messages:
             clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
@@ -1348,7 +1348,8 @@ class ModelClient:
         messages = Text.value(converted)
         provider = self.session.config.provider
         resolved = provider.resolve()
-        params: Json = {"model": provider.model, "messages": messages, "stream": self.on_stream is not None}
+        stream = allow_stream and provider.stream and self.on_stream is not None
+        params: Json = {"model": provider.model, "messages": messages, "stream": stream}
         if provider.max_tokens > 0:
             params["max_tokens"] = provider.max_tokens
         if tools:
@@ -1359,10 +1360,10 @@ class ModelClient:
         if prompt_cache_key:
             params["prompt_cache_key"] = prompt_cache_key
         self.apply_provider_params(params, provider, resolved)
-        if self.on_stream is not None:
+        if stream:
             params["stream_options"] = {"include_usage": True}
         client = self.client()
-        if self.on_stream is not None:
+        if stream:
             message, usage = self.call_client(client, lambda: self._chat_stream(client, params))
         else:
             response = self.call_client(client, lambda: client.chat.completions.create(**params))
@@ -1378,6 +1379,10 @@ class ModelClient:
         content: list[str] = []
         reasoning: list[str] = []
         tool_calls: dict[int, Json] = {}
+        tool_call_functions: dict[int, Json] = {}
+        tool_call_ids: dict[str, int] = {}
+        tool_call_positions: dict[int, int] = {}
+        next_index = 0
         usage: Any = None
         try:
             for chunk in client.chat.completions.create(**params):
@@ -1395,15 +1400,38 @@ class ModelClient:
                     self._emit_stream("output", content_delta)
                 for position, raw in enumerate(self.message_field(delta, "tool_calls") or []):
                     raw_index = self.message_field(raw, "index")
-                    index = raw_index if isinstance(raw_index, int) else position
-                    call = tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                    if call_id := self.message_field(raw, "id"):
-                        call["id"] = str(call_id)
+                    call_id = str(self.message_field(raw, "id") or "")
+                    if isinstance(raw_index, int):
+                        index = raw_index
+                    elif call_id and call_id in tool_call_ids:
+                        index = tool_call_ids[call_id]
+                    elif call_id:
+                        while next_index in tool_calls:
+                            next_index += 1
+                        index = next_index
+                        next_index += 1
+                    elif position in tool_call_positions:
+                        index = tool_call_positions[position]
+                    else:
+                        while next_index in tool_calls:
+                            next_index += 1
+                        index = next_index
+                        next_index += 1
+                    next_index = max(next_index, index + 1)
+                    tool_call_positions[position] = index
+                    if call_id:
+                        tool_call_ids[call_id] = index
+                    if index not in tool_calls:
+                        function_target: Json = {"name": "", "arguments": ""}
+                        tool_calls[index] = {"id": "", "type": "function", "function": function_target}
+                        tool_call_functions[index] = function_target
+                    call = tool_calls[index]
+                    if call_id:
+                        call["id"] = call_id
                     function = self.message_field(raw, "function")
-                    target = call["function"]
-                    assert isinstance(target, dict)
+                    target = tool_call_functions[index]
                     if name := self.message_field(function, "name"):
-                        target["name"] = str(target["name"]) + str(name)
+                        target["name"] = str(name)
                     if arguments := self.message_field(function, "arguments"):
                         target["arguments"] = str(target["arguments"]) + str(arguments)
         finally:
@@ -1415,21 +1443,24 @@ class ModelClient:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         return message, usage
 
-    def api_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
+    def api_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
         api = self.session.config.provider.resolve().api
         if api == "anthropic":
-            return self.anthropic_request(messages, tools)
-        if api == "responses":
-            return self.responses_request(messages, tools)
-        return self.chat_request(messages, tools)
+            request = self.anthropic_request
+        elif api == "responses":
+            request = self.responses_request
+        else:
+            request = self.chat_request
+        return request(messages, tools) if allow_stream else request(messages, tools, allow_stream=False)
 
-    def responses_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
+    def responses_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         resolved = provider.resolve()
+        stream = allow_stream and provider.stream and self.on_stream is not None
         params: Json = {
             "model": provider.model,
             "input": self.responses_input(Text.value(messages)),
-            "stream": self.on_stream is not None,
+            "stream": stream,
             "store": False,
         }
         if provider.max_tokens > 0:
@@ -1454,7 +1485,7 @@ class ModelClient:
         client = self.client()
         result = (
             self.call_client(client, lambda: self._responses_stream(client, params))
-            if self.on_stream
+            if stream
             else self.call_client(client, lambda: client.responses.create(**params))
         )
         self.session.usage.add(self.message_field(result, "usage"))
@@ -1477,10 +1508,6 @@ class ModelClient:
             self._emit_stream("", "")
         if terminal is None:
             raise ModelError("Responses stream ended without a terminal response")
-        status = str(self.message_field(terminal, "status") or "")
-        if status and status != "completed":
-            error = self.message_field(terminal, "error") or self.message_field(terminal, "incomplete_details") or status
-            raise ModelError(f"Responses stream {status}: {error}")
         return terminal
 
     def _emit_stream(self, kind: str, delta: str) -> None:
@@ -1557,6 +1584,9 @@ class ModelClient:
         return converted
 
     def responses_result(self, result: Any) -> tuple[Json, list[ToolCall], str]:
+        if self.message_field(result, "status") == "failed":
+            error = self.message_field(result, "error") or "unknown error"
+            raise ModelError(f"Responses request failed: {error}")
         output = self.message_field(result, "output") or []
         saved_output = [self.dump_message_item(item) for item in output]
         text_parts: list[str] = []
@@ -1608,7 +1638,7 @@ Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": Text.clean(context)}]
-        _, _, content = self.api_request(messages, None)
+        _, _, content = self.api_request(messages, None, allow_stream=False)
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")
@@ -1677,13 +1707,14 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "minacode-" + digest[:24]
 
-    def anthropic_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
+    def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
         params = self.anthropic_params(messages, tools)
         client = self.anthropic_client()
+        stream = allow_stream and self.session.config.provider.stream and self.on_stream is not None
         result = (
             self.call_client(client, lambda: self._anthropic_stream(client, params))
-            if self.on_stream
+            if stream
             else self.call_client(client, lambda: client.messages.create(**params))
         )
         self.session.usage.add(self.message_field(result, "usage"))

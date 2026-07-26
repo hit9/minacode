@@ -66,6 +66,7 @@ class CommandCompleter(Completer):
         "provider.temperature": ("provider", "temperature", lambda v: None if v == "off" else float(v)),
         "provider.max_tokens": ("provider", "max_tokens", lambda v: max(0, int(v))),
         "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
+        "provider.stream": ("provider", "stream", lambda v: v == "on"),
         "provider.image_input": ("provider", "image_input", None),
         "runtime.max_agent_steps": ("settings", "max_steps", lambda v: max(1, int(v))),
         "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
@@ -78,6 +79,7 @@ class CommandCompleter(Completer):
     # fmt: off
     # Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
     SET_CHOICES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "provider.stream": ("on", "off"),
         "provider.image_input": IMAGE_INPUT_CHOICES,
     }
     SET_VALUES: ClassVar[dict[str, tuple[str, ...]]] = {
@@ -1397,6 +1399,7 @@ Tools:
                 f"provider.key: {'(set)' if provider.key else '(empty)'}",
                 f"provider.model: {provider.model or '(empty)'}",
                 f"provider.api: {provider.api}",
+                f"provider.stream: {'on' if provider.stream else 'off'}",
                 f"provider.image_input: {provider.image_input}",
                 f"provider.resolved_api: {resolved.api}",
                 f"provider.prompt_cache_key: {provider.prompt_cache_key}",

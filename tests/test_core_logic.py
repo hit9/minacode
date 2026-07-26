@@ -69,6 +69,12 @@ def test_provider_default_timeout_is_120_seconds():
     assert n.Config.from_dict({}).provider.timeout == 120
 
 
+def test_provider_stream_defaults_on_and_can_be_disabled():
+    assert n.ProviderConfig().stream is True
+    assert n.ProviderConfig.from_dict({"stream": False}).stream is False
+    assert "# stream = true" in n.ConfigFile.DEFAULT_TEXT
+
+
 def test_provider_image_input_defaults_to_auto_and_validates_values():
     assert n.ProviderConfig().image_input == "auto"
     assert n.ProviderConfig.from_dict({"image_input": "on"}).image_input == "on"

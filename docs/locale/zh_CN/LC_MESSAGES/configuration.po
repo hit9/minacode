@@ -119,6 +119,18 @@ msgid "`api`"
 msgstr "`api`"
 
 #: ../../configuration.md
+msgid "`stream`"
+msgstr "`stream`"
+
+#: ../../configuration.md
+msgid "`true`"
+msgstr "`true`"
+
+#: ../../configuration.md
+msgid "Stream model output; disable for endpoints that reject streaming or Chat `stream_options`"
+msgstr "流式展示模型输出；如果 endpoint 拒绝流式请求或 Chat `stream_options`，可将其禁用"
+
+#: ../../configuration.md
 msgid "`image_input`"
 msgstr "`image_input`"
 
@@ -222,6 +234,10 @@ msgstr "`chat_reasoning`"
 #: ../../configuration.md
 msgid "Provider-specific Chat reasoning format; normally leave on `auto`"
 msgstr "Provider 特有的 Chat reasoning 格式；通常保留为 `auto`"
+
+#: ../../configuration.md:66
+msgid "Streaming is enabled by default for all three protocols. If a compatible endpoint does not support it, set `stream = false` in that provider block, or use `/set provider.stream off` for the current session."
+msgstr "三种协议默认都启用流式输出。如果兼容 endpoint 不支持，可在对应 provider 配置中设置 `stream = false`，或在当前 session 中执行 `/set provider.stream off`。"
 
 #: ../../configuration.md:64
 msgid "Unknown OpenAI-compatible endpoints stay on the generic path. If automatic protocol selection is wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage reported by the provider."

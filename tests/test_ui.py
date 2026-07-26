@@ -1689,6 +1689,8 @@ def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
 
 
 def test_reason_strict_and_set_commands_validate_values(tmp_path):
+    from prompt_toolkit.document import Document
+
     command_loop = loop(tmp_path)
 
     assert command_loop.reason("invalid").startswith("Usage: /reason ")
@@ -1698,6 +1700,11 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.set_value("provider.timeout never") == "Invalid value for provider.timeout"
     assert command_loop.set_value("provider.temperature off") == "Set provider.temperature"
     assert command_loop.session.config.provider.temperature is None
+    assert command_loop.set_value("provider.stream maybe") == "Invalid value for provider.stream"
+    assert command_loop.set_value("provider.stream off") == "Set provider.stream"
+    assert command_loop.session.config.provider.stream is False
+    stream_values = [item.text for item in n.CommandCompleter().get_completions(Document("/set provider.stream "), None)]
+    assert stream_values == ["on", "off"]
     assert command_loop.set_value("provider.image_input maybe") == "Invalid value for provider.image_input"
     assert command_loop.set_value("provider.image_input off") == "Set provider.image_input"
     assert command_loop.session.config.provider.image_input == "off"
