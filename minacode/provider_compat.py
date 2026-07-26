@@ -37,6 +37,7 @@ class CompatibilityProfile:
     reasoning_effort_values: Mapping[str, str | int] = field(default_factory=dict)
     reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
     responses_reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
+    responses_reasoning_models: tuple[str, ...] | None = None
     prompt_cache_key: bool = True
     strict_tools: bool = False
     strict_beta: bool = False
@@ -57,6 +58,7 @@ class ResolvedProvider:
     host: str
     chat_reasoning: str
     reasoning_effort: str | None
+    responses_reasoning: bool
     suppress_temperature: bool
     prompt_cache_key: bool
     strict_tools_active: bool
@@ -155,15 +157,18 @@ COMPATIBILITY_PROFILES: dict[str, CompatibilityProfile] = {
     # Why: Chat Completions accepts reasoning_effort only for reasoning model families,
     # while strict function schemas are an OpenAI capability rather than a generic default.
     # Responses models from GPT-5.1 onward document `none` as the no-reasoning effort; the
-    # original GPT-5 does not. These reasoning families reject temperature, while sibling models
-    # such as gpt-4o retain it.
+    # original GPT-5 does not. The optional Responses reasoning object is limited to these
+    # reasoning families: GPT-4.1 supports Responses but is explicitly non-reasoning. Reasoning
+    # families reject temperature, while sibling chat models such as gpt-4o retain it.
     # Evidence: https://developers.openai.com/api/docs/guides/reasoning
     #           https://developers.openai.com/api/docs/models/gpt-5
     #           https://developers.openai.com/api/docs/models/gpt-5.1
+    #           https://developers.openai.com/api/docs/models/gpt-4.1
     #           https://developers.openai.com/api/docs/guides/function-calling#strict-mode
     "api.openai.com": CompatibilityProfile(
         chat_reasoning_rules=(ModelRule("reasoning_effort", OPENAI_REASONING_MODEL_FAMILIES),),
         responses_reasoning_effort_off_rules=(ModelRule("none", pattern=r"gpt-5\.(?:[1-9]\d*)(?:-|$)"),),
+        responses_reasoning_models=OPENAI_REASONING_MODEL_FAMILIES,
         strict_tools=True,
         suppress_temperature_models=OPENAI_REASONING_MODEL_FAMILIES,
     ),

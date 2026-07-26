@@ -755,6 +755,23 @@ def test_openai_responses_reasoning_off_is_not_silently_replaced_by_the_model_de
     assert json.loads(factory.calls[0].content)["reasoning"] == {"effort": "none"}
 
 
+@pytest.mark.parametrize("reasoning", ("medium", "off"))
+def test_openai_responses_non_reasoning_model_omits_reasoning(tmp_path, monkeypatch, reasoning):
+    """GPT-4.1 supports Responses but is not a reasoning model, so the optional reasoning object
+    must be absent for both the default effort and an explicit off setting."""
+    s = _session(tmp_path, api="responses", model="gpt-4.1", stream=False)
+    s.config.provider.url = "https://api.openai.com/v1"
+    s.config.provider.reasoning = reasoning
+    model = n.ModelClient(s)
+    empty = {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-4.1", "output": []}
+    factory = _MockClientFactory([(200, empty)])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], None)
+
+    assert "reasoning" not in json.loads(factory.calls[0].content)
+
+
 @pytest.mark.parametrize("model", ("custom-model", "gpt-5", "gpt-5-mini"))
 def test_responses_reports_unsupported_reasoning_off_instead_of_guessing(tmp_path, model):
     s = _session(tmp_path, api="responses", model=model)

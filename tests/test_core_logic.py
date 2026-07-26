@@ -345,6 +345,14 @@ def test_openai_compatibility_leaves_non_reasoning_chat_models_off():
     assert provider.resolve().chat_reasoning == "off"
 
 
+def test_openai_compatibility_limits_responses_reasoning_to_reasoning_models():
+    reasoning = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-5", api="responses")
+    non_reasoning = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-4.1", api="responses")
+
+    assert reasoning.resolve().responses_reasoning is True
+    assert non_reasoning.resolve().responses_reasoning is False
+
+
 def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     client = n.ModelClient(session(tmp_path))
     provider = n.ProviderConfig.from_dict(

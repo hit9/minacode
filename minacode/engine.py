@@ -1474,10 +1474,11 @@ class ModelClient:
         # Stateless requests return encrypted reasoning items by default, so the replay below
         # needs no `include`; effort goes through the compatibility fold like the chat path, and
         # a host that defines an explicit "off" spelling still gets it when reasoning is off.
-        if effort := resolved.reasoning_effort:
-            params["reasoning"] = {"effort": effort}
-        elif provider.reasoning == "off":
-            raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
+        if resolved.responses_reasoning:
+            if effort := resolved.reasoning_effort:
+                params["reasoning"] = {"effort": effort}
+            elif provider.reasoning == "off":
+                raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
         if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
         if provider.extra_body:

@@ -177,6 +177,10 @@ msgid "Fixed"
 msgstr "修复"
 
 #: ../../../CHANGELOG.md:32
+msgid "Omit the optional Responses `reasoning` object for documented non-reasoning models such as OpenAI GPT-4.1; it supports the Responses endpoint but rejects reasoning controls, so both the default effort and `/reason off` now produce a valid request."
+msgstr "对于 OpenAI GPT-4.1 等文档明确的非推理模型，省略可选的 Responses `reasoning` 对象；这些模型支持 Responses endpoint，但会拒绝 reasoning 控制，因此默认 effort 和 `/reason off` 现在都能生成有效请求。"
+
+#: ../../../CHANGELOG.md:32
 msgid "Keep streamed Chat tool calls distinct when a compatible endpoint omits their indexes, and treat a repeated function name as the complete name instead of concatenating it into an unknown tool."
 msgstr "兼容 endpoint 省略 index 时仍保持各个 Chat 流式工具调用相互独立；重复出现的函数名按完整名称处理，不再拼接成未知工具。"
 

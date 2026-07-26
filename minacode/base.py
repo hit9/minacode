@@ -280,6 +280,7 @@ class ProviderConfig:
             host=host,
             chat_reasoning=chat_reasoning,
             reasoning_effort=reasoning_effort,
+            responses_reasoning=profile.responses_reasoning_models is None or any(model.startswith(prefix) for prefix in profile.responses_reasoning_models),
             suppress_temperature=suppress_temperature,
             prompt_cache_key=profile.prompt_cache_key,
             strict_tools_active=strict_tools_active,
