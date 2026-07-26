@@ -131,9 +131,6 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert params["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "reasoning_effort" not in params
 
-    deepseek = n.ProviderConfig(url="https://api.deepseek.com/v1", model="deepseek-v4-flash")
-    assert deepseek.resolved_max_tokens() == 0
-
 
 def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
     """`chat_reasoning` is the escape hatch when auto guesses wrong for a gateway or an
@@ -152,13 +149,13 @@ def test_openai_suppresses_temperature_only_for_reasoning_families(tmp_path):
     """Reasoning models reject temperature outright, while sibling chat models still take it."""
     client = n.ModelClient(session(tmp_path))
     reasoning = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-5", reasoning="medium", temperature=0.7)
-    assert reasoning.suppresses_temperature() is True
+    assert reasoning.resolve().suppress_temperature is True
     params = {}
     client.apply_provider_params(params, reasoning)
     assert params == {"reasoning_effort": "medium"}
 
     chat = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-4o", temperature=0.7)
-    assert chat.suppresses_temperature() is False
+    assert chat.resolve().suppress_temperature is False
     params = {}
     client.apply_provider_params(params, chat)
     assert params == {"temperature": 0.7}
@@ -168,7 +165,7 @@ def test_opencode_routes_each_model_family_to_its_documented_protocol():
     """One base URL multiplexes three wire protocols by model, so api=auto cannot read the URL."""
 
     def api(model):
-        return n.ProviderConfig(url="https://opencode.ai/zen/v1", model=model).resolved_api()
+        return n.ProviderConfig(url="https://opencode.ai/zen/v1", model=model).resolve().api
 
     assert api("claude-sonnet-5") == "anthropic"
     assert api("qwen3-coder") == "anthropic"
@@ -327,12 +324,12 @@ def test_context_estimate_ignores_opaque_echo_bytes_but_counts_readable_reasonin
 @pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6"))
 def test_openai_compatibility_recognizes_reasoning_model_families(model):
     provider = n.ProviderConfig(url="https://api.openai.com/v1", model=model)
-    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+    assert provider.resolve().chat_reasoning == "reasoning_effort"
 
 
 def test_openai_compatibility_leaves_non_reasoning_chat_models_off():
     provider = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-4o")
-    assert provider.resolved_chat_reasoning() == "off"
+    assert provider.resolve().chat_reasoning == "off"
 
 
 def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
@@ -344,7 +341,7 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
             "reasoning": "medium",
         }
     )
-    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+    assert provider.resolve().chat_reasoning == "reasoning_effort"
 
     for reasoning in ("minimal", "low", "medium", "high", "xhigh"):
         provider.reasoning = reasoning
@@ -358,21 +355,21 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     assert params == {"reasoning_effort": "none"}
 
     provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert provider.resolved_chat_reasoning() == "reasoning_effort"
+    assert provider.resolve().chat_reasoning == "reasoning_effort"
 
     provider.url = "https://notaliyuncs.com/compatible-mode/v1"
-    assert provider.resolved_chat_reasoning() == "off"
+    assert provider.resolve().chat_reasoning == "off"
 
     provider.model = "other-model"
-    assert provider.resolved_chat_reasoning() == "off"
+    assert provider.resolve().chat_reasoning == "off"
 
 
 def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     client = n.ModelClient(session(tmp_path))
     provider = n.ProviderConfig(url="https://api.moonshot.ai/v1", model="kimi-k3", reasoning="medium", temperature=0.2)
-    assert provider.resolved_chat_reasoning() == "reasoning_effort"
-    assert provider.supports_prompt_cache_key() is True
-    assert provider.supports_strict_tools() is True
+    resolved = provider.resolve()
+    assert resolved.chat_reasoning == "reasoning_effort"
+    assert resolved.prompt_cache_key is True
     assert client.prompt_cache_key(provider, None).startswith("minacode-")
 
     params = {}
@@ -400,14 +397,15 @@ def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     assert params == {}
 
     provider.url = "https://api.moonshot.cn/v1"
-    assert provider.resolved_chat_reasoning() == "mandatory_thinking"
+    assert provider.resolve().chat_reasoning == "mandatory_thinking"
 
 
 def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
     client = n.ModelClient(session(tmp_path))
     provider = n.ProviderConfig(url="https://api.kimi.com/coding/v1", model="k3", reasoning="medium", temperature=0.2)
-    assert provider.resolved_chat_reasoning() == "reasoning_effort"
-    assert provider.supports_prompt_cache_key() is True
+    resolved = provider.resolve()
+    assert resolved.chat_reasoning == "reasoning_effort"
+    assert resolved.prompt_cache_key is True
     assert client.prompt_cache_key(provider, None).startswith("minacode-")
 
     params = {}
@@ -423,7 +421,7 @@ def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
     provider.reasoning = "high"
     params = {}
     client.apply_provider_params(params, provider)
-    assert provider.resolved_chat_reasoning() == "mandatory_thinking"
+    assert provider.resolve().chat_reasoning == "mandatory_thinking"
     assert params == {"temperature": 0.2}
 
 
@@ -431,8 +429,9 @@ def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
 def test_zai_regional_endpoints_share_documented_reasoning_effort(url, tmp_path):
     client = n.ModelClient(session(tmp_path))
     provider = n.ProviderConfig(url=url, model="glm-5.2", reasoning="xhigh", temperature=0.6)
-    assert provider.resolved_chat_reasoning() == "thinking_effort"
-    assert provider.supports_prompt_cache_key() is False
+    resolved = provider.resolve()
+    assert resolved.chat_reasoning == "thinking_effort"
+    assert resolved.prompt_cache_key is False
     assert client.prompt_cache_key(provider, None) == ""
 
     params = {}
@@ -453,7 +452,7 @@ def test_zai_regional_endpoints_share_documented_reasoning_effort(url, tmp_path)
 def test_zai_older_reasoning_families_use_only_thinking_toggle(url, tmp_path):
     client = n.ModelClient(session(tmp_path))
     provider = n.ProviderConfig(url=url, model="glm-5.1", reasoning="high", temperature=0.6)
-    assert provider.resolved_chat_reasoning() == "thinking_toggle"
+    assert provider.resolve().chat_reasoning == "thinking_toggle"
 
     params = {}
     client.apply_provider_params(params, provider)
@@ -473,8 +472,9 @@ def test_zai_older_reasoning_families_use_only_thinking_toggle(url, tmp_path):
 def test_provider_compatibility_requires_a_real_domain_boundary(url, model, tmp_path):
     client = n.ModelClient(session(tmp_path))
     provider = n.ProviderConfig(url=url, model=model, reasoning="high", temperature=0.4)
-    assert provider.resolved_chat_reasoning() == "off"
-    assert provider.supports_prompt_cache_key() is True
+    resolved = provider.resolve()
+    assert resolved.chat_reasoning == "off"
+    assert resolved.prompt_cache_key is True
 
     params = {}
     client.apply_provider_params(params, provider)
@@ -499,7 +499,6 @@ def test_unknown_provider_resolution_stays_generic_and_explicit_values_win():
     assert resolved.reasoning_effort == "low"
     assert resolved.suppress_temperature is True
     assert resolved.prompt_cache_key is True
-    assert resolved.strict_tools_supported is False
     assert resolved.strict_tools_active is False
 
 
@@ -569,24 +568,24 @@ def test_strict_tools_off_path_emits_legacy_schema_unchanged():
 
 
 def test_strict_tools_gating_and_beta_routing():
-    def provider(url, strict=False):
-        return n.ProviderConfig(url=url, strict_tools=strict)
+    def resolved(url, strict=False):
+        return n.ProviderConfig(url=url, strict_tools=strict).resolve()
 
     # Unsupported hosts never activate strict, even when requested, and stay on their endpoint.
     for url in ("https://openrouter.ai/api/v1", "https://api.together.xyz/v1", "http://localhost:1234/v1"):
-        assert provider(url, strict=True).resolved_strict_tools() is False
-        assert provider(url, strict=True).base_url() == url
+        assert resolved(url, strict=True).strict_tools_active is False
+        assert resolved(url, strict=True).base_url == url
 
     # DeepSeek: off keeps the stable endpoint; on activates strict and routes to /beta (idempotently).
-    assert provider("https://api.deepseek.com").resolved_strict_tools() is False
-    assert provider("https://api.deepseek.com").base_url() == "https://api.deepseek.com"
-    assert provider("https://api.deepseek.com", strict=True).resolved_strict_tools() is True
-    assert provider("https://api.deepseek.com", strict=True).base_url() == "https://api.deepseek.com/beta"
-    assert provider("https://api.deepseek.com/beta", strict=True).base_url() == "https://api.deepseek.com/beta"
+    assert resolved("https://api.deepseek.com").strict_tools_active is False
+    assert resolved("https://api.deepseek.com").base_url == "https://api.deepseek.com"
+    assert resolved("https://api.deepseek.com", strict=True).strict_tools_active is True
+    assert resolved("https://api.deepseek.com", strict=True).base_url == "https://api.deepseek.com/beta"
+    assert resolved("https://api.deepseek.com/beta", strict=True).base_url == "https://api.deepseek.com/beta"
 
     # OpenAI supports strict but not the beta endpoint, so it stays on the normal URL.
-    assert provider("https://api.openai.com/v1", strict=True).resolved_strict_tools() is True
-    assert provider("https://api.openai.com/v1", strict=True).base_url() == "https://api.openai.com/v1"
+    assert resolved("https://api.openai.com/v1", strict=True).strict_tools_active is True
+    assert resolved("https://api.openai.com/v1", strict=True).base_url == "https://api.openai.com/v1"
 
 
 def test_stripped_url_removes_known_suffixes():
@@ -603,16 +602,16 @@ def test_stripped_url_removes_known_suffixes():
 
 def test_provider_api_auto_recognizes_explicit_endpoint_suffixes():
     assert n.ProviderConfig.from_dict({"api": "responses"}).api == "responses"
-    assert n.ProviderConfig(url="https://api.openai.com/v1/responses").resolved_api() == "responses"
-    assert n.ProviderConfig(url="https://api.openai.com/v1/chat/completions").resolved_api() == "chat"
-    assert n.ProviderConfig(url="https://api.anthropic.com/v1/messages").resolved_api() == "anthropic"
-    assert n.ProviderConfig(url="https://api.openai.com/v1").resolved_api() == "chat"
-    assert n.ProviderConfig(url="https://api.openai.com/v1/responses", api="chat").resolved_api() == "chat"
+    assert n.ProviderConfig(url="https://api.openai.com/v1/responses").resolve().api == "responses"
+    assert n.ProviderConfig(url="https://api.openai.com/v1/chat/completions").resolve().api == "chat"
+    assert n.ProviderConfig(url="https://api.anthropic.com/v1/messages").resolve().api == "anthropic"
+    assert n.ProviderConfig(url="https://api.openai.com/v1").resolve().api == "chat"
+    assert n.ProviderConfig(url="https://api.openai.com/v1/responses", api="chat").resolve().api == "chat"
 
 
 def test_openai_responses_path_supports_strict_tools():
     provider = n.ProviderConfig(url="https://api.openai.com/v1", api="responses", strict_tools=True)
-    assert provider.resolved_strict_tools() is True
+    assert provider.resolve().strict_tools_active is True
 
 
 def test_strict_tools_schema_is_valid_and_does_not_mutate_classvars():

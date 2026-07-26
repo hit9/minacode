@@ -2137,7 +2137,7 @@ def _validate_edit_target(session: "Session", path: str, creating: bool) -> bool
 
 
 def _resolved_tool_schemas(session: Session) -> list[Json]:
-    strict = session.config.provider.resolved_strict_tools()
+    strict = session.config.provider.resolve().strict_tools_active
     # Optional tool families stay out of the model prefix until they have usable session state.
     has_skills = bool(session.skills and session.skills.skills)
     has_mcp = bool(session.mcp and (session.mcp.tools or session.mcp.resources))

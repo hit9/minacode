@@ -232,9 +232,6 @@ class ProviderConfig:
         url = self.url.rstrip("/")
         return url.removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
 
-    def base_url(self) -> str:
-        return self.resolve().base_url
-
     def host(self) -> str:
         return (urlparse(self._stripped_url()).hostname or "").lower()
 
@@ -272,8 +269,7 @@ class ProviderConfig:
             reasoning_enabled = self.reasoning != "off"
             suppress_temperature = reasoning_enabled and chat_reasoning in ("thinking", "enable_thinking")
 
-        strict_tools_supported = profile.strict_tools
-        strict_tools_active = self.strict_tools and strict_tools_supported and api in ("chat", "responses")
+        strict_tools_active = self.strict_tools and profile.strict_tools and api in ("chat", "responses")
         if strict_tools_active and profile.strict_beta and not url.endswith("/beta"):
             url += "/beta"
 
@@ -285,40 +281,14 @@ class ProviderConfig:
             reasoning_effort=reasoning_effort,
             suppress_temperature=suppress_temperature,
             prompt_cache_key=profile.prompt_cache_key,
-            strict_tools_supported=strict_tools_supported,
             strict_tools_active=strict_tools_active,
-            max_tokens=self.max_tokens or profile.max_tokens,
         )
-
-    def resolved_chat_reasoning(self) -> str:
-        return self.resolve().chat_reasoning
-
-    def resolved_api(self) -> str:
-        return self.resolve().api
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
 
-    def resolved_reasoning_effort(self) -> str | None:
-        return self.resolve().reasoning_effort
-
-    def suppresses_temperature(self) -> bool:
-        return self.resolve().suppress_temperature
-
-    def resolved_max_tokens(self) -> int:
-        return self.resolve().max_tokens
-
     def output_token_budget(self) -> int:
-        return self.resolved_max_tokens() or DEFAULT_OUTPUT_RESERVE_TOKENS
-
-    def supports_prompt_cache_key(self) -> bool:
-        return self.resolve().prompt_cache_key
-
-    def supports_strict_tools(self) -> bool:
-        return self.resolve().strict_tools_supported
-
-    def resolved_strict_tools(self) -> bool:
-        return self.resolve().strict_tools_active
+        return self.max_tokens or DEFAULT_OUTPUT_RESERVE_TOKENS
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:

@@ -1305,8 +1305,8 @@ class ModelClient:
         provider = self.session.config.provider
         resolved = provider.resolve()
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
-        if (max_tokens := resolved.max_tokens) > 0:
-            params["max_tokens"] = max_tokens
+        if provider.max_tokens > 0:
+            params["max_tokens"] = provider.max_tokens
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
@@ -1341,8 +1341,8 @@ class ModelClient:
             "stream": False,
             "store": False,
         }
-        if (max_tokens := resolved.max_tokens) > 0:
-            params["max_output_tokens"] = max_tokens
+        if provider.max_tokens > 0:
+            params["max_output_tokens"] = provider.max_tokens
         if tools:
             params["tools"] = self.responses_tool_schemas(tools)
             params["tool_choice"] = "auto"
@@ -1508,14 +1508,14 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         return OpenAI(
-            api_key=provider.key, base_url=provider.base_url(), timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
+            api_key=provider.key, base_url=provider.resolve().base_url, timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
         )
 
     def anthropic_client(self) -> Anthropic:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
-        url = provider.base_url().rstrip("/")
+        url = provider.resolve().base_url.rstrip("/")
         return Anthropic(
             api_key=provider.key,
             base_url=url[: -len("/v1")] if url.endswith("/v1") else url,

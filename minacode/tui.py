@@ -2774,6 +2774,7 @@ Tools:
 
         usage = self.session.usage
         provider = self.session.config.provider
+        resolved = provider.resolve()
         context_tokens = self.agent.context.update_current_tokens(self.agent.SYSTEM_PROMPT)
         context_budget = self.agent.context.request_token_budget()
         index = CodeIndex(self.session)
@@ -2807,7 +2808,7 @@ Tools:
             ("session", "`" + self.session.uid + "`"),
             (
                 "model",
-                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()}`; reasoning `{provider.reasoning}`",
+                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{resolved.api}`; reasoning `{provider.reasoning}`",
             ),
             (
                 "context",
@@ -3045,6 +3046,7 @@ Tools:
 
     def config(self, args: str) -> str:
         provider = self.session.config.provider
+        resolved = provider.resolve()
         return "\n".join(
             [
                 f"provider.active: {self.session.config.active_provider}",
@@ -3053,15 +3055,15 @@ Tools:
                 f"provider.key: {'(set)' if provider.key else '(empty)'}",
                 f"provider.model: {provider.model or '(empty)'}",
                 f"provider.api: {provider.api}",
-                f"provider.resolved_api: {provider.resolved_api()}",
+                f"provider.resolved_api: {resolved.api}",
                 f"provider.prompt_cache_key: {provider.prompt_cache_key}",
                 f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
                 f"provider.reasoning: {provider.reasoning}",
-                f"provider.resolved_chat_reasoning: {provider.resolved_chat_reasoning()}",
+                f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
                 f"provider.chat_reasoning: {provider.chat_reasoning}",
                 f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
-                f"provider.max_tokens: {provider.max_tokens or ('(resolved ' + str(provider.resolved_max_tokens() or 'server default') + ')')}",
-                f"provider.strict_tools: {provider.strict_tools} (active {provider.resolved_strict_tools()})",
+                f"provider.max_tokens: {provider.max_tokens or '(server default)'}",
+                f"provider.strict_tools: {provider.strict_tools} (active {resolved.strict_tools_active})",
                 f"provider.extra_body: {json.dumps(provider.extra_body, ensure_ascii=False, sort_keys=True) if provider.extra_body else '(off)'}",
                 f"provider.timeout: {provider.timeout}",
                 f"paths.data_dir: {self.session.data_path()}",
@@ -3191,7 +3193,7 @@ Tools:
         try:
             page = OpenAI(
                 api_key=provider.key,
-                base_url=provider.base_url(),
+                base_url=provider.resolve().base_url,
                 timeout=min(provider.timeout, 10),
                 max_retries=0,
                 default_headers={"User-Agent": HTTP_USER_AGENT},
@@ -3240,7 +3242,7 @@ Tools:
         provider = self.session.config.provider
         provider.strict_tools = not provider.strict_tools
         state = "on" if provider.strict_tools else "off"
-        if provider.strict_tools and not provider.resolved_strict_tools():
+        if provider.strict_tools and not provider.resolve().strict_tools_active:
             return f"strict_tools: {state} (inactive: {provider.host() or 'this provider'} does not support strict tool calling)"
         return f"strict_tools: {state}"
 

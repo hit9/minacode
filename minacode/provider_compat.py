@@ -42,7 +42,6 @@ class CompatibilityProfile:
     strict_beta: bool = False
     suppress_temperature: bool = False
     suppress_temperature_models: tuple[str, ...] = ()
-    max_tokens: int = 0
 
     @staticmethod
     def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
@@ -60,9 +59,7 @@ class ResolvedProvider:
     reasoning_effort: str | None
     suppress_temperature: bool
     prompt_cache_key: bool
-    strict_tools_supported: bool
     strict_tools_active: bool
-    max_tokens: int
 
 
 KIMI_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"}

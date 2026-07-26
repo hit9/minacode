@@ -1625,14 +1625,15 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
 
 def test_provider_compatibility_and_prompt_cache_key(tmp_path):
     opencode_claude = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="claude-sonnet", api="auto")
-    assert opencode_claude.resolved_api() == "anthropic"
+    assert opencode_claude.resolve().api == "anthropic"
 
     opencode_qwen = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="qwen3.7-max", api="auto")
-    assert opencode_qwen.resolved_api() == "anthropic"
+    assert opencode_qwen.resolve().api == "anthropic"
 
     opencode_deepseek = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="deepseek-v4-flash", api="auto")
-    assert opencode_deepseek.resolved_api() == "chat"
-    assert opencode_deepseek.resolved_chat_reasoning() == "off"
+    resolved = opencode_deepseek.resolve()
+    assert resolved.api == "chat"
+    assert resolved.chat_reasoning == "off"
 
     provider = n.ProviderConfig(url="https://api.openai.com/v1", key="k", model="gpt-5-mini", prompt_cache_key="auto")
     s = n.Session(cwd=str(tmp_path), config=n.Config(active_provider="p", providers={"p": provider}))
