@@ -2521,7 +2521,10 @@ Tools:
         output = handler(args.strip()) if handler else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
-            (self.ui.emit_answer if name in {"/status", "/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
+            if name == "/status":
+                self.ui.emit_answer(output, rule=False)
+            else:
+                (self.ui.emit_answer if name in {"/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
         return True, False
 
     def resend_command(self, _args: str) -> str | None:
@@ -2756,7 +2759,7 @@ Tools:
         return self.HELP.rstrip()
 
     def status(self, args: str) -> str:
-        def progress_bar(value: int, total: int, width: int = 20) -> str:
+        def progress_bar(value: int, total: int, width: int = 14) -> str:
             ratio = min(1.0, max(0.0, value / total)) if total else 0.0
             eighths = int(ratio * width * 8 + 0.5)
             full, partial = divmod(eighths, 8)
@@ -2788,21 +2791,52 @@ Tools:
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
         connected_mcp = sum(self.session.mcp.connected(config.name) for config in self.session.mcp.parse_configs()) if self.session.mcp else 0
-        # fmt: off
+        activity = [
+            ("history", len(self.session.messages)),
+            ("turn", self.session.state.turn_messages),
+            ("tools", len(self.session.tool_results)),
+            ("mcp", connected_mcp),
+            ("skills", len(self.session.skills.skills) if self.session.skills else 0),
+            ("known", len(self.session.state.known)),
+            ("compactions", self.session.state.compaction_count),
+        ]
+        running_jobs = len(self.session.running_jobs())
+        if self.session.jobs:
+            activity.append(("jobs", f"{running_jobs}/{len(self.session.jobs)}"))
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
-            ("model", f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()} ({provider.api})`; reasoning `{provider.reasoning} ({provider.resolved_chat_reasoning()})`"),
-            ("context", f"`{progress_bar(context_tokens, context_budget)}` `~{token_count(context_tokens)} / {token_count(context_budget)} ({self.session.state.context_percent}%)`; history `{len(self.session.messages)}`; turn `{self.session.state.turn_messages}`; tools `{len(self.session.tool_results)}`; mcp `{connected_mcp}`; skills `{len(self.session.skills.skills) if self.session.skills else 0}`; known `{len(self.session.state.known)}`; compactions `{self.session.state.compaction_count}`"),
-            ("cache", f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` last `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`; session `{token_count(usage.cached_prompt_tokens)} / {token_count(usage.prompt_tokens)} ({cache_ratio:.1f}%)`"),
-            ("goal", self.session.state.goal or "(empty)"),
-            ("usage", f"calls `{usage.calls}`; total `{usage.total_tokens}`"),
-            ("runtime", f"yolo `{'on' if self.session.settings.yolo else 'off'}`; max steps `{self.session.settings.max_steps}`"),
-            ("index", CodeIndex.status_line(index_status, index_message)),
-            ("jobs", f"running `{len(self.session.running_jobs())}`; total `{len(self.session.jobs)}`"),
-            ("update", UpdateChecker(self.session).status_line().removeprefix("update: ")),
+            (
+                "model",
+                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{provider.resolved_api()}`; reasoning `{provider.reasoning}`",
+            ),
+            (
+                "context",
+                f"`{progress_bar(context_tokens, context_budget)}` `~{token_count(context_tokens)} / {token_count(context_budget)}` (`{self.session.state.context_percent}%`)",
+            ),
+            (
+                "cache",
+                f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` last `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`; session `{token_count(usage.cached_prompt_tokens)} / {token_count(usage.prompt_tokens)} ({cache_ratio:.1f}%)`"
+                if usage.prompt_tokens
+                else "(no requests yet)",
+            ),
         ]
-        # fmt: on
+        if self.session.state.goal:
+            rows.append(("goal", self.session.state.goal))
+        visible_activity = [(name, value) for name, value in activity if value]
+        if visible_activity:
+            rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
+        if usage.calls:
+            rows.append(("usage", f"calls `{usage.calls}`; total `{token_count(usage.total_tokens)}`"))
+        runtime = [
+            f"yolo {'on' if self.session.settings.yolo else 'off'}",
+            f"steps {self.session.settings.max_steps}",
+            CodeIndex.status_line(index_status, index_message),
+        ]
+        update = UpdateChecker(self.session).status_line().removeprefix("update: ")
+        if update not in {"current", "unknown"}:
+            runtime.append("update " + update)
+        rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
         return "\n".join(
             [
                 "| status | value |",

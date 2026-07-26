@@ -1963,8 +1963,9 @@ def test_status_and_bar_show_skill_count(tmp_path):
     status = loop.status("")
     assert "mcp `1`" in status
     assert f"skills `{count}`" in status
-    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K (" in status
-    assert "| cache | `[" in status
+    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in status
+    assert "| cache | (no requests yet) |" in status
+    assert "| status | value |" in status
     bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
@@ -1985,7 +1986,7 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
 
     assert s.state.context_percent == active_percent
     context_row = next(line for line in status.splitlines() if line.startswith("| context |"))
-    assert f"({active_percent}%)" in context_row
+    assert f"`{active_percent}%`" in context_row
 
 
 def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
@@ -2000,6 +2001,20 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
 
     assert "last `76.0K / 76.1K (99.9%)`" in cache_row
     assert "session `83.4K / 100.0K (83.4%)`" in cache_row
+
+
+def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
+    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
+    plain = []
+    rich = []
+    loop.emit = plain.append
+    loop.ui.emit_answer = lambda text, **kwargs: rich.append((text, kwargs))
+
+    assert loop.command("/status") == (True, False)
+    assert plain == []
+    assert len(rich) == 1
+    assert rich[0][0].startswith("| status | value |")
+    assert rich[0][1] == {"rule": False}
 
 
 def test_session_from_config_file_theme_param(tmp_path):

@@ -9,7 +9,7 @@
 ### Changed
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
 - Replace wildcard imports between minacode modules with explicit imports, and have Ruff reject any future `import *` usage.
-- Make `/status` context and prompt-cache usage immediately readable with compact progress bars, token counts, and percentages.
+- Make `/status` context and prompt-cache usage immediately readable with compact progress bars, token counts, and percentages, while retaining its Rich table and hiding empty detail.
 - Lower the default provider request timeout from 180 seconds to 120 seconds; explicitly configured values are unchanged.
 - Increase transient model retries from two to five, and show attempts with concise reasons in the running TUI, such as `retrying 2/6 · timeout`, then keep `attempt 2/6` visible while the replacement request continues.
 - Isolate only necessary provider compatibility overrides in a dedicated `provider_compat` module, keeping the default OpenAI-compatible path generic. Domain overrides match real subdomains, and OpenCode protocol routing uses broad Claude and Qwen families because its single base URL multiplexes different wire protocols by model.
