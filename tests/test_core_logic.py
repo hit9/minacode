@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import minacode as n
+from minacode import __main__ as cli
 
 
 def session(tmp_path):
@@ -38,7 +39,7 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
         def close_background_output(self):
             pass
 
-    monkeypatch.setattr(n.loop, "CommandLoop", lambda _agent: Loop())
+    monkeypatch.setattr(cli, "CommandLoop", lambda _agent: Loop())
     monkeypatch.chdir(tmp_path)
 
     assert n.main([flag]) == 0

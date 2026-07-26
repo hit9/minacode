@@ -57,9 +57,9 @@ loop.tui = app
 
 
 def drive():
-    time.sleep(0.2)
+    while app.app is None or not app.app.is_running:
+        time.sleep(0.005)
     print("HISTORY MARKER", flush=True)
-    time.sleep(0.2)
     print(loop.diff_command(""), flush=True)
 
 
@@ -94,28 +94,35 @@ def test_alternate_screen_probe_reads_the_resolved_window_option(tmp_path):
     socket = "minacode-test-probe-" + tmp_path.name
     command = [executable, "-L", socket]
     probe = tmp_path / "alternate_screen_probe.py"
-    probe.write_text("import minacode as n\nprint(n.TuiApp.alternate_screen_available())\n")
+    probe.write_text(
+        f"""import subprocess
+
+import minacode as n
+
+print(n.TuiApp.alternate_screen_available())
+subprocess.run([{executable!r}, "set-option", "-wg", "alternate-screen", "off"], check=True)
+print(n.TuiApp.alternate_screen_available())
+subprocess.run([{executable!r}, "set-option", "-wg", "alternate-screen", "on"], check=True)
+print(n.TuiApp.alternate_screen_available())
+"""
+    )
     run = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))} > {shlex.quote(str(tmp_path / 'out'))} 2>&1"
 
-    def probe_value(*setup):
-        (tmp_path / "out").unlink(missing_ok=True)
-        for arguments in setup:
-            subprocess.run([*command, *arguments], check=True, capture_output=True)
+    def probe_values():
         subprocess.run([*command, "new-window", "-d", "-t", "holder", run], check=True, capture_output=True)
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            value = (tmp_path / "out").read_text().strip() if (tmp_path / "out").exists() else ""
-            if value:
-                return value
+            values = (tmp_path / "out").read_text().splitlines() if (tmp_path / "out").exists() else []
+            if len(values) == 3:
+                return values
             time.sleep(0.01)
-        return ""
+        return []
 
     try:
         subprocess.run([*command, "new-session", "-d", "-s", "holder", "sleep 60"], check=True, capture_output=True)
-        assert probe_value() == "True"
-        # The global window-option form: invisible to `show-options` without -g.
-        assert probe_value(["set-option", "-wg", "alternate-screen", "off"]) == "False"
-        assert probe_value(["set-option", "-wg", "alternate-screen", "on"]) == "True"
+        # The global window-option form is invisible to `show-options` without -g; all three
+        # observations happen in one tmux client process so process startup does not dominate.
+        assert probe_values() == ["True", "False", "True"]
     finally:
         subprocess.run([*command, "kill-server"], check=False, capture_output=True)
 

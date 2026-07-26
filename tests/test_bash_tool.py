@@ -123,8 +123,8 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
 
 def test_bash_promoted_job_is_killable(tmp_path):
     s = session(tmp_path)
-    s.settings.bash_wait_timeout = 1
-    s.settings.shell_timeout = 30
+    s.settings.bash_wait_timeout = 0.2
+    s.settings.shell_timeout = 5
 
     n.BashTool(s, ["sleep 60"]).call()
     assert "job.1" in s.jobs
@@ -137,7 +137,7 @@ def test_bash_promoted_job_is_killable(tmp_path):
 def test_bash_promotion_disabled_when_wait_timeout_zero(tmp_path):
     s = session(tmp_path)
     s.settings.bash_wait_timeout = 0
-    s.settings.shell_timeout = 1
+    s.settings.shell_timeout = 0.2
 
     output = n.BashTool(s, ["sleep 5"]).call()
 
@@ -206,14 +206,14 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
 
 def test_bash_slow_command_promotes_to_job(tmp_path):
     s = session(tmp_path)
-    s.settings.bash_wait_timeout = 1
-    s.settings.shell_timeout = 30
+    s.settings.bash_wait_timeout = 0.2
+    s.settings.shell_timeout = 5
 
-    output = n.BashTool(s, ["printf early; sleep 3; printf late"]).call()
+    output = n.BashTool(s, ["printf early; sleep 0.5; printf late"]).call()
 
     assert "* exit_code: -1" in output
     assert "early" in output
-    assert "backgrounded after 1s" in output
+    assert "backgrounded after 0.2s" in output
     assert "job.1" in output
     assert "job.1" in s.jobs
     job = s.jobs["job.1"]
@@ -221,7 +221,7 @@ def test_bash_slow_command_promotes_to_job(tmp_path):
     # `early` was consumed by the foreground streaming loop before promotion, so it lives in the
     # Bash result payload (asserted above). `late` was produced after the drainer took over, so it
     # lives in the promoted job's tail buffer.
-    job.process.wait(timeout=10)
+    job.process.wait(timeout=5)
     for _ in range(50):
         if "late" in job.tail(4096):
             break
@@ -236,7 +236,7 @@ def test_bash_slow_command_promotes_to_job(tmp_path):
 
 def test_bash_timeout_and_live_output(tmp_path):
     s = session(tmp_path)
-    s.settings.shell_timeout = 1
+    s.settings.shell_timeout = 0.2
     events = []
     tool = n.BashTool(s, ["printf live; sleep 5"])
     tool.live_output = lambda stream, text: events.append((stream, text))

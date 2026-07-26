@@ -8,6 +8,7 @@
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 
 ### Changed
+- Expand CLI and command validation coverage, remove an import-order dependency from resume tests, and replace fixed integration-test waits with event-driven synchronization; the full suite now finishes substantially faster while retaining real tmux, subprocess, and signal coverage.
 - Split the oversized tool test module into focused core, edit, and Bash/Job suites, and expand shared validation, strict-schema, optional-capability, and background-job coverage.
 - Add Pyright to CI and tighten internal annotations around tool arguments, lifecycle resources, MCP operations, and validated dynamic input while preserving `Any` at JSON and third-party SDK boundaries where the value is intentionally open-ended.
 - Consolidate the small protocol-adaptation helpers into `provider_compat`, removing a thin module boundary while keeping provider-specific behavior isolated.

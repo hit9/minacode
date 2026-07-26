@@ -1,6 +1,7 @@
 import multiprocessing
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit.data_structures import Size
@@ -333,6 +334,8 @@ def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch
         output.size = Size(rows=40, columns=120)
         app.app.loop.call_soon_threadsafe(app.app._on_resize)
         wait_until(lambda: output.requests == 2)
+        app.app.loop.call_soon_threadsafe(app.app.renderer.report_absolute_cursor_row, 20)
+        wait_until(lambda: not app.app.renderer.waiting_for_cpr)
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive, output=output)
@@ -1658,6 +1661,61 @@ def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
     assert command_loop.session.config.provider.reasoning == "high"
     assert discovered == ["model-b"]
     assert "Set provider.model = model-b" in result
+
+
+def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
+    command_loop = loop(tmp_path)
+
+    assert command_loop.provider("one two") == "Usage: /provider [NAME]"
+    assert command_loop.provider("missing") == "Unknown provider: missing"
+    assert command_loop.model("one two") == "Usage: /model [MODEL]"
+
+
+def test_reason_strict_and_set_commands_validate_values(tmp_path):
+    command_loop = loop(tmp_path)
+
+    assert command_loop.reason("invalid").startswith("Usage: /reason ")
+    assert command_loop.strict("on") == "Usage: /strict"
+    assert command_loop.set_value("") == "Usage: /set KEY VALUE"
+    assert command_loop.set_value("unknown value") == "Unknown config key: unknown"
+    assert command_loop.set_value("provider.timeout never") == "Invalid value for provider.timeout"
+    assert command_loop.set_value("provider.temperature off") == "Set provider.temperature"
+    assert command_loop.session.config.provider.temperature is None
+
+
+def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.url = "https://example.com/v1"
+    provider.key = "secret"
+    calls = []
+
+    class Models:
+        def list(self):
+            return SimpleNamespace(data=[{"id": "zeta"}, SimpleNamespace(id="alpha"), {"id": "zeta"}, {"missing": True}, None])
+
+    def openai(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(models=Models())
+
+    monkeypatch.setattr(n.loop, "OpenAI", openai)
+
+    assert command_loop.remote_models(provider) == ("alpha", "zeta")
+    assert calls[0]["api_key"] == "secret"
+    assert calls[0]["max_retries"] == 0
+
+
+def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+
+    assert command_loop.remote_models(provider) == ()
+
+    provider.url = "https://example.com/v1"
+    provider.key = "secret"
+    monkeypatch.setattr(n.loop, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    assert command_loop.remote_models(provider) == ()
 
 
 def test_effort_is_an_alias_for_reason(tmp_path):
