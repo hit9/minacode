@@ -3,7 +3,11 @@
 
 ## Unreleased
 
+
+## 0.13.0 - 2026-07-26
+
 ### Added
+- Add top-level `minacode update` and `minacode upgrade` commands that check PyPI and use the detected installer (`uv tool`, `pipx`, or `pip`) when an upgrade is available; startup hints now show the same command.
 - Stream reasoning and answer text by default over OpenAI-compatible Chat Completions, OpenAI Responses, and Anthropic Messages. The running TUI now distinguishes `thinking` from `responding` while preserving the completed Rich transcript, tool-call replay, usage accounting, cancellation, and retry behavior.
 - Add the generic `provider.stream` setting, enabled by default and switchable for the current session with `/set provider.stream on|off`, so compatible endpoints that reject streaming or Chat `stream_options` retain a non-streaming path without provider specialization.
 - Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization.
@@ -13,6 +17,8 @@
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 
 ### Changed
+- Render `/help` as structured Rich Markdown in interactive terminals while retaining a clean plain-text fallback for redirected and non-TTY output.
+- Keep long-running model requests visually neutral instead of turning the status bar red or prompting `/resend` based only on elapsed time; real retries and their causes remain visible.
 - Require exposed reasoning and thinking summaries to follow the user's current language, alongside progress updates and final answers.
 - Consolidate image recognition, asset storage, protocol payloads, token estimates, and learned capability into one session-owned `ImageInputs` component instead of module-level helpers and Session forwarding methods.
 - Expand CLI and command validation coverage, remove an import-order dependency from resume tests, and replace fixed integration-test waits with event-driven synchronization; the full suite now finishes substantially faster while retaining real tmux, subprocess, and signal coverage.
@@ -41,7 +47,7 @@
 - Return partial Responses output when a streamed response ends as `incomplete`, matching the non-streaming path, while rejecting genuinely `failed` responses consistently on both paths.
 - Keep automatic and manual compaction output out of the live `responding` preview; only the user-facing model request streams into the TUI.
 - Learn image support only from requests that actually transmit images and resolve to an eligible 400, 415, or 422 response, preserving permission and unrelated provider errors; omit image-tile estimates when historical images are sent as labels.
-- Keep internal image-capability state out of the prompt, and render actionable image-input errors in their own TUI row instead of exposing the newline as `^J` inside the editable input.
+- Keep internal image-capability state out of the prompt, and render actionable image-input errors in their own TUI row instead of exposing the newline as `^J` inside the editable input. Text-only schema rejections such as `unknown variant image_url, expected text` are recognized explicitly and name the active provider/model.
 - Render Edit diff previews as solid red and green bands across every visual row, including line-number gutters and wrapped continuations, instead of dropping all padding whenever one changed line exceeded the terminal width.
 - Send each known Claude generation the thinking configuration it accepts. Extended thinking (`thinking.type = "enabled"` with `budget_tokens`) is rejected with a 400 from Claude 4.7 onward, so those models and the 4.6 generation now use adaptive thinking with `output_config.effort`, while Claude 4.5 and earlier keep their token budget; Opus 4.5 also receives its documented effort field. Unversioned gateway aliases remain unconfigured rather than being guessed as current-generation models. `/reason off` disables thinking where that is allowed and is omitted on the always-thinking families, which reject it.
 - Echo Anthropic assistant turns back verbatim, thinking blocks and signatures included, as the Messages API requires for multi-turn and tool-use conversations; they were previously rebuilt from text and tool calls.
