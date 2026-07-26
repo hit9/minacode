@@ -169,6 +169,10 @@ msgid "Fixed"
 msgstr "修复"
 
 #: ../../../CHANGELOG.md
+msgid "Learn image support only from requests that actually transmit images and resolve to an eligible 400, 415, or 422 response, preserving permission and unrelated provider errors; omit image-tile estimates when historical images are sent as labels."
+msgstr "仅从实际发送图片且解析为适用的 400、415 或 422 响应的请求中学习识图支持状态，保留权限错误及其他无关 provider 错误；历史图片以标签发送时，不再计入图片 tile 估算。"
+
+#: ../../../CHANGELOG.md
 msgid "Keep internal image-capability state out of the prompt, and render actionable image-input errors in their own TUI row instead of exposing the newline as `^J` inside the editable input."
 msgstr "不再在 prompt 中暴露内部图片能力状态，并将可操作的图片输入错误渲染到独立的 TUI 行，避免换行在可编辑输入中显示成 `^J`。"
 

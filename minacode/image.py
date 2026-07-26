@@ -223,7 +223,7 @@ class ImageInputs:
             self._learned_support[self._capability_key()] = True
 
     def note_error(self, messages: list[Json], error: Exception) -> bool:
-        unsupported = self.has_images(messages) and self._explicit_unsupported_error(error)
+        unsupported = self.has_images(messages) and self.support() is not False and self._explicit_unsupported_error(error)
         if unsupported and self.session is not None and self.session.config.provider.image_input == "auto":
             self._learned_support[self._capability_key()] = False
         return unsupported
@@ -354,11 +354,12 @@ class ImageInputs:
         text = str(error).lower()
         cause = getattr(error, "__cause__", None)
         status = getattr(cause, "status_code", None) or getattr(cause, "code", None)
-        if status is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                if int(status) not in {400, 415, 422}:
-                    return False
-        if status is None and not re.search(r"\b(?:400|415|422)\b", text):
+        numeric_status: int | None = None
+        with contextlib.suppress(TypeError, ValueError):
+            numeric_status = int(status) if status is not None else None
+        if numeric_status is not None and numeric_status not in {400, 415, 422}:
+            return False
+        if numeric_status is None and not re.search(r"\b(?:400|415|422)\b", text):
             return False
         return any(term in text for term in cls._MODALITY_TERMS) and any(term in text for term in cls._UNSUPPORTED_TERMS)
 

@@ -581,8 +581,7 @@ class ContextManager:
                     readable.append(str(block["thinking"]))
         return readable
 
-    @staticmethod
-    def estimated_tokens(messages: list[Json]) -> int:
+    def estimated_tokens(self, messages: list[Json]) -> int:
         # Normalized assistant fields already contain visible text and tool calls, so provider
         # echoes would double-count them. Preserve only additional readable reasoning; ciphertext
         # and signatures are transport state whose byte length is not a prompt-token estimate.
@@ -593,7 +592,7 @@ class ContextManager:
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        images = ImageInputs.estimated_tokens(messages)
+        images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
         return (chars + 3) // 4 + images
 
     @staticmethod

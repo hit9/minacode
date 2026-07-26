@@ -246,6 +246,8 @@ class TuiApp:
     def _set_mode(self, mode: str, prompt: str) -> None:
         self.input_mode = mode
         self.input_prompt = prompt
+        if mode not in {"chat", "running"}:
+            self.input_error = ""
         self.invalidate()
 
     def invalidate(self) -> None:

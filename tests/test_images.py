@@ -241,6 +241,47 @@ def test_only_explicit_image_unsupported_error_is_learned(tmp_path, monkeypatch)
     assert s.images.support() is None
 
 
+def test_non_numeric_sdk_code_does_not_bypass_image_error_status_gate(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    image_file(tmp_path / "denied.png")
+    message = s.images.message(s.images.recognize("denied.png"))
+    model = n.ModelClient(s)
+
+    class ProviderError(Exception):
+        code = "permission_error"
+
+    def denied(_messages, _tools):
+        try:
+            raise ProviderError
+        except ProviderError as cause:
+            raise n.ModelError("Error code: 403 - vision is not enabled for this key") from cause
+
+    monkeypatch.setattr(model, "api_request", denied)
+    with pytest.raises(n.ModelError) as caught:
+        model.request([message], [])
+
+    assert str(caught.value) == "Error code: 403 - vision is not enabled for this key"
+    assert s.images.support() is None
+
+
+def test_error_is_not_reclassified_when_historical_images_are_degraded(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    image_file(tmp_path / "history.png")
+    message = s.images.message(s.images.recognize("history.png"))
+    s.config.provider.image_input = "off"
+    model = n.ModelClient(s)
+
+    def reject(_messages, _tools):
+        raise n.ModelError("Error code: 400 - vision modality is not supported for this deployment")
+
+    monkeypatch.setattr(model, "api_request", reject)
+    with pytest.raises(n.ModelError) as caught:
+        model.request([message], [])
+
+    assert str(caught.value) == "Error code: 400 - vision modality is not supported for this deployment"
+    assert s.images.chat_content(message) == "[Image #1 · history.png]"
+
+
 def test_anthropic_merges_text_mention_after_image_user_message(tmp_path):
     s = session(tmp_path)
     image_file(tmp_path / "pixel.png", size=(1, 1))
@@ -281,10 +322,14 @@ def test_context_estimates_image_from_dimensions_without_base64(tmp_path):
     message = s.images.message(s.images.recognize("large.png"))
     plain = {"role": "user", "content": message["content"]}
 
-    difference = n.ContextManager.estimated_tokens([message]) - n.ContextManager.estimated_tokens([plain])
+    context = n.ContextManager(s)
+    difference = context.estimated_tokens([message]) - context.estimated_tokens([plain])
 
     assert difference == 85 + 170 * 4
     assert difference < len(s.images.chat_content(message)[0]["image_url"]["url"]) // 4
+
+    assert s.images.note_error([message], n.ModelError("Error code: 400 - image input is not supported")) is True
+    assert context.estimated_tokens([message]) == context.estimated_tokens([plain])
 
 
 def test_tui_replaces_image_path_with_atomic_label_and_keeps_history_readable(tmp_path):

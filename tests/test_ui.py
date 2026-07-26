@@ -305,6 +305,18 @@ def test_tui_loading_models_prompt_is_simple_and_dim():
     assert app.status_fragments() == [("ansibrightblack", "Loading models...")]
 
 
+def test_tui_non_editing_modes_clear_stale_input_errors():
+    app = n.TuiApp()
+    app.input_error = "stale image error"
+
+    app.set_dispatching("Loading models...")
+    assert app.input_error_fragments() == []
+
+    app.input_error = "another stale image error"
+    app._set_mode("approval", "Continue? ")
+    assert app.input_error_fragments() == []
+
+
 def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch):
     class CprOutput(ResizableOutput):
         def __init__(self):
