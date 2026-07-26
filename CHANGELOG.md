@@ -4,6 +4,7 @@
 ## Unreleased
 
 ### Added
+- Stream reasoning and answer text by default over OpenAI-compatible Chat Completions, OpenAI Responses, and Anthropic Messages. The running TUI now distinguishes `thinking` from `responding` while preserving the completed Rich transcript, tool-call replay, usage accounting, cancellation, and retry behavior.
 - Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization.
 - Allow the generic `provider.image_input` setting to force or disable image input, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft.
 - Add `/api` to select or set the request protocol during a session, and confirm it as a step in the `/provider` and `/model` selection chains. An endpoint serving several model families rarely serves them all over one protocol, and an OpenAI-compatible `/models` listing does not say which serves what, so a discovered model could be selected and then rejected as unsupported with no in-session way to change the wire. The reply names the protocol that took effect rather than echoing `auto` back.

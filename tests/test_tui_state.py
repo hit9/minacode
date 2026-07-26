@@ -151,3 +151,42 @@ def test_bash_live_preview_finish():
     preview.finish()
     assert not preview.active
     assert preview.text == ""
+
+
+def test_model_stream_preview_switches_phase_and_clears(tmp_path):
+    config = n.Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = n.CommandLoop(n.Agent(n.Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+
+    loop.model_stream_output("reasoning", "checking the request")
+    reasoning = "".join(text for _style, text in loop.model_stream_fragments())
+    assert "thinking" in reasoning
+    assert "checking the request" in reasoning
+    assert "thinking" in "".join(text for _style, text in loop.queue_divider_fragments())
+
+    loop.model_stream_output("output", "answering now")
+    output = "".join(text for _style, text in loop.model_stream_fragments())
+    assert "responding" in output
+    assert "answering now" in output
+    assert "checking the request" not in output
+    assert "responding" in "".join(text for _style, text in loop.queue_divider_fragments())
+
+    loop.model_stream_output("", "")
+    assert loop.model_stream_fragments() == []
+    assert "working" in "".join(text for _style, text in loop.queue_divider_fragments())
+
+
+def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypatch):
+    config = n.Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = n.CommandLoop(n.Agent(n.Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    monkeypatch.setattr(n.loop.shutil, "get_terminal_size", lambda fallback: n.loop.os.terminal_size((40, 20)))
+
+    loop.model_stream_output("output", "\n".join(f"line {index} with a deliberately long suffix" for index in range(8)))
+
+    preview = "".join(text for _style, text in loop.model_stream_fragments())
+    assert "line 0" not in preview
+    assert "line 1" not in preview
+    assert "line 2" in preview
+    assert "line 7" in preview
+    assert all(len(line) <= 40 for line in preview.splitlines())

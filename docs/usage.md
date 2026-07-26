@@ -29,6 +29,19 @@ if it was never sent (your input history still recalls it with `Ctrl-P`). Once t
 spoken or run a tool, `Ctrl-C` *interrupts*: the work already shown stays, and the turn is
 marked as interrupted so minacode knows it ended early.
 
+## Streaming model output
+
+Model output streams by default in the interactive terminal over OpenAI-compatible Chat
+Completions, OpenAI Responses, and Anthropic Messages. Text appears as it arrives above the
+divider: reasoning, when the model exposes it, uses `thinking`; the answer uses `responding`.
+
+<div class="term-shot" role="img" aria-label="Terminal view: streamed reasoning appears above a divider labeled thinking, followed by streamed answer text and a divider labeled responding."><span class="fs-dim">  thinking</span><span class="fs-output">    I should inspect the existing implementation first.</span><span class="fs-divider">──── thinking (4s) ─────────────────────</span><span class="fs-dim">  responding</span><span class="fs-output">    I found the issue in the request path.</span><span class="fs-divider">──── responding (7s) ───────────────────</span></div>
+
+The live text is a bounded preview, not a second conversation entry. On completion it clears
+and the final answer is rendered once in the normal Rich transcript. Tool-call arguments stay
+buffered until the call is complete, so partial JSON never appears as user-facing output. No
+streaming setting is required.
+
 ## Bash output
 
 While Bash runs, its live output stays above the `working` divider. When the command

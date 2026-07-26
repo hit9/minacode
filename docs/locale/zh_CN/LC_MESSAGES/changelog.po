@@ -47,6 +47,10 @@ msgid "Added"
 msgstr ""
 
 #: ../../../CHANGELOG.md:8
+msgid "Stream reasoning and answer text by default over OpenAI-compatible Chat Completions, OpenAI Responses, and Anthropic Messages. The running TUI now distinguishes `thinking` from `responding` while preserving the completed Rich transcript, tool-call replay, usage accounting, cancellation, and retry behavior."
+msgstr "默认通过 OpenAI-compatible Chat Completions、OpenAI Responses 和 Anthropic Messages 流式展示推理与回答文本。运行中的 TUI 现在会区分 `thinking` 和 `responding`，同时保留完整的 Rich transcript、工具调用回放、用量统计、中断和重试行为。"
+
+#: ../../../CHANGELOG.md:8
 msgid "Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization."
 msgstr "可直接在交互式 prompt 中输入本地图片路径，将识别到的文件显示为可编辑的内联标签，并在排队的追加指令和恢复后的 session 中保留图片；无需按 provider 或模型名称特化，即可通过 OpenAI-compatible Chat、OpenAI Responses 和 Anthropic Messages 发送对应的标准图片内容。"
 

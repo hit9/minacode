@@ -46,6 +46,42 @@ class _AnthropicMockClientFactory(_MockClientFactory):
         return Anthropic(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
 
 
+class _StreamClientFactory:
+    def __init__(self, events: list[dict], base_url: str = "http://test", failures: int = 0):
+        self.events = events
+        self.calls: list[httpx.Request] = []
+        self.base_url = base_url
+        self.failures = failures
+
+    def __call__(self) -> OpenAI:
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.calls.append(request)
+            if self.failures:
+                self.failures -= 1
+                return httpx.Response(500, json={"error": {"message": "temporary failure", "type": "server_error"}})
+            body = "".join(f"data: {json.dumps(event)}\n\n" for event in self.events) + "data: [DONE]\n\n"
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+        http_client = httpx.Client(transport=httpx.MockTransport(respond))
+        return OpenAI(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
+
+
+class _AnthropicStreamClientFactory:
+    def __init__(self, events: list[tuple[str, dict]], base_url: str = "http://test"):
+        self.events = events
+        self.calls: list[httpx.Request] = []
+        self.base_url = base_url
+
+    def __call__(self) -> Anthropic:
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.calls.append(request)
+            body = "".join(f"event: {name}\ndata: {json.dumps(event)}\n\n" for name, event in self.events)
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+        http_client = httpx.Client(transport=httpx.MockTransport(respond))
+        return Anthropic(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
+
+
 def _session(tmp_path, **provider_kwargs):
     config = n.Config()
     config.data_dir = str(tmp_path / "data")
@@ -132,6 +168,114 @@ def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
     assert calls[0].args == ["echo hi"]
 
 
+def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, monkeypatch):
+    s = _session(tmp_path)
+    model = n.ModelClient(s)
+    chunks = [
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_content": "check"}, "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [{"index": 0, "delta": {"content": "hello"}, "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "Ba", "arguments": '{"command":"echo'}}]},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"index": 0, "function": {"name": "sh", "arguments": ' hi"}'}}]},
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        },
+    ]
+    factory = _StreamClientFactory(chunks)
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, calls, content = model.chat_request([{"role": "user", "content": "run"}], [])
+
+    body = json.loads(factory.calls[0].content)
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
+    assert streamed == [("reasoning", "check"), ("output", "hello"), ("", "")]
+    assert content == "hello"
+    assert assistant["reasoning_content"] == "check"
+    assert assistant["tool_calls"][0]["function"] == {"name": "Bash", "arguments": '{"command":"echo hi"}'}
+    assert calls == [n.ToolCall("call_1", "Bash", ["echo hi"])]
+    assert s.usage.total_tokens == 15
+
+
+def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
+    s = _session(tmp_path)
+    model = n.ModelClient(s)
+    factory = _StreamClientFactory(
+        [
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "gpt-4",
+                "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+            },
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "gpt-4",
+                "choices": [],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        ],
+        failures=1,
+    )
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", factory)
+    monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
+
+    _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert content == "ok"
+    assert len(factory.calls) == 2
+    assert streamed == [("", ""), ("output", "ok"), ("", "")]
+    assert s.state.model_retry_count == 1
+    assert s.usage.total_tokens == 2
+
+
 def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses", model="gpt-5")
     model = n.ModelClient(s)
@@ -204,6 +348,122 @@ def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_p
     assert s.usage.cached_prompt_tokens == 7
     assert s.usage.last_cached_prompt_tokens == 7
     assert s.usage.completion_tokens == 5
+
+
+def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, monkeypatch):
+    s = _session(tmp_path, api="responses", model="gpt-5")
+    model = n.ModelClient(s)
+    terminal = {
+        "id": "resp_stream",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "gpt-5",
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "output": [
+            {"id": "rs_stream", "type": "reasoning", "summary": [{"type": "summary_text", "text": "checking"}]},
+            {
+                "id": "msg_stream",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hello", "annotations": []}],
+            },
+        ],
+        "usage": {
+            "input_tokens": 10,
+            "input_tokens_details": {"cached_tokens": 7},
+            "output_tokens": 5,
+            "total_tokens": 15,
+        },
+    }
+    events = [
+        {
+            "type": "response.reasoning_summary_text.delta",
+            "item_id": "rs_stream",
+            "output_index": 0,
+            "summary_index": 0,
+            "delta": "check",
+            "sequence_number": 1,
+        },
+        {
+            "type": "response.output_text.delta",
+            "item_id": "msg_stream",
+            "output_index": 1,
+            "content_index": 0,
+            "delta": "hel",
+            "logprobs": [],
+            "sequence_number": 2,
+        },
+        {
+            "type": "response.output_text.delta",
+            "item_id": "msg_stream",
+            "output_index": 1,
+            "content_index": 0,
+            "delta": "lo",
+            "logprobs": [],
+            "sequence_number": 3,
+        },
+        {"type": "response.completed", "response": terminal, "sequence_number": 4},
+    ]
+    factory = _StreamClientFactory(events)
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert json.loads(factory.calls[0].content)["stream"] is True
+    assert streamed == [("reasoning", "check"), ("output", "hel"), ("output", "lo"), ("", "")]
+    assert content == "hello"
+    assert assistant["content"] == "hello"
+    assert calls == []
+    assert s.usage.prompt_tokens == 10
+    assert s.usage.cached_prompt_tokens == 7
+
+
+def test_responses_stream_rejects_incomplete_terminal_response_and_clears_preview(tmp_path, monkeypatch):
+    s = _session(tmp_path, api="responses", model="gpt-5")
+    model = n.ModelClient(s)
+    factory = _StreamClientFactory(
+        [
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_stream",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "partial",
+                "logprobs": [],
+                "sequence_number": 1,
+            },
+            {
+                "type": "response.incomplete",
+                "response": {
+                    "id": "resp_stream",
+                    "object": "response",
+                    "created_at": 1,
+                    "status": "incomplete",
+                    "model": "gpt-5",
+                    "parallel_tool_calls": True,
+                    "tool_choice": "auto",
+                    "tools": [],
+                    "output": [],
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                },
+                "sequence_number": 2,
+            },
+        ]
+    )
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", factory)
+
+    with pytest.raises(n.ModelError, match="Responses stream incomplete"):
+        model.request([{"role": "user", "content": "hi"}], [])
+
+    assert streamed == [("output", "partial"), ("", "")]
 
 
 def test_responses_tool_items_are_converted_and_replayed(tmp_path):
@@ -504,6 +764,101 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     assert s.usage.prompt_tokens == 8
     assert s.usage.completion_tokens == 4
     assert s.usage.total_tokens == 12
+
+
+def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
+    s = _session(tmp_path, model="claude-3", api="anthropic")
+    model = n.ModelClient(s)
+    factory = _AnthropicStreamClientFactory(
+        [
+            (
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-3",
+                        "content": [],
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 10, "output_tokens": 0},
+                    },
+                },
+            ),
+            (
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                },
+            ),
+            (
+                "content_block_delta",
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "check"}},
+            ),
+            (
+                "content_block_delta",
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}},
+            ),
+            ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            (
+                "content_block_start",
+                {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": "", "citations": None}},
+            ),
+            (
+                "content_block_delta",
+                {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "hello"}},
+            ),
+            ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+            (
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 2,
+                    "content_block": {"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}},
+                },
+            ),
+            (
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 2,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"command":"echo hi"}'},
+                },
+            ),
+            ("content_block_stop", {"type": "content_block_stop", "index": 2}),
+            (
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                    "usage": {"output_tokens": 5},
+                },
+            ),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+    )
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "anthropic_client", factory)
+
+    assistant, calls, content = model.anthropic_request([{"role": "user", "content": "hi"}], None)
+
+    body = json.loads(factory.calls[0].content)
+    assert body["stream"] is True
+    assert streamed == [("reasoning", "check"), ("output", "hello"), ("", "")]
+    assert content == "hello"
+    assert calls == [n.ToolCall("tool_1", "Bash", ["echo hi"])]
+    assert assistant["_anthropic_content"] == [
+        {"type": "thinking", "thinking": "check", "signature": "sig"},
+        {"type": "text", "text": "hello"},
+        {"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {"command": "echo hi"}},
+    ]
+    assert s.usage.prompt_tokens == 10
+    assert s.usage.completion_tokens == 5
 
 
 def test_request_retries_then_succeeds(tmp_path, monkeypatch):

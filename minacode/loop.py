@@ -275,6 +275,9 @@ Tools:
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
         self.live_preview = BashLivePreview()
+        self.model_stream_lock = threading.Lock()
+        self.model_stream_kind = ""
+        self.model_stream_text = ""
         self.live_status_paused = False
         self.background_output_lock = threading.Lock()
         self.background_output_open = True
@@ -299,6 +302,7 @@ Tools:
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
         self.agent.output_fn = self.agent_output
+        self.agent.model.on_stream = self.model_stream_output
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
@@ -319,9 +323,8 @@ Tools:
         fragments.append(("", "\n"))
         print_formatted_text(FormattedText(fragments), style=self.style(), end="", flush=True)
 
-    # Breathing green dot shown on the working divider while a model request is in flight — it sits
-    # just before the "working (…)" label and vanishes as soon as the response returns (non-streaming
-    # client, so response return is the analogue of "first token arrives"). Palette dim → bright green.
+    # Breathing green dot shown on the divider while a model request is in flight. The label moves
+    # from working to thinking/responding as stream events arrive; the pulse remains until completion.
     WAITING_PULSE_STYLES: ClassVar[tuple[str, ...]] = (
         "fg:#0a3d0a",
         "fg:#146114",
@@ -388,7 +391,11 @@ Tools:
         if status == "working":
             retry_status = self.status_bar.retry_status()
             attempt_status = self.status_bar.model_attempt_status()
-            activity = retry_status or ("working · " + attempt_status if attempt_status else "working")
+            with self.model_stream_lock:
+                phase = self.model_stream_kind
+            activity = retry_status or (
+                ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or "working") + (" · " + attempt_status if attempt_status else "")
+            )
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:
             label = status
@@ -408,14 +415,30 @@ Tools:
         return fragments
 
     def tui_activity_fragments(self) -> list[tuple[str, str]]:
+        fragments = self.model_stream_fragments()
+        if fragments:
+            fragments.append(("", "\n"))
         with self.live_preview.lock:
             lines = self.live_preview.frame_lines() if self.live_preview.active else []
-        fragments = []
         for line in lines:
             fragments.extend([("ansibrightblack", line), ("", "\n")])
         if lines:
             fragments.append(("", "\n"))
         fragments.extend(self.queue_region_fragments())
+        return fragments
+
+    def model_stream_fragments(self) -> list[tuple[str, str]]:
+        with self.model_stream_lock:
+            kind, text = self.model_stream_kind, self.model_stream_text
+        if not text:
+            return []
+        width = max(20, shutil.get_terminal_size((120, 20)).columns)
+        label = "thinking" if kind == "reasoning" else "responding"
+        rows = [Text.clip_width(line.expandtabs(4), max(1, width - 4)) for line in text.replace("\r", "\n").splitlines()[-6:]]
+        lines = [f"├─ {label}", *(f"│  {row}" for row in rows)]
+        fragments: list[tuple[str, str]] = []
+        for line in lines:
+            fragments.extend([("ansibrightblack", line), ("", "\n")])
         return fragments
 
     def tui_input_hint(self) -> str:
@@ -745,6 +768,17 @@ Tools:
 
     def agent_output(self, text: str = "") -> None:
         self.with_status_paused(lambda: self.emit_agent_output(text))
+
+    def model_stream_output(self, kind: str, text: str) -> None:
+        with self.model_stream_lock:
+            if not kind:
+                self.model_stream_kind = self.model_stream_text = ""
+            elif text:
+                if kind != self.model_stream_kind:
+                    self.model_stream_kind, self.model_stream_text = kind, ""
+                self.model_stream_text = (self.model_stream_text + text)[-8000:]
+        if self.tui is not None:
+            self.tui.invalidate()
 
     def tool_input(self, prompt: str = "") -> str:
         # When the TUI is running, route agent approvals through TuiApp's

@@ -1225,6 +1225,7 @@ class ModelClient:
         self.session = session
         self.cancel_requested = threading.Event()
         self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
+        self.on_stream: Callable[[str, str], None] | None = None
 
     def cancel(self) -> None:
         self.cancel_requested.set()
@@ -1347,7 +1348,7 @@ class ModelClient:
         messages = Text.value(converted)
         provider = self.session.config.provider
         resolved = provider.resolve()
-        params: Json = {"model": provider.model, "messages": messages, "stream": False}
+        params: Json = {"model": provider.model, "messages": messages, "stream": self.on_stream is not None}
         if provider.max_tokens > 0:
             params["max_tokens"] = provider.max_tokens
         if tools:
@@ -1358,14 +1359,61 @@ class ModelClient:
         if prompt_cache_key:
             params["prompt_cache_key"] = prompt_cache_key
         self.apply_provider_params(params, provider, resolved)
+        if self.on_stream is not None:
+            params["stream_options"] = {"include_usage": True}
         client = self.client()
-        response = self.call_client(client, lambda: client.chat.completions.create(**params))
-        self.session.usage.add(getattr(response, "usage", None))
-        message = response.choices[0].message
+        if self.on_stream is not None:
+            message, usage = self.call_client(client, lambda: self._chat_stream(client, params))
+        else:
+            response = self.call_client(client, lambda: client.chat.completions.create(**params))
+            usage = getattr(response, "usage", None)
+            message = response.choices[0].message
+        self.session.usage.add(usage)
         assistant = self.assistant_message(message)
         calls = self.tool_calls(message)
-        content = str(getattr(message, "content", None) or "")
+        content = str(self.message_field(message, "content") or "")
         return assistant, calls, content
+
+    def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any]:
+        content: list[str] = []
+        reasoning: list[str] = []
+        tool_calls: dict[int, Json] = {}
+        usage: Any = None
+        try:
+            for chunk in client.chat.completions.create(**params):
+                if chunk_usage := self.message_field(chunk, "usage"):
+                    usage = chunk_usage
+                choices = self.message_field(chunk, "choices") or []
+                if not choices:
+                    continue
+                delta = self.message_field(choices[0], "delta")
+                if reasoning_delta := str(self.message_field(delta, "reasoning_content") or ""):
+                    reasoning.append(reasoning_delta)
+                    self._emit_stream("reasoning", reasoning_delta)
+                if content_delta := str(self.message_field(delta, "content") or ""):
+                    content.append(content_delta)
+                    self._emit_stream("output", content_delta)
+                for position, raw in enumerate(self.message_field(delta, "tool_calls") or []):
+                    raw_index = self.message_field(raw, "index")
+                    index = raw_index if isinstance(raw_index, int) else position
+                    call = tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    if call_id := self.message_field(raw, "id"):
+                        call["id"] = str(call_id)
+                    function = self.message_field(raw, "function")
+                    target = call["function"]
+                    assert isinstance(target, dict)
+                    if name := self.message_field(function, "name"):
+                        target["name"] = str(target["name"]) + str(name)
+                    if arguments := self.message_field(function, "arguments"):
+                        target["arguments"] = str(target["arguments"]) + str(arguments)
+        finally:
+            self._emit_stream("", "")
+        message: Json = {"content": "".join(content) or None}
+        if reasoning:
+            message["reasoning_content"] = "".join(reasoning)
+        if tool_calls:
+            message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+        return message, usage
 
     def api_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
         api = self.session.config.provider.resolve().api
@@ -1381,7 +1429,7 @@ class ModelClient:
         params: Json = {
             "model": provider.model,
             "input": self.responses_input(Text.value(messages)),
-            "stream": False,
+            "stream": self.on_stream is not None,
             "store": False,
         }
         if provider.max_tokens > 0:
@@ -1404,9 +1452,40 @@ class ModelClient:
         if provider.extra_body:
             params["extra_body"] = provider.extra_body
         client = self.client()
-        result = self.call_client(client, lambda: client.responses.create(**params))
+        result = (
+            self.call_client(client, lambda: self._responses_stream(client, params))
+            if self.on_stream
+            else self.call_client(client, lambda: client.responses.create(**params))
+        )
         self.session.usage.add(self.message_field(result, "usage"))
         return self.responses_result(result)
+
+    def _responses_stream(self, client: OpenAI, params: Json) -> Any:
+        """Consume a Responses event stream and return its terminal response."""
+
+        terminal: Any = None
+        try:
+            for event in client.responses.create(**params):
+                event_type = str(self.message_field(event, "type") or "")
+                if event_type == "response.reasoning_summary_text.delta":
+                    self._emit_stream("reasoning", str(self.message_field(event, "delta") or ""))
+                elif event_type in ("response.output_text.delta", "response.refusal.delta"):
+                    self._emit_stream("output", str(self.message_field(event, "delta") or ""))
+                elif event_type in ("response.completed", "response.failed", "response.incomplete"):
+                    terminal = self.message_field(event, "response")
+        finally:
+            self._emit_stream("", "")
+        if terminal is None:
+            raise ModelError("Responses stream ended without a terminal response")
+        status = str(self.message_field(terminal, "status") or "")
+        if status and status != "completed":
+            error = self.message_field(terminal, "error") or self.message_field(terminal, "incomplete_details") or status
+            raise ModelError(f"Responses stream {status}: {error}")
+        return terminal
+
+    def _emit_stream(self, kind: str, delta: str) -> None:
+        if self.on_stream is not None:
+            self.on_stream(kind, delta)
 
     def responses_input(self, messages: list[Json]) -> list[Json]:
         converted: list[Json] = []
@@ -1602,10 +1681,30 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         messages = Text.value(messages)
         params = self.anthropic_params(messages, tools)
         client = self.anthropic_client()
-        result = self.call_client(client, lambda: client.messages.create(**params))
+        result = (
+            self.call_client(client, lambda: self._anthropic_stream(client, params))
+            if self.on_stream
+            else self.call_client(client, lambda: client.messages.create(**params))
+        )
         self.session.usage.add(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result)
         return assistant, calls, content
+
+    def _anthropic_stream(self, client: Anthropic, params: Json) -> Any:
+        try:
+            with client.messages.stream(**params) as stream:
+                for event in stream:
+                    if self.message_field(event, "type") != "content_block_delta":
+                        continue
+                    delta = self.message_field(event, "delta")
+                    delta_type = self.message_field(delta, "type")
+                    if delta_type == "thinking_delta":
+                        self._emit_stream("reasoning", str(self.message_field(delta, "thinking") or ""))
+                    elif delta_type == "text_delta":
+                        self._emit_stream("output", str(self.message_field(delta, "text") or ""))
+                return stream.get_final_message()
+        finally:
+            self._emit_stream("", "")
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
@@ -1781,10 +1880,19 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         reasoning_content = self.message_field(message, "reasoning_content")
         if reasoning_content:
             data["reasoning_content"] = reasoning_content
-        tool_calls = [
-            {"id": call.id, "type": "function", "function": {"name": call.function.name, "arguments": call.function.arguments or "{}"}}
-            for call in getattr(message, "tool_calls", None) or []
-        ]
+        tool_calls: list[Json] = []
+        for call in self.message_field(message, "tool_calls") or []:
+            function = self.message_field(call, "function")
+            tool_calls.append(
+                {
+                    "id": str(self.message_field(call, "id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(self.message_field(function, "name") or ""),
+                        "arguments": str(self.message_field(function, "arguments") or "{}"),
+                    },
+                }
+            )
         if tool_calls:
             data["tool_calls"] = tool_calls
         return data
@@ -1807,15 +1915,19 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 
     def tool_calls(self, message: Any) -> list[ToolCall]:
         calls = []
-        for raw in getattr(message, "tool_calls", None) or []:
+        for raw in self.message_field(message, "tool_calls") or []:
+            function = self.message_field(raw, "function")
+            call_id = str(self.message_field(raw, "id") or "")
+            name = str(self.message_field(function, "name") or "")
+            arguments = str(self.message_field(function, "arguments") or "{}")
             try:
                 # strict=False so literal newlines in argument strings (e.g. a multi-line
                 # git commit message) parse instead of dropping the call's args.
-                payload = json.loads(raw.function.arguments or "{}", strict=False)
+                payload = json.loads(arguments, strict=False)
             except json.JSONDecodeError:
-                calls.append(ToolCall(id=raw.id, name=raw.function.name, args=[]))
+                calls.append(ToolCall(id=call_id, name=name, args=[]))
                 continue
-            calls.append(self.tool_call(raw.id, raw.function.name, payload))
+            calls.append(self.tool_call(call_id, name, payload))
         return calls
 
     @classmethod
