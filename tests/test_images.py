@@ -138,6 +138,27 @@ def test_recalling_image_follow_up_keeps_asset_until_resubmission(tmp_path):
     assert s.images.chat_content(s.images.message(recalled))[0]["type"] == "image_url"
 
 
+def test_simple_cli_preserves_images_when_combining_pending_inputs(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = image_file(tmp_path / "queued.png")
+    s.enqueue_user_input(s.images.prepare(s.images.recognize(path.name)))
+    agent = n.Agent(s, output_fn=lambda _text: None)
+    received = []
+    monkeypatch.setattr(agent, "run", lambda value: received.append(value) or "done")
+    monkeypatch.setattr(n.loop.UpdateChecker, "start", lambda _self: None)
+    monkeypatch.setattr(n.loop.CodeIndex, "refresh_existing_async", lambda _self: False)
+
+    def eof(_prompt):
+        raise EOFError
+
+    command_loop = n.CommandLoop(agent, input_fn=eof, output_fn=lambda _text: None)
+
+    assert command_loop.run() == 0
+    assert len(received) == 1
+    assert isinstance(received[0], n.UserInput)
+    assert [image.name for image in received[0].images] == ["queued.png"]
+
+
 def test_expired_session_removes_its_image_assets(tmp_path):
     old = session(tmp_path)
     path = image_file(tmp_path / "expired.png")

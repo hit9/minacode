@@ -303,6 +303,50 @@ def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_pa
     assert [call["function"]["arguments"] for call in assistant["tool_calls"]] == ['{"path":"a"}', '{"path":"b"}']
 
 
+def test_chat_stream_rejects_ambiguous_tool_fragments_without_indexes_or_ids(tmp_path, monkeypatch):
+    s = _session(tmp_path)
+    model = n.ModelClient(s)
+    chunks = [
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {"id": "call_1", "type": "function", "function": {"name": "Read", "arguments": '{"path":"a"}'}},
+                            {"id": "call_2", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"echo'}},
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"function": {"arguments": ' hi"}'}}]},
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+    ]
+    factory = _StreamClientFactory(chunks)
+    model.on_stream = lambda _kind, _delta: None
+    monkeypatch.setattr(model, "client", factory)
+
+    with pytest.raises(n.ModelError, match="cannot associate it safely"):
+        model.chat_request([{"role": "user", "content": "run"}], [])
+
+
 def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = n.ModelClient(s)

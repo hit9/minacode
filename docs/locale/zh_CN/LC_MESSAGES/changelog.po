@@ -176,6 +176,18 @@ msgstr "为 Kimi 和 Z.AI 的国际版与中国版 endpoint 添加有文档依�
 msgid "Fixed"
 msgstr "修复"
 
+#: ../../../CHANGELOG.md:34
+msgid "Preserve image references when the simple CLI combines resumed queued inputs; joining their text previously left internal image markers without attachments and crashed before dispatch."
+msgstr "简单 CLI 合并恢复出的排队输入时保留图片引用；此前拼接文本会留下没有附件的内部图片标记，并在发送前崩溃。"
+
+#: ../../../CHANGELOG.md:35
+msgid "Reject an ambiguous streamed Chat tool-call fragment when a compatibility endpoint omits both `index` and `id`, instead of silently appending its arguments to the wrong parallel tool call."
+msgstr "兼容 endpoint 同时省略 `index` 和 `id`、导致 Chat 流式工具调用片段无法判定归属时明确拒绝，不再静默把参数追加到错误的并行工具调用。"
+
+#: ../../../CHANGELOG.md:36
+msgid "Keep configured `temperature` on unversioned Anthropic aliases when no thinking mode was inferred, and report a clean CLI error if `update`/`upgrade` cannot launch its detected package manager."
+msgstr "未能为无版本 Anthropic 别名推断 thinking 模式时保留已配置的 `temperature`；`update`/`upgrade` 无法启动检测到的包管理器时显示清晰的 CLI 错误。"
+
 #: ../../../CHANGELOG.md:32
 msgid "Omit the optional Responses `reasoning` object for documented non-reasoning models such as OpenAI GPT-4.1; it supports the Responses endpoint but rejects reasoning controls, so both the default effort and `/reason off` now produce a valid request."
 msgstr "对于 OpenAI GPT-4.1 等文档明确的非推理模型，省略可选的 Responses `reasoning` 对象；这些模型支持 Responses endpoint，但会拒绝 reasoning 控制，因此默认 effort 和 `/reason off` 现在都能生成有效请求。"

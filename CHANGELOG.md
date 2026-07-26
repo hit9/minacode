@@ -31,6 +31,9 @@
 - Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
+- Preserve image references when the simple CLI combines resumed queued inputs; joining their text previously left internal image markers without attachments and crashed before dispatch.
+- Reject an ambiguous streamed Chat tool-call fragment when a compatibility endpoint omits both `index` and `id`, instead of silently appending its arguments to the wrong parallel tool call.
+- Keep configured `temperature` on unversioned Anthropic aliases when no thinking mode was inferred, and report a clean CLI error if `update`/`upgrade` cannot launch its detected package manager.
 - Omit the optional Responses `reasoning` object for documented non-reasoning models such as OpenAI GPT-4.1; it supports the Responses endpoint but rejects reasoning controls, so both the default effort and `/reason off` now produce a valid request.
 - Keep streamed Chat tool calls distinct when a compatible endpoint omits their indexes, and treat a repeated function name as the complete name instead of concatenating it into an unknown tool.
 - Return partial Responses output when a streamed response ends as `incomplete`, matching the non-streaming path, while rejecting genuinely `failed` responses consistently on both paths.

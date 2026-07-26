@@ -516,7 +516,11 @@ Tools:
         while True:
             try:
                 entered = self.take_pending_inputs()
-                user_input = self.read_input(initial_text="\n".join(entered))
+                initial_input = UserInput(
+                    "\n".join(str(item) for item in entered),
+                    tuple(image for item in entered for image in item.images),
+                )
+                user_input = self.read_input(initial_text=initial_input)
             except EOFError:
                 self.emit(TurnBox.SEPARATOR)
                 self.save_and_emit_resume()

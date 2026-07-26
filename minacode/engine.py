@@ -1398,7 +1398,8 @@ class ModelClient:
                 if content_delta := str(self.message_field(delta, "content") or ""):
                     content.append(content_delta)
                     self._emit_stream("output", content_delta)
-                for position, raw in enumerate(self.message_field(delta, "tool_calls") or []):
+                raw_tool_calls = self.message_field(delta, "tool_calls") or []
+                for position, raw in enumerate(raw_tool_calls):
                     raw_index = self.message_field(raw, "index")
                     call_id = str(self.message_field(raw, "id") or "")
                     if isinstance(raw_index, int):
@@ -1410,13 +1411,17 @@ class ModelClient:
                             next_index += 1
                         index = next_index
                         next_index += 1
-                    elif position in tool_call_positions:
+                    elif len(raw_tool_calls) == 1 and len(tool_calls) == 1:
+                        index = next(iter(tool_calls))
+                    elif position in tool_call_positions and len(raw_tool_calls) == len(tool_call_positions):
                         index = tool_call_positions[position]
-                    else:
+                    elif position not in tool_call_positions:
                         while next_index in tool_calls:
                             next_index += 1
                         index = next_index
                         next_index += 1
+                    else:
+                        raise ModelError("Chat stream tool-call delta omitted both index and id; cannot associate it safely")
                     next_index = max(next_index, index + 1)
                     tool_call_positions[position] = index
                     if call_id:
@@ -1765,7 +1770,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, budget),
         )
         params.update(thinking_params)
-        thinking_active = provider.reasoning != "off" or anthropic_thinking_always_on(provider.model)
+        thinking = thinking_params.get("thinking")
+        thinking_active = anthropic_thinking_always_on(provider.model) or (isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive"))
         if provider.temperature is not None and not thinking_active:
             params["temperature"] = provider.temperature
         return params

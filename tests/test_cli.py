@@ -126,6 +126,19 @@ def test_cli_update_reports_fetch_error(monkeypatch, capsys):
     assert "network down" in capsys.readouterr().err
 
 
+def test_cli_update_reports_missing_package_manager(monkeypatch, capsys):
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", lambda: "999.0.0")
+    monkeypatch.setattr(cli.UpdateChecker, "upgrade_command", lambda: ["missing-installer"])
+
+    def missing(_command):
+        raise FileNotFoundError("installer not found")
+
+    monkeypatch.setattr(cli.subprocess, "call", missing)
+
+    assert cli.main(["update"]) == 1
+    assert "could not run the upgrade command: installer not found" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("executable", "expected"),
     [

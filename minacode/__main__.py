@@ -30,7 +30,11 @@ def run_update() -> int:
         return 0
     command = UpdateChecker.upgrade_command()
     print(f"updating {__version__} -> {latest}: {' '.join(command)}")
-    return subprocess.call(command)
+    try:
+        return subprocess.call(command)
+    except OSError as error:
+        print(f"Error: could not run the upgrade command: {error}", file=sys.stderr)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
