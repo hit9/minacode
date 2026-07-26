@@ -85,10 +85,14 @@ msgid "Changed"
 msgstr "变更"
 
 #: ../../../CHANGELOG.md:12
+msgid "Consolidate the small protocol-adaptation helpers into `provider_compat`, removing a thin module boundary while keeping provider-specific behavior isolated."
+msgstr "将少量协议适配 helper 合并到 `provider_compat`，移除过薄的模块边界，同时继续隔离 provider 特有行为。"
+
+#: ../../../CHANGELOG.md:13
 msgid "Split the terminal frontend into focused `loop`, `tui`, and `render` modules without adding forwarding layers or changing behavior."
 msgstr "将终端前端拆分为职责清晰的 `loop`、`tui` 和 `render` 模块，不增加转发层，也不改变行为。"
 
-#: ../../../CHANGELOG.md:13
+#: ../../../CHANGELOG.md:14
 msgid "Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands."
 msgstr ""
 

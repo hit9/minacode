@@ -47,8 +47,13 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.provider_compat import ResolvedProvider
-from minacode.provider_protocol import CHAT_REASONING_EFFORT_VALUES, anthropic_thinking_always_on, anthropic_thinking_params, readable_provider_context
+from minacode.provider_compat import (
+    CHAT_REASONING_EFFORT_VALUES,
+    ResolvedProvider,
+    anthropic_thinking_always_on,
+    anthropic_thinking_params,
+    readable_provider_context,
+)
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
