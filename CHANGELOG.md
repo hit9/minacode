@@ -13,6 +13,7 @@
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 
 ### Changed
+- Require exposed reasoning and thinking summaries to follow the user's current language, alongside progress updates and final answers.
 - Consolidate image recognition, asset storage, protocol payloads, token estimates, and learned capability into one session-owned `ImageInputs` component instead of module-level helpers and Session forwarding methods.
 - Expand CLI and command validation coverage, remove an import-order dependency from resume tests, and replace fixed integration-test waits with event-driven synchronization; the full suite now finishes substantially faster while retaining real tmux, subprocess, and signal coverage.
 - Split the oversized tool test module into focused core, edit, and Bash/Job suites, and expand shared validation, strict-schema, optional-capability, and background-job coverage.

@@ -101,6 +101,10 @@ msgid "Changed"
 msgstr "变更"
 
 #: ../../../CHANGELOG.md
+msgid "Require exposed reasoning and thinking summaries to follow the user's current language, alongside progress updates and final answers."
+msgstr "要求公开显示的 reasoning 和 thinking 摘要与进度更新及最终回答一样，遵循用户当前使用的语言。"
+
+#: ../../../CHANGELOG.md
 msgid "Consolidate image recognition, asset storage, protocol payloads, token estimates, and learned capability into one session-owned `ImageInputs` component instead of module-level helpers and Session forwarding methods."
 msgstr "将图片识别、asset 存储、协议 payload、token 估算和能力学习统一收敛到 session 持有的 `ImageInputs` 组件，替代模块级 helper 和 Session 转发方法。"
 

@@ -2059,7 +2059,7 @@ FINAL:
 - Use GitHub-flavored Markdown: flat lists (`1. 2. 3.`), backticks for code/paths, info strings on code blocks, clickable file links `[app.py](/abs/path/app.py:12)` without backticks or file://, vscode://, https://. Write http(s) URLs bare (terminal auto-links them); `[text](url)` prints as `text (url)` here.
 - No emoji/em dash unless asked; no "X rather than Y" framing; no trailing "If you want".
 - The user doesn't see raw outputs; summarize when asked. If you couldn't do something, say so.
-- LANGUAGE (strict): write in the user's current natural language, detected per turn. This covers every visible message, including mid-task progress updates, follow-up acknowledgements, and Ask questions/choices/previews — not just the final answer. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
+- LANGUAGE (strict): write in the user's current natural language, detected per turn. This covers all visible prose, including exposed reasoning/thinking summaries, mid-task progress updates, follow-up acknowledgements, Ask questions/choices/previews, and the final answer. Keep code, identifiers, paths, shell commands, and tool/API names verbatim — translate only prose.
 """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):
