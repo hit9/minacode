@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-25 23:03-0700\n"
+"POT-Creation-Date: 2026-07-26 01:46-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -119,9 +119,9 @@ msgid "Load reusable instruction packs on demand."
 msgstr "按需加载可复用的指令包。"
 
 #: ../../index.md:40
-msgid "**[Providers](providers.md)**"
-msgstr "**[Provider](providers.md)**"
+msgid "**[Configuration](configuration.md)**"
+msgstr "**[配置](configuration.md)**"
 
 #: ../../index.md:40
-msgid "OpenAI-compatible Chat and Responses APIs, plus Anthropic."
-msgstr "支持 OpenAI-compatible Chat、Responses API，以及 Anthropic。"
+msgid "Providers, runtime settings, and data location."
+msgstr "Provider、runtime 设置和数据目录。"

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-25 23:03-0700\n"
+"POT-Creation-Date: 2026-07-26 01:46-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -99,22 +99,22 @@ msgid "Model name to use"
 msgstr "使用的模型名称"
 
 #: ../../getting-started.md:55
-msgid "You can define several `[provider.<name>]` blocks and switch between them with `active` (or `/provider` inside a session). See [Providers](providers.md) for protocol selection, reasoning, caching, and compatibility behavior; see [Configuration](configuration.md) for runtime and data settings."
-msgstr "可以定义多个 `[provider.<name>]`，通过 `active` 选择；也可以在 session 中使用 `/provider` 切换。协议选择、reasoning、缓存和兼容行为见 [Provider](providers.md)；runtime 和数据设置见[配置](configuration.md)。"
+msgid "You can define several `[provider.<name>]` blocks and switch between them with `active` (or `/provider` inside a session). See [Configuration](configuration.md#providers) for optional provider, runtime, and data settings."
+msgstr "可以定义多个 `[provider.<name>]`，通过 `active` 选择；也可以在 session 中使用 `/provider` 切换。可选的 provider、runtime 和数据设置见[配置](configuration.md#providers)。"
 
-#: ../../getting-started.md:60
+#: ../../getting-started.md:59
 msgid "Start a session"
 msgstr "启动 session"
 
-#: ../../getting-started.md:66
+#: ../../getting-started.md:65
 msgid "Type a request in plain language and the agent starts working — reading files, proposing edits, running commands. Before anything that changes files or runs a command, it asks for confirmation (unless you pass `--yolo`). You can keep typing while it works; see [Follow-ups](usage.md#follow-ups)."
 msgstr "直接用自然语言输入任务，agent 就会开始读取文件、提出修改并运行命令。任何会修改文件或执行命令的操作都会先请求确认，除非使用 `--yolo`。agent 工作时仍可继续输入；见[追加指令](usage.md#follow-ups)。"
 
-#: ../../getting-started.md:71
+#: ../../getting-started.md:70
 msgid "Exit with `/exit`, `/quit`, or `Ctrl-D`."
 msgstr "使用 `/exit`、`/quit` 或 `Ctrl-D` 退出。"
 
-#: ../../getting-started.md:73
+#: ../../getting-started.md:72
 msgid "Command-line flags"
 msgstr "命令行参数"
 
@@ -190,4 +190,3 @@ msgstr "`-v`, `--version`"
 #: ../../getting-started.md
 msgid "Print the version and exit"
 msgstr "输出版本号后退出"
-

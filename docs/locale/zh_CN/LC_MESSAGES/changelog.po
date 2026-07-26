@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-25 23:47-0700\n"
+"POT-Creation-Date: 2026-07-26 01:46-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -51,8 +51,8 @@ msgid "Support OpenAI's Responses protocol with `provider.api = \"responses\"` (
 msgstr "支持 OpenAI Responses 协议：可设置 `provider.api = \"responses\"`，也可从 `/responses` URL 推断；包括标准 reasoning effort、扁平 function tool、tool result 往返、缓存 token 用量、无状态请求，以及跨轮回放不透明 reasoning item。"
 
 #: ../../../CHANGELOG.md:9
-msgid "Add a dedicated Providers documentation page covering configuration, protocol selection, reasoning, caching, strict tools, compatibility profiles, and their official references."
-msgstr "新增独立的 Provider 文档页，说明配置、协议选择、reasoning、缓存、strict tools、兼容性 profile 及其官方依据。"
+msgid "Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles."
+msgstr "将 provider 设置并入配置文档，让面向用户的指南聚焦配置项，而不是内部兼容性 profile。"
 
 #: ../../../CHANGELOG.md:11 ../../../CHANGELOG.md:37 ../../../CHANGELOG.md:52
 #: ../../../CHANGELOG.md:68 ../../../CHANGELOG.md:103 ../../../CHANGELOG.md:150

@@ -52,13 +52,12 @@ Working through a repository task in an interactive session.
 | **[Sessions](usage.md#sessions)** | Your work is saved and resumable with `-c` or `--resume`. |
 | **[MCP](mcp.md)** | Connect external Model Context Protocol servers and use their tools. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |
-| **[Providers](providers.md)** | OpenAI-compatible Chat and Responses APIs, plus Anthropic. |
+| **[Configuration](configuration.md)** | Providers, runtime settings, and data location. |
 
 ```{toctree}
 :hidden:
 
 getting-started
-providers
 configuration
 context
 usage

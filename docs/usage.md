@@ -90,7 +90,7 @@ for details.
 ### Switching models
 
 **`/provider [NAME]`** — Show or switch the active provider. Without an argument it
-lists every configured provider (see [Providers](providers.md))
+lists every configured provider (see [Configuration](configuration.md#providers))
 and lets you pick one interactively. With a name it switches immediately.
 
 **`/model [MODEL]`** — Show or switch the model for the current provider. Without

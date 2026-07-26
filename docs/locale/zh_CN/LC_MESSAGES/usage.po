@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-25 23:03-0700\n"
+"POT-Creation-Date: 2026-07-26 01:46-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -171,8 +171,8 @@ msgid "Switching models"
 msgstr "切换模型"
 
 #: ../../usage.md:92
-msgid "**`/provider [NAME]`** — Show or switch the active provider. Without an argument it lists every configured provider (see [Providers](providers.md)) and lets you pick one interactively. With a name it switches immediately."
-msgstr "**`/provider [NAME]`** — 显示或切换当前 provider。不带参数时列出全部已配置 provider（参见 [Provider](providers.md)），并打开交互式选择器；提供名称时立即切换。"
+msgid "**`/provider [NAME]`** — Show or switch the active provider. Without an argument it lists every configured provider (see [Configuration](configuration.md#providers)) and lets you pick one interactively. With a name it switches immediately."
+msgstr "**`/provider [NAME]`** — 显示或切换当前 provider。不带参数时列出全部已配置 provider（参见 [配置](configuration.md#providers)），并打开交互式选择器；提供名称时立即切换。"
 
 #: ../../usage.md:96
 msgid "**`/model [MODEL]`** — Show or switch the model for the current provider. Without an argument it opens an interactive picker with configured and discovered models. Changing the model also prompts you to pick a reasoning effort."

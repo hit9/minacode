@@ -8,9 +8,11 @@ commented starter with `minacode --init-config`, or point at another file with
 a built-in default, so a minimal config is just a provider. Inspect the resolved configuration
 at any time with `/config`.
 
-## Provider selection
+## Providers
 
-Define one or more `[provider.<name>]` blocks and select one with `[provider] active`:
+minacode supports OpenAI-compatible Chat Completions and Responses APIs, plus the Anthropic
+Messages API. Define one or more `[provider.<name>]` blocks and select one with
+`[provider] active`:
 
 ```toml
 [provider]
@@ -22,8 +24,46 @@ key = "sk-..."
 model = "deepseek-v4-flash"
 ```
 
-For provider fields, API protocols, live switching, reasoning, caching, strict tools, and
-documented compatibility behavior, see [Providers](providers.md).
+These three fields are enough for most endpoints. minacode selects the usual protocol and applies
+only necessary, documented compatibility adjustments. Explicit settings always take precedence.
+Use `/config` to inspect the result.
+
+Define additional blocks to use more providers. Switch between them with `/provider [NAME]`, and
+switch the active model with `/model [MODEL]`.
+
+### API protocol
+
+Leave `api = "auto"` unless your endpoint needs an explicit protocol:
+
+| Value | Meaning |
+|---|---|
+| `auto` | Infer the protocol when possible; otherwise use Chat Completions |
+| `chat` | OpenAI-compatible Chat Completions |
+| `responses` | OpenAI-compatible Responses |
+| `anthropic` | Anthropic-compatible Messages |
+
+A URL ending in `/chat/completions`, `/responses`, or `/messages` also selects that protocol.
+
+### Optional provider settings
+
+Most users can leave these unset.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `api` | `auto` | API protocol shown above |
+| `reasoning` | `medium` | Reasoning effort; change it during a session with `/reason` |
+| `available_models` | — | Additional models shown by `/model` |
+| `temperature` | — | Sampling temperature; omitted by default |
+| `max_tokens` | — | Output-token cap and reserved compaction space |
+| `timeout` | `120` | Request timeout in seconds |
+| `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
+| `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
+| `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body |
+| `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
+
+Unknown OpenAI-compatible endpoints stay on the generic path. If automatic protocol selection is
+wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage
+reported by the provider.
 
 ## Runtime
 
