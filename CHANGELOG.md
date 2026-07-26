@@ -5,7 +5,7 @@
 
 ### Added
 - Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization.
-- Show image capability at attachment time, allow the generic `provider.image_input` setting to force or disable it, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft.
+- Allow the generic `provider.image_input` setting to force or disable image input, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft.
 - Support OpenAI's Responses protocol with `provider.api = "responses"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns.
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 
@@ -28,6 +28,7 @@
 - Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
+- Keep internal image-capability state out of the prompt, and render actionable image-input errors in their own TUI row instead of exposing the newline as `^J` inside the editable input.
 - Render Edit diff previews as solid red and green bands across every visual row, including line-number gutters and wrapped continuations, instead of dropping all padding whenever one changed line exceeded the terminal width.
 - Send each known Claude generation the thinking configuration it accepts. Extended thinking (`thinking.type = "enabled"` with `budget_tokens`) is rejected with a 400 from Claude 4.7 onward, so those models and the 4.6 generation now use adaptive thinking with `output_config.effort`, while Claude 4.5 and earlier keep their token budget; Opus 4.5 also receives its documented effort field. Unversioned gateway aliases remain unconfigured rather than being guessed as current-generation models. `/reason off` disables thinking where that is allowed and is omitted on the always-thinking families, which reject it.
 - Echo Anthropic assistant turns back verbatim, thinking blocks and signatures included, as the Messages API requires for multi-turn and tool-use conversations; they were previously rebuilt from text and tool calls.

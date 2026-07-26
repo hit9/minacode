@@ -197,13 +197,12 @@ the path with an inline label such as `[Image #1 · screenshot.png]`, so you can
 images will be submitted while continuing to edit the surrounding text. Relative paths resolve
 from the workspace; quoted paths and backslash-escaped spaces are accepted.
 
-<div class="term-shot" role="img" aria-label="The input prompt after recognizing a local screenshot path: a quiet capability notice appears above an editable inline image label."><span class="fs-hint">Image attached · model capability unknown</span><span class="fs-prompt">&gt; explain <span class="fs-i fs-sel">[Image #1 · screenshot.png]</span> and fix the layout<span class="fs-caret">▏</span></span></div>
+<div class="term-shot" role="img" aria-label="The input prompt after recognizing a local screenshot path as an editable inline image label."><span class="fs-prompt">&gt; explain <span class="fs-i fs-sel">[Image #1 · screenshot.png]</span> and fix the layout<span class="fs-caret">▏</span></span></div>
 
-PNG, JPEG, WebP, and single-frame GIF files are supported. The line above the prompt reports
-whether the active provider and model are known to support images. An unknown capability is tried
-using the selected standard API; an explicit rejection is remembered for the session, and later
-image submissions are blocked without clearing the draft. Queued follow-ups, resumed sessions,
-and providers with image input disabled keep readable image labels. See
+PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends images using the selected
+standard API. If the provider explicitly rejects image input, that result is remembered for the
+session and later image submissions are blocked without clearing the draft. Queued follow-ups,
+resumed sessions, and providers with image input disabled keep readable image labels. See
 [`provider.image_input`](configuration.md#optional-provider-settings) to override automatic detection.
 
 ## Sessions

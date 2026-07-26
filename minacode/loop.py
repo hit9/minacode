@@ -662,7 +662,6 @@ Tools:
                 "queue.hint": "ansibrightblack",
                 "image.attachment": "ansicyan bold",
                 "input.error": "ansired",
-                "input.notice": "ansibrightblack",
                 "divider.working": "ansimagenta bold",
                 # Comet gradient: bright head fading through cyan into the dim rule.
                 "divider.glow0": "ansibrightcyan bold",

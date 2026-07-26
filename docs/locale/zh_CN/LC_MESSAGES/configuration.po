@@ -228,8 +228,8 @@ msgid "Unknown OpenAI-compatible endpoints stay on the generic path. If automati
 msgstr "未知的 OpenAI-compatible endpoint 会使用通用路径。如果自动选择的协议不正确，请显式设置 `api`。`/status` 会显示当前模型以及 provider 报告的缓存用量。"
 
 #: ../../configuration.md
-msgid "With `image_input = \"auto\"`, an attached image initially shows that model capability is unknown. A successful image request is remembered for that provider and model during the session; only an explicit image-not-supported response disables later image submissions. Set `on` or `off` when the endpoint's capability is already known. Historical images remain readable as text labels after switching to a provider or model with image input disabled."
-msgstr "使用 `image_input = \"auto\"` 时，刚附加的图片会提示模型能力未知。图片请求成功后，会在当前 session 中为该 provider 和模型记住其支持识图；只有明确表示不支持图片的响应才会禁用后续图片提交。如果已经知道 endpoint 的能力，可设为 `on` 或 `off`。切换到禁用图片输入的 provider 或模型后，历史图片仍会以可读文本标签保留。"
+msgid "With `image_input = \"auto\"`, minacode sends attached images using the selected standard API. A successful image request is remembered for that provider and model during the session; only an explicit image-not-supported response disables later image submissions. Set `on` or `off` when the endpoint's capability is already known. Historical images remain readable as text labels after switching to a provider or model with image input disabled."
+msgstr "使用 `image_input = \"auto\"` 时，minacode 会使用所选的标准 API 发送附加图片。图片请求成功后，会在当前 session 中为该 provider 和模型记住其支持识图；只有明确表示不支持图片的响应才会禁用后续图片提交。如果已经知道 endpoint 的能力，可设为 `on` 或 `off`。切换到禁用图片输入的 provider 或模型后，历史图片仍会以可读文本标签保留。"
 
 #: ../../configuration.md:68
 msgid "Runtime"

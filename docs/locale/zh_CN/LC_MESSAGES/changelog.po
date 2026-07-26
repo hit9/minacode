@@ -51,8 +51,8 @@ msgid "Accept local image paths directly in the interactive prompt, render recog
 msgstr "可直接在交互式 prompt 中输入本地图片路径，将识别到的文件显示为可编辑的内联标签，并在排队的追加指令和恢复后的 session 中保留图片；无需按 provider 或模型名称特化，即可通过 OpenAI-compatible Chat、OpenAI Responses 和 Anthropic Messages 发送对应的标准图片内容。"
 
 #: ../../../CHANGELOG.md
-msgid "Show image capability at attachment time, allow the generic `provider.image_input` setting to force or disable it, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft."
-msgstr "附加图片时显示识图能力状态；可通过通用的 `provider.image_input` 配置强制开启或禁用，并仅根据成功请求或明确的模态错误谨慎学习支持状态，使后续已知不受支持的提交保留原草稿。"
+msgid "Allow the generic `provider.image_input` setting to force or disable image input, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft."
+msgstr "可通过通用的 `provider.image_input` 配置强制开启或禁用图片输入，并仅根据成功请求或明确的模态错误谨慎学习支持状态，使后续已知不受支持的提交保留原草稿。"
 
 #: ../../../CHANGELOG.md:8
 msgid "Support OpenAI's Responses protocol with `provider.api = \"responses\"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns."
@@ -167,6 +167,10 @@ msgstr "为 Kimi 和 Z.AI 的国际版与中国版 endpoint 添加有文档依�
 #: ../../../CHANGELOG.md:809 ../../../CHANGELOG.md:826
 msgid "Fixed"
 msgstr "修复"
+
+#: ../../../CHANGELOG.md
+msgid "Keep internal image-capability state out of the prompt, and render actionable image-input errors in their own TUI row instead of exposing the newline as `^J` inside the editable input."
+msgstr "不再在 prompt 中暴露内部图片能力状态，并将可操作的图片输入错误渲染到独立的 TUI 行，避免换行在可编辑输入中显示成 `^J`。"
 
 #: ../../../CHANGELOG.md:24
 msgid "Send each known Claude generation the thinking configuration it accepts. Extended thinking (`thinking.type = \"enabled\"` with `budget_tokens`) is rejected with a 400 from Claude 4.7 onward, so those models and the 4.6 generation now use adaptive thinking with `output_config.effort`, while Claude 4.5 and earlier keep their token budget; Opus 4.5 also receives its documented effort field. Unversioned gateway aliases remain unconfigured rather than being guessed as current-generation models. `/reason off` disables thinking where that is allowed and is omitted on the always-thinking families, which reject it."

@@ -66,11 +66,11 @@ Unknown OpenAI-compatible endpoints stay on the generic path. If automatic proto
 wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage
 reported by the provider.
 
-With `image_input = "auto"`, an attached image initially shows that model capability is unknown.
-A successful image request is remembered for that provider and model during the session; only an explicit
-image-not-supported response disables later image submissions. Set `on` or `off` when the endpoint's
-capability is already known. Historical images remain readable as text labels after switching to a
-provider or model with image input disabled.
+With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
+successful image request is remembered for that provider and model during the session; only an
+explicit image-not-supported response disables later image submissions. Set `on` or `off` when the
+endpoint's capability is already known. Historical images remain readable as text labels after
+switching to a provider or model with image input disabled.
 
 ## Runtime
 

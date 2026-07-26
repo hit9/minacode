@@ -204,11 +204,13 @@ def test_successful_image_request_is_learned_per_provider_and_model(tmp_path, mo
 
     app = n.TuiApp(images=s.images)
     app.input_buffer.insert_text("learn.png ")
-    assert app.status_fragments()[0] == ("class:input.notice", "Image attached · supported\n")
+    assert app.status_fragments() == [("class:prompt", app.input_prompt)]
+    assert app.input_error_fragments() == []
 
     s.config.provider.model = "another-model"
     assert s.images.support() is None
-    assert app.status_fragments()[0] == ("class:input.notice", "Image attached · model capability unknown\n")
+    assert app.status_fragments() == [("class:prompt", app.input_prompt)]
+    assert app.input_error_fragments() == []
 
 
 def test_only_explicit_image_unsupported_error_is_learned(tmp_path, monkeypatch):
@@ -296,7 +298,8 @@ def test_tui_replaces_image_path_with_atomic_label_and_keeps_history_readable(tm
 
     assert app.input_buffer.text == f"inspect {n.IMAGE_MARKER} "
     assert app.input_images[0].name == "ui.png"
-    assert app.status_fragments()[0] == ("class:input.notice", "Image attached · model capability unknown\n")
+    assert app.status_fragments() == [("class:prompt", app.input_prompt)]
+    assert app.input_error_fragments() == []
     app.input_buffer.validate_and_handle()
     assert received[0].display_text() == "inspect [Image #1 · ui.png] "
     assert list(history.load_history_strings())[-1] == "inspect ui.png "
@@ -311,7 +314,8 @@ def test_tui_reports_and_blocks_disabled_image_input_without_clearing_draft(tmp_
 
     app.input_buffer.insert_text(path.name + " ")
 
-    assert app.status_fragments()[0] == ("class:input.error", "Error: Image input is disabled for the active provider/model\n")
+    assert app.status_fragments() == [("class:prompt", app.input_prompt)]
+    assert app.input_error_fragments() == [("class:input.error", "Error: Image input is disabled for the active provider/model")]
     app.input_buffer.validate_and_handle()
     assert received == []
     assert app.input_buffer.text == n.IMAGE_MARKER + " "
@@ -360,13 +364,18 @@ def test_missing_recognized_image_keeps_tui_draft_on_submit(tmp_path):
     assert "Cannot read image" in app.input_error
 
 
-def test_tmux_renders_recognized_image_as_inline_label(tmp_path):
+def test_tmux_renders_image_error_above_inline_label_without_control_character(tmp_path):
     executable = shutil.which("tmux")
     if executable is None:
         return
     image_file(tmp_path / "tmux.png")
     probe = tmp_path / "image_tui_probe.py"
-    probe.write_text(f"import minacode as n\nn.TuiApp(image_cwd={str(tmp_path)!r}).run()\n")
+    probe.write_text(
+        "import minacode as n\n"
+        f"session = n.Session(cwd={str(tmp_path)!r})\n"
+        'session.config.provider.image_input = "off"\n'
+        "n.TuiApp(images=session.images).run()\n"
+    )
     socket = "minacode-image-test-" + tmp_path.name
     command = [executable, "-L", socket]
     pane_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))}"
@@ -380,5 +389,11 @@ def test_tmux_renders_recognized_image_as_inline_label(tmp_path):
             time.sleep(0.02)
             screen = subprocess.run([*command, "capture-pane", "-p", "-t", "probe"], check=True, capture_output=True, text=True).stdout
         assert "[Image #1 · tmux.png]" in screen
+        assert "Error: Image input is disabled for the active provider/model" in screen
+        assert "^J" not in screen
+        lines = screen.splitlines()
+        error_line = next(index for index, line in enumerate(lines) if "Error: Image input" in line)
+        prompt_line = next(index for index, line in enumerate(lines) if "> [Image #1" in line)
+        assert prompt_line == error_line + 1
     finally:
         subprocess.run([*command, "kill-server"], check=False, capture_output=True)

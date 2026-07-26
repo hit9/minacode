@@ -447,17 +447,6 @@ class TuiApp:
             self.invalidate()
 
     def status_fragments(self) -> list[tuple[str, str]]:
-        if self.input_error:
-            return [("class:input.error", f"Error: {self.input_error}\n"), ("class:prompt", self.input_prompt)]
-        if self.input_images and self.input_mode in {"chat", "running"}:
-            support = self.images.support()
-            if support is False:
-                return [
-                    ("class:input.error", "Error: Image input is disabled for the active provider/model\n"),
-                    ("class:prompt", self.input_prompt),
-                ]
-            state = "supported" if support else "model capability unknown"
-            return [("class:input.notice", f"Image attached \u00b7 {state}\n"), ("class:prompt", self.input_prompt)]
         if self.input_mode == "dispatch" and self.input_prompt:
             return [("ansibrightblack", self.input_prompt)]
         if self.input_mode == "approval" and self.input_prompt:
@@ -470,6 +459,12 @@ class TuiApp:
             )
             return [*prompt, ("class:approval.wait", frame + " ")]
         return [("class:prompt", self.input_prompt)]
+
+    def input_error_fragments(self) -> list[tuple[str, str]]:
+        error = self.input_error
+        if not error and self.input_images and self.input_mode in {"chat", "running"} and self.images.support() is False:
+            error = "Image input is disabled for the active provider/model"
+        return [("class:input.error", f"Error: {error}")] if error else []
 
     @staticmethod
     def complete_input(buffer: Buffer, *, reverse: bool = False) -> None:
@@ -515,6 +510,10 @@ class TuiApp:
             style=UiPrinter.user_log_style(),
         )
         completion_space = ConditionalContainer(Window(height=12, dont_extend_height=True), filter=has_completions & ~is_done)
+        input_error = ConditionalContainer(
+            Window(FormattedTextControl(self.input_error_fragments), dont_extend_height=True, wrap_lines=True),
+            filter=Condition(lambda: bool(self.input_error_fragments())),
+        )
         self.activity_window = Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True)
         running = Condition(lambda: self.input_mode == "running")
         activity = ConditionalContainer(
@@ -539,6 +538,7 @@ class TuiApp:
                     running_gap_above,
                     activity,
                     running_gap_below,
+                    input_error,
                     self.input_window,
                     completion_space,
                     self.search_toolbar,
