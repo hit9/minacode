@@ -43,6 +43,7 @@ from minacode.base import (
 )
 from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolDisplay, TurnBox, UpdateChecker
 from minacode.image import ImageInputs, UserInput
+from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import AskSpec, CodeIndex, TOOL_REGISTRY
 
@@ -578,7 +579,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         self.session.resumed = False
         # The percent is derived, not persisted, so a resumed session carries a full history with a
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
-        self.agent.context.update_current_tokens(self.agent.SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(SYSTEM_PROMPT)
         messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         if not messages:
             return
@@ -1127,7 +1128,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         usage = self.session.usage
         provider = self.session.config.provider
         resolved = provider.resolve()
-        context_tokens = self.agent.context.update_current_tokens(self.agent.SYSTEM_PROMPT)
+        context_tokens = self.agent.context.update_current_tokens(SYSTEM_PROMPT)
         context_budget = self.agent.context.request_token_budget()
         index = CodeIndex(self.session)
         index_status, index_message = index.status(check=False)
@@ -1448,7 +1449,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         except KeyboardInterrupt:
             return "Cancelled"
         except Exception:
-            self.agent.context.apply_compaction(None, keep, fallback_note="Previous context was deterministically trimmed.", compacted=compacted)
+            self.agent.context.apply_compaction(None, keep, fallback_note=PREVIOUS_CONTEXT_TRIMMED, compacted=compacted)
             fallback = True
             data = None
         finally:
@@ -1458,7 +1459,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                 self.status_bar.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep, compacted=compacted)
-        self.agent.context.update_current_tokens(self.agent.SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(SYSTEM_PROMPT)
         # Compaction rewrites the history in place. Persist it now: leaving the session without
         # running another turn would otherwise resume from the log's pre-compaction state.
         self.session.save_snapshot()

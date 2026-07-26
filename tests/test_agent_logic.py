@@ -172,7 +172,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert [vars(item) for item in s.state.plan] == [{"status": "todo", "text": "next"}]
     assert s.state.known == ["fact"]
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
-    assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+    assert s.messages[0]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
     assert "compact summary" in s.messages[0]["content"]
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
@@ -221,7 +221,7 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
 
 def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
     s = session(tmp_path)
-    summary = n.ContextManager.COMPACT_TITLE + "\nold summary"
+    summary = n.COMPACTION_SUMMARY_TITLE + "\nold summary"
     s.messages = [
         {"role": "user", "content": summary},
         {"role": "assistant", "content": "before"},
@@ -242,7 +242,7 @@ def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
 def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
     s = session(tmp_path)
     s.messages = [
-        {"role": "user", "content": n.ContextManager.COMPACT_TITLE + "\nold summary"},
+        {"role": "user", "content": n.COMPACTION_SUMMARY_TITLE + "\nold summary"},
         {"role": "assistant", "content": "answer"},
         {"role": "tool", "content": "tool tr.1"},
     ]
@@ -255,9 +255,9 @@ def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
 
 def test_compaction_selection_keeps_assistant_text_that_quotes_summary_marker(tmp_path):
     s = session(tmp_path)
-    quoted = n.ContextManager.COMPACT_TITLE + "\nquoted by assistant"
+    quoted = n.COMPACTION_SUMMARY_TITLE + "\nquoted by assistant"
     s.messages = [
-        {"role": "user", "content": n.ContextManager.COMPACT_TITLE + "\nold summary"},
+        {"role": "user", "content": n.COMPACTION_SUMMARY_TITLE + "\nold summary"},
         {"role": "assistant", "content": quoted},
     ]
 
@@ -270,7 +270,7 @@ def test_compaction_selection_keeps_assistant_text_that_quotes_summary_marker(tm
 def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
-    summary = n.ContextManager.COMPACT_TITLE + "\nold summary"
+    summary = n.COMPACTION_SUMMARY_TITLE + "\nold summary"
     s.state.summary = "old summary"
     s.messages = [{"role": "user", "content": summary}]
 
@@ -287,7 +287,7 @@ def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
 
 def test_turn_compaction_does_not_recompact_a_prior_summary(tmp_path):
     context = n.ContextManager(session(tmp_path))
-    summary = n.ContextManager.COMPACT_TITLE + "\nold summary"
+    summary = n.COMPACTION_SUMMARY_TITLE + "\nold summary"
     messages = [
         {"role": "user", "content": "current request"},
         {"role": "user", "content": summary},
@@ -534,13 +534,13 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
     assert "step 11" in s.history[1].text
     # The turn keeps its request and recent window; the compacted prefix is replaced by the summary.
     assert turn[0]["content"] == "current request"
-    assert turn[1]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+    assert turn[1]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
 
 
 def test_history_title_skips_summary_blocks(tmp_path):
     context = n.ContextManager(session(tmp_path))
     messages = [
-        {"role": "user", "content": n.ContextManager.COMPACT_TITLE + "\nold summary"},
+        {"role": "user", "content": n.COMPACTION_SUMMARY_TITLE + "\nold summary"},
         {"role": "assistant", "content": "answer"},
         {"role": "user", "content": "the real request"},
     ]
@@ -746,12 +746,12 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
         agent.run("read file")
 
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
-    assert s.messages[-1]["content"] == n.Agent.INTERRUPT_MARKER
+    assert s.messages[-1]["content"] == n.INTERRUPT_MARKER
     assert s._active_turn_messages == []
     restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     messages = [message for message in restored.messages if not n.SessionSnapshotCodec.is_internal_message(message)]
     assert [message["role"] for message in messages] == ["user", "assistant", "tool", "user"]
-    assert messages[-1]["content"] == n.Agent.INTERRUPT_MARKER
+    assert messages[-1]["content"] == n.INTERRUPT_MARKER
     assert messages[1]["tool_calls"][0]["id"] == "Read-id"
     assert messages[2]["tool_call_id"] == "Read-id"
     assert "<Read" in messages[2]["content"]
@@ -810,7 +810,7 @@ def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
     assert s.messages[2]["tool_call_id"] == "Read-id"
     assert "Cancelled" in s.messages[2]["content"]
-    assert s.messages[3]["content"] == n.Agent.INTERRUPT_MARKER
+    assert s.messages[3]["content"] == n.INTERRUPT_MARKER
 
 
 def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
@@ -919,12 +919,12 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     second = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
     first_followup = next(message["content"] for message in agent.model.messages[0] if "extra instruction" in (message.get("content") or ""))
     second_followup = next(message["content"] for message in agent.model.messages[1] if "second instruction" in (message.get("content") or ""))
-    assert "[Live follow-up received while you were working]" in n.Agent.LIVE_FOLLOWUP_PREFIX
-    assert "[Live follow-up received while you were working]" in n.Agent.SYSTEM_PROMPT
-    assert "must include a brief visible text response" in n.Agent.LIVE_FOLLOWUP_PREFIX
-    assert "never respond with tool calls only" in n.Agent.SYSTEM_PROMPT
-    assert first_followup == n.Agent.LIVE_FOLLOWUP_PREFIX + "extra instruction"
-    assert second_followup == n.Agent.LIVE_FOLLOWUP_PREFIX + "second instruction"
+    assert "[Live follow-up received while you were working]" in n.LIVE_FOLLOWUP_PREFIX
+    assert "[Live follow-up received while you were working]" in n.SYSTEM_PROMPT
+    assert "must include a brief visible text response" in n.LIVE_FOLLOWUP_PREFIX
+    assert "never respond with tool calls only" in n.SYSTEM_PROMPT
+    assert first_followup == n.LIVE_FOLLOWUP_PREFIX + "extra instruction"
+    assert second_followup == n.LIVE_FOLLOWUP_PREFIX + "second instruction"
     assert "extra instruction" in first
     assert "extra instruction" in second
     assert "checking" in second
@@ -1558,7 +1558,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
     assert len(s.messages) == 2
-    assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+    assert s.messages[0]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
     assert "deterministically trimmed" in s.messages[0]["content"]
     assert s.messages[1]["content"] == "9"
     # Even though summarization failed, the evicted conversation is still captured as a recallable
@@ -1590,7 +1590,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     result = loop.compact("")
 
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
-    assert s.messages[0]["content"].startswith(n.ContextManager.COMPACT_TITLE)
+    assert s.messages[0]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
     assert s.state.summary == "summary"
@@ -1922,7 +1922,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     assert bare.skills_context() == ""
     tools = n.Tool.resolved_schemas(bare.session)
     assert not any(t["function"]["name"] == "Skill" for t in tools)
-    assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(n.Agent.SYSTEM_PROMPT))
+    assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(n.SYSTEM_PROMPT))
 
 
 def test_skills_command_lists_installed(tmp_path):
@@ -1978,10 +1978,10 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s.settings.max_context_tokens = 100_000
     s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
     context = n.ContextManager(s)
-    active_messages = context.model_messages(n.Agent.SYSTEM_PROMPT, s._active_turn_messages)
+    active_messages = context.model_messages(n.SYSTEM_PROMPT, s._active_turn_messages)
     tools = n.Tool.resolved_schemas(s)
     active_percent = context.update_percent(active_messages, tools)
-    persisted_percent = context.request_tokens(context.model_messages(n.Agent.SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
+    persisted_percent = context.request_tokens(context.model_messages(n.SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
     assert active_percent > persisted_percent
     loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 

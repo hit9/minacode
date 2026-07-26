@@ -1,7 +1,7 @@
 """minacode: A small terminal coding agent written in Python.
 
-The implementation lives in focused submodules (``base``, ``image``, ``provider_compat``, ``session``,
-``skill``, ``mcp``, ``tools``, ``engine``, ``tui``) plus a ``__main__`` entry
+The implementation lives in focused submodules (``base``, ``image``, ``prompts``, ``provider_compat``,
+``session``, ``skill``, ``mcp``, ``tools``, ``engine``, ``tui``) plus a ``__main__`` entry
 point.  The public names are
 re-exported here so ``import minacode`` keeps exposing the same namespace the
 single-file module used to provide.
@@ -62,6 +62,7 @@ from minacode.base import (
     __version__,
 )
 from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES
+from minacode.prompts import COMPACTION_PROMPT, COMPACTION_SUMMARY_TITLE, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from minacode.engine import (
     ActiveResource,
     Agent,

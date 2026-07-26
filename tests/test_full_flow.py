@@ -118,7 +118,7 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     ]
     baseline = _session(tmp_path / "baseline")
     baseline_context = n.ContextManager(baseline)
-    baseline_messages = baseline_context.model_messages(n.Agent.SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
+    baseline_messages = baseline_context.model_messages(n.SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
     baseline_tokens = baseline_context.request_tokens(baseline_messages, n.Tool.resolved_schemas(baseline))
     session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + n.MIN_CONTEXT_SAFETY_TOKENS
 
@@ -139,7 +139,7 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     active_messages = agent_request["messages"]
     contents = [str(message.get("content") or "") for message in active_messages]
     history_index = next(index for index, content in enumerate(contents) if content.startswith("--- History index ---"))
-    conversation = next(index for index, content in enumerate(contents) if content.startswith(n.ContextManager.COMPACT_TITLE))
+    conversation = next(index for index, content in enumerate(contents) if content.startswith(n.COMPACTION_SUMMARY_TITLE))
     memory = next(index for index, content in enumerate(contents) if content.startswith("--- Memory ---"))
     current_turn = max(index for index, content in enumerate(contents) if content == "continue")
     assert history_index < conversation < memory < current_turn
