@@ -2137,6 +2137,21 @@ def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch
     assert get_cwidth("".join(text for _style, text in fragments)) < 20
 
 
+def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.config.provider.timeout = 120
+    s.state.current_model_call_started_at = 1.0
+    bar = n.StatusBar(s)
+    now = [1.0]
+    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
+
+    initial = bar.sweep_fragments("status")
+    now[0] = 121.0  # Same sweep phase after a full configured timeout.
+
+    assert bar.sweep_fragments("status") == initial
+    assert all("resend" not in text for text, _role in bar.entries(show_elapsed=True))
+
+
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):
     now = [100.0]
     monkeypatch.setattr(n.time, "monotonic", lambda: now[0])

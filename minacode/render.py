@@ -763,9 +763,6 @@ class StatusBar:
             self.rendered = True
             self.stop_event.wait(self.INTERVAL)
 
-    def model_elapsed(self) -> float:
-        return max(0.0, time.monotonic() - started) if (started := self.session.state.current_model_call_started_at) > 0 else 0.0
-
     def clear(self) -> None:
         if self.rendered:
             self.output.write_raw("\r")
@@ -837,8 +834,6 @@ class StatusBar:
                 parts.append((retry_status, "warn"))
             elif attempt_status := self.model_attempt_status():
                 parts.append((attempt_status, "warn"))
-            elif self.model_elapsed() >= self.stress_after():
-                parts.append(("/resend to re-request", "warn"))
         return parts
 
     def styled_fragments(self, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -854,17 +849,12 @@ class StatusBar:
             return [("", "")]
         width = max(1, len(text) - 1)
         sweep = (time.monotonic() * 0.55) % 1.0
-        model_elapsed = self.model_elapsed()
-        heat = min(1.0, max(0.0, model_elapsed - self.stress_after()) / max(30.0, self.session.config.provider.timeout - self.stress_after()))
         fragments = []
         for index, char in enumerate(text):
             ratio = index / width
             red = round(75 + (180 - 75) * ratio)
             green = round(180 + (130 - 180) * ratio)
             blue = 235
-            red = round(red + (240 - red) * heat)
-            green = round(green * (1 - 0.65 * heat))
-            blue = round(blue * (1 - 0.75 * heat))
             intensity = max(0.0, 1.0 - abs(ratio - sweep) * 5.0) ** 2
             red = round(red + (230 - red) * intensity)
             green = round(green + (245 - green) * intensity)
@@ -903,6 +893,3 @@ class StatusBar:
             return ""
         # "!" flags that the tools index overflowed the cap and some tools are hidden.
         return f"mcp {len(self.session.mcp.tools)}{'!' if self.session.mcp.index_truncated else ''}"
-
-    def stress_after(self) -> float:
-        return max(30.0, self.session.config.provider.timeout * 0.5)
