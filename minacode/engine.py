@@ -776,7 +776,6 @@ class ToolRunner:
         return messages
 
     def skip_message(self, call: ToolCall) -> Json:
-        self.session.state.turn_tool_calls += 1
         content = self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True)
         return {"role": "tool", "tool_call_id": call.id, "content": content}
 
@@ -784,7 +783,6 @@ class ToolRunner:
         messages: list[Json] = []
         plan = EditBatchPlan(self.session).build(segment) if any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
         for call in segment:
-            self.session.state.turn_tool_calls += 1
             suffix = batch_suffix if state["first"] else ""
             state["first"] = False
             status, content = self.run_one(call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
@@ -805,7 +803,6 @@ class ToolRunner:
                 outcomes[futures[future]] = future.result()
         messages: list[Json] = []
         for call, outcome in zip(segment, outcomes):
-            self.session.state.turn_tool_calls += 1
             suffix = batch_suffix if state["first"] else ""
             state["first"] = False
             assert outcome is not None
@@ -1823,7 +1820,6 @@ FINAL:
         self.cancel_requested.clear()
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
-        self.session.state.turn_tool_calls = 0
         tool_batches = 0
         turn_messages: list[Json] = [{"role": "user", "content": user_input}]
         if self.session.mcp is not None:

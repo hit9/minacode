@@ -1572,12 +1572,7 @@ class StatusBar:
         if self.session.settings.yolo:
             parts.append(("yolo", "warn"))
         if show_elapsed:
-            parts.extend(
-                [
-                    ("step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "runtime"),
-                    ("tools " + str(self.session.state.turn_tool_calls), "runtime"),
-                ]
-            )
+            parts.append(("step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "runtime"))
             if retry_status := self.retry_status():
                 parts.append((retry_status, "warn"))
             elif attempt_status := self.model_attempt_status():

@@ -68,7 +68,6 @@ class AgentState:
     code_index_checking: bool = False
     context_percent: int = 0
     turn_step: int = 0
-    turn_tool_calls: int = 0
     turn_messages: int = 0
     round_count: int = 0
     current_model_call_started_at: float = 0.0
