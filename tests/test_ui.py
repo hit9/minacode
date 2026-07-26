@@ -1572,7 +1572,6 @@ class ModalHarness:
 
 
 def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkeypatch):
-    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda _fallback: n.os.terminal_size((50, 20)))
     command_loop = loop(tmp_path)
     for index in range(12):
         stdout = "\n".join(f"line {line}" for line in range(40)) if index == 10 else f"output {index}"
@@ -1582,7 +1581,11 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     modal = ModalHarness(["j", "enter", "escape", "G", "enter", "c-o"])
     command_loop.tui = modal
 
-    command_loop.bash_output_viewer()
+    # ``shutil`` is a shared module object also used by pytest's terminal reporter. Restore the
+    # patch before pytest reports this test result, rather than waiting for fixture teardown.
+    with monkeypatch.context() as patch:
+        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((50, 20)))
+        command_loop.bash_output_viewer()
 
     listing = "".join(value for _style, value in modal.frames[0])
     assert listing.startswith("\n──── Bash outputs · latest 10 ")
@@ -1979,20 +1982,22 @@ def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
 
 
 def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
-    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((20, 24)))
     preview = n.BashLivePreview()
     preview.active = True
     preview.text = "界" * 20
 
-    assert all(get_cwidth(line) < 20 for line in preview.frame_lines())
+    with monkeypatch.context() as patch:
+        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((20, 24)))
+        assert all(get_cwidth(line) < 20 for line in preview.frame_lines())
 
 
 def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.provider.model = "模型" * 20
-    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda *args: n.os.terminal_size((20, 24)))
 
-    fragments = n.StatusBar(s).fragments(sweep=False, show_elapsed=False)
+    with monkeypatch.context() as patch:
+        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((20, 24)))
+        fragments = n.StatusBar(s).fragments(sweep=False, show_elapsed=False)
 
     assert get_cwidth("".join(text for _style, text in fragments)) < 20
 

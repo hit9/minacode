@@ -721,11 +721,12 @@ def test_log_block_aligns_multiline_tool_arguments():
 
 
 def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
-    monkeypatch.setattr(n.shutil, "get_terminal_size", lambda fallback: n.os.terminal_size((40, 24)))
     command = 'git commit -m "system prompt: enhance with attitude, updates, review mode, and tooling rules"'
     block = n.LogBlock([n.LogLine("Bash", command, n.LogRole.TOOL, syntax="bash")])
 
-    rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+    with monkeypatch.context() as patch:
+        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((40, 24)))
+        rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
 
     assert rendered.splitlines() == [
         '  Bash  git commit -m "system prompt:',
