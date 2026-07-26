@@ -20,7 +20,15 @@
 - Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
-- Preserve the CLI transcript after closing `/diff` by using the terminal's alternate screen; when tmux has alternate-screen support disabled, render the diff inline instead.
+- Send each Claude generation the thinking configuration it accepts. Extended thinking (`thinking.type = "enabled"` with `budget_tokens`) is rejected with a 400 from Claude 4.7 onward, so those models and the 4.6 generation now use adaptive thinking with `output_config.effort`, while Claude 4.5 and earlier keep their token budget. `/reason off` disables thinking where that is allowed and is omitted on the always-thinking families, which reject it.
+- Echo Anthropic assistant turns back verbatim, thinking blocks and signatures included, as the Messages API requires for multi-turn and tool-use conversations; they were previously rebuilt from text and tool calls.
+- Route OpenCode's GPT models to their documented Responses endpoint, alongside the existing Claude and Qwen routing to Messages.
+- Apply the compatibility layer to Responses requests too: reasoning effort goes through the same host fold as the chat path, a host's explicit "no thinking" spelling is used for `/reason off`, and `temperature` is omitted for OpenAI reasoning models, which reject it outright. Sibling chat models such as `gpt-4o` keep their sampling control.
+- Accept every reasoning wire format `auto` can select as an explicit `chat_reasoning` value, so gateways and unrecognized model names keep a manual override; `thinking_toggle`, `thinking_effort`, and `mandatory_thinking` were previously resolvable but rejected by config validation.
+- Stop counting replayed Responses items against the context window. They restate the assistant text and carry opaque encrypted reasoning that the provider does not bill as context, so a reasoning-heavy session no longer compacts early against a phantom context percentage.
+- Drop saved reasoning items that carry no encrypted payload or readable summary instead of replaying an empty shell that a stateless request cannot resolve.
+- Omit `temperature` from Anthropic requests while thinking is enabled, which the Messages API rejects.
+- Preserve the CLI transcript after closing `/diff` by using the terminal's alternate screen; when tmux has alternate-screen support disabled, render the diff inline instead. The probe now reads the resolved window option, so the usual global `set -wg alternate-screen off` is detected and not just a per-window override.
 - Restore both cache scopes in `/status`: the visual bar is now explicitly labeled `last`, while `last` and `session` each show cached tokens, prompt tokens, and hit rate.
 
 ## 0.12.0 - 2026-07-21

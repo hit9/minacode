@@ -135,6 +135,168 @@ def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     assert deepseek.resolved_max_tokens() == 0
 
 
+def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
+    """`chat_reasoning` is the escape hatch when auto guesses wrong for a gateway or an
+    unrecognized model name, so every mode the compatibility rules can resolve to must also be
+    accepted from config."""
+    resolvable = {
+        str(value) for compatibility in n.ProviderConfig.COMPATIBILITY.values() for value, _prefixes in compatibility.get("chat_reasoning_rules", ())
+    } | {str(compatibility["chat_reasoning"]) for compatibility in n.ProviderConfig.COMPATIBILITY.values() if "chat_reasoning" in compatibility}
+
+    assert resolvable <= set(n.CHAT_REASONING_CHOICES), sorted(resolvable - set(n.CHAT_REASONING_CHOICES))
+    for mode in resolvable:
+        assert n.ProviderConfig.from_dict({"chat_reasoning": mode}).chat_reasoning == mode
+
+
+def test_openai_suppresses_temperature_only_for_reasoning_families(tmp_path):
+    """Reasoning models reject temperature outright, while sibling chat models still take it."""
+    client = n.ModelClient(session(tmp_path))
+    reasoning = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-5", reasoning="medium", temperature=0.7)
+    assert reasoning.suppresses_temperature() is True
+    params = {}
+    client.apply_provider_params(params, reasoning)
+    assert params == {"reasoning_effort": "medium"}
+
+    chat = n.ProviderConfig(url="https://api.openai.com/v1", model="gpt-4o", temperature=0.7)
+    assert chat.suppresses_temperature() is False
+    params = {}
+    client.apply_provider_params(params, chat)
+    assert params == {"temperature": 0.7}
+
+
+def test_opencode_routes_each_model_family_to_its_documented_protocol():
+    """One base URL multiplexes three wire protocols by model, so api=auto cannot read the URL."""
+
+    def api(model):
+        return n.ProviderConfig(url="https://opencode.ai/zen/v1", model=model).resolved_api()
+
+    assert api("claude-sonnet-5") == "anthropic"
+    assert api("qwen3-coder") == "anthropic"
+    assert api("gpt-5.6") == "responses"
+    assert api("deepseek-v4") == "chat"
+
+
+def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
+    """Thinking pins sampling to the default; any other temperature is rejected."""
+    client = n.ModelClient(session(tmp_path))
+    provider = client.session.config.provider
+    provider.url, provider.model, provider.api = "https://api.anthropic.com", "claude-sonnet-4-5", "anthropic"
+    provider.temperature, provider.reasoning = 0.3, "medium"
+
+    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    assert params["thinking"]["type"] == "enabled"
+    assert "temperature" not in params
+
+    provider.reasoning = "off"
+    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    assert "thinking" not in params
+    assert params["temperature"] == 0.3
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    (
+        # Extended thinking is the only mode at 4.5 and earlier.
+        ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        ("claude-opus-4-5-20251101", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        # The 4.6 generation accepts both; adaptive is the documented recommendation.
+        ("claude-sonnet-4-6", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        # 4.7 and later reject "enabled" outright.
+        ("claude-opus-4-7", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        ("claude-sonnet-5", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        ("claude-fable-5", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        # An unversioned id is treated as current: new models keep arriving, while the
+        # extended-thinking-only ones are a closed, shrinking set.
+        ("claude-sonnet", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+    ),
+)
+def test_anthropic_thinking_matches_the_generation_of_the_model(tmp_path, model, expected):
+    client = n.ModelClient(session(tmp_path))
+    provider = client.session.config.provider
+    provider.url, provider.api, provider.reasoning = "https://api.anthropic.com", "anthropic", "high"
+    provider.model = model
+
+    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+
+    assert {key: params[key] for key in ("thinking", "output_config") if key in params} == expected
+
+
+def test_anthropic_reasoning_off_respects_models_that_cannot_stop_thinking(tmp_path):
+    """Adaptive models think by default, so "off" has to say so — except on the always-thinking
+    families, which reject `disabled` with a 400 and have to be left unconfigured."""
+    client = n.ModelClient(session(tmp_path))
+    provider = client.session.config.provider
+    provider.url, provider.api, provider.reasoning = "https://api.anthropic.com", "anthropic", "off"
+
+    def thinking(model):
+        provider.model = model
+        params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+        return params.get("thinking")
+
+    assert thinking("claude-sonnet-5") == {"type": "disabled"}
+    assert thinking("claude-opus-4-7") == {"type": "disabled"}
+    assert thinking("claude-fable-5") is None
+    assert thinking("claude-mythos-5") is None
+    # Extended-thinking models think only when asked, so the parameter is simply absent.
+    assert thinking("claude-sonnet-4-5") is None
+
+
+def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_path):
+    """xhigh arrived after the 4.6 generation, which tops out at max."""
+    client = n.ModelClient(session(tmp_path))
+    provider = client.session.config.provider
+    provider.url, provider.api, provider.reasoning = "https://api.anthropic.com", "anthropic", "xhigh"
+
+    def effort(model):
+        provider.model = model
+        return client.anthropic_params([{"role": "user", "content": "hi"}], None)["output_config"]["effort"]
+
+    assert effort("claude-sonnet-4-6") == "max"
+    assert effort("claude-opus-4-7") == "xhigh"
+    assert effort("claude-opus-5") == "xhigh"
+
+    provider.reasoning = "minimal"
+    assert effort("claude-opus-5") == "low"
+
+
+def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
+    """The API verifies that thinking blocks return exactly as it produced them, signature
+    included, so a rebuilt assistant turn breaks any tool loop that thought."""
+    client = n.ModelClient(session(tmp_path))
+    blocks = [
+        {"type": "thinking", "thinking": "", "signature": "sig-abc"},
+        {"type": "text", "text": "checking"},
+        {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}},
+    ]
+    assistant, calls, _ = client.anthropic_result({"content": blocks})
+    assert [call.name for call in calls] == ["Bash"]
+
+    params = client.anthropic_params(
+        [{"role": "user", "content": "go"}, assistant, {"role": "tool", "tool_call_id": "tu_1", "content": "out"}],
+        None,
+    )
+
+    assert params["messages"][1]["content"] == blocks
+
+
+def test_context_estimate_ignores_saved_responses_output(tmp_path):
+    """Replayed Responses items restate the assistant text and carry opaque encrypted reasoning
+    that the provider does not bill as context; counting them shrinks the usable window."""
+    context = n.ContextManager(session(tmp_path))
+    plain = {"role": "assistant", "content": "hello world"}
+    carrying = {
+        **plain,
+        n.RESPONSES_OUTPUT_KEY: [
+            {"id": "rs_1", "type": "reasoning", "encrypted_content": "E" * 8000, "summary": []},
+            {"id": "msg_1", "type": "message", "content": [{"type": "output_text", "text": "hello world"}]},
+        ],
+    }
+
+    assert context.estimated_tokens([carrying]) == context.estimated_tokens([plain])
+
+
 @pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6"))
 def test_openai_compatibility_recognizes_reasoning_model_families(model):
     provider = n.ProviderConfig(url="https://api.openai.com/v1", model=model)

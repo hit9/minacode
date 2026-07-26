@@ -28,11 +28,14 @@ from openai import OpenAI
 from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import (
+    ANTHROPIC_CONTENT_KEY,
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     HTTP_USER_AGENT,
     MAX_TOOL_OUTPUT_TOKENS,
     MIN_CONTEXT_SAFETY_TOKENS,
     MODEL_REQUEST_RETRIES,
+    PROVIDER_ECHO_KEYS,
+    RESPONSES_OUTPUT_KEY,
     Json,
     MinacodeError,
     ModelError,
@@ -44,7 +47,7 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES
+from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES, anthropic_thinking_params
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -544,7 +547,11 @@ class ContextManager:
 
     @staticmethod
     def estimated_tokens(messages: list[Json]) -> int:
-        chars = len(json.dumps(messages, ensure_ascii=False, separators=(",", ":")))
+        # Saved provider replies restate the assistant text and carry opaque reasoning, none of
+        # which the provider bills as context; counting them would shrink the usable window and
+        # trigger compaction early.
+        payload = [{key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS} for message in messages]
+        chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return (chars + 3) // 4
 
     @staticmethod
@@ -1173,7 +1180,8 @@ class PreparedRequest:
 
 
 class ModelClient:
-    RESPONSES_OUTPUT_KEY = "_responses_output"
+    RESPONSES_OUTPUT_KEY: ClassVar[str] = RESPONSES_OUTPUT_KEY
+    ANTHROPIC_CONTENT_KEY: ClassVar[str] = ANTHROPIC_CONTENT_KEY
 
     def __init__(self, session: Session):
         self.session = session
@@ -1287,7 +1295,7 @@ class ModelClient:
         return "transient error"
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
-        messages = Text.value([{key: value for key, value in message.items() if key != self.RESPONSES_OUTPUT_KEY} for message in messages])
+        messages = Text.value([{key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS} for message in messages])
         provider = self.session.config.provider
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
         if (max_tokens := provider.resolved_max_tokens()) > 0:
@@ -1333,8 +1341,11 @@ class ModelClient:
             params["parallel_tool_calls"] = True
         if prompt_cache_key := self.prompt_cache_key(provider, tools):
             params["prompt_cache_key"] = prompt_cache_key
-        if provider.reasoning != "off":
-            params["reasoning"] = {"effort": provider.reasoning_effort()}
+        # Stateless requests return encrypted reasoning items by default, so the replay below
+        # needs no `include`; effort goes through the compatibility fold like the chat path, and
+        # a host that defines an explicit "off" spelling still gets it when reasoning is off.
+        if effort := provider.resolved_reasoning_effort():
+            params["reasoning"] = {"effort": effort}
         if provider.temperature is not None and not provider.suppresses_temperature():
             params["temperature"] = provider.temperature
         if provider.extra_body:
@@ -1350,7 +1361,7 @@ class ModelClient:
             role = str(message.get("role") or "")
             saved_output = message.get(self.RESPONSES_OUTPUT_KEY)
             if role == "assistant" and isinstance(saved_output, list):
-                converted.extend(item for item in saved_output if isinstance(item, dict))
+                converted.extend(item for item in saved_output if isinstance(item, dict) and self.replayable_output_item(item))
                 continue
             if role == "tool":
                 converted.append(
@@ -1380,6 +1391,15 @@ class ModelClient:
                         }
                     )
         return converted
+
+    @staticmethod
+    def replayable_output_item(item: Json) -> bool:
+        """Whether a saved output item still carries something a later request can use.
+
+        Stateless reasoning travels in the encrypted payload, which the id alone cannot stand in
+        for once the response was never stored. A host that returns neither that payload nor any
+        readable reasoning leaves an empty shell, so it is dropped instead of replayed."""
+        return item.get("type") != "reasoning" or any(item.get(key) for key in ("encrypted_content", "content", "summary"))
 
     @staticmethod
     def responses_tool_schemas(tools: list[Json]) -> list[Json]:
@@ -1541,14 +1561,21 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             "messages": self.anthropic_messages(messages),
             "max_tokens": provider.output_token_budget(),
         }
-        if provider.temperature is not None:
+        # Thinking pins temperature to its default; sending any other value is rejected.
+        if provider.temperature is not None and provider.reasoning == "off":
             params["temperature"] = provider.temperature
         if tools:
             params["tools"] = self.anthropic_tool_schemas(tools)
             params["tool_choice"] = {"type": "auto"}
-        if provider.reasoning != "off":
-            budget = CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(provider.reasoning_effort(), 4096)
-            params["thinking"] = {"type": "enabled", "budget_tokens": min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, int(budget))}
+        budget = int(CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(provider.reasoning_effort(), 4096))
+        params.update(
+            anthropic_thinking_params(
+                provider.model,
+                provider.reasoning,
+                provider.reasoning_effort(),
+                min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, budget),
+            )
+        )
         return params
 
     def anthropic_messages(self, messages: list[Json]) -> list[Json]:
@@ -1581,6 +1608,11 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         messages.append({"role": role, "content": content})
 
     def anthropic_assistant_blocks(self, message: Json) -> list[Json]:
+        # The API verifies that thinking blocks come back exactly as it produced them, signature
+        # included, so a turn it produced is echoed rather than rebuilt from text and tool calls.
+        saved = message.get(self.ANTHROPIC_CONTENT_KEY)
+        if isinstance(saved, list) and saved:
+            return [block for block in saved if isinstance(block, dict)]
         blocks: list[Json] = []
         content = message.get("content")
         if isinstance(content, str) and content:
@@ -1621,7 +1653,9 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         text_parts: list[str] = []
         tool_calls: list[Json] = []
         calls: list[ToolCall] = []
-        for block in self.message_field(result, "content") or []:
+        content_blocks = self.message_field(result, "content") or []
+        saved_content = [self.dump_message_item(block) for block in content_blocks]
+        for block in content_blocks:
             block_type = self.message_field(block, "type")
             if block_type == "text":
                 text_parts.append(str(self.message_field(block, "text") or ""))
@@ -1634,7 +1668,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts)
-        assistant: Json = {"role": "assistant", "content": text or None}
+        assistant: Json = {"role": "assistant", "content": text or None, self.ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
         if tool_calls:
             assistant["tool_calls"] = tool_calls
         return assistant, calls, text

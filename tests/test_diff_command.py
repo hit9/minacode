@@ -84,6 +84,42 @@ app.run()
         subprocess.run([*command, "kill-server"], check=False, capture_output=True)
 
 
+def test_alternate_screen_probe_reads_the_resolved_window_option(tmp_path):
+    """alternate-screen is a window option, so `show-options` reports it only where a window
+    overrides it and stays silent for the usual global `set -wg` form in a tmux.conf. The probe
+    has to answer for both, or /diff takes over the primary screen and eats the transcript."""
+    executable = shutil.which("tmux")
+    if executable is None:
+        return
+    socket = "minacode-test-probe-" + tmp_path.name
+    command = [executable, "-L", socket]
+    probe = tmp_path / "alternate_screen_probe.py"
+    probe.write_text("import minacode as n\nprint(n.TuiApp.alternate_screen_available())\n")
+    run = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))} > {shlex.quote(str(tmp_path / 'out'))} 2>&1"
+
+    def probe_value(*setup):
+        (tmp_path / "out").unlink(missing_ok=True)
+        for arguments in setup:
+            subprocess.run([*command, *arguments], check=True, capture_output=True)
+        subprocess.run([*command, "new-window", "-d", "-t", "holder", run], check=True, capture_output=True)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            value = (tmp_path / "out").read_text().strip() if (tmp_path / "out").exists() else ""
+            if value:
+                return value
+            time.sleep(0.01)
+        return ""
+
+    try:
+        subprocess.run([*command, "new-session", "-d", "-s", "holder", "sleep 60"], check=True, capture_output=True)
+        assert probe_value() == "True"
+        # The global window-option form: invisible to `show-options` without -g.
+        assert probe_value(["set-option", "-wg", "alternate-screen", "off"]) == "False"
+        assert probe_value(["set-option", "-wg", "alternate-screen", "on"]) == "True"
+    finally:
+        subprocess.run([*command, "kill-server"], check=False, capture_output=True)
+
+
 def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_path):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "a.py", "-old\n+new\n", round=1)

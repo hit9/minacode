@@ -1666,7 +1666,8 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert params["temperature"] == 0.2
     assert params["max_tokens"] == n.DEFAULT_OUTPUT_RESERVE_TOKENS
-    assert "thinking" not in params
+    # An unversioned id is treated as a current model, where thinking is on unless disabled.
+    assert params["thinking"] == {"type": "disabled"}
     assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}
     assert params["messages"][1]["content"][1]["type"] == "tool_use"
     assert params["messages"][2]["content"][0]["type"] == "tool_result"
@@ -1677,6 +1678,7 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assert client.anthropic_params(messages, None)["max_tokens"] == 2_048
     provider.temperature = None
     provider.reasoning = "minimal"
+    provider.model = "claude-sonnet-4-5"
     assert client.anthropic_params(messages, None)["thinking"] == {"type": "enabled", "budget_tokens": 1_024}
 
     result = SimpleNamespace(

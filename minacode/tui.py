@@ -512,15 +512,18 @@ class TuiApp:
         """Whether an exclusive modal can preserve the primary screen in this terminal."""
         if not os.environ.get("TMUX"):
             return True
-        command = ["tmux", "show-options", "-v"]
+        # alternate-screen is a window option, so show-options reports it only when a window
+        # overrides it and stays silent for the usual global `set -wg` form. Formatting the
+        # resolved value instead answers for both, as 1 (enabled) or 0 (disabled).
+        command = ["tmux", "display-message", "-p"]
         if pane := os.environ.get("TMUX_PANE"):
             command.extend(["-t", pane])
-        command.append("alternate-screen")
+        command.append("#{alternate-screen}")
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=1)
         except (OSError, subprocess.TimeoutExpired):
             return True
-        return result.returncode != 0 or result.stdout.strip().lower() != "off"
+        return result.returncode != 0 or result.stdout.strip() != "0"
 
     def modal_fragments(self) -> list[tuple[str, str]]:
         return self.modal.fragments_fn() if self.modal is not None else []

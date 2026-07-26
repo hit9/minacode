@@ -57,9 +57,11 @@ sessions remain stateless. See OpenAI's [Responses migration guide](https://deve
 fields; Chat-compatible providers receive the documented form selected by `chat_reasoning`.
 
 Leave `chat_reasoning = "auto"` unless an otherwise unknown provider needs a specific wire
-format. Supported explicit formats are `off`, `reasoning`, `reasoning_effort`, `thinking`, and
-`enable_thinking`. A compatibility profile may also suppress `temperature` where a provider's
-thinking mode fixes or rejects it.
+format. Supported explicit formats are `off`, `reasoning`, `reasoning_effort`, `thinking`,
+`thinking_toggle`, `thinking_effort`, `enable_thinking`, and `mandatory_thinking` — every form
+`auto` can select is also selectable by hand, for gateways and model names the rules do not
+recognize. A compatibility profile may also suppress `temperature` where a provider's thinking
+mode fixes or rejects it.
 
 ## Caching and strict tools
 

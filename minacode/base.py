@@ -42,7 +42,23 @@ MODEL_REQUEST_RETRIES = 5
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
-CHAT_REASONING_CHOICES = ("auto", "off", "reasoning", "reasoning_effort", "thinking", "enable_thinking")
+CHAT_REASONING_CHOICES = (
+    "auto",
+    "off",
+    "reasoning",
+    "reasoning_effort",
+    "thinking",
+    "thinking_toggle",
+    "thinking_effort",
+    "enable_thinking",
+    "mandatory_thinking",
+)
+# Assistant turns carry the provider's own reply verbatim under these keys — Responses output
+# items and Anthropic content blocks — so tool loops can replay opaque reasoning the protocol
+# requires back unmodified. They are minacode's bookkeeping and never reach a request body.
+RESPONSES_OUTPUT_KEY = "_responses_output"
+ANTHROPIC_CONTENT_KEY = "_anthropic_content"
+PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY)
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
 DEFAULT_OUTPUT_RESERVE_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS
 MIN_CONTEXT_SAFETY_TOKENS = 4_096
@@ -268,8 +284,10 @@ class ProviderConfig:
 
     def suppresses_temperature(self) -> bool:
         compatibility = self._compatibility()
-        if "suppress_temperature" in compatibility:
-            return bool(compatibility["suppress_temperature"])
+        if (suppress := compatibility.get("suppress_temperature")) is not None:
+            # A bool fixes temperature for the whole host; a tuple names the resolved reasoning
+            # modes that reject it, so sibling non-reasoning models keep their sampling control.
+            return self.resolved_chat_reasoning() in suppress if isinstance(suppress, tuple) else bool(suppress)
         mode = self.resolved_chat_reasoning()
         if mode == "off" or (self.reasoning == "off" and mode in ("thinking", "thinking_toggle", "enable_thinking")):
             return False

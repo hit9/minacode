@@ -327,6 +327,102 @@ def test_responses_function_call_round_trip_over_sdk_transport(tmp_path, monkeyp
     assert second_body["input"][3] == {"type": "function_call_output", "call_id": "call_1", "output": "hi"}
 
 
+def test_responses_request_folds_effort_and_drops_rejected_temperature(tmp_path, monkeypatch):
+    """The Responses path shares the chat path's compatibility handling: effort goes through the
+    host's fold, and OpenAI reasoning models reject temperature outright."""
+    s = _session(tmp_path, api="responses", model="gpt-5")
+    s.config.provider.url = "https://api.openai.com/v1"
+    s.config.provider.reasoning = "high"
+    s.config.provider.temperature = 0.7
+    model = n.ModelClient(s)
+    empty = {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-5", "output": []}
+    factory = _MockClientFactory([(200, empty), (200, empty)])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], None)
+    body = json.loads(factory.calls[0].content)
+    assert body["reasoning"] == {"effort": "high"}
+    assert "temperature" not in body
+
+    # A host that documents an explicit spelling for "no thinking" still gets it when reasoning
+    # is off, instead of falling back to the model's default behaviour.
+    s.config.provider.url = "https://api.kimi.com/coding/v1"
+    s.config.provider.model = "k3"
+    s.config.provider.reasoning = "off"
+    model.request([{"role": "user", "content": "hi"}], None)
+    body = json.loads(factory.calls[1].content)
+    assert body["reasoning"] == {"effort": "none"}
+    assert body["temperature"] == 0.7
+
+
+def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
+    """Stateless reasoning travels in the encrypted payload; an id alone cannot stand in for it
+    once the response was never stored, so an empty shell is dropped rather than replayed."""
+    model = n.ModelClient(_session(tmp_path, api="responses"))
+    assistant, _, _ = model.responses_result(
+        {
+            "output": [
+                {"id": "rs_bare", "type": "reasoning", "summary": []},
+                {"id": "rs_kept", "type": "reasoning", "encrypted_content": "opaque", "summary": []},
+                {"id": "rs_text", "type": "reasoning", "summary": [{"type": "summary_text", "text": "thought"}]},
+                {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "Bash", "arguments": "{}"},
+            ]
+        }
+    )
+
+    replayed = model.responses_input([assistant])
+
+    assert [item["id"] for item in replayed] == ["rs_kept", "rs_text", "fc_1"]
+
+
+def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
+    """`/provider` can switch protocols mid-session, so history holds assistant turns produced by
+    a protocol other than the one now in use. Each protocol replays only its own saved reply and
+    never puts minacode's bookkeeping keys on the wire."""
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "from responses", "_responses_output": [{"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"}]},
+        {"role": "assistant", "content": "from anthropic", "_anthropic_content": [{"type": "thinking", "thinking": "", "signature": "sig"}]},
+    ]
+    s = _session(tmp_path, model="claude-x")
+    model = n.ModelClient(s)
+
+    # Consecutive assistant turns merge into one message, as the Messages API requires roles to
+    # alternate. The responses-only turn is rebuilt as text; only the Anthropic turn is echoed.
+    anthropic_params = model.anthropic_params(history, None)
+    assert anthropic_params["messages"][1]["content"] == [
+        {"type": "text", "text": "from responses"},
+        {"type": "thinking", "thinking": "", "signature": "sig"},
+    ]
+
+    responses_input = model.responses_input(history)
+    assert responses_input == [
+        {"role": "user", "content": "hi"},
+        {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
+        {"role": "assistant", "content": "from anthropic"},
+    ]
+
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "c",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "m",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(model, "client", factory)
+    model.chat_request(history, None)
+    body = factory.calls[0].content.decode()
+    assert "_responses_output" not in body
+    assert "_anthropic_content" not in body
+
+
 def test_chat_request_drops_responses_only_metadata(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = n.ModelClient(s)
@@ -378,7 +474,7 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     assistant, calls, content = model.anthropic_request([{"role": "user", "content": "hi"}], None)
 
     assert content == "hello from claude"
-    assert assistant == {"role": "assistant", "content": "hello from claude"}
+    assert assistant == {"role": "assistant", "content": "hello from claude", "_anthropic_content": [{"type": "text", "text": "hello from claude"}]}
     assert calls == []
     assert s.usage.prompt_tokens == 8
     assert s.usage.completion_tokens == 4
