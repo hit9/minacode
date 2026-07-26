@@ -8,6 +8,8 @@
 
 ### Changed
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
+- Replace wildcard imports between minacode modules with explicit imports, and have Ruff reject any future `import *` usage.
+- Make `/status` context and prompt-cache usage immediately readable with compact progress bars, token counts, and percentages.
 - Lower the default provider request timeout from 180 seconds to 120 seconds; explicitly configured values are unchanged.
 - Increase transient model retries from two to five, and show attempts with concise reasons in the running TUI, such as `retrying 2/6 · timeout`, then keep `attempt 2/6` visible while the replacement request continues.
 - Isolate only necessary provider compatibility overrides in a dedicated `provider_compat` module, keeping the default OpenAI-compatible path generic. Domain overrides match real subdomains, and OpenCode protocol routing uses broad Claude and Qwen families because its single base URL multiplexes different wire protocols by model.
@@ -17,6 +19,7 @@
 - Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
+- Preserve the CLI transcript after closing `/diff` by using the terminal's alternate screen; when tmux has alternate-screen support disabled, render the diff inline instead.
 - Restore both cache scopes in `/status`: the visual bar is now explicitly labeled `last`, while `last` and `session` each show cached tokens, prompt tokens, and hit rate.
 
 ## 0.12.0 - 2026-07-21
