@@ -26,6 +26,7 @@ from prompt_toolkit.utils import get_cwidth
 from minacode.base import (
     DISMISSED,
     HTTP_USER_AGENT,
+    IMAGE_INPUT_CHOICES,
     REASONING_CHOICES,
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
@@ -39,7 +40,7 @@ from minacode.base import (
     __version__,
 )
 from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolDisplay, TurnBox, UpdateChecker
-from minacode.image import UserInput, image_label_text, store_input
+from minacode.image import ImageInputs, UserInput
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import AskSpec, CodeIndex, TOOL_REGISTRY
 
@@ -63,6 +64,7 @@ class CommandCompleter(Completer):
         "provider.temperature": ("provider", "temperature", lambda v: None if v == "off" else float(v)),
         "provider.max_tokens": ("provider", "max_tokens", lambda v: max(0, int(v))),
         "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
+        "provider.image_input": ("provider", "image_input", None),
         "runtime.max_agent_steps": ("settings", "max_steps", lambda v: max(1, int(v))),
         "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
         "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
@@ -74,6 +76,7 @@ class CommandCompleter(Completer):
     # fmt: off
     SET_VALUES: ClassVar[dict[str, tuple[str, ...]]] = {
         "provider.temperature": ("off",),
+        "provider.image_input": IMAGE_INPUT_CHOICES,
     }
     # fmt: on
 
@@ -468,7 +471,7 @@ Tools:
                     pending_item.inflight = False
         if was_inflight:
             on_inflight()
-        self.session.retain_images(item.images)
+        self.session.images.retain(item.images)
         self.session.save_snapshot()
         return item.user_input()
 
@@ -555,7 +558,7 @@ Tools:
 
     def render_transcript_message(self, message: Json, tool_record_index: int = 0, diffs: dict[str, str] | None = None) -> int:
         role = str(message.get("role") or "")
-        content = image_label_text(message).strip()
+        content = ImageInputs.label_text(message).strip()
         raw_calls = message.get("tool_calls")
         has_tool_calls = isinstance(raw_calls, list) and bool(raw_calls)
         if role == "assistant" and content:
@@ -659,6 +662,7 @@ Tools:
                 "queue.hint": "ansibrightblack",
                 "image.attachment": "ansicyan bold",
                 "input.error": "ansired",
+                "input.notice": "ansibrightblack",
                 "divider.working": "ansimagenta bold",
                 # Comet gradient: bright head fading through cyan into the dim rule.
                 "divider.glow0": "ansibrightcyan bold",
@@ -1342,6 +1346,7 @@ Tools:
                 f"provider.key: {'(set)' if provider.key else '(empty)'}",
                 f"provider.model: {provider.model or '(empty)'}",
                 f"provider.api: {provider.api}",
+                f"provider.image_input: {provider.image_input}",
                 f"provider.resolved_api: {resolved.api}",
                 f"provider.prompt_cache_key: {provider.prompt_cache_key}",
                 f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
@@ -1544,6 +1549,8 @@ Tools:
         if handler is None:
             return "Unknown config key: " + key
         target_name, attr, coerce = handler
+        if key == "provider.image_input" and value not in IMAGE_INPUT_CHOICES:
+            return "Invalid value for " + key
         obj = self.session.config.provider if target_name == "provider" else self.session.settings
         try:
             if coerce is not None:
@@ -1638,8 +1645,7 @@ class TuiRuntime:
             activity_fragments_fn=self.loop.tui_activity_fragments,
             input_hint_fn=self.loop.tui_input_hint,
             editor_context_fn=self.loop.editor_context,
-            prepare_input_fn=lambda value: store_input(self.loop.session, value),
-            image_cwd=self.loop.session.cwd,
+            images=self.loop.session.images,
             history=self.loop.input_history,
             completer=self.loop.input_completer,
         )

@@ -40,7 +40,7 @@ from minacode.base import (
     MinacodeError,
 )
 from minacode.engine import LogBlock, LogEdge
-from minacode.image import IMAGE_MARKER, ImageRef, UserInput, recognize_images
+from minacode.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
 
 try:
     import pygments
@@ -147,7 +147,7 @@ class TuiApp:
         activity_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
         input_hint_fn: Callable[[], str] | None = None,
         editor_context_fn: Callable[[], str] | None = None,
-        prepare_input_fn: Callable[[UserInput], UserInput] | None = None,
+        images: ImageInputs | None = None,
         image_cwd: str = "",
         history: FileHistory | None = None,
         completer: Completer | None = None,
@@ -165,8 +165,7 @@ class TuiApp:
         self.activity_fragments_fn = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.editor_context_fn = editor_context_fn or (lambda: "")
-        self.prepare_input_fn = prepare_input_fn or (lambda value: value)
-        self.image_cwd = image_cwd or os.getcwd()
+        self.images = images if images is not None else ImageInputs(cwd=image_cwd)
         self.input_images: tuple[ImageRef, ...] = ()
         self._last_input_text = ""
         self._changing_input = False
@@ -305,7 +304,7 @@ class TuiApp:
     def _submitted_input(self) -> UserInput | None:
         value = self._recognize_input()
         try:
-            value = self.prepare_input_fn(value)
+            value = self.images.prepare(value)
         except MinacodeError as error:
             self.input_error = str(error)
             self.invalidate()
@@ -318,7 +317,7 @@ class TuiApp:
             self.history.append_string(value.original_text())
 
     def _recognize_input(self) -> UserInput:
-        value = recognize_images(self.input_buffer.text, self.image_cwd, self.input_images)
+        value = self.images.recognize(self.input_buffer.text, self.input_images)
         if str(value) != self.input_buffer.text or value.images != self.input_images:
             self._reset_input(value, cursor_position=len(value))
         return value
@@ -450,6 +449,15 @@ class TuiApp:
     def status_fragments(self) -> list[tuple[str, str]]:
         if self.input_error:
             return [("class:input.error", f"Error: {self.input_error}\n"), ("class:prompt", self.input_prompt)]
+        if self.input_images and self.input_mode in {"chat", "running"}:
+            support = self.images.support()
+            if support is False:
+                return [
+                    ("class:input.error", "Error: Image input is disabled for the active provider/model\n"),
+                    ("class:prompt", self.input_prompt),
+                ]
+            state = "supported" if support else "model capability unknown"
+            return [("class:input.notice", f"Image attached \u00b7 {state}\n"), ("class:prompt", self.input_prompt)]
         if self.input_mode == "dispatch" and self.input_prompt:
             return [("ansibrightblack", self.input_prompt)]
         if self.input_mode == "approval" and self.input_prompt:

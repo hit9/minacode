@@ -55,16 +55,7 @@ from minacode.provider_compat import (
     anthropic_thinking_always_on,
     anthropic_thinking_params,
 )
-from minacode.image import (
-    IMAGE_REFS_KEY,
-    UserInput,
-    anthropic_content,
-    chat_content,
-    estimated_image_tokens,
-    image_label_text,
-    image_refs,
-    responses_content,
-)
+from minacode.image import IMAGE_REFS_KEY, ImageInputs, UserInput
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -482,7 +473,7 @@ class ContextManager:
         return messages[:cut], messages[cut:]
 
     def messages_text(self, messages: list[Json]) -> str:
-        return "\n\n".join(f"{message.get('role', 'message')}:\n{image_label_text(message)}" for message in messages) or "(empty)"
+        return "\n\n".join(f"{message.get('role', 'message')}:\n{ImageInputs.label_text(message)}" for message in messages) or "(empty)"
 
     def history_title(self, messages: list[Json]) -> str:
         for message in messages:
@@ -602,7 +593,7 @@ class ContextManager:
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        images = sum(estimated_image_tokens(image) for message in messages for image in image_refs(message))
+        images = ImageInputs.estimated_tokens(messages)
         return (chars + 3) // 4 + images
 
     @staticmethod
@@ -1269,13 +1260,17 @@ class ModelClient:
                 state.current_model_attempt = attempt + 1
                 state.current_model_call_started_at = time.monotonic()
                 try:
-                    return self.api_request(messages, tools)
+                    result = self.api_request(messages, tools)
+                    self.session.images.note_success(messages)
+                    return result
                 except KeyboardInterrupt:
                     if state.manual_model_retry_requested:
                         state.manual_model_retry_requested = False
                         raise ModelRequestRetry() from None
                     raise
                 except ModelError as error:
+                    if self.session.images.note_error(messages, error):
+                        raise ModelError(f"Active provider/model does not support image input: {error}") from error
                     retryable = self.retryable_error(error)
                     if attempt >= MODEL_REQUEST_RETRIES or not retryable:
                         if attempt:
@@ -1347,8 +1342,8 @@ class ModelClient:
         converted: list[Json] = []
         for message in messages:
             clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
-            if message.get("role") == "user" and image_refs(message):
-                clean["content"] = chat_content(self.session, message)
+            if message.get("role") == "user" and self.session.images.refs(message):
+                clean["content"] = self.session.images.chat_content(message)
             converted.append(clean)
         messages = Text.value(converted)
         provider = self.session.config.provider
@@ -1436,7 +1431,10 @@ class ModelClient:
             content = message.get("content")
             if content is not None:
                 converted.append(
-                    {"role": role, "content": responses_content(self.session, message) if role == "user" and image_refs(message) else str(content)}
+                    {
+                        "role": role,
+                        "content": self.session.images.responses_content(message) if role == "user" and self.session.images.refs(message) else str(content),
+                    }
                 )
             if role == "assistant":
                 for raw in message.get("tool_calls") or []:
@@ -1649,7 +1647,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             if role == "system":
                 continue
             if role == "user":
-                self.append_anthropic_message(converted, "user", anthropic_content(self.session, message))
+                self.append_anthropic_message(converted, "user", self.session.images.anthropic_content(message))
             elif role == "assistant":
                 blocks = self.anthropic_assistant_blocks(message)
                 if blocks:
@@ -1931,8 +1929,8 @@ FINAL:
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
         tool_batches = 0
-        user_message = self.session.user_message(user_input)
-        user_text = image_label_text(user_message)
+        user_message = self.session.images.message(user_input)
+        user_text = self.session.images.label_text(user_message)
         turn_messages: list[Json] = [user_message]
         if self.session.mcp is not None:
             mentions = self.session.mcp.resolve_mentions(user_text)

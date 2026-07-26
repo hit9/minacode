@@ -41,6 +41,7 @@ DEFAULT_MAX_CONTEXT_TOKENS = 240 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 5
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
+IMAGE_INPUT_CHOICES = ("auto", "on", "off")
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = (
@@ -190,6 +191,7 @@ class ProviderConfig:
     key: str = ""
     model: str = ""
     api: str = "auto"
+    image_input: str = "auto"
     prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
@@ -203,11 +205,13 @@ class ProviderConfig:
     @classmethod
     def from_dict(cls, data: Json) -> "ProviderConfig":
         api = Config.str(data, "api", "auto")
+        image_input = Config.str(data, "image_input", "auto")
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
         for key, value, choices in (
             ("api", api, PROVIDER_API_CHOICES),
+            ("image_input", image_input, IMAGE_INPUT_CHOICES),
             ("reasoning", reasoning, REASONING_CHOICES),
             ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES),
         ):
@@ -218,6 +222,7 @@ class ProviderConfig:
             key=Config.str(data, "key"),
             model=Config.str(data, "model"),
             api=api,
+            image_input=image_input,
             prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
@@ -432,6 +437,7 @@ url = ""
 key = ""
 model = ""
 # api = "auto"                 # auto | chat | responses | anthropic
+# image_input = "auto"         # auto | on | off
 # reasoning = "medium"
 # timeout = 120
 # available_models = ["gpt-5", "gpt-5-mini"]

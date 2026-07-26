@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from minacode.base import Config, ConfigFile, Json, MinacodeError, ModelUsage, RuntimeSettings, SystemInfo, Text, ToolArgs, UpdateStatus
-from minacode.image import IMAGE_REFS_KEY, ImageRef, UserInput, assets_dir, store_user_input
+from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 
 if TYPE_CHECKING:
     from minacode.mcp import MCPManager
@@ -441,7 +441,7 @@ class SessionSnapshotStore:
         return self.session.uid
 
     def garbage_collect_assets(self) -> None:
-        directory = assets_dir(self.session)
+        directory = self.session.images.assets_dir()
         if not os.path.isdir(directory):
             return
         refs: set[str] = set()
@@ -451,7 +451,7 @@ class SessionSnapshotStore:
                 continue
             refs.update(image.ref for raw in raw_images if (image := ImageRef.from_json(raw)) is not None)
         refs.update(image.ref for item in self.session.pending_user_inputs for image in item.images)
-        refs.update(self.session._retained_image_refs)
+        refs.update(self.session.images.retained_refs)
         with contextlib.suppress(OSError):
             for entry in os.scandir(directory):
                 if entry.is_file() and entry.name not in refs:
@@ -809,17 +809,18 @@ class Session:
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
     skills: SkillLibrary | None = None
+    images: ImageInputs = field(init=False, repr=False)
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
     uid: str = ""
     resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
     _blobs_written: set[str] = field(default_factory=set)
     _active_turn_messages: list[Json] = field(default_factory=list)
-    _retained_image_refs: set[str] = field(default_factory=set)
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
     _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
+        self.images = ImageInputs(self)
         if not self.uid:
             self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]
         if self.system_info is None:
@@ -894,22 +895,11 @@ class Session:
             self.tool_results.pop(old.key, None)
         return key
 
-    def user_message(self, value: str | UserInput) -> Json:
-        message = store_user_input(self, value)
-        raw_images = message.get(IMAGE_REFS_KEY)
-        if isinstance(raw_images, list):
-            self._retained_image_refs.difference_update(image.ref for raw in raw_images if (image := ImageRef.from_json(raw)) is not None)
-        return message
-
-    def retain_images(self, images: tuple[ImageRef, ...]) -> None:
-        self._retained_image_refs.update(image.ref for image in images)
-
     def enqueue_user_input(self, value: str | UserInput) -> None:
         if isinstance(value, UserInput) and value.images:
-            message = self.user_message(value)
+            message = self.images.message(value)
             text = str(message.get("content") or "").strip()
-            raw_images = message.get(IMAGE_REFS_KEY)
-            images = tuple(image for raw in raw_images if (image := ImageRef.from_json(raw)) is not None) if isinstance(raw_images, list) else ()
+            images = self.images.refs(message)
             draft = str(value)
         else:
             text = Text.clean(str(value).strip())

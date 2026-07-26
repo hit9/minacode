@@ -50,6 +50,10 @@ msgstr ""
 msgid "Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization."
 msgstr "可直接在交互式 prompt 中输入本地图片路径，将识别到的文件显示为可编辑的内联标签，并在排队的追加指令和恢复后的 session 中保留图片；无需按 provider 或模型名称特化，即可通过 OpenAI-compatible Chat、OpenAI Responses 和 Anthropic Messages 发送对应的标准图片内容。"
 
+#: ../../../CHANGELOG.md
+msgid "Show image capability at attachment time, allow the generic `provider.image_input` setting to force or disable it, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft."
+msgstr "附加图片时显示识图能力状态；可通过通用的 `provider.image_input` 配置强制开启或禁用，并仅根据成功请求或明确的模态错误谨慎学习支持状态，使后续已知不受支持的提交保留原草稿。"
+
 #: ../../../CHANGELOG.md:8
 msgid "Support OpenAI's Responses protocol with `provider.api = \"responses\"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns."
 msgstr "支持 OpenAI Responses 协议：可设置 `provider.api = \"responses\"`，也可从 `/responses` URL 推断；包括标准 reasoning effort、扁平 function tool、tool result 往返、缓存 token 用量、无状态请求，以及跨轮回放不透明 reasoning item。"
@@ -87,6 +91,10 @@ msgstr "将 provider 设置并入配置文档，让面向用户的指南聚焦�
 #: ../../../CHANGELOG.md:804 ../../../CHANGELOG.md:820
 msgid "Changed"
 msgstr "变更"
+
+#: ../../../CHANGELOG.md
+msgid "Consolidate image recognition, asset storage, protocol payloads, token estimates, and learned capability into one session-owned `ImageInputs` component instead of module-level helpers and Session forwarding methods."
+msgstr "将图片识别、asset 存储、协议 payload、token 估算和能力学习统一收敛到 session 持有的 `ImageInputs` 组件，替代模块级 helper 和 Session 转发方法。"
 
 #: ../../../CHANGELOG.md:12
 msgid "Consolidate the small protocol-adaptation helpers into `provider_compat`, removing a thin module boundary while keeping provider-specific behavior isolated."

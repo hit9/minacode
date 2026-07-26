@@ -51,6 +51,7 @@ Most users can leave these unset.
 | Key | Default | Meaning |
 |---|---|---|
 | `api` | `auto` | API protocol shown above |
+| `image_input` | `auto` | Image capability: learn automatically, force `on`, or disable with `off` |
 | `reasoning` | `medium` | Reasoning effort; change it during a session with `/reason` |
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
@@ -64,6 +65,12 @@ Most users can leave these unset.
 Unknown OpenAI-compatible endpoints stay on the generic path. If automatic protocol selection is
 wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage
 reported by the provider.
+
+With `image_input = "auto"`, an attached image initially shows that model capability is unknown.
+A successful image request is remembered for that provider and model during the session; only an explicit
+image-not-supported response disables later image submissions. Set `on` or `off` when the endpoint's
+capability is already known. Historical images remain readable as text labels after switching to a
+provider or model with image input disabled.
 
 ## Runtime
 

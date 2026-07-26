@@ -5,10 +5,12 @@
 
 ### Added
 - Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization.
+- Show image capability at attachment time, allow the generic `provider.image_input` setting to force or disable it, and learn support conservatively from successful requests or explicit modality errors so later known-unsupported submissions keep their draft.
 - Support OpenAI's Responses protocol with `provider.api = "responses"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns.
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 
 ### Changed
+- Consolidate image recognition, asset storage, protocol payloads, token estimates, and learned capability into one session-owned `ImageInputs` component instead of module-level helpers and Session forwarding methods.
 - Expand CLI and command validation coverage, remove an import-order dependency from resume tests, and replace fixed integration-test waits with event-driven synchronization; the full suite now finishes substantially faster while retaining real tmux, subprocess, and signal coverage.
 - Split the oversized tool test module into focused core, edit, and Bash/Job suites, and expand shared validation, strict-schema, optional-capability, and background-job coverage.
 - Add Pyright to CI and tighten internal annotations around tool arguments, lifecycle resources, MCP operations, and validated dynamic input while preserving `Any` at JSON and third-party SDK boundaries where the value is intentionally open-ended.

@@ -1684,6 +1684,9 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.set_value("provider.timeout never") == "Invalid value for provider.timeout"
     assert command_loop.set_value("provider.temperature off") == "Set provider.temperature"
     assert command_loop.session.config.provider.temperature is None
+    assert command_loop.set_value("provider.image_input maybe") == "Invalid value for provider.image_input"
+    assert command_loop.set_value("provider.image_input off") == "Set provider.image_input"
+    assert command_loop.session.config.provider.image_input == "off"
 
 
 def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):

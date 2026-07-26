@@ -69,6 +69,13 @@ def test_provider_default_timeout_is_120_seconds():
     assert n.Config.from_dict({}).provider.timeout == 120
 
 
+def test_provider_image_input_defaults_to_auto_and_validates_values():
+    assert n.ProviderConfig().image_input == "auto"
+    assert n.ProviderConfig.from_dict({"image_input": "on"}).image_input == "on"
+    with pytest.raises(n.ConfigError, match="provider.image_input"):
+        n.ProviderConfig.from_dict({"image_input": "unknown"})
+
+
 def test_runtime_settings_reads_theme_from_config():
     settings = n.RuntimeSettings.from_dict(
         {"runtime": {"theme": "light"}},

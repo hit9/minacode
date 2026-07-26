@@ -33,6 +33,7 @@ from minacode.base import (
     DEFAULT_OUTPUT_RESERVE_TOKENS,
     DISMISSED,
     HTTP_USER_AGENT,
+    IMAGE_INPUT_CHOICES,
     Json,
     MAX_TOOL_OUTPUT_TOKENS,
     MIN_CONTEXT_SAFETY_TOKENS,
@@ -78,7 +79,7 @@ from minacode.engine import (
     UpdateChecker,
 )
 from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig, MCPToolInfo
-from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageRef, UserInput
+from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 from minacode.session import (
     AgentState,
     BackgroundJob,
