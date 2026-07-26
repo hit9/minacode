@@ -52,7 +52,6 @@ from minacode.provider_compat import (
     ResolvedProvider,
     anthropic_thinking_always_on,
     anthropic_thinking_params,
-    readable_provider_context,
 )
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
@@ -66,8 +65,6 @@ from minacode.tools import (
     JobTool,
     ReadTool,
     Tool,
-    _resolved_tool_schemas,
-    _validate_edit_target,
 )
 
 
@@ -325,14 +322,10 @@ class ContextManager:
 
     def update_current_tokens(self, base_system: str) -> int:
         messages = self.model_messages(base_system, self.session._active_turn_messages)
-        tools = _resolved_tool_schemas(self.session)
+        tools = Tool._resolved_schemas(self.session)
         tokens = self.request_tokens(messages, tools)
         self.session.state.context_percent = min(100, tokens * 100 // self.request_token_budget())
         return tokens
-
-    def update_current_percent(self, base_system: str) -> int:
-        self.update_current_tokens(base_system)
-        return self.session.state.context_percent
 
     def prepare_messages(self, model: "ModelClient", base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
@@ -552,6 +545,24 @@ class ContextManager:
         return text[-limit:].split("\n", 1)[-1] or text[-limit:]
 
     @staticmethod
+    def _readable_provider_context(message: Json) -> list[str]:
+        """Return provider replay state that also contributes readable prompt tokens."""
+
+        readable: list[str] = []
+        responses = message.get(RESPONSES_OUTPUT_KEY)
+        if isinstance(responses, list):
+            for item in responses:
+                if not isinstance(item, dict) or item.get("type") != "reasoning":
+                    continue
+                readable.extend(str(item[key]) for key in ("content", "summary") if item.get(key))
+        anthropic = message.get(ANTHROPIC_CONTENT_KEY)
+        if isinstance(anthropic, list):
+            for block in anthropic:
+                if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking") and block.get("thinking"):
+                    readable.append(str(block["thinking"]))
+        return readable
+
+    @staticmethod
     def estimated_tokens(messages: list[Json]) -> int:
         # Normalized assistant fields already contain visible text and tool calls, so provider
         # echoes would double-count them. Preserve only additional readable reasoning; ciphertext
@@ -559,7 +570,7 @@ class ContextManager:
         payload: list[Json] = []
         for message in messages:
             estimated = {key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS}
-            if readable := readable_provider_context(message, RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY):
+            if readable := ContextManager._readable_provider_context(message):
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -658,7 +669,7 @@ class EditBatchPlan:
 
     def plan_call(self, call: ToolCall, tool: EditTool) -> None:
         path, edits = tool.parse()
-        state = self.file_state(path, edits[0].op == "create")
+        state = self.file_state(tool, path, edits[0].op == "create")
         before, created = state.text(), not state.exists
         before_lines = [line.text for line in state.lines]
         result = self.apply(tool, state, edits)
@@ -668,7 +679,7 @@ class EditBatchPlan:
         self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes)
         state.lines, state.exists = result.lines, True
 
-    def file_state(self, path: str, creating: bool) -> FileState:
+    def file_state(self, tool: EditTool, path: str, creating: bool) -> FileState:
         if path in self.files:
             state = self.files[path]
             if not state.exists and not creating:
@@ -676,7 +687,7 @@ class EditBatchPlan:
             if state.exists and creating:
                 raise ToolError("file already exists")
             return state
-        if _validate_edit_target(self.session, path, creating):
+        if tool._validate_target(path, creating):
             with open(path, encoding="utf-8") as file:
                 original = file.readlines()
             state = self.FileState(path, [self.Line(line, index) for index, line in enumerate(original)], original, True)
@@ -1191,9 +1202,6 @@ class PreparedRequest:
 
 
 class ModelClient:
-    RESPONSES_OUTPUT_KEY: ClassVar[str] = RESPONSES_OUTPUT_KEY
-    ANTHROPIC_CONTENT_KEY: ClassVar[str] = ANTHROPIC_CONTENT_KEY
-
     def __init__(self, session: Session):
         self.session = session
         self.cancel_requested = threading.Event()
@@ -1223,9 +1231,8 @@ class ModelClient:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         self.cancel_requested.clear()
-        tools = tools if tools is not None else _resolved_tool_schemas(self.session)
+        tools = tools if tools is not None else Tool._resolved_schemas(self.session)
         state = self.session.state
-        state.current_model_attempt = 1
         state.model_retry_reason = ""
         try:
             for attempt in range(MODEL_REQUEST_RETRIES + 1):
@@ -1250,7 +1257,6 @@ class ModelClient:
                     time.sleep(0.5 * (attempt + 1))
                 finally:
                     state.current_model_call_started_at = 0.0
-            raise ModelError("model request retry exhausted")
         finally:
             state.current_model_attempt = 0
             state.model_retry_reason = ""
@@ -1374,7 +1380,7 @@ class ModelClient:
         converted: list[Json] = []
         for message in messages:
             role = str(message.get("role") or "")
-            saved_output = message.get(self.RESPONSES_OUTPUT_KEY)
+            saved_output = message.get(RESPONSES_OUTPUT_KEY)
             if role == "assistant" and isinstance(saved_output, list):
                 converted.extend(item for item in saved_output if isinstance(item, dict) and self.replayable_output_item(item))
                 continue
@@ -1458,7 +1464,7 @@ class ModelClient:
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts) or str(self.message_field(result, "output_text") or "")
-        assistant: Json = {"role": "assistant", "content": text or None, self.RESPONSES_OUTPUT_KEY: saved_output}
+        assistant: Json = {"role": "assistant", "content": text or None, RESPONSES_OUTPUT_KEY: saved_output}
         if tool_calls:
             assistant["tool_calls"] = tool_calls
         return assistant, calls, text
@@ -1581,11 +1587,12 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         if tools:
             params["tools"] = self.anthropic_tool_schemas(tools)
             params["tool_choice"] = {"type": "auto"}
-        budget = int(CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(provider.reasoning_effort(), 4096))
+        effort = provider.reasoning_effort()
+        budget = int(CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(effort, 4096))
         thinking_params = anthropic_thinking_params(
             provider.model,
             provider.reasoning,
-            provider.reasoning_effort(),
+            effort,
             min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, budget),
         )
         params.update(thinking_params)
@@ -1626,7 +1633,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
     def anthropic_assistant_blocks(self, message: Json) -> list[Json]:
         # The API verifies that thinking blocks come back exactly as it produced them, signature
         # included, so a turn it produced is echoed rather than rebuilt from text and tool calls.
-        saved = message.get(self.ANTHROPIC_CONTENT_KEY)
+        saved = message.get(ANTHROPIC_CONTENT_KEY)
         if isinstance(saved, list) and saved:
             return [block for block in saved if isinstance(block, dict)]
         blocks: list[Json] = []
@@ -1684,7 +1691,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts)
-        assistant: Json = {"role": "assistant", "content": text or None, self.ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
+        assistant: Json = {"role": "assistant", "content": text or None, ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
         if tool_calls:
             assistant["tool_calls"] = tool_calls
         return assistant, calls, text
@@ -1978,7 +1985,7 @@ FINAL:
         pending = self.session.claim_user_inputs()
         request_turn = [*turn_messages, *({"role": "user", "content": self.LIVE_FOLLOWUP_PREFIX + item.text} for item in pending)]
         self.session.state.turn_messages = len(request_turn)
-        tools = _resolved_tool_schemas(self.session)
+        tools = Tool._resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending)

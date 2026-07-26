@@ -998,7 +998,7 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
             self.received_tools = request_tools
             return {"role": "assistant", "content": "done"}, [], "done"
 
-    monkeypatch.setattr(n.engine, "_resolved_tool_schemas", resolve)
+    monkeypatch.setattr(n.Tool, "_resolved_schemas", staticmethod(resolve))
     agent.model = FakeModel()
 
     assert agent.run("hello") == "done"
@@ -1912,7 +1912,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     _write_skill(tmp_path, "available", "available skill", "body")
     withskill = n.ContextManager(session(tmp_path))
     assert "--- SKILLS ---" in withskill.skills_context()
-    assert any(t["function"]["name"] == "Skill" for t in n.tools._resolved_tool_schemas(withskill.session))
+    assert any(t["function"]["name"] == "Skill" for t in n.Tool._resolved_schemas(withskill.session))
     messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
     assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
 
@@ -1920,7 +1920,7 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
     bare = n.ContextManager(session(tmp_path))
     bare.session.skills = n.SkillLibrary({})
     assert bare.skills_context() == ""
-    tools = n.tools._resolved_tool_schemas(bare.session)
+    tools = n.Tool._resolved_schemas(bare.session)
     assert not any(t["function"]["name"] == "Skill" for t in tools)
     assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(n.Agent.SYSTEM_PROMPT))
 
@@ -1979,7 +1979,7 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
     context = n.ContextManager(s)
     active_messages = context.model_messages(n.Agent.SYSTEM_PROMPT, s._active_turn_messages)
-    tools = n.tools._resolved_tool_schemas(s)
+    tools = n.Tool._resolved_schemas(s)
     active_percent = context.update_percent(active_messages, tools)
     persisted_percent = context.request_tokens(context.model_messages(n.Agent.SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
     assert active_percent > persisted_percent

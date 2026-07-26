@@ -814,13 +814,13 @@ class TestToolIndexBudget:
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
 
         assert s.mcp.render_tools_index() == ""
-        assert "MCP" not in {schema["function"]["name"] for schema in n.tools._resolved_tool_schemas(s)}
+        assert "MCP" not in {schema["function"]["name"] for schema in n.Tool._resolved_schemas(s)}
 
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
 
         assert "[test]" in s.mcp.render_tools_index()
-        assert "MCP" in {schema["function"]["name"] for schema in n.tools._resolved_tool_schemas(s)}
+        assert "MCP" in {schema["function"]["name"] for schema in n.Tool._resolved_schemas(s)}
 
     def test_disconnect_removes_server_from_model_context(self):
         s = n.Session(cwd="/tmp", config=n.Config.from_dict(mcp_cfg()))
@@ -831,7 +831,7 @@ class TestToolIndexBudget:
 
         assert result == "MCP server disconnected: test"
         assert s.mcp.render_tools_index() == ""
-        assert "MCP" not in {schema["function"]["name"] for schema in n.tools._resolved_tool_schemas(s)}
+        assert "MCP" not in {schema["function"]["name"] for schema in n.Tool._resolved_schemas(s)}
 
 
 # ---------------------------------------------------------------------------

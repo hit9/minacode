@@ -587,9 +587,9 @@ def test_strict_tools_gating_and_beta_routing():
     assert resolved("https://api.openai.com/v1", strict=True).base_url == "https://api.openai.com/v1"
 
 
-def test_stripped_url_removes_known_suffixes():
+def test_resolved_base_url_removes_known_protocol_suffixes():
     def p(url):
-        return n.ProviderConfig(url=url)._stripped_url()
+        return n.ProviderConfig(url=url).resolve().base_url
 
     assert p("https://api.openai.com/v1/chat/completions") == "https://api.openai.com/v1"
     assert p("https://api.openai.com/v1/responses") == "https://api.openai.com/v1"

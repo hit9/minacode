@@ -127,33 +127,6 @@ def anthropic_thinking_always_on(model: str) -> bool:
     return any(family in families for family in ANTHROPIC_ALWAYS_THINKING_FAMILIES)
 
 
-def readable_provider_context(message: dict[str, Any], responses_key: str, anthropic_key: str) -> list[str]:
-    """Readable provider state replayed in addition to the normalized assistant fields.
-
-    Encrypted payloads and signatures are transport state rather than prompt text, so their byte
-    length is not a token estimate. Text, summaries, and thinking blocks do occupy model context.
-    """
-
-    readable: list[str] = []
-    responses = message.get(responses_key)
-    if isinstance(responses, list):
-        for item in responses:
-            if not isinstance(item, dict) or item.get("type") != "reasoning":
-                continue
-            for key in ("content", "summary"):
-                value = item.get(key)
-                if value:
-                    readable.append(str(value))
-    anthropic = message.get(anthropic_key)
-    if isinstance(anthropic, list):
-        for block in anthropic:
-            if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking"):
-                continue
-            if thinking := block.get("thinking"):
-                readable.append(str(thinking))
-    return readable
-
-
 KIMI_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"}
 
 KIMI_PLATFORM_COMPATIBILITY = CompatibilityProfile(

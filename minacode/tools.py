@@ -59,6 +59,14 @@ class Tool:
         return {"type": "function", "function": function}
 
     @staticmethod
+    def _resolved_schemas(session: Session) -> list[Json]:
+        strict = session.config.provider.resolve().strict_tools_active
+        # Optional tool families stay out of the model prefix until they have usable session state.
+        has_skills = bool(session.skills and session.skills.skills)
+        has_mcp = bool(session.mcp and (session.mcp.tools or session.mcp.resources))
+        return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp)]
+
+    @staticmethod
     def _strictifiable(schema: Any) -> bool:
         """False if the schema contains a free-form object (an `object` with no `properties`),
         which strict function calling cannot represent — such tools fall back to non-strict."""
@@ -985,10 +993,26 @@ class EditTool(Tool):
             )
         return path, edits
 
+    def _validate_target(self, path: str, creating: bool) -> bool:
+        """Validate an edit/create target and return whether its current contents should be read."""
+
+        if os.path.exists(path):
+            if creating:
+                raise ToolError("file already exists")
+            if os.path.isdir(path):
+                raise ToolError("path is a directory")
+            return True
+        if creating:
+            parent = os.path.dirname(path) or "."
+            if not self.session.in_cwd(parent):
+                raise ToolError("refusing to create parent directories outside workspace")
+            return False
+        raise ToolError("file does not exist; use op=create to create it")
+
     def build(self) -> tuple[str, str, bool, EditApplyResult]:
         path, edits = self.parse()
         creating = edits[0].op == "create"
-        if _validate_edit_target(self.session, path, creating):
+        if self._validate_target(path, creating):
             with open(path, encoding="utf-8") as file:
                 original = file.read()
             created = False
@@ -1432,7 +1456,7 @@ class BashTool(Tool):
         stdout_parts: list[str],
         stderr_parts: list[str],
     ) -> bool:
-        data, eof = _read_and_release(selector, key)
+        data, eof = self._read_and_release(selector, key)
         # final=True on EOF flushes any bytes still buffered in the decoder (e.g. a truncated
         # trailing character) so they are not silently dropped.
         text = self._decoders[key.data].decode(data, final=eof)
@@ -1441,6 +1465,22 @@ class BashTool(Tool):
             if self.live_output is not None:
                 self.live_output(str(key.data), text)
         return not eof
+
+    @staticmethod
+    def _read_and_release(selector: selectors.BaseSelector, key: selectors.SelectorKey) -> tuple[bytes, bool]:
+        """Read one stream chunk, releasing the selector registration when it reaches EOF."""
+
+        try:
+            data = os.read(key.fileobj.fileno(), 4096)
+        except OSError:
+            data = b""
+        eof = not data
+        if eof:
+            with contextlib.suppress(Exception):
+                selector.unregister(key.fileobj)
+            with contextlib.suppress(Exception):
+                key.fileobj.close()
+        return data, eof
 
     @staticmethod
     def kill_process_group(proc: subprocess.Popen[Any]) -> None:
@@ -2100,45 +2140,3 @@ TOOLS: tuple[type[Tool], ...] = (
 )
 # fmt: on
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
-
-
-def _read_and_release(selector: selectors.BaseSelector, key: selectors.SelectorKey) -> tuple[bytes, bool]:
-    """Read up to 4KB from a selector-registered stream. On EOF, unregister and close it.
-    Returns (bytes, eof). Callers do their own decoding and buffer bookkeeping."""
-    try:
-        data = os.read(key.fileobj.fileno(), 4096)
-    except OSError:
-        data = b""
-    eof = not data
-    if eof:
-        with contextlib.suppress(Exception):
-            selector.unregister(key.fileobj)
-        with contextlib.suppress(Exception):
-            key.fileobj.close()
-    return data, eof
-
-
-def _validate_edit_target(session: "Session", path: str, creating: bool) -> bool:
-    """Validate a filesystem path for an edit/create and raise ToolError on an invalid state
-    (already exists, is a directory, missing without create, or creating outside the workspace).
-    Returns True when the file exists on disk and should be read, False when it will be created."""
-    if os.path.exists(path):
-        if creating:
-            raise ToolError("file already exists")
-        if os.path.isdir(path):
-            raise ToolError("path is a directory")
-        return True
-    if creating:
-        parent = os.path.dirname(path) or "."
-        if not session.in_cwd(parent):
-            raise ToolError("refusing to create parent directories outside workspace")
-        return False
-    raise ToolError("file does not exist; use op=create to create it")
-
-
-def _resolved_tool_schemas(session: Session) -> list[Json]:
-    strict = session.config.provider.resolve().strict_tools_active
-    # Optional tool families stay out of the model prefix until they have usable session state.
-    has_skills = bool(session.skills and session.skills.skills)
-    has_mcp = bool(session.mcp and (session.mcp.tools or session.mcp.resources))
-    return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp)]

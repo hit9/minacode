@@ -531,7 +531,7 @@ Tools:
         self.session.resumed = False
         # The percent is derived, not persisted, so a resumed session carries a full history with a
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
-        self.agent.context.update_current_percent(self.agent.SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(self.agent.SYSTEM_PROMPT)
         messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         if not messages:
             return
@@ -1380,7 +1380,7 @@ Tools:
                 self.status_bar.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep, compacted=compacted)
-        self.agent.context.update_current_percent(self.agent.SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(self.agent.SYSTEM_PROMPT)
         # Compaction rewrites the history in place. Persist it now: leaving the session without
         # running another turn would otherwise resume from the log's pre-compaction state.
         self.session.save_snapshot()
@@ -1518,8 +1518,10 @@ Tools:
         provider = self.session.config.provider
         provider.strict_tools = not provider.strict_tools
         state = "on" if provider.strict_tools else "off"
-        if provider.strict_tools and not provider.resolve().strict_tools_active:
-            return f"strict_tools: {state} (inactive: {provider.host() or 'this provider'} does not support strict tool calling)"
+        if provider.strict_tools:
+            resolved = provider.resolve()
+            if not resolved.strict_tools_active:
+                return f"strict_tools: {state} (inactive: {resolved.host or 'this provider'} does not support strict tool calling)"
         return f"strict_tools: {state}"
 
     def set_value(self, args: str) -> str:

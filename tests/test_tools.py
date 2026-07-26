@@ -18,22 +18,23 @@ def anchor(index, line):
 
 def test_validate_edit_target_branches(tmp_path):
     s = session(tmp_path)
+    tool = n.EditTool(s, [])
     (tmp_path / "a.py").write_text("x", encoding="utf-8")
     (tmp_path / "sub").mkdir()
 
     # Existing file, editing -> True (caller should read it).
-    assert n.tools._validate_edit_target(s, str(tmp_path / "a.py"), creating=False) is True
+    assert tool._validate_target(str(tmp_path / "a.py"), creating=False) is True
     # Missing file, creating inside the workspace -> False (create fresh).
-    assert n.tools._validate_edit_target(s, str(tmp_path / "new.py"), creating=True) is False
+    assert tool._validate_target(str(tmp_path / "new.py"), creating=True) is False
     # Each invalid state raises the same ToolError both edit paths relied on.
     with pytest.raises(n.ToolError, match="file already exists"):
-        n.tools._validate_edit_target(s, str(tmp_path / "a.py"), creating=True)
+        tool._validate_target(str(tmp_path / "a.py"), creating=True)
     with pytest.raises(n.ToolError, match="path is a directory"):
-        n.tools._validate_edit_target(s, str(tmp_path / "sub"), creating=False)
+        tool._validate_target(str(tmp_path / "sub"), creating=False)
     with pytest.raises(n.ToolError, match="does not exist"):
-        n.tools._validate_edit_target(s, str(tmp_path / "missing.py"), creating=False)
+        tool._validate_target(str(tmp_path / "missing.py"), creating=False)
     with pytest.raises(n.ToolError, match="outside workspace"):
-        n.tools._validate_edit_target(s, "/etc/minacode_should_not_create.py", creating=True)
+        tool._validate_target("/etc/minacode_should_not_create.py", creating=True)
 
 
 def test_read_and_search_success_paths(tmp_path):

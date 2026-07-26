@@ -228,18 +228,11 @@ class ProviderConfig:
             extra_body=Config.table(data, "extra_body"),
         )
 
-    def _stripped_url(self) -> str:
-        url = self.url.rstrip("/")
-        return url.removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
-
-    def host(self) -> str:
-        return (urlparse(self._stripped_url()).hostname or "").lower()
-
     def resolve(self) -> ResolvedProvider:
         """Fold explicit configuration and documented compatibility into one request policy."""
 
-        url = self._stripped_url()
-        host = self.host()
+        url = self.url.rstrip("/").removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
+        host = (urlparse(url).hostname or "").lower()
         profile = compatibility_for_host(host, self.COMPATIBILITY)
         model = self.model.lower()
 
