@@ -4,18 +4,6 @@ minacode runs as a conversation in your terminal. You type a request, the agent 
 through it with [tools](tools.md), and you stay in the loop the whole time — steering,
 answering questions, and reviewing changes.
 
-## Image input
-
-Paste or type the path of an existing local image directly into the prompt. minacode replaces
-the path with an inline label such as `[Image #1 · screenshot.png]`, so you can see exactly which
-images will be submitted while continuing to edit the surrounding text. Relative paths resolve
-from the workspace; quoted paths and backslash-escaped spaces are accepted.
-
-PNG, JPEG, WebP, and single-frame GIF files are supported. The active model and endpoint must
-also support image input; if they do not, minacode leaves the provider's error intact instead of
-guessing capabilities from the provider or model name. Images in queued follow-ups and resumed
-sessions keep the same labels and content.
-
 ## Follow-ups
 
 You can keep typing while minacode works. A submitted follow-up joins the current task if
@@ -201,6 +189,22 @@ When you open the editor in reply to the agent, its most recent reply is appende
 <div class="term-shot" role="img" aria-label="External editor view: the draft being composed on top, a git-style scissors line, then the agent's most recent reply below it for reference; everything below the scissors line is stripped before the message is sent."><span class="fs-user">yes, add the reconnect test and cap the backoff at 30s</span><span class="fs-dim">&nbsp;</span><span class="fs-divider"># ------------------------ &gt;8 ------------------------</span><span class="fs-dim"># Reference only: everything below the scissors line is stripped before your</span><span class="fs-dim"># message is sent. The agent's most recent reply follows for reference.</span><span class="fs-dim">&nbsp;</span><span class="fs-prompt">I split McpManager into StdioTransport and HttpTransport, each closing its own</span><span class="fs-prompt">client in close(). Want me to add a test for the reconnect path?</span></div>
 
 Everything from the scissors line down is stripped before the message is sent; a scissors line you type yourself is left untouched. Long replies are capped to their most recent lines.
+
+### Image input
+
+Paste or type the path of an existing local image directly into the prompt. minacode replaces
+the path with an inline label such as `[Image #1 · screenshot.png]`, so you can see exactly which
+images will be submitted while continuing to edit the surrounding text. Relative paths resolve
+from the workspace; quoted paths and backslash-escaped spaces are accepted.
+
+<div class="term-shot" role="img" aria-label="The input prompt after recognizing a local screenshot path: a quiet capability notice appears above an editable inline image label."><span class="fs-hint">Image attached · model capability unknown</span><span class="fs-prompt">&gt; explain <span class="fs-i fs-sel">[Image #1 · screenshot.png]</span> and fix the layout<span class="fs-caret">▏</span></span></div>
+
+PNG, JPEG, WebP, and single-frame GIF files are supported. The line above the prompt reports
+whether the active provider and model are known to support images. An unknown capability is tried
+using the selected standard API; an explicit rejection is remembered for the session, and later
+image submissions are blocked without clearing the draft. Queued follow-ups, resumed sessions,
+and providers with image input disabled keep readable image labels. See
+[`provider.image_input`](configuration.md#optional-provider-settings) to override automatic detection.
 
 ## Sessions
 
