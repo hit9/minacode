@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
 __version__ = "0.12.0"
 
 Json = dict[str, Any]
+ToolArgs = list[Any]
 
 
 HTTP_USER_AGENT = "minacode/" + __version__
@@ -563,7 +564,7 @@ class SystemInfo:
 class ToolCall:
     id: str
     name: str
-    args: list[Any]
+    args: ToolArgs
     # A malformed-argument error captured while parsing the call. Deferred so it surfaces as a
     # tool result the model can correct from, instead of aborting the whole turn at parse time.
     error: str = ""

@@ -54,6 +54,7 @@ from minacode.base import (
     RuntimeSettings,
     SystemInfo,
     Text,
+    ToolArgs,
     ToolCall,
     ToolError,
     UpdateStatus,

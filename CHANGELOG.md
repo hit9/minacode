@@ -8,6 +8,7 @@
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 
 ### Changed
+- Add Pyright to CI and tighten internal annotations around tool arguments, lifecycle resources, MCP operations, and validated dynamic input while preserving `Any` at JSON and third-party SDK boundaries where the value is intentionally open-ended.
 - Consolidate the small protocol-adaptation helpers into `provider_compat`, removing a thin module boundary while keeping provider-specific behavior isolated.
 - Split the terminal frontend into focused `loop`, `tui`, and `render` modules without adding forwarding layers or changing behavior.
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.

@@ -13,11 +13,12 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
-from minacode.base import Config, ConfigFile, Json, MinacodeError, ModelUsage, RuntimeSettings, SystemInfo, Text, UpdateStatus
+from minacode.base import Config, ConfigFile, Json, MinacodeError, ModelUsage, RuntimeSettings, SystemInfo, Text, ToolArgs, UpdateStatus
 
 if TYPE_CHECKING:
     from minacode.mcp import MCPManager
@@ -34,7 +35,7 @@ class PlanItem:
     text: str
 
     @classmethod
-    def parse(cls, value: Any) -> "PlanItem | None":
+    def parse(cls, value: object) -> "PlanItem | None":
         if isinstance(value, cls):
             status, text = value.status, value.text
         elif isinstance(value, dict):
@@ -78,14 +79,14 @@ class AgentState:
     compaction_count: int = 0
 
     def __post_init__(self) -> None:
-        self.plan = self.plan_items(self.plan)
+        self.plan = cast(list[PlanItem | Json | str], self.plan_items(self.plan))
 
     @classmethod
-    def plan_items(cls, items: list[Any]) -> list[PlanItem]:
+    def plan_items(cls, items: Iterable[object]) -> list[PlanItem]:
         return [item for raw in items if (item := PlanItem.parse(raw))]
 
     @classmethod
-    def plan_rows_for(cls, items: list[Any], *, status: bool = False, style: str = "text") -> list[str]:
+    def plan_rows_for(cls, items: Iterable[object], *, status: bool = False, style: str = "text") -> list[str]:
         rows = [item.row(status=status, style=style) for item in cls.plan_items(items)]
         return rows or ["- (empty)"]
 
@@ -110,7 +111,7 @@ class AgentState:
 class ToolResultRecord:
     key: str
     name: str
-    args: list[Any]
+    args: ToolArgs
     output: str
     note: str = ""
 
@@ -119,7 +120,7 @@ class ToolResultRecord:
 class ToolErrorRecord:
     key: str
     name: str
-    args: list[Any]
+    args: ToolArgs
     error: str
 
 
@@ -158,7 +159,7 @@ class HistorySegment:
 
 class SessionSnapshotCodec:
     @staticmethod
-    def digest(value: Any) -> str:
+    def digest(value: Json | list[Json] | list[str]) -> str:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -325,7 +326,7 @@ class SessionSnapshotCodec:
         return delta
 
     @classmethod
-    def add_sequence_delta(cls, delta: Json, key: str, current: list[Any], saved: Json, len_key: str, digest_key: str) -> None:
+    def add_sequence_delta(cls, delta: Json, key: str, current: list[Json], saved: Json, len_key: str, digest_key: str) -> None:
         last_len = saved.get(len_key, 0)
         if cls.digest(current[:last_len]) == saved.get(digest_key):
             if len(current) > last_len:
@@ -822,7 +823,7 @@ class Session:
         provider = self.config.provider
         return [key for key, value in (("provider.url", provider.url), ("provider.key", provider.key), ("provider.model", provider.model)) if not value]
 
-    def store_tool_result(self, name: str, args: list[Any], output: str, note: str = "") -> str:
+    def store_tool_result(self, name: str, args: ToolArgs, output: str, note: str = "") -> str:
         self.tool_counter += 1
         key = f"tr.{self.tool_counter}"
         args, output = Text.value(list(args)), Text.clean(output)
@@ -1073,7 +1074,7 @@ class Session:
     def session_diff_sections(self) -> list[tuple[str, str, str]]:
         return self.net_diff_sections(self.turn_diffs, "overall", cwd=self.cwd)
 
-    def record_tool_error(self, key: str, name: str, args: list[Any], error: str) -> None:
+    def record_tool_error(self, key: str, name: str, args: ToolArgs, error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
 

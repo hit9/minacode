@@ -9,7 +9,7 @@ import shutil
 import sys
 import threading
 import time
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI, FormattedText
@@ -29,6 +29,9 @@ from minacode.base import (
 from minacode.engine import LogBlock, LogEdge, LogLine, LogRole
 from minacode.session import Session
 from minacode.tools import CodeIndex
+
+if TYPE_CHECKING:
+    from pygments.style import Style as PygmentsStyle
 
 try:
     import pygments
@@ -92,7 +95,7 @@ class Theme:
     }
 
     _mode: ClassVar[str] = "dark"
-    _pygments_cache: ClassVar[dict[str, Any]] = {}
+    _pygments_cache: ClassVar[dict[str, type[PygmentsStyle] | None]] = {}
 
     @classmethod
     def set_mode(cls, mode: str) -> None:
@@ -119,13 +122,13 @@ class Theme:
         return configured if configured in ("light", "dark") else cls.detect()
 
     @classmethod
-    def pygments_style(cls) -> Any:
-        if pygments is None:
+    def pygments_style(cls) -> type[PygmentsStyle] | None:
+        if pygments is None or get_style_by_name is None:
             return None
         name = cls.style("pygments")
         if name not in cls._pygments_cache:
             try:
-                cls._pygments_cache[name] = get_style_by_name(name)  # type: ignore[possibly-unbound]
+                cls._pygments_cache[name] = get_style_by_name(name)
             except Exception:
                 cls._pygments_cache[name] = None
         return cls._pygments_cache[name]
@@ -376,7 +379,7 @@ class UiPrinter:
     def syntax_segments(cls, text: str, lexer_name: str, fallback_style: str) -> list[tuple[str, str]]:
         if lexer_name == "tool-args":
             return cls.tool_arg_segments(text, fallback_style)
-        if pygments is None or not lexer_name:
+        if pygments is None or get_lexer_by_name is None or not lexer_name:
             return [(fallback_style, text)]
         try:
             lexer = get_lexer_by_name(lexer_name, stripnl=False, ensurenl=False)
@@ -427,7 +430,7 @@ class UiPrinter:
     @classmethod
     def pygments_style(cls, token_type: Any) -> str:
         style = Theme.pygments_style()
-        if style is None:
+        if style is None or Token is None:
             return "fg:default"
         if token_type in Token.Text.Whitespace:
             return "fg:default"
@@ -448,7 +451,7 @@ class UiPrinter:
         indentation-sensitive languages.  We therefore lex the assembled code
         block once and split the resulting token stream back into lines.
         """
-        if pygments is None or not path:
+        if pygments is None or get_lexer_for_filename is None or not path:
             return None
         try:
             lexer = get_lexer_for_filename(path, stripnl=False)

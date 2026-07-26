@@ -57,7 +57,7 @@ from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, Tabb
 class CommandCompleter(Completer):
     # fmt: on
     # fmt: off
-    SET_HANDLERS: ClassVar[dict[str, tuple[str, str, Callable[[str], Any] | None]]] = {
+    SET_HANDLERS: ClassVar[dict[str, tuple[str, str, Callable[[str], int | float | None] | None]]] = {
         "provider.temperature": ("provider", "temperature", lambda v: None if v == "off" else float(v)),
         "provider.max_tokens": ("provider", "max_tokens", lambda v: max(0, int(v))),
         "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
@@ -91,7 +91,8 @@ class CommandCompleter(Completer):
         self.mcp_tools = mcp_tools
         self.skills = skills
 
-    def get_completions(self, document, _complete_event):
+    def get_completions(self, document, complete_event):
+        del complete_event
         text = document.text_before_cursor
         if text.startswith("/set "):
             tail = text[len("/set ") :]
@@ -277,9 +278,11 @@ Tools:
         self.input_completer = CommandCompleter(
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
-            mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs()),
-            mcp_connected_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)),
-            mcp_tools=lambda server: tuple(tool.name for tool in self.session.mcp.tools.get(server, [])),
+            mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs()) if self.session.mcp else (),
+            mcp_connected_servers=lambda: (
+                tuple(config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)) if self.session.mcp else ()
+            ),
+            mcp_tools=lambda server: tuple(tool.name for tool in self.session.mcp.tools.get(server, [])) if self.session.mcp else (),
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
         )
         self.agent.output_fn = self.agent_output
@@ -519,7 +522,9 @@ Tools:
         CodeIndex(self.session).refresh_existing_async()
         # Discover auto_connect servers in the background so an unreachable one cannot block the
         # prompt for the discovery timeout; the tools index picks them up as they connect.
-        threading.Thread(target=self.session.mcp.discover_auto, name="mcp-discover", daemon=True).start()
+        mcp = self.session.mcp
+        if mcp is not None:
+            threading.Thread(target=mcp.discover_auto, name="mcp-discover", daemon=True).start()
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()
@@ -603,10 +608,11 @@ Tools:
         return LogBlock.hierarchy(tools.log_root(tools.short_call(call), LogRole.AUTO, "", call), children)
 
     @staticmethod
-    def transcript_tool_call(raw: Any) -> ToolCall | None:
+    def transcript_tool_call(raw: object) -> ToolCall | None:
         if not isinstance(raw, dict):
             return None
-        function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+        raw_function = raw.get("function")
+        function = raw_function if isinstance(raw_function, dict) else {}
         name = str(function.get("name") or "")
         if not name:
             return None
@@ -1067,7 +1073,7 @@ Tools:
         cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
         last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
         connected_mcp = sum(self.session.mcp.connected(config.name) for config in self.session.mcp.parse_configs()) if self.session.mcp else 0
-        activity = [
+        activity: list[tuple[str, int | str]] = [
             ("history", len(self.session.messages)),
             ("turn", self.session.state.turn_messages),
             ("tools", len(self.session.tool_results)),
@@ -1431,14 +1437,15 @@ Tools:
             return "No change" if result is SELECTION_BACK else str(result)
         provider = self.session.config.provider
         configured = tuple(dict.fromkeys(provider.available_models))
-        show_loading = self.tui is not None and bool(provider.url and provider.key)
-        if show_loading:
-            self.tui.set_dispatching("Loading models...")
+        tui = self.tui
+        show_loading = tui is not None and bool(provider.url and provider.key)
+        if show_loading and tui is not None:
+            tui.set_dispatching("Loading models...")
         try:
             remote = tuple(model for model in self.remote_models(provider) if model not in configured)
         finally:
-            if show_loading:
-                self.tui.set_dispatching()
+            if show_loading and tui is not None:
+                tui.set_dispatching()
         choices: list[str] = []
         if configured:
             choices.extend((self.MODEL_CONFIGURED_LABEL, *configured))

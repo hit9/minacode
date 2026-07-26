@@ -10,13 +10,23 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from minacode.base import Config, Json, Text, ToolError
 from minacode.session import Session
+
+if TYPE_CHECKING:
+    from fastmcp.client import Client
+    from fastmcp.client.auth import OAuth
+    from fastmcp.client.client import CallToolResult
+    from fastmcp.client.tasks import ResourceTask, ToolTask
+    from fastmcp.client.transports import ClientTransport
+    from mcp.types import BlobResourceContents, Resource, TextResourceContents, Tool
+
+_MCPResultT = TypeVar("_MCPResultT")
 
 
 @dataclass
@@ -192,11 +202,11 @@ class MCPManager:
         return self._configs_cache
 
     @staticmethod
-    def _string_list(value: Any) -> tuple[str, ...] | None:
+    def _string_list(value: object) -> tuple[str, ...] | None:
         return tuple(value) if isinstance(value, list) and all(isinstance(item, str) for item in value) else None
 
     @staticmethod
-    def _string_map(value: Any) -> dict[str, str] | None:
+    def _string_map(value: object) -> dict[str, str] | None:
         return dict(value) if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()) else None
 
     def _parse_configs(self) -> list[MCPServerConfig]:
@@ -235,7 +245,7 @@ class MCPManager:
         if not config.error:
             config.error = message
 
-    def _read_config_field(self, raw: Json, config: MCPServerConfig, key: str, parse: Callable[[Any], Any], error: str) -> None:
+    def _read_config_field(self, raw: Json, config: MCPServerConfig, key: str, parse: Callable[[object], object | None], error: str) -> None:
         if (value := raw.get(key)) is None:
             return
         parsed = parse(value)
@@ -455,7 +465,7 @@ class MCPManager:
                 raise
             self.set_server_error(config.name, self.error_text(error, timeout=self.discovery_timeout()))
 
-    async def _gather_assets(self, config: MCPServerConfig, headers: dict[str, str]) -> tuple[Any, list[Any]]:
+    async def _gather_assets(self, config: MCPServerConfig, headers: dict[str, str]) -> tuple[list[Tool], list[Resource]]:
         """Fetch tools and resources concurrently. Tool failure aborts discovery; resources are best-effort."""
         tools_co = self._list_tools(config, headers)
         resources_co = self._list_resources(config, headers)
@@ -505,13 +515,13 @@ class MCPManager:
     def discovery_timeout(self) -> int:
         return min(self.call_timeout(), self.DISCOVERY_TIMEOUT)
 
-    def error_text(self, error: Exception, *, timeout: int | None = None) -> str:
+    def error_text(self, error: BaseException, *, timeout: int | None = None) -> str:
         if isinstance(error, TimeoutError):
             return f"timeout after {timeout or self.call_timeout()}s"
         text = str(error).strip()
         return text or error.__class__.__name__
 
-    def _tools_info(self, server: str, tools: Any) -> list[MCPToolInfo]:
+    def _tools_info(self, server: str, tools: list[Tool]) -> list[MCPToolInfo]:
         return [
             MCPToolInfo(
                 server=server,
@@ -523,7 +533,7 @@ class MCPManager:
             for t in tools
         ]
 
-    def _resources_info(self, server: str, resources: Any) -> list[MCPResourceInfo]:
+    def _resources_info(self, server: str, resources: list[Resource]) -> list[MCPResourceInfo]:
         infos: list[MCPResourceInfo] = []
         for r in resources or []:
             uri = str(getattr(r, "uri", "") or "")
@@ -541,7 +551,7 @@ class MCPManager:
         return infos
 
     @staticmethod
-    def tool_annotations(tool: Any) -> Json:
+    def tool_annotations(tool: Tool) -> Json:
         annotations = getattr(tool, "annotations", None)
         if annotations is None:
             return {}
@@ -593,7 +603,7 @@ class MCPManager:
             self._loop = holder["loop"]
             return self._loop
 
-    def run_async(self, coroutine: Any, *, timeout: int | None = None) -> Any:
+    def run_async(self, coroutine: Coroutine[Any, Any, _MCPResultT], *, timeout: int | None = None) -> _MCPResultT:
         if timeout is None:
             timeout = self.call_timeout()
         loop = self._async_loop()
@@ -644,7 +654,7 @@ class MCPManager:
         if thread.is_alive():
             thread.join(timeout=5)
 
-    def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> Any:
+    def oauth_client(self, config: MCPServerConfig, *, interactive: bool = False, notify: Callable[[str], None] | None = None) -> OAuth:
         from fastmcp.client.auth import OAuth
 
         class MinacodeOAuth(OAuth):
@@ -656,12 +666,14 @@ class MCPManager:
                 await super().redirect_handler(authorization_url)
 
         return MinacodeOAuth(
-            token_storage=self._oauth_token_store,
+            # FastMCP types this as its full AsyncKeyValue protocol, although TokenStorageAdapter
+            # only calls get/put/delete. MCPFileTokenStore deliberately implements that used subset.
+            token_storage=self._oauth_token_store,  # pyright: ignore[reportArgumentType]
             client_name="minacode",
             callback_timeout=self.session.settings.shell_timeout,
         )
 
-    def _transport(self, config: MCPServerConfig, headers: dict[str, str]) -> Any:
+    def _transport(self, config: MCPServerConfig, headers: dict[str, str]) -> ClientTransport:
         from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
 
         if config.command:
@@ -675,12 +687,12 @@ class MCPManager:
         self,
         config: MCPServerConfig,
         headers: dict[str, str],
-        operation: Callable[[Any], Any],
+        operation: Callable[[Client], Awaitable[_MCPResultT]],
         *,
         long_timeout: bool = False,
         interactive: bool = False,
         notify: Callable[[str], None] | None = None,
-    ) -> Any:
+    ) -> _MCPResultT:
         """Enter a fastmcp Client (with OAuth if config.auth=='oauth') and await one operation."""
         from fastmcp.client import Client
 
@@ -689,16 +701,18 @@ class MCPManager:
         async with Client(self._transport(config, headers), auth=auth, timeout=timeout, init_timeout=timeout) as client:
             return await asyncio.wait_for(operation(client), timeout=timeout)
 
-    async def _list_tools(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
+    async def _list_tools(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Tool]:
         return await self._run_op(config, headers, lambda c: c.list_tools())
 
-    async def _list_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Any]:
+    async def _list_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Resource]:
         return await self._run_op(config, headers, lambda c: c.list_resources())
 
-    async def _call_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> Any:
+    async def _call_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> CallToolResult | ToolTask:
         return await self._run_op(config, headers, lambda c: c.call_tool(name, arguments), long_timeout=True)
 
-    async def _read_resource(self, config: MCPServerConfig, headers: dict[str, str], uri: str) -> Any:
+    async def _read_resource(
+        self, config: MCPServerConfig, headers: dict[str, str], uri: str
+    ) -> list[TextResourceContents | BlobResourceContents] | ResourceTask:
         return await self._run_op(config, headers, lambda c: c.read_resource(uri), long_timeout=True)
 
     def _build_mcp_headers(self, config: MCPServerConfig) -> dict[str, str] | str:
@@ -849,7 +863,7 @@ class MCPManager:
         return text
 
     @staticmethod
-    def _schema_props_required(schema: Json) -> tuple[dict, list]:
+    def _schema_props_required(schema: Json) -> tuple[Json, list[Any]]:
         """Extract a JSON-Schema object's `properties` dict and `required` list, tolerant of bad types."""
         props = schema.get("properties", {})
         required = schema.get("required", [])

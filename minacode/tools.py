@@ -21,11 +21,11 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import code_symbol_index as csi
 
-from minacode.base import Json, Text, ToolError
+from minacode.base import Json, Text, ToolArgs, ToolError
 from minacode.session import AgentState, BackgroundJob, HistorySegment, PlanItem, Session, TurnDiff
 
 
@@ -40,7 +40,7 @@ class Tool:
     STORES_RESULT: ClassVar[bool] = True
     LOG_LEXER: ClassVar[str] = "tool-args"
 
-    def __init__(self, session: Session, args: list[Any]):
+    def __init__(self, session: Session, args: ToolArgs):
         self.session = session
         self.args = args
 
@@ -67,7 +67,7 @@ class Tool:
         return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp)]
 
     @staticmethod
-    def _strictifiable(schema: Any) -> bool:
+    def _strictifiable(schema: object) -> bool:
         """False if the schema contains a free-form object (an `object` with no `properties`),
         which strict function calling cannot represent — such tools fall back to non-strict."""
         if isinstance(schema, dict):
@@ -101,20 +101,22 @@ class Tool:
                 sub["enum"] = [*sub["enum"], None]
             return sub
 
+        # Json is intentionally shallow (dict[str, Any]); this recursive schema transform is one
+        # of the places where preserving that dynamic value type is clearer than repeated casts.
         def transform(node: Any) -> Any:
             if isinstance(node, list):
                 return [transform(item) for item in node]
             if not isinstance(node, dict):
                 return node
-            node = {key: transform(value) for key, value in node.items() if key not in ("minItems", "maxItems", "minLength", "maxLength")}
-            if isinstance(node.get("properties"), dict):
-                required = set(node.get("required") or [])
-                for key, sub in node["properties"].items():
+            transformed = {key: transform(value) for key, value in node.items() if key not in ("minItems", "maxItems", "minLength", "maxLength")}
+            if isinstance(transformed.get("properties"), dict):
+                required = set(transformed.get("required") or [])
+                for key, sub in transformed["properties"].items():
                     if key not in required and isinstance(sub, dict):
-                        node["properties"][key] = nullable(sub)
-                node["required"] = list(node["properties"].keys())
-                node["additionalProperties"] = False
-            return node
+                        transformed["properties"][key] = nullable(sub)
+                transformed["required"] = list(transformed["properties"].keys())
+                transformed["additionalProperties"] = False
+            return transformed
 
         return transform(copy.deepcopy(schema))
 
@@ -130,14 +132,14 @@ class Tool:
         return cls.object_schema({})
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         return [payload]
 
     def needs_confirmation(self) -> bool:
         return self.MUTATES
 
     @classmethod
-    def log_lexer(cls, _args: list[Any]) -> str:
+    def log_lexer(cls, _args: ToolArgs) -> str:
         return cls.LOG_LEXER
 
     def single_dict_arg(self, message: str) -> Json:
@@ -163,7 +165,7 @@ class Tool:
         return [str(arg) for arg in self.args]
 
     @staticmethod
-    def line_range(value: Any, label: str = "range") -> tuple[int, int]:
+    def line_range(value: object, label: str = "range") -> tuple[int, int]:
         if not isinstance(value, list) or len(value) != 2 or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
             raise ToolError(f"{label} must be [start,end] integers")
         start, end = value
@@ -274,7 +276,7 @@ class ReadTool(Tool):
         # fmt: on
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         return (
             payload["files"]
             if isinstance(payload.get("files"), list)
@@ -282,7 +284,7 @@ class ReadTool(Tool):
         )
 
     @classmethod
-    def ranges_arg(cls, value: Any) -> Any:
+    def ranges_arg(cls, value: object) -> object:
         return [value] if isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) and not isinstance(item, bool) for item in value) else value
 
     @staticmethod
@@ -410,7 +412,7 @@ class SearchTool(Tool):
         return cls.object_schema(props)
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         return payload.get("queries") or [payload]
 
     def needs_confirmation(self) -> bool:
@@ -598,7 +600,7 @@ class CodeIndex:
         if text:
             self.session.state.code_index_status = "syncing" if text in {"syncing", "updating"} else text
 
-    def fail(self, error: Any) -> str:
+    def fail(self, error: object) -> str:
         self.session.state.code_index_error = str(error).strip()
         self.notice("error")
         return self.session.state.code_index_error
@@ -762,7 +764,7 @@ class InspectCodeTool(Tool):
         return cls.object_schema(props, ["mode", "target"])
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         options = {key: payload[key] for key in cls.OPTION_KEYS if key in payload}
         return [str(payload.get("mode") or ""), str(payload.get("target") or ""), *([options] if options else [])]
 
@@ -819,7 +821,7 @@ class InspectCodeTool(Tool):
         return self.process_result("InspectCodeToolResult", 0, str(output), "")
 
     @staticmethod
-    def _check_int_option(value: Any, low: int, high: int | None, message: str) -> None:
+    def _check_int_option(value: object, low: int, high: int | None, message: str) -> None:
         if value is None:
             return
         if isinstance(value, bool) or not isinstance(value, int) or value < low or (high is not None and value > high):
@@ -905,7 +907,7 @@ class EditTool(Tool):
         # fmt: on
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         return [payload.get("path", ""), payload.get("edits", [])]
 
     def call(self) -> str:
@@ -1164,7 +1166,7 @@ class BashTool(Tool):
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
-    def __init__(self, session: Session, args: list[Any]):
+    def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
         self._process_lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
@@ -1300,7 +1302,7 @@ class BashTool(Tool):
     # fmt: on
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         command = str(payload.get("command") or "")
         if not command.strip():
             raise ToolError("Bash command must be non-empty")
@@ -1344,8 +1346,10 @@ class BashTool(Tool):
         # reads is decoded once it is complete, instead of being mangled into replacement chars.
         self._decoders = {"stdout": codecs.getincrementaldecoder("utf-8")("replace"), "stderr": codecs.getincrementaldecoder("utf-8")("replace")}
         selector = selectors.DefaultSelector()
-        selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+        stdout, stderr = proc.stdout, proc.stderr
+        assert stdout is not None and stderr is not None
+        selector.register(stdout, selectors.EVENT_READ, "stdout")
+        selector.register(stderr, selectors.EVENT_READ, "stderr")
         timed_out = False
         started = time.monotonic()
         shell_deadline = started + self.session.settings.shell_timeout
@@ -1471,7 +1475,7 @@ class BashTool(Tool):
         """Read one stream chunk, releasing the selector registration when it reaches EOF."""
 
         try:
-            data = os.read(key.fileobj.fileno(), 4096)
+            data = os.read(cast(Any, key.fileobj).fileno(), 4096)
         except OSError:
             data = b""
         eof = not data
@@ -1479,11 +1483,11 @@ class BashTool(Tool):
             with contextlib.suppress(Exception):
                 selector.unregister(key.fileobj)
             with contextlib.suppress(Exception):
-                key.fileobj.close()
+                cast(Any, key.fileobj).close()
         return data, eof
 
     @staticmethod
-    def kill_process_group(proc: subprocess.Popen[Any]) -> None:
+    def kill_process_group(proc: subprocess.Popen[bytes]) -> None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
@@ -1491,12 +1495,16 @@ class BashTool(Tool):
                 proc.kill()
 
     @classmethod
-    def kill_and_collect(cls, proc: subprocess.Popen[Any] | None) -> tuple[str, str]:
+    def kill_and_collect(cls, proc: subprocess.Popen[bytes] | None) -> tuple[str, str]:
         if proc is None:
             return "", ""
         cls.kill_process_group(proc)
         stdout, stderr = proc.communicate()
-        return tuple(value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or "" for value in (stdout, stderr))
+
+        def decode(value: bytes | str | None) -> str:
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+
+        return decode(stdout), decode(stderr)
 
 
 class JobTool(Tool):
@@ -1542,7 +1550,7 @@ class JobTool(Tool):
         return [action, str(payload.get("job") or "")]
 
     @classmethod
-    def log_lexer(cls, args: list[Any]) -> str:
+    def log_lexer(cls, args: ToolArgs) -> str:
         payload = args[0] if len(args) == 1 and isinstance(args[0], dict) else {}
         return "bash" if payload.get("action") == "start" else cls.LOG_LEXER
 
@@ -1669,7 +1677,7 @@ class RecallTool(Tool):
     # fmt: on
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         return [{"keys": payload.get("keys", []), **({"ranges": payload["ranges"]} if "ranges" in payload else {})}]
 
     def call(self) -> str:
@@ -1758,7 +1766,7 @@ class RecallContextTool(Tool):
     # fmt: on
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         return [payload]
 
     def call(self) -> str:
@@ -1892,7 +1900,7 @@ class NoteTool(Tool):
                         raise ToolError("Note replace_plan status must be one of: " + ", ".join(PlanItem.STATUSES))
                     if not str(item.get("text") or "").strip():
                         raise ToolError("Note replace_plan text is required")
-            plan = AgentState.plan_items(data["replace_plan"])
+            plan = cast(list[PlanItem | Json | str], AgentState.plan_items(data["replace_plan"]))
             changed.append("replace_plan")
         if "append_known" in data:
             if not isinstance(data["append_known"], list):
@@ -2120,7 +2128,7 @@ class SkillTool(Tool):
     # fmt: on
 
     @classmethod
-    def payload_args(cls, payload: Json) -> list[Any]:
+    def payload_args(cls, payload: Json) -> ToolArgs:
         return [payload.get("name", "")]
 
     def call(self) -> str:
@@ -2130,6 +2138,7 @@ class SkillTool(Tool):
         if skill is None:
             available = ", ".join(item.name for item in library.all()) if library else ""
             raise ToolError(f"unknown skill {name!r}" + (f"; available: {available}" if available else "; no skills are installed"))
+        assert library is not None
         return f"<Skill name={json.dumps(skill.name)}>\n{library.expand(skill)}\n</Skill>"
 
 

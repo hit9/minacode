@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Mapping
 
 
 OPENAI_REASONING_MODEL_FAMILIES = ("o", "gpt-5")
@@ -92,7 +92,7 @@ def anthropic_model_version(model: str) -> tuple[int, int] | None:
     return None
 
 
-def anthropic_thinking_params(model: str, reasoning: str, effort: str, budget_tokens: int) -> dict[str, Any]:
+def anthropic_thinking_params(model: str, reasoning: str, effort: str, budget_tokens: int) -> dict[str, object]:
     """Build the documented thinking fields for a known Claude generation.
 
     Unknown aliases remain unconfigured. A gateway may point such a name at either side of the
@@ -113,7 +113,7 @@ def anthropic_thinking_params(model: str, reasoning: str, effort: str, budget_to
         return {"thinking": {"type": "disabled"}} if adaptive and not always_thinking else {}
     level = ANTHROPIC_EFFORT_VALUES.get(effort, "high")
     if not adaptive:
-        params: dict[str, Any] = {"thinking": {"type": "enabled", "budget_tokens": budget_tokens}}
+        params: dict[str, object] = {"thinking": {"type": "enabled", "budget_tokens": budget_tokens}}
         if version == (4, 5) and "opus" in families:
             params["output_config"] = {"effort": level if level in ("low", "medium", "high") else "high"}
         return params

@@ -53,6 +53,7 @@ minacode = "minacode:main"
 
 [project.optional-dependencies]
 dev = [
+    "pyright>=1.1.411",
     "pytest>=8.0",
     "ruff>=0.4.0",
 ]
@@ -70,3 +71,8 @@ target-version = "py311"
 [tool.ruff.lint]
 extend-select = ["F403"]
 per-file-ignores = { "minacode/__init__.py" = ["F401"] }
+
+[tool.pyright]
+include = ["minacode"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"

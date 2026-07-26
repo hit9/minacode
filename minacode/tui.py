@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, ClassVar
+from typing import Any, Callable, ClassVar, TypeVar
 
 from prompt_toolkit import search as pt_search
 from prompt_toolkit.application import Application, run_in_terminal
@@ -51,6 +51,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
 from minacode.render import UiPrinter
 
 TUI_MODAL_PENDING = object()
+ViewLine = TypeVar("ViewLine")
 
 
 @dataclass
@@ -66,7 +67,8 @@ class CallbackPlaceholder(Processor):
     def __init__(self, text_fn: Callable[[], str]):
         self.text_fn = text_fn
 
-    def apply_transformation(self, ti) -> Transformation:
+    def apply_transformation(self, transformation_input) -> Transformation:
+        ti = transformation_input
         text = self.text_fn()
         buffer = ti.buffer_control.buffer
         if not text or buffer is None or buffer.text or ti.lineno != ti.document.line_count - 1:
@@ -196,7 +198,9 @@ class TuiApp:
     def _schedule(self, callback: Callable[..., None], *args: Any) -> None:
         app = self.app
         if app is not None and app.is_running:
-            app.loop.call_soon_threadsafe(callback, *args)
+            loop = app.loop
+            assert loop is not None
+            loop.call_soon_threadsafe(callback, *args)
         else:
             callback(*args)
 
@@ -251,7 +255,8 @@ class TuiApp:
             def activate() -> None:
                 self.modal = modal
                 target = self.exclusive_modal_window if exclusive else self.modal_window
-                app.layout.focus(target or self.modal_window)
+                assert target is not None
+                app.layout.focus(target)
                 if exclusive:
                     self._use_alternate_screen(True)
                 app.invalidate()
@@ -675,7 +680,7 @@ class TabbedViewState:
     def scroll_by(self, delta: int) -> None:
         self.scroll = max(0, self.scroll + delta)
 
-    def visible(self, lines: list[Any], height: int) -> list[Any]:
+    def visible(self, lines: list[ViewLine], height: int) -> list[ViewLine]:
         self.scroll = min(self.scroll, max(0, len(lines) - height))
         return lines[self.scroll : self.scroll + height]
 

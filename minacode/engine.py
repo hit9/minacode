@@ -11,13 +11,13 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Hashable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from enum import auto
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Generic, TypeVar
 from urllib.request import Request, urlopen
 
 import anthropic
@@ -42,6 +42,7 @@ from minacode.base import (
     ModelRequestRetry,
     ProviderConfig,
     Text,
+    ToolArgs,
     ToolCall,
     ToolError,
     UpdateStatus,
@@ -66,6 +67,10 @@ from minacode.tools import (
     ReadTool,
     Tool,
 )
+
+_IdentityT = TypeVar("_IdentityT", bound=Hashable)
+_ResourceT = TypeVar("_ResourceT")
+_ResultT = TypeVar("_ResultT")
 
 
 class UpdateChecker:
@@ -172,7 +177,7 @@ class LogBlock:
     def hierarchy(cls, root: LogLine | None, children: list[LogLine]) -> LogBlock:
         items: list[LogLine | LogBlock] = [root] if root else []
         if children:
-            items.append(cls(children))
+            items.append(cls(list(children)))
         return cls(items)
 
     @property
@@ -273,10 +278,10 @@ class ContextManager:
     def _dedup_tool_blocks(
         messages: list[Json],
         block: re.Pattern,
-        identity_from: Callable[[re.Match], Any],
-        marker_for: Callable[[Any, str], str],
+        identity_from: Callable[[re.Match[str]], _IdentityT],
+        marker_for: Callable[[_IdentityT, str], str],
     ) -> list[Json]:
-        seen: dict[Any, str] = {}
+        seen: dict[_IdentityT, str] = {}
         result: list[Json] = []
         for message in messages:
             content = message.get("content")
@@ -388,6 +393,7 @@ class ContextManager:
 
     def environment(self) -> str:
         info = self.session.system_info
+        assert info is not None
         rows = [
             f"- cwd: {info.cwd}",
             # Tell the model which executables it may drive through Bash.
@@ -718,19 +724,19 @@ class EditBatchPlan:
             if current is not None:
                 return current
             raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
-        current = ReadTool.anchor_line(index, state.lines[index].text) if index < len(state.lines) else "out of range"
-        raise ToolError(f"stale anchor {anchor}; current is {current}")
+        current_line = ReadTool.anchor_line(index, state.lines[index].text) if index < len(state.lines) else "out of range"
+        raise ToolError(f"stale anchor {anchor}; current is {current_line}")
 
 
-class ActiveResource:
+class ActiveResource(Generic[_ResourceT]):
     """Thread-safe lifecycle for a resource that another thread may need to cancel."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.value: Any = None
+        self.value: _ResourceT | None = None
 
     @contextlib.contextmanager
-    def track(self, value: Any):
+    def track(self, value: _ResourceT) -> Iterator[None]:
         with self.lock:
             self.value = value
         try:
@@ -740,7 +746,7 @@ class ActiveResource:
                 if self.value is value:
                     self.value = None
 
-    def apply(self, action: Callable[[Any], None]) -> None:
+    def apply(self, action: Callable[[_ResourceT], None]) -> None:
         with self.lock:
             value = self.value
         if value is not None:
@@ -772,7 +778,7 @@ class ToolRunner:
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
-        self._active_bash = ActiveResource()
+        self._active_bash: ActiveResource[BashTool] = ActiveResource()
 
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
@@ -1205,14 +1211,14 @@ class ModelClient:
     def __init__(self, session: Session):
         self.session = session
         self.cancel_requested = threading.Event()
-        self.active_client = ActiveResource()
+        self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
 
     def cancel(self) -> None:
         self.cancel_requested.set()
         with contextlib.suppress(Exception):
             self.active_client.apply(lambda client: client.close())
 
-    def call_client(self, client: Any, request: Callable[[], Any]) -> Any:
+    def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT]) -> _ResultT:
         with self.active_client.track(client):
             try:
                 result = request()
@@ -1235,7 +1241,8 @@ class ModelClient:
         state = self.session.state
         state.model_retry_reason = ""
         try:
-            for attempt in range(MODEL_REQUEST_RETRIES + 1):
+            attempt = 0
+            while True:
                 state.current_model_attempt = attempt + 1
                 state.current_model_call_started_at = time.monotonic()
                 try:
@@ -1257,6 +1264,7 @@ class ModelClient:
                     time.sleep(0.5 * (attempt + 1))
                 finally:
                     state.current_model_call_started_at = 0.0
+                attempt += 1
         finally:
             state.current_model_attempt = 0
             state.model_retry_reason = ""
@@ -1281,7 +1289,7 @@ class ModelClient:
             return True
 
         # Fallback: parse status codes embedded in the error text or cause attributes.
-        status = getattr(cause, "status_code", None) or getattr(cause, "code", None)
+        status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
         with contextlib.suppress(Exception):
             if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
                 return True
@@ -1295,10 +1303,11 @@ class ModelClient:
     @staticmethod
     def retry_reason(error: Exception) -> str:
         cause = getattr(error, "__cause__", None)
-        status = getattr(cause, "status_code", None) or getattr(cause, "code", None)
+        status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
         with contextlib.suppress(Exception):
-            if 400 <= int(status) <= 599:
-                return str(int(status))
+            status_code = int(status)
+            if 400 <= status_code <= 599:
+                return str(status_code)
         text = str(error).lower()
         match = re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b", text)
         if match:
@@ -1402,7 +1411,8 @@ class ModelClient:
                 for raw in message.get("tool_calls") or []:
                     if not isinstance(raw, dict):
                         continue
-                    function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+                    raw_function = raw.get("function")
+                    function = raw_function if isinstance(raw_function, dict) else {}
                     converted.append(
                         {
                             "type": "function_call",
@@ -1426,7 +1436,8 @@ class ModelClient:
     def responses_tool_schemas(tools: list[Json]) -> list[Json]:
         converted: list[Json] = []
         for schema in tools:
-            function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
+            raw_function = schema.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
             converted.append(
                 {
                     "type": "function",
@@ -1544,18 +1555,17 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         resolved = provider.resolve()
         if not resolved.prompt_cache_key:
             return ""
+        tool_names: list[str] = []
+        for schema in tools or []:
+            raw_function = schema.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
+            tool_names.append(str(function.get("name") or schema.get("name") or "(unknown)"))
         payload = {
             "api": resolved.api,
             "cwd": self.session.cwd,
             "host": resolved.host,
             "model": provider.model,
-            "tools": ",".join(
-                sorted(
-                    str(((schema.get("function") if isinstance(schema.get("function"), dict) else {}).get("name") or schema.get("name") or "(unknown)"))
-                    for schema in tools or []
-                )
-            )
-            or "(none)",
+            "tools": ",".join(sorted(tool_names)) or "(none)",
         }
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "minacode-" + digest[:24]
@@ -1576,7 +1586,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         # cache_control breakpoints; without one, every turn reprocesses the whole prompt from
         # scratch. Render order is tools -> system -> messages, so a breakpoint on the (single)
         # system block caches the stable tools+system prefix and is reused on every later turn.
-        system: Json = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}] if system_text else system_text
+        system: str | list[Json] = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}] if system_text else system_text
         params: Json = {
             "model": provider.model,
             "system": system,
@@ -1643,7 +1653,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         for raw in message.get("tool_calls") or []:
             if not isinstance(raw, dict):
                 continue
-            function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+            raw_function = raw.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
             try:
                 # strict=False: tool-call argument strings often contain literal newlines
                 # (e.g. a multi-line git commit message), which are not valid JSON otherwise.
@@ -1663,7 +1674,8 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
     @staticmethod
     def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
         def convert(schema: Json) -> Json:
-            function = schema.get("function") if isinstance(schema.get("function"), dict) else {}
+            raw_function = schema.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
             return {
                 "name": str(function.get("name") or ""),
                 "description": str(function.get("description") or ""),
@@ -1772,15 +1784,17 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         return calls
 
     @classmethod
-    def tool_payload(cls, name: str, payload: Any) -> list[Any]:
+    def tool_payload(cls, name: str, payload: object) -> ToolArgs:
         if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
             # Strict schemas express optional params as nullable, so the model may send explicit
             # null for an omitted argument. In every minacode tool null means "absent", so drop it.
-            return tool.payload_args(cls.drop_nulls(payload))
+            cleaned = cls.drop_nulls(payload)
+            assert isinstance(cleaned, dict)
+            return tool.payload_args(cleaned)
         return [payload]
 
     @classmethod
-    def drop_nulls(cls, value: Any) -> Any:
+    def drop_nulls(cls, value: object) -> object:
         if isinstance(value, dict):
             return {key: cls.drop_nulls(item) for key, item in value.items() if item is not None}
         if isinstance(value, list):
@@ -1788,7 +1802,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         return value
 
     @classmethod
-    def tool_call(cls, call_id: str, name: str, payload: Any) -> ToolCall:
+    def tool_call(cls, call_id: str, name: str, payload: object) -> ToolCall:
         # payload_args may reject malformed arguments (e.g. Bash with an empty command). Capture that
         # error on the call so it is replayed as a tool result during execution, letting the model
         # self-correct, rather than escaping to abort the entire agent turn.
