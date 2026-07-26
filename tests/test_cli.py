@@ -92,3 +92,57 @@ def test_cli_reports_domain_errors(monkeypatch, capsys, error, return_code, mess
 
     assert cli.main([]) == return_code
     assert capsys.readouterr().err.strip() == message
+
+
+def test_cli_update_already_current(monkeypatch, capsys):
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", lambda: cli.__version__)
+    called = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda command: called.append(command) or 0)
+
+    assert cli.main(["update"]) == 0
+    assert "already up to date" in capsys.readouterr().out
+    assert called == []
+
+
+def test_cli_upgrade_runs_package_manager(monkeypatch, capsys):
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", lambda: "999.0.0")
+    monkeypatch.setattr(cli.UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "minacode"])
+    called = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda command: called.append(command) or 3)
+
+    assert cli.main(["upgrade"]) == 3
+    out = capsys.readouterr().out
+    assert f"{cli.__version__} -> 999.0.0" in out
+    assert called == [["uv", "tool", "upgrade", "minacode"]]
+
+
+def test_cli_update_reports_fetch_error(monkeypatch, capsys):
+    def boom():
+        raise cli.MinacodeError("network down")
+
+    monkeypatch.setattr(cli.UpdateChecker, "fetch_latest", boom)
+
+    assert cli.main(["update"]) == 1
+    assert "network down" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("executable", "expected"),
+    [
+        ("/home/u/.local/share/uv/tools/minacode/bin/python", ["uv", "tool", "upgrade", "minacode"]),
+        ("/home/u/.local/pipx/venvs/minacode/bin/python", ["pipx", "upgrade", "minacode"]),
+    ],
+)
+def test_upgrade_command_detects_installer(monkeypatch, executable, expected):
+    monkeypatch.setattr(cli.sys, "executable", executable)
+    monkeypatch.setattr(cli.os.path, "realpath", lambda path: path)
+
+    assert cli.UpdateChecker.upgrade_command() == expected
+
+
+def test_upgrade_command_falls_back_to_pip(monkeypatch):
+    executable = "/home/u/venvs/foo/bin/python"
+    monkeypatch.setattr(cli.sys, "executable", executable)
+    monkeypatch.setattr(cli.os.path, "realpath", lambda path: path)
+
+    assert cli.UpdateChecker.upgrade_command() == [executable, "-m", "pip", "install", "--upgrade", "minacode"]

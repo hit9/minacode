@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -116,9 +117,10 @@ class UpdateChecker:
             with open(self.cache_path, "w", encoding="utf-8") as file:
                 json.dump({"checked_at": time.time(), "latest": self.session.update.latest}, file)
 
-    def fetch_latest(self) -> str:
-        request = Request(self.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
-        with urlopen(request, timeout=self.TIMEOUT) as response:
+    @staticmethod
+    def fetch_latest() -> str:
+        request = Request(UpdateChecker.PYPI_URL, headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT})
+        with urlopen(request, timeout=UpdateChecker.TIMEOUT) as response:
             data = json.loads(response.read().decode("utf-8", "replace"))
         version = data.get("info", {}).get("version") if isinstance(data, dict) else ""
         if not isinstance(version, str) or not UpdateStatus.version_tuple(version):
@@ -134,6 +136,16 @@ class UpdateChecker:
         if update.error:
             return "update: error"
         return "update: current" if update.latest else "update: unknown"
+
+    @staticmethod
+    def upgrade_command() -> list[str]:
+        """Best-effort package-manager command to upgrade minacode, based on how it was installed."""
+        executable = os.path.realpath(sys.executable).replace(os.sep, "/")
+        if "/uv/tools/" in executable:
+            return ["uv", "tool", "upgrade", "minacode"]
+        if "/pipx/venvs/" in executable:
+            return ["pipx", "upgrade", "minacode"]
+        return [sys.executable, "-m", "pip", "install", "--upgrade", "minacode"]
 
 
 class LogEdge(Enum):

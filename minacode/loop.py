@@ -516,7 +516,7 @@ Tools:
         self.emit(f"minacode {__version__}. /help for commands.")
         UpdateChecker(self.session).start()
         if self.session.update.newer_than(__version__):
-            self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `uv tool upgrade minacode`.")
+            self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `{' '.join(UpdateChecker.upgrade_command())}`.")
         SessionSnapshotStore.clean_expired(self.session)
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()

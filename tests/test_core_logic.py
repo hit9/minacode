@@ -901,6 +901,20 @@ def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch)
     assert seen == {"timeout": n.UpdateChecker.TIMEOUT, "user_agent": n.HTTP_USER_AGENT}
 
 
+def test_start_session_announces_detected_upgrade_command(tmp_path, monkeypatch):
+    s = data_session(tmp_path)
+    s.update.latest = "999.0.0"
+    emitted = []
+    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(n.UpdateChecker, "upgrade_command", lambda: ["uv", "tool", "upgrade", "minacode"])
+    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
+
+    n.CommandLoop(n.Agent(s), input_fn=lambda _: "", output_fn=emitted.append).start_session()
+
+    assert any("upgrade with `uv tool upgrade minacode`" in line for line in emitted)
+
+
 def test_tool_runner_unknown_tool_records_concise_error(tmp_path):
     s = session(tmp_path)
     n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None).run([n.ToolCall("x", "MissingTool", [])])
