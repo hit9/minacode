@@ -127,12 +127,47 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     assert any(t == "-" and s == "ansired bg:#520000" for s, t in segments)
     assert any("pass" in t and s == "fg:default bg:#520000" for s, t in segments)
 
-    # Line-number gutters and context code remain unfilled.
+    # Changed-line gutters join the background band; context stays unfilled.
+    assert any("|" in text and style == "ansibrightblack bg:#003b00" for style, text in segments)
+    assert any("|" in text and style == "ansibrightblack bg:#520000" for style, text in segments)
     assert any("1" in text and "|" in text and "bg:" not in style for style, text in segments)
     assert any(text == "def" and "bg:" not in style for style, text in segments)
-    changed = [line for line in ui.segment_lines(segments) if any("bg:" in style for style, _text in line)]
-    widths = [sum(n.get_cwidth(text.rstrip("\n")) for style, text in line if "bg:" in style) for line in changed]
-    assert len(set(widths)) == 1
+
+    live = ui.segment_lines(ui.diff_segments_live(diff, row_width=40))
+    changed = [line for line in live if any("bg:" in style for style, _text in line)]
+    widths = [sum(n.get_cwidth(text.rstrip("\n")) for _style, text in line) for line in changed]
+    assert set(widths) == {40}
+
+
+def test_approval_diff_background_fills_every_wrapped_row(monkeypatch):
+    preview = "--- foo.py\n+++ foo.py\n@@ -1,3 +1,3 @@\n-short\n+a\n+this is a much longer changed line that forces wrapping across several terminal rows"
+    block = n.LogBlock.hierarchy(
+        n.LogLine("Edit", "foo.py", n.LogRole.TOOL),
+        [
+            n.LogLine("preview", role=n.LogRole.META, edge=n.LogEdge.BRANCH),
+            *(n.LogLine("", line, n.LogRole.DIFF, n.LogEdge.CONTINUE) for line in preview.splitlines()),
+        ],
+    )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((50, 24)))
+        lines = n.UiPrinter.segment_lines(n.UiPrinter().log_segments(block))
+
+    spans = []
+    for line in lines:
+        column = 0
+        background_columns = []
+        for style, text in line:
+            width = n.get_cwidth(text.rstrip("\n"))
+            if "bg:" in style:
+                background_columns.extend(range(column, column + width))
+            column += width
+        if background_columns:
+            spans.append((min(background_columns), max(background_columns) + 1))
+
+    expected_start = n.get_cwidth(n.LogBlock.prefix(2, n.LogEdge.CONTINUE))
+    assert len(spans) >= 5
+    assert set(spans) == {(expected_start, 49)}
 
 
 def test_edit_accepts_inspect_code_anchor(tmp_path):

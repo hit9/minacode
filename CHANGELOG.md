@@ -25,6 +25,7 @@
 - Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
+- Render Edit diff previews as solid red and green bands across every visual row, including line-number gutters and wrapped continuations, instead of dropping all padding whenever one changed line exceeded the terminal width.
 - Send each known Claude generation the thinking configuration it accepts. Extended thinking (`thinking.type = "enabled"` with `budget_tokens`) is rejected with a 400 from Claude 4.7 onward, so those models and the 4.6 generation now use adaptive thinking with `output_config.effort`, while Claude 4.5 and earlier keep their token budget; Opus 4.5 also receives its documented effort field. Unversioned gateway aliases remain unconfigured rather than being guessed as current-generation models. `/reason off` disables thinking where that is allowed and is omitted on the always-thinking families, which reject it.
 - Echo Anthropic assistant turns back verbatim, thinking blocks and signatures included, as the Messages API requires for multi-turn and tool-use conversations; they were previously rebuilt from text and tool calls.
 - Route OpenCode's GPT models to their documented Responses endpoint, alongside the existing Claude and Qwen routing to Messages.

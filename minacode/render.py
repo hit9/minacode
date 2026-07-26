@@ -330,8 +330,6 @@ class UiPrinter:
                 while end < len(entries) and entries[end][0].role is LogRole.DIFF and entries[end][1] == level:
                     end += 1
                 diff_lines = [item for item, _level in entries[index:end]]
-                # The bg band lives inside diff_segments; size it to the width remaining after this
-                # log tree's own margin+edge, so the padding does not overflow into a phantom wrap row.
                 sample_prefix = [("", block.margin(level)), *self.edge_segments(diff_lines[0].edge)]
                 sample_prefix_width = sum(get_cwidth(text) for _style, text in sample_prefix)
                 diff_row_width = max(1, width - sample_prefix_width)
@@ -341,6 +339,15 @@ class UiPrinter:
                     prefix = [("", block.margin(level)), *self.edge_segments(item.edge)]
                     rendered = self.remove_line_ending(rendered)
                     for row in Text.wrap_styled(prefix, prefix, rendered, width):
+                        if item.text.startswith("+") and not item.text.startswith("+++"):
+                            background = Theme.style("diff.added.bg")
+                        elif item.text.startswith("-") and not item.text.startswith("---"):
+                            background = Theme.style("diff.removed.bg")
+                        else:
+                            background = ""
+                        if background:
+                            used = sum(get_cwidth(text) for _style, text in row)
+                            row.append((background, " " * max(0, width - used)))
                         segments.extend([*row, ("", "\n")])
                 index = end
                 continue
@@ -491,21 +498,14 @@ class UiPrinter:
         old_line: int | None = None
         new_line: int | None = None
         lines = text.splitlines()
-        natural_changed_width = max(
-            (get_cwidth(line) for line in lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))),
-            default=1,
-        )
-        if row_width is None:
-            row_width = shutil.get_terminal_size((120, 20)).columns - 3
-        available_changed_width = max(1, row_width - self.DIFF_GUTTER_WIDTH)
-        # Scrollback path: cap the bg band at the widest actual changed line, and drop bg entirely
-        # if that would already exceed the pane — a later resize can't wrap what wasn't padded. Live
-        # path (the /diff viewer): fill edge-to-edge with the current pane width; the viewer repaints
-        # on resize, so wide padding stays fresh.
+        # The live viewer repaints on resize, so it can pad directly to the current pane width.
+        # Scrollback is padded only after wrapping in log_segments; padding a logical line here
+        # would either be discarded at a word boundary or create an extra visual row.
+        changed_width: int | None = None
         if live:
-            changed_width: int | None = available_changed_width
-        else:
-            changed_width = natural_changed_width if natural_changed_width <= available_changed_width else None
+            if row_width is None:
+                row_width = shutil.get_terminal_size((120, 20)).columns - 3
+            changed_width = max(1, row_width - self.DIFF_GUTTER_WIDTH)
 
         # Determine the target file path from the diff header.  The `+++` line
         # names the resulting file; for created files `---` is /dev/null.
@@ -550,10 +550,10 @@ class UiPrinter:
             except ValueError:
                 return None
 
-        def number(old: int | None, new: int | None) -> None:
+        def number(old: int | None, new: int | None, background: str = "") -> None:
             old_text = "" if old is None else str(old)
             new_text = "" if new is None else str(new)
-            segments.append(("ansibrightblack", f"{old_text:>4} {new_text:>4} | "))
+            segments.append((("ansibrightblack " + background).strip(), f"{old_text:>4} {new_text:>4} | "))
 
         def append_hl(prefix: str, prefix_style: str, content_hl: list[tuple[str, str]], suffix: str, background: str = "") -> None:
             def styled(style: str) -> str:
@@ -579,13 +579,15 @@ class UiPrinter:
                 number(None, None)
                 segments.append(("ansibrightblack", line + suffix))
             elif line.startswith("+"):
-                number(None, new_line)
+                background = Theme.style("diff.added.bg")
+                number(None, new_line, background)
                 content_hl = hl_by_index.get(index) or [(Theme.style("diff.added.fg"), line[1:])]
-                append_hl("+", "ansigreen", content_hl, suffix, Theme.style("diff.added.bg"))
+                append_hl("+", "ansigreen", content_hl, suffix, background)
                 new_line = None if new_line is None else new_line + 1
             elif line.startswith("-"):
-                number(old_line, None)
-                append_hl("-", "ansired", [(Theme.style("diff.removed.fg"), line[1:])], suffix, Theme.style("diff.removed.bg"))
+                background = Theme.style("diff.removed.bg")
+                number(old_line, None, background)
+                append_hl("-", "ansired", [(Theme.style("diff.removed.fg"), line[1:])], suffix, background)
                 old_line = None if old_line is None else old_line + 1
             elif line.startswith(" "):
                 number(old_line, new_line)
