@@ -11,8 +11,9 @@ import sys
 
 from minacode.base import Config, ConfigError, ConfigFile, MinacodeError, RuntimeSettings, __version__
 from minacode.engine import Agent
+from minacode.loop import CommandLoop
+from minacode.render import Theme
 from minacode.session import Session
-from minacode.tui import CommandLoop, Theme
 
 
 def main(argv: list[str] | None = None) -> int:

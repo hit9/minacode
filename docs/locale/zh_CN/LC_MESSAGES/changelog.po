@@ -85,6 +85,10 @@ msgid "Changed"
 msgstr "变更"
 
 #: ../../../CHANGELOG.md:12
+msgid "Split the terminal frontend into focused `loop`, `tui`, and `render` modules without adding forwarding layers or changing behavior."
+msgstr "将终端前端拆分为职责清晰的 `loop`、`tui` 和 `render` 模块，不增加转发层，也不改变行为。"
+
+#: ../../../CHANGELOG.md:13
 msgid "Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands."
 msgstr ""
 

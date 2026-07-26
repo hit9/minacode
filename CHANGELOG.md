@@ -8,6 +8,7 @@
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 
 ### Changed
+- Split the terminal frontend into focused `loop`, `tui`, and `render` modules without adding forwarding layers or changing behavior.
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.
 - Replace wildcard imports between minacode modules with explicit imports, and have Ruff reject any future `import *` usage.
 - Make `/status` context and prompt-cache usage immediately readable with compact progress bars, token counts, and percentages, while retaining its Rich table and hiding empty detail.

@@ -1767,7 +1767,7 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     printed = []
     now = [100.4]
     monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(n.tui, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
+    monkeypatch.setattr(n.render, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
 
     class FakeOut:
         def write_raw(self, s=""):

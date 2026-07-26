@@ -30,7 +30,6 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
         "load_snapshot",
         classmethod(lambda _cls, uid, config=None, settings=None, cwd="": selected.append((uid, config, settings, cwd)) or resumed),
     )
-    monkeypatch.setattr(n.tui, "Agent", lambda session: session)
 
     class Loop:
         def run(self):
@@ -39,7 +38,7 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
         def close_background_output(self):
             pass
 
-    monkeypatch.setattr(n.tui, "CommandLoop", lambda _agent: Loop())
+    monkeypatch.setattr(n.loop, "CommandLoop", lambda _agent: Loop())
     monkeypatch.chdir(tmp_path)
 
     assert n.main([flag]) == 0

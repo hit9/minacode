@@ -112,22 +112,14 @@ from minacode.tools import (
     SkillTool,
     Tool,
 )
-from minacode.tui import (
-    TUI_MODAL_PENDING,
+from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
+from minacode.render import (
     BashLivePreview,
-    CallbackPlaceholder,
-    ChoiceViewState,
-    CommandCompleter,
-    CommandLoop,
-    DiffViewState,
     StatusBar,
-    TabbedViewState,
     Theme,
-    TuiApp,
-    TuiModal,
-    TuiRuntime,
     UiPrinter,
 )
+from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp, TuiModal
 
 
 def __getattr__(name: str):
