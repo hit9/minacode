@@ -53,8 +53,9 @@ model = "deepseek-v4-flash"
 | `model` | Model name to use |
 
 You can define several `[provider.<name>]` blocks and switch between them with `active` (or
-`/provider` inside a session). See [Configuration](configuration.md) for every option,
-including reasoning effort and per-host tuning.
+`/provider` inside a session). See [Providers](providers.md) for protocol selection, reasoning,
+caching, and compatibility behavior; see [Configuration](configuration.md) for runtime and data
+settings.
 
 ## Start a session
 

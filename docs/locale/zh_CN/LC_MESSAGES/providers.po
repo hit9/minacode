@@ -1,0 +1,422 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the minacode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: minacode 0.12\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-25 23:12-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../providers.md:1
+msgid "Providers"
+msgstr "Provider"
+
+#: ../../providers.md:3
+msgid "minacode talks to OpenAI-compatible Chat Completions and Responses APIs, and to the Anthropic Messages API. The default path is deliberately generic: for an unknown host, minacode sends standard Chat Completions requests and only applies behavior you configure. Small compatibility profiles exist for documented provider differences."
+msgstr "minacode 支持 OpenAI-compatible Chat Completions、Responses API，以及 Anthropic Messages API。默认路径刻意保持通用：对于未知 host，minacode 发送标准 Chat Completions 请求，并且只应用用户显式配置的行为。只有 provider 有文档明确说明的差异时，才使用小范围的兼容性 profile。"
+
+#: ../../providers.md:8
+msgid "Provider blocks"
+msgstr "Provider 配置块"
+
+#: ../../providers.md:10
+msgid "Start with the [minimal provider configuration](configuration.md#provider-selection). Each `[provider.<name>]` block describes one endpoint, and its name is local to your config. Use `/provider [NAME]` to switch blocks inside a session, `/model [MODEL]` to switch models, and `/config` to inspect configured and resolved values."
+msgstr "先从[最小 Provider 配置](configuration.md#provider-selection)开始。每个 `[provider.<name>]` 配置块描述一个 endpoint，其名称只在本地配置中使用。在 session 中通过 `/provider [NAME]` 切换配置块，通过 `/model [MODEL]` 切换模型，通过 `/config` 查看配置值和解析后的值。"
+
+#: ../../providers.md:15
+msgid "Provider options"
+msgstr "Provider 选项"
+
+#: ../../providers.md
+msgid "Key"
+msgstr "配置项"
+
+#: ../../providers.md
+msgid "Default"
+msgstr "默认值"
+
+#: ../../providers.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../providers.md
+msgid "`url`"
+msgstr "`url`"
+
+#: ../../providers.md
+msgid "—"
+msgstr "—"
+
+#: ../../providers.md
+msgid "API base URL; a trailing `/chat/completions`, `/responses`, or `/messages` is accepted and stripped before SDK use"
+msgstr "API base URL；允许以 `/chat/completions`、`/responses` 或 `/messages` 结尾，SDK 使用前会移除该 endpoint 后缀"
+
+#: ../../providers.md
+msgid "`key`"
+msgstr "`key`"
+
+#: ../../providers.md
+msgid "API key"
+msgstr "API key"
+
+#: ../../providers.md
+msgid "`model`"
+msgstr "`model`"
+
+#: ../../providers.md
+msgid "Model name"
+msgstr "模型名称"
+
+#: ../../providers.md
+msgid "`api`"
+msgstr "`api`"
+
+#: ../../providers.md
+msgid "`auto`"
+msgstr "`auto`"
+
+#: ../../providers.md
+msgid "Request format: `auto`, `chat`, `responses`, or `anthropic`"
+msgstr "请求格式：`auto`、`chat`、`responses` 或 `anthropic`"
+
+#: ../../providers.md
+msgid "`reasoning`"
+msgstr "`reasoning`"
+
+#: ../../providers.md
+msgid "`medium`"
+msgstr "`medium`"
+
+#: ../../providers.md
+msgid "Normalized reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`"
+msgstr "统一的 reasoning effort：`off`、`minimal`、`low`、`medium`、`high` 或 `xhigh`"
+
+#: ../../providers.md
+msgid "`chat_reasoning`"
+msgstr "`chat_reasoning`"
+
+#: ../../providers.md
+msgid "Chat-only reasoning wire format; normally leave this on `auto`"
+msgstr "仅用于 Chat API 的 reasoning wire format；通常保持为 `auto`"
+
+#: ../../providers.md
+msgid "`prompt_cache_key`"
+msgstr "`prompt_cache_key`"
+
+#: ../../providers.md
+msgid "Stable prompt-cache key; use `off` to omit it or provide a custom key"
+msgstr "稳定的 prompt-cache key；使用 `off` 可省略，也可以提供自定义 key"
+
+#: ../../providers.md
+msgid "`timeout`"
+msgstr "`timeout`"
+
+#: ../../providers.md
+msgid "`120`"
+msgstr "`120`"
+
+#: ../../providers.md
+msgid "Request timeout in seconds"
+msgstr "请求超时秒数"
+
+#: ../../providers.md
+msgid "`available_models`"
+msgstr "`available_models`"
+
+#: ../../providers.md
+msgid "Models shown by `/model` in addition to models discovered elsewhere"
+msgstr "除自动发现的模型外，额外显示在 `/model` 中的模型"
+
+#: ../../providers.md
+msgid "`temperature`"
+msgstr "`temperature`"
+
+#: ../../providers.md
+msgid "Sampling temperature; omit it to use the provider default"
+msgstr "采样 temperature；省略时使用 provider 默认值"
+
+#: ../../providers.md
+msgid "`max_tokens`"
+msgstr "`max_tokens`"
+
+#: ../../providers.md
+msgid "Output-token cap; also reserves that space during automatic compaction"
+msgstr "输出 token 上限；自动 compaction 时也会预留相同空间"
+
+#: ../../providers.md
+msgid "`strict_tools`"
+msgstr "`strict_tools`"
+
+#: ../../providers.md
+msgid "`false`"
+msgstr "`false`"
+
+#: ../../providers.md
+msgid "Emit strict function schemas on hosts known to support them; toggle with `/strict`"
+msgstr "在已知支持 strict function schema 的 host 上启用严格 schema；使用 `/strict` 切换"
+
+#: ../../providers.md
+msgid "`extra_body`"
+msgstr "`extra_body`"
+
+#: ../../providers.md
+#, python-brace-format
+msgid "`{}`"
+msgstr "`{}`"
+
+#: ../../providers.md
+msgid "Provider extension fields merged into an OpenAI-compatible request body"
+msgstr "合并到 OpenAI-compatible request body 中的 provider 扩展字段"
+
+#: ../../providers.md:33
+msgid "Explicit settings win over compatibility profiles. In most configurations, `url`, `key`, and `model` are enough."
+msgstr "显式配置优先于兼容性 profile。大多数配置只需要 `url`、`key` 和 `model`。"
+
+#: ../../providers.md:36
+msgid "API protocols"
+msgstr "API 协议"
+
+#: ../../providers.md
+msgid "Value"
+msgstr "值"
+
+#: ../../providers.md
+msgid "Request path"
+msgstr "请求路径"
+
+#: ../../providers.md
+msgid "Use it when"
+msgstr "适用场景"
+
+#: ../../providers.md
+msgid "Resolved from the endpoint suffix or a documented compatibility profile; otherwise Chat Completions"
+msgstr "根据 endpoint 后缀或有文档依据的兼容性 profile 解析；否则使用 Chat Completions"
+
+#: ../../providers.md
+msgid "You want minacode to select the normal protocol"
+msgstr "希望 minacode 自动选择常规协议"
+
+#: ../../providers.md
+msgid "`chat`"
+msgstr "`chat`"
+
+#: ../../providers.md
+msgid "`/chat/completions`"
+msgstr "`/chat/completions`"
+
+#: ../../providers.md
+msgid "The provider exposes an OpenAI-compatible Chat Completions API"
+msgstr "Provider 提供 OpenAI-compatible Chat Completions API"
+
+#: ../../providers.md
+msgid "`responses`"
+msgstr "`responses`"
+
+#: ../../providers.md
+msgid "`/responses`"
+msgstr "`/responses`"
+
+#: ../../providers.md
+msgid "The provider exposes an OpenAI-compatible Responses API"
+msgstr "Provider 提供 OpenAI-compatible Responses API"
+
+#: ../../providers.md
+msgid "`anthropic`"
+msgstr "`anthropic`"
+
+#: ../../providers.md
+msgid "`/messages`"
+msgstr "`/messages`"
+
+#: ../../providers.md
+msgid "The provider exposes an Anthropic-compatible Messages API"
+msgstr "Provider 提供 Anthropic-compatible Messages API"
+
+#: ../../providers.md:45
+msgid "An explicit endpoint suffix also selects the matching protocol while preserving the SDK base URL. For example, a URL ending in `/responses` resolves to `responses`; setting `api` explicitly takes precedence."
+msgstr "显式 endpoint 后缀也会选择对应协议，同时保留 SDK base URL。例如，以 `/responses` 结尾的 URL 会解析为 `responses`；显式设置的 `api` 优先级更高。"
+
+#: ../../providers.md:49
+msgid "Responses requests use `store = false`. minacode keeps the returned reasoning and function-call items in its own transcript and replays them on later requests, so tool loops and resumed sessions remain stateless. See OpenAI's [Responses migration guide](https://developers.openai.com/api/docs/guides/migrate-to-responses)."
+msgstr "Responses 请求使用 `store = false`。minacode 在自己的 transcript 中保存返回的 reasoning 和 function-call item，并在后续请求中回放，因此工具循环和恢复后的 session 都能保持无状态。参见 OpenAI 的 [Responses 迁移指南](https://developers.openai.com/api/docs/guides/migrate-to-responses)。"
+
+#: ../../providers.md:53
+msgid "Reasoning"
+msgstr "Reasoning"
+
+#: ../../providers.md:55
+msgid "`reasoning` is minacode's provider-independent effort setting. Change it live with `/reason [EFFORT]`. Native Responses and Anthropic requests receive their standard reasoning fields; Chat-compatible providers receive the documented form selected by `chat_reasoning`."
+msgstr "`reasoning` 是 minacode 与 provider 无关的 effort 设置，可以通过 `/reason [EFFORT]` 实时修改。原生 Responses 和 Anthropic 请求使用各自的标准 reasoning 字段；Chat-compatible provider 使用 `chat_reasoning` 选择的文档格式。"
+
+#: ../../providers.md:59
+msgid "Leave `chat_reasoning = \"auto\"` unless an otherwise unknown provider needs a specific wire format. Supported explicit formats are `off`, `reasoning`, `reasoning_effort`, `thinking`, and `enable_thinking`. A compatibility profile may also suppress `temperature` where a provider's thinking mode fixes or rejects it."
+msgstr "除非未知 provider 需要特定 wire format，否则保持 `chat_reasoning = \"auto\"`。可显式选择 `off`、`reasoning`、`reasoning_effort`、`thinking` 和 `enable_thinking`。如果 provider 的 thinking mode 固定或拒绝 temperature，兼容性 profile 也可能省略 `temperature`。"
+
+#: ../../providers.md:64
+msgid "Caching and strict tools"
+msgstr "缓存与 strict tools"
+
+#: ../../providers.md:66
+msgid "`prompt_cache_key = \"auto\"` creates a stable key from the workspace, host, model, protocol, and tool set. Providers that cache automatically can disable this through their compatibility profile. `/status` reports the cache-token counts returned by the provider; it does not estimate cache hits locally."
+msgstr "`prompt_cache_key = \"auto\"` 根据 workspace、host、model、protocol 和工具集合生成稳定 key。自动缓存的 provider 可以通过兼容性 profile 禁用该字段。`/status` 展示 provider 返回的缓存 token 数；minacode 不会在本地估算缓存命中。"
+
+#: ../../providers.md:71
+msgid "`strict_tools = true` only becomes active for a host and protocol known to support strict function schemas. `/strict` reports whether the setting is active. On other providers the normal schemas remain unchanged."
+msgstr "只有 host 和协议已知支持 strict function schema 时，`strict_tools = true` 才会生效。`/strict` 会报告该设置是否处于 active 状态。其他 provider 仍使用普通 schema。"
+
+#: ../../providers.md:75
+msgid "Compatibility profiles"
+msgstr "兼容性 profile"
+
+#: ../../providers.md:77
+msgid "Profiles are domain-wide where the provider contract is domain-wide, and model-family rules are used only when the provider documents different behavior by family."
+msgstr "如果 provider contract 对整个 domain 一致，profile 就按 domain 匹配；只有 provider 明确记录不同 model family 的行为时，才使用 model-family rule。"
+
+#: ../../providers.md
+msgid "Host"
+msgstr "Host"
+
+#: ../../providers.md
+msgid "Automatic compatibility behavior"
+msgstr "自动兼容行为"
+
+#: ../../providers.md
+msgid "Official reference"
+msgstr "官方依据"
+
+#: ../../providers.md
+msgid "`api.openai.com`"
+msgstr "`api.openai.com`"
+
+#: ../../providers.md
+msgid "`reasoning_effort` for `o*` and `gpt-5*` Chat models; strict function schemas"
+msgstr "Chat API 的 `o*` 和 `gpt-5*` 模型使用 `reasoning_effort`；支持 strict function schema"
+
+#: ../../providers.md
+msgid "[Reasoning](https://developers.openai.com/api/docs/guides/reasoning), [strict mode](https://developers.openai.com/api/docs/guides/function-calling#strict-mode)"
+msgstr "[Reasoning](https://developers.openai.com/api/docs/guides/reasoning)、[strict mode](https://developers.openai.com/api/docs/guides/function-calling#strict-mode)"
+
+#: ../../providers.md
+msgid "`openrouter.ai`"
+msgstr "`openrouter.ai`"
+
+#: ../../providers.md
+msgid "OpenRouter's top-level `reasoning` object"
+msgstr "OpenRouter 顶层的 `reasoning` object"
+
+#: ../../providers.md
+msgid "[Reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)"
+msgstr "[Reasoning token](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)"
+
+#: ../../providers.md
+msgid "`opencode.ai`"
+msgstr "`opencode.ai`"
+
+#: ../../providers.md
+msgid "Anthropic Messages routing for Claude and Qwen families on the shared Zen endpoint"
+msgstr "共享 Zen endpoint 上的 Claude 和 Qwen family 使用 Anthropic Messages 协议"
+
+#: ../../providers.md
+msgid "[OpenCode Zen](https://opencode.ai/docs/zen)"
+msgstr "[OpenCode Zen](https://opencode.ai/docs/zen)"
+
+#: ../../providers.md
+msgid "`api.deepseek.com`"
+msgstr "`api.deepseek.com`"
+
+#: ../../providers.md
+msgid "DeepSeek thinking controls, automatic prefix caching, and the beta endpoint when strict tools are active"
+msgstr "DeepSeek thinking 控制、自动 prefix cache，以及 strict tools 生效时使用 beta endpoint"
+
+#: ../../providers.md
+msgid "[Thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/), [tool calls](https://api-docs.deepseek.com/guides/tool_calls)"
+msgstr "[Thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)、[tool call](https://api-docs.deepseek.com/guides/tool_calls)"
+
+#: ../../providers.md
+msgid "`*.aliyuncs.com`"
+msgstr "`*.aliyuncs.com`"
+
+#: ../../providers.md
+msgid "`reasoning_effort` for the documented Qwen3.8 family, including `none` for reasoning off"
+msgstr "有文档支持的 Qwen3.8 family 使用 `reasoning_effort`，关闭 reasoning 时使用 `none`"
+
+#: ../../providers.md
+msgid "[Qwen OpenAI Chat](https://docs.qwencloud.com/api-reference/chat/openai-chat)"
+msgstr "[Qwen OpenAI Chat](https://docs.qwencloud.com/api-reference/chat/openai-chat)"
+
+#: ../../providers.md
+msgid "`*.moonshot.ai`, `*.moonshot.cn`"
+msgstr "`*.moonshot.ai`, `*.moonshot.cn`"
+
+#: ../../providers.md
+msgid "Kimi open-platform thinking tiers, fixed-temperature behavior, strict tools, and prompt-cache keys"
+msgstr "Kimi 开放平台的 thinking 档位、固定 temperature 行为、strict tools 和 prompt-cache key"
+
+#: ../../providers.md
+msgid "[Thinking models](https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model), [model parameters](https://platform.kimi.ai/docs/api/models-overview)"
+msgstr "[Thinking 模型](https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model)、[模型参数](https://platform.kimi.ai/docs/api/models-overview)"
+
+#: ../../providers.md
+msgid "`*.kimi.com`"
+msgstr "`*.kimi.com`"
+
+#: ../../providers.md
+msgid "Kimi Code model-family reasoning controls; kept separate from the open platform"
+msgstr "Kimi Code 的 model-family reasoning 控制；与开放平台分开处理"
+
+#: ../../providers.md
+msgid "[Kimi Code models](https://www.kimi.com/code/docs/kimi-code/models.html)"
+msgstr "[Kimi Code 模型](https://www.kimi.com/code/docs/kimi-code/models.html)"
+
+#: ../../providers.md
+msgid "`*.z.ai`, `*.bigmodel.cn`"
+msgstr "`*.z.ai`, `*.bigmodel.cn`"
+
+#: ../../providers.md
+msgid "GLM thinking controls and automatic context caching"
+msgstr "GLM thinking 控制和自动 context cache"
+
+#: ../../providers.md
+msgid "[Z.AI thinking](https://docs.z.ai/guides/capabilities/thinking), [BigModel cache](https://docs.bigmodel.cn/cn/guide/capabilities/cache)"
+msgstr "[Z.AI thinking](https://docs.z.ai/guides/capabilities/thinking)、[BigModel 缓存](https://docs.bigmodel.cn/cn/guide/capabilities/cache)"
+
+#: ../../providers.md:91
+msgid "This table documents compatibility behavior, not a fixed list of supported providers. Other OpenAI-compatible and Anthropic-compatible endpoints work through the generic protocol paths."
+msgstr "此表记录兼容行为，并不是固定的受支持 provider 列表。其他 OpenAI-compatible 和 Anthropic-compatible endpoint 通过通用协议路径工作。"
+
+#: ../../providers.md:94
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../providers.md:96
+msgid "Run `/config` to see the configured and resolved API modes."
+msgstr "运行 `/config` 查看配置的 API mode 和解析后的 API mode。"
+
+#: ../../providers.md:97
+msgid "Run `/status` to confirm the active provider/model and returned cache usage."
+msgstr "运行 `/status` 确认当前 provider/model，以及 provider 返回的缓存使用情况。"
+
+#: ../../providers.md:98
+msgid "Set `api` explicitly if an endpoint cannot be inferred safely."
+msgstr "如果无法安全推断 endpoint，请显式设置 `api`。"
+
+#: ../../providers.md:99
+msgid "Keep a provider's API key paired with its documented base URL; keys from different billing products or regions are not necessarily interchangeable."
+msgstr "Provider 的 API key 应与其文档指定的 base URL 配套使用；不同计费产品或 region 的 key 不一定能够互换。"
+
+#~ msgid "Configure and switch providers"
+#~ msgstr "配置和切换 provider"
+
+#~ msgid "Define one or more `[provider.<name>]` blocks, then select one with `[provider] active`:"
+#~ msgstr "定义一个或多个 `[provider.<name>]`，再通过 `[provider] active` 选择当前 provider："

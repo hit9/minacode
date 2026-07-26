@@ -5,6 +5,7 @@
 
 ### Added
 - Support OpenAI's Responses protocol with `provider.api = "responses"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns.
+- Add a dedicated Providers documentation page covering configuration, protocol selection, reasoning, caching, strict tools, compatibility profiles, and their official references.
 
 ### Changed
 - Keep up to three lines from each completed Bash output stream in the transcript, with `Ctrl-O` offering a larger 24-line preview for recent commands.

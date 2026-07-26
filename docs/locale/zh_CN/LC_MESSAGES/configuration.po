@@ -7,15 +7,15 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-21 07:32-0700\n"
+"POT-Creation-Date: 2026-07-25 23:12-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
-"Language-Team: zh_CN <LL@li.org>\n"
 "Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=1; plural=0;\n"
 "Generated-By: Babel 2.18.0\n"
 
 #: ../../configuration.md:1
@@ -23,40 +23,32 @@ msgid "Configuration"
 msgstr "配置"
 
 #: ../../configuration.md:3
-msgid ""
-"minacode reads a single TOML file, `~/.minacode/config.toml` by default. Generate a commented"
-" starter with `minacode --init-config`, or point at another file with `--config <path>`."
-msgstr ""
-"minacode 默认读取 `~/.minacode/config.toml`。使用 `minacode --init-config` 生成带注释的初始配置，或通过 `--config "
-"<path>` 指定其他文件。"
+msgid "minacode reads a single TOML file, `~/.minacode/config.toml` by default. Generate a commented starter with `minacode --init-config`, or point at another file with `--config <path>`."
+msgstr "minacode 默认读取 `~/.minacode/config.toml`。使用 `minacode --init-config` 生成带注释的初始配置，或通过 `--config <path>` 指定其他文件。"
 
 #: ../../configuration.md:7
-msgid ""
-"<span class=\"marker\">Only the `[provider]` block is required.</span> Every other key falls "
-"back to a built-in default, so a minimal config is just a provider. Inspect the resolved "
-"configuration at any time with `/config`."
-msgstr ""
-"<span class=\"marker\">只有 `[provider]` 是必需的。</span>其他配置项都会使用内置默认值，因此最小配置只需一个 provider。随时可以用 "
-"`/config` 查看解析后的完整配置。"
+msgid "<span class=\"marker\">Only the `[provider]` block is required.</span> Every other key falls back to a built-in default, so a minimal config is just a provider. Inspect the resolved configuration at any time with `/config`."
+msgstr "<span class=\"marker\">只有 `[provider]` 是必需的。</span>其他配置项都会使用内置默认值，因此最小配置只需一个 provider。随时可以用 `/config` 查看解析后的完整配置。"
 
 #: ../../configuration.md:11
-msgid "Providers"
-msgstr "Provider"
+msgid "Provider selection"
+msgstr "选择 provider"
 
 #: ../../configuration.md:13
-msgid ""
-"Define one or more `[provider.<name>]` blocks and pick the active one with `[provider] "
-"active`:"
+msgid "Define one or more `[provider.<name>]` blocks and select one with `[provider] active`:"
 msgstr "定义一个或多个 `[provider.<name>]`，再通过 `[provider] active` 选择当前 provider："
 
-#: ../../configuration.md:26
-msgid ""
-"Switch providers within a session with `/provider [NAME]` and models with `/model [MODEL]`."
-msgstr "在 session 中使用 `/provider [NAME]` 切换 provider，使用 `/model [MODEL]` 切换模型。"
+#: ../../configuration.md:25
+msgid "For provider fields, API protocols, live switching, reasoning, caching, strict tools, and documented compatibility behavior, see [Providers](providers.md)."
+msgstr "Provider 字段、API 协议、实时切换、reasoning、缓存、strict tools 和有文档依据的兼容性行为，参见 [Provider](providers.md)。"
 
 #: ../../configuration.md:28
-msgid "Provider options"
-msgstr "Provider 选项"
+msgid "Runtime"
+msgstr "Runtime"
+
+#: ../../configuration.md:30
+msgid "Optional; the defaults shown are used when omitted."
+msgstr "以下设置均可省略，表中列出其默认值。"
 
 #: ../../configuration.md
 msgid "Key"
@@ -71,150 +63,12 @@ msgid "Meaning"
 msgstr "含义"
 
 #: ../../configuration.md
-msgid "`url`"
-msgstr "`url`"
-
-#: ../../configuration.md
-msgid "—"
-msgstr "—"
-
-#: ../../configuration.md
-msgid "Base URL of the API"
-msgstr "API 的 base URL"
-
-#: ../../configuration.md
-msgid "`key`"
-msgstr "`key`"
-
-#: ../../configuration.md
-msgid "API key"
-msgstr "API key"
-
-#: ../../configuration.md
-msgid "`model`"
-msgstr "`model`"
-
-#: ../../configuration.md
-msgid "Model name"
-msgstr "模型名称"
-
-#: ../../configuration.md
-msgid "`api`"
-msgstr "`api`"
-
-#: ../../configuration.md
-msgid "`auto`"
-msgstr "`auto`"
-
-#: ../../configuration.md
-msgid ""
-"Request format: `auto`, `anthropic`, or `chat`. `auto` picks the right one for the host and "
-"model."
-msgstr "请求格式：`auto`、`anthropic` 或 `chat`；`auto` 根据 host 和模型选择。"
-
-#: ../../configuration.md
-msgid "`reasoning`"
-msgstr "`reasoning`"
-
-#: ../../configuration.md
-msgid "`medium`"
-msgstr "`medium`"
-
-#: ../../configuration.md
-msgid "Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`"
-msgstr "Reasoning effort：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`"
-
-#: ../../configuration.md
-msgid "`chat_reasoning`"
-msgstr "`chat_reasoning`"
-
-#: ../../configuration.md
-msgid ""
-"Chat-API reasoning format: `auto`, `off`, `reasoning`, `reasoning_effort`, `thinking`, or "
-"`enable_thinking`"
-msgstr ""
-"Chat API reasoning 格式：`auto`、`off`、`reasoning`、`reasoning_effort`、`thinking` 或 "
-"`enable_thinking`"
-
-#: ../../configuration.md
-msgid "`prompt_cache_key`"
-msgstr "`prompt_cache_key`"
-
-#: ../../configuration.md
-msgid "Stable prompt-cache key; use `off` to disable or provide a custom key"
-msgstr "稳定的 prompt-cache key；设为 `off` 可关闭，也可提供自定义值"
-
-#: ../../configuration.md
-msgid "`timeout`"
-msgstr "`timeout`"
-
-#: ../../configuration.md
-msgid "`120`"
-msgstr "`120`"
-
-#: ../../configuration.md
-msgid "Request timeout, in seconds"
-msgstr "请求超时秒数"
-
-#: ../../configuration.md
-msgid "`available_models`"
-msgstr "`available_models`"
-
-#: ../../configuration.md
-msgid "Models offered by `/model`'s picker"
-msgstr "`/model` 选择器中显示的模型"
-
-#: ../../configuration.md
-msgid "`temperature`"
-msgstr "`temperature`"
-
-#: ../../configuration.md
-msgid "Sampling temperature (omit to use the server default)"
-msgstr "Sampling temperature；省略则使用 server 默认值"
-
-#: ../../configuration.md
-msgid "`max_tokens`"
-msgstr "`max_tokens`"
-
-#: ../../configuration.md
-msgid "Cap on output tokens and reserve that space during automatic compaction"
-msgstr "输出 token 上限，自动 compaction 时会预留这部分空间"
-
-#: ../../configuration.md
-msgid "`strict_tools`"
-msgstr "`strict_tools`"
+msgid "`yolo`"
+msgstr "`yolo`"
 
 #: ../../configuration.md
 msgid "`false`"
 msgstr "`false`"
-
-#: ../../configuration.md
-msgid ""
-"Emit strict tool-call schemas where supported (OpenAI, DeepSeek); toggle live with `/strict`"
-msgstr "在支持的 API（OpenAI、DeepSeek）上使用严格 tool-call schema；可通过 `/strict` 切换"
-
-#: ../../configuration.md:45
-msgid ""
-"For well-known hosts, `auto` settings pick sensible defaults for you, so <span "
-"class=\"marker\">`url`, `key`, and `model` are usually all you need</span>. Anything you set "
-"explicitly is always respected. Tested with DeepSeek, OpenCode, Alibaba Cloud, and ZenMux; "
-"other OpenAI-compatible and Anthropic endpoints work too."
-msgstr ""
-"对于已知 host，`auto` 会选择合理默认值，所以通常<span class=\"marker\">只需填写 `url`、`key` 和 "
-"`model`</span>。显式设置的值始终优先。已测试 DeepSeek、OpenCode、阿里云和 ZenMux；其他 OpenAI-compatible 与 Anthropic "
-"endpoint 也可以使用。"
-
-#: ../../configuration.md:50
-msgid "Runtime"
-msgstr "Runtime"
-
-#: ../../configuration.md:52
-msgid "Optional; the defaults shown are used when omitted."
-msgstr "以下设置均可省略，表中列出其默认值。"
-
-#: ../../configuration.md
-msgid "`yolo`"
-msgstr "`yolo`"
 
 #: ../../configuration.md
 msgid "Start without confirmation prompts"
@@ -265,8 +119,7 @@ msgid "`10`"
 msgstr "`10`"
 
 #: ../../configuration.md
-msgid ""
-"Foreground wait before a running command becomes a background job; `0` disables promotion"
+msgid "Foreground wait before a running command becomes a background job; `0` disables promotion"
 msgstr "前台命令转为后台任务前的等待秒数；`0` 表示禁用"
 
 #: ../../configuration.md
@@ -298,27 +151,24 @@ msgid "`theme`"
 msgstr "`theme`"
 
 #: ../../configuration.md
+msgid "`auto`"
+msgstr "`auto`"
+
+#: ../../configuration.md
 msgid "Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme`"
 msgstr "终端主题：`auto`、`light` 或 `dark`；`--theme` 可覆盖"
 
-#: ../../configuration.md:65
-msgid ""
-"Selected tuning values can be changed for the current session with `/set` (Tab completion "
-"lists the supported keys). `/yolo` toggles `yolo`."
+#: ../../configuration.md:43
+msgid "Selected tuning values can be changed for the current session with `/set` (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:68
+#: ../../configuration.md:46
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:75
-msgid ""
-"Sessions live under `<data_dir>/projects/<project>/`, one directory per working directory. "
-"Each holds that project's session logs and a `latest` pointer, so a resume stays scoped to "
-"the project it belongs to. A project directory is removed once its last session expires."
-msgstr ""
-"Session 保存在 `<data_dir>/projects/<project>/`，每个工作目录对应一个子目录，其中存放该项目的 session 日志和 `latest` "
-"指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session 过期后，对应目录会被一并删除。"
+#: ../../configuration.md:53
+msgid "Sessions live under `<data_dir>/projects/<project>/`, one directory per working directory. Each holds that project's session logs and a `latest` pointer, so a resume stays scoped to the project it belongs to. A project directory is removed once its last session expires."
+msgstr "Session 保存在 `<data_dir>/projects/<project>/`，每个工作目录对应一个子目录，其中存放该项目的 session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session 过期后，对应目录会被一并删除。"
 
 #~ msgid "Cap on output tokens (omit to use the server default)"
 #~ msgstr "输出 token 上限；省略则使用 server 默认值"
@@ -328,3 +178,96 @@ msgstr ""
 
 #~ msgid "Context budget before automatic compaction"
 #~ msgstr "触发自动 compact 前的 context 预算"
+
+#~ msgid "Providers"
+#~ msgstr "Provider"
+
+#~ msgid "Switch providers within a session with `/provider [NAME]` and models with `/model [MODEL]`."
+#~ msgstr "在 session 中使用 `/provider [NAME]` 切换 provider，使用 `/model [MODEL]` 切换模型。"
+
+#~ msgid "`url`"
+#~ msgstr "`url`"
+
+#~ msgid "—"
+#~ msgstr "—"
+
+#~ msgid "Base URL of the API"
+#~ msgstr "API 的 base URL"
+
+#~ msgid "`key`"
+#~ msgstr "`key`"
+
+#~ msgid "API key"
+#~ msgstr "API key"
+
+#~ msgid "`model`"
+#~ msgstr "`model`"
+
+#~ msgid "Model name"
+#~ msgstr "模型名称"
+
+#~ msgid "`api`"
+#~ msgstr "`api`"
+
+#~ msgid "Request format: `auto`, `anthropic`, or `chat`. `auto` picks the right one for the host and model."
+#~ msgstr "请求格式：`auto`、`anthropic` 或 `chat`；`auto` 根据 host 和模型选择。"
+
+#~ msgid "`reasoning`"
+#~ msgstr "`reasoning`"
+
+#~ msgid "`medium`"
+#~ msgstr "`medium`"
+
+#~ msgid "Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`"
+#~ msgstr "Reasoning effort：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`"
+
+#~ msgid "`chat_reasoning`"
+#~ msgstr "`chat_reasoning`"
+
+#~ msgid "Chat-API reasoning format: `auto`, `off`, `reasoning`, `reasoning_effort`, `thinking`, or `enable_thinking`"
+#~ msgstr "Chat API reasoning 格式：`auto`、`off`、`reasoning`、`reasoning_effort`、`thinking` 或 `enable_thinking`"
+
+#~ msgid "`prompt_cache_key`"
+#~ msgstr "`prompt_cache_key`"
+
+#~ msgid "Stable prompt-cache key; use `off` to disable or provide a custom key"
+#~ msgstr "稳定的 prompt-cache key；设为 `off` 可关闭，也可提供自定义值"
+
+#~ msgid "`timeout`"
+#~ msgstr "`timeout`"
+
+#~ msgid "`120`"
+#~ msgstr "`120`"
+
+#~ msgid "Request timeout, in seconds"
+#~ msgstr "请求超时秒数"
+
+#~ msgid "`available_models`"
+#~ msgstr "`available_models`"
+
+#~ msgid "Models offered by `/model`'s picker"
+#~ msgstr "`/model` 选择器中显示的模型"
+
+#~ msgid "`temperature`"
+#~ msgstr "`temperature`"
+
+#~ msgid "Sampling temperature (omit to use the server default)"
+#~ msgstr "Sampling temperature；省略则使用 server 默认值"
+
+#~ msgid "`max_tokens`"
+#~ msgstr "`max_tokens`"
+
+#~ msgid "Cap on output tokens and reserve that space during automatic compaction"
+#~ msgstr "输出 token 上限，自动 compaction 时会预留这部分空间"
+
+#~ msgid "`strict_tools`"
+#~ msgstr "`strict_tools`"
+
+#~ msgid "Emit strict tool-call schemas where supported (OpenAI, DeepSeek); toggle live with `/strict`"
+#~ msgstr "在支持的 API（OpenAI、DeepSeek）上使用严格 tool-call schema；可通过 `/strict` 切换"
+
+#~ msgid "For well-known hosts, `auto` settings pick sensible defaults for you, so <span class=\"marker\">`url`, `key`, and `model` are usually all you need</span>. Anything you set explicitly is always respected. Tested with DeepSeek, OpenCode, Alibaba Cloud, and ZenMux; other OpenAI-compatible and Anthropic endpoints work too."
+#~ msgstr "对于已知 host，`auto` 会选择合理默认值，所以通常<span class=\"marker\">只需填写 `url`、`key` 和 `model`</span>。显式设置的值始终优先。已测试 DeepSeek、OpenCode、阿里云和 ZenMux；其他 OpenAI-compatible 与 Anthropic endpoint 也可以使用。"
+
+#~ msgid "Switch providers within a session with `/provider [NAME]` and models with `/model [MODEL]`. See [Providers](providers.md) for every provider option, protocol selection, reasoning, prompt caching, strict tools, and the small set of documented compatibility profiles."
+#~ msgstr "在 session 中使用 `/provider [NAME]` 切换 provider，使用 `/model [MODEL]` 切换模型。所有 provider 选项、协议选择、reasoning、prompt cache、strict tools 和少量有文档依据的兼容性 profile，参见 [Provider](providers.md)。"
