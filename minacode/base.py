@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from prompt_toolkit.utils import get_cwidth
 
-from minacode.provider_compat import COMPATIBILITY_OVERRIDES
+from minacode.provider_compat import COMPATIBILITY_PROFILES, CompatibilityProfile, ResolvedProvider, compatibility_for_host
 
 try:
     import pygments
@@ -183,7 +183,7 @@ class Text:
 
 @dataclass
 class ProviderConfig:
-    COMPATIBILITY: ClassVar[dict[str, dict[str, Any]]] = COMPATIBILITY_OVERRIDES
+    COMPATIBILITY: ClassVar[dict[str, CompatibilityProfile]] = COMPATIBILITY_PROFILES
 
     url: str = ""
     key: str = ""
@@ -233,84 +233,92 @@ class ProviderConfig:
         return url.removesuffix("/chat/completions").removesuffix("/responses").removesuffix("/messages")
 
     def base_url(self) -> str:
-        # Strict tool calling is a beta feature on some hosts (DeepSeek); route to /beta only when active.
-        url = self._stripped_url()
-        return url + "/beta" if self.resolved_strict_tools() and self._compatibility().get("strict_beta") and not url.endswith("/beta") else url
+        return self.resolve().base_url
 
     def host(self) -> str:
         return (urlparse(self._stripped_url()).hostname or "").lower()
 
-    def _compatibility(self) -> Json:
+    def resolve(self) -> ResolvedProvider:
+        """Fold explicit configuration and documented compatibility into one request policy."""
+
+        url = self._stripped_url()
         host = self.host()
-        matches = ((domain, compat) for domain, compat in self.COMPATIBILITY.items() if host == domain or host.endswith(f".{domain}"))
-        return max(matches, key=lambda item: len(item[0]), default=("", {}))[1]
+        profile = compatibility_for_host(host, self.COMPATIBILITY)
+        model = self.model.lower()
+
+        api = self.api
+        if api == "auto":
+            path = urlparse(self.url.rstrip("/")).path
+            suffix_api = next(
+                (value for suffix, value in (("/responses", "responses"), ("/messages", "anthropic"), ("/chat/completions", "chat")) if path.endswith(suffix)),
+                None,
+            )
+            api = suffix_api or profile.rule_value(profile.api_rules, model) or "chat"
+
+        chat_reasoning = self.chat_reasoning
+        if chat_reasoning == "auto":
+            chat_reasoning = profile.rule_value(profile.chat_reasoning_rules, model) or profile.chat_reasoning or "off"
+
+        if self.reasoning == "off":
+            reasoning_effort = profile.rule_value(profile.reasoning_effort_off_rules, model)
+            if api == "responses":
+                reasoning_effort = profile.rule_value(profile.responses_reasoning_effort_off_rules, model) or reasoning_effort
+        else:
+            effort = self.reasoning_effort()
+            reasoning_effort = str(profile.reasoning_effort_values.get(effort, effort))
+
+        suppress_temperature = profile.suppress_temperature or any(model.startswith(prefix) for prefix in profile.suppress_temperature_models)
+        if not suppress_temperature:
+            reasoning_enabled = self.reasoning != "off"
+            suppress_temperature = reasoning_enabled and chat_reasoning in ("thinking", "enable_thinking")
+
+        strict_tools_supported = profile.strict_tools
+        strict_tools_active = self.strict_tools and strict_tools_supported and api in ("chat", "responses")
+        if strict_tools_active and profile.strict_beta and not url.endswith("/beta"):
+            url += "/beta"
+
+        return ResolvedProvider(
+            api=api,
+            base_url=url,
+            host=host,
+            chat_reasoning=chat_reasoning,
+            reasoning_effort=reasoning_effort,
+            suppress_temperature=suppress_temperature,
+            prompt_cache_key=profile.prompt_cache_key,
+            strict_tools_supported=strict_tools_supported,
+            strict_tools_active=strict_tools_active,
+            max_tokens=self.max_tokens or profile.max_tokens,
+        )
 
     def resolved_chat_reasoning(self) -> str:
-        return self.compatibility_value(self.chat_reasoning, "off", "chat_reasoning", "chat_reasoning_rules")
+        return self.resolve().chat_reasoning
 
     def resolved_api(self) -> str:
-        if self.api == "auto":
-            path = urlparse(self.url.rstrip("/")).path
-            if path.endswith("/responses"):
-                return "responses"
-            if path.endswith("/messages"):
-                return "anthropic"
-            if path.endswith("/chat/completions"):
-                return "chat"
-        return self.compatibility_value(self.api, "chat", "api", "api_rules")
-
-    def compatibility_value(self, configured: str, default: str, compatibility_attr: str, rules_attr: str) -> str:
-        if configured != "auto":
-            return configured
-        if not (compatibility := self._compatibility()):
-            return default
-        model = self.model.lower()
-        for value, prefixes in compatibility.get(rules_attr, ()):
-            if any(model.startswith(prefix) for prefix in prefixes):
-                return str(value)
-        return str(compatibility.get(compatibility_attr, default))
+        return self.resolve().api
 
     def reasoning_effort(self) -> str:
         return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
 
     def resolved_reasoning_effort(self) -> str | None:
-        compatibility = self._compatibility()
-        if self.reasoning != "off":
-            effort = self.reasoning_effort()
-            values = compatibility.get("reasoning_effort_values", {})
-            return str(values.get(effort, effort)) if isinstance(values, dict) else effort
-        value = compatibility.get("reasoning_effort_off")
-        return str(value) if value is not None else None
+        return self.resolve().reasoning_effort
 
     def suppresses_temperature(self) -> bool:
-        compatibility = self._compatibility()
-        if (suppress := compatibility.get("suppress_temperature")) is not None:
-            # A bool fixes temperature for the whole host; a tuple names the resolved reasoning
-            # modes that reject it, so sibling non-reasoning models keep their sampling control.
-            return self.resolved_chat_reasoning() in suppress if isinstance(suppress, tuple) else bool(suppress)
-        mode = self.resolved_chat_reasoning()
-        if mode == "off" or (self.reasoning == "off" and mode in ("thinking", "thinking_toggle", "enable_thinking")):
-            return False
-        return mode in ("thinking", "enable_thinking")
+        return self.resolve().suppress_temperature
 
     def resolved_max_tokens(self) -> int:
-        # Generic OpenAI-compatible providers keep their server-side cap; only explicit overrides get a ceiling.
-        return self.max_tokens or int(self._compatibility().get("max_tokens", 0))
+        return self.resolve().max_tokens
 
     def output_token_budget(self) -> int:
         return self.resolved_max_tokens() or DEFAULT_OUTPUT_RESERVE_TOKENS
 
     def supports_prompt_cache_key(self) -> bool:
-        # Default on for unknown OpenAI-compatible hosts (status quo); compatibility overrides opt out
-        # (e.g. DeepSeek caches automatically by prefix and ignores the key).
-        return bool(self._compatibility().get("prompt_cache_key", True))
+        return self.resolve().prompt_cache_key
 
     def supports_strict_tools(self) -> bool:
-        return bool(self._compatibility().get("strict_tools"))
+        return self.resolve().strict_tools_supported
 
     def resolved_strict_tools(self) -> bool:
-        # Only emit strict schemas on OpenAI protocol paths of hosts known to support strict mode.
-        return self.strict_tools and self.supports_strict_tools() and self.resolved_api() in ("chat", "responses")
+        return self.resolve().strict_tools_active
 
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:

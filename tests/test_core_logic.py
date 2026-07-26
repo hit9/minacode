@@ -139,9 +139,9 @@ def test_every_resolvable_chat_reasoning_mode_is_configurable_by_hand():
     """`chat_reasoning` is the escape hatch when auto guesses wrong for a gateway or an
     unrecognized model name, so every mode the compatibility rules can resolve to must also be
     accepted from config."""
-    resolvable = {
-        str(value) for compatibility in n.ProviderConfig.COMPATIBILITY.values() for value, _prefixes in compatibility.get("chat_reasoning_rules", ())
-    } | {str(compatibility["chat_reasoning"]) for compatibility in n.ProviderConfig.COMPATIBILITY.values() if "chat_reasoning" in compatibility}
+    resolvable = {rule.value for compatibility in n.ProviderConfig.COMPATIBILITY.values() for rule in compatibility.chat_reasoning_rules} | {
+        compatibility.chat_reasoning for compatibility in n.ProviderConfig.COMPATIBILITY.values() if compatibility.chat_reasoning is not None
+    }
 
     assert resolvable <= set(n.CHAT_REASONING_CHOICES), sorted(resolvable - set(n.CHAT_REASONING_CHOICES))
     for mode in resolvable:
@@ -192,13 +192,21 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     assert "thinking" not in params
     assert params["temperature"] == 0.3
 
+    provider.model = "claude-fable-5"
+    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    assert "thinking" not in params
+    assert "temperature" not in params
+
 
 @pytest.mark.parametrize(
     ("model", "expected"),
     (
         # Extended thinking is the only mode at 4.5 and earlier.
         ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
-        ("claude-opus-4-5-20251101", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        (
+            "claude-opus-4-5-20251101",
+            {"thinking": {"type": "enabled", "budget_tokens": 8192}, "output_config": {"effort": "high"}},
+        ),
         ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
         ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
         # The 4.6 generation accepts both; adaptive is the documented recommendation.
@@ -207,9 +215,9 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
         ("claude-opus-4-7", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
         ("claude-sonnet-5", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
         ("claude-fable-5", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
-        # An unversioned id is treated as current: new models keep arriving, while the
-        # extended-thinking-only ones are a closed, shrinking set.
-        ("claude-sonnet", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        # An alias with no generation stays generic: forcing either adaptive or manual thinking
+        # can make a gateway reject an otherwise valid model name.
+        ("claude-sonnet", {}),
     ),
 )
 def test_anthropic_thinking_matches_the_generation_of_the_model(tmp_path, model, expected):
@@ -260,6 +268,13 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
     provider.reasoning = "minimal"
     assert effort("claude-opus-5") == "low"
 
+    # Opus 4.5 is the one manual-thinking generation that also accepts output_config.effort.
+    provider.reasoning = "medium"
+    provider.model = "claude-opus-4-5"
+    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    assert params["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+    assert params["output_config"] == {"effort": "medium"}
+
 
 def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
     """The API verifies that thinking blocks return exactly as it produced them, signature
@@ -281,9 +296,9 @@ def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
     assert params["messages"][1]["content"] == blocks
 
 
-def test_context_estimate_ignores_saved_responses_output(tmp_path):
-    """Replayed Responses items restate the assistant text and carry opaque encrypted reasoning
-    that the provider does not bill as context; counting them shrinks the usable window."""
+def test_context_estimate_ignores_opaque_echo_bytes_but_counts_readable_reasoning(tmp_path):
+    """Serialized ciphertext/signatures are not prompt text, but readable reasoning replayed by
+    a protocol still occupies context and must not disappear from the estimate."""
     context = n.ContextManager(session(tmp_path))
     plain = {"role": "assistant", "content": "hello world"}
     carrying = {
@@ -295,6 +310,18 @@ def test_context_estimate_ignores_saved_responses_output(tmp_path):
     }
 
     assert context.estimated_tokens([carrying]) == context.estimated_tokens([plain])
+
+    carrying[n.RESPONSES_OUTPUT_KEY][0]["summary"] = [{"type": "summary_text", "text": "R" * 800}]
+    assert context.estimated_tokens([carrying]) > context.estimated_tokens([plain]) + 150
+
+    anthropic = {
+        **plain,
+        "_anthropic_content": [
+            {"type": "thinking", "thinking": "T" * 800, "signature": "S" * 8000},
+            {"type": "text", "text": "hello world"},
+        ],
+    }
+    assert context.estimated_tokens([anthropic]) > context.estimated_tokens([plain]) + 150
 
 
 @pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6"))
@@ -452,6 +479,28 @@ def test_provider_compatibility_requires_a_real_domain_boundary(url, model, tmp_
     params = {}
     client.apply_provider_params(params, provider)
     assert params == {"temperature": 0.4}
+
+
+def test_unknown_provider_resolution_stays_generic_and_explicit_values_win():
+    provider = n.ProviderConfig(
+        url="https://gateway.example/v1/responses",
+        model="custom-model",
+        api="chat",
+        chat_reasoning="enable_thinking",
+        reasoning="low",
+        temperature=0.4,
+        strict_tools=True,
+    )
+
+    resolved = provider.resolve()
+
+    assert resolved.api == "chat"
+    assert resolved.chat_reasoning == "enable_thinking"
+    assert resolved.reasoning_effort == "low"
+    assert resolved.suppress_temperature is True
+    assert resolved.prompt_cache_key is True
+    assert resolved.strict_tools_supported is False
+    assert resolved.strict_tools_active is False
 
 
 def test_chat_provider_extra_body_passthrough(tmp_path):

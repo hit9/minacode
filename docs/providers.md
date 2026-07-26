@@ -56,6 +56,12 @@ sessions remain stateless. See OpenAI's [Responses migration guide](https://deve
 `/reason [EFFORT]`. Native Responses and Anthropic requests receive their standard reasoning
 fields; Chat-compatible providers receive the documented form selected by `chat_reasoning`.
 
+For Responses, `off` is sent only when the resolved provider/model contract documents an off
+value, such as `none`. Otherwise minacode reports that the setting is unsupported instead of
+silently omitting the field and letting the model use its default effort. For Anthropic, official
+versioned Claude model IDs select the matching manual or adaptive thinking contract; an
+unversioned gateway alias remains unconfigured because its generation cannot be inferred safely.
+
 Leave `chat_reasoning = "auto"` unless an otherwise unknown provider needs a specific wire
 format. Supported explicit formats are `off`, `reasoning`, `reasoning_effort`, `thinking`,
 `thinking_toggle`, `thinking_effort`, `enable_thinking`, and `mandatory_thinking` — every form
@@ -81,12 +87,12 @@ used only when the provider documents different behavior by family.
 
 | Host | Automatic compatibility behavior | Official reference |
 |---|---|---|
-| `api.openai.com` | `reasoning_effort` for `o*` and `gpt-5*` Chat models; strict function schemas | [Reasoning](https://developers.openai.com/api/docs/guides/reasoning), [strict mode](https://developers.openai.com/api/docs/guides/function-calling#strict-mode) |
+| `api.openai.com` | `reasoning_effort` for `o*` and `gpt-5*` Chat models; `none` for `/reason off` on GPT-5.1+ Responses models; strict function schemas | [Reasoning](https://developers.openai.com/api/docs/guides/reasoning), [GPT-5](https://developers.openai.com/api/docs/models/gpt-5), [GPT-5.1](https://developers.openai.com/api/docs/models/gpt-5.1), [strict mode](https://developers.openai.com/api/docs/guides/function-calling#strict-mode) |
 | `openrouter.ai` | OpenRouter's top-level `reasoning` object | [Reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) |
-| `opencode.ai` | Anthropic Messages routing for Claude and Qwen families on the shared Zen endpoint | [OpenCode Zen](https://opencode.ai/docs/zen) |
+| `opencode.ai` | Responses routing for GPT and Anthropic Messages routing for Claude and Qwen families on the shared Zen endpoint | [OpenCode Zen](https://opencode.ai/docs/zen) |
 | `api.deepseek.com` | DeepSeek thinking controls, automatic prefix caching, and the beta endpoint when strict tools are active | [Thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/), [tool calls](https://api-docs.deepseek.com/guides/tool_calls) |
 | `*.aliyuncs.com` | `reasoning_effort` for the documented Qwen3.8 family, including `none` for reasoning off | [Qwen OpenAI Chat](https://docs.qwencloud.com/api-reference/chat/openai-chat) |
-| `*.moonshot.ai`, `*.moonshot.cn` | Kimi open-platform thinking tiers, fixed-temperature behavior, strict tools, and prompt-cache keys | [Thinking models](https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model), [model parameters](https://platform.kimi.ai/docs/api/models-overview) |
+| `*.moonshot.ai`, `*.moonshot.cn` | Kimi open-platform thinking tiers, fixed-temperature behavior, strict tools, and prompt-cache keys | [Thinking models](https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model), [model parameters](https://platform.kimi.ai/docs/api/models-overview), [Chat API](https://platform.kimi.ai/docs/api/chat) |
 | `*.kimi.com` | Kimi Code model-family reasoning controls; kept separate from the open platform | [Kimi Code models](https://www.kimi.com/code/docs/kimi-code/models.html) |
 | `*.z.ai`, `*.bigmodel.cn` | GLM thinking controls and automatic context caching | [Z.AI thinking](https://docs.z.ai/guides/capabilities/thinking), [BigModel cache](https://docs.bigmodel.cn/cn/guide/capabilities/cache) |
 

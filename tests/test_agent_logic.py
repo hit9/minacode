@@ -1666,8 +1666,8 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert params["temperature"] == 0.2
     assert params["max_tokens"] == n.DEFAULT_OUTPUT_RESERVE_TOKENS
-    # An unversioned id is treated as a current model, where thinking is on unless disabled.
-    assert params["thinking"] == {"type": "disabled"}
+    # An unversioned gateway alias remains generic rather than guessing a thinking generation.
+    assert "thinking" not in params
     assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}
     assert params["messages"][1]["content"][1]["type"] == "tool_use"
     assert params["messages"][2]["content"][0]["type"] == "tool_result"

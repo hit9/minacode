@@ -59,7 +59,7 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES
+from minacode.provider_protocol import CHAT_REASONING_EFFORT_VALUES
 from minacode.engine import (
     ActiveResource,
     Agent,

@@ -355,6 +355,31 @@ def test_responses_request_folds_effort_and_drops_rejected_temperature(tmp_path,
     assert body["temperature"] == 0.7
 
 
+def test_openai_responses_reasoning_off_is_not_silently_replaced_by_the_model_default(tmp_path, monkeypatch):
+    s = _session(tmp_path, api="responses", model="gpt-5.5")
+    s.config.provider.url = "https://api.openai.com/v1"
+    s.config.provider.reasoning = "off"
+    model = n.ModelClient(s)
+    empty = {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-5.5", "output": []}
+    factory = _MockClientFactory([(200, empty)])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], None)
+
+    assert json.loads(factory.calls[0].content)["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.parametrize("model", ("custom-model", "gpt-5", "gpt-5-mini"))
+def test_responses_reports_unsupported_reasoning_off_instead_of_guessing(tmp_path, model):
+    s = _session(tmp_path, api="responses", model=model)
+    s.config.provider.reasoning = "off"
+    if model.startswith("gpt-5"):
+        s.config.provider.url = "https://api.openai.com/v1"
+
+    with pytest.raises(n.ModelError, match="reasoning off is not defined"):
+        n.ModelClient(s).responses_request([{"role": "user", "content": "hi"}], None)
+
+
 def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
     """Stateless reasoning travels in the encrypted payload; an id alone cannot stand in for it
     once the response was never stored, so an empty shell is dropped rather than replayed."""

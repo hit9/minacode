@@ -47,7 +47,8 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.provider_compat import CHAT_REASONING_EFFORT_VALUES, anthropic_thinking_params
+from minacode.provider_compat import ResolvedProvider
+from minacode.provider_protocol import CHAT_REASONING_EFFORT_VALUES, anthropic_thinking_always_on, anthropic_thinking_params, readable_provider_context
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -547,10 +548,15 @@ class ContextManager:
 
     @staticmethod
     def estimated_tokens(messages: list[Json]) -> int:
-        # Saved provider replies restate the assistant text and carry opaque reasoning, none of
-        # which the provider bills as context; counting them would shrink the usable window and
-        # trigger compaction early.
-        payload = [{key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS} for message in messages]
+        # Normalized assistant fields already contain visible text and tool calls, so provider
+        # echoes would double-count them. Preserve only additional readable reasoning; ciphertext
+        # and signatures are transport state whose byte length is not a prompt-token estimate.
+        payload: list[Json] = []
+        for message in messages:
+            estimated = {key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS}
+            if readable := readable_provider_context(message, RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY):
+                estimated["_provider_context"] = readable
+            payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return (chars + 3) // 4
 
@@ -1297,8 +1303,9 @@ class ModelClient:
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value([{key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS} for message in messages])
         provider = self.session.config.provider
+        resolved = provider.resolve()
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
-        if (max_tokens := provider.resolved_max_tokens()) > 0:
+        if (max_tokens := resolved.max_tokens) > 0:
             params["max_tokens"] = max_tokens
         if tools:
             params["tools"] = tools
@@ -1307,7 +1314,7 @@ class ModelClient:
         prompt_cache_key = self.prompt_cache_key(provider, tools)
         if prompt_cache_key:
             params["prompt_cache_key"] = prompt_cache_key
-        self.apply_provider_params(params, provider)
+        self.apply_provider_params(params, provider, resolved)
         client = self.client()
         response = self.call_client(client, lambda: client.chat.completions.create(**params))
         self.session.usage.add(getattr(response, "usage", None))
@@ -1318,7 +1325,7 @@ class ModelClient:
         return assistant, calls, content
 
     def api_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
-        api = self.session.config.provider.resolved_api()
+        api = self.session.config.provider.resolve().api
         if api == "anthropic":
             return self.anthropic_request(messages, tools)
         if api == "responses":
@@ -1327,13 +1334,14 @@ class ModelClient:
 
     def responses_request(self, messages: list[Json], tools: list[Json] | None) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
+        resolved = provider.resolve()
         params: Json = {
             "model": provider.model,
             "input": self.responses_input(Text.value(messages)),
             "stream": False,
             "store": False,
         }
-        if (max_tokens := provider.resolved_max_tokens()) > 0:
+        if (max_tokens := resolved.max_tokens) > 0:
             params["max_output_tokens"] = max_tokens
         if tools:
             params["tools"] = self.responses_tool_schemas(tools)
@@ -1344,9 +1352,11 @@ class ModelClient:
         # Stateless requests return encrypted reasoning items by default, so the replay below
         # needs no `include`; effort goes through the compatibility fold like the chat path, and
         # a host that defines an explicit "off" spelling still gets it when reasoning is off.
-        if effort := provider.resolved_reasoning_effort():
+        if effort := resolved.reasoning_effort:
             params["reasoning"] = {"effort": effort}
-        if provider.temperature is not None and not provider.suppresses_temperature():
+        elif provider.reasoning == "off":
+            raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
+        if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
         if provider.extra_body:
             params["extra_body"] = provider.extra_body
@@ -1520,12 +1530,13 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             return ""
         if configured != "auto":
             return configured
-        if not provider.supports_prompt_cache_key():
+        resolved = provider.resolve()
+        if not resolved.prompt_cache_key:
             return ""
         payload = {
-            "api": provider.resolved_api(),
+            "api": resolved.api,
             "cwd": self.session.cwd,
-            "host": provider.host(),
+            "host": resolved.host,
             "model": provider.model,
             "tools": ",".join(
                 sorted(
@@ -1562,20 +1573,20 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             "max_tokens": provider.output_token_budget(),
         }
         # Thinking pins temperature to its default; sending any other value is rejected.
-        if provider.temperature is not None and provider.reasoning == "off":
-            params["temperature"] = provider.temperature
         if tools:
             params["tools"] = self.anthropic_tool_schemas(tools)
             params["tool_choice"] = {"type": "auto"}
         budget = int(CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(provider.reasoning_effort(), 4096))
-        params.update(
-            anthropic_thinking_params(
-                provider.model,
-                provider.reasoning,
-                provider.reasoning_effort(),
-                min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, budget),
-            )
+        thinking_params = anthropic_thinking_params(
+            provider.model,
+            provider.reasoning,
+            provider.reasoning_effort(),
+            min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, budget),
         )
+        params.update(thinking_params)
+        thinking_active = provider.reasoning != "off" or anthropic_thinking_always_on(provider.model)
+        if provider.temperature is not None and not thinking_active:
+            params["temperature"] = provider.temperature
         return params
 
     def anthropic_messages(self, messages: list[Json]) -> list[Json]:
@@ -1673,18 +1684,19 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             assistant["tool_calls"] = tool_calls
         return assistant, calls, text
 
-    def apply_provider_params(self, params: Json, provider: ProviderConfig) -> None:
-        chat_reasoning = provider.resolved_chat_reasoning()
+    def apply_provider_params(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider | None = None) -> None:
+        resolved = resolved or provider.resolve()
+        chat_reasoning = resolved.chat_reasoning
         reasoning_enabled = provider.reasoning != "off"
         effort = provider.reasoning_effort()
         # Some native APIs fix or reject temperature for all or part of their thinking modes.
-        if provider.temperature is not None and not provider.suppresses_temperature():
+        if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
         extra: Json = {}
         if reasoning_enabled and chat_reasoning == "reasoning":
             extra["reasoning"] = {"effort": effort}
         elif chat_reasoning == "reasoning_effort":
-            if value := provider.resolved_reasoning_effort():
+            if value := resolved.reasoning_effort:
                 params["reasoning_effort"] = value
         elif chat_reasoning == "thinking":
             extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
@@ -1693,7 +1705,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
         elif chat_reasoning in ("thinking_toggle", "thinking_effort"):
             extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
             if reasoning_enabled and chat_reasoning == "thinking_effort":
-                params["reasoning_effort"] = provider.resolved_reasoning_effort()
+                params["reasoning_effort"] = resolved.reasoning_effort
         elif chat_reasoning == "enable_thinking":
             extra["enable_thinking"] = reasoning_enabled
             if reasoning_enabled:
