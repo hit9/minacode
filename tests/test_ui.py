@@ -1653,11 +1653,11 @@ def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
     assert "Beta" in "".join(text for frame in modal.frames for _style, text in frame)
 
 
-def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
+def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     command_loop.session.config.providers["other"] = n.ProviderConfig(model="model-b", available_models=("model-b",), reasoning="low")
-    selected = iter(["other", "model-b", "high"])
+    selected = iter(["other", "model-b", "responses", "high"])
     titles = []
 
     def select(title, *_args, **_kwargs):
@@ -1670,12 +1670,14 @@ def test_provider_selection_chains_provider_model_and_reasoning(tmp_path):
 
     result = command_loop.provider("")
 
-    assert titles == ["Provider", "Model", "Reasoning effort"]
+    assert titles == ["Provider", "Model", "Request API", "Reasoning effort"]
     assert command_loop.session.config.active_provider == "other"
     assert command_loop.session.config.provider.model == "model-b"
+    assert command_loop.session.config.provider.api == "responses"
     assert command_loop.session.config.provider.reasoning == "high"
     assert discovered == ["model-b"]
     assert "Set provider.model = model-b" in result
+    assert "Set provider.api = responses (wire: responses)" in result
 
 
 def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
@@ -1699,6 +1701,115 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.set_value("provider.image_input maybe") == "Invalid value for provider.image_input"
     assert command_loop.set_value("provider.image_input off") == "Set provider.image_input"
     assert command_loop.session.config.provider.image_input == "off"
+
+
+def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_path):
+    # A model chosen with /model may not be served over the provider's configured protocol, so the
+    # wire has to be switchable in-session rather than only in the config file.
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.url = "https://example.com/compatible-mode/v1"
+    provider.api = "responses"
+
+    assert command_loop.api("grpc").startswith("Usage: /api ")
+    assert provider.resolve().api == "responses"
+    assert command_loop.api("chat") == "Set provider.api = chat (wire: chat)"
+    assert provider.resolve().api == "chat"
+    # "auto" reports the wire it inferred rather than echoing "auto" back.
+    assert command_loop.api("auto") == "Set provider.api = auto (wire: chat)"
+
+    provider.url = "https://example.com/v1/responses"
+    assert command_loop.api("auto") == "Set provider.api = auto (wire: responses)"
+
+
+def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    provider = command_loop.session.config.provider
+    provider.url = "https://example.com/v1/responses"
+    provider.api = "chat"
+    shown = {}
+
+    def choose(title, choices, labels, current, _disabled):
+        shown.update(title=title, choices=choices, labels=labels, current=current)
+        return "auto"
+
+    command_loop.choice_application = choose
+
+    assert command_loop.api("") == "Set provider.api = auto (wire: responses)"
+    assert shown["title"] == "Request API"
+    assert shown["choices"] == n.PROVIDER_API_CHOICES
+    assert shown["current"] == "chat"
+    assert shown["labels"]["auto"] == "auto - infer from the endpoint URL and model (responses)"
+    assert shown["labels"]["chat"] == "chat (current)"
+
+
+def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
+    from prompt_toolkit.document import Document
+
+    command_loop = loop(tmp_path)
+
+    assert "/api" in n.CommandLoop.COMMANDS
+    command_loop.command("/api anthropic")
+    assert command_loop.session.config.provider.api == "anthropic"
+
+    texts = [c.text for c in n.CommandCompleter().get_completions(Document("/api "), None)]
+    assert set(texts) == set(n.PROVIDER_API_CHOICES)
+    # The wire is a command, not a /set key, so it must not be reachable both ways.
+    assert "provider.api" not in n.CommandCompleter.SET_KEYS
+    assert command_loop.set_value("provider.api chat") == "Unknown config key: provider.api"
+
+
+def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to_the_wire(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    provider = command_loop.session.config.provider
+    provider.available_models = ("model-a", "model-b")
+    scripted = iter(
+        [
+            ("Model", "model-a"),
+            ("Request API", n.SELECTION_BACK),  # back lands on the model picker again
+            ("Model", "model-a"),
+            ("Request API", "chat"),
+            ("Reasoning effort", n.SELECTION_BACK),  # back lands on the wire, not the model
+            ("Request API", "responses"),
+            ("Reasoning effort", "high"),
+        ]
+    )
+    titles = []
+
+    def select(title, *_args, **_kwargs):
+        expected_title, value = next(scripted)
+        assert title == expected_title
+        titles.append(title)
+        return value
+
+    command_loop.select_choice = select
+    command_loop.remote_models = lambda _provider: ()
+
+    result = command_loop.model("")
+
+    assert titles == ["Model", "Request API", "Model", "Request API", "Reasoning effort", "Request API", "Reasoning effort"]
+    assert provider.model == "model-a"
+    assert provider.api == "responses"
+    assert provider.reasoning == "high"
+    assert "Set provider.api = responses (wire: responses)" in result
+
+
+def test_model_chain_leaves_the_wire_alone_when_selection_is_unavailable(tmp_path):
+    # Non-interactive input returns None from every picker; the model still applies, the wire is untouched.
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = False
+    provider = command_loop.session.config.provider
+    provider.api = "responses"
+    provider.reasoning = "low"
+
+    result = command_loop.set_model("model-a")
+
+    assert result == "Set provider.model = model-a"
+    assert provider.model == "model-a"
+    assert provider.api == "responses"
+    assert provider.reasoning == "low"
 
 
 def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
@@ -1768,6 +1879,8 @@ def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_pa
         shown.append((title, choices))
         if title == "Reasoning effort":
             return "off"
+        if title == "Request API":
+            return "auto"
         return "remote-model"
 
     command_loop.select_choice = select
@@ -1797,7 +1910,7 @@ def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path):
     command_loop.tui = n.TuiApp()
     command_loop.tui.set_dispatching = lambda prompt="": transitions.append(prompt)
     command_loop.remote_models = lambda selected: ("remote-model",)
-    selected = iter(["remote-model", "off"])
+    selected = iter(["remote-model", "auto", "off"])
     command_loop.select_choice = lambda *_args, **_kwargs: next(selected)
 
     assert "Set provider.model = remote-model" in command_loop.model("")
@@ -1829,7 +1942,7 @@ def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monk
         application_ids.append(id(app.app))
         worker = threading.Thread(target=lambda: result.append(command_loop.provider("")), daemon=True)
         worker.start()
-        for title in ("Provider", "Model", "Reasoning effort"):
+        for title in ("Provider", "Model", "Request API", "Reasoning effort"):
             wait_until(lambda title=title: modal_title().startswith(title))
             wait_until(lambda title=title: title in rendered_screen_text(app.app, output))
             application_ids.append(id(app.app))
@@ -1876,7 +1989,7 @@ def test_provider_auto_selects_sole_provider_and_model(tmp_path):
 
     result = command_loop.provider("")
 
-    assert titles == ["Reasoning effort"]
+    assert titles == ["Request API", "Reasoning effort"]
     assert "Set provider.model = only-model" in result
 
 

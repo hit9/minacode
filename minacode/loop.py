@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any, Callable, ClassVar
 
 from prompt_toolkit import print_formatted_text
@@ -27,6 +28,7 @@ from minacode.base import (
     DISMISSED,
     HTTP_USER_AGENT,
     IMAGE_INPUT_CHOICES,
+    PROVIDER_API_CHOICES,
     REASONING_CHOICES,
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
@@ -74,9 +76,13 @@ class CommandCompleter(Completer):
     SET_KEYS: ClassVar[tuple[str, ...]] = tuple(SET_HANDLERS)
     # fmt: on
     # fmt: off
+    # Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
+    SET_CHOICES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "provider.image_input": IMAGE_INPUT_CHOICES,
+    }
     SET_VALUES: ClassVar[dict[str, tuple[str, ...]]] = {
         "provider.temperature": ("off",),
-        "provider.image_input": IMAGE_INPUT_CHOICES,
+        **SET_CHOICES,
     }
     # fmt: on
 
@@ -112,6 +118,7 @@ class CommandCompleter(Completer):
             ("/provider ", self.providers),
             ("/reason ", lambda: REASONING_CHOICES),
             ("/effort ", lambda: REASONING_CHOICES),
+            ("/api ", lambda: PROVIDER_API_CHOICES),
             ("/strict ", lambda: ("on", "off")),
         ):
             if text.startswith(command):
@@ -172,7 +179,7 @@ class CommandLoop:
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
         "/skills": "skills_command", "/config": "config",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
-        "/reason": "reason", "/effort": "reason", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
+        "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
         "/mcp": "mcp_command", "/resend": "resend_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
@@ -204,6 +211,7 @@ class CommandLoop:
   /provider [NAME]   Select or show the active provider.
   /model [MODEL]     Select or set the active model.
   /reason [EFFORT]   Select or set reasoning effort (alias: /effort).
+  /api [API]         Select or set the request protocol used to reach the model.
   /set KEY VALUE     Set provider.* and runtime.*.
   /yolo              Toggle tool confirmations.
   /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
@@ -1044,6 +1052,16 @@ Tools:
         labels[current] = labels.get(current, current) + " (current)"
         return self.select_choice("Reasoning effort", REASONING_CHOICES, labels=labels, current=current)
 
+    def select_api(self, model: str) -> str | object | None:
+        # An endpoint that lists several model families rarely serves them all over one protocol, and
+        # a /models listing does not say which. Confirm the wire alongside the model that needs it.
+        provider = self.session.config.provider
+        current = provider.api
+        inferred = replace(provider, api="auto", model=model).resolve().api
+        labels = {"auto": f"auto - infer from the endpoint URL and model ({inferred})"}
+        labels[current] = labels.get(current, current) + " (current)"
+        return self.select_choice("Request API", PROVIDER_API_CHOICES, labels=labels, current=current)
+
     def help(self, args: str) -> str:
         return self.HELP.rstrip()
 
@@ -1500,12 +1518,18 @@ Tools:
         return tuple(sorted(dict.fromkeys(names)))
 
     def set_model(self, model: str, *, back_to_model: bool = False) -> str | object:
-        reasoning = self.select_reasoning()
-        if reasoning is SELECTION_BACK:
-            return SELECTION_BACK if back_to_model else "No change"
+        while True:
+            api = self.select_api(model)
+            if api is SELECTION_BACK:
+                return SELECTION_BACK if back_to_model else "No change"
+            reasoning = self.select_reasoning()
+            if reasoning is not SELECTION_BACK:
+                break
         provider = self.session.config.provider
         provider.model = model
         lines = ["Set provider.model = " + model]
+        if isinstance(api, str):
+            lines.append(self.set_api(api))
         if isinstance(reasoning, str):
             provider.reasoning = reasoning
             lines.append("Set provider.reasoning = " + reasoning)
@@ -1523,6 +1547,22 @@ Tools:
             self.session.config.provider.reasoning = choice
             return "Set provider.reasoning = " + choice
         return "No change"
+
+    def api(self, args: str) -> str:
+        value = args.strip()
+        provider = self.session.config.provider
+        if value:
+            if value not in PROVIDER_API_CHOICES:
+                return "Usage: /api " + "|".join(PROVIDER_API_CHOICES)
+            return self.set_api(value)
+        choice = self.select_api(provider.model)
+        return self.set_api(choice) if isinstance(choice, str) else "No change"
+
+    def set_api(self, value: str) -> str:
+        provider = self.session.config.provider
+        provider.api = value
+        # "auto" is the usual choice, so name the wire it resolved to rather than echoing the setting back.
+        return f"Set provider.api = {value} (wire: {provider.resolve().api})"
 
     def yolo(self, args: str) -> str:
         self.session.settings.yolo = not self.session.settings.yolo
@@ -1548,7 +1588,8 @@ Tools:
         if handler is None:
             return "Unknown config key: " + key
         target_name, attr, coerce = handler
-        if key == "provider.image_input" and value not in IMAGE_INPUT_CHOICES:
+        choices = CommandCompleter.SET_CHOICES.get(key)
+        if choices is not None and value not in choices:
             return "Invalid value for " + key
         obj = self.session.config.provider if target_name == "provider" else self.session.settings
         try:

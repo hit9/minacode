@@ -119,8 +119,18 @@ this off permanently.
 
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
-**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session. Example:
-`/set provider.model deepseek-v4-flash`.
+**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
+used to reach the model. `/provider` and `/model` also confirm it as a step in their selection
+chain, since the right protocol depends on the model you just picked.
+
+An endpoint that serves several model families often exposes them on different protocols, and an
+OpenAI-compatible `/models` listing says nothing about which protocol serves which model — so a
+model offered by `/model` can still be rejected as unsupported. When that happens, pick a different
+protocol with `/api` (or `auto` to re-infer from the URL and model). The reply names the wire that
+took effect, and history is protocol-neutral, so switching mid-session is safe.
+
+**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; tab-completes both keys
+and, where the values are a fixed set, the values. Example: `/set provider.timeout 180`.
 
 **`/resend`** — Cancel and re-send the in-flight model request without restarting the
 turn. Type it while a model request is waiting; it has no effect while the agent is
