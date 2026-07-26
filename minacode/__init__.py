@@ -1,6 +1,6 @@
 """minacode: A small terminal coding agent written in Python.
 
-The implementation lives in focused submodules (``base``, ``provider_compat``, ``session``,
+The implementation lives in focused submodules (``base``, ``image``, ``provider_compat``, ``session``,
 ``skill``, ``mcp``, ``tools``, ``engine``, ``tui``) plus a ``__main__`` entry
 point.  The public names are
 re-exported here so ``import minacode`` keeps exposing the same namespace the
@@ -78,6 +78,7 @@ from minacode.engine import (
     UpdateChecker,
 )
 from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig, MCPToolInfo
+from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageRef, UserInput
 from minacode.session import (
     AgentState,
     BackgroundJob,

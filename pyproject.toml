@@ -36,6 +36,7 @@ dependencies = [
     "json-repair",
     "fastmcp-slim[client]>=3,<4",
     "openai>=2.37.0",
+    "pillow>=11.0",
     "prompt-toolkit>=3.0",
     "rich>=13.0",
     "socksio>=1.0.0",

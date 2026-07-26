@@ -55,6 +55,16 @@ from minacode.provider_compat import (
     anthropic_thinking_always_on,
     anthropic_thinking_params,
 )
+from minacode.image import (
+    IMAGE_REFS_KEY,
+    UserInput,
+    anthropic_content,
+    chat_content,
+    estimated_image_tokens,
+    image_label_text,
+    image_refs,
+    responses_content,
+)
 from minacode.session import AgentState, HistorySegment, QueuedInput, Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -472,7 +482,7 @@ class ContextManager:
         return messages[:cut], messages[cut:]
 
     def messages_text(self, messages: list[Json]) -> str:
-        return "\n\n".join(f"{message.get('role', 'message')}:\n{message.get('content') or ''}" for message in messages) or "(empty)"
+        return "\n\n".join(f"{message.get('role', 'message')}:\n{image_label_text(message)}" for message in messages) or "(empty)"
 
     def history_title(self, messages: list[Json]) -> str:
         for message in messages:
@@ -587,12 +597,13 @@ class ContextManager:
         # and signatures are transport state whose byte length is not a prompt-token estimate.
         payload: list[Json] = []
         for message in messages:
-            estimated = {key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS}
+            estimated = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
             if readable := ContextManager._readable_provider_context(message):
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        return (chars + 3) // 4
+        images = sum(estimated_image_tokens(image) for message in messages for image in image_refs(message))
+        return (chars + 3) // 4 + images
 
     @staticmethod
     def estimated_text_tokens(text: str) -> int:
@@ -1333,7 +1344,13 @@ class ModelClient:
         return "transient error"
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
-        messages = Text.value([{key: value for key, value in message.items() if key not in PROVIDER_ECHO_KEYS} for message in messages])
+        converted: list[Json] = []
+        for message in messages:
+            clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
+            if message.get("role") == "user" and image_refs(message):
+                clean["content"] = chat_content(self.session, message)
+            converted.append(clean)
+        messages = Text.value(converted)
         provider = self.session.config.provider
         resolved = provider.resolve()
         params: Json = {"model": provider.model, "messages": messages, "stream": False}
@@ -1418,7 +1435,9 @@ class ModelClient:
                 continue
             content = message.get("content")
             if content is not None:
-                converted.append({"role": role, "content": str(content)})
+                converted.append(
+                    {"role": role, "content": responses_content(self.session, message) if role == "user" and image_refs(message) else str(content)}
+                )
             if role == "assistant":
                 for raw in message.get("tool_calls") or []:
                     if not isinstance(raw, dict):
@@ -1630,7 +1649,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             if role == "system":
                 continue
             if role == "user":
-                self.append_anthropic_message(converted, "user", str(message.get("content") or ""))
+                self.append_anthropic_message(converted, "user", anthropic_content(self.session, message))
             elif role == "assistant":
                 blocks = self.anthropic_assistant_blocks(message)
                 if blocks:
@@ -1646,6 +1665,13 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
             previous = messages[-1].get("content")
             if isinstance(previous, list) and isinstance(content, list):
                 previous.extend(content)
+                return
+            if isinstance(previous, list) and isinstance(content, str):
+                if content:
+                    previous.append({"type": "text", "text": content})
+                return
+            if isinstance(previous, str) and isinstance(content, list):
+                messages[-1]["content"] = ([{"type": "text", "text": previous}] if previous else []) + content
                 return
             if isinstance(previous, str) and isinstance(content, str):
                 messages[-1]["content"] = (previous + "\n\n" + content).strip()
@@ -1900,18 +1926,20 @@ FINAL:
         if self.cancel_requested.is_set():
             raise KeyboardInterrupt
 
-    def run(self, user_input: str) -> str:
+    def run(self, user_input: str | UserInput) -> str:
         self.cancel_requested.clear()
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
         tool_batches = 0
-        turn_messages: list[Json] = [{"role": "user", "content": user_input}]
+        user_message = self.session.user_message(user_input)
+        user_text = image_label_text(user_message)
+        turn_messages: list[Json] = [user_message]
         if self.session.mcp is not None:
-            mentions = self.session.mcp.resolve_mentions(user_input)
+            mentions = self.session.mcp.resolve_mentions(user_text)
             if mentions:
                 turn_messages.append({"role": "user", "content": mentions})
         if self.session.skills is not None:
-            skill_mentions = self.session.skills.resolve_mentions(user_input)
+            skill_mentions = self.session.skills.resolve_mentions(user_text)
             if skill_mentions:
                 turn_messages.append({"role": "user", "content": skill_mentions})
         self.checkpoint_turn(turn_messages)
@@ -2009,7 +2037,7 @@ FINAL:
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
-        request_turn = [*turn_messages, *({"role": "user", "content": self.LIVE_FOLLOWUP_PREFIX + item.text} for item in pending)]
+        request_turn = [*turn_messages, *(item.message(self.LIVE_FOLLOWUP_PREFIX) for item in pending)]
         self.session.state.turn_messages = len(request_turn)
         tools = Tool._resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn, tools)
@@ -2020,7 +2048,7 @@ FINAL:
         if not pending:
             return
         texts = [item.text for item in pending]
-        turn_messages.extend({"role": "user", "content": text} for text in texts)
+        turn_messages.extend(item.message() for item in pending)
         self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:
             self.on_queue_flush(texts)

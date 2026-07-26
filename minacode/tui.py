@@ -20,6 +20,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -36,8 +37,10 @@ from prompt_toolkit.widgets import SearchToolbar
 from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
+    MinacodeError,
 )
 from minacode.engine import LogBlock, LogEdge
+from minacode.image import IMAGE_MARKER, ImageRef, UserInput, recognize_images
 
 try:
     import pygments
@@ -76,6 +79,49 @@ class CallbackPlaceholder(Processor):
         return Transformation([*ti.fragments, ("class:queue.hint", text)])
 
 
+class ImageLabelProcessor(Processor):
+    """Render each one-cell image marker as an atomic, readable inline label."""
+
+    def __init__(self, images_fn: Callable[[], tuple[ImageRef, ...]]):
+        self.images_fn = images_fn
+
+    def apply_transformation(self, transformation_input) -> Transformation:
+        ti = transformation_input
+        images = self.images_fn()
+        before = sum(line.count(IMAGE_MARKER) for line in ti.document.lines[: ti.lineno])
+        source = "".join(fragment[1] for fragment in ti.fragments)
+        labels: dict[int, str] = {}
+        ordinal = before
+        for index, char in enumerate(source):
+            if char == IMAGE_MARKER and ordinal < len(images):
+                ordinal += 1
+                labels[index] = f"[Image #{ordinal} \u00b7 {images[ordinal - 1].name}]"
+        if not labels:
+            return Transformation(ti.fragments)
+        fragments: StyleAndTextTuples = []
+        source_index = 0
+        for fragment in ti.fragments:
+            style, text, *rest = fragment
+            for char in text:
+                label = labels.get(source_index)
+                fragments.append(("class:image.attachment" if label else style, label or char))
+                source_index += 1
+
+        def source_to_display(index: int) -> int:
+            return index + sum(len(label) - 1 for position, label in labels.items() if position < index)
+
+        def display_to_source(index: int) -> int:
+            display = 0
+            for position in range(len(source) + 1):
+                if display >= index:
+                    return position
+                value = labels[position] if position in labels else (source[position] if position < len(source) else "")
+                display += len(value)
+            return len(source)
+
+        return Transformation(fragments, source_to_display=source_to_display, display_to_source=display_to_source)
+
+
 class TuiApp:
     """One primary-screen application for live activity, input, selectors, and status.
 
@@ -88,19 +134,21 @@ class TuiApp:
     def __init__(
         self,
         *,
-        on_chat_submit: Callable[[str], None] | None = None,
-        on_running_submit: Callable[[str], None] | None = None,
+        on_chat_submit: Callable[[UserInput], None] | None = None,
+        on_running_submit: Callable[[UserInput], None] | None = None,
         on_exit_request: Callable[[], None] | None = None,
         on_force_exit: Callable[[], None] | None = None,
         on_interrupt: Callable[[], None] | None = None,
         on_input_cancel: Callable[[], None] | None = None,
         on_retry: Callable[[], None] | None = None,
-        on_recall: Callable[[], str] | None = None,
+        on_recall: Callable[[], str | UserInput] | None = None,
         on_expand_output: Callable[[], None] | None = None,
         status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
         activity_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
         input_hint_fn: Callable[[], str] | None = None,
         editor_context_fn: Callable[[], str] | None = None,
+        prepare_input_fn: Callable[[UserInput], UserInput] | None = None,
+        image_cwd: str = "",
         history: FileHistory | None = None,
         completer: Completer | None = None,
     ) -> None:
@@ -117,6 +165,13 @@ class TuiApp:
         self.activity_fragments_fn = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.editor_context_fn = editor_context_fn or (lambda: "")
+        self.prepare_input_fn = prepare_input_fn or (lambda value: value)
+        self.image_cwd = image_cwd or os.getcwd()
+        self.input_images: tuple[ImageRef, ...] = ()
+        self._last_input_text = ""
+        self._changing_input = False
+        self.input_error = ""
+        self.history = history
         self.input_buffer = Buffer(
             history=history,
             completer=completer,
@@ -125,6 +180,7 @@ class TuiApp:
             multiline=True,
             accept_handler=self._accept,
         )
+        self.input_buffer.on_text_changed += self._sync_input_images
         self.search_toolbar = SearchToolbar()
         self.app: Application | None = None
         self.ready = threading.Event()
@@ -152,6 +208,7 @@ class TuiApp:
         event = threading.Event()
         previous_mode, previous_prompt = self.input_mode, self.input_prompt
         previous_document: Document | None = None
+        previous_images = self.input_images
         self._input_pending = event
         self._input_result = ""
 
@@ -159,7 +216,8 @@ class TuiApp:
             nonlocal previous_document
             if previous_document is None:
                 previous_document = self.input_buffer.document
-            self.input_buffer.reset(document)
+            images = previous_images if mode == previous_mode else ()
+            self._reset_input(UserInput(document.text, images), cursor_position=document.cursor_position)
             self._set_mode(mode, prompt_text)
             done.set()
 
@@ -223,20 +281,84 @@ class TuiApp:
             return False
         if self.input_mode == "running":
             if text.strip():
-                buffer.append_to_history()
-                buffer.reset()
-                self.on_running_submit(text)
+                value = self._submitted_input()
+                if value is None:
+                    return True
+                self._append_history(value)
+                self._reset_input("")
+                self.on_running_submit(value)
                 return True
             return False
         if self.input_mode == "chat":
             if not text.strip():
                 return False
-            buffer.append_to_history()
-            buffer.reset()
+            value = self._submitted_input()
+            if value is None:
+                return True
+            self._append_history(value)
+            self._reset_input("")
             self.set_dispatching()
-            self.on_chat_submit(text)
+            self.on_chat_submit(value)
             return True
         return False
+
+    def _submitted_input(self) -> UserInput | None:
+        value = self._recognize_input()
+        try:
+            value = self.prepare_input_fn(value)
+        except MinacodeError as error:
+            self.input_error = str(error)
+            self.invalidate()
+            return None
+        self.input_error = ""
+        return value
+
+    def _append_history(self, value: UserInput) -> None:
+        if self.history is not None:
+            self.history.append_string(value.original_text())
+
+    def _recognize_input(self) -> UserInput:
+        value = recognize_images(self.input_buffer.text, self.image_cwd, self.input_images)
+        if str(value) != self.input_buffer.text or value.images != self.input_images:
+            self._reset_input(value, cursor_position=len(value))
+        return value
+
+    def _reset_input(self, value: str | UserInput, *, cursor_position: int | None = None) -> None:
+        user_input = value if isinstance(value, UserInput) else UserInput(value)
+        self._changing_input = True
+        try:
+            self.input_images = user_input.images
+            self._last_input_text = str(user_input)
+            position = len(user_input) if cursor_position is None else cursor_position
+            self.input_buffer.reset(Document(str(user_input), cursor_position=position))
+        finally:
+            self._changing_input = False
+
+    def _sync_input_images(self, buffer: Buffer) -> None:
+        text = buffer.text
+        if self._changing_input:
+            self._last_input_text = text
+            return
+        old = self._last_input_text
+        if old == text:
+            return
+        self.input_error = ""
+        prefix = 0
+        while prefix < min(len(old), len(text)) and old[prefix] == text[prefix]:
+            prefix += 1
+        suffix = 0
+        while suffix < len(old) - prefix and suffix < len(text) - prefix and old[-suffix - 1] == text[-suffix - 1]:
+            suffix += 1
+        removed_end = len(old) - suffix
+        first = old[:prefix].count(IMAGE_MARKER)
+        removed = old[prefix:removed_end].count(IMAGE_MARKER)
+        if removed:
+            self.input_images = self.input_images[:first] + self.input_images[first + removed :]
+        self._last_input_text = text
+        inserted_end = len(text) - suffix
+        inserted = text[prefix:inserted_end]
+        if inserted and inserted[-1].isspace() and self.input_mode in {"chat", "running"}:
+            self._recognize_input()
 
     def show_modal(
         self,
@@ -326,6 +448,8 @@ class TuiApp:
             self.invalidate()
 
     def status_fragments(self) -> list[tuple[str, str]]:
+        if self.input_error:
+            return [("class:input.error", f"Error: {self.input_error}\n"), ("class:prompt", self.input_prompt)]
         if self.input_mode == "dispatch" and self.input_prompt:
             return [("ansibrightblack", self.input_prompt)]
         if self.input_mode == "approval" and self.input_prompt:
@@ -370,6 +494,7 @@ class TuiApp:
                 buffer=self.input_buffer,
                 input_processors=[
                     HighlightIncrementalSearchProcessor(),
+                    ImageLabelProcessor(lambda: self.input_images),
                     BeforeInput(self.status_fragments),
                     CallbackPlaceholder(self.input_hint_fn),
                 ],
@@ -458,7 +583,12 @@ class TuiApp:
         bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
         for key, reverse in (("tab", False), ("s-tab", True)):
             bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.complete_input(event.current_buffer, reverse=reverse))
-        bindings.add(Keys.BracketedPaste, filter=~modal)(lambda event: event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n")))
+
+        @bindings.add(Keys.BracketedPaste, filter=~modal)
+        def _paste(event):
+            event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
+            if self.input_mode in {"chat", "running"}:
+                self._recognize_input()
 
         @bindings.add("c-r", filter=~modal, eager=True)
         def _history_search(event):
@@ -480,7 +610,7 @@ class TuiApp:
                 return
             text = self.on_recall()
             if text:
-                self.input_buffer.reset(Document(text, cursor_position=len(text)))
+                self._reset_input(text, cursor_position=len(text))
             else:
                 event.current_buffer.auto_up(count=event.arg)
 
@@ -621,14 +751,16 @@ class TuiApp:
         # terminal. A non-zero exit or a launch failure leaves the input untouched. The editor
         # also receives the agent's recent reply below a scissors line for reference (the
         # full-screen editor hides the scrollback); that context is stripped back out on return.
-        original = self.input_buffer.text
+        original = UserInput(self.input_buffer.text, self.input_images).original_text()
         composed, marker = self._compose_editor_text(original, self.editor_context_fn())
         edited = await run_in_terminal(lambda: self._edit_text_in_editor(composed), in_executor=True)
         if edited is None:
             return
         edited = self._strip_editor_context(edited, marker)
         if edited != original:
-            self.input_buffer.reset(Document(edited, cursor_position=len(edited)))
+            self._reset_input(edited, cursor_position=len(edited))
+            if self.input_mode in {"chat", "running"}:
+                self._recognize_input()
             self.invalidate()
 
     def edit_input_in_editor(self) -> None:

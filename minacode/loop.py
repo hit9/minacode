@@ -12,6 +12,7 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any, Callable, ClassVar
 
 from prompt_toolkit import print_formatted_text
@@ -38,6 +39,7 @@ from minacode.base import (
     __version__,
 )
 from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolDisplay, TurnBox, UpdateChecker
+from minacode.image import UserInput, image_label_text, store_input
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import AskSpec, CodeIndex, TOOL_REGISTRY
 
@@ -446,14 +448,14 @@ Tools:
                 return
         self.command(text)
 
-    def take_pending_inputs(self) -> list[str]:
+    def take_pending_inputs(self) -> list[UserInput]:
         """Remove and return queued inputs that are not currently being flushed."""
         with self.session._queue_lock:
-            texts = [item.text for item in self.session.pending_user_inputs if not item.inflight]
+            texts = [item.user_input() for item in self.session.pending_user_inputs if not item.inflight]
             self.session.pending_user_inputs = [item for item in self.session.pending_user_inputs if item.inflight]
         return texts
 
-    def recall_pending_input(self, on_inflight: Callable[[], None]) -> str:
+    def recall_pending_input(self, on_inflight: Callable[[], None]) -> str | UserInput:
         """Move the newest queued input back to the editor, retrying if it was already claimed."""
         with self.session._queue_lock:
             item = next(reversed(self.session.pending_user_inputs), None)
@@ -466,8 +468,9 @@ Tools:
                     pending_item.inflight = False
         if was_inflight:
             on_inflight()
+        self.session.retain_images(item.images)
         self.session.save_snapshot()
-        return item.text
+        return item.user_input()
 
     def run(self) -> int:
         # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
@@ -552,7 +555,7 @@ Tools:
 
     def render_transcript_message(self, message: Json, tool_record_index: int = 0, diffs: dict[str, str] | None = None) -> int:
         role = str(message.get("role") or "")
-        content = str(message.get("content") or "").strip()
+        content = image_label_text(message).strip()
         raw_calls = message.get("tool_calls")
         has_tool_calls = isinstance(raw_calls, list) and bool(raw_calls)
         if role == "assistant" and content:
@@ -654,6 +657,8 @@ Tools:
                 "prompt": "ansicyan bold",
                 "queue.rule": "ansibrightblack",
                 "queue.hint": "ansibrightblack",
+                "image.attachment": "ansicyan bold",
+                "input.error": "ansired",
                 "divider.working": "ansimagenta bold",
                 # Comet gradient: bright head fading through cyan into the dim rule.
                 "divider.glow0": "ansibrightcyan bold",
@@ -1554,7 +1559,7 @@ class TuiRuntime:
 
     def __init__(self, command_loop: CommandLoop):
         self.loop = command_loop
-        self.pending: queue.Queue[str] = queue.Queue()
+        self.pending: queue.Queue[UserInput] = queue.Queue()
         self.stop = threading.Event()
         self.cancel_pending = threading.Event()
         self.main_busy = threading.Event()
@@ -1588,18 +1593,19 @@ class TuiRuntime:
         self.tui.invalidate()
         self._interrupt_active(self.loop.agent.model.cancel)
 
-    def submit_running(self, text: str) -> None:
-        text = Text.clean(text.strip())
+    def submit_running(self, value: str | UserInput) -> None:
+        value = value if isinstance(value, UserInput) else UserInput(value)
+        text = str(value).strip()
         if not text:
             return
-        if "\n" not in text and text.startswith("/"):
+        if not value.images and "\n" not in text and text.startswith("/"):
             threading.Thread(target=self.loop.run_queued_command, args=(text,), daemon=True).start()
         else:
-            self.loop.session.enqueue_user_input(text)
+            self.loop.session.enqueue_user_input(value)
             self.loop.session.save_snapshot()
         self.tui.invalidate()
 
-    def recall(self) -> str:
+    def recall(self) -> str | UserInput:
         return self.loop.recall_pending_input(lambda: self._request_model_retry("revising queued input"))
 
     def expand_output(self) -> None:
@@ -1632,14 +1638,17 @@ class TuiRuntime:
             activity_fragments_fn=self.loop.tui_activity_fragments,
             input_hint_fn=self.loop.tui_input_hint,
             editor_context_fn=self.loop.editor_context,
+            prepare_input_fn=lambda value: store_input(self.loop.session, value),
+            image_cwd=self.loop.session.cwd,
             history=self.loop.input_history,
             completer=self.loop.input_completer,
         )
 
-    def submit_next(self, entered: list[str]) -> None:
+    def submit_next(self, entered: Sequence[str | UserInput]) -> None:
         if not entered:
             return
-        self.pending.put(entered[0])
+        first = entered[0] if isinstance(entered[0], UserInput) else UserInput(entered[0])
+        self.pending.put(first)
         for text in entered[1:]:
             self.loop.session.enqueue_user_input(text)
 
@@ -1648,9 +1657,10 @@ class TuiRuntime:
         self.cancel_pending.clear()
         self.main_busy.clear()
 
-    def dispatch(self, user_input: str) -> bool:
+    def dispatch(self, user_input: str | UserInput) -> bool:
         """Dispatch one input. Return true when it was fully handled as a command."""
-        self.loop.ui.emit_answer(user_input, role="user", rule=False)
+        user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
+        self.loop.ui.emit_answer(user_input.display_text(), role="user", rule=False)
         try:
             handled, exit_now = self.loop.command(user_input.strip())
         except (KeyboardInterrupt, MinacodeError) as error:
@@ -1667,7 +1677,8 @@ class TuiRuntime:
             return True
         return False
 
-    def run_agent_turn(self, user_input: str) -> None:
+    def run_agent_turn(self, user_input: str | UserInput) -> None:
+        user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
         self.loop.emit("")
         self.loop.status_bar.begin()
         self.tui.set_running("working")

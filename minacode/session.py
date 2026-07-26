@@ -9,6 +9,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -19,6 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from minacode.base import Config, ConfigFile, Json, MinacodeError, ModelUsage, RuntimeSettings, SystemInfo, Text, ToolArgs, UpdateStatus
+from minacode.image import IMAGE_REFS_KEY, ImageRef, UserInput, assets_dir, store_user_input
 
 if TYPE_CHECKING:
     from minacode.mcp import MCPManager
@@ -159,7 +161,7 @@ class HistorySegment:
 
 class SessionSnapshotCodec:
     @staticmethod
-    def digest(value: Json | list[Json] | list[str]) -> str:
+    def digest(value: object) -> str:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -172,7 +174,7 @@ class SessionSnapshotCodec:
         # fmt: off
         return {
             "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
-            "pending_user_inputs_digest": cls.digest([item.text for item in session.pending_user_inputs]),
+            "pending_user_inputs_digest": cls.digest([item.to_json() for item in session.pending_user_inputs]),
             "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
             "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
             "turn_diffs_len": len(turn_diff_keys), "turn_diffs_keys_digest": cls.digest(turn_diff_keys),
@@ -286,7 +288,7 @@ class SessionSnapshotCodec:
         # fmt: off
         return {
             "uid": session.uid, "cwd": session.cwd, "messages": cls.snapshot_messages(session),
-            "pending_user_inputs": [item.text for item in session.pending_user_inputs],
+            "pending_user_inputs": [item.to_json() for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
             "turn_diffs": [cls.turn_diff(diff, blobs) for diff in session.turn_diffs],
@@ -302,7 +304,7 @@ class SessionSnapshotCodec:
             "state": cls.state(session.state),
         }
         cls.add_sequence_delta(delta, "messages", cls.snapshot_messages(session), saved, "messages_len", "messages_digest")
-        pending_user_inputs = [item.text for item in session.pending_user_inputs]
+        pending_user_inputs = [item.to_json() for item in session.pending_user_inputs]
         if cls.digest(pending_user_inputs) != saved.get("pending_user_inputs_digest", cls.digest([])):
             delta["pending_user_inputs"] = pending_user_inputs
         cls.add_sequence_delta(
@@ -435,7 +437,27 @@ class SessionSnapshotStore:
         self.write_jsonl(path, record, mode="a")
         self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
         self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
+        self.garbage_collect_assets()
         return self.session.uid
+
+    def garbage_collect_assets(self) -> None:
+        directory = assets_dir(self.session)
+        if not os.path.isdir(directory):
+            return
+        refs: set[str] = set()
+        for message in SessionSnapshotCodec.snapshot_messages(self.session):
+            raw_images = message.get(IMAGE_REFS_KEY)
+            if not isinstance(raw_images, list):
+                continue
+            refs.update(image.ref for raw in raw_images if (image := ImageRef.from_json(raw)) is not None)
+        refs.update(image.ref for item in self.session.pending_user_inputs for image in item.images)
+        refs.update(self.session._retained_image_refs)
+        with contextlib.suppress(OSError):
+            for entry in os.scandir(directory):
+                if entry.is_file() and entry.name not in refs:
+                    os.unlink(entry.path)
+            if not any(os.scandir(directory)):
+                os.rmdir(directory)
 
     def write_blobs(self, path: str, blobs: dict[str, str]) -> None:
         """Blob lines precede the record that references them, and each content hash is written to
@@ -511,6 +533,7 @@ class SessionSnapshotStore:
                     if entry.stat().st_mtime >= cutoff:
                         continue
                     os.unlink(entry.path)
+                    shutil.rmtree(os.path.join(directory, uid + ".assets"), ignore_errors=True)
                     removed += 1
                     stale_latest = stale_latest or cls.read_latest(directory) == uid
                 except OSError:
@@ -593,7 +616,7 @@ class SessionSnapshotStore:
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
             turn_diffs=SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", []), blobs),
             history=SessionSnapshotCodec.history(data.get("history", []), blobs),
-            pending_user_inputs=[QueuedInput(str(text)) for text in data.get("pending_user_inputs", []) if str(text).strip()],
+            pending_user_inputs=[item for value in data.get("pending_user_inputs", []) if (item := QueuedInput.from_json(value)) is not None],
             uid=data.get("uid", uid),
             resumed=True,
         )
@@ -726,7 +749,43 @@ class BackgroundJob:
 @dataclass(eq=False)
 class QueuedInput:
     text: str
+    images: tuple[ImageRef, ...] = ()
+    draft: str = ""
     inflight: bool = False
+
+    def to_json(self) -> str | Json:
+        if not self.images:
+            return self.text
+        return {
+            "text": self.text,
+            "draft": self.draft,
+            IMAGE_REFS_KEY: [image.to_json() for image in self.images],
+        }
+
+    @classmethod
+    def from_json(cls, value: object) -> "QueuedInput | None":
+        if isinstance(value, str):
+            return cls(value) if value.strip() else None
+        if not isinstance(value, dict):
+            return None
+        text = str(value.get("text") or "")
+        raw_images = value.get(IMAGE_REFS_KEY)
+        images = tuple(image for raw in raw_images if (image := ImageRef.from_json(raw)) is not None) if isinstance(raw_images, list) else ()
+        draft = str(value.get("draft") or text)
+        if not text.strip():
+            return None
+        if draft.count("\ufffc") != len(images):
+            return cls(text)
+        return cls(text, images, draft)
+
+    def user_input(self) -> UserInput:
+        return UserInput(self.draft or self.text, self.images)
+
+    def message(self, prefix: str = "") -> Json:
+        message: Json = {"role": "user", "content": prefix + self.text}
+        if self.images:
+            message[IMAGE_REFS_KEY] = [image.to_json() for image in self.images]
+        return message
 
 
 @dataclass
@@ -756,6 +815,7 @@ class Session:
     _snapshot_saved: dict = field(default_factory=dict)
     _blobs_written: set[str] = field(default_factory=set)
     _active_turn_messages: list[Json] = field(default_factory=list)
+    _retained_image_refs: set[str] = field(default_factory=set)
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
     _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -834,12 +894,31 @@ class Session:
             self.tool_results.pop(old.key, None)
         return key
 
-    def enqueue_user_input(self, text: str) -> None:
-        text = Text.clean(text.strip())
+    def user_message(self, value: str | UserInput) -> Json:
+        message = store_user_input(self, value)
+        raw_images = message.get(IMAGE_REFS_KEY)
+        if isinstance(raw_images, list):
+            self._retained_image_refs.difference_update(image.ref for raw in raw_images if (image := ImageRef.from_json(raw)) is not None)
+        return message
+
+    def retain_images(self, images: tuple[ImageRef, ...]) -> None:
+        self._retained_image_refs.update(image.ref for image in images)
+
+    def enqueue_user_input(self, value: str | UserInput) -> None:
+        if isinstance(value, UserInput) and value.images:
+            message = self.user_message(value)
+            text = str(message.get("content") or "").strip()
+            raw_images = message.get(IMAGE_REFS_KEY)
+            images = tuple(image for raw in raw_images if (image := ImageRef.from_json(raw)) is not None) if isinstance(raw_images, list) else ()
+            draft = str(value)
+        else:
+            text = Text.clean(str(value).strip())
+            images = ()
+            draft = text
         if not text:
             return
         with self._queue_lock:
-            self.pending_user_inputs.append(QueuedInput(text))
+            self.pending_user_inputs.append(QueuedInput(text, images, draft))
 
     def claim_user_inputs(self) -> list[QueuedInput]:
         # claim/ack/release is a transaction across model retries; keep this boundary even though each step is small.

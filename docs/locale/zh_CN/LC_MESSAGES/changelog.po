@@ -47,6 +47,10 @@ msgid "Added"
 msgstr ""
 
 #: ../../../CHANGELOG.md:8
+msgid "Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization."
+msgstr "可直接在交互式 prompt 中输入本地图片路径，将识别到的文件显示为可编辑的内联标签，并在排队的追加指令和恢复后的 session 中保留图片；无需按 provider 或模型名称特化，即可通过 OpenAI-compatible Chat、OpenAI Responses 和 Anthropic Messages 发送对应的标准图片内容。"
+
+#: ../../../CHANGELOG.md:8
 msgid "Support OpenAI's Responses protocol with `provider.api = \"responses\"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns."
 msgstr "支持 OpenAI Responses 协议：可设置 `provider.api = \"responses\"`，也可从 `/responses` URL 推断；包括标准 reasoning effort、扁平 function tool、tool result 往返、缓存 token 用量、无状态请求，以及跨轮回放不透明 reasoning item。"
 

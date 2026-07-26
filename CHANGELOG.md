@@ -4,6 +4,7 @@
 ## Unreleased
 
 ### Added
+- Accept local image paths directly in the interactive prompt, render recognized files as editable inline labels, preserve them across queued follow-ups and resumed sessions, and send the corresponding standard image content through OpenAI-compatible Chat, OpenAI Responses, and Anthropic Messages without provider- or model-name specialization.
 - Support OpenAI's Responses protocol with `provider.api = "responses"` (also inferred from a `/responses` URL), including standardized reasoning effort, flattened function tools, tool-result round trips, cached-token usage, stateless requests, and replay of opaque reasoning items across turns.
 - Document provider setup alongside the rest of the configuration, keeping the user-facing guide focused on settings rather than internal compatibility profiles.
 

@@ -27,6 +27,18 @@ msgid "minacode runs as a conversation in your terminal. You type a request, the
 msgstr "minacode 以终端对话的形式运行。你输入任务，agent 使用[工具](tools.md)完成工作；整个过程中你都可以继续引导、回答问题并审查修改。"
 
 #: ../../usage.md:7
+msgid "Image input"
+msgstr "图片输入"
+
+#: ../../usage.md:9
+msgid "Paste or type the path of an existing local image directly into the prompt. minacode replaces the path with an inline label such as `[Image #1 · screenshot.png]`, so you can see exactly which images will be submitted while continuing to edit the surrounding text. Relative paths resolve from the workspace; quoted paths and backslash-escaped spaces are accepted."
+msgstr "可直接在 prompt 中粘贴或输入现有本地图片的路径。minacode 会将路径替换为类似 `[Image #1 · screenshot.png]` 的内联标签，因此你可以清楚看到将要提交哪些图片，并继续编辑周围的文字。相对路径以 workspace 为基准；带引号的路径和使用反斜杠转义空格的路径也可以识别。"
+
+#: ../../usage.md:14
+msgid "PNG, JPEG, WebP, and single-frame GIF files are supported. The active model and endpoint must also support image input; if they do not, minacode leaves the provider's error intact instead of guessing capabilities from the provider or model name. Images in queued follow-ups and resumed sessions keep the same labels and content."
+msgstr "支持 PNG、JPEG、WebP 和单帧 GIF。当前模型和 endpoint 也必须支持图片输入；如果不支持，minacode 会原样保留 provider 的错误，不根据 provider 或模型名称猜测能力。排队的追加指令和恢复后的 session 会保留相同的图片标签与内容。"
+
+#: ../../usage.md:7
 msgid "Follow-ups"
 msgstr "追加指令"
 

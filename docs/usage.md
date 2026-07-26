@@ -4,6 +4,18 @@ minacode runs as a conversation in your terminal. You type a request, the agent 
 through it with [tools](tools.md), and you stay in the loop the whole time — steering,
 answering questions, and reviewing changes.
 
+## Image input
+
+Paste or type the path of an existing local image directly into the prompt. minacode replaces
+the path with an inline label such as `[Image #1 · screenshot.png]`, so you can see exactly which
+images will be submitted while continuing to edit the surrounding text. Relative paths resolve
+from the workspace; quoted paths and backslash-escaped spaces are accepted.
+
+PNG, JPEG, WebP, and single-frame GIF files are supported. The active model and endpoint must
+also support image input; if they do not, minacode leaves the provider's error intact instead of
+guessing capabilities from the provider or model name. Images in queued follow-ups and resumed
+sessions keep the same labels and content.
+
 ## Follow-ups
 
 You can keep typing while minacode works. A submitted follow-up joins the current task if
