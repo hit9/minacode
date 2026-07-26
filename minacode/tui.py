@@ -41,16 +41,6 @@ from minacode.base import (
 )
 from minacode.engine import LogBlock, LogEdge
 from minacode.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
-
-try:
-    import pygments
-    from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
-    from pygments.styles import get_style_by_name
-    from pygments.token import Token
-except ImportError:  # pragma: no cover - optional highlighting dependency
-    pygments = Token = None
-    get_lexer_by_name = get_lexer_for_filename = get_style_by_name = None
-
 from minacode.render import UiPrinter
 
 TUI_MODAL_PENDING = object()
@@ -101,7 +91,7 @@ class ImageLabelProcessor(Processor):
         fragments: StyleAndTextTuples = []
         source_index = 0
         for fragment in ti.fragments:
-            style, text, *rest = fragment
+            style, text = fragment[0], fragment[1]
             for char in text:
                 label = labels.get(source_index)
                 fragments.append(("class:image.attachment" if label else style, label or char))
@@ -152,8 +142,8 @@ class TuiApp:
         history: FileHistory | None = None,
         completer: Completer | None = None,
     ) -> None:
-        self.on_chat_submit = on_chat_submit or (lambda _text: None)
-        self.on_running_submit = on_running_submit or (lambda _text: None)
+        self.on_chat_submit = on_chat_submit or (lambda _: None)
+        self.on_running_submit = on_running_submit or (lambda _: None)
         self.on_exit_request = on_exit_request or (lambda: None)
         self.on_force_exit = on_force_exit or (lambda: None)
         self.on_interrupt = on_interrupt or (lambda: None)
@@ -594,27 +584,26 @@ class TuiApp:
         for key, reverse in (("tab", False), ("s-tab", True)):
             bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.complete_input(event.current_buffer, reverse=reverse))
 
-        @bindings.add(Keys.BracketedPaste, filter=~modal)
-        def _paste(event):
+        def paste(event):
             event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
             if self.input_mode in {"chat", "running"}:
                 self._recognize_input()
 
-        @bindings.add("c-r", filter=~modal, eager=True)
-        def _history_search(event):
+        bindings.add(Keys.BracketedPaste, filter=~modal)(paste)
+
+        def history_search(event):
             direction = pt_search.SearchDirection.BACKWARD
             if event.app.layout.current_control is self.search_toolbar.control:
                 pt_search.do_incremental_search(direction, count=event.arg)
             else:
                 pt_search.start_search(direction=direction)
 
-        bindings.add("c-o", filter=~modal, eager=True)(lambda _event: self.on_expand_output())
+        bindings.add("c-r", filter=~modal, eager=True)(history_search)
+        bindings.add("c-o", filter=~modal, eager=True)(lambda _: self.on_expand_output())
 
         # Ctrl-P mirrors Up here: readline treats them as synonyms, and both recall the latest
         # queued follow-up (or move the cursor up / walk history) while a turn is working.
-        @bindings.add("up", filter=running, eager=True)
-        @bindings.add("c-p", filter=running, eager=True)
-        def _recall(event):
+        def recall(event):
             if self.input_buffer.text:
                 self.input_buffer.cursor_up()
                 return
@@ -624,20 +613,22 @@ class TuiApp:
             else:
                 event.current_buffer.auto_up(count=event.arg)
 
+        bindings.add("c-p", filter=running, eager=True)(recall)
+        bindings.add("up", filter=running, eager=True)(recall)
+
         # Ctrl-X Ctrl-E (readline `edit-and-execute-command`) and Ctrl-G hand the current input to
         # $VISUAL/$EDITOR (fallback vim) for editing, matching Claude Code's editor bindings. The
         # `c-x c-e` chord means a lone Ctrl-X waits for the second key instead of firing eagerly.
         # In-flight resend has no key; it is the `/resend` command typed in the running input.
         edits_input = Condition(lambda: self.input_mode in {"chat", "running", "approval"})
 
-        @bindings.add("c-x", "c-e", filter=~modal & edits_input)
-        @bindings.add("c-g", filter=~modal & edits_input)
-        def _edit_in_editor(event):  # pragma: no cover — interactive path
+        def edit_in_editor(_):  # pragma: no cover — interactive path
             self.edit_input_in_editor()
 
-        @bindings.add("c-c", eager=True)
-        @bindings.add("<sigint>", eager=True)
-        def _ctrl_c(event):  # pragma: no cover — interactive path
+        bindings.add("c-g", filter=~modal & edits_input)(edit_in_editor)
+        bindings.add("c-x", "c-e", filter=~modal & edits_input)(edit_in_editor)
+
+        def ctrl_c(event):  # pragma: no cover — interactive path
             # Never quit on Ctrl-C. Instead:
             #   * approval mode → cancel this specific prompt (empty reply back to the agent).
             #   * idle chat → cancel and clear the current input.
@@ -665,15 +656,18 @@ class TuiApp:
                     return
                 self.on_interrupt()
 
-        @bindings.add("c-u", filter=~modal & edits_input, eager=True)
-        def _clear_input(event):  # pragma: no cover — interactive path
+        bindings.add("<sigint>", eager=True)(ctrl_c)
+        bindings.add("c-c", eager=True)(ctrl_c)
+
+        def clear_input(_):  # pragma: no cover — interactive path
             # The readline convention for discarding the line, and the one key that means the same
             # thing in every editor here. Ctrl-C also clears, but while the agent runs it spends a
             # press that would otherwise interrupt; this one never competes with stopping the turn.
             self.input_buffer.reset(Document(""))
 
-        @bindings.add("c-d", filter=~modal, eager=True)
-        def _ctrl_d(event):  # pragma: no cover — interactive path
+        bindings.add("c-u", filter=~modal & edits_input, eager=True)(clear_input)
+
+        def ctrl_d(event):  # pragma: no cover — interactive path
             if self.input_mode == "approval" and self._input_pending is not None:
                 self._input_result = self.input_buffer.text
                 self._input_pending.set()
@@ -683,10 +677,13 @@ class TuiApp:
                 self.on_exit_request()
                 event.app.exit()
 
-        @bindings.add(Keys.ControlBackslash, eager=True)
-        def _force_exit(event):  # pragma: no cover — interactive emergency path
+        bindings.add("c-d", filter=~modal, eager=True)(ctrl_d)
+
+        def force_exit(event):  # pragma: no cover — interactive emergency path
             self.on_force_exit()
             event.app.exit()
+
+        bindings.add(Keys.ControlBackslash, eager=True)(force_exit)
 
         return bindings
 

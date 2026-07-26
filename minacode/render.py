@@ -329,9 +329,9 @@ class UiPrinter:
                 end = index + 1
                 while end < len(entries) and entries[end][0].role is LogRole.DIFF and entries[end][1] == level:
                     end += 1
-                diff_lines = [item for item, _level in entries[index:end]]
+                diff_lines = [entry[0] for entry in entries[index:end]]
                 sample_prefix = [("", block.margin(level)), *self.edge_segments(diff_lines[0].edge)]
-                sample_prefix_width = sum(get_cwidth(text) for _style, text in sample_prefix)
+                sample_prefix_width = sum(get_cwidth(fragment[1]) for fragment in sample_prefix)
                 diff_row_width = max(1, width - sample_prefix_width)
                 diff_text = "\n".join(item.text for item in diff_lines)
                 highlighted = self.segment_lines(self.diff_segments(diff_text, diff_row_width))
@@ -346,7 +346,7 @@ class UiPrinter:
                         else:
                             background = ""
                         if background:
-                            used = sum(get_cwidth(text) for _style, text in row)
+                            used = sum(get_cwidth(fragment[1]) for fragment in row)
                             row.append((background, " " * max(0, width - used)))
                         segments.extend([*row, ("", "\n")])
                 index = end
@@ -562,7 +562,7 @@ class UiPrinter:
             segments.append((styled(prefix_style), prefix))
             for style, piece in content_hl:
                 segments.append((styled(style), piece))
-            width = get_cwidth(prefix) + sum(get_cwidth(piece) for _style, piece in content_hl)
+            width = get_cwidth(prefix) + sum(get_cwidth(fragment[1]) for fragment in content_hl)
             padding = " " * max(0, changed_width - width) if background and changed_width is not None else ""
             segments.append((background if padding else "", padding + suffix))
 

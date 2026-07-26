@@ -46,15 +46,6 @@ from minacode.image import ImageInputs, UserInput
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import AskSpec, CodeIndex, TOOL_REGISTRY
 
-try:
-    import pygments
-    from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
-    from pygments.styles import get_style_by_name
-    from pygments.token import Token
-except ImportError:  # pragma: no cover - optional highlighting dependency
-    pygments = Token = None
-    get_lexer_by_name = get_lexer_for_filename = get_style_by_name = None
-
 from minacode.render import BashLivePreview, StatusBar, UiPrinter
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 

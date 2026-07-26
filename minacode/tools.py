@@ -141,7 +141,7 @@ class Tool:
         return self.MUTATES
 
     @classmethod
-    def log_lexer(cls, _args: ToolArgs) -> str:
+    def log_lexer(cls, _: ToolArgs) -> str:
         return cls.LOG_LEXER
 
     def single_dict_arg(self, message: str) -> Json:
@@ -340,7 +340,7 @@ class ReadTool(Tool):
         return expected == cls.line_hash(line) or expected == cls.indexed_line_hash(line)
 
     def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(path) for path, _ranges in self.targets())
+        return any(not self.session.in_cwd(path) for path, _ in self.targets())
 
     def call(self) -> str:
         return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())
@@ -531,7 +531,7 @@ class SearchTool(Tool):
         regex = self.compile_regex(str(request["pattern"]), multiline=True)
         rows = []
         for path in self.files(str(request["path"]), str(request["glob"])):
-            for row, _matched in self.file_matches(path, regex, int(request["context"])):
+            for row, _ in self.file_matches(path, regex, int(request["context"])):
                 rows.append(row)
         return rows
 
@@ -697,7 +697,7 @@ class CodeIndex:
     def refresh_existing_async(self) -> bool:
         if self.session.state.code_index_refreshing:
             return False
-        status, _message = self.status()
+        status = self.status()[0]
         if status not in {"ready", "stale"}:
             return False
         self.notice("syncing", refreshing=True)
@@ -941,13 +941,13 @@ class EditTool(Tool):
         return TurnDiff(key="", turn=0, path=path, diff=diff, before=getattr(self, "last_before", ""), after=getattr(self, "last_after", ""))
 
     def preview(self) -> str:
-        path, original, _created, result = self.build()
+        path, original, _, result = self.build()
         if result.content == original and os.path.exists(path):
             raise ToolError(self.no_changes_error(original, result))
         return self.diff(path, original, result.content) or f"Edit({path})"
 
     def short_args(self) -> list[str]:
-        path, _edits = self.parse()
+        path = self.parse()[0]
         return [self.session.relpath(path)]
 
     def diff(self, path: str, original: str, new_content: str) -> str:
