@@ -628,6 +628,25 @@ def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monk
     assert output[:3] == ["\n• answer me", "", "set_running:working"]
 
 
+def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = n.TuiApp()
+    runtime = n.TuiRuntime(command_loop)
+    emitted = []
+
+    def interrupt(_user_input):
+        command_loop.model_stream_output("reasoning", "private reasoning")
+        raise KeyboardInterrupt
+
+    command_loop.agent.run = interrupt
+    command_loop.emit = lambda text: emitted.append((text, command_loop.model_stream_fragments()))
+    monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
+
+    runtime.run_agent_turn("question")
+
+    assert emitted[-1] == ("Cancelled", [])
+
+
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):
     saved = session(tmp_path)
     saved.enqueue_user_input("queued one")

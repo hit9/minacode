@@ -1740,6 +1740,7 @@ class TuiRuntime:
             self.loop.session.enqueue_user_input(text)
 
     def reset_turn(self) -> None:
+        self.loop.model_stream_output("", "")
         self.tui.set_idle()
         self.cancel_pending.clear()
         self.main_busy.clear()
@@ -1770,18 +1771,22 @@ class TuiRuntime:
         self.loop.status_bar.begin()
         self.tui.set_running("working")
         started = time.monotonic()
+        cancelled = False
         try:
             answer = self.loop.agent.run(user_input)
         except KeyboardInterrupt:
             self.submit_next(self.loop.take_pending_inputs())
-            self.loop.emit("Cancelled")
-            return
+            answer = ""
+            cancelled = True
         except MinacodeError as error:
             answer = f"Error: {error}"
         finally:
             self.reset_turn()
             self.loop.session.state.manual_model_retry_requested = False
             CodeIndex(self.loop.session).update_pending_async()
+        if cancelled:
+            self.loop.emit("Cancelled")
+            return
         elapsed = time.monotonic() - started
         self.loop.ui.emit_answer(answer)
         self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")

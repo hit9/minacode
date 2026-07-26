@@ -180,6 +180,10 @@ msgstr "为 Kimi 和 Z.AI 的国际版与中国版 endpoint 添加有文档依�
 msgid "Fixed"
 msgstr "修复"
 
+#: ../../../CHANGELOG.md
+msgid "Clear the transient thinking preview before printing `Cancelled`, so interrupted reasoning does not remain in terminal scrollback. Protocol-required reasoning data is still retained in the session."
+msgstr "在打印 `Cancelled` 前清除临时 thinking 预览，避免被中断的推理残留在终端回滚历史中；协议要求的 reasoning 数据仍会保留在 session 内。"
+
 #: ../../../CHANGELOG.md:34
 msgid "Preserve image references when the simple CLI combines resumed queued inputs; joining their text previously left internal image markers without attachments and crashed before dispatch."
 msgstr "简单 CLI 合并恢复出的排队输入时保留图片引用；此前拼接文本会留下没有附件的内部图片标记，并在发送前崩溃。"

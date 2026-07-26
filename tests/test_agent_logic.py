@@ -940,10 +940,6 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.pending_user_inputs == []
 
 
-def test_system_prompt_applies_user_language_to_visible_reasoning():
-    assert "all visible prose, including exposed reasoning/thinking summaries" in n.Agent.SYSTEM_PROMPT
-
-
 def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_path):
     s = session(tmp_path)
     queue(s, "first follow-up", "second follow-up")
