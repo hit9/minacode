@@ -201,14 +201,6 @@ class MCPManager:
             self._configs_cache = self._parse_configs()
         return self._configs_cache
 
-    @staticmethod
-    def _string_list(value: object) -> tuple[str, ...] | None:
-        return tuple(value) if isinstance(value, list) and all(isinstance(item, str) for item in value) else None
-
-    @staticmethod
-    def _string_map(value: object) -> dict[str, str] | None:
-        return dict(value) if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()) else None
-
     def _parse_configs(self) -> list[MCPServerConfig]:
         mcp_config = self.session.config.mcp
         if not isinstance(mcp_config, dict):
@@ -225,34 +217,40 @@ class MCPManager:
             bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
             auto_connect=Config.bool(raw, "auto_connect", False),
         )
-        self._read_config_field(raw, config, "args", self._string_list, "args must be a string list")
-        self._read_config_field(raw, config, "env", self._string_map, "env must be a string map")
-        self._read_config_field(raw, config, "env_http_headers", self._string_map, "env_http_headers must be a string map")
+
+        def config_error(message: str) -> None:
+            if not config.error:
+                config.error = message
+
+        def string_list(value: object) -> tuple[str, ...] | None:
+            return tuple(value) if isinstance(value, list) and all(isinstance(item, str) for item in value) else None
+
+        def string_map(value: object) -> dict[str, str] | None:
+            return dict(value) if isinstance(value, dict) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items()) else None
+
+        def read_field(key: str, parse: Callable[[object], object | None], error: str) -> None:
+            if (value := raw.get(key)) is None:
+                return
+            parsed = parse(value)
+            if parsed is None:
+                config_error(error)
+            else:
+                setattr(config, key, parsed)
+
+        read_field("args", string_list, "args must be a string list")
+        read_field("env", string_map, "env must be a string map")
+        read_field("env_http_headers", string_map, "env_http_headers must be a string map")
         if bool(config.url) == bool(config.command):
-            self._config_error(config, "exactly one of url or command is required")
+            config_error("exactly one of url or command is required")
         elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
-            self._config_error(config, "command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers")
+            config_error("command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers")
         if config.auth not in {"", "oauth"}:
-            self._config_error(config, "auth must be oauth")
+            config_error("auth must be oauth")
         if config.auth == "oauth" and config.bearer_token_env_var:
-            self._config_error(config, "auth=oauth conflicts with bearer_token_env_var")
+            config_error("auth=oauth conflicts with bearer_token_env_var")
         if config.auth == "oauth" and self._has_header(config.env_http_headers, "authorization"):
-            self._config_error(config, "auth=oauth conflicts with env_http_headers.Authorization")
+            config_error("auth=oauth conflicts with env_http_headers.Authorization")
         return config
-
-    @staticmethod
-    def _config_error(config: MCPServerConfig, message: str) -> None:
-        if not config.error:
-            config.error = message
-
-    def _read_config_field(self, raw: Json, config: MCPServerConfig, key: str, parse: Callable[[object], object | None], error: str) -> None:
-        if (value := raw.get(key)) is None:
-            return
-        parsed = parse(value)
-        if parsed is None:
-            self._config_error(config, error)
-        else:
-            setattr(config, key, parsed)
 
     @staticmethod
     def _has_header(headers: dict[str, str], name: str) -> bool:
@@ -702,18 +700,18 @@ class MCPManager:
             return await asyncio.wait_for(operation(client), timeout=timeout)
 
     async def _list_tools(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Tool]:
-        return await self._run_op(config, headers, lambda c: c.list_tools())
+        return await self._run_op(config, headers, lambda client: client.list_tools())
 
     async def _list_resources(self, config: MCPServerConfig, headers: dict[str, str]) -> list[Resource]:
-        return await self._run_op(config, headers, lambda c: c.list_resources())
+        return await self._run_op(config, headers, lambda client: client.list_resources())
 
     async def _call_tool(self, config: MCPServerConfig, headers: dict[str, str], name: str, arguments: Json) -> CallToolResult | ToolTask:
-        return await self._run_op(config, headers, lambda c: c.call_tool(name, arguments), long_timeout=True)
+        return await self._run_op(config, headers, lambda client: client.call_tool(name, arguments), long_timeout=True)
 
     async def _read_resource(
         self, config: MCPServerConfig, headers: dict[str, str], uri: str
     ) -> list[TextResourceContents | BlobResourceContents] | ResourceTask:
-        return await self._run_op(config, headers, lambda c: c.read_resource(uri), long_timeout=True)
+        return await self._run_op(config, headers, lambda client: client.read_resource(uri), long_timeout=True)
 
     def _build_mcp_headers(self, config: MCPServerConfig) -> dict[str, str] | str:
         headers: dict[str, str] = {}

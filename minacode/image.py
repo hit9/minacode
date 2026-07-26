@@ -233,40 +233,32 @@ class ImageInputs:
         return any(cls.refs(message) for message in messages)
 
     def chat_content(self, message: Json) -> str | list[Json]:
-        images = self.refs(message)
-        if not images or self.support() is False:
-            return self.label_text(message)
-        parts: list[Json] = [{"type": "image_url", "image_url": {"url": self._data_url(image)}} for image in images]
-        if text := str(message.get("content") or ""):
-            parts.append({"type": "text", "text": text})
-        return parts
+        return self._protocol_content(message, lambda image: {"type": "image_url", "image_url": {"url": self._data_url(image)}}, "text")
 
     def responses_content(self, message: Json) -> str | list[Json]:
-        images = self.refs(message)
-        if not images or self.support() is False:
-            return self.label_text(message)
-        parts: list[Json] = [{"type": "input_image", "image_url": self._data_url(image)} for image in images]
-        if text := str(message.get("content") or ""):
-            parts.append({"type": "input_text", "text": text})
-        return parts
+        return self._protocol_content(message, lambda image: {"type": "input_image", "image_url": self._data_url(image)}, "input_text")
 
     def anthropic_content(self, message: Json) -> str | list[Json]:
-        images = self.refs(message)
-        if not images or self.support() is False:
-            return self.label_text(message)
-        parts: list[Json] = [
-            {
+        return self._protocol_content(
+            message,
+            lambda image: {
                 "type": "image",
                 "source": {
                     "type": "base64",
                     "media_type": image.media_type,
                     "data": base64.b64encode(self._bytes(image)).decode("ascii"),
                 },
-            }
-            for image in images
-        ]
+            },
+            "text",
+        )
+
+    def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
+        images = self.refs(message)
+        if not images or self.support() is False:
+            return self.label_text(message)
+        parts = [image_part(image) for image in images]
         if text := str(message.get("content") or ""):
-            parts.append({"type": "text", "text": text})
+            parts.append({"type": text_type, "text": text})
         return parts
 
     @classmethod

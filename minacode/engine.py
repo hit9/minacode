@@ -340,7 +340,7 @@ class ContextManager:
 
     def update_current_tokens(self, base_system: str) -> int:
         messages = self.model_messages(base_system, self.session._active_turn_messages)
-        tools = Tool._resolved_schemas(self.session)
+        tools = Tool.resolved_schemas(self.session)
         tokens = self.request_tokens(messages, tools)
         self.session.state.context_percent = min(100, tokens * 100 // self.request_token_budget())
         return tokens
@@ -563,32 +563,29 @@ class ContextManager:
             return text
         return text[-limit:].split("\n", 1)[-1] or text[-limit:]
 
-    @staticmethod
-    def _readable_provider_context(message: Json) -> list[str]:
-        """Return provider replay state that also contributes readable prompt tokens."""
-
-        readable: list[str] = []
-        responses = message.get(RESPONSES_OUTPUT_KEY)
-        if isinstance(responses, list):
-            for item in responses:
-                if not isinstance(item, dict) or item.get("type") != "reasoning":
-                    continue
-                readable.extend(str(item[key]) for key in ("content", "summary") if item.get(key))
-        anthropic = message.get(ANTHROPIC_CONTENT_KEY)
-        if isinstance(anthropic, list):
-            for block in anthropic:
-                if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking") and block.get("thinking"):
-                    readable.append(str(block["thinking"]))
-        return readable
-
     def estimated_tokens(self, messages: list[Json]) -> int:
         # Normalized assistant fields already contain visible text and tool calls, so provider
         # echoes would double-count them. Preserve only additional readable reasoning; ciphertext
         # and signatures are transport state whose byte length is not a prompt-token estimate.
+        def readable_provider_context(message: Json) -> list[str]:
+            readable: list[str] = []
+            responses = message.get(RESPONSES_OUTPUT_KEY)
+            if isinstance(responses, list):
+                for item in responses:
+                    if not isinstance(item, dict) or item.get("type") != "reasoning":
+                        continue
+                    readable.extend(str(item[key]) for key in ("content", "summary") if item.get(key))
+            anthropic = message.get(ANTHROPIC_CONTENT_KEY)
+            if isinstance(anthropic, list):
+                for block in anthropic:
+                    if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking") and block.get("thinking"):
+                        readable.append(str(block["thinking"]))
+            return readable
+
         payload: list[Json] = []
         for message in messages:
             estimated = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
-            if readable := ContextManager._readable_provider_context(message):
+            if readable := readable_provider_context(message):
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -1251,7 +1248,7 @@ class ModelClient:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         self.cancel_requested.clear()
-        tools = tools if tools is not None else Tool._resolved_schemas(self.session)
+        tools = tools if tools is not None else Tool.resolved_schemas(self.session)
         state = self.session.state
         state.model_retry_reason = ""
         try:
@@ -1384,6 +1381,37 @@ class ModelClient:
         tool_call_positions: dict[int, int] = {}
         next_index = 0
         usage: Any = None
+
+        def allocate_tool_call() -> int:
+            nonlocal next_index
+            while next_index in tool_calls:
+                next_index += 1
+            index = next_index
+            next_index += 1
+            return index
+
+        def resolve_tool_call_index(raw_index: object, call_id: str, position: int, chunk_size: int) -> int:
+            nonlocal next_index
+            if isinstance(raw_index, int):
+                index = raw_index
+            elif call_id and call_id in tool_call_ids:
+                index = tool_call_ids[call_id]
+            elif call_id:
+                index = allocate_tool_call()
+            elif chunk_size == 1 and len(tool_calls) == 1:
+                index = next(iter(tool_calls))
+            elif position in tool_call_positions and chunk_size == len(tool_call_positions):
+                index = tool_call_positions[position]
+            elif position not in tool_call_positions:
+                index = allocate_tool_call()
+            else:
+                raise ModelError("Chat stream tool-call delta omitted both index and id; cannot associate it safely")
+            next_index = max(next_index, index + 1)
+            tool_call_positions[position] = index
+            if call_id:
+                tool_call_ids[call_id] = index
+            return index
+
         try:
             for chunk in client.chat.completions.create(**params):
                 if chunk_usage := self.message_field(chunk, "usage"):
@@ -1402,30 +1430,7 @@ class ModelClient:
                 for position, raw in enumerate(raw_tool_calls):
                     raw_index = self.message_field(raw, "index")
                     call_id = str(self.message_field(raw, "id") or "")
-                    if isinstance(raw_index, int):
-                        index = raw_index
-                    elif call_id and call_id in tool_call_ids:
-                        index = tool_call_ids[call_id]
-                    elif call_id:
-                        while next_index in tool_calls:
-                            next_index += 1
-                        index = next_index
-                        next_index += 1
-                    elif len(raw_tool_calls) == 1 and len(tool_calls) == 1:
-                        index = next(iter(tool_calls))
-                    elif position in tool_call_positions and len(raw_tool_calls) == len(tool_call_positions):
-                        index = tool_call_positions[position]
-                    elif position not in tool_call_positions:
-                        while next_index in tool_calls:
-                            next_index += 1
-                        index = next_index
-                        next_index += 1
-                    else:
-                        raise ModelError("Chat stream tool-call delta omitted both index and id; cannot associate it safely")
-                    next_index = max(next_index, index + 1)
-                    tool_call_positions[position] = index
-                    if call_id:
-                        tool_call_ids[call_id] = index
+                    index = resolve_tool_call_index(raw_index, call_id, position, len(raw_tool_calls))
                     if index not in tool_calls:
                         function_target: Json = {"name": "", "arguments": ""}
                         tool_calls[index] = {"id": "", "type": "function", "function": function_target}
@@ -2186,7 +2191,7 @@ FINAL:
         pending = self.session.claim_user_inputs()
         request_turn = [*turn_messages, *(item.message(self.LIVE_FOLLOWUP_PREFIX) for item in pending)]
         self.session.state.turn_messages = len(request_turn)
-        tools = Tool._resolved_schemas(self.session)
+        tools = Tool.resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.SYSTEM_PROMPT, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending)

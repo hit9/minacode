@@ -59,7 +59,9 @@ class Tool:
         return {"type": "function", "function": function}
 
     @staticmethod
-    def _resolved_schemas(session: Session) -> list[Json]:
+    def resolved_schemas(session: Session) -> list[Json]:
+        """Return the tool schemas available for this session and provider."""
+
         strict = session.config.provider.resolve().strict_tools_active
         # Optional tool families stay out of the model prefix until they have usable session state.
         has_skills = bool(session.skills and session.skills.skills)
@@ -1460,20 +1462,6 @@ class BashTool(Tool):
         stdout_parts: list[str],
         stderr_parts: list[str],
     ) -> bool:
-        data, eof = self._read_and_release(selector, key)
-        # final=True on EOF flushes any bytes still buffered in the decoder (e.g. a truncated
-        # trailing character) so they are not silently dropped.
-        text = self._decoders[key.data].decode(data, final=eof)
-        if text:
-            (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
-            if self.live_output is not None:
-                self.live_output(str(key.data), text)
-        return not eof
-
-    @staticmethod
-    def _read_and_release(selector: selectors.BaseSelector, key: selectors.SelectorKey) -> tuple[bytes, bool]:
-        """Read one stream chunk, releasing the selector registration when it reaches EOF."""
-
         try:
             data = os.read(cast(Any, key.fileobj).fileno(), 4096)
         except OSError:
@@ -1484,7 +1472,14 @@ class BashTool(Tool):
                 selector.unregister(key.fileobj)
             with contextlib.suppress(Exception):
                 cast(Any, key.fileobj).close()
-        return data, eof
+        # final=True on EOF flushes any bytes still buffered in the decoder (e.g. a truncated
+        # trailing character) so they are not silently dropped.
+        text = self._decoders[key.data].decode(data, final=eof)
+        if text:
+            (stdout_parts if key.data == "stdout" else stderr_parts).append(text)
+            if self.live_output is not None:
+                self.live_output(str(key.data), text)
+        return not eof
 
     @staticmethod
     def kill_process_group(proc: subprocess.Popen[bytes]) -> None:
