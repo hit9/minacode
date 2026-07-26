@@ -353,7 +353,16 @@ class ImageInputs:
             return False
         if numeric_status is None and not re.search(r"\b(?:400|415|422)\b", text):
             return False
-        return any(term in text for term in cls._MODALITY_TERMS) and any(term in text for term in cls._UNSUPPORTED_TERMS)
+        mentions_image = any(term in text for term in cls._MODALITY_TERMS)
+        rejects_modality = any(term in text for term in cls._UNSUPPORTED_TERMS)
+        rejects_image_schema = (
+            re.search(
+                r"\bunknown variant\b\s*[`'\"]?(?:image_url|input_image|image)\b[`'\"]?[\s\S]*\bexpected\b[\s\S]*\btext\b",
+                text,
+            )
+            is not None
+        )
+        return (mentions_image and rejects_modality) or rejects_image_schema
 
     def _session(self) -> Session:
         if self.session is None:

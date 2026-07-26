@@ -1267,7 +1267,11 @@ class ModelClient:
                     raise
                 except ModelError as error:
                     if self.session.images.note_error(messages, error):
-                        raise ModelError(f"Active provider/model does not support image input: {error}") from error
+                        provider = self.session.config.provider
+                        identity = f"{self.session.config.active_provider}/{provider.model or '(no model)'}"
+                        raise ModelError(
+                            f"{identity} does not support image input. Switch to an image-capable model, or continue with image labels only."
+                        ) from error
                     retryable = self.retryable_error(error)
                     if attempt >= MODEL_REQUEST_RETRIES or not retryable:
                         if attempt:

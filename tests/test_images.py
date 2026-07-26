@@ -242,11 +242,13 @@ def test_only_explicit_image_unsupported_error_is_learned(tmp_path, monkeypatch)
     model = n.ModelClient(s)
 
     def reject(_messages, _tools):
-        raise n.ModelError("status code: 400 image inputs are not supported")
+        raise n.ModelError("Error code: 400 - Failed to deserialize messages[4]: unknown variant `image_url`, expected `text`")
 
     monkeypatch.setattr(model, "api_request", reject)
-    with pytest.raises(n.ModelError, match="Active provider/model does not support image input"):
+    with pytest.raises(n.ModelError) as caught:
         model.request([message], [])
+    assert str(caught.value) == ("default/vision does not support image input. Switch to an image-capable model, or continue with image labels only.")
+    assert "unknown variant `image_url`" in str(caught.value.__cause__)
     assert s.images.support() is False
     with pytest.raises(n.ModelError, match="Image input is disabled"):
         s.images.prepare(value)
@@ -254,10 +256,10 @@ def test_only_explicit_image_unsupported_error_is_learned(tmp_path, monkeypatch)
     s.config.provider.model = "unrelated-error-model"
 
     def unrelated(_messages, _tools):
-        raise n.ModelError("status code: 400 invalid request")
+        raise n.ModelError("status code: 400 unknown variant `text`, expected `image_url`")
 
     monkeypatch.setattr(model, "api_request", unrelated)
-    with pytest.raises(n.ModelError, match="invalid request"):
+    with pytest.raises(n.ModelError, match="expected `image_url`"):
         model.request([message], [])
     assert s.images.support() is None
 
