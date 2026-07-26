@@ -200,34 +200,42 @@ class CommandLoop:
     }
     MCP_HELP = "Try /mcp, /mcp connect <server> [server ...], /mcp disconnect <server>, or /mcp tools [server]"
 
-    HELP = """Commands:
-  /help              Show this help.
-  /status            Show runtime status.
-  /ps                Show active background jobs.
-  /diff              Show latest edits and overall session diff.
-  /skills            List installed skills (load with Skill(name) or reference inline with $name).
-  /config            Show active config.
-  /compact           Compact context now.
-  /resend            Resend the in-flight model request (type it while a turn is working).
-  /index [force]      Sync or rebuild code symbol index.
-  /provider [NAME]   Select or show the active provider.
-  /model [MODEL]     Select or set the active model.
-  /reason [EFFORT]   Select or set reasoning effort (alias: /effort).
-  /api [API]         Select or set the request protocol used to reach the model.
-  /set KEY VALUE     Set provider.* and runtime.*.
-  /yolo              Toggle tool confirmations.
-  /strict            Toggle strict tool-call schemas (OpenAI / DeepSeek).
-  /mcp               Manage MCP server connections.
-  /exit, /quit       Exit.
-Mentions:
-  @server[.tool]     Point the agent at an MCP server/tool in your message (tab-completes).
-  $skill             Reference a skill in your message to load its instructions for that turn (tab-completes).
-CLI:
-  -c, --last, --latest       Resume the latest session in the current project.
-  --resume [UID]             Resume a saved session; defaults to latest (last also works).
-Tools:
-  Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
-  Skill(name) loads a skill's full instructions on demand (see the SKILLS section / $skill).
+    HELP = """### Commands
+
+- `/help` — Show this help.
+- `/status` — Show runtime status.
+- `/ps` — Show active background jobs.
+- `/diff` — Show latest edits and overall session diff.
+- `/skills` — List installed skills (load with `Skill(name)` or reference inline with `$name`).
+- `/config` — Show active config.
+- `/compact` — Compact context now.
+- `/resend` — Resend the in-flight model request (type it while a turn is working).
+- `/index [force]` — Sync or rebuild code symbol index.
+- `/provider [NAME]` — Select or show the active provider.
+- `/model [MODEL]` — Select or set the active model.
+- `/reason [EFFORT]` — Select or set reasoning effort (alias: `/effort`).
+- `/api [API]` — Select or set the request protocol used to reach the model.
+- `/set KEY VALUE` — Set `provider.*` and `runtime.*`.
+- `/yolo` — Toggle tool confirmations.
+- `/strict` — Toggle strict tool-call schemas (OpenAI / DeepSeek).
+- `/mcp` — Manage MCP server connections.
+- `/exit`, `/quit` — Exit.
+
+### Mentions
+
+- `@server[.tool]` — Point the agent at an MCP server/tool in your message (tab-completes).
+- `$skill` — Reference a skill in your message to load its instructions for that turn (tab-completes).
+
+### CLI
+
+- `-c`, `--last`, `--latest` — Resume the latest session in the current project.
+- `--resume [UID]` — Resume a saved session; defaults to latest (`last` also works).
+
+### Tools
+
+Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
+
+`Skill(name)` loads a skill's full instructions on demand (see the SKILLS section / `$skill`).
 """
 
     DIFF_MAX_BYTES: ClassVar[int] = 50_000
@@ -861,7 +869,7 @@ Tools:
             if name == "/status":
                 self.ui.emit_answer(output, rule=False)
             else:
-                (self.ui.emit_answer if name in {"/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
+                (self.ui.emit_answer if name in {"/help", "/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
         return True, False
 
     def resend_command(self, _args: str) -> str | None:
@@ -1103,7 +1111,12 @@ Tools:
         return self.select_choice("Request API", PROVIDER_API_CHOICES, labels=labels, current=current)
 
     def help(self, args: str) -> str:
-        return self.HELP.rstrip()
+        text = self.HELP.rstrip()
+        if self.ui.color:
+            return text
+        text = text.replace("`", "")
+        text = re.sub(r"^### (.+)$", r"\1:", text, flags=re.MULTILINE)
+        return re.sub(r"^- (.+?) — ", r"  \1  ", text, flags=re.MULTILINE)
 
     def status(self, args: str) -> str:
         def progress_bar(value: int, total: int, width: int = 14) -> str:
