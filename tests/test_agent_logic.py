@@ -1162,7 +1162,15 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
 
     text = "".join(t for _, t in loop.queue_region_fragments())
     assert "2 queued" in text and "working" in text
+    assert "sent" not in text
     assert "+ run tests" in text and "+ then push" in text
+
+    s.claim_user_inputs()
+    queue(s, "after claim")
+    mixed = "".join(t for _, t in loop.queue_region_fragments())
+    assert "1 queued · 2 sent" in mixed
+    assert "→ run tests" in mixed and "→ then push" in mixed
+    assert "+ after claim" in mixed
 
     # The divider animates a comet head across the dashes while its label remains stable.
     with pytest.MonkeyPatch.context() as mp:

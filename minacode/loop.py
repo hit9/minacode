@@ -387,7 +387,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             *dashes(lead, trail),
         ]
 
-    def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
+    def queue_divider_fragments(self, queued: int = 0, sent: int = 0) -> list[tuple[str, str]]:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
         if status == "working":
             retry_status = self.status_bar.retry_status()
@@ -400,7 +400,13 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:
             label = status
-        label = f"{label} [ {queued} queued ]" if queued else label
+        input_status = []
+        if queued:
+            input_status.append(f"{queued} queued")
+        if sent:
+            input_status.append(f"{sent} sent")
+        if input_status:
+            label = f"{label} [ {' · '.join(input_status)} ]"
         return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
 
     def queue_region_fragments(self) -> list[tuple[str, str]]:
@@ -408,7 +414,8 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             pending = list(self.session.pending_user_inputs)
         # The divider is a standing boundary for the whole turn: flushed messages move up into the log
         # above it, so it stays put even once the queue empties rather than vanishing.
-        fragments = self.queue_divider_fragments(len(pending))
+        queued = sum(not item.inflight for item in pending)
+        fragments = self.queue_divider_fragments(queued, len(pending) - queued)
         for item in pending:
             marker = "→ " if item.inflight else "+ "
             for index, line in enumerate(item.text.splitlines()):
@@ -1675,13 +1682,12 @@ class TuiRuntime:
         self.tui.set_running("cancelling")
         self._interrupt_active(self.loop.agent.cancel)
 
-    def _request_model_retry(self, status_label: str) -> None:
+    def _request_model_retry(self) -> None:
         state = self.loop.session.state
         if state.current_model_call_started_at <= 0 or state.manual_model_retry_requested:
             return
         state.manual_model_retry_requested = True
         state.model_retry_count += 1
-        self.tui.status_label = status_label
         self.tui.invalidate()
         self._interrupt_active(self.loop.agent.model.cancel)
 
@@ -1698,7 +1704,7 @@ class TuiRuntime:
         self.tui.invalidate()
 
     def recall(self) -> str | UserInput:
-        return self.loop.recall_pending_input(lambda: self._request_model_retry("revising queued input"))
+        return self.loop.recall_pending_input(self._request_model_retry)
 
     def expand_output(self) -> None:
         threading.Thread(target=self.loop.bash_output_viewer, name="bash-output", daemon=True).start()
@@ -1723,7 +1729,7 @@ class TuiRuntime:
             on_force_exit=self.force_exit,
             on_interrupt=self.interrupt,
             on_input_cancel=lambda: self.loop.emit("Cancelled"),
-            on_retry=lambda: self._request_model_retry("working"),
+            on_retry=self._request_model_retry,
             on_recall=self.recall,
             on_expand_output=self.expand_output,
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),

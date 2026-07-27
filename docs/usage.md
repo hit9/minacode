@@ -12,8 +12,11 @@ never submitted by interrupting — the first `Ctrl-C` discards it instead.
 
 <div class="term-shot" role="img" aria-label="Terminal view: minacode is working on a request while two follow-up messages wait below a divider reading 'working, 2 queued'."><span class="fs-user">• refactor the MCP manager</span><span class="fs-tool">  Read minacode.py</span><span class="fs-tool">  Edit minacode.py</span><span class="fs-divider">──── working (12s) [ 2 queued ] ─────────────</span><span class="fs-queued">+ also update the tests</span><span class="fs-queued">+ and bump the version</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span class="fs-hint">  ↑ recalls queued · Ctrl-C interrupts</span></div>
 
-Everything below the divider is waiting. The agent picks those messages up at its next step,
-and they move up into the log above the divider once they are in.
+A `+` below the divider is waiting for the next model step. At that boundary — after the current
+tool-call batch, when there is one — all waiting follow-ups are sent together, in order, with the
+next model request; their marker changes to `→` and the divider reports them as `sent`. They move
+into the log above the divider after that request completes successfully, while failed requests
+keep them available for retry.
 
 | Key | When | Effect |
 |---|---|---|

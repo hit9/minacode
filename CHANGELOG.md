@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+### Fixed
+- Distinguish follow-ups waiting for the next model step from those already sent in the active request, and let recalled-input retries return to the normal `retrying`, `thinking`, and `responding` states instead of leaving a stale `revising queued input` label.
+
 
 ## 0.13.0 - 2026-07-26
 

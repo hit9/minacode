@@ -27,6 +27,10 @@ msgstr ""
 msgid "Unreleased"
 msgstr ""
 
+#: ../../../CHANGELOG.md:8
+msgid "Distinguish follow-ups waiting for the next model step from those already sent in the active request, and let recalled-input retries return to the normal `retrying`, `thinking`, and `responding` states instead of leaving a stale `revising queued input` label."
+msgstr "区分等待下一个模型 step 的追加指令与已随当前请求发送的追加指令；召回输入触发重试后恢复正常的 `retrying`、`thinking` 和 `responding` 状态，不再残留 `revising queued input` 标签。"
+
 #: ../../../CHANGELOG.md:7 ../../../CHANGELOG.md:48 ../../../CHANGELOG.md:63
 #: ../../../CHANGELOG.md:99 ../../../CHANGELOG.md:132 ../../../CHANGELOG.md:141
 #: ../../../CHANGELOG.md:147 ../../../CHANGELOG.md:172

@@ -47,8 +47,8 @@ msgid "You can keep typing while minacode works. A submitted follow-up joins the
 msgstr "minacode 工作时仍可继续输入。如果又开始了一个模型 step，提交的追加指令会加入当前任务；否则会成为下一个任务。中断不会提交编辑器中尚未发送的草稿——第一次 `Ctrl-C` 会先丢弃它。"
 
 #: ../../usage.md:15
-msgid "Everything below the divider is waiting. The agent picks those messages up at its next step, and they move up into the log above the divider once they are in."
-msgstr "分隔线以下的内容都在等待。Agent 会在下一个 step 取走这些消息；消息进入请求后，会移到分隔线上方的日志中。"
+msgid "A `+` below the divider is waiting for the next model step. At that boundary — after the current tool-call batch, when there is one — all waiting follow-ups are sent together, in order, with the next model request; their marker changes to `→` and the divider reports them as `sent`. They move into the log above the divider after that request completes successfully, while failed requests keep them available for retry."
+msgstr "分隔线下以 `+` 开头的消息正在等待下一个模型 step。到达该边界时——如果存在当前 tool-call 批次，则先等待它结束——所有等待中的追加指令会按顺序随下一次模型请求一起发送；其标记变为 `→`，分隔线将其显示为 `sent`。请求成功结束后，它们才会移入分隔线上方的日志；请求失败时则会保留以供重试。"
 
 #: ../../usage.md
 msgid "Key"

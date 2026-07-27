@@ -1095,7 +1095,7 @@ def test_resend_command_only_resends_while_running(tmp_path):
     assert retried == [True]
 
 
-def test_manual_resend_uses_transient_retry_status(tmp_path, monkeypatch):
+def test_manual_resend_preserves_stream_driven_status(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     command_loop.tui.set_running("working")
@@ -1103,11 +1103,35 @@ def test_manual_resend_uses_transient_retry_status(tmp_path, monkeypatch):
     runtime = TuiRuntime(command_loop)
     monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
 
-    runtime._request_model_retry("working")
+    runtime._request_model_retry()
 
     assert command_loop.tui.status_label == "working"
     assert command_loop.session.state.manual_model_retry_requested is True
     assert command_loop.session.state.model_retry_count == 1
+
+
+def test_recalling_sent_input_does_not_leave_revising_status(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop.tui.set_running("working")
+    command_loop.session.enqueue_user_input("revise me")
+    command_loop.session.claim_user_inputs()
+    command_loop.session.state.current_model_call_started_at = 1.0
+    runtime = TuiRuntime(command_loop)
+    monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
+
+    assert runtime.recall() == "revise me"
+    command_loop.model_stream_output("output", "updated response")
+
+    retrying = "".join(text for _style, text in command_loop.queue_divider_fragments())
+    assert "retrying" in retrying
+    assert "revising" not in retrying
+
+    command_loop.status_bar.retry_notice_until = 0
+    responding = "".join(text for _style, text in command_loop.queue_divider_fragments())
+    assert "responding" in responding
+    assert "revising" not in responding
+    assert command_loop.session.state.manual_model_retry_requested is True
 
 
 def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path, monkeypatch):
