@@ -1760,6 +1760,8 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.set_value("") == "Usage: /set KEY VALUE"
     assert command_loop.set_value("unknown value") == "Unknown config key: unknown"
     assert command_loop.set_value("provider.timeout never") == "Invalid value for provider.timeout"
+    assert command_loop.set_value("provider.response_timeout 900") == "Set provider.response_timeout"
+    assert command_loop.session.config.provider.response_timeout == 900
     assert command_loop.set_value("provider.temperature off") == "Set provider.temperature"
     assert command_loop.session.config.provider.temperature is None
     assert command_loop.set_value("provider.stream maybe") == "Invalid value for provider.stream"

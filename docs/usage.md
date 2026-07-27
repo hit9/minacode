@@ -147,7 +147,7 @@ protocol with `/api` (or `auto` to re-infer from the URL and model). The reply n
 took effect, and history is protocol-neutral, so switching mid-session is safe.
 
 **`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; tab-completes both keys
-and, where the values are a fixed set, the values. Example: `/set provider.timeout 180`.
+and, where the values are a fixed set, the values. Example: `/set provider.response_timeout 900`.
 
 **`/resend`** — Cancel and re-send the in-flight model request without restarting the
 turn. Type it while a model request is waiting; it has no effect while the agent is

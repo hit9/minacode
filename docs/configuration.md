@@ -57,7 +57,8 @@ Most users can leave these unset.
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
 | `max_tokens` | — | Output-token cap and reserved compaction space |
-| `timeout` | `120` | Request timeout in seconds |
+| `timeout` | `120` | Transport inactivity timeout in seconds |
+| `response_timeout` | `600` | Total generation limit in seconds; `0` disables it |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
 | `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
 | `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body |
@@ -66,6 +67,11 @@ Most users can leave these unset.
 Streaming is enabled by default for all three protocols. If a compatible endpoint does not
 support it, set `stream = false` in that provider block, or use `/set provider.stream off` for
 the current session.
+
+`timeout` detects a connection that stops delivering data. Streaming reasoning can keep that
+timer active indefinitely, so `response_timeout` separately limits the complete model response to
+ten minutes by default. Reaching the total limit cancels the request without automatic retries;
+set it to `0` only when deliberately allowing unbounded generations.
 
 Unknown OpenAI-compatible endpoints stay on the generic path. If automatic protocol selection is
 wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage

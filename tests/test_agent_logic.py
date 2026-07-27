@@ -26,7 +26,7 @@ from minacode.base import (
 )
 from minacode.engine import Agent, ContextManager, LogBlock, ModelClient, ToolRunner, TurnBox
 from minacode.loop import CommandLoop
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, INTERRUPT_MARKER, LANGUAGE_REMINDER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from minacode.render import StatusBar
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.skill import SkillLibrary
@@ -72,7 +72,10 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert [message["content"] for message in messages[2:4]] == ["old request", "old answer"]
     assert messages[4]["content"].startswith("--- Memory ---")
     assert "Date:" in messages[4]["content"]
+    assert messages[4]["content"].endswith(LANGUAGE_REMINDER)
     assert [message["content"] for message in messages[5:]] == ["current request", "extra one", "extra two"]
+    assert [message["content"] for message in turn] == ["current request", "extra one", "extra two"]
+    assert not any(LANGUAGE_REMINDER in str(message.get("content")) for message in s.messages)
     assert not any("FILE STATE" in message["content"] for message in messages)
 
 

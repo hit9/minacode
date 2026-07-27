@@ -87,9 +87,13 @@ def test_runtime_settings_default_context_budget_is_240k():
     assert RuntimeSettings.from_dict({}).max_context_tokens == 240 * 1024
 
 
-def test_provider_default_timeout_is_120_seconds():
+def test_provider_timeout_defaults_distinguish_inactivity_from_total_generation():
     assert ProviderConfig().timeout == 120
     assert Config.from_dict({}).provider.timeout == 120
+    assert ProviderConfig().response_timeout == 600
+    assert Config.from_dict({}).provider.response_timeout == 600
+    assert ProviderConfig.from_dict({"response_timeout": 0}).response_timeout == 0
+    assert "# response_timeout = 600" in ConfigFile.DEFAULT_TEXT
 
 
 def test_provider_stream_defaults_on_and_can_be_disabled():

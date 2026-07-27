@@ -231,8 +231,8 @@ msgid "**`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek)."
 msgstr "**`/strict`** — 切换严格 tool-call schema（OpenAI / DeepSeek）。"
 
 #: ../../usage.md:122
-msgid "**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session. Example: `/set provider.model deepseek-v4-flash`."
-msgstr "**`/set KEY VALUE`** — 为当前 session 设置 `provider.*` 或 `runtime.*`。例如：`/set provider.model deepseek-v4-flash`。"
+msgid "**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; tab-completes both keys and, where the values are a fixed set, the values. Example: `/set provider.response_timeout 900`."
+msgstr "**`/set KEY VALUE`** — 为当前 session 设置 `provider.*` 或 `runtime.*`；key 以及有固定选项的 value 均支持 Tab 补全。例如：`/set provider.response_timeout 900`。"
 
 #: ../../usage.md:125
 msgid "**`/resend`** — Cancel and re-send the in-flight model request without restarting the turn. Type it while a model request is waiting; it has no effect while the agent is running a tool or otherwise between model calls. The divider briefly reports the retry, keeps its elapsed timer and waiting pulse, then returns to `working` for the replacement request. Automatic retries also show their attempt and concise reason, such as `retrying 2/6 · timeout`, followed by `working · attempt 2/6` while that request continues:"

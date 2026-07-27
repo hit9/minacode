@@ -78,6 +78,9 @@ class ConfigError(MinacodeError): ...
 class ModelError(MinacodeError): ...
 
 
+class ModelResponseTimeout(ModelError): ...
+
+
 class ModelRequestRetry(MinacodeError): ...
 
 
@@ -201,6 +204,7 @@ class ProviderConfig:
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
     timeout: int = 120
+    response_timeout: int = 600
     extra_body: Json = field(default_factory=dict)
 
     @classmethod
@@ -233,6 +237,7 @@ class ProviderConfig:
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
             timeout=Config.int(data, "timeout", 120),
+            response_timeout=max(0, Config.int(data, "response_timeout", 600)),
             extra_body=Config.table(data, "extra_body"),
         )
 
@@ -444,7 +449,8 @@ model = ""
 # stream = true
 # image_input = "auto"         # auto | on | off
 # reasoning = "medium"
-# timeout = 120
+# timeout = 120                # transport inactivity
+# response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
 
 # [runtime]                    # optional overrides (defaults shown)

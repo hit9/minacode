@@ -191,8 +191,20 @@ msgid "`120`"
 msgstr "`120`"
 
 #: ../../configuration.md
-msgid "Request timeout in seconds"
-msgstr "请求超时秒数"
+msgid "Transport inactivity timeout in seconds"
+msgstr "传输无数据时的超时秒数"
+
+#: ../../configuration.md
+msgid "`response_timeout`"
+msgstr "`response_timeout`"
+
+#: ../../configuration.md
+msgid "`600`"
+msgstr "`600`"
+
+#: ../../configuration.md
+msgid "Total generation limit in seconds; `0` disables it"
+msgstr "完整生成的时限（秒）；设为 `0` 可禁用"
 
 #: ../../configuration.md
 msgid "`prompt_cache_key`"
@@ -238,6 +250,10 @@ msgstr "Provider 特有的 Chat reasoning 格式；通常保留为 `auto`"
 #: ../../configuration.md:66
 msgid "Streaming is enabled by default for all three protocols. If a compatible endpoint does not support it, set `stream = false` in that provider block, or use `/set provider.stream off` for the current session."
 msgstr "三种协议默认都启用流式输出。如果兼容 endpoint 不支持，可在对应 provider 配置中设置 `stream = false`，或在当前 session 中执行 `/set provider.stream off`。"
+
+#: ../../configuration.md:71
+msgid "`timeout` detects a connection that stops delivering data. Streaming reasoning can keep that timer active indefinitely, so `response_timeout` separately limits the complete model response to ten minutes by default. Reaching the total limit cancels the request without automatic retries; set it to `0` only when deliberately allowing unbounded generations."
+msgstr "`timeout` 用于检测连接停止传输数据的情况。流式 reasoning 可能持续产生数据，使该计时器一直不会触发；因此 `response_timeout` 会单独限制完整模型响应，默认十分钟。达到总时限后会取消请求且不自动重试；只有在明确需要允许无限时长生成时，才将其设为 `0`。"
 
 #: ../../configuration.md:64
 msgid "Unknown OpenAI-compatible endpoints stay on the generic path. If automatic protocol selection is wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage reported by the provider."

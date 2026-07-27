@@ -40,6 +40,7 @@ from minacode.base import (
     MinacodeError,
     ModelError,
     ModelRequestRetry,
+    ModelResponseTimeout,
     ProviderConfig,
     Text,
     ToolArgs,
@@ -54,6 +55,7 @@ from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
     INTERRUPT_MARKER,
+    LANGUAGE_REMINDER,
     LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
     SYSTEM_PROMPT,
@@ -276,7 +278,10 @@ class ContextManager:
             messages.append({"role": "user", "content": "--- History index ---\n" + history_index})
         conversation = [
             *self.session.messages,
-            {"role": "user", "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)")},
+            {
+                "role": "user",
+                "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)") + "\n\n" + LANGUAGE_REMINDER,
+            },
             *(turn_messages or []),
         ]
         messages.extend(self.dedup_skill_loads(self.dedup_mcp_describes(conversation)))
@@ -1330,17 +1335,43 @@ class ModelClient:
         return (chars + 3) // 4 + images
 
     def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT]) -> _ResultT:
+        response_timeout = self.session.config.provider.response_timeout
+        expired = threading.Event()
+        timer: threading.Timer | None = None
+        if response_timeout:
+
+            def expire() -> None:
+                expired.set()
+                with contextlib.suppress(Exception):
+                    client.close()
+
+            timer = threading.Timer(response_timeout, expire)
+            timer.daemon = True
         with self.active_client.track(client):
+            if timer is not None:
+                timer.start()
             try:
                 result = request()
                 if self.cancel_requested.is_set():
                     raise KeyboardInterrupt
+                if expired.is_set():
+                    raise ModelResponseTimeout(
+                        f"Model response exceeded provider.response_timeout={response_timeout}s; set it to 0 to disable the total-generation limit"
+                    )
                 return result
+            except ModelResponseTimeout:
+                raise
             except Exception as error:
                 if self.cancel_requested.is_set():
                     raise KeyboardInterrupt from None
+                if expired.is_set():
+                    raise ModelResponseTimeout(
+                        f"Model response exceeded provider.response_timeout={response_timeout}s; set it to 0 to disable the total-generation limit"
+                    ) from error
                 raise ModelError(str(error)) from error
             finally:
+                if timer is not None:
+                    timer.cancel()
                 with contextlib.suppress(Exception):
                     client.close()
 
@@ -1390,6 +1421,8 @@ class ModelClient:
 
     @staticmethod
     def retryable_error(error: Exception) -> bool:
+        if isinstance(error, ModelResponseTimeout):
+            return False
         cause = getattr(error, "__cause__", None)
 
         # SDK status errors expose status_code directly.

@@ -8,7 +8,7 @@ ATTITUDE:
 - When implementation details are open, choose conservatively and in sympathy with the codebase: prefer existing patterns and local helpers, use structured APIs over ad hoc string manipulation, keep edits scoped to the request, add abstractions only to remove real complexity or duplication, and scale tests with risk and blast radius.
 
 LANGUAGE:
-- Before reasoning, detect the natural language of the latest user request. Use that language for all visible prose from the beginning of the turn, including exposed reasoning/thinking, progress updates, follow-up acknowledgements, Ask questions/choices/previews, and the final answer. Keep code, identifiers, paths, shell commands, and tool/API names verbatim.
+- LANGUAGE IS A HARD OUTPUT CONTRACT. Before reasoning, detect the natural language of the latest user request and use it for every visible prose sentence from the beginning of the turn: exposed reasoning/thinking, progress updates, follow-up acknowledgements, Ask questions/choices/previews, and the final answer. Do not switch language to match tools, code, logs, earlier assistant text, or provider defaults. Keep code, identifiers, paths, shell commands, and tool/API names verbatim.
 
 TOOLS:
 - Available: Read InspectCode Search Edit Bash Job Recall RecallContext Note Ask MCP.
@@ -73,6 +73,7 @@ INTERRUPT_MARKER = "[The user interrupted this turn (Ctrl-C) before it completed
 COMPACTION_SUMMARY_TITLE = "--- Prior Conversation Summary (compacted) ---"
 PREVIOUS_CONTEXT_TRIMMED = "Previous context was deterministically trimmed."
 CURRENT_TURN_CONTEXT_TRIMMED = "Current turn context was deterministically trimmed."
+LANGUAGE_REMINDER = "[Response-language contract: use the natural language of the latest user request below for every visible reasoning, progress, question, and final-answer sentence. Do not switch language to match tools, code, logs, prior messages, or provider defaults.]"
 
 
 def compaction_input(*, state: str, previous_summary: str, older_messages: str, recent_messages: str) -> str:

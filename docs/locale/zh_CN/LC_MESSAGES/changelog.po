@@ -35,6 +35,14 @@ msgstr "将 agent 的行动限制在用户实际要求的阶段内：准备、�
 msgid "Preserve Chat reasoning in session history while replaying only the history each provider documents: full preserved thinking where required or explicitly enabled, tool-call reasoning within active tool loops for providers that clear older thinking, and DeepSeek tool-call reasoning across later requests. Context and compaction estimates now follow the effective Chat, Responses, or Anthropic wire payload instead of counting normalized fields that will not be sent."
 msgstr "在 session history 中保留 Chat reasoning，同时只按各 provider 的文档要求回放：在强制或显式启用 preserved thinking 时完整保留；对会清理旧思考的 provider，仅在当前工具调用链内保留 reasoning；DeepSeek 的工具调用 reasoning 则继续随之后的请求回传。Context 与 compaction 估算现在基于实际的 Chat、Responses 或 Anthropic wire payload，不再计算最终不会发送的标准化字段。"
 
+#: ../../../CHANGELOG.md:10
+msgid "Add a generic 10-minute `provider.response_timeout` hard limit across streaming and non-streaming model calls, separate from the 120-second transport inactivity timeout. The hard limit closes the active request without automatic retries; set it to `0` to disable it."
+msgstr "为流式和非流式模型调用新增通用的 10 分钟 `provider.response_timeout` 硬时限，与 120 秒传输无数据超时相互独立。达到硬时限后会关闭当前请求且不自动重试；设为 `0` 可禁用。"
+
+#: ../../../CHANGELOG.md:13
+msgid "Reinforce the user's response language at the latest-user request boundary on every model step, including visible reasoning and progress, without rewriting stored session history."
+msgstr "在每次模型调用的最新用户请求边界强化回复语言约束，包括可见 reasoning 和进度信息，同时不改写已存储的 session history。"
+
 #: ../../../CHANGELOG.md:12
 msgid "Preserve OpenRouter's `reasoning`, `reasoning_content`, and structured `reasoning_details` in both streaming and non-streaming Chat responses, and retain nested `thinking.keep` or `thinking.clear_thinking` settings when minacode adds its managed thinking mode."
 msgstr "在流式和非流式 Chat 响应中保留 OpenRouter 的 `reasoning`、`reasoning_content` 与结构化 `reasoning_details`；minacode 添加其管理的 thinking mode 时，也保留嵌套的 `thinking.keep` 或 `thinking.clear_thinking` 配置。"

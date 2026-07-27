@@ -18,6 +18,8 @@ memory, the active turn, and tool schemas.
 
 - Apply provider replay rules, image expansion, and repeated-schema reduction only while building
   the request. Token-saving transforms must not rewrite stored history.
+- Keep request-local behavioral reminders in this projection as well. They may guide the current
+  response but must not rewrite the user's message or become conversation history.
 - Estimate the payload that will actually cross the selected protocol boundary, including tool
   schemas and image cost. Reserve output capacity and a safety margin before declaring input space
   available.
