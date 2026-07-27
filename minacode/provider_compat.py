@@ -33,6 +33,8 @@ class CompatibilityProfile:
     api_rules: tuple[ModelRule, ...] = ()
     chat_reasoning: str | None = None
     chat_reasoning_rules: tuple[ModelRule, ...] = ()
+    chat_reasoning_history: str = "all"
+    chat_reasoning_history_rules: tuple[ModelRule, ...] = ()
     reasoning_effort_values: Mapping[str, str | int] = field(default_factory=dict)
     reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
     responses_reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
@@ -56,6 +58,7 @@ class ResolvedProvider:
     base_url: str
     host: str
     chat_reasoning: str
+    chat_reasoning_history: str
     reasoning_effort: str | None
     responses_reasoning: bool
     suppress_temperature: bool
@@ -128,6 +131,20 @@ def anthropic_thinking_always_on(model: str) -> bool:
     return any(family in families for family in ANTHROPIC_ALWAYS_THINKING_FAMILIES)
 
 
+def anthropic_keeps_prior_thinking(model: str) -> bool:
+    """Whether Claude keeps earlier turns' thinking in its effective context."""
+
+    # Opus 4.5 and all numbered 4.6+ models preserve and bill all prior thinking. Sonnet/Haiku
+    # 4.5 and earlier models keep only the latest turn; unknown aliases stay conservative.
+    # Current-turn thinking blocks are required for tool use regardless of this distinction.
+    # Evidence: https://platform.claude.com/docs/en/build-with-claude/thinking
+    version = anthropic_model_version(model)
+    if version is None:
+        return True
+    families = re.split(r"[^0-9a-z]+", model.lower())
+    return version >= ANTHROPIC_ADAPTIVE_MIN_VERSION or (version == (4, 5) and "opus" in families)
+
+
 KIMI_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"}
 
 KIMI_PLATFORM_COMPATIBILITY = CompatibilityProfile(
@@ -137,6 +154,12 @@ KIMI_PLATFORM_COMPATIBILITY = CompatibilityProfile(
         ModelRule("mandatory_thinking", ("kimi-k2.7-code",)),
     ),
     reasoning_effort_values=KIMI_EFFORT_VALUES,
+    # K3 and K2.7 always preserve thinking across turns. K2.6 defaults to dropping prior-turn
+    # reasoning (but still needs it inside a tool loop), while K2.5 has no preserved-thinking mode.
+    # Explicit thinking.keep="all" is folded at request time.
+    # Evidence: https://platform.kimi.com/docs/guide/use-thinking-models
+    chat_reasoning_history="current_turn",
+    chat_reasoning_history_rules=(ModelRule("all", ("kimi-k3", "kimi-k2.7-code")),),
     # K3 cannot disable thinking on the open platform, so /reason off selects its lowest valid tier.
     reasoning_effort_off_rules=(ModelRule("low", ("kimi-k3",)),),
     strict_tools=True,
@@ -149,6 +172,10 @@ ZAI_COMPATIBILITY = CompatibilityProfile(
         ModelRule("thinking_toggle", ZAI_THINKING_MODEL_FAMILIES),
     ),
     prompt_cache_key=False,
+    # The standard API clears historical thinking by default. Preserved Thinking is opt-in with
+    # thinking.clear_thinking=false, which is folded at request time.
+    # Evidence: https://docs.z.ai/guides/capabilities/thinking-mode
+    chat_reasoning_history="current_turn",
 )
 
 
@@ -191,6 +218,9 @@ COMPATIBILITY_PROFILES: dict[str, CompatibilityProfile] = {
     #           https://api-docs.deepseek.com/guides/tool_calls
     "api.deepseek.com": CompatibilityProfile(
         chat_reasoning="thinking",
+        # Ordinary turns may omit reasoning, but every assistant tool-call message must retain it.
+        # Evidence: https://api-docs.deepseek.com/guides/thinking_mode
+        chat_reasoning_history="tool_calls",
         prompt_cache_key=False,
         strict_tools=True,
         strict_beta=True,
@@ -201,6 +231,10 @@ COMPATIBILITY_PROFILES: dict[str, CompatibilityProfile] = {
     "aliyuncs.com": CompatibilityProfile(
         chat_reasoning_rules=(ModelRule("reasoning_effort", ("qwen3.8-",)),),
         reasoning_effort_off_rules=(ModelRule("none", ("qwen3.8-",)),),
+        # Qwen ignores prior-turn reasoning by default, while tool loops should replay it.
+        # Explicit preserve_thinking=true is folded at request time.
+        # Evidence: https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking
+        chat_reasoning_history="current_turn",
     ),
     # Why: the international and China Kimi open platforms expose the same model controls
     # on different regional domains. K2.5/K2.6 use thinking.type, K2.7 is always-thinking,
@@ -223,6 +257,7 @@ COMPATIBILITY_PROFILES: dict[str, CompatibilityProfile] = {
         ),
         reasoning_effort_values=KIMI_EFFORT_VALUES,
         reasoning_effort_off_rules=(ModelRule("none", ("k3",)),),
+        chat_reasoning_history_rules=(ModelRule("all", ("k3", "kimi-for-coding")),),
     ),
     # Why: both Z.AI regions use thinking.type for GLM-4.5+ and reasoning_effort for GLM-5.2+.
     # Their context caches are automatic and require no request cache key.

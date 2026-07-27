@@ -31,6 +31,14 @@ msgstr ""
 msgid "Keep agent action within the phase the user actually requested: preparation, investigation, and plans no longer imply permission to implement, and live follow-ups can pause or narrow work immediately. Calibrate reasoning depth to task risk so routine, reversible work proceeds once the next step is clear while ambiguous or high-risk decisions retain deeper analysis."
 msgstr "将 agent 的行动限制在用户实际要求的阶段内：准备、调查和计划不再隐含实施权限，实时追加指令可以立即暂停或收窄工作。根据任务风险校准推理深度，使常规、可逆的工作在下一步明确后立即推进，同时为模糊或高风险决策保留更深入的分析。"
 
+#: ../../../CHANGELOG.md:9
+msgid "Preserve Chat reasoning in session history while replaying only the history each provider documents: full preserved thinking where required or explicitly enabled, tool-call reasoning within active tool loops for providers that clear older thinking, and DeepSeek tool-call reasoning across later requests. Context and compaction estimates now follow the effective Chat, Responses, or Anthropic wire payload instead of counting normalized fields that will not be sent."
+msgstr "在 session history 中保留 Chat reasoning，同时只按各 provider 的文档要求回放：在强制或显式启用 preserved thinking 时完整保留；对会清理旧思考的 provider，仅在当前工具调用链内保留 reasoning；DeepSeek 的工具调用 reasoning 则继续随之后的请求回传。Context 与 compaction 估算现在基于实际的 Chat、Responses 或 Anthropic wire payload，不再计算最终不会发送的标准化字段。"
+
+#: ../../../CHANGELOG.md:12
+msgid "Preserve OpenRouter's `reasoning`, `reasoning_content`, and structured `reasoning_details` in both streaming and non-streaming Chat responses, and retain nested `thinking.keep` or `thinking.clear_thinking` settings when minacode adds its managed thinking mode."
+msgstr "在流式和非流式 Chat 响应中保留 OpenRouter 的 `reasoning`、`reasoning_content` 与结构化 `reasoning_details`；minacode 添加其管理的 thinking mode 时，也保留嵌套的 `thinking.keep` 或 `thinking.clear_thinking` 配置。"
+
 #: ../../../CHANGELOG.md:8
 msgid "Allow `Edit create` in an existing directory outside the workspace while still refusing to create missing external parent directories implicitly. The error now tells the agent to create such a directory with an approved `Bash mkdir`, and Bash's tool description clarifies that commands start in the workspace rather than being confined to it."
 msgstr "允许 `Edit create` 在 workspace 外已存在的目录中创建文件，同时仍拒绝隐式创建缺失的外部父目录。错误信息现在会提示 agent 通过经确认的 `Bash mkdir` 创建此类目录；Bash 的工具说明也明确命令从 workspace 启动，而非被限制在其中。"

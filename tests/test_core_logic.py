@@ -334,6 +334,72 @@ def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
     assert params["messages"][1]["content"] == blocks
 
 
+@pytest.mark.parametrize(
+    ("model", "keeps_prior"),
+    [
+        ("claude-sonnet-4-5", False),
+        ("claude-haiku-4-5", False),
+        ("claude-opus-4-5", True),
+        ("claude-sonnet-4-6", True),
+        ("claude-custom-alias", True),
+    ],
+)
+def test_anthropic_replays_thinking_according_to_model_generation(tmp_path, model, keeps_prior):
+    s = session(tmp_path)
+    s.config.provider.api = "anthropic"
+    s.config.provider.model = model
+    client = ModelClient(s)
+    prior = {
+        "role": "assistant",
+        "content": "checking",
+        "_anthropic_content": [
+            {"type": "thinking", "thinking": "R" * 800, "signature": "signature"},
+            {"type": "text", "text": "checking"},
+            {"type": "tool_use", "id": "tu", "name": "Read", "input": {"path": "a"}},
+        ],
+    }
+    final = {
+        "role": "assistant",
+        "content": "done",
+        "_anthropic_content": [{"type": "thinking", "thinking": "recent", "signature": "recent-signature"}, {"type": "text", "text": "done"}],
+    }
+    history = [
+        {"role": "user", "content": "first"},
+        prior,
+        {"role": "tool", "tool_call_id": "tu", "content": "done"},
+        final,
+        {"role": "user", "content": "second"},
+    ]
+
+    blocks = client.anthropic_messages(history)[1]["content"]
+    tokens = client.estimated_request_tokens(history)
+    without_old_thinking = [
+        history[0],
+        {**prior, "_anthropic_content": [block for block in prior["_anthropic_content"] if block["type"] != "thinking"]},
+        *history[2:],
+    ]
+
+    # Always return complete blocks on the wire; older models filter all but the latest turn
+    # server-side, which the context estimate mirrors without mutating the request.
+    assert {"type": "thinking", "thinking": "R" * 800, "signature": "signature"} in blocks
+    assert {"type": "tool_use", "id": "tu", "name": "Read", "input": {"path": "a"}} in blocks
+    assert (tokens > client.estimated_request_tokens(without_old_thinking) + 150) is keeps_prior
+
+
+def test_anthropic_always_replays_current_tool_loop_thinking(tmp_path):
+    s = session(tmp_path)
+    s.config.provider.api = "anthropic"
+    s.config.provider.model = "claude-sonnet-4-5"
+    blocks = [{"type": "thinking", "thinking": "reasoning", "signature": "signature"}, {"type": "tool_use", "id": "tu", "name": "Read", "input": {}}]
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": None, "_anthropic_content": blocks},
+        {"role": "tool", "tool_call_id": "tu", "content": "done"},
+    ]
+
+    assert ModelClient(s).anthropic_messages(history)[1]["content"] == blocks
+
+
 def test_context_estimate_ignores_opaque_echo_bytes_but_counts_readable_reasoning(tmp_path):
     """Serialized ciphertext/signatures are not prompt text, but readable reasoning replayed by
     a protocol still occupies context and must not disappear from the estimate."""
@@ -360,6 +426,75 @@ def test_context_estimate_ignores_opaque_echo_bytes_but_counts_readable_reasonin
         ],
     }
     assert context.estimated_tokens([anthropic]) > context.estimated_tokens([plain]) + 150
+
+
+def test_context_gate_estimates_the_actual_chat_reasoning_history(tmp_path):
+    s = session(tmp_path)
+    s.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    s.config.provider.model = "qwen3.8-max-preview"
+    s.config.provider.max_tokens = 1000
+    s.settings.max_context_tokens = 6000
+    model = ModelClient(s)
+    context = ContextManager(s, model)
+    reasoning = "R" * 20_000
+    plain = [{"role": "user", "content": "question"}, {"role": "assistant", "content": "answer"}]
+    final_reasoning = [plain[0], {**plain[1], "reasoning_content": reasoning}]
+    tool_plain = [
+        plain[0],
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]},
+    ]
+    tool_reasoning = [tool_plain[0], {**tool_plain[1], "reasoning_content": reasoning}]
+
+    # Qwen's default does not put final-answer reasoning on the next wire request, so it cannot
+    # trigger compaction. Reasoning attached to a tool call is replayed and still counts.
+    assert context.request_tokens(final_reasoning) == context.request_tokens(plain)
+    assert context.request_tokens(final_reasoning) < context.request_token_budget()
+    assert context.request_tokens(tool_reasoning) > context.request_tokens(tool_plain) + 4_000
+    assert context.request_tokens(tool_reasoning) >= context.request_token_budget()
+
+
+def test_context_estimate_uses_each_protocols_replayed_reasoning_shape(tmp_path):
+    plain = [{"role": "user", "content": "question"}, {"role": "assistant", "content": "answer"}]
+
+    responses = session(tmp_path / "responses")
+    responses.config.provider.api = "responses"
+    responses_model = ModelClient(responses)
+    response_history = [
+        plain[0],
+        {
+            **plain[1],
+            RESPONSES_OUTPUT_KEY: [
+                {"id": "rs", "type": "reasoning", "encrypted_content": "E" * 20_000, "summary": [{"type": "summary_text", "text": "S" * 800}]},
+                {"id": "msg", "type": "message", "content": [{"type": "output_text", "text": "answer"}]},
+            ],
+        },
+    ]
+    response_tokens = responses_model.estimated_request_tokens(response_history)
+    response_without_ciphertext = responses_model.estimated_request_tokens(
+        [
+            plain[0],
+            {
+                **response_history[1],
+                RESPONSES_OUTPUT_KEY: [{**response_history[1][RESPONSES_OUTPUT_KEY][0], "encrypted_content": ""}, response_history[1][RESPONSES_OUTPUT_KEY][1]],
+            },
+        ]
+    )
+    assert response_tokens == response_without_ciphertext
+    assert response_tokens > responses_model.estimated_request_tokens(plain) + 150
+
+    anthropic = session(tmp_path / "anthropic")
+    anthropic.config.provider.api = "anthropic"
+    anthropic_model = ModelClient(anthropic)
+    anthropic_history = [
+        plain[0],
+        {**plain[1], "_anthropic_content": [{"type": "thinking", "thinking": "T" * 800, "signature": "X" * 20_000}, {"type": "text", "text": "answer"}]},
+    ]
+    assert anthropic_model.estimated_request_tokens(anthropic_history) > anthropic_model.estimated_request_tokens(plain) + 150
+    without_signature = [
+        plain[0],
+        {**plain[1], "_anthropic_content": [{"type": "thinking", "thinking": "T" * 800, "signature": ""}, {"type": "text", "text": "answer"}]},
+    ]
+    assert anthropic_model.estimated_request_tokens(anthropic_history) == anthropic_model.estimated_request_tokens(without_signature)
 
 
 @pytest.mark.parametrize("model", ("o3", "o4-mini", "gpt-5.6"))
@@ -391,6 +526,7 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
         }
     )
     assert provider.resolve().chat_reasoning == "reasoning_effort"
+    assert provider.resolve().chat_reasoning_history == "current_turn"
 
     for reasoning in ("minimal", "low", "medium", "high", "xhigh"):
         provider.reasoning = reasoning
@@ -419,6 +555,7 @@ def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     resolved = provider.resolve()
     assert resolved.chat_reasoning == "reasoning_effort"
     assert resolved.prompt_cache_key is True
+    assert resolved.chat_reasoning_history == "all"
     assert client.prompt_cache_key(provider, None).startswith("minacode-")
 
     params = {}
@@ -431,6 +568,7 @@ def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     assert params == {"reasoning_effort": "low"}
 
     provider.model = "kimi-k2.6"
+    assert provider.resolve().chat_reasoning_history == "current_turn"
     params = {}
     client.apply_provider_params(params, provider)
     assert params == {"extra_body": {"thinking": {"type": "disabled"}}}
@@ -455,6 +593,7 @@ def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
     resolved = provider.resolve()
     assert resolved.chat_reasoning == "reasoning_effort"
     assert resolved.prompt_cache_key is True
+    assert resolved.chat_reasoning_history == "all"
     assert client.prompt_cache_key(provider, None).startswith("minacode-")
 
     params = {}
@@ -481,6 +620,7 @@ def test_zai_regional_endpoints_share_documented_reasoning_effort(url, tmp_path)
     resolved = provider.resolve()
     assert resolved.chat_reasoning == "thinking_effort"
     assert resolved.prompt_cache_key is False
+    assert resolved.chat_reasoning_history == "current_turn"
     assert client.prompt_cache_key(provider, None) == ""
 
     params = {}
@@ -572,6 +712,19 @@ def test_chat_provider_extra_body_passthrough(tmp_path):
         params, ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high", extra_body={"reasoning": {"effort": "low"}})
     )
     assert params["extra_body"] == {"reasoning": {"effort": "high"}}
+
+    # Managed thinking.type remains authoritative without discarding documented history options.
+    params = {}
+    client.apply_provider_params(
+        params,
+        ProviderConfig(
+            url="https://api.z.ai/api/paas/v4",
+            model="glm-5.1",
+            reasoning="high",
+            extra_body={"thinking": {"clear_thinking": False}},
+        ),
+    )
+    assert params["extra_body"] == {"thinking": {"clear_thinking": False, "type": "enabled"}}
 
     # extra_body round-trips through config; non-object values are ignored.
     assert ProviderConfig.from_dict({"extra_body": search}).extra_body == search

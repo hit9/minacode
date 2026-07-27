@@ -279,6 +279,7 @@ class ProviderConfig:
             base_url=url,
             host=host,
             chat_reasoning=chat_reasoning,
+            chat_reasoning_history=profile.rule_value(profile.chat_reasoning_history_rules, model) or profile.chat_reasoning_history,
             reasoning_effort=reasoning_effort,
             responses_reasoning=profile.responses_reasoning_models is None or any(model.startswith(prefix) for prefix in profile.responses_reasoning_models),
             suppress_temperature=suppress_temperature,

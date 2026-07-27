@@ -64,6 +64,7 @@ from minacode.prompts import (
 from minacode.provider_compat import (
     CHAT_REASONING_EFFORT_VALUES,
     ResolvedProvider,
+    anthropic_keeps_prior_thinking,
     anthropic_thinking_always_on,
     anthropic_thinking_params,
 )
@@ -259,8 +260,9 @@ class ContextManager:
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, model: ModelClient | None = None):
         self.session = session
+        self.model = model
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         messages: list[Json] = [
@@ -342,6 +344,8 @@ class ContextManager:
         return max(1, limit - self.session.config.provider.output_token_budget() - safety)
 
     def request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
+        if self.model is not None:
+            return self.model.estimated_request_tokens(messages, tools)
         return self.estimated_tokens(messages) + (self.estimated_tokens(tools) if tools else 0)
 
     def update_percent(self, messages: list[Json], tools: list[Json] | None = None) -> int:
@@ -1237,6 +1241,94 @@ class ModelClient:
         with contextlib.suppress(Exception):
             self.active_client.apply(lambda client: client.close())
 
+    def chat_messages(self, messages: list[Json]) -> list[Json]:
+        """Build Chat Completions history using the provider's documented replay contract."""
+
+        provider = self.session.config.provider
+        resolved = provider.resolve()
+        history = resolved.chat_reasoning_history
+        thinking = provider.extra_body.get("thinking")
+        if provider.extra_body.get("preserve_thinking") is True or (
+            isinstance(thinking, dict) and (thinking.get("keep") == "all" or thinking.get("clear_thinking") is False)
+        ):
+            history = "all"
+
+        converted: list[Json] = []
+        latest_user = max((index for index, message in enumerate(messages) if message.get("role") == "user"), default=-1)
+        for index, message in enumerate(messages):
+            clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
+            keep_reasoning = history == "all" or (
+                bool(message.get("tool_calls")) and (history == "tool_calls" or (history == "current_turn" and index > latest_user))
+            )
+            if message.get("role") == "assistant" and not keep_reasoning:
+                for key in ("reasoning_content", "reasoning", "reasoning_details"):
+                    clean.pop(key, None)
+            if message.get("role") == "user" and self.session.images.refs(message):
+                clean["content"] = self.session.images.chat_content(message)
+            converted.append(clean)
+        return Text.value(converted)
+
+    def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
+        """Estimate the actual protocol payload instead of minacode's normalized history."""
+
+        api = self.session.config.provider.resolve().api
+        # Payload builders would otherwise expand every local image to base64 merely to throw the
+        # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
+        projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
+        if api == "responses":
+            payload: Json = {"input": self.responses_input(Text.value(projected))}
+            if tools:
+                payload["tools"] = self.responses_tool_schemas(tools)
+        elif api == "anthropic":
+            system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
+            estimated_messages = projected
+            if not anthropic_keeps_prior_thinking(self.session.config.provider.model):
+                latest_user = max((index for index, message in enumerate(projected) if message.get("role") == "user"), default=-1)
+                active_assistants = [index for index, message in enumerate(projected) if index > latest_user and message.get("role") == "assistant"]
+                keep_from = (
+                    latest_user
+                    if active_assistants
+                    else max((index for index, message in enumerate(projected) if message.get("role") == "assistant"), default=len(projected))
+                )
+                estimated_messages = []
+                for index, message in enumerate(projected):
+                    estimated = dict(message)
+                    saved = estimated.get(ANTHROPIC_CONTENT_KEY)
+                    if index < keep_from and isinstance(saved, list):
+                        estimated[ANTHROPIC_CONTENT_KEY] = [
+                            block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
+                        ]
+                    estimated_messages.append(estimated)
+            payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
+            if tools:
+                payload["tools"] = self.anthropic_tool_schemas(tools)
+        else:
+            payload = {"messages": self.chat_messages(projected)}
+            if tools:
+                payload["tools"] = tools
+
+        def prompt_value(value: object) -> object:
+            if isinstance(value, list):
+                return [prompt_value(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            kind = value.get("type")
+            clean: Json = {}
+            for key, item in value.items():
+                if key in ("encrypted_content", "signature"):
+                    continue
+                if key == "data" and kind in ("reasoning.encrypted", "redacted_thinking"):
+                    continue
+                if (key == "data" and kind == "base64") or (key in ("image_url", "url") and isinstance(item, str) and item.startswith("data:")):
+                    clean[key] = ""
+                else:
+                    clean[key] = prompt_value(item)
+            return clean
+
+        chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")))
+        images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
+        return (chars + 3) // 4 + images
+
     def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT]) -> _ResultT:
         with self.active_client.track(client):
             try:
@@ -1348,13 +1440,7 @@ class ModelClient:
         return "transient error"
 
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
-        converted: list[Json] = []
-        for message in messages:
-            clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
-            if message.get("role") == "user" and self.session.images.refs(message):
-                clean["content"] = self.session.images.chat_content(message)
-            converted.append(clean)
-        messages = Text.value(converted)
+        messages = self.chat_messages(messages)
         provider = self.session.config.provider
         resolved = provider.resolve()
         stream = allow_stream and provider.stream and self.on_stream is not None
@@ -1386,7 +1472,9 @@ class ModelClient:
 
     def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any]:
         content: list[str] = []
+        reasoning_content: list[str] = []
         reasoning: list[str] = []
+        reasoning_details: list[Json] = []
         tool_calls: dict[int, Json] = {}
         tool_call_functions: dict[int, Json] = {}
         tool_call_ids: dict[str, int] = {}
@@ -1432,9 +1520,22 @@ class ModelClient:
                 if not choices:
                     continue
                 delta = self.message_field(choices[0], "delta")
-                if reasoning_delta := str(self.message_field(delta, "reasoning_content") or ""):
+                reasoning_content_delta = str(self.message_field(delta, "reasoning_content") or "")
+                reasoning_delta = str(self.message_field(delta, "reasoning") or "")
+                if reasoning_content_delta:
+                    reasoning_content.append(reasoning_content_delta)
+                    self._emit_stream("reasoning", reasoning_content_delta)
+                elif reasoning_delta:
                     reasoning.append(reasoning_delta)
                     self._emit_stream("reasoning", reasoning_delta)
+                raw_details = self.message_field(delta, "reasoning_details") or []
+                details = [self.dump_message_item(item) for item in raw_details]
+                reasoning_details.extend(item for item in details if item)
+                if not reasoning_content_delta and not reasoning_delta:
+                    for detail in details:
+                        text = detail.get("text") if detail.get("type") == "reasoning.text" else detail.get("summary")
+                        if text:
+                            self._emit_stream("reasoning", str(text))
                 if content_delta := str(self.message_field(delta, "content") or ""):
                     content.append(content_delta)
                     self._emit_stream("output", content_delta)
@@ -1459,8 +1560,15 @@ class ModelClient:
         finally:
             self._emit_stream("", "")
         message: Json = {"content": "".join(content) or None}
+        if reasoning_content:
+            message["reasoning_content"] = "".join(reasoning_content)
         if reasoning:
-            message["reasoning_content"] = "".join(reasoning)
+            message["reasoning"] = "".join(reasoning)
+        if reasoning_details:
+            # OpenRouter defines the complete sequence as the ordered concatenation of each
+            # delta's reasoning_details array; replay it unchanged on the assistant message.
+            # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+            message["reasoning_details"] = reasoning_details
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         return message, usage
@@ -1919,14 +2027,23 @@ class ModelClient:
         # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; minacode's
         # own reasoning fields are layered on top so they stay authoritative on key conflicts.
         extra_body = {**provider.extra_body, **extra}
+        configured_thinking = provider.extra_body.get("thinking")
+        managed_thinking = extra.get("thinking")
+        if isinstance(configured_thinking, dict) and isinstance(managed_thinking, dict):
+            extra_body["thinking"] = {**configured_thinking, **managed_thinking}
         if extra_body:
             params["extra_body"] = extra_body
 
     def assistant_message(self, message: Any) -> Json:
         data: Json = {"role": "assistant", "content": self.message_field(message, "content")}
-        reasoning_content = self.message_field(message, "reasoning_content")
-        if reasoning_content:
-            data["reasoning_content"] = reasoning_content
+        for key in ("reasoning_content", "reasoning"):
+            value = self.message_field(message, key)
+            if value:
+                data[key] = Text.value(value)
+        raw_details = self.message_field(message, "reasoning_details") or []
+        details = [item for item in (self.dump_message_item(raw) for raw in raw_details) if item]
+        if details:
+            data["reasoning_details"] = details
         tool_calls: list[Json] = []
         for call in self.message_field(message, "tool_calls") or []:
             function = self.message_field(call, "function")
@@ -2009,8 +2126,8 @@ class ModelClient:
 class Agent:
     def __init__(self, session: Session, input_fn=input, output_fn=print):
         self.session = session
-        self.context = ContextManager(session)
         self.model = ModelClient(session)
+        self.context = ContextManager(session, self.model)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         self.cancel_requested = threading.Event()

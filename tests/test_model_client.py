@@ -90,7 +90,9 @@ def _session(tmp_path, **provider_kwargs):
     config = Config()
     config.data_dir = str(tmp_path / "data")
     provider_kwargs.setdefault("model", "gpt-4")
-    config.providers = {"default": ProviderConfig(url="http://test", key="sk-test", **provider_kwargs)}
+    provider_kwargs.setdefault("url", "http://test")
+    provider_kwargs.setdefault("key", "sk-test")
+    config.providers = {"default": ProviderConfig(**provider_kwargs)}
     return Session(cwd=str(tmp_path), config=config)
 
 
@@ -249,6 +251,151 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     assert assistant["tool_calls"][0]["function"] == {"name": "Bash", "arguments": '{"command":"echo hi"}'}
     assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert s.usage.total_tokens == 15
+
+
+def test_chat_stream_preserves_openrouter_reasoning_alias_and_details(tmp_path, monkeypatch):
+    s = _session(tmp_path, url="https://openrouter.ai/api/v1", model="anthropic/claude-sonnet-4")
+    model = ModelClient(s)
+    chunks = [
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": s.config.provider.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": "think ",
+                        "reasoning_details": [
+                            {"type": "reasoning.text", "text": "think ", "signature": None, "id": "r1", "format": "anthropic-claude-v1", "index": 0}
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": s.config.provider.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": "more",
+                        "reasoning_details": [{"type": "reasoning.encrypted", "data": "opaque", "id": "r2", "format": "anthropic-claude-v1", "index": 1}],
+                        "content": "done",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    ]
+    factory = _StreamClientFactory(chunks, base_url="https://openrouter.ai/api/v1")
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, calls, content = model.chat_request([{"role": "user", "content": "go"}], None)
+
+    assert calls == []
+    assert content == "done"
+    assert assistant["reasoning"] == "think more"
+    assert assistant["reasoning_details"] == [
+        {"type": "reasoning.text", "text": "think ", "signature": None, "id": "r1", "format": "anthropic-claude-v1", "index": 0},
+        {"type": "reasoning.encrypted", "data": "opaque", "id": "r2", "format": "anthropic-claude-v1", "index": 1},
+    ]
+    assert streamed == [("reasoning", "think "), ("reasoning", "more"), ("output", "done"), ("", "")]
+
+
+def test_non_streaming_chat_preserves_all_reasoning_shapes(tmp_path):
+    model = ModelClient(_session(tmp_path))
+    details = [{"type": "reasoning.summary", "summary": "short", "id": "r", "format": "openai-responses-v1", "index": 0}]
+
+    assert model.assistant_message({"content": "answer", "reasoning_content": "native", "reasoning": "alias", "reasoning_details": details}) == {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "native",
+        "reasoning": "alias",
+        "reasoning_details": details,
+    }
+
+
+@pytest.mark.parametrize(
+    ("url", "model", "keeps_final"),
+    [
+        ("https://api.deepseek.com/v1", "deepseek-chat", False),
+        ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-max-preview", False),
+        ("https://api.z.ai/api/paas/v4", "glm-5.1", False),
+        ("https://api.moonshot.cn/v1", "kimi-k2.6", False),
+        ("https://api.moonshot.cn/v1", "kimi-k3", True),
+        ("https://api.moonshot.cn/v1", "kimi-k2.7-code", True),
+        ("https://api.kimi.com/coding/v1", "k3", True),
+        ("https://openrouter.ai/api/v1", "vendor/model", True),
+        ("https://gateway.example/v1", "vendor/model", True),
+    ],
+)
+def test_chat_reasoning_history_follows_provider_contract(tmp_path, url, model, keeps_final):
+    client = ModelClient(_session(tmp_path, url=url, model=model))
+    reasoning = {"reasoning_content": "native", "reasoning": "alias", "reasoning_details": [{"type": "reasoning.text", "text": "detail"}]}
+    history = [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "final", **reasoning},
+        {"role": "user", "content": "next"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+            **reasoning,
+        },
+    ]
+
+    converted = client.chat_messages(history)
+
+    assert ("reasoning_content" in converted[1]) is keeps_final
+    assert ("reasoning" in converted[1]) is keeps_final
+    assert ("reasoning_details" in converted[1]) is keeps_final
+    assert converted[3]["reasoning_content"] == "native"
+    assert converted[3]["reasoning"] == "alias"
+    assert converted[3]["reasoning_details"] == reasoning["reasoning_details"]
+
+
+def test_only_deepseek_keeps_completed_tool_reasoning_across_user_turns(tmp_path):
+    reasoning_tool_call = {
+        "role": "assistant",
+        "content": None,
+        "reasoning_content": "reasoning",
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+    }
+    history = [
+        {"role": "user", "content": "first"},
+        reasoning_tool_call,
+        {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+        {"role": "user", "content": "second"},
+    ]
+
+    deepseek = ModelClient(_session(tmp_path / "deepseek", url="https://api.deepseek.com/v1", model="deepseek-chat"))
+    qwen = ModelClient(_session(tmp_path / "qwen", url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3.8-max-preview"))
+
+    assert deepseek.chat_messages(history)[1]["reasoning_content"] == "reasoning"
+    assert "reasoning_content" not in qwen.chat_messages(history)[1]
+
+
+@pytest.mark.parametrize(
+    "extra_body",
+    [
+        {"preserve_thinking": True},
+        {"thinking": {"keep": "all"}},
+        {"thinking": {"clear_thinking": False}},
+    ],
+)
+def test_explicit_preserved_thinking_keeps_final_reasoning(tmp_path, extra_body):
+    s = _session(tmp_path, url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3.8-max-preview", extra_body=extra_body)
+    message = {"role": "assistant", "content": "answer", "reasoning_content": "reasoning"}
+
+    assert ModelClient(s).chat_messages([message]) == [message]
 
 
 def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_path, monkeypatch):

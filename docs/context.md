@@ -13,6 +13,12 @@ Tool definitions are sent beside this message stack: built-in tools, `Skill` whe
 installed, and MCP tools and resources from <span class="marker">currently connected servers</span>.
 Configured but disconnected servers do not consume context.
 
+When a model exposes reasoning, minacode keeps the returned protocol data in the session but only
+replays what the active provider expects. Some APIs require preserved reasoning across turns;
+others ignore old reasoning unless a preserved-thinking option is enabled, while still needing it
+inside a multi-step tool call. Opaque signatures and encrypted reasoning are returned unchanged
+when their protocol requires them, but are not shown as model-readable text.
+
 ## Keeping context manageable
 
 Large tool results are shortened before they enter the conversation; the agent can retrieve the
@@ -23,9 +29,10 @@ with references to their first full copy instead of being sent in full again.
 
 As the estimated request approaches `runtime.max_context_tokens`, minacode **compacts**: the older
 part of the conversation is replaced by a short summary, and the most recent messages are kept as
-they are. The trigger reserves the configured provider output cap (16K when unspecified), tool
-schemas, and a safety margin of at least 4K. The session continues in the same turn, so a long task
-does not have to stop.
+they are. The estimate uses the effective Chat, Responses, or Anthropic request, so reasoning that
+the provider will discard does not cause early compaction. The trigger reserves the configured
+provider output cap (16K when unspecified), tool schemas, and a safety margin of at least 4K. The
+session continues in the same turn, so a long task does not have to stop.
 
 The summary in the active context is lossy, but each compaction also captures a bounded verbatim
 excerpt of the evicted messages as a **history segment**. Earlier snapshots in the append-only
