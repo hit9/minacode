@@ -43,6 +43,23 @@ minacode is one local process with explicit owners for each kind of behavior:
 
 State changes belong to the module that owns their meaning. Higher layers may request a transition
 or observe it through callbacks, but rendered text and widget state are never the source of truth.
+Dependencies point toward stable concepts: configuration and value types do not know the runtime;
+feature and session modules do not know the command loop or terminal; orchestration composes them at
+the boundary. Do not introduce a shared module merely to break a cycle—fix the ownership instead.
+
+## Turn execution and authority
+
+One agent turn is a bounded state machine:
+
+`user input → request projection → model proposal → validated tool batch → tool results → next request`
+
+- The user's request defines authority for the entire turn. A model may propose work, but model text,
+  a plan, or an inferred next step cannot broaden that authority; tool validation and approval remain
+  runtime responsibilities.
+- The agent loop is the serialized writer of active-turn messages. TUI and background workers cross
+  that boundary through queues, callbacks, and cancellation signals rather than editing the turn.
+- Treat a completed request, an ordered tool-result batch, and turn completion as coherent transition
+  boundaries. UI progress may lead them, but resume must restart from a protocol-valid sequence.
 
 ## Three forms of state
 
@@ -114,6 +131,20 @@ stored once as content-addressed blobs. Persist semantic checkpoints, not object
 - Reconstruct transcript and UI state from semantic records on resume. Never persist live preview
   rows as conversation messages.
 
+## Terminal boundary
+
+The terminal has two deliberately different output paths:
+
+- Completed user, assistant, and tool output is printed into native terminal or tmux scrollback.
+- Drafts, live model/tool previews, queue state, selectors, and status are one prompt-toolkit
+  application on the primary screen. Exclusive viewers such as `/diff` may temporarily use the
+  alternate screen and restore the transcript on exit.
+
+Preserving native scrollback is more important than making every transient frame durable. Terminal
+resize and reflow can leave copies of a live preview in scrollback; those copies are visual artifacts,
+not session history. Do not clear scrollback, persist preview rows, or move the whole application to
+the alternate screen to hide that artifact—the cure would discard more valuable behavior.
+
 ## Compaction
 
 Compaction is the deliberate persisted exception to send-time-only projection: it replaces old
@@ -132,6 +163,8 @@ budget.
 
 - Retry only bounded, plausibly transient model failures. User cancellation, explicit capability
   rejection, validation errors, and total-generation deadlines are not automatic retry signals.
+- Cancellation is a control signal, not a state mutation from another thread. Fan it out to the
+  active model and tool resources, then let the owning turn settle or retract its semantic records.
 - Tool failures become matched tool results rather than broken turns. Cancellation settles every
   already-visible call so later protocol replay remains valid.
 - Lower layers contain recoverable detail: retained output supports recall, snapshots support
