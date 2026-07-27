@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.14.0 - 2026-07-27
+
 ### Changed
 - Keep agent action within the phase the user actually requested: preparation, investigation, and plans no longer imply permission to implement, and live follow-ups can pause or narrow work immediately. Calibrate reasoning depth to task risk so routine, reversible work proceeds once the next step is clear while ambiguous or high-risk decisions retain deeper analysis.
 - Preserve Chat reasoning in session history while replaying only the history each provider documents: full preserved thinking where required or explicitly enabled, tool-call reasoning within active tool loops for providers that clear older thinking, and DeepSeek tool-call reasoning across later requests. Context and compaction estimates now follow the effective Chat, Responses, or Anthropic wire payload instead of counting normalized fields that will not be sent.
