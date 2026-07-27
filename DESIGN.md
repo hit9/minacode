@@ -10,9 +10,59 @@ short: document durable conclusions, not implementation diaries or complete inve
 - Add a note here only for a cross-cutting decision that future maintainers may otherwise reopen.
   If a decision changes, keep the old conclusion visible and mark it as superseded.
 
+## Context is a projection
+
+Session messages are the protocol-neutral source of truth. A model request is a derived view built
+at the request boundary from the system prompt, environment, capability indexes, retained history,
+memory, the active turn, and tool schemas.
+
+- Apply provider replay rules, image expansion, and repeated-schema reduction only while building
+  the request. Token-saving transforms must not rewrite stored history.
+- Estimate the payload that will actually cross the selected protocol boundary, including tool
+  schemas and image cost. Reserve output capacity and a safety margin before declaring input space
+  available.
+- Prompt-cache usage is an observed transport optimization, not free context. Cached tokens remain
+  part of the request and must not be subtracted from compaction pressure.
+
+## Tool-call lifecycle
+
+A tool call is intent, not a result. Chat, Responses, and Anthropic streams are consumed to their
+protocol terminal event before the agent dispatches the complete call set. A model must then wait
+for the returned tool messages before judging or retrying those calls.
+
+- Every emitted call must receive a matching result, including malformed, refused, failed, skipped,
+  and interrupted calls. This keeps replay valid across protocols.
+- Independent read-only calls may execute concurrently. Mutating or interactive calls remain
+  ordered; parallel outcomes are displayed, stored, and returned in the model's original order.
+- Storable output is retained under a `tr.N` key while the model-facing result is bounded. `Recall`
+  restores retained detail on demand, so large output does not need to occupy every later request.
+- Follow-ups are claimed transactionally for the next model request and acknowledged only after
+  that request succeeds. A retry sees the same input; a failure or interrupt releases it.
+- Interrupting before any assistant activity retracts the turn. Once text or a tool call is visible,
+  the partial turn is preserved and unanswered calls receive cancellation results.
+
+## Compaction
+
+Compaction is the deliberate, persisted exception to send-time-only projection: it replaces old
+active messages with a summary when the estimated request, including tools, reaches the input
+budget.
+
+- Compact prior history first. Compact the active turn only if the rebuilt request is still too
+  large.
+- Keep the latest user boundary and a recent tail. Never split an assistant tool-call message from
+  its following tool results.
+- Replace compacted messages with one structured summary and store the removed excerpt as a
+  `seg.N` history segment for `RecallContext`.
+- If model-generated compaction fails, fall back to deterministic trimming and leave an explicit
+  marker. Compaction must remain a recovery path rather than a new failure mode.
+- Prune retained `tr.N` records only after the surviving summary and messages no longer reference
+  them. Manual compaction is persisted immediately, and compactor output never enters the live
+  answer preview.
+
 ## Reasoning history and context accounting
 
-**Status:** Current  
+**Status:** Current
+
 **Introduced:** 2026-07-26, commit `cda2a81`
 
 ### Context
@@ -68,5 +118,8 @@ continuation for providers that require it.
 ### Code
 
 - Compatibility policy: `minacode/provider_compat.py`
-- Protocol projection and context estimation: `minacode/engine.py`
-- Regression coverage: `tests/test_core_logic.py`, `tests/test_model_client.py`
+- Context projection, compaction, agent loop, and tool execution: `minacode/engine.py`
+- Queue transactions and retained tool results: `minacode/session.py`
+- Tool contracts and implementations: `minacode/tools.py`
+- Regression coverage: `tests/test_agent_logic.py`, `tests/test_core_logic.py`,
+  `tests/test_model_client.py`
