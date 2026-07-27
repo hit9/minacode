@@ -95,11 +95,17 @@ Session messages are the protocol-neutral source of truth. A model request is de
 boundary from the system prompt, environment, capability indexes, retained history, memory, the
 active turn, and tool schemas.
 
+- Order stable, broadly shared context before conversation history and keep volatile task memory and
+  the active turn at the tail. Prefix stability is an input to prompt caching, never a reason to put
+  stale state into durable history.
 - Apply replay rules, image expansion, request-local reminders, and repeated-schema reduction only
   while building the request. These transforms must not rewrite stored history or user text.
 - Estimate the payload that will actually cross the selected protocol boundary, including tool
   schemas and image cost. Reserve output capacity and a safety margin before declaring input space
   available.
+- Keep estimated request size separate from provider-reported usage. The estimate drives preparation
+  and compaction for the next request; reported prompt, completion, and cached tokens describe calls
+  that already happened and are observability data.
 - Prompt-cache usage is an observed transport optimization, not free context. Cached tokens remain
   part of the request and compaction pressure.
 
@@ -112,10 +118,27 @@ dispatching its complete call set, then return results before the model may judg
   and interrupted calls. This keeps replay valid across protocols.
 - Independent read-only calls may run concurrently. Mutating or interactive calls remain ordered;
   all outcomes are displayed, stored, and returned in the model's original order.
-- Model-facing output is bounded while full storable output is retained under `tr.N`; `Recall`
-  restores detail on demand.
 - Interrupting before assistant activity retracts the turn. Once text or a tool call is visible,
   preserve the partial turn and add cancellation results for unanswered calls.
+
+## Retention and recall
+
+Bounded active context and recoverable detail are separate concerns:
+
+- A large tool result enters the conversation as a bounded view while its retained full output is
+  addressed by `tr.N`. `Recall` can retrieve selected line ranges; a hard session ceiling prevents
+  indefinite growth, and compaction prunes records no surviving message or summary references.
+- Compaction stores one bounded verbatim excerpt of each evicted span as `seg.N`. `RecallContext`
+  retrieves a segment or regex-searches all retained segments; it does not pretend the excerpt is a
+  lossless copy of arbitrarily large conversation history.
+- The active history index contains only bounded `seg.N` titles. Its truncation limits standing
+  context, while search still covers the warm segment store, so omitted middle titles remain
+  discoverable.
+- Recall tools do not create new retained-result keys. Their output is ordinary, bounded turn
+  context and should be requested selectively instead of recursively copying cold detail into hot
+  context.
+- Snapshot JSONL is the persistence and resume boundary, not a model-facing search engine. Runtime
+  recall uses the current retained indexes and never scans historical log records opportunistically.
 
 ## Persistence and input transactions
 
@@ -154,10 +177,16 @@ budget.
 - Compact prior history first and the active turn only if the rebuilt request remains too large.
 - Keep the latest user boundary and a recent tail. Never split assistant tool calls from their
   following results.
-- Store removed text as a `seg.N` history segment for `RecallContext`, and prune `tr.N` records only
-  after surviving state no longer references them.
+- Feed the previous summary and structured goal, plan, known facts, and checks to the compactor
+  explicitly. Do not treat an old summary as ordinary conversation to summarize again; each newly
+  evicted message span is captured once before it leaves the active history.
+- Store a bounded verbatim excerpt as a `seg.N` history segment for `RecallContext`, and use surviving
+  messages and summaries as the reachability set when compaction prunes `tr.N` records.
 - If model-generated compaction fails, fall back to deterministic trimming with an explicit marker.
   Compaction must remain a recovery path, and its output never enters the live answer preview.
+- Compaction cannot make an oversized fixed prefix, latest user boundary, tool schema set, or single
+  retained object fit. Bound such sources at their owner or fail clearly; never claim that deleting
+  protocol structure made a request valid.
 
 ## Failure boundaries
 
