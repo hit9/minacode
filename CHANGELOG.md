@@ -4,7 +4,7 @@
 ## Unreleased
 
 ### Changed
-- Reduce fixed model-context overhead by consolidating repeated system instructions and removing tool signatures and redundant examples already expressed by each tool's JSON Schema, without changing tool names, parameters, or execution behavior.
+- Reduce fixed model-context overhead by consolidating repeated system instructions and removing tool signatures and redundant examples already expressed by each tool's JSON Schema, without changing tool names, parameters, or execution behavior. Keep visible model output concise by default without limiting detail when requested or necessary.
 
 
 ## 0.14.0 - 2026-07-27
