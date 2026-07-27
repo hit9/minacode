@@ -50,7 +50,7 @@ ViewLine = TypeVar("ViewLine")
 
 @dataclass
 class TuiModal:
-    fragments_fn: Callable[[], list[tuple[str, str]]]
+    fragments_fn: Callable[[], StyleAndTextTuples]
     key_fn: Callable[[str, str], Any]
     exclusive: bool = False
     done: threading.Event = field(default_factory=threading.Event)
@@ -136,8 +136,8 @@ class TuiApp:
         on_retry: Callable[[], None] | None = None,
         on_recall: Callable[[], str | UserInput] | None = None,
         on_expand_output: Callable[[], None] | None = None,
-        status_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
-        activity_fragments_fn: Callable[[], list[tuple[str, str]]] | None = None,
+        status_fragments_fn: Callable[[], StyleAndTextTuples] | None = None,
+        activity_fragments_fn: Callable[[], StyleAndTextTuples] | None = None,
         input_hint_fn: Callable[[], str] | None = None,
         editor_context_fn: Callable[[], str] | None = None,
         images: ImageInputs | None = None,
@@ -154,8 +154,8 @@ class TuiApp:
         self.on_retry = on_retry or (lambda: None)
         self.on_recall = on_recall or (lambda: "")
         self.on_expand_output = on_expand_output or (lambda: None)
-        self.status_fragments_fn = status_fragments_fn or list
-        self.activity_fragments_fn = activity_fragments_fn or list
+        self.status_fragments_fn: Callable[[], StyleAndTextTuples] = status_fragments_fn or list
+        self.activity_fragments_fn: Callable[[], StyleAndTextTuples] = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.editor_context_fn = editor_context_fn or (lambda: "")
         self.images = images if images is not None else ImageInputs(cwd=image_cwd)
@@ -356,7 +356,7 @@ class TuiApp:
 
     def show_modal(
         self,
-        fragments_fn: Callable[[], list[tuple[str, str]]],
+        fragments_fn: Callable[[], StyleAndTextTuples],
         key_fn: Callable[[str, str], Any],
         *,
         exclusive: bool = False,
@@ -429,7 +429,7 @@ class TuiApp:
             return True
         return result.returncode != 0 or result.stdout.strip() != "0"
 
-    def modal_fragments(self) -> list[tuple[str, str]]:
+    def modal_fragments(self) -> StyleAndTextTuples:
         return self.modal.fragments_fn() if self.modal is not None else []
 
     def dispatch_modal_key(self, key: str, data: str = "") -> None:
@@ -441,7 +441,7 @@ class TuiApp:
         else:
             self.invalidate()
 
-    def status_fragments(self) -> list[tuple[str, str]]:
+    def status_fragments(self) -> StyleAndTextTuples:
         if self.input_mode == "dispatch" and self.input_prompt:
             return [("ansibrightblack", self.input_prompt)]
         if self.input_mode == "approval" and self.input_prompt:
@@ -455,7 +455,7 @@ class TuiApp:
             return [*prompt, ("class:approval.wait", frame + " ")]
         return [("class:prompt", self.input_prompt)]
 
-    def input_error_fragments(self) -> list[tuple[str, str]]:
+    def input_error_fragments(self) -> StyleAndTextTuples:
         error = self.input_error
         if not error and self.input_images and self.input_mode in {"chat", "running"} and self.images.support() is False:
             error = "Image input is disabled for the active provider/model"
@@ -487,15 +487,16 @@ class TuiApp:
         )
 
     def build_layout(self) -> Layout:
+        input_processors: list[Processor] = [
+            HighlightIncrementalSearchProcessor(),
+            ImageLabelProcessor(lambda: self.input_images),
+            BeforeInput(self.status_fragments),
+            CallbackPlaceholder(self.input_hint_fn),
+        ]
         self.input_window = Window(
             BufferControl(
                 buffer=self.input_buffer,
-                input_processors=[
-                    HighlightIncrementalSearchProcessor(),
-                    ImageLabelProcessor(lambda: self.input_images),
-                    BeforeInput(self.status_fragments),
-                    CallbackPlaceholder(self.input_hint_fn),
-                ],
+                input_processors=input_processors,
                 search_buffer_control=self.search_toolbar.control,
                 preview_search=True,
             ),
@@ -953,13 +954,13 @@ class ChoiceViewState:
         options = self.clamp()
         return options[self.selected] if options else None
 
-    def fragments(self, title: str, preview_fn: Callable[[str], str] | None = None) -> list[tuple[str, str]]:
+    def fragments(self, title: str, preview_fn: Callable[[str], str] | None = None) -> StyleAndTextTuples:
         visible = self.visible()
         options = self.clamp()
         suffix = (" /" + self.query) if self.query else ""
         if self.query and not self.searching:
             suffix += " (filtered)"
-        parts: list[tuple[str, str]] = [
+        parts: StyleAndTextTuples = [
             ("class:choice.title", title + suffix + "\n"),
             ("class:choice.disabled", "  j/k move, / search, Esc/q back/cancel\n"),
         ]

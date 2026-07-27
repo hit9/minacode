@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 from openai import OpenAI
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
@@ -337,7 +337,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
     )
     WAITING_PULSE_PERIOD: ClassVar[float] = 1.6
 
-    def waiting_pulse_fragments(self) -> list[tuple[str, str]]:
+    def waiting_pulse_fragments(self) -> StyleAndTextTuples:
         if self.session.state.current_model_call_started_at <= 0:
             return []
         # Triangular breath: 0 → 1 → 0 over WAITING_PULSE_PERIOD seconds, mapped onto the palette.
@@ -357,9 +357,9 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         "class:divider.glow4",
     )
 
-    def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
+    def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: StyleAndTextTuples | None = None) -> StyleAndTextTuples:
         prefix = prefix or []
-        prefix_len = sum(len(text) for _style, text in prefix)
+        prefix_len = sum(len(fragment[1]) for fragment in prefix)
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
         body_len = prefix_len + len(label) + 2  # prefix + " label "
@@ -372,8 +372,8 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         phase = time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC % (2 * span)
         head = phase if phase <= span else 2 * span - phase
 
-        def dashes(offset: int, count: int) -> list[tuple[str, str]]:
-            fragments = []
+        def dashes(offset: int, count: int) -> StyleAndTextTuples:
+            fragments: StyleAndTextTuples = []
             for i in range(count):
                 distance = round(abs(offset + i - head))
                 fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:queue.rule", "-"))
@@ -388,7 +388,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             *dashes(lead, trail),
         ]
 
-    def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
+    def queue_divider_fragments(self, queued: int = 0) -> StyleAndTextTuples:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
         if status == "working":
             retry_status = self.status_bar.retry_status()
@@ -405,12 +405,12 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             label = f"{label} [ {queued} queued ]"
         return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
 
-    def followup_fragments(self) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    def followup_fragments(self) -> tuple[StyleAndTextTuples, StyleAndTextTuples]:
         with self.session._queue_lock:
             pending = list(self.session.pending_user_inputs)
 
-        def render(items: list[QueuedInput], marker: str, marker_style: str) -> list[tuple[str, str]]:
-            fragments: list[tuple[str, str]] = []
+        def render(items: list[QueuedInput], marker: str, marker_style: str) -> StyleAndTextTuples:
+            fragments: StyleAndTextTuples = []
             for item in items:
                 for index, line in enumerate(item.text.splitlines()):
                     fragments.extend([("", "\n"), (marker_style, marker if index == 0 else "  "), (UiPrinter.user_log_style(), line)])
@@ -425,7 +425,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         waiting.extend(render(queued, "+ ", UiPrinter.user_log_style()))
         return transcript, waiting
 
-    def tui_activity_fragments(self) -> list[tuple[str, str]]:
+    def tui_activity_fragments(self) -> StyleAndTextTuples:
         sent, waiting = self.followup_fragments()
         fragments = sent
         if fragments:
@@ -443,7 +443,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         fragments.extend(waiting)
         return fragments
 
-    def model_stream_fragments(self) -> list[tuple[str, str]]:
+    def model_stream_fragments(self) -> StyleAndTextTuples:
         with self.model_stream_lock:
             kind, text = self.model_stream_kind, self.model_stream_text
         if not text:
@@ -452,7 +452,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         label = "thinking" if kind == "reasoning" else "responding"
         rows = [Text.clip_width(line.expandtabs(4), max(1, width - 4)) for line in text.replace("\r", "\n").splitlines()[-6:]]
         lines = [f"├─ {label}", *(f"│  {row}" for row in rows)]
-        fragments: list[tuple[str, str]] = []
+        fragments: StyleAndTextTuples = []
         for line in lines:
             fragments.extend([("ansibrightblack", line), ("", "\n")])
         return fragments
@@ -964,7 +964,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                 return issue[1]
             return ""
 
-        def fragments() -> list[tuple[str, str]]:
+        def fragments() -> StyleAndTextTuples:
             state.labels = server_labels()
             return state.fragments("MCP servers · Enter toggles connection", preview)
 
@@ -1261,20 +1261,20 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         state = ChoiceViewState(choices, labels, set())
         opened: str | None = None
 
-        def rule(label: str) -> list[tuple[str, str]]:
+        def rule(label: str) -> StyleAndTextTuples:
             cols = shutil.get_terminal_size((80, 20)).columns
             rule_width = max(20, min(72, cols - 2))
             lead = "──── "
             trail = " " + "─" * max(3, rule_width - get_cwidth(lead + label) - 1)
             return [("", "\n"), ("class:choice.disabled", lead + label + trail + "\n")]
 
-        def fragments() -> list[tuple[str, str]]:
+        def fragments() -> StyleAndTextTuples:
             if opened is None:
                 list_fragments = state.fragments("")
                 return [*rule(f"Bash outputs · latest {len(records)}"), *list_fragments[1:]]
             record, preview = records[int(opened)]
             detail_width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
-            parts = [*rule(f"Bash output · {record.key}"), ("ansibrightblack", f"  {Text.clip_width(calls[opened], detail_width)}\n\n")]
+            parts: StyleAndTextTuples = [*rule(f"Bash output · {record.key}"), ("ansibrightblack", f"  {Text.clip_width(calls[opened], detail_width)}\n\n")]
             parts.extend(("ansibrightblack", f"  {Text.clip_width(line, detail_width)}\n") for line in preview.splitlines())
             parts.append(("class:choice.disabled", "\n  Esc / ← back · Ctrl-O / q closes\n"))
             return parts
@@ -1345,7 +1345,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         def active_sections() -> list[tuple[str, str, str]]:
             return model[state.view.tab]
 
-        def list_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
+        def list_fragments(parts: StyleAndTextTuples, sections: list[tuple[str, str, str]]) -> None:
             parts.append(("", "\n"))
             counts = [CommandLoop.diff_counts(diff) for _status, _path, diff in sections]
             added_width = max(len(str(added)) for added, _removed in counts)
@@ -1365,7 +1365,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                 )
             parts.append(("", "\n"))
 
-        def file_fragments(parts: list[tuple[str, str]], sections: list[tuple[str, str, str]]) -> None:
+        def file_fragments(parts: StyleAndTextTuples, sections: list[tuple[str, str, str]]) -> None:
             state.clamp_file(len(sections))
             status, path, diff = sections[state.file]
             parts.append(("", "\n"))
@@ -1377,8 +1377,8 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             if not visible or not visible[-1] or not visible[-1][-1][1].endswith("\n"):
                 parts.append(("", "\n"))
 
-        def fragments():
-            parts: list[tuple[str, str]] = [("", "\n")]
+        def fragments() -> StyleAndTextTuples:
+            parts: StyleAndTextTuples = [("", "\n")]
             parts.extend(self.ui.tab_segments(state.view.titles, state.view.tab))
             parts.append(("", "\n"))
 

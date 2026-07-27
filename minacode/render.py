@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
-from prompt_toolkit.formatted_text import ANSI, FormattedText
+from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples
 from prompt_toolkit.output import create_output
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
@@ -770,7 +770,7 @@ class StatusBar:
             self.output.flush()
             self.rendered = False
 
-    def display_fragments(self, *, active: bool) -> list[tuple[str, str]]:
+    def display_fragments(self, *, active: bool) -> StyleAndTextTuples:
         if not active:
             return self.fragments(sweep=False, show_elapsed=False)
         return self.fragments(sweep=True, show_elapsed=True)
@@ -795,7 +795,7 @@ class StatusBar:
         reason = self.session.state.model_retry_reason
         return text + (" · " + reason if reason else "")
 
-    def fragments(self, *, sweep: bool, show_elapsed: bool) -> list[tuple[str, str]]:
+    def fragments(self, *, sweep: bool, show_elapsed: bool) -> StyleAndTextTuples:
         entries = self.entries(show_elapsed=show_elapsed)
         text = " | ".join(text for text, _ in entries)
         columns = shutil.get_terminal_size((120, 20)).columns
@@ -836,20 +836,20 @@ class StatusBar:
                 parts.append((attempt_status, "warn"))
         return parts
 
-    def styled_fragments(self, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
-        fragments: list[tuple[str, str]] = []
+    def styled_fragments(self, entries: list[tuple[str, str]]) -> StyleAndTextTuples:
+        fragments: StyleAndTextTuples = []
         for index, (text, role) in enumerate(entries):
             if index:
                 fragments.append((Theme.style("status.sep"), " | "))
             fragments.append((self.role_style(role), text))
         return fragments or [("", "")]
 
-    def sweep_fragments(self, text: str) -> list[tuple[str, str]]:
+    def sweep_fragments(self, text: str) -> StyleAndTextTuples:
         if not text:
             return [("", "")]
         width = max(1, len(text) - 1)
         sweep = (time.monotonic() * 0.55) % 1.0
-        fragments = []
+        fragments: StyleAndTextTuples = []
         for index, char in enumerate(text):
             ratio = index / width
             red = round(75 + (180 - 75) * ratio)
