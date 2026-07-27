@@ -110,9 +110,12 @@ Session messages are the protocol-neutral source of truth. A model request is de
 boundary from the system prompt, environment, capability indexes, retained history, memory, the
 active turn, and tool schemas.
 
-- Order stable, broadly shared context before conversation history and keep volatile task memory and
-  the active turn at the tail. Prefix stability is an input to prompt caching, never a reason to put
-  stale state into durable history.
+- Treat cache-prefix stability as the first review criterion for every system prompt, tool schema or
+  ordering, and context-layout change. Order requests from version-stable system and tools, through
+  session-stable capability context and append-only conversation, to volatile task memory and the
+  active turn at the tail. Prefer trigger-local tail additions over conditionally rewriting an
+  earlier layer; saving a small number of tokens does not justify invalidating a larger reusable
+  prefix. Prefix stability never justifies putting stale state into durable history.
 - Apply replay rules, image expansion, request-local reminders, and repeated-schema reduction only
   while building the request. These transforms must not rewrite stored history or user text.
 - Estimate the payload that will actually cross the selected protocol boundary, including tool
