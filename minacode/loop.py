@@ -45,7 +45,7 @@ from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, L
 from minacode.image import ImageInputs, UserInput
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.render import BashLivePreview, StatusBar, UiPrinter
-from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
+from minacode.session import QueuedInput, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 
@@ -387,7 +387,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             *dashes(lead, trail),
         ]
 
-    def queue_divider_fragments(self, queued: int = 0, sent: int = 0) -> list[tuple[str, str]]:
+    def queue_divider_fragments(self, queued: int = 0) -> list[tuple[str, str]]:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
         if status == "working":
             retry_status = self.status_bar.retry_status()
@@ -400,31 +400,38 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:
             label = status
-        input_status = []
         if queued:
-            input_status.append(f"{queued} queued")
-        if sent:
-            input_status.append(f"{sent} sent")
-        if input_status:
-            label = f"{label} [ {' · '.join(input_status)} ]"
+            label = f"{label} [ {queued} queued ]"
         return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
 
-    def queue_region_fragments(self) -> list[tuple[str, str]]:
+    def followup_fragments(self) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         with self.session._queue_lock:
             pending = list(self.session.pending_user_inputs)
-        # The divider is a standing boundary for the whole turn: flushed messages move up into the log
-        # above it, so it stays put even once the queue empties rather than vanishing.
-        queued = sum(not item.inflight for item in pending)
-        fragments = self.queue_divider_fragments(queued, len(pending) - queued)
-        for item in pending:
-            marker = "→ " if item.inflight else "+ "
-            for index, line in enumerate(item.text.splitlines()):
-                fragments.extend([("", "\n"), (UiPrinter.user_log_style(), (marker if index == 0 else "  ") + line)])
-        return fragments
+
+        def render(items: list[QueuedInput], marker: str, marker_style: str) -> list[tuple[str, str]]:
+            fragments: list[tuple[str, str]] = []
+            for item in items:
+                for index, line in enumerate(item.text.splitlines()):
+                    fragments.extend([("", "\n"), (marker_style, marker if index == 0 else "  "), (UiPrinter.user_log_style(), line)])
+            return fragments
+
+        sent = [item for item in pending if item.inflight]
+        queued = [item for item in pending if not item.inflight]
+        transcript = render(sent, UiPrinter.USER_LOG_PREFIX, "class:prompt")
+        # The divider is a standing boundary for the whole turn. Only messages that have not entered
+        # a model request remain below it; sent messages render above it until the request commits them.
+        waiting = self.queue_divider_fragments(len(queued))
+        waiting.extend(render(queued, "+ ", UiPrinter.user_log_style()))
+        return transcript, waiting
 
     def tui_activity_fragments(self) -> list[tuple[str, str]]:
-        fragments = self.model_stream_fragments()
+        sent, waiting = self.followup_fragments()
+        fragments = sent
         if fragments:
+            fragments.append(("", "\n"))
+        stream = self.model_stream_fragments()
+        fragments.extend(stream)
+        if stream:
             fragments.append(("", "\n"))
         with self.live_preview.lock:
             lines = self.live_preview.frame_lines() if self.live_preview.active else []
@@ -432,7 +439,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             fragments.extend([("ansibrightblack", line), ("", "\n")])
         if lines:
             fragments.append(("", "\n"))
-        fragments.extend(self.queue_region_fragments())
+        fragments.extend(waiting)
         return fragments
 
     def model_stream_fragments(self) -> list[tuple[str, str]]:

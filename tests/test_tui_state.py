@@ -182,6 +182,33 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     assert "working" in "".join(text for _style, text in loop.queue_divider_fragments())
 
 
+def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_path):
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    session = Session(cwd=str(tmp_path), config=config)
+    loop = CommandLoop(Agent(session), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    session.enqueue_user_input("use black instead")
+    claimed = session.claim_user_inputs()
+    loop.model_stream_output("reasoning", "checking the formatter")
+
+    activity = "".join(text for _style, text in loop.tui_activity_fragments())
+    assert activity.count("use black instead") == 1
+    assert activity.index("• use black instead") < activity.index("├─ thinking") < activity.rindex("thinking")
+    assert "+ use black instead" not in activity
+    assert "queued" not in activity and "sent" not in activity
+
+    session.release_user_inputs()
+    requeued = "".join(text for _style, text in loop.tui_activity_fragments())
+    assert "• use black instead" not in requeued
+    assert "[ 1 queued ]" in requeued
+    assert requeued.rindex("thinking") < requeued.index("+ use black instead")
+
+    session.claim_user_inputs()
+    session.acknowledge_user_inputs(claimed)
+    committed = "".join(text for _style, text in loop.tui_activity_fragments())
+    assert "use black instead" not in committed
+
+
 def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypatch):
     config = Config()
     config.data_dir = str(tmp_path / "data")

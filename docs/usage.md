@@ -14,9 +14,9 @@ never submitted by interrupting — the first `Ctrl-C` discards it instead.
 
 A `+` below the divider is waiting for the next model step. At that boundary — after the current
 tool-call batch, when there is one — all waiting follow-ups are sent together, in order, with the
-next model request; their marker changes to `→` and the divider reports them as `sent`. They move
-into the log above the divider after that request completes successfully, while failed requests
-keep them available for retry.
+next model request and move above the divider as normal user messages. They remain retryable
+internally until that request completes successfully; a failed request moves them back below the
+divider as queued input.
 
 | Key | When | Effect |
 |---|---|---|

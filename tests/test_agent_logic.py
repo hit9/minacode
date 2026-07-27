@@ -1160,17 +1160,37 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     queue(s, "run tests", "then push")
 
-    text = "".join(t for _, t in loop.queue_region_fragments())
+    sent, waiting = loop.followup_fragments()
+    text = "".join(t for _, t in [*sent, *waiting])
     assert "2 queued" in text and "working" in text
-    assert "sent" not in text
     assert "+ run tests" in text and "+ then push" in text
 
-    s.claim_user_inputs()
+    claimed = s.claim_user_inputs()
+    sent, waiting = loop.followup_fragments()
+    sent_text = "".join(t for _, t in sent)
+    waiting_text = "".join(t for _, t in waiting)
+    assert "• run tests" in sent_text and "• then push" in sent_text
+    assert "queued" not in waiting_text
+    assert "run tests" not in waiting_text and "then push" not in waiting_text
+
     queue(s, "after claim")
-    mixed = "".join(t for _, t in loop.queue_region_fragments())
-    assert "1 queued · 2 sent" in mixed
-    assert "→ run tests" in mixed and "→ then push" in mixed
-    assert "+ after claim" in mixed
+    sent, waiting = loop.followup_fragments()
+    assert "• run tests" in "".join(t for _, t in sent)
+    assert "1 queued" in "".join(t for _, t in waiting)
+    assert "+ after claim" in "".join(t for _, t in waiting)
+
+    s.release_user_inputs()
+    sent, waiting = loop.followup_fragments()
+    assert sent == []
+    released = "".join(t for _, t in waiting)
+    assert "3 queued" in released
+    assert "+ run tests" in released and "+ then push" in released and "+ after claim" in released
+
+    s.claim_user_inputs()
+    s.acknowledge_user_inputs(claimed)
+    sent, waiting = loop.followup_fragments()
+    assert "run tests" not in "".join(t for _, t in [*sent, *waiting])
+    assert "then push" not in "".join(t for _, t in [*sent, *waiting])
 
     # The divider animates a comet head across the dashes while its label remains stable.
     with pytest.MonkeyPatch.context() as mp:
@@ -1184,7 +1204,8 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
         assert seen_head
 
     s.pending_user_inputs = []
-    empty = "".join(t for _, t in loop.queue_region_fragments())
+    sent, waiting = loop.followup_fragments()
+    empty = "".join(t for _, t in [*sent, *waiting])
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
 

@@ -1611,7 +1611,8 @@ def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
 
     command_loop = loop(tmp_path)
     command_loop.session.enqueue_user_input("queued message")
-    assert any(style == expected and "queued message" in text for style, text in command_loop.queue_region_fragments())
+    sent, waiting = command_loop.followup_fragments()
+    assert any(style == expected and "queued message" in text for style, text in [*sent, *waiting])
 
 
 @pytest.mark.parametrize("width", [20, 40, 80])
