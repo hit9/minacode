@@ -47,6 +47,21 @@ Dependencies point toward stable concepts: configuration and value types do not 
 feature and session modules do not know the command loop or terminal; orchestration composes them at
 the boundary. Do not introduce a shared module merely to break a cycle—fix the ownership instead.
 
+### Future MCP client lifecycle
+
+`MCPManager` currently opens a short-lived client for each discovery, tool, or resource operation.
+This is sufficient for stateless servers, but repeatedly starts stdio processes, prevents transport
+reuse, and cannot preserve legacy servers that rely on process-lifetime state. A future MCP revision
+should evaluate one managed client runtime per configured server, with explicit connect, reconnect,
+cancellation, and close ownership.
+
+That runtime would reuse transport resources without treating an MCP connection as durable semantic
+state. MCP is moving toward a sessionless protocol with explicit state handles
+([SEP-2567](https://modelcontextprotocol.io/seps/2567-sessionless-mcp)); protocol negotiation and
+server-specific compatibility remain the client library's responsibility. Keep the current FastMCP
+3 dependency until the modern protocol support is stable, and do not add roots, sampling, extension,
+or provider-specific machinery without a demonstrated minacode use case.
+
 ## Turn execution and authority
 
 One agent turn is a bounded state machine:
