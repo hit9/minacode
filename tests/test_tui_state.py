@@ -5,11 +5,17 @@ These tests exercise the stateful parts of the TUI without requiring a real term
 
 import time
 
-import minacode as n
+import minacode.loop as loop_module
+from minacode.base import Config
+from minacode.engine import Agent
+from minacode.loop import CommandLoop
+from minacode.render import BashLivePreview
+from minacode.session import Session
+from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState
 
 
 def test_diff_view_state_tab_switching():
-    view = n.DiffViewState(view=n.TabbedViewState(titles=("latest", "net")))
+    view = DiffViewState(view=TabbedViewState(titles=("latest", "net")))
     assert view.view.tab == 0
     view.switch_tab(1)
     assert view.view.tab == 1
@@ -19,7 +25,7 @@ def test_diff_view_state_tab_switching():
 
 
 def test_diff_view_state_file_navigation():
-    view = n.DiffViewState(view=n.TabbedViewState(titles=("latest",)))
+    view = DiffViewState(view=TabbedViewState(titles=("latest",)))
     view.move_file(1, 3)
     assert view.file == 1
     view.move_file(1, 3)
@@ -31,7 +37,7 @@ def test_diff_view_state_file_navigation():
 
 
 def test_diff_view_state_open_and_close_file():
-    view = n.DiffViewState(view=n.TabbedViewState(titles=("latest",)))
+    view = DiffViewState(view=TabbedViewState(titles=("latest",)))
     assert view.mode == view.Mode.LIST
     view.open_file(2)
     assert view.mode == view.Mode.FILE
@@ -41,29 +47,29 @@ def test_diff_view_state_open_and_close_file():
 
 
 def test_diff_view_state_handle_key():
-    view = n.DiffViewState(view=n.TabbedViewState(titles=("latest", "net")))
+    view = DiffViewState(view=TabbedViewState(titles=("latest", "net")))
     # Down in list mode moves file
     result = view.handle_key("down", file_count=3, viewport=10)
-    assert result == n.TUI_MODAL_PENDING
+    assert result == TUI_MODAL_PENDING
     assert view.file == 1
     # Enter opens file
     result = view.handle_key("enter", file_count=3, viewport=10)
-    assert result == n.TUI_MODAL_PENDING
+    assert result == TUI_MODAL_PENDING
     assert view.mode == view.Mode.FILE
     # Page down in file mode scrolls
     result = view.handle_key("pagedown", file_count=3, viewport=10)
-    assert result == n.TUI_MODAL_PENDING
+    assert result == TUI_MODAL_PENDING
     assert view.view.scroll == 10
     # Escape closes file
     result = view.handle_key("escape", file_count=3, viewport=10)
-    assert result == n.TUI_MODAL_PENDING
+    assert result == TUI_MODAL_PENDING
     assert view.mode == view.Mode.LIST
     # q exits
     assert view.handle_key("q", file_count=3, viewport=10) is None
 
 
 def test_choice_view_state_filtering():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("a", "b", "c", "d"),
         labels={"a": "alpha", "b": "beta", "c": "gamma", "d": "delta"},
         disabled=set(),
@@ -78,7 +84,7 @@ def test_choice_view_state_filtering():
 
 
 def test_choice_view_state_disabled_headers():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("header", "a", "b", "other", "c"),
         labels={},
         disabled={"header", "other"},
@@ -91,7 +97,7 @@ def test_choice_view_state_disabled_headers():
 
 
 def test_choice_view_state_movement():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("a", "b", "c"),
         labels={},
         disabled=set(),
@@ -110,7 +116,7 @@ def test_choice_view_state_movement():
 
 
 def test_choice_view_state_selected_choice():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("a", "b", "c"),
         labels={},
         disabled={"b"},
@@ -123,7 +129,7 @@ def test_choice_view_state_selected_choice():
 
 
 def test_bash_live_preview_frame_lines():
-    preview = n.BashLivePreview()
+    preview = BashLivePreview()
     preview.active = True
     preview.text = "line1\nline2\n"
     preview.started_at = time.monotonic() - 1.5
@@ -135,7 +141,7 @@ def test_bash_live_preview_frame_lines():
 
 
 def test_bash_live_preview_text_accumulation():
-    preview = n.BashLivePreview()
+    preview = BashLivePreview()
     preview.active = True
     preview.update("hello ")
     preview.update("world")
@@ -145,7 +151,7 @@ def test_bash_live_preview_text_accumulation():
 
 
 def test_bash_live_preview_finish():
-    preview = n.BashLivePreview()
+    preview = BashLivePreview()
     preview.active = True
     preview.text = "output"
     preview.finish()
@@ -154,9 +160,9 @@ def test_bash_live_preview_finish():
 
 
 def test_model_stream_preview_switches_phase_and_clears(tmp_path):
-    config = n.Config()
+    config = Config()
     config.data_dir = str(tmp_path / "data")
-    loop = n.CommandLoop(n.Agent(n.Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
     loop.model_stream_output("reasoning", "checking the request")
     reasoning = "".join(text for _style, text in loop.model_stream_fragments())
@@ -177,10 +183,10 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
 
 
 def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypatch):
-    config = n.Config()
+    config = Config()
     config.data_dir = str(tmp_path / "data")
-    loop = n.CommandLoop(n.Agent(n.Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
-    monkeypatch.setattr(n.loop.shutil, "get_terminal_size", lambda fallback: n.loop.os.terminal_size((40, 20)))
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    monkeypatch.setattr(loop_module.shutil, "get_terminal_size", lambda fallback: loop_module.os.terminal_size((40, 20)))
 
     loop.model_stream_output("output", "\n".join(f"line {index} with a deliberately long suffix" for index in range(8)))
 

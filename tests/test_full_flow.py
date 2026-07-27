@@ -13,7 +13,12 @@ import json
 import httpx
 from openai import OpenAI
 
-import minacode as n
+from minacode.base import MIN_CONTEXT_SAFETY_TOKENS, Config, ProviderConfig
+from minacode.engine import Agent, ContextManager, ModelClient
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
+from minacode.session import Session
+from minacode.skill import SkillLibrary
+from minacode.tools import Tool
 
 
 class ScriptedLLM:
@@ -67,12 +72,12 @@ def _answer_response(text: str) -> tuple[int, dict]:
 
 
 def _session(tmp_path):
-    config = n.Config()
+    config = Config()
     config.data_dir = str(tmp_path / "data")
-    config.providers = {"default": n.ProviderConfig(url="http://test", key="sk-test", model="gpt-4")}
-    session = n.Session(cwd=str(tmp_path), config=config)
+    config.providers = {"default": ProviderConfig(url="http://test", key="sk-test", model="gpt-4")}
+    session = Session(cwd=str(tmp_path), config=config)
     session.settings.yolo = True  # auto-approve mutating tools so the flow runs unattended
-    session.skills = n.SkillLibrary({})  # no skills: keep the system frame deterministic
+    session.skills = SkillLibrary({})  # no skills: keep the system frame deterministic
     return session
 
 
@@ -82,9 +87,9 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
     session = _session(tmp_path)
     edit_args = {"path": "hello.txt", "edits": [{"op": "create", "content": "hi\n"}]}
     llm = ScriptedLLM([_tool_call_response("call_1", "Edit", edit_args), _answer_response("Created hello.txt.")])
-    monkeypatch.setattr(n.ModelClient, "client", lambda self: llm.client())
+    monkeypatch.setattr(ModelClient, "client", lambda self: llm.client())
 
-    answer = n.Agent(session, output_fn=lambda text: None).run("create hello.txt containing hi")
+    answer = Agent(session, output_fn=lambda text: None).run("create hello.txt containing hi")
 
     # The tool really ran: the file exists on disk and the run returned the model's final answer.
     assert answer == "Created hello.txt."
@@ -117,16 +122,16 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
         {"role": "assistant", "content": "latest retained answer"},
     ]
     baseline = _session(tmp_path / "baseline")
-    baseline_context = n.ContextManager(baseline)
-    baseline_messages = baseline_context.model_messages(n.SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
-    baseline_tokens = baseline_context.request_tokens(baseline_messages, n.Tool.resolved_schemas(baseline))
-    session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + n.MIN_CONTEXT_SAFETY_TOKENS
+    baseline_context = ContextManager(baseline)
+    baseline_messages = baseline_context.model_messages(SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
+    baseline_tokens = baseline_context.request_tokens(baseline_messages, Tool.resolved_schemas(baseline))
+    session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
 
     compacted_state = json.dumps({"summary": "Archived work was completed.", "goal": "continue", "plan": [], "known": ["durable fact"], "check": "tests"})
     llm = ScriptedLLM([_answer_response(compacted_state), _answer_response("Continued successfully.")])
-    monkeypatch.setattr(n.ModelClient, "client", lambda self: llm.client())
+    monkeypatch.setattr(ModelClient, "client", lambda self: llm.client())
 
-    answer = n.Agent(session, output_fn=lambda text: None).run("continue")
+    answer = Agent(session, output_fn=lambda text: None).run("continue")
 
     assert answer == "Continued successfully."
     assert len(llm.requests) == 2
@@ -139,7 +144,7 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     active_messages = agent_request["messages"]
     contents = [str(message.get("content") or "") for message in active_messages]
     history_index = next(index for index, content in enumerate(contents) if content.startswith("--- History index ---"))
-    conversation = next(index for index, content in enumerate(contents) if content.startswith(n.COMPACTION_SUMMARY_TITLE))
+    conversation = next(index for index, content in enumerate(contents) if content.startswith(COMPACTION_SUMMARY_TITLE))
     memory = next(index for index, content in enumerate(contents) if content.startswith("--- Memory ---"))
     current_turn = max(index for index, content in enumerate(contents) if content == "continue")
     assert history_index < conversation < memory < current_turn

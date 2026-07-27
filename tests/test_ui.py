@@ -1,27 +1,45 @@
 import multiprocessing
+import os
+import shutil
+import signal
+import sys
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
+from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Size
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import fragment_list_to_text, to_formatted_text
-from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.input.defaults import create_pipe_input
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.utils import get_cwidth
+from rich.console import Console
 
-import minacode as n
+import minacode.loop as loop_module
+import minacode.render as render_module
+import minacode.tui as tui_module
+from minacode.base import PROVIDER_API_CHOICES, REASONING_CHOICES, SELECTION_BACK, SELECTION_FREE_TEXT, Config, ProviderConfig, Text
+from minacode.engine import Agent, LogBlock, LogEdge, LogLine, LogRole, UpdateChecker
+from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
+from minacode.prompts import LIVE_FOLLOWUP_PREFIX
+from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
+from minacode.session import Session, SessionSnapshotStore
+from minacode.tools import CodeIndex, Tool
+from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 
 
 def session(tmp_path):
-    config = n.Config()
+    config = Config()
     config.data_dir = str(tmp_path / "data")
-    return n.Session(cwd=str(tmp_path), config=config)
+    return Session(cwd=str(tmp_path), config=config)
 
 
 def loop(tmp_path):
-    return n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt="": "", output_fn=lambda text: None)
+    return CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt="": "", output_fn=lambda text: None)
 
 
 class ResizableOutput(DummyOutput):
@@ -49,7 +67,7 @@ def rendered_screen_text(application, output):
 
 
 def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, after_render=None):
-    real_application = n.Application
+    real_application = Application
     output = output or DummyOutput()
     driver_errors = []
     with create_pipe_input() as pipe_input:
@@ -57,7 +75,7 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
         def application(**kwargs):
             return real_application(input=pipe_input, after_render=after_render, **(kwargs | {"output": output}))
 
-        monkeypatch.setattr(n.tui, "Application", application)
+        monkeypatch.setattr(tui_module, "Application", application)
         if text:
             pipe_input.send_text(text)
         driver = None
@@ -82,10 +100,10 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
 
 
 def ctrl_c_queue_scenario(cwd, results):
-    config = n.Config(data_dir=cwd)
-    scenario_session = n.Session(cwd=cwd, config=config)
-    command_loop = n.CommandLoop(
-        n.Agent(scenario_session, output_fn=lambda text: None),
+    config = Config(data_dir=cwd)
+    scenario_session = Session(cwd=cwd, config=config)
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=lambda text: None),
         input_fn=lambda prompt="": "",
         output_fn=lambda text: None,
     )
@@ -114,15 +132,15 @@ def ctrl_c_queue_scenario(cwd, results):
             cancel_calls.append(True)
 
     command_loop.agent.model = RecordingModel()
-    n.SessionSnapshotStore.clean_expired = lambda _session: 0
-    n.CodeIndex.refresh_existing_async = lambda _index: False
-    n.CodeIndex.update_pending_async = lambda _index: None
-    n.UpdateChecker.start = lambda _checker: None
-    real_application = n.Application
+    SessionSnapshotStore.clean_expired = lambda _session: 0
+    CodeIndex.refresh_existing_async = lambda _index: False
+    CodeIndex.update_pending_async = lambda _index: None
+    UpdateChecker.start = lambda _checker: None
+    real_application = Application
 
     try:
         with create_pipe_input() as pipe_input:
-            n.tui.Application = lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()}))
+            tui_module.Application = lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()}))
 
             def drive():
                 try:
@@ -142,12 +160,12 @@ def ctrl_c_queue_scenario(cwd, results):
                     wait_until(lambda: command_loop.tui.input_buffer.text == "")
                     draft_after_ctrl_c.append(command_loop.tui.input_buffer.text)
                     elapsed.append(time.monotonic() - began)
-                    command_loop.tui.input_buffer.reset(n.Document(""))
+                    command_loop.tui.input_buffer.reset(Document(""))
                     pipe_input.send_text("\x04")
                 except BaseException as error:
                     driver_errors.append(repr(error))
                     if first_running.is_set():
-                        n.os.kill(n.os.getpid(), n.signal.SIGINT)
+                        os.kill(os.getpid(), signal.SIGINT)
                     if command_loop.tui is not None:
                         command_loop.tui.on_exit_request()
                         if command_loop.tui.app is not None:
@@ -159,7 +177,7 @@ def ctrl_c_queue_scenario(cwd, results):
             driver.join(timeout=1)
             if driver.is_alive():
                 driver_errors.append("driver did not exit")
-        restored_session = n.Session.load_snapshot(command_loop.session.uid, config=config)
+        restored_session = Session.load_snapshot(command_loop.session.uid, config=config)
         results.put(
             {
                 "cancel_calls": len(cancel_calls),
@@ -177,21 +195,21 @@ def ctrl_c_queue_scenario(cwd, results):
 
 
 def test_theme_palettes_have_identical_complete_keys():
-    assert n.Theme.DARK.keys() == n.Theme.LIGHT.keys()
-    assert all(n.Theme.DARK.values())
-    assert all(n.Theme.LIGHT.values())
+    assert Theme.DARK.keys() == Theme.LIGHT.keys()
+    assert all(Theme.DARK.values())
+    assert all(Theme.LIGHT.values())
 
 
 def test_editor_command_prefers_visual_then_editor_then_vim(monkeypatch):
     monkeypatch.delenv("VISUAL", raising=False)
     monkeypatch.delenv("EDITOR", raising=False)
-    assert n.TuiApp.editor_command() == ["vim"]
+    assert TuiApp.editor_command() == ["vim"]
 
     monkeypatch.setenv("EDITOR", "code --wait")
-    assert n.TuiApp.editor_command() == ["code", "--wait"]
+    assert TuiApp.editor_command() == ["code", "--wait"]
 
     monkeypatch.setenv("VISUAL", "nvim")
-    assert n.TuiApp.editor_command() == ["nvim"]
+    assert TuiApp.editor_command() == ["nvim"]
 
 
 def test_edit_text_in_editor_roundtrips_edited_content(tmp_path, monkeypatch):
@@ -202,49 +220,49 @@ def test_edit_text_in_editor_roundtrips_edited_content(tmp_path, monkeypatch):
     monkeypatch.setenv("EDITOR", str(editor))
     monkeypatch.delenv("VISUAL", raising=False)
 
-    assert n.TuiApp()._edit_text_in_editor("hello") == "hello EDITED"
+    assert TuiApp()._edit_text_in_editor("hello") == "hello EDITED"
 
 
 def test_edit_text_in_editor_leaves_input_untouched_when_editor_missing(monkeypatch):
     monkeypatch.setenv("EDITOR", "definitely-not-an-editor-binary")
     monkeypatch.delenv("VISUAL", raising=False)
 
-    assert n.TuiApp()._edit_text_in_editor("hello") is None
+    assert TuiApp()._edit_text_in_editor("hello") is None
 
 
 def test_edit_text_in_editor_leaves_input_untouched_on_nonzero_exit(monkeypatch):
     monkeypatch.setenv("EDITOR", "false")
     monkeypatch.delenv("VISUAL", raising=False)
 
-    assert n.TuiApp()._edit_text_in_editor("hello") is None
+    assert TuiApp()._edit_text_in_editor("hello") is None
 
 
 def test_editor_text_compose_and_strip_roundtrip():
     # The editor receives the draft plus the agent's reply below a scissors line; stripping
     # drops the reference context and returns exactly the (possibly edited) draft.
-    composed, marker = n.TuiApp._compose_editor_text("my draft", "reply line one\nline two")
+    composed, marker = TuiApp._compose_editor_text("my draft", "reply line one\nline two")
     assert "my draft" in composed
-    assert n.TuiApp.EDITOR_CONTEXT_MARKER in composed
+    assert TuiApp.EDITOR_CONTEXT_MARKER in composed
     assert marker and marker in composed
     assert "reply line one" in composed
-    assert n.TuiApp._strip_editor_context(composed, marker) == "my draft"
+    assert TuiApp._strip_editor_context(composed, marker) == "my draft"
     # Editing above the scissors line survives; everything below it is dropped.
-    assert n.TuiApp._strip_editor_context(composed.replace("my draft", "edited draft"), marker) == "edited draft"
+    assert TuiApp._strip_editor_context(composed.replace("my draft", "edited draft"), marker) == "edited draft"
 
 
 def test_editor_text_compose_without_context_is_identity():
-    assert n.TuiApp._compose_editor_text("draft", "") == ("draft", "")
-    assert n.TuiApp._compose_editor_text("draft", "   ") == ("draft", "")
-    assert n.TuiApp._strip_editor_context("plain text\n", "") == "plain text"
+    assert TuiApp._compose_editor_text("draft", "") == ("draft", "")
+    assert TuiApp._compose_editor_text("draft", "   ") == ("draft", "")
+    assert TuiApp._strip_editor_context("plain text\n", "") == "plain text"
 
 
 def test_editor_strip_preserves_a_scissors_line_the_user_typed():
     # Only the marker this composition added is stripped; a scissors line already in the draft
     # (pasted Markdown or code) survives, whether or not reference context was appended.
-    draft = f"before\n{n.TuiApp.EDITOR_CONTEXT_MARKER}\nafter"
-    assert n.TuiApp._strip_editor_context(draft, "") == draft
-    composed, marker = n.TuiApp._compose_editor_text(draft, "reply")
-    assert n.TuiApp._strip_editor_context(composed, marker) == draft
+    draft = f"before\n{TuiApp.EDITOR_CONTEXT_MARKER}\nafter"
+    assert TuiApp._strip_editor_context(draft, "") == draft
+    composed, marker = TuiApp._compose_editor_text(draft, "reply")
+    assert TuiApp._strip_editor_context(composed, marker) == draft
 
 
 def test_editor_context_returns_last_assistant_reply(tmp_path):
@@ -275,7 +293,7 @@ def test_editor_context_caps_long_replies_to_recent_lines(tmp_path):
 
 
 def test_tui_app_build_layout_composes_input_and_status():
-    app = n.TuiApp()
+    app = TuiApp()
     layout = app.build_layout()
     focused = layout.current_window
     assert focused is not None
@@ -285,11 +303,11 @@ def test_tui_app_build_layout_composes_input_and_status():
 
 
 def test_tui_approval_prompt_keeps_connector_style_and_spinner(monkeypatch):
-    app = n.TuiApp()
-    connector = n.LogBlock.prefix(2, n.LogEdge.CONTINUE)
+    app = TuiApp()
+    connector = LogBlock.prefix(2, LogEdge.CONTINUE)
     app.input_mode = "approval"
     app.input_prompt = connector + "[Y/n] "
-    monkeypatch.setattr(n.time, "monotonic", lambda: 0.2)
+    monkeypatch.setattr(time, "monotonic", lambda: 0.2)
 
     assert app.status_fragments() == [
         ("ansibrightblack", connector),
@@ -299,14 +317,14 @@ def test_tui_approval_prompt_keeps_connector_style_and_spinner(monkeypatch):
 
 
 def test_tui_loading_models_prompt_is_simple_and_dim():
-    app = n.TuiApp()
+    app = TuiApp()
     app.set_dispatching("Loading models...")
 
     assert app.status_fragments() == [("ansibrightblack", "Loading models...")]
 
 
 def test_tui_non_editing_modes_clear_stale_input_errors():
-    app = n.TuiApp()
+    app = TuiApp()
     app.input_error = "stale image error"
 
     app.set_dispatching("Loading models...")
@@ -334,7 +352,7 @@ def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch
             self.requests += 1
 
     output = CprOutput()
-    app = n.TuiApp()
+    app = TuiApp()
 
     def drive(_pipe_input):
         wait_until(lambda: app.app is not None and output.requests == 1)
@@ -364,7 +382,7 @@ def test_tui_app_accept_handler_fires_on_submit_and_clears_buffer():
         received.append(text)
         cleared_before_callback.append(app.input_buffer.text)
 
-    app = n.TuiApp(on_chat_submit=submit)
+    app = TuiApp(on_chat_submit=submit)
     app.input_buffer.insert_text("hello")
     app.input_buffer.validate_and_handle()
     assert received == ["hello"]
@@ -379,7 +397,7 @@ def test_tui_running_submit_clears_buffer_before_callback():
     def submit(text):
         received.append((text, app.input_buffer.text))
 
-    app = n.TuiApp(on_running_submit=submit)
+    app = TuiApp(on_running_submit=submit)
     app.set_running("working")
     app.input_buffer.insert_text("queued task")
     app.input_buffer.validate_and_handle()
@@ -396,7 +414,7 @@ def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
         received.append(text)
         app.set_idle()
 
-    app = n.TuiApp(on_chat_submit=submit)
+    app = TuiApp(on_chat_submit=submit)
 
     run_interactive_tui(monkeypatch, app, text="hello from pipe\r\x04")
 
@@ -407,7 +425,7 @@ def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
 @pytest.mark.parametrize("draft", ["", "unfinished draft"])
 def test_interactive_tui_ctrl_c_cancels_idle_input_like_master(monkeypatch, draft):
     cancelled = []
-    app = n.TuiApp(on_input_cancel=lambda: cancelled.append(True))
+    app = TuiApp(on_input_cancel=lambda: cancelled.append(True))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -424,7 +442,7 @@ def test_interactive_tui_ctrl_c_cancels_idle_input_like_master(monkeypatch, draf
 def test_tui_ctrl_c_consumes_a_running_draft_before_interrupting(monkeypatch):
     """While the agent works, a draft absorbs the first Ctrl-C; the turn keeps running."""
     events = []
-    app = n.TuiApp(on_interrupt=lambda: events.append("interrupt"))
+    app = TuiApp(on_interrupt=lambda: events.append("interrupt"))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -449,7 +467,7 @@ def test_tui_ctrl_c_interrupts_immediately_with_an_empty_running_input(monkeypat
     """The queue hint renders only on an empty buffer, so "Ctrl-C interrupts" is shown exactly
     when a single press interrupts."""
     events = []
-    app = n.TuiApp(on_interrupt=lambda: events.append("interrupt"))
+    app = TuiApp(on_interrupt=lambda: events.append("interrupt"))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -468,7 +486,7 @@ def test_tui_ctrl_u_clears_the_idle_draft_without_cancelling(monkeypatch):
     """Ctrl-U discards the line. Unlike Ctrl-C it carries no other meaning, so nothing is
     cancelled."""
     cancelled = []
-    app = n.TuiApp(on_input_cancel=lambda: cancelled.append(True))
+    app = TuiApp(on_input_cancel=lambda: cancelled.append(True))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -491,7 +509,7 @@ def test_tui_ctrl_u_clears_the_running_draft_without_interrupting(monkeypatch):
     """In the queued-input editor Ctrl-C interrupts the turn, so clearing a draft there needs its
     own key."""
     interrupted = []
-    app = n.TuiApp(on_interrupt=lambda: interrupted.append(True))
+    app = TuiApp(on_interrupt=lambda: interrupted.append(True))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -514,15 +532,15 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
     scenario_session = session(tmp_path)
     scenario_session.messages.append({"role": "user", "content": "persist me"})
     output = []
-    command_loop = n.CommandLoop(
-        n.Agent(scenario_session, output_fn=output.append),
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=output.append),
         input_fn=lambda prompt="": "",
         output_fn=output.append,
     )
-    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
-    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
-    real_application = n.Application
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    real_application = Application
     full_screen_modes = []
     tui_daemon = []
 
@@ -532,7 +550,7 @@ def test_tui_ctrl_d_emits_resume_command_without_alternate_screen(tmp_path, monk
             full_screen_modes.append(kwargs["full_screen"])
             return real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()}))
 
-        monkeypatch.setattr(n.tui, "Application", application)
+        monkeypatch.setattr(tui_module, "Application", application)
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -558,16 +576,16 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
             {"role": "assistant", "content": "restored answer"},
         ]
     )
-    command_loop = n.CommandLoop(
-        n.Agent(scenario_session, output_fn=lambda _text: None),
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=lambda _text: None),
         input_fn=lambda prompt="": "",
         output_fn=lambda _text: None,
     )
     command_loop.ui.color = True
-    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
-    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
-    real_application = n.Application
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    real_application = Application
     emitted_while_running = []
     history_emitted = threading.Event()
 
@@ -577,10 +595,10 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
             emitted_while_running.append(command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
             history_emitted.set()
 
-    monkeypatch.setattr(n.render, "print_formatted_text", print_formatted)
+    monkeypatch.setattr(render_module, "print_formatted_text", print_formatted)
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n.tui, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+        monkeypatch.setattr(tui_module, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             assert history_emitted.wait(timeout=1)
@@ -600,8 +618,8 @@ def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
     command_loop = loop(tmp_path)
     dispatched = []
     command_loop.command = lambda text: dispatched.append(text) or (True, False)
-    command_loop.tui = n.TuiApp()
-    runtime = n.TuiRuntime(command_loop)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
 
     assert runtime.dispatch(entered)
     assert dispatched == [entered.strip()]
@@ -610,17 +628,17 @@ def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
 def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
     output = []
     scenario_session = session(tmp_path)
-    command_loop = n.CommandLoop(
-        n.Agent(scenario_session, output_fn=output.append),
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=output.append),
         input_fn=lambda prompt="": "",
         output_fn=output.append,
     )
-    runtime = n.TuiRuntime(command_loop)
-    command_loop.tui = n.TuiApp()
+    runtime = TuiRuntime(command_loop)
+    command_loop.tui = TuiApp()
     command_loop.tui.set_running = lambda label: output.append("set_running:" + label)
     command_loop.command = lambda _text: (False, False)
     command_loop.agent.run = lambda _text: "done"
-    monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
     assert not runtime.dispatch("answer me")
     runtime.run_agent_turn("answer me")
@@ -630,8 +648,8 @@ def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monk
 
 def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
-    command_loop.tui = n.TuiApp()
-    runtime = n.TuiRuntime(command_loop)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
     emitted = []
 
     def interrupt(_user_input):
@@ -640,7 +658,7 @@ def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypat
 
     command_loop.agent.run = interrupt
     command_loop.emit = lambda text: emitted.append((text, command_loop.model_stream_fragments()))
-    monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
     runtime.run_agent_turn("question")
 
@@ -652,9 +670,9 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
     saved.enqueue_user_input("queued one")
     saved.enqueue_user_input("queued two")
     saved.save_snapshot()
-    restored = n.Session.load_snapshot(saved.uid, config=saved.config)
-    command_loop = n.CommandLoop(
-        n.Agent(restored, output_fn=lambda _text: None),
+    restored = Session.load_snapshot(saved.uid, config=saved.config)
+    command_loop = CommandLoop(
+        Agent(restored, output_fn=lambda _text: None),
         input_fn=lambda prompt="": "",
         output_fn=lambda _text: None,
     )
@@ -669,14 +687,14 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
             pass
 
     command_loop.agent.model = RecordingModel()
-    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
-    monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
-    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
-    real_application = n.Application
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    real_application = Application
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n.tui, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+        monkeypatch.setattr(tui_module, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -691,7 +709,7 @@ def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, mo
 
     assert len(requests) == 1
     assert "queued one" in requests[0]
-    marked_followup = n.LIVE_FOLLOWUP_PREFIX + "queued two"
+    marked_followup = LIVE_FOLLOWUP_PREFIX + "queued two"
     assert marked_followup in requests[0]
     assert requests[0].index("queued one") < requests[0].index(marked_followup)
     assert restored.pending_user_inputs == []
@@ -715,14 +733,14 @@ def test_processed_queued_message_does_not_return_to_input(tmp_path, monkeypatch
             pass
 
     command_loop.agent.model = RecordingModel()
-    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
-    monkeypatch.setattr(n.CodeIndex, "update_pending_async", lambda _index: None)
-    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
-    real_application = n.Application
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    real_application = Application
 
     with create_pipe_input() as pipe_input:
-        monkeypatch.setattr(n.tui, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
+        monkeypatch.setattr(tui_module, "Application", lambda **kwargs: real_application(input=pipe_input, **(kwargs | {"output": DummyOutput()})))
 
         def drive():
             wait_until(lambda: command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
@@ -753,7 +771,7 @@ def test_interactive_tui_control_backslash_forces_exit(monkeypatch):
         forced.append(True)
         app.app.exit()
 
-    app = n.TuiApp(on_force_exit=force_exit)
+    app = TuiApp(on_force_exit=force_exit)
 
     run_interactive_tui(monkeypatch, app, text="\x1c")
 
@@ -773,7 +791,7 @@ def test_interactive_tui_recalls_and_submits_queued_input(monkeypatch):
         received.append(text)
         app.set_idle()
 
-    app = n.TuiApp(on_running_submit=submit, on_recall=recall)
+    app = TuiApp(on_running_submit=submit, on_recall=recall)
     app.set_running("working")
 
     run_interactive_tui(monkeypatch, app, text="\x1b[A\r\x04")
@@ -786,7 +804,7 @@ def test_interactive_tui_recalls_and_submits_queued_input(monkeypatch):
 def test_interactive_tui_history_keys_recall_when_queue_is_empty(monkeypatch, tmp_path, history_key):
     received = []
     recalled = []
-    app = n.TuiApp(
+    app = TuiApp(
         on_running_submit=received.append,
         history=FileHistory(str(tmp_path / "history.txt")),
     )
@@ -807,7 +825,7 @@ def test_interactive_tui_history_keys_recall_when_queue_is_empty(monkeypatch, tm
 
 
 def test_interactive_tui_tab_inserts_single_completion_without_menu(monkeypatch):
-    app = n.TuiApp(completer=n.CommandCompleter())
+    app = TuiApp(completer=CommandCompleter())
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -822,7 +840,7 @@ def test_interactive_tui_tab_inserts_single_completion_without_menu(monkeypatch)
 
 
 def test_interactive_tui_bracketed_paste_displays_all_lines(monkeypatch):
-    app = n.TuiApp()
+    app = TuiApp()
     pasted = "\n".join(f"line {index}" for index in range(10))
     rendered = threading.Event()
     input_heights = []
@@ -850,7 +868,7 @@ def test_interactive_tui_bracketed_paste_displays_all_lines(monkeypatch):
 
 
 def test_interactive_tui_keeps_legacy_padding_around_input(monkeypatch):
-    app = n.TuiApp()
+    app = TuiApp()
     frames = []
     rendered = threading.Event()
 
@@ -877,7 +895,7 @@ def test_interactive_tui_keeps_legacy_padding_around_input(monkeypatch):
 
 
 def test_interactive_tui_keeps_padding_around_running_queue(monkeypatch):
-    app = n.TuiApp(activity_fragments_fn=lambda: [("", "working\n+ queued")])
+    app = TuiApp(activity_fragments_fn=lambda: [("", "working\n+ queued")])
     app.set_running("working")
     frames = []
     rendered = threading.Event()
@@ -907,7 +925,7 @@ def test_interactive_tui_keeps_padding_around_running_queue(monkeypatch):
 
 
 def test_interactive_tui_approval_has_no_leading_blank_row(monkeypatch):
-    app = n.TuiApp()
+    app = TuiApp()
     app._set_mode("approval", "    ├ [Y/n or reason] ")
     frames = []
     rendered = threading.Event()
@@ -936,7 +954,7 @@ def test_interactive_tui_approval_has_no_leading_blank_row(monkeypatch):
 
 def test_tui_running_input_queues_one_multiline_message():
     received: list[str] = []
-    app = n.TuiApp(on_running_submit=received.append)
+    app = TuiApp(on_running_submit=received.append)
     app.set_running("working")
     app.input_buffer.insert_text("first\nsecond\nthird")
 
@@ -948,7 +966,7 @@ def test_tui_running_input_queues_one_multiline_message():
 
 def test_tui_running_input_drops_whitespace_only_draft():
     received: list[str] = []
-    app = n.TuiApp(on_running_submit=received.append)
+    app = TuiApp(on_running_submit=received.append)
     app.set_running("working")
     app.input_buffer.insert_text("  \n ")
 
@@ -960,10 +978,10 @@ def test_tui_running_input_drops_whitespace_only_draft():
 
 def test_tui_running_input_shows_contextual_placeholder():
     hint = {"text": "Enter queues follow-up"}
-    placeholder = n.CallbackPlaceholder(lambda: hint["text"])
+    placeholder = CallbackPlaceholder(lambda: hint["text"])
 
     def transform(text):
-        document = n.Document(text)
+        document = Document(text)
         ti = type(
             "TransformationInput",
             (),
@@ -982,7 +1000,7 @@ def test_tui_running_input_shows_contextual_placeholder():
 
 def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
     command_loop = loop(tmp_path)
-    command_loop.tui = n.TuiApp()
+    command_loop.tui = TuiApp()
     command_loop.tui.set_running("working")
     command_loop.session.enqueue_user_input("queued")
 
@@ -991,19 +1009,19 @@ def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
 
 def test_tui_chat_input_shows_random_idle_placeholder(tmp_path):
     command_loop = loop(tmp_path)
-    command_loop.tui = n.TuiApp()
+    command_loop.tui = TuiApp()
 
-    assert "Ctrl-X Ctrl-E opens $EDITOR" in n.CommandLoop.IDLE_HINTS
+    assert "Ctrl-X Ctrl-E opens $EDITOR" in CommandLoop.IDLE_HINTS
     hint = command_loop.tui_input_hint()
-    assert hint in n.CommandLoop.IDLE_HINTS
+    assert hint in CommandLoop.IDLE_HINTS
     assert command_loop.tui_input_hint() == hint  # stable within a session (no flicker)
 
 
 def test_tui_sigint_interrupts_dispatch_and_running_modes():
     interrupted = []
-    app = n.TuiApp(on_interrupt=lambda: interrupted.append(True))
+    app = TuiApp(on_interrupt=lambda: interrupted.append(True))
     bindings = app.make_bindings()
-    handler = next(binding.handler for binding in bindings.bindings if binding.keys == (n.Keys.SIGINT,))
+    handler = next(binding.handler for binding in bindings.bindings if binding.keys == (Keys.SIGINT,))
     event = type("Event", (), {})()
 
     app.set_dispatching()
@@ -1016,8 +1034,8 @@ def test_tui_sigint_interrupts_dispatch_and_running_modes():
 
 def test_tui_ctrl_o_opens_latest_bash_output():
     expanded = []
-    app = n.TuiApp(on_expand_output=lambda: expanded.append(True))
-    binding = next(binding for binding in app.make_bindings().bindings if binding.keys == (n.Keys.ControlO,) and binding.filter())
+    app = TuiApp(on_expand_output=lambda: expanded.append(True))
+    binding = next(binding for binding in app.make_bindings().bindings if binding.keys == (Keys.ControlO,) and binding.filter())
 
     binding.handler(type("Event", (), {})())
 
@@ -1026,10 +1044,10 @@ def test_tui_ctrl_o_opens_latest_bash_output():
 
 @pytest.mark.parametrize("mode", ["chat", "running"])
 def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
-    app = n.TuiApp()
-    app.input_buffer.reset(n.Document("abc", cursor_position=1))
+    app = TuiApp()
+    app.input_buffer.reset(Document("abc", cursor_position=1))
     app.input_mode = mode
-    binding = next(binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (n.Keys.ControlD,) and binding.filter())
+    binding = next(binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (Keys.ControlD,) and binding.filter())
     event = type("Event", (), {"app": type("Application", (), {"exit": lambda self: None})()})()
 
     binding.handler(event)
@@ -1038,12 +1056,12 @@ def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
 
 
 def test_tui_ctrl_d_submits_multiline_approval_input():
-    app = n.TuiApp()
+    app = TuiApp()
     pending = threading.Event()
     app.input_mode = "approval"
     app._input_pending = pending
-    app.input_buffer.reset(n.Document("first\nsecond"))
-    binding = next(binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (n.Keys.ControlD,) and binding.filter())
+    app.input_buffer.reset(Document("first\nsecond"))
+    binding = next(binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (Keys.ControlD,) and binding.filter())
     event = type("Event", (), {"app": type("Application", (), {"exit": lambda self: None})()})()
 
     binding.handler(event)
@@ -1055,10 +1073,10 @@ def test_tui_ctrl_d_submits_multiline_approval_input():
 def test_resend_command_only_resends_while_running(tmp_path):
     command_loop = loop(tmp_path)
     retried = []
-    command_loop.tui = n.TuiApp(on_retry=lambda: retried.append(True))
+    command_loop.tui = TuiApp(on_retry=lambda: retried.append(True))
 
     # Reachable from the running follow-up input (queue region), not just the idle prompt.
-    assert "/resend" in n.CommandLoop.QUEUE_RUN_COMMANDS
+    assert "/resend" in CommandLoop.QUEUE_RUN_COMMANDS
 
     # Idle chat: no-op with guidance.
     command_loop.tui.set_idle()
@@ -1079,10 +1097,10 @@ def test_resend_command_only_resends_while_running(tmp_path):
 
 def test_manual_resend_uses_transient_retry_status(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
-    command_loop.tui = n.TuiApp()
+    command_loop.tui = TuiApp()
     command_loop.tui.set_running("working")
     command_loop.session.state.current_model_call_started_at = 1.0
-    runtime = n.TuiRuntime(command_loop)
+    runtime = TuiRuntime(command_loop)
     monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
 
     runtime._request_model_retry("working")
@@ -1094,12 +1112,12 @@ def test_manual_resend_uses_transient_retry_status(tmp_path, monkeypatch):
 
 def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
-    command_loop.tui = n.TuiApp()
+    command_loop.tui = TuiApp()
     command_loop.tui.set_running("working")
     command_loop.status_bar.started_at = 90.0
     command_loop.session.state.current_model_call_started_at = 99.0
     now = [100.0]
-    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
 
     command_loop.session.state.current_model_attempt = 2
     command_loop.session.state.model_retry_reason = "timeout"
@@ -1124,13 +1142,13 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
 
 def test_tui_ctrl_g_and_ctrl_x_ctrl_e_open_editor():
     opened = []
-    app = n.TuiApp()
+    app = TuiApp()
     app.edit_input_in_editor = lambda: opened.append(True)
     bindings = app.make_bindings()
     event = type("Event", (), {})()
 
     # A fresh TuiApp is in chat mode, where the editor bindings are active.
-    for keys in ((n.Keys.ControlG,), (n.Keys.ControlX, n.Keys.ControlE)):
+    for keys in ((Keys.ControlG,), (Keys.ControlX, Keys.ControlE)):
         binding = next(binding for binding in bindings.bindings if binding.keys == keys)
         assert binding.filter()
         binding.handler(event)
@@ -1140,7 +1158,7 @@ def test_tui_ctrl_g_and_ctrl_x_ctrl_e_open_editor():
 
 def test_tui_activity_uses_transient_cancelling_status(tmp_path):
     command_loop = loop(tmp_path)
-    command_loop.tui = n.TuiApp()
+    command_loop.tui = TuiApp()
     command_loop.tui.set_running("cancelling")
 
     text = "".join(fragment for _style, fragment in command_loop.queue_divider_fragments())
@@ -1149,14 +1167,14 @@ def test_tui_activity_uses_transient_cancelling_status(tmp_path):
     assert "working" not in text
 
 
-@pytest.mark.parametrize("recall_key", [(n.Keys.Up,), (n.Keys.ControlP,)])
+@pytest.mark.parametrize("recall_key", [(Keys.Up,), (Keys.ControlP,)])
 def test_tui_running_recall_removes_latest_pending_message(recall_key):
     pending = ["first", "second"]
 
     def recall():
         return pending.pop() if pending else ""
 
-    app = n.TuiApp(on_recall=recall)
+    app = TuiApp(on_recall=recall)
     app.set_running("working")
     bindings = app.make_bindings()
     event = type("Event", (), {"current_buffer": app.input_buffer})()
@@ -1169,17 +1187,17 @@ def test_tui_running_recall_removes_latest_pending_message(recall_key):
 
 
 def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):
-    app = n.TuiApp()
+    app = TuiApp()
     selected = {"index": 0}
     result = []
 
     def key(key, _data):
         if key == "j":
             selected["index"] = 1
-            return n.TUI_MODAL_PENDING
+            return TUI_MODAL_PENDING
         if key == "enter":
             return selected["index"]
-        return n.TUI_MODAL_PENDING
+        return TUI_MODAL_PENDING
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -1198,7 +1216,7 @@ def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):
 
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_interactive_tui_modal_survives_repeated_resize(monkeypatch, exclusive):
-    app = n.TuiApp()
+    app = TuiApp()
     output = ResizableOutput()
     result = []
     rendered = threading.Event()
@@ -1207,7 +1225,7 @@ def test_interactive_tui_modal_survives_repeated_resize(monkeypatch, exclusive):
         return [("", "\n".join(f"choice {index}" for index in range(40)))]
 
     def key(key, _data):
-        return None if key == "q" else n.TUI_MODAL_PENDING
+        return None if key == "q" else TUI_MODAL_PENDING
 
     def after_render(_application):
         rendered.set()
@@ -1234,7 +1252,7 @@ def test_interactive_tui_modal_survives_repeated_resize(monkeypatch, exclusive):
 
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_interactive_tui_modal_presentation_matches_legacy_scope(monkeypatch, exclusive):
-    app = n.TuiApp(status_fragments_fn=lambda: [("", "status marker")])
+    app = TuiApp(status_fragments_fn=lambda: [("", "status marker")])
     output = ResizableOutput(rows=12, columns=60)
     frames = []
     rendered = threading.Event()
@@ -1248,7 +1266,7 @@ def test_interactive_tui_modal_presentation_matches_legacy_scope(monkeypatch, ex
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         waiter = threading.Thread(
-            target=lambda: app.show_modal(lambda: [("", "modal marker")], lambda key, _data: None if key == "q" else n.TUI_MODAL_PENDING, exclusive=exclusive),
+            target=lambda: app.show_modal(lambda: [("", "modal marker")], lambda key, _data: None if key == "q" else TUI_MODAL_PENDING, exclusive=exclusive),
             daemon=True,
         )
         waiter.start()
@@ -1287,7 +1305,7 @@ def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path
     assert "long request" in outcome["requests"][0]
     queued_request = outcome["requests"][1]
     assert "queued one" in queued_request
-    marked_followup = n.LIVE_FOLLOWUP_PREFIX + "queued two"
+    marked_followup = LIVE_FOLLOWUP_PREFIX + "queued two"
     assert marked_followup in queued_request
     assert queued_request.index("queued one") < queued_request.index(marked_followup)
     assert outcome["draft_after_ctrl_c"] == [""]
@@ -1300,7 +1318,7 @@ def test_interactive_command_loop_ctrl_c_stops_llm_and_returns_to_input(tmp_path
 def test_tui_app_approval_mode_resolves_bridge_event():
     import threading as _threading
 
-    app = n.TuiApp()
+    app = TuiApp()
     result: list[str] = []
     ready = _threading.Event()
 
@@ -1326,7 +1344,7 @@ def test_tui_app_approval_mode_resolves_bridge_event():
 
 
 def test_tui_approval_restores_half_typed_draft():
-    app = n.TuiApp()
+    app = TuiApp()
     app.set_running("working")
     app.input_buffer.insert_text("unfinished draft")
     result = []
@@ -1352,12 +1370,12 @@ def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatc
         received.append(text)
         app.app.exit()
 
-    app = n.TuiApp(on_chat_submit=submit)
+    app = TuiApp(on_chat_submit=submit)
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         waiter = threading.Thread(
-            target=lambda: app.show_modal(lambda: [("", "selector")], lambda _key, _data: n.TUI_MODAL_PENDING),
+            target=lambda: app.show_modal(lambda: [("", "selector")], lambda _key, _data: TUI_MODAL_PENDING),
             daemon=True,
         )
         waiter.start()
@@ -1375,7 +1393,7 @@ def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatc
 
 
 def test_interactive_tui_resolved_modal_allows_followup_approval(monkeypatch):
-    app = n.TuiApp()
+    app = TuiApp()
     selected = []
     approved = []
 
@@ -1385,7 +1403,7 @@ def test_interactive_tui_resolved_modal_allows_followup_approval(monkeypatch):
             target=lambda: selected.append(
                 app.show_modal(
                     lambda: [("", "selector")],
-                    lambda key, _data: "chosen" if key == "enter" else n.TUI_MODAL_PENDING,
+                    lambda key, _data: "chosen" if key == "enter" else TUI_MODAL_PENDING,
                 )
             ),
             daemon=True,
@@ -1416,7 +1434,7 @@ def test_interactive_tui_choice_ctrl_c_reports_cancellation(monkeypatch, tmp_pat
     command_loop.interactive_input = True
     output = []
     command_loop.emit = output.append
-    app = n.TuiApp()
+    app = TuiApp()
     command_loop.tui = app
     result = []
 
@@ -1450,7 +1468,7 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     )
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(n.render, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
 
     command_loop.render_resumed_session()
 
@@ -1462,8 +1480,8 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):
-        monkeypatch.setattr(n.Theme, "_mode", mode)
-        assert n.UiPrinter.user_log_style() == expected
+        monkeypatch.setattr(Theme, "_mode", mode)
+        assert UiPrinter.user_log_style() == expected
         assert command_loop.style().get_attrs_for_style_str("").color == ""
 
 
@@ -1472,7 +1490,7 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     command_loop.ui.color = True
     monkeypatch.setattr(command_loop, "status", lambda _args: "status marker")
     printed = []
-    monkeypatch.setattr(n.render, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
 
     assert command_loop.command("/help") == (True, False)
     assert command_loop.command("/status") == (True, False)
@@ -1497,14 +1515,14 @@ def test_background_output_is_closed_before_final_output(tmp_path):
 
 
 def test_tool_labels_keep_legacy_green_style():
-    assert n.UiPrinter.LOG_STYLES[n.LogRole.TOOL][0] == "ansigreen"
+    assert UiPrinter.LOG_STYLES[LogRole.TOOL][0] == "ansigreen"
 
 
 @pytest.mark.parametrize(("mode", "rgb"), [("dark", "224;169;109"), ("light", "154;91;46")])
 def test_resumed_user_rendering_emits_desert_truecolor(mode, rgb, monkeypatch):
-    monkeypatch.setattr(n.Theme, "_mode", mode)
-    ui = n.UiPrinter(output_fn=lambda text: None)
-    console = n.Console(force_terminal=True, color_system="truecolor", no_color=False, width=40)
+    monkeypatch.setattr(Theme, "_mode", mode)
+    ui = UiPrinter(output_fn=lambda text: None)
+    console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=40)
 
     with console.capture() as capture:
         ui.render_message(console, "hello", "user", False, 0)
@@ -1526,17 +1544,17 @@ def test_resumed_user_rendering_emits_desert_truecolor(mode, rgb, monkeypatch):
 )
 def test_theme_resolution(configured, colorfgbg, expected, monkeypatch):
     monkeypatch.setenv("COLORFGBG", colorfgbg)
-    assert n.Theme.resolve(configured) == expected
+    assert Theme.resolve(configured) == expected
 
 
 def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch):
-    line = n.LogLine("Search", '"needle" path=src 0:20', n.LogRole.TOOL, syntax="tool-args")
-    block = n.LogBlock([line])
+    line = LogLine("Search", '"needle" path=src 0:20', LogRole.TOOL, syntax="tool-args")
+    block = LogBlock([line])
     rendered = []
 
     for mode in ("dark", "light"):
-        monkeypatch.setattr(n.Theme, "_mode", mode)
-        segments = n.UiPrinter(output_fn=lambda text: None).log_segments(block)
+        monkeypatch.setattr(Theme, "_mode", mode)
+        segments = UiPrinter(output_fn=lambda text: None).log_segments(block)
         rendered.append(("".join(text for _style, text in segments), {style for style, text in segments if text.strip()}))
 
     assert rendered[0][0] == rendered[1][0] == '  Search  "needle" path=src 0:20\n'
@@ -1545,12 +1563,12 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
 
 def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.setattr(n.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(n.Theme, "_mode", "dark")
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(Theme, "_mode", "dark")
     emitted = []
-    monkeypatch.setattr(n.render, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
 
-    ui = n.UiPrinter()
+    ui = UiPrinter()
     # Interactive TTY output stays colored regardless of NO_COLOR — minacode owns its theming and
     # renders through prompt_toolkit's ANSI path, so the parent env var is not honored.
     assert ui.color
@@ -1561,9 +1579,9 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
 
 
 def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
-    monkeypatch.setattr(n.Theme, "_mode", "dark")
-    expected = n.UiPrinter.user_log_style()
-    app = n.TuiApp()
+    monkeypatch.setattr(Theme, "_mode", "dark")
+    expected = UiPrinter.user_log_style()
+    app = TuiApp()
     app.build_layout()
     assert app.input_window.style == expected
 
@@ -1577,7 +1595,7 @@ def test_styled_wrapping_respects_terminal_width_for_unicode(width):
     prefix = [("", "  Read  ")]
     continuation = [("", "        ")]
     content_text = "路径/非常长/🙂/é/模块/filename.py:123"
-    rows = n.Text.wrap_styled(prefix, continuation, [("fg:default", content_text)], width)
+    rows = Text.wrap_styled(prefix, continuation, [("fg:default", content_text)], width)
 
     assert "".join(text for _style, text in rows[0]).startswith("  Read  ")
     assert all(sum(get_cwidth(text) for _style, text in row) <= width for row in rows)
@@ -1593,11 +1611,11 @@ class ModalHarness:
     def show_modal(self, fragments_fn, key_fn, *, exclusive=False):
         self.exclusive.append(exclusive)
         self.frames.append(fragments_fn())
-        result = n.TUI_MODAL_PENDING
+        result = TUI_MODAL_PENDING
         for key in self.keys:
             result = key_fn(key, key if len(key) == 1 else "")
             self.frames.append(fragments_fn())
-            if result is not n.TUI_MODAL_PENDING:
+            if result is not TUI_MODAL_PENDING:
                 return result
         return None
 
@@ -1607,15 +1625,15 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     for index in range(12):
         stdout = "\n".join(f"line {line}" for line in range(40)) if index == 10 else f"output {index}"
         stderr = "detail stderr" if index == 10 else ""
-        command_loop.session.store_tool_result("Bash", [f"printf command-{index}"], n.Tool.process_result("BashToolResult", 0, stdout, stderr))
-    command_loop.session.store_tool_result("Bash", ["true"], n.Tool.process_result("BashToolResult", 0, "", ""))
+        command_loop.session.store_tool_result("Bash", [f"printf command-{index}"], Tool.process_result("BashToolResult", 0, stdout, stderr))
+    command_loop.session.store_tool_result("Bash", ["true"], Tool.process_result("BashToolResult", 0, "", ""))
     modal = ModalHarness(["j", "enter", "escape", "G", "enter", "c-o"])
     command_loop.tui = modal
 
     # ``shutil`` is a shared module object also used by pytest's terminal reporter. Restore the
     # patch before pytest reports this test result, rather than waiting for fixture teardown.
     with monkeypatch.context() as patch:
-        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((50, 20)))
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
         command_loop.bash_output_viewer()
 
     listing = "".join(value for _style, value in modal.frames[0])
@@ -1648,10 +1666,10 @@ def test_bash_output_viewer_is_noop_without_stored_bash_output(tmp_path):
 
 def test_bash_output_viewer_reads_resumed_history(tmp_path):
     saved = session(tmp_path)
-    saved.store_tool_result("Bash", ["printf persisted"], n.Tool.process_result("BashToolResult", 0, "persisted output", ""))
+    saved.store_tool_result("Bash", ["printf persisted"], Tool.process_result("BashToolResult", 0, "persisted output", ""))
     saved.save_snapshot()
-    restored = n.Session.load_snapshot(saved.uid, config=saved.config)
-    command_loop = n.CommandLoop(n.Agent(restored, output_fn=lambda _text: None), input_fn=lambda prompt="": "", output_fn=lambda _text: None)
+    restored = Session.load_snapshot(saved.uid, config=saved.config)
+    command_loop = CommandLoop(Agent(restored, output_fn=lambda _text: None), input_fn=lambda prompt="": "", output_fn=lambda _text: None)
     modal = ModalHarness(["enter", "q"])
     command_loop.tui = modal
 
@@ -1675,7 +1693,7 @@ def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
 def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
-    command_loop.session.config.providers["other"] = n.ProviderConfig(model="model-b", available_models=("model-b",), reasoning="low")
+    command_loop.session.config.providers["other"] = ProviderConfig(model="model-b", available_models=("model-b",), reasoning="low")
     selected = iter(["other", "model-b", "responses", "high"])
     titles = []
 
@@ -1722,7 +1740,7 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.set_value("provider.stream maybe") == "Invalid value for provider.stream"
     assert command_loop.set_value("provider.stream off") == "Set provider.stream"
     assert command_loop.session.config.provider.stream is False
-    stream_values = [item.text for item in n.CommandCompleter().get_completions(Document("/set provider.stream "), None)]
+    stream_values = [item.text for item in CommandCompleter().get_completions(Document("/set provider.stream "), None)]
     assert stream_values == ["on", "off"]
     assert command_loop.set_value("provider.image_input maybe") == "Invalid value for provider.image_input"
     assert command_loop.set_value("provider.image_input off") == "Set provider.image_input"
@@ -1764,7 +1782,7 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
 
     assert command_loop.api("") == "Set provider.api = auto (wire: responses)"
     assert shown["title"] == "Request API"
-    assert shown["choices"] == n.PROVIDER_API_CHOICES
+    assert shown["choices"] == PROVIDER_API_CHOICES
     assert shown["current"] == "chat"
     assert shown["labels"]["auto"] == "auto - infer from the endpoint URL and model (responses)"
     assert shown["labels"]["chat"] == "chat (current)"
@@ -1775,14 +1793,14 @@ def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
 
     command_loop = loop(tmp_path)
 
-    assert "/api" in n.CommandLoop.COMMANDS
+    assert "/api" in CommandLoop.COMMANDS
     command_loop.command("/api anthropic")
     assert command_loop.session.config.provider.api == "anthropic"
 
-    texts = [c.text for c in n.CommandCompleter().get_completions(Document("/api "), None)]
-    assert set(texts) == set(n.PROVIDER_API_CHOICES)
+    texts = [c.text for c in CommandCompleter().get_completions(Document("/api "), None)]
+    assert set(texts) == set(PROVIDER_API_CHOICES)
     # The wire is a command, not a /set key, so it must not be reachable both ways.
-    assert "provider.api" not in n.CommandCompleter.SET_KEYS
+    assert "provider.api" not in CommandCompleter.SET_KEYS
     assert command_loop.set_value("provider.api chat") == "Unknown config key: provider.api"
 
 
@@ -1794,10 +1812,10 @@ def test_model_chain_steps_back_from_the_wire_to_the_model_and_from_reasoning_to
     scripted = iter(
         [
             ("Model", "model-a"),
-            ("Request API", n.SELECTION_BACK),  # back lands on the model picker again
+            ("Request API", SELECTION_BACK),  # back lands on the model picker again
             ("Model", "model-a"),
             ("Request API", "chat"),
-            ("Reasoning effort", n.SELECTION_BACK),  # back lands on the wire, not the model
+            ("Reasoning effort", SELECTION_BACK),  # back lands on the wire, not the model
             ("Request API", "responses"),
             ("Reasoning effort", "high"),
         ]
@@ -1853,7 +1871,7 @@ def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
         calls.append(kwargs)
         return SimpleNamespace(models=Models())
 
-    monkeypatch.setattr(n.loop, "OpenAI", openai)
+    monkeypatch.setattr(loop_module, "OpenAI", openai)
 
     assert command_loop.remote_models(provider) == ("alpha", "zeta")
     assert calls[0]["api_key"] == "secret"
@@ -1868,7 +1886,7 @@ def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
 
     provider.url = "https://example.com/v1"
     provider.key = "secret"
-    monkeypatch.setattr(n.loop, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(loop_module, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
 
     assert command_loop.remote_models(provider) == ()
 
@@ -1877,8 +1895,8 @@ def test_effort_is_an_alias_for_reason(tmp_path):
     command_loop = loop(tmp_path)
 
     # Registered as a command that dispatches to the same handler as /reason.
-    assert "/effort" in n.CommandLoop.COMMANDS
-    assert n.CommandLoop.COMMAND_HANDLERS["/effort"] == n.CommandLoop.COMMAND_HANDLERS["/reason"]
+    assert "/effort" in CommandLoop.COMMANDS
+    assert CommandLoop.COMMAND_HANDLERS["/effort"] == CommandLoop.COMMAND_HANDLERS["/reason"]
 
     # Dispatch sets reasoning effort exactly like /reason.
     command_loop.command("/effort high")
@@ -1887,8 +1905,8 @@ def test_effort_is_an_alias_for_reason(tmp_path):
     # Tab completion offers the same reasoning choices.
     from prompt_toolkit.document import Document
 
-    texts = [c.text for c in n.CommandCompleter().get_completions(Document("/effort "), None)]
-    assert set(texts) == set(n.REASONING_CHOICES)
+    texts = [c.text for c in CommandCompleter().get_completions(Document("/effort "), None)]
+    assert set(texts) == set(REASONING_CHOICES)
 
 
 def test_model_selection_groups_configured_and_remote_choices_like_master(tmp_path):
@@ -1933,7 +1951,7 @@ def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path):
     provider.url = "https://example.com/v1"
     provider.key = "key"
     transitions = []
-    command_loop.tui = n.TuiApp()
+    command_loop.tui = TuiApp()
     command_loop.tui.set_dispatching = lambda prompt="": transitions.append(prompt)
     command_loop.remote_models = lambda selected: ("remote-model",)
     selected = iter(["remote-model", "auto", "off"])
@@ -1946,12 +1964,12 @@ def test_model_discovery_shows_loading_state_for_selected_provider(tmp_path):
 def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
-    command_loop.session.config.providers["zz-other"] = n.ProviderConfig(
+    command_loop.session.config.providers["zz-other"] = ProviderConfig(
         model="model-a",
         available_models=("model-a", "model-b"),
         reasoning="low",
     )
-    app = n.TuiApp()
+    app = TuiApp()
     command_loop.tui = app
     output = ResizableOutput(rows=20, columns=80)
     result = []
@@ -2072,26 +2090,26 @@ def test_empty_diff_viewer_reports_zero_position(tmp_path):
 
 
 def test_diff_view_state_owns_navigation_transitions():
-    state = n.DiffViewState(n.TabbedViewState(("Latest", "Session")))
+    state = DiffViewState(TabbedViewState(("Latest", "Session")))
 
     state.handle_key("down", 3, 10)
     assert state.file == 1
     state.handle_key("enter", 3, 10)
-    assert state.mode is n.DiffViewState.Mode.FILE
+    assert state.mode is DiffViewState.Mode.FILE
     state.handle_key("c-d", 3, 10)
     assert state.view.scroll == 5
-    assert state.handle_key("escape", 3, 10) is n.TUI_MODAL_PENDING
-    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.handle_key("escape", 3, 10) is TUI_MODAL_PENDING
+    assert state.mode is DiffViewState.Mode.LIST
 
     state.handle_key("right", 3, 10)
     assert state.view.tab == 1
     assert state.file == 0
-    assert state.handle_key("r", 3, 10) is n.DiffViewState.REFRESH
+    assert state.handle_key("r", 3, 10) is DiffViewState.REFRESH
     assert state.handle_key("q", 3, 10) is None
 
 
 def test_diff_view_g_and_shift_g_jump_top_and_bottom():
-    state = n.DiffViewState(n.TabbedViewState(("Latest", "Session")))
+    state = DiffViewState(TabbedViewState(("Latest", "Session")))
 
     # LIST mode: jump file selection to last / first.
     state.handle_key("G", 5, 10)
@@ -2101,7 +2119,7 @@ def test_diff_view_g_and_shift_g_jump_top_and_bottom():
 
     # FILE mode: jump scroll to bottom (clamped on render) / top.
     state.handle_key("enter", 5, 10)
-    assert state.mode is n.DiffViewState.Mode.FILE
+    assert state.mode is DiffViewState.Mode.FILE
     state.handle_key("G", 5, 10)
     assert state.view.scroll > 0
     state.handle_key("g", 5, 10)
@@ -2109,7 +2127,7 @@ def test_diff_view_g_and_shift_g_jump_top_and_bottom():
 
 
 def test_choice_view_g_and_shift_g_jump_first_and_last():
-    state = n.ChoiceViewState(choices=("one", "two", "three"), labels={}, disabled=set())
+    state = ChoiceViewState(choices=("one", "two", "three"), labels={}, disabled=set())
 
     state.handle_key("G")
     assert state.selected == 2
@@ -2125,23 +2143,23 @@ def test_choice_view_g_and_shift_g_jump_first_and_last():
 
 @pytest.mark.parametrize(("key", "expected_tab"), [("l", 1), ("tab", 1), ("h", 0)])
 def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
-    state = n.DiffViewState(n.TabbedViewState(("Latest", "Session"), tab=0 if key != "h" else 1))
+    state = DiffViewState(TabbedViewState(("Latest", "Session"), tab=0 if key != "h" else 1))
     state.open_file(3)
 
     state.handle_key(key, 3, 10)
 
     assert state.view.tab == expected_tab
-    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.mode is DiffViewState.Mode.LIST
     assert state.file == 0
 
 
 def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
-    preview = n.BashLivePreview()
+    preview = BashLivePreview()
     preview.active = True
     preview.text = "界" * 20
 
     with monkeypatch.context() as patch:
-        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((20, 24)))
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((20, 24)))
         assert all(get_cwidth(line) < 20 for line in preview.frame_lines())
 
 
@@ -2150,8 +2168,8 @@ def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch
     s.config.provider.model = "模型" * 20
 
     with monkeypatch.context() as patch:
-        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((20, 24)))
-        fragments = n.StatusBar(s).fragments(sweep=False, show_elapsed=False)
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((20, 24)))
+        fragments = StatusBar(s).fragments(sweep=False, show_elapsed=False)
 
     assert get_cwidth("".join(text for _style, text in fragments)) < 20
 
@@ -2160,9 +2178,9 @@ def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkey
     s = session(tmp_path)
     s.config.provider.timeout = 120
     s.state.current_model_call_started_at = 1.0
-    bar = n.StatusBar(s)
+    bar = StatusBar(s)
     now = [1.0]
-    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
 
     initial = bar.sweep_fragments("status")
     now[0] = 121.0  # Same sweep phase after a full configured timeout.
@@ -2173,9 +2191,9 @@ def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkey
 
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):
     now = [100.0]
-    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(n.render, "print_formatted_text", lambda *args, **kwargs: None)
-    preview = n.BashLivePreview()
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *args, **kwargs: None)
+    preview = BashLivePreview()
     preview.output = recording_output
     preview.active = True
     preview.started_at = 100.0
@@ -2192,7 +2210,7 @@ def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, m
 
 
 def test_status_clear_erases_rendered_line(tmp_path, recording_output):
-    status = n.StatusBar(session(tmp_path))
+    status = StatusBar(session(tmp_path))
     status.output = recording_output
     status.rendered = True
 
@@ -2203,34 +2221,34 @@ def test_status_clear_erases_rendered_line(tmp_path, recording_output):
 
 
 def test_clip_width_returns_unchanged_text_when_within_width():
-    assert n.Text.clip_width("hello", 10) == "hello"
-    assert n.Text.clip_width("", 5) == ""
-    assert n.Text.clip_width("hello", 5) == "hello"
+    assert Text.clip_width("hello", 10) == "hello"
+    assert Text.clip_width("", 5) == ""
+    assert Text.clip_width("hello", 5) == "hello"
 
 
 def test_clip_width_clips_wide_text_with_ellipsis():
-    assert n.Text.clip_width("hello world", 8) == "hello..."
+    assert Text.clip_width("hello world", 8) == "hello..."
     # When width is less than 3, the ellipsis shrinks to fit
-    assert n.Text.clip_width("hello world", 1) == "."
-    assert n.Text.clip_width("hello world", 2) == ".."
-    assert n.Text.clip_width("hello world", 3) == "..."
-    assert n.Text.clip_width("hello world", 4) == "h..."
+    assert Text.clip_width("hello world", 1) == "."
+    assert Text.clip_width("hello world", 2) == ".."
+    assert Text.clip_width("hello world", 3) == "..."
+    assert Text.clip_width("hello world", 4) == "h..."
 
 
 def test_clip_width_clamps_negative_width_to_zero():
-    assert n.Text.clip_width("hello", -1) == ""
+    assert Text.clip_width("hello", -1) == ""
 
 
 def test_clip_width_handles_cjk_wide_characters():
-    assert n.Text.clip_width("你好世界", 5) == "你..."
-    assert n.Text.clip_width("a你好", 5) == "a你好"
+    assert Text.clip_width("你好世界", 5) == "你..."
+    assert Text.clip_width("a你好", 5) == "a你好"
 
 
 def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_output):
     now = [100.0]
-    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(n.render, "print_formatted_text", lambda *args, **kwargs: None)
-    preview = n.BashLivePreview()
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *args, **kwargs: None)
+    preview = BashLivePreview()
     preview.output = recording_output
     preview.active = True
     preview.started_at = 100.0
@@ -2249,7 +2267,7 @@ def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_
 
 
 def test_choice_view_state_default_filtering():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("alpha", "---", "beta", "---", "gamma"),
         labels={"alpha": "Alpha", "beta": "Beta", "gamma": "Gamma"},
         disabled={"---"},
@@ -2261,7 +2279,7 @@ def test_choice_view_state_default_filtering():
 
 
 def test_choice_view_state_search_filters_visible():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("alpha", "---", "beta", "---", "gamma"),
         labels={"alpha": "Alpha", "beta": "Beta"},
         disabled={"---"},
@@ -2273,7 +2291,7 @@ def test_choice_view_state_search_filters_visible():
 
 
 def test_choice_view_state_move_navigation():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("a", "b", "c"),
         labels={},
         disabled=set(),
@@ -2290,7 +2308,7 @@ def test_choice_view_state_move_navigation():
 
 
 def test_choice_view_state_no_enabled_choices_returns_none():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("x",),
         labels={},
         disabled={"x"},
@@ -2300,39 +2318,39 @@ def test_choice_view_state_no_enabled_choices_returns_none():
 
 
 def test_choice_view_state_key_navigation_and_selection():
-    state = n.ChoiceViewState(
-        choices=("a", "---", "b", n.ChoiceViewState.FREE_TEXT),
-        labels={n.ChoiceViewState.FREE_TEXT: "Type freely..."},
+    state = ChoiceViewState(
+        choices=("a", "---", "b", ChoiceViewState.FREE_TEXT),
+        labels={ChoiceViewState.FREE_TEXT: "Type freely..."},
         disabled={"---"},
     )
 
-    assert state.handle_key("j") is n.TUI_MODAL_PENDING
+    assert state.handle_key("j") is TUI_MODAL_PENDING
     assert state.selected_choice() == "b"
-    assert state.handle_key("1") is n.TUI_MODAL_PENDING
+    assert state.handle_key("1") is TUI_MODAL_PENDING
     assert state.handle_key("enter") == "a"
 
     state.selected = 2
-    assert state.handle_key("enter") is n.SELECTION_FREE_TEXT
+    assert state.handle_key("enter") is SELECTION_FREE_TEXT
 
 
 def test_choice_view_state_search_and_escape_layers():
-    state = n.ChoiceViewState(choices=("alpha", "beta"), labels={}, disabled=set())
+    state = ChoiceViewState(choices=("alpha", "beta"), labels={}, disabled=set())
 
     state.handle_key("/")
     state.handle_key("any", "b")
     assert state.searching
     assert state.query == "b"
     assert state.selected_choice() == "beta"
-    assert state.handle_key("escape") is n.TUI_MODAL_PENDING
+    assert state.handle_key("escape") is TUI_MODAL_PENDING
     assert not state.searching
     assert state.query == "b"
-    assert state.handle_key("escape") is n.TUI_MODAL_PENDING
+    assert state.handle_key("escape") is TUI_MODAL_PENDING
     assert state.query == ""
-    assert state.handle_key("escape") is n.SELECTION_BACK
+    assert state.handle_key("escape") is SELECTION_BACK
 
 
 def test_choice_view_state_fragments_preserve_headers_and_preview():
-    state = n.ChoiceViewState(
+    state = ChoiceViewState(
         choices=("--- Models ---", "alpha"),
         labels={"--- Models ---": "  ---- Models ----", "alpha": "Alpha"},
         disabled={"--- Models ---"},
@@ -2350,23 +2368,23 @@ def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
     """start_session must dispatch auto_connect MCP discovery in the background: an unreachable
     server otherwise blocks the prompt for the whole discovery timeout. Regression guard for the
     lifecycle refactor that had briefly made discover_auto a synchronous startup call."""
-    config = n.Config.from_dict(
+    config = Config.from_dict(
         {
             "provider": {"active": "d", "d": {"url": "u", "key": "k", "model": "m"}},
             "mcp": {"slow": {"url": "http://unreachable/mcp", "auto_connect": True}},
             "paths": {"data_dir": str(tmp_path / "data")},
         }
     )
-    s = n.Session(cwd=str(tmp_path), config=config)
-    command_loop = n.CommandLoop(
-        n.Agent(s, output_fn=lambda text: None),
+    s = Session(cwd=str(tmp_path), config=config)
+    command_loop = CommandLoop(
+        Agent(s, output_fn=lambda text: None),
         input_fn=lambda prompt="": "",
         output_fn=lambda text: None,
     )
 
-    monkeypatch.setattr(n.SessionSnapshotStore, "clean_expired", lambda _session: 0)
-    monkeypatch.setattr(n.CodeIndex, "refresh_existing_async", lambda _index: False)
-    monkeypatch.setattr(n.UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: False)
+    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
 
     discover_started = threading.Event()
     allow_finish = threading.Event()

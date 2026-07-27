@@ -4,24 +4,27 @@ import time
 
 import pytest
 
-import minacode as n
+from minacode.base import Config, MinacodeError, RuntimeSettings
+from minacode.engine import Agent, ModelClient
+from minacode.loop import CommandLoop
+from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
 
 
 def session_with_data_dir(tmp_path):
     """Session targeting tmp_path as data_dir (avoids touching ~/.minacode)."""
-    return n.Session(
+    return Session(
         cwd=str(tmp_path),
-        config=n.Config(data_dir=str(tmp_path)),
+        config=Config(data_dir=str(tmp_path)),
     )
 
 
 def log_path(s):
     """Path of a session's log inside its project shard."""
-    return n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid)
+    return SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid)
 
 
 def project_dir(s):
-    return n.SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd)
+    return SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd)
 
 
 def read_jsonl(path) -> list[dict]:
@@ -66,7 +69,7 @@ def test_pending_user_inputs_persist_and_restore(tmp_path):
 
     lines = read_jsonl(log_path(s))
     assert lines[0]["pending_user_inputs"] == ["queued one", "queued two"]
-    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    restored = Session.load_snapshot(s.uid, config=s.config)
     assert [item.text for item in restored.pending_user_inputs] == ["queued one", "queued two"]
     assert all(not item.inflight for item in restored.pending_user_inputs)
 
@@ -83,7 +86,7 @@ def test_pending_user_input_delta_replaces_queue_state(tmp_path):
     lines = read_jsonl(log_path(s))
     assert lines[1]["pending_user_inputs"] == ["queued"]
     assert lines[2]["pending_user_inputs"] == []
-    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.pending_user_inputs == []
 
 
@@ -158,7 +161,7 @@ def test_delta_omits_unchanged_turn_diffs_without_serializing_payload(tmp_path, 
     def fail_turn_diff(_diff, _blobs):
         raise AssertionError("unchanged turn diffs should not be serialized")
 
-    monkeypatch.setattr(n.SessionSnapshotCodec, "turn_diff", fail_turn_diff)
+    monkeypatch.setattr(SessionSnapshotCodec, "turn_diff", fail_turn_diff)
     s.messages.append({"role": "user", "content": "next"})
     s.save_snapshot()  # delta
 
@@ -191,7 +194,7 @@ def test_turn_diff_snapshots_survive_a_roundtrip(tmp_path):
     s.store_turn_diff("tr.1", 1, "x.py", "-old\n+new\n", before="old\n", after="new\n", round=1)
     s.save_snapshot()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
 
     assert [(d.key, d.path, d.before, d.after) for d in restored.turn_diffs] == [("tr.1", "x.py", "old\n", "new\n")]
 
@@ -199,7 +202,7 @@ def test_turn_diff_snapshots_survive_a_roundtrip(tmp_path):
 def test_oversized_snapshots_are_dropped_before_reaching_the_log(tmp_path):
     """Snapshots over the size limit are still discarded, and leave no blob behind."""
     s = session_with_data_dir(tmp_path)
-    huge = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
+    huge = "x" * (TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
     s.store_turn_diff("tr.1", 1, "big.py", "-o\n+n\n", before=huge, after=huge, round=1)
     s.save_snapshot()
 
@@ -208,7 +211,7 @@ def test_oversized_snapshots_are_dropped_before_reaching_the_log(tmp_path):
 
     assert not [line for line in lines if "blob" in line]
     assert (entry["before_blob"], entry["after_blob"]) == ("", "")
-    assert n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path)).turn_diffs[0].before == ""
+    assert Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path)).turn_diffs[0].before == ""
 
 
 def test_rewriting_the_retained_window_does_not_rewrite_snapshots(tmp_path):
@@ -237,7 +240,7 @@ def test_resumed_session_does_not_rewrite_existing_blobs(tmp_path):
     s.store_turn_diff("tr.1", 1, "x.py", "-old\n+new\n", before="old\n", after="new\n", round=1)
     s.save_snapshot()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     restored.store_turn_diff("tr.2", 2, "x.py", "-new\n+newer\n", before="new\n", after="newer\n", round=2)
     restored.save_snapshot()
 
@@ -259,7 +262,7 @@ def test_load_merges_init_and_deltas(tmp_path):
     s.messages.append({"role": "user", "content": "q2"})
     s.save_snapshot()  # delta (no new tool results)
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     # All messages across all lines
     assert [m["content"] for m in s2.messages[:3]] == ["q1", "a1", "q2"]
     # Fourth message is resume marker
@@ -276,7 +279,7 @@ def test_load_preserves_uid(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert s2.uid == s.uid
 
 
@@ -286,7 +289,7 @@ def test_load_with_latest_alias(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot("latest", config=s.config, cwd=str(tmp_path))
+    s2 = Session.load_snapshot("latest", config=s.config, cwd=str(tmp_path))
     assert s2.uid == s.uid
 
 
@@ -296,7 +299,7 @@ def test_load_with_last_alias(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot("last", config=s.config, cwd=str(tmp_path))
+    s2 = Session.load_snapshot("last", config=s.config, cwd=str(tmp_path))
     assert s2.uid == s.uid
 
 
@@ -306,24 +309,24 @@ def test_latest_uid_ignores_newer_sessions_from_other_projects(tmp_path):
     other = tmp_path / "other"
     project.mkdir()
     other.mkdir()
-    config = n.Config(data_dir=str(data_dir))
+    config = Config(data_dir=str(data_dir))
 
-    project_session = n.Session(cwd=str(project), config=config)
+    project_session = Session(cwd=str(project), config=config)
     project_session.messages.append({"role": "user", "content": "project"})
     project_session.save_snapshot()
 
-    other_session = n.Session(cwd=str(other), config=config)
+    other_session = Session(cwd=str(other), config=config)
     other_session.messages.append({"role": "user", "content": "other"})
     other_session.save_snapshot()
     os.utime(log_path(project_session), (1, 1))
     os.utime(log_path(other_session), (2, 2))
 
-    assert n.SessionSnapshotStore.latest_uid(str(data_dir), str(project)) == project_session.uid
-    assert n.SessionSnapshotStore.latest_uid(str(data_dir), str(other)) == other_session.uid
+    assert SessionSnapshotStore.latest_uid(str(data_dir), str(project)) == project_session.uid
+    assert SessionSnapshotStore.latest_uid(str(data_dir), str(other)) == other_session.uid
 
 
 def test_latest_uid_returns_empty_without_project_session(tmp_path):
-    assert n.SessionSnapshotStore.latest_uid(str(tmp_path / "missing"), str(tmp_path)) == ""
+    assert SessionSnapshotStore.latest_uid(str(tmp_path / "missing"), str(tmp_path)) == ""
 
 
 def test_sessions_are_sharded_per_project(tmp_path):
@@ -332,12 +335,12 @@ def test_sessions_are_sharded_per_project(tmp_path):
     data_dir, project, other = tmp_path / "data", tmp_path / "project", tmp_path / "other"
     project.mkdir()
     other.mkdir()
-    config = n.Config(data_dir=str(data_dir))
+    config = Config(data_dir=str(data_dir))
 
-    first = n.Session(cwd=str(project), config=config)
+    first = Session(cwd=str(project), config=config)
     first.messages.append({"role": "user", "content": "project"})
     first.save_snapshot()
-    second = n.Session(cwd=str(other), config=config)
+    second = Session(cwd=str(other), config=config)
     second.messages.append({"role": "user", "content": "other"})
     second.save_snapshot()
 
@@ -351,7 +354,7 @@ def test_project_slug_separates_same_named_directories(tmp_path):
     left, right = tmp_path / "a" / "repo", tmp_path / "b" / "repo"
     left.mkdir(parents=True)
     right.mkdir(parents=True)
-    slugs = [n.SessionSnapshotStore.project_slug(str(path)) for path in (left, right)]
+    slugs = [SessionSnapshotStore.project_slug(str(path)) for path in (left, right)]
 
     assert all(slug.startswith("repo-") for slug in slugs)
     assert slugs[0] != slugs[1]
@@ -361,12 +364,12 @@ def test_load_finds_a_session_by_uid_from_any_directory(tmp_path):
     """An explicit UID resolves regardless of which project it belongs to."""
     data_dir, project = tmp_path / "data", tmp_path / "project"
     project.mkdir()
-    config = n.Config(data_dir=str(data_dir))
-    s = n.Session(cwd=str(project), config=config)
+    config = Config(data_dir=str(data_dir))
+    s = Session(cwd=str(project), config=config)
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    loaded = n.Session.load_snapshot(s.uid, config=config, cwd=str(tmp_path))
+    loaded = Session.load_snapshot(s.uid, config=config, cwd=str(tmp_path))
 
     assert loaded.uid == s.uid
     assert loaded.cwd == str(project)
@@ -378,13 +381,13 @@ def test_latest_never_crosses_into_another_project(tmp_path):
     data_dir, project, other = tmp_path / "data", tmp_path / "project", tmp_path / "other"
     project.mkdir()
     other.mkdir()
-    config = n.Config(data_dir=str(data_dir))
-    elsewhere = n.Session(cwd=str(other), config=config)
+    config = Config(data_dir=str(data_dir))
+    elsewhere = Session(cwd=str(other), config=config)
     elsewhere.messages.append({"role": "user", "content": "other"})
     elsewhere.save_snapshot()
 
-    with pytest.raises(n.MinacodeError, match="No previous session for this project"):
-        n.Session.load_snapshot("latest", config=config, cwd=str(project))
+    with pytest.raises(MinacodeError, match="No previous session for this project"):
+        Session.load_snapshot("latest", config=config, cwd=str(project))
 
 
 def test_latest_falls_back_to_newest_log_when_pointer_is_missing(tmp_path):
@@ -393,7 +396,7 @@ def test_latest_falls_back_to_newest_log_when_pointer_is_missing(tmp_path):
     s.save_snapshot()
     os.unlink(os.path.join(project_dir(s), "latest"))
 
-    assert n.SessionSnapshotStore.latest_uid(str(tmp_path), str(tmp_path)) == s.uid
+    assert SessionSnapshotStore.latest_uid(str(tmp_path), str(tmp_path)) == s.uid
 
 
 def test_header_line_precedes_the_snapshot(tmp_path):
@@ -404,7 +407,7 @@ def test_header_line_precedes_the_snapshot(tmp_path):
 
     header = read_lines(log_path(s))[0]
 
-    assert header == {"v": n.SessionSnapshotStore.FORMAT_VERSION, "uid": s.uid, "cwd": s.cwd, "created_at": header["created_at"]}
+    assert header == {"v": SessionSnapshotStore.FORMAT_VERSION, "uid": s.uid, "cwd": s.cwd, "created_at": header["created_at"]}
     assert "messages" not in header
 
 
@@ -417,8 +420,8 @@ def test_load_rejects_an_unknown_format_version(tmp_path):
     with open(log_path(s), "w") as file:
         file.write("\n".join(json.dumps(line) for line in lines) + "\n")
 
-    with pytest.raises(n.MinacodeError, match="Unsupported session format v99"):
-        n.Session.load_snapshot(s.uid, config=s.config)
+    with pytest.raises(MinacodeError, match="Unsupported session format v99"):
+        Session.load_snapshot(s.uid, config=s.config)
 
 
 def test_load_appends_resume_marker(tmp_path):
@@ -427,7 +430,7 @@ def test_load_appends_resume_marker(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert len(s2.messages) == 2  # hello + resume marker
     assert s2.messages[-1]["content"].startswith(f"[Session resumed: uid={s.uid}]")
 
@@ -438,7 +441,7 @@ def test_save_after_load_produces_a_delta(tmp_path):
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()  # init (line 1)
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     # s2 now has messages = [hello, resume_marker]
     s2.messages.append({"role": "assistant", "content": "post-resume"})
     s2.save_snapshot()  # delta (line 2)
@@ -459,14 +462,14 @@ def test_repeated_resume_preserves_history(tmp_path):
 
     expected = ["m1"]
     for role, content in (("assistant", "a1"), ("user", "m2"), ("assistant", "a2")):
-        s = n.Session.load_snapshot(s.uid, config=s.config)
-        assert [m["content"] for m in n.SessionSnapshotCodec.persistable_messages(s.messages)] == expected
+        s = Session.load_snapshot(s.uid, config=s.config)
+        assert [m["content"] for m in SessionSnapshotCodec.persistable_messages(s.messages)] == expected
         s.messages.append({"role": role, "content": content})
         s.save_snapshot()
         expected.append(content)
 
-    loaded = n.Session.load_snapshot(s.uid, config=s.config)
-    assert [m["content"] for m in n.SessionSnapshotCodec.persistable_messages(loaded.messages)] == expected
+    loaded = Session.load_snapshot(s.uid, config=s.config)
+    assert [m["content"] for m in SessionSnapshotCodec.persistable_messages(loaded.messages)] == expected
 
 
 def test_resume_marker_is_never_persisted(tmp_path):
@@ -475,7 +478,7 @@ def test_resume_marker_is_never_persisted(tmp_path):
     s.messages.append({"role": "user", "content": "m1"})
     s.save_snapshot()
 
-    resumed = n.Session.load_snapshot(s.uid, config=s.config)
+    resumed = Session.load_snapshot(s.uid, config=s.config)
     resumed.messages = [
         {"role": "system", "content": f"[Session resumed: uid={s.uid}]"},
         {"role": "user", "content": "rewritten"},
@@ -493,8 +496,8 @@ def test_load_discards_persisted_resume_markers(tmp_path):
     path = log_path(s)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     marker = {"role": "system", "content": f"[Session resumed: uid={s.uid}]"}
-    n.SessionSnapshotStore.write_jsonl(path, n.SessionSnapshotStore.header(s), mode="w")
-    n.SessionSnapshotStore.write_jsonl(
+    SessionSnapshotStore.write_jsonl(path, SessionSnapshotStore.header(s), mode="w")
+    SessionSnapshotStore.write_jsonl(
         path,
         {
             "uid": s.uid,
@@ -504,10 +507,10 @@ def test_load_discards_persisted_resume_markers(tmp_path):
         mode="a",
     )
 
-    loaded = n.Session.load_snapshot(s.uid, config=s.config)
+    loaded = Session.load_snapshot(s.uid, config=s.config)
 
-    assert [m["content"] for m in n.SessionSnapshotCodec.persistable_messages(loaded.messages)] == ["m1", "a1"]
-    assert sum(1 for m in loaded.messages if n.SessionSnapshotCodec.is_internal_message(m)) == 1
+    assert [m["content"] for m in SessionSnapshotCodec.persistable_messages(loaded.messages)] == ["m1", "a1"]
+    assert sum(1 for m in loaded.messages if SessionSnapshotCodec.is_internal_message(m)) == 1
 
 
 def test_empty_session_first_save_is_skipped(tmp_path):
@@ -525,7 +528,7 @@ def test_tool_results_roundtrip(tmp_path):
     s.store_tool_result("Read", ["f.py"], "code")
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert s2.tool_results["tr.1"] == "hi"
     assert s2.tool_results["tr.2"] == "code"
 
@@ -537,7 +540,7 @@ def test_tool_records_roundtrip(tmp_path):
     s.store_tool_result("Search", ["x"], "match")
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert len(s2.tool_records) == 2
     assert s2.tool_records[0].key == "tr.1"
     assert s2.tool_records[0].name == "Bash"
@@ -552,7 +555,7 @@ def test_tool_errors_roundtrip(tmp_path):
     s.record_tool_error("tr.1", "Bash", ["bad"], "command not found")
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert len(s2.tool_errors) == 1
     assert s2.tool_errors[0].key == "tr.1"
     assert s2.tool_errors[0].error == "command not found"
@@ -570,7 +573,7 @@ def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     s.usage.last_cached_prompt_tokens = 5
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert s2.usage.calls == 3
     assert s2.usage.prompt_tokens == 100
     assert s2.usage.completion_tokens == 50
@@ -590,7 +593,7 @@ def test_agent_state_roundtrip(tmp_path):
     s.state.round_count = 7
     s.save_snapshot()
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert s2.state.goal == "fix bug"
     assert [vars(item) for item in s2.state.plan] == [{"status": "todo", "text": "step 1"}, {"status": "todo", "text": "step 2"}]
     assert s2.state.known == ["file at src/a.py"]
@@ -611,7 +614,7 @@ def test_multiple_deltas_accumulate_correctly(tmp_path):
     s.messages.append({"role": "assistant", "content": "a2"})
     s.save_snapshot()  # delta 3
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     contents = [m["content"] for m in s2.messages if not m["content"].startswith("[Session resumed:")]
     assert contents == ["m1", "a1", "m2", "a2"]
 
@@ -626,7 +629,7 @@ def test_multiple_deltas_with_tool_calls(tmp_path):
     s.store_tool_result("Bash", ["pwd"], "/tmp")
     s.save_snapshot()  # delta 2: tr.3
 
-    s2 = n.Session.load_snapshot(s.uid, config=s.config)
+    s2 = Session.load_snapshot(s.uid, config=s.config)
     assert s2.tool_results["tr.1"] == "# a"
     assert s2.tool_results["tr.2"] == "hit"
     assert s2.tool_results["tr.3"] == "/tmp"
@@ -636,20 +639,20 @@ def test_multiple_deltas_with_tool_calls(tmp_path):
 
 def test_load_missing_snapshot_raises_error(tmp_path):
     """Loading a non-existent session raises MinacodeError."""
-    with pytest.raises(n.MinacodeError, match="Session snapshot not found"):
-        n.Session.load_snapshot("nonexistent-uid", config=n.Config(data_dir=str(tmp_path)))
+    with pytest.raises(MinacodeError, match="Session snapshot not found"):
+        Session.load_snapshot("nonexistent-uid", config=Config(data_dir=str(tmp_path)))
 
 
 @pytest.mark.parametrize("alias", ["latest", "last"])
 def test_resolve_uid_without_a_project_session(tmp_path, alias):
     """Resolving an alias in a project with no sessions raises MinacodeError."""
-    with pytest.raises(n.MinacodeError, match="No previous session for this project"):
-        n.SessionSnapshotStore.resolve_uid(alias, str(tmp_path), str(tmp_path))
+    with pytest.raises(MinacodeError, match="No previous session for this project"):
+        SessionSnapshotStore.resolve_uid(alias, str(tmp_path), str(tmp_path))
 
 
 def test_resolve_uid_passthrough_normal_uid(tmp_path):
     """Resolving a normal uid (not an alias) returns it as-is."""
-    assert n.SessionSnapshotStore.resolve_uid("my-uid", str(tmp_path), str(tmp_path)) == "my-uid"
+    assert SessionSnapshotStore.resolve_uid("my-uid", str(tmp_path), str(tmp_path)) == "my-uid"
 
 
 def test_jsonl_file_is_append_only(tmp_path):
@@ -671,7 +674,7 @@ def test_jsonl_file_is_append_only(tmp_path):
 
 
 def test_runtime_session_retention_defaults_to_seven_days():
-    settings = n.RuntimeSettings.from_dict({})
+    settings = RuntimeSettings.from_dict({})
 
     assert settings.session_retention_days == 7
 
@@ -685,7 +688,7 @@ def test_clean_expired_sessions_removes_old_files_and_latest(tmp_path):
     stale_time = time.time() - 8 * 86400
     os.utime(old_path, (stale_time, stale_time))
 
-    assert n.SessionSnapshotStore.clean_expired(s) == 1
+    assert SessionSnapshotStore.clean_expired(s) == 1
 
     assert not os.path.exists(old_path)
     # The pointer named the expired session, and the emptied shard is pruned with it.
@@ -700,7 +703,7 @@ def test_clean_expired_sessions_skips_current_session(tmp_path):
     stale_time = time.time() - 8 * 86400
     os.utime(path, (stale_time, stale_time))
 
-    assert n.SessionSnapshotStore.clean_expired(s) == 0
+    assert SessionSnapshotStore.clean_expired(s) == 0
 
     assert os.path.exists(path)
 
@@ -720,9 +723,9 @@ def _resumed_transcript(tmp_path, diff_text, *, lines_cap=None):
     s.store_turn_diff("tr.1", 1, "x.py", diff_text, before="a\n", after="b\n", round=1)
     s.save_snapshot()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     output = []
-    loop = n.CommandLoop(n.Agent(restored, output_fn=output.append), output_fn=output.append)
+    loop = CommandLoop(Agent(restored, output_fn=output.append), output_fn=output.append)
     if lines_cap is not None:
         loop.TRANSCRIPT_DIFF_LINES = lines_cap
     loop.render_resumed_session()
@@ -741,7 +744,7 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
     s.save_snapshot()
     before = len(s.messages)
 
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
     loop.agent.model.compact = lambda _context: {"summary": "a compacted summary"}
     result = loop.compact("")
 
@@ -749,8 +752,8 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
     assert len(s.messages) < before
 
     # The compacted history is on disk, not just in memory.
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
-    persisted = n.SessionSnapshotCodec.persistable_messages(restored.messages)
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    persisted = SessionSnapshotCodec.persistable_messages(restored.messages)
     assert len(persisted) == len(s.messages)
     assert any("a compacted summary" in str(m.get("content") or "") for m in persisted)
     # /compact also captures the evicted conversation as a recallable segment, and persists it.
@@ -764,10 +767,10 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
 def test_history_segments_persist_and_restore(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
-    s.history.append(n.HistorySegment(key="seg.1", title="earlier task", text="user:\nfind the bug\n\nassistant:\nfixed it"))
+    s.history.append(HistorySegment(key="seg.1", title="earlier task", text="user:\nfind the bug\n\nassistant:\nfixed it"))
     s.save_snapshot()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
 
     assert len(restored.history) == 1
     segment = restored.history[0]
@@ -779,12 +782,12 @@ def test_history_segments_persist_and_restore(tmp_path):
 def test_history_delta_appends_new_segments(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
-    s.history.append(n.HistorySegment(key="seg.1", title="first", text="one"))
+    s.history.append(HistorySegment(key="seg.1", title="first", text="one"))
     s.save_snapshot()
-    s.history.append(n.HistorySegment(key="seg.2", title="second", text="two"))
+    s.history.append(HistorySegment(key="seg.2", title="second", text="two"))
     s.save_snapshot()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert [segment.key for segment in restored.history] == ["seg.1", "seg.2"]
 
     # The second save appended only seg.2 (digest-delta), not a full rewrite.
@@ -799,8 +802,8 @@ def test_history_delta_rewrites_when_saved_segments_change(tmp_path):
     full history_replace so the log still reconstructs the current set."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
-    s.history.append(n.HistorySegment(key="seg.1", title="first", text="one"))
-    s.history.append(n.HistorySegment(key="seg.2", title="second", text="two"))
+    s.history.append(HistorySegment(key="seg.1", title="first", text="one"))
+    s.history.append(HistorySegment(key="seg.2", title="second", text="two"))
     s.save_snapshot()
 
     # Mutate the saved history out of band: the prefix digest no longer matches the last save.
@@ -810,7 +813,7 @@ def test_history_delta_rewrites_when_saved_segments_change(tmp_path):
     lines = read_jsonl(log_path(s))
     assert any("history_replace" in line and [seg["key"] for seg in line["history_replace"]] == ["seg.2", "seg.1"] for line in lines)
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert [segment.key for segment in restored.history] == ["seg.2", "seg.1"]
 
 
@@ -821,10 +824,10 @@ def test_resume_recomputes_the_context_percent(tmp_path):
     s.messages.append({"role": "user", "content": "x" * 40000})
     s.save_snapshot()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert restored.state.context_percent == 0
 
-    loop = n.CommandLoop(n.Agent(restored, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop = CommandLoop(Agent(restored, output_fn=lambda _text: None), output_fn=lambda _text: None)
     loop.render_resumed_session()
 
     assert restored.state.context_percent > 0
@@ -872,7 +875,7 @@ def test_transcript_tool_call_parses_multiline_arguments():
     """Argument strings with literal newlines (invalid strict JSON) still parse, so the
     Bash command survives instead of being dropped to {}."""
     raw = _bash_raw_call('{"command": "printf \'line one\nline two\'"}')
-    call = n.CommandLoop.transcript_tool_call(raw)
+    call = CommandLoop.transcript_tool_call(raw)
     assert call is not None
     assert call.args == ["printf 'line one\nline two'"]
 
@@ -880,7 +883,7 @@ def test_transcript_tool_call_parses_multiline_arguments():
 def test_transcript_tool_call_does_not_crash_on_unparseable_args():
     """A historical Bash call whose payload fails validation must render, not raise."""
     raw = _bash_raw_call("{not valid json at all")
-    call = n.CommandLoop.transcript_tool_call(raw)  # must not raise ToolError
+    call = CommandLoop.transcript_tool_call(raw)  # must not raise ToolError
     assert call is not None
     assert call.name == "Bash"
 
@@ -899,19 +902,19 @@ def test_chat_tool_calls_parse_multiline_commit_message():
     class _Msg:
         tool_calls = [_Raw()]
 
-    s = n.Session(cwd="/tmp")
-    calls = n.ModelClient(s).tool_calls(_Msg())
+    s = Session(cwd="/tmp")
+    calls = ModelClient(s).tool_calls(_Msg())
     assert len(calls) == 1
     assert calls[0].args == ["printf 'subject\n\nbody line'"]
 
 
 def test_snapshot_messages_strips_non_persistable_roles(tmp_path):
-    s = n.Session(cwd=str(tmp_path))
+    s = Session(cwd=str(tmp_path))
     s.messages = [
         {"role": "system", "content": "[Session resumed: old-session-id]"},
         {"role": "user", "content": "hello"},
     ]
-    messages = n.SessionSnapshotCodec.snapshot_messages(s)
+    messages = SessionSnapshotCodec.snapshot_messages(s)
     # Internal resume marker is stripped; user message is kept.
     roles = [m["role"] for m in messages]
     assert "system" not in roles

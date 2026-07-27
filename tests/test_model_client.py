@@ -6,13 +6,17 @@ hitting real providers.
 """
 
 import json
+import time
 
 import httpx
 import pytest
 from anthropic import Anthropic
 from openai import OpenAI
 
-import minacode as n
+from minacode.base import Config, ModelError, ProviderConfig, ToolCall
+from minacode.engine import ModelClient
+from minacode.session import Session
+from minacode.tools import BashTool
 
 
 class _MockClientFactory:
@@ -83,16 +87,16 @@ class _AnthropicStreamClientFactory:
 
 
 def _session(tmp_path, **provider_kwargs):
-    config = n.Config()
+    config = Config()
     config.data_dir = str(tmp_path / "data")
     provider_kwargs.setdefault("model", "gpt-4")
-    config.providers = {"default": n.ProviderConfig(url="http://test", key="sk-test", **provider_kwargs)}
-    return n.Session(cwd=str(tmp_path), config=config)
+    config.providers = {"default": ProviderConfig(url="http://test", key="sk-test", **provider_kwargs)}
+    return Session(cwd=str(tmp_path), config=config)
 
 
 def test_chat_request_success(tmp_path, monkeypatch):
     s = _session(tmp_path, stream=False)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     factory = _MockClientFactory(
@@ -130,7 +134,7 @@ def test_chat_request_success(tmp_path, monkeypatch):
 
 def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _MockClientFactory(
         [
             (
@@ -177,7 +181,7 @@ def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
 
 def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     chunks = [
         {
             "id": "chatcmpl-stream",
@@ -243,13 +247,13 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     assert content == "hello"
     assert assistant["reasoning_content"] == "check"
     assert assistant["tool_calls"][0]["function"] == {"name": "Bash", "arguments": '{"command":"echo hi"}'}
-    assert calls == [n.ToolCall("call_1", "Bash", ["echo hi"])]
+    assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert s.usage.total_tokens == 15
 
 
 def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     chunks = [
         {
             "id": "chatcmpl-stream",
@@ -305,7 +309,7 @@ def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_pa
 
 def test_chat_stream_rejects_ambiguous_tool_fragments_without_indexes_or_ids(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     chunks = [
         {
             "id": "chatcmpl-stream",
@@ -343,13 +347,13 @@ def test_chat_stream_rejects_ambiguous_tool_fragments_without_indexes_or_ids(tmp
     model.on_stream = lambda _kind, _delta: None
     monkeypatch.setattr(model, "client", factory)
 
-    with pytest.raises(n.ModelError, match="cannot associate it safely"):
+    with pytest.raises(ModelError, match="cannot associate it safely"):
         model.chat_request([{"role": "user", "content": "run"}], [])
 
 
 def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _StreamClientFactory(
         [
             {
@@ -373,7 +377,7 @@ def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
-    monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], [])
 
@@ -386,7 +390,7 @@ def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
 
 def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses", model="gpt-5", stream=False)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     factory = _MockClientFactory(
@@ -465,7 +469,7 @@ def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_p
 
 def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses", model="gpt-5")
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     terminal = {
         "id": "resp_stream",
         "object": "response",
@@ -540,7 +544,7 @@ def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, mo
 
 def test_responses_stream_returns_incomplete_terminal_response_and_clears_preview(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses", model="gpt-5")
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _StreamClientFactory(
         [
             {
@@ -591,9 +595,9 @@ def test_responses_stream_returns_incomplete_terminal_response_and_clears_previe
 
 
 def test_responses_failed_result_raises_for_streaming_and_non_streaming_paths(tmp_path):
-    model = n.ModelClient(_session(tmp_path, api="responses"))
+    model = ModelClient(_session(tmp_path, api="responses"))
 
-    with pytest.raises(n.ModelError, match="Responses request failed"):
+    with pytest.raises(ModelError, match="Responses request failed"):
         model.responses_result({"status": "failed", "error": {"message": "bad request"}, "output": []})
 
 
@@ -611,25 +615,25 @@ def test_responses_failed_mock_servers_match_across_stream_modes(tmp_path, monke
         "error": {"code": "server_error", "message": "provider failed"},
     }
 
-    streaming = n.ModelClient(_session(tmp_path / "stream", api="responses", model="gpt-5"))
+    streaming = ModelClient(_session(tmp_path / "stream", api="responses", model="gpt-5"))
     stream_factory = _StreamClientFactory([{"type": "response.failed", "response": terminal, "sequence_number": 1}])
     streamed = []
     streaming.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(streaming, "client", stream_factory)
 
-    with pytest.raises(n.ModelError, match="Responses request failed"):
+    with pytest.raises(ModelError, match="Responses request failed"):
         streaming.request([{"role": "user", "content": "hi"}], [])
 
     assert stream_factory.calls[0].url.path.endswith("/responses")
     assert json.loads(stream_factory.calls[0].content)["stream"] is True
     assert streamed == [("", "")]
 
-    non_streaming = n.ModelClient(_session(tmp_path / "plain", api="responses", model="gpt-5", stream=False))
+    non_streaming = ModelClient(_session(tmp_path / "plain", api="responses", model="gpt-5", stream=False))
     plain_factory = _MockClientFactory([(200, terminal)])
     non_streaming.on_stream = lambda _kind, _delta: pytest.fail("disabled stream callback was called")
     monkeypatch.setattr(non_streaming, "client", plain_factory)
 
-    with pytest.raises(n.ModelError, match="Responses request failed"):
+    with pytest.raises(ModelError, match="Responses request failed"):
         non_streaming.request([{"role": "user", "content": "hi"}], [])
 
     assert plain_factory.calls[0].url.path.endswith("/responses")
@@ -637,7 +641,7 @@ def test_responses_failed_mock_servers_match_across_stream_modes(tmp_path, monke
 
 
 def test_responses_tool_items_are_converted_and_replayed(tmp_path):
-    model = n.ModelClient(_session(tmp_path, api="responses"))
+    model = ModelClient(_session(tmp_path, api="responses"))
     result = {
         "output": [
             {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque", "summary": []},
@@ -655,7 +659,7 @@ def test_responses_tool_items_are_converted_and_replayed(tmp_path):
     assistant, calls, content = model.responses_result(result)
 
     assert content == ""
-    assert calls == [n.ToolCall("call_1", "Bash", ["echo hi"])]
+    assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert assistant["tool_calls"][0]["id"] == "call_1"
     converted = model.responses_input(
         [
@@ -681,7 +685,7 @@ def test_responses_tool_items_are_converted_and_replayed(tmp_path):
 
 def test_responses_function_call_round_trip_over_sdk_transport(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses")
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _MockClientFactory(
         [
             (
@@ -727,11 +731,11 @@ def test_responses_function_call_round_trip_over_sdk_transport(tmp_path, monkeyp
         ]
     )
     monkeypatch.setattr(model, "client", factory)
-    tools = [n.BashTool.schema(False)]
+    tools = [BashTool.schema(False)]
 
     assistant, calls, content = model.request([{"role": "user", "content": "run it"}], tools)
     assert content == ""
-    assert calls == [n.ToolCall("call_1", "Bash", ["echo hi"])]
+    assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
 
     final, final_calls, final_content = model.request(
         [
@@ -764,7 +768,7 @@ def test_responses_request_folds_effort_and_drops_rejected_temperature(tmp_path,
     s.config.provider.url = "https://api.openai.com/v1"
     s.config.provider.reasoning = "high"
     s.config.provider.temperature = 0.7
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     empty = {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-5", "output": []}
     factory = _MockClientFactory([(200, empty), (200, empty)])
     monkeypatch.setattr(model, "client", factory)
@@ -789,7 +793,7 @@ def test_openai_responses_reasoning_off_is_not_silently_replaced_by_the_model_de
     s = _session(tmp_path, api="responses", model="gpt-5.5")
     s.config.provider.url = "https://api.openai.com/v1"
     s.config.provider.reasoning = "off"
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     empty = {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-5.5", "output": []}
     factory = _MockClientFactory([(200, empty)])
     monkeypatch.setattr(model, "client", factory)
@@ -806,7 +810,7 @@ def test_openai_responses_non_reasoning_model_omits_reasoning(tmp_path, monkeypa
     s = _session(tmp_path, api="responses", model="gpt-4.1", stream=False)
     s.config.provider.url = "https://api.openai.com/v1"
     s.config.provider.reasoning = reasoning
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     empty = {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-4.1", "output": []}
     factory = _MockClientFactory([(200, empty)])
     monkeypatch.setattr(model, "client", factory)
@@ -823,14 +827,14 @@ def test_responses_reports_unsupported_reasoning_off_instead_of_guessing(tmp_pat
     if model.startswith("gpt-5"):
         s.config.provider.url = "https://api.openai.com/v1"
 
-    with pytest.raises(n.ModelError, match="reasoning off is not defined"):
-        n.ModelClient(s).responses_request([{"role": "user", "content": "hi"}], None)
+    with pytest.raises(ModelError, match="reasoning off is not defined"):
+        ModelClient(s).responses_request([{"role": "user", "content": "hi"}], None)
 
 
 def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
     """Stateless reasoning travels in the encrypted payload; an id alone cannot stand in for it
     once the response was never stored, so an empty shell is dropped rather than replayed."""
-    model = n.ModelClient(_session(tmp_path, api="responses"))
+    model = ModelClient(_session(tmp_path, api="responses"))
     assistant, _, _ = model.responses_result(
         {
             "output": [
@@ -857,7 +861,7 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
         {"role": "assistant", "content": "from anthropic", "_anthropic_content": [{"type": "thinking", "thinking": "", "signature": "sig"}]},
     ]
     s = _session(tmp_path, model="claude-x")
-    model = n.ModelClient(s)
+    model = ModelClient(s)
 
     # Consecutive assistant turns merge into one message, as the Messages API requires roles to
     # alternate. The responses-only turn is rebuilt as text; only the Anthropic turn is echoed.
@@ -897,7 +901,7 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
 
 def test_chat_request_drops_responses_only_metadata(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _MockClientFactory(
         [
             (
@@ -925,7 +929,7 @@ def test_chat_request_drops_responses_only_metadata(tmp_path, monkeypatch):
 
 def test_anthropic_request_success(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     factory = _AnthropicMockClientFactory(
@@ -960,7 +964,7 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
 
 def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic")
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _AnthropicStreamClientFactory(
         [
             (
@@ -1044,7 +1048,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     assert body["stream"] is True
     assert streamed == [("reasoning", "check"), ("output", "hello"), ("", "")]
     assert content == "hello"
-    assert calls == [n.ToolCall("tool_1", "Bash", ["echo hi"])]
+    assert calls == [ToolCall("tool_1", "Bash", ["echo hi"])]
     assert assistant["_anthropic_content"] == [
         {"type": "thinking", "thinking": "check", "signature": "sig"},
         {"type": "text", "text": "hello"},
@@ -1056,7 +1060,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
 
 def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _MockClientFactory(
         [
             (
@@ -1092,7 +1096,7 @@ def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch
 
 def test_request_retries_then_succeeds(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _MockClientFactory(
         [
             (429, {"error": {"message": "rate limited", "type": "rate_limit_error"}}),
@@ -1110,7 +1114,7 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(model, "client", factory)
-    monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
 
@@ -1121,12 +1125,12 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
 
 def test_request_retry_exhausted(tmp_path, monkeypatch):
     s = _session(tmp_path)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     factory = _MockClientFactory([(500, {"error": {"message": "server error", "type": "internal_server_error"}})] * 6)
     monkeypatch.setattr(model, "client", factory)
-    monkeypatch.setattr(n.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
-    with pytest.raises(n.ModelError, match="after 6 attempts"):
+    with pytest.raises(ModelError, match="after 6 attempts"):
         model.request([{"role": "user", "content": "hi"}], None)
 
     assert len(factory.calls) == 6

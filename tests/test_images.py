@@ -13,7 +13,14 @@ from PIL import Image
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 
-import minacode as n
+import minacode.loop as loop_module
+import minacode.tui as tui_module
+from minacode.base import Config, ModelError, ProviderConfig
+from minacode.engine import Agent, ContextManager, ModelClient
+from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
+from minacode.loop import CommandLoop
+from minacode.session import Session, SessionSnapshotStore
+from minacode.tui import TuiApp
 
 
 def image_file(path, *, size=(32, 24), image_format="PNG", color=(12, 34, 56)):
@@ -22,18 +29,18 @@ def image_file(path, *, size=(32, 24), image_format="PNG", color=(12, 34, 56)):
 
 
 def session(tmp_path):
-    config = n.Config(data_dir=str(tmp_path / "data"))
-    config.providers = {"default": n.ProviderConfig(url="http://test", key="test", model="vision")}
-    return n.Session(cwd=str(tmp_path), config=config)
+    config = Config(data_dir=str(tmp_path / "data"))
+    config.providers = {"default": ProviderConfig(url="http://test", key="test", model="vision")}
+    return Session(cwd=str(tmp_path), config=config)
 
 
 def test_recognize_local_image_paths_and_leave_other_tokens_alone(tmp_path):
     first = image_file(tmp_path / "one.png")
     image_file(tmp_path / "two words.webp", image_format="WEBP")
 
-    value = n.ImageInputs(cwd=str(tmp_path)).recognize(f"review ({first.name}) and two\\ words.webp; missing.png stays")
+    value = ImageInputs(cwd=str(tmp_path)).recognize(f"review ({first.name}) and two\\ words.webp; missing.png stays")
 
-    assert str(value).count(n.IMAGE_MARKER) == 2
+    assert str(value).count(IMAGE_MARKER) == 2
     assert [image.name for image in value.images] == ["one.png", "two words.webp"]
     assert value.display_text() == "review ([Image #1 · one.png]) and [Image #2 · two words.webp]; missing.png stays"
     assert value.original_text() == f"review ({first.name}) and two\\ words.webp; missing.png stays"
@@ -42,7 +49,7 @@ def test_recognize_local_image_paths_and_leave_other_tokens_alone(tmp_path):
 def test_recognize_quoted_path_and_attach_duplicate_only_once(tmp_path):
     image_file(tmp_path / "same image.png")
 
-    value = n.ImageInputs(cwd=str(tmp_path)).recognize("look at 'same image.png' and 'same image.png'")
+    value = ImageInputs(cwd=str(tmp_path)).recognize("look at 'same image.png' and 'same image.png'")
 
     assert len(value.images) == 1
     assert value.original_text() == "look at 'same image.png' and 'same image.png'"
@@ -53,7 +60,7 @@ def test_animated_gif_is_not_recognized(tmp_path):
     frames = [Image.new("RGB", (4, 4), color) for color in ("red", "blue")]
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=10, loop=0)
 
-    value = n.ImageInputs(cwd=str(tmp_path)).recognize(path.name)
+    value = ImageInputs(cwd=str(tmp_path)).recognize(path.name)
 
     assert value == path.name
     assert value.images == ()
@@ -68,15 +75,15 @@ def test_session_stores_content_addressed_image_and_persists_refs(tmp_path):
     s.messages.append(message)
     s.save_snapshot()
 
-    image = n.ImageRef.from_json(message[n.IMAGE_REFS_KEY][0])
+    image = ImageRef.from_json(message[IMAGE_REFS_KEY][0])
     assert image is not None
-    asset = os.path.join(n.SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets", image.ref)
+    asset = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets", image.ref)
     assert os.path.isfile(asset)
     assert open(asset, "rb").read() == path.read_bytes()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.messages[0] == message
-    assert n.ContextManager(restored).messages_text(restored.messages[:1]) == "user:\ndescribe [Image #1 · screen.png]"
+    assert ContextManager(restored).messages_text(restored.messages[:1]) == "user:\ndescribe [Image #1 · screen.png]"
 
 
 def test_submission_revalidates_an_image_changed_after_recognition(tmp_path):
@@ -96,12 +103,12 @@ def test_missing_stored_asset_is_a_local_model_error(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "missing.png")
     message = s.images.message(s.images.recognize(path.name))
-    image = n.ImageRef.from_json(message[n.IMAGE_REFS_KEY][0])
+    image = ImageRef.from_json(message[IMAGE_REFS_KEY][0])
     assert image is not None
-    asset = os.path.join(n.SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets", image.ref)
+    asset = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets", image.ref)
     os.unlink(asset)
 
-    with pytest.raises(n.ModelError, match="Stored image is missing"):
+    with pytest.raises(ModelError, match="Stored image is missing"):
         s.images.responses_content(message)
 
 
@@ -112,12 +119,12 @@ def test_session_queue_round_trips_images_and_garbage_collects_assets(tmp_path):
     s.enqueue_user_input(value)
     s.save_snapshot()
 
-    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    restored = Session.load_snapshot(s.uid, config=s.config)
     queued = restored.pending_user_inputs[0]
     assert queued.text == "[Image #1 · queued.jpg]"
     assert queued.user_input().display_text() == queued.text
 
-    assets = os.path.join(n.SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
+    assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
     assert os.path.isdir(assets)
     s.pending_user_inputs.clear()
     s.save_snapshot()
@@ -129,11 +136,11 @@ def test_recalling_image_follow_up_keeps_asset_until_resubmission(tmp_path):
     path = image_file(tmp_path / "recall.png")
     s.enqueue_user_input(s.images.prepare(s.images.recognize(path.name)))
     s.save_snapshot()
-    command_loop = n.CommandLoop(n.Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    command_loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
 
     recalled = command_loop.recall_pending_input(lambda: None)
 
-    assert isinstance(recalled, n.UserInput)
+    assert isinstance(recalled, UserInput)
     assert recalled.display_text() == "[Image #1 · recall.png]"
     assert s.images.chat_content(s.images.message(recalled))[0]["type"] == "image_url"
 
@@ -142,20 +149,20 @@ def test_simple_cli_preserves_images_when_combining_pending_inputs(tmp_path, mon
     s = session(tmp_path)
     path = image_file(tmp_path / "queued.png")
     s.enqueue_user_input(s.images.prepare(s.images.recognize(path.name)))
-    agent = n.Agent(s, output_fn=lambda _text: None)
+    agent = Agent(s, output_fn=lambda _text: None)
     received = []
     monkeypatch.setattr(agent, "run", lambda value: received.append(value) or "done")
-    monkeypatch.setattr(n.loop.UpdateChecker, "start", lambda _self: None)
-    monkeypatch.setattr(n.loop.CodeIndex, "refresh_existing_async", lambda _self: False)
+    monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _self: None)
+    monkeypatch.setattr(loop_module.CodeIndex, "refresh_existing_async", lambda _self: False)
 
     def eof(_prompt):
         raise EOFError
 
-    command_loop = n.CommandLoop(agent, input_fn=eof, output_fn=lambda _text: None)
+    command_loop = CommandLoop(agent, input_fn=eof, output_fn=lambda _text: None)
 
     assert command_loop.run() == 0
     assert len(received) == 1
-    assert isinstance(received[0], n.UserInput)
+    assert isinstance(received[0], UserInput)
     assert [image.name for image in received[0].images] == ["queued.png"]
 
 
@@ -164,14 +171,14 @@ def test_expired_session_removes_its_image_assets(tmp_path):
     path = image_file(tmp_path / "expired.png")
     old.messages.append(old.images.message(old.images.recognize(path.name)))
     old.save_snapshot()
-    log = n.SessionSnapshotStore.session_path(old.config.data_dir, old.cwd, old.uid)
+    log = SessionSnapshotStore.session_path(old.config.data_dir, old.cwd, old.uid)
     assets = log[: -len(".jsonl")] + ".assets"
     stale = time.time() - 3 * 86400
     os.utime(log, (stale, stale))
     current = session(tmp_path)
     current.settings.session_retention_days = 1
 
-    assert n.SessionSnapshotStore.clean_expired(current) == 1
+    assert SessionSnapshotStore.clean_expired(current) == 1
     assert not os.path.exists(log)
     assert not os.path.exists(assets)
 
@@ -196,7 +203,7 @@ def test_protocol_payloads_use_each_standard_image_shape(tmp_path):
         {"type": "text", "text": "what is this? [Image #1 · pixel.png]"},
     ]
 
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     assert model.responses_input([message]) == [{"role": "user", "content": s.images.responses_content(message)}]
     assert model.anthropic_messages([message]) == [{"role": "user", "content": s.images.anthropic_content(message)}]
 
@@ -216,14 +223,14 @@ def test_successful_image_request_is_learned_per_provider_and_model(tmp_path, mo
     s = session(tmp_path)
     image_file(tmp_path / "learn.png")
     message = s.images.message(s.images.recognize("learn.png"))
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     monkeypatch.setattr(model, "api_request", lambda _messages, _tools: ({"role": "assistant", "content": "ok"}, [], "ok"))
 
     assert s.images.support() is None
     model.request([message], [])
     assert s.images.support() is True
 
-    app = n.TuiApp(images=s.images)
+    app = TuiApp(images=s.images)
     app.input_buffer.insert_text("learn.png ")
     assert app.status_fragments() == [("class:prompt", app.input_prompt)]
     assert app.input_error_fragments() == []
@@ -239,27 +246,27 @@ def test_only_explicit_image_unsupported_error_is_learned(tmp_path, monkeypatch)
     image_file(tmp_path / "reject.png")
     value = s.images.prepare(s.images.recognize("reject.png"))
     message = s.images.message(value)
-    model = n.ModelClient(s)
+    model = ModelClient(s)
 
     def reject(_messages, _tools):
-        raise n.ModelError("Error code: 400 - Failed to deserialize messages[4]: unknown variant `image_url`, expected `text`")
+        raise ModelError("Error code: 400 - Failed to deserialize messages[4]: unknown variant `image_url`, expected `text`")
 
     monkeypatch.setattr(model, "api_request", reject)
-    with pytest.raises(n.ModelError) as caught:
+    with pytest.raises(ModelError) as caught:
         model.request([message], [])
     assert str(caught.value) == ("default/vision does not support image input. Switch to an image-capable model, or continue with image labels only.")
     assert "unknown variant `image_url`" in str(caught.value.__cause__)
     assert s.images.support() is False
-    with pytest.raises(n.ModelError, match="Image input is disabled"):
+    with pytest.raises(ModelError, match="Image input is disabled"):
         s.images.prepare(value)
 
     s.config.provider.model = "unrelated-error-model"
 
     def unrelated(_messages, _tools):
-        raise n.ModelError("status code: 400 unknown variant `text`, expected `image_url`")
+        raise ModelError("status code: 400 unknown variant `text`, expected `image_url`")
 
     monkeypatch.setattr(model, "api_request", unrelated)
-    with pytest.raises(n.ModelError, match="expected `image_url`"):
+    with pytest.raises(ModelError, match="expected `image_url`"):
         model.request([message], [])
     assert s.images.support() is None
 
@@ -268,7 +275,7 @@ def test_non_numeric_sdk_code_does_not_bypass_image_error_status_gate(tmp_path, 
     s = session(tmp_path)
     image_file(tmp_path / "denied.png")
     message = s.images.message(s.images.recognize("denied.png"))
-    model = n.ModelClient(s)
+    model = ModelClient(s)
 
     class ProviderError(Exception):
         code = "permission_error"
@@ -277,10 +284,10 @@ def test_non_numeric_sdk_code_does_not_bypass_image_error_status_gate(tmp_path, 
         try:
             raise ProviderError
         except ProviderError as cause:
-            raise n.ModelError("Error code: 403 - vision is not enabled for this key") from cause
+            raise ModelError("Error code: 403 - vision is not enabled for this key") from cause
 
     monkeypatch.setattr(model, "api_request", denied)
-    with pytest.raises(n.ModelError) as caught:
+    with pytest.raises(ModelError) as caught:
         model.request([message], [])
 
     assert str(caught.value) == "Error code: 403 - vision is not enabled for this key"
@@ -292,13 +299,13 @@ def test_error_is_not_reclassified_when_historical_images_are_degraded(tmp_path,
     image_file(tmp_path / "history.png")
     message = s.images.message(s.images.recognize("history.png"))
     s.config.provider.image_input = "off"
-    model = n.ModelClient(s)
+    model = ModelClient(s)
 
     def reject(_messages, _tools):
-        raise n.ModelError("Error code: 400 - vision modality is not supported for this deployment")
+        raise ModelError("Error code: 400 - vision modality is not supported for this deployment")
 
     monkeypatch.setattr(model, "api_request", reject)
-    with pytest.raises(n.ModelError) as caught:
+    with pytest.raises(ModelError) as caught:
         model.request([message], [])
 
     assert str(caught.value) == "Error code: 400 - vision modality is not supported for this deployment"
@@ -310,7 +317,7 @@ def test_anthropic_merges_text_mention_after_image_user_message(tmp_path):
     image_file(tmp_path / "pixel.png", size=(1, 1))
     message = s.images.message(s.images.recognize("pixel.png"))
 
-    converted = n.ModelClient(s).anthropic_messages([message, {"role": "user", "content": "mention context"}])
+    converted = ModelClient(s).anthropic_messages([message, {"role": "user", "content": "mention context"}])
 
     assert len(converted) == 1
     assert converted[0]["role"] == "user"
@@ -331,11 +338,11 @@ def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatc
         return response
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)), close=lambda: None)
-    monkeypatch.setattr(n.ModelClient, "client", lambda _self: client)
+    monkeypatch.setattr(ModelClient, "client", lambda _self: client)
 
-    n.ModelClient(s).chat_request([message], None)
+    ModelClient(s).chat_request([message], None)
 
-    assert n.IMAGE_REFS_KEY not in json.dumps(captured)
+    assert IMAGE_REFS_KEY not in json.dumps(captured)
     assert captured["messages"][0]["content"] == s.images.chat_content(message)
 
 
@@ -345,13 +352,13 @@ def test_context_estimates_image_from_dimensions_without_base64(tmp_path):
     message = s.images.message(s.images.recognize("large.png"))
     plain = {"role": "user", "content": message["content"]}
 
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     difference = context.estimated_tokens([message]) - context.estimated_tokens([plain])
 
     assert difference == 85 + 170 * 4
     assert difference < len(s.images.chat_content(message)[0]["image_url"]["url"]) // 4
 
-    assert s.images.note_error([message], n.ModelError("Error code: 400 - image input is not supported")) is True
+    assert s.images.note_error([message], ModelError("Error code: 400 - image input is not supported")) is True
     assert context.estimated_tokens([message]) == context.estimated_tokens([plain])
 
 
@@ -360,11 +367,11 @@ def test_tui_replaces_image_path_with_atomic_label_and_keeps_history_readable(tm
     path = image_file(tmp_path / "ui.png")
     received = []
     history = FileHistory(str(tmp_path / "history"))
-    app = n.TuiApp(on_chat_submit=received.append, images=s.images, history=history)
+    app = TuiApp(on_chat_submit=received.append, images=s.images, history=history)
 
     app.input_buffer.insert_text(f"inspect {path.name} ")
 
-    assert app.input_buffer.text == f"inspect {n.IMAGE_MARKER} "
+    assert app.input_buffer.text == f"inspect {IMAGE_MARKER} "
     assert app.input_images[0].name == "ui.png"
     assert app.status_fragments() == [("class:prompt", app.input_prompt)]
     assert app.input_error_fragments() == []
@@ -378,7 +385,7 @@ def test_tui_reports_and_blocks_disabled_image_input_without_clearing_draft(tmp_
     s.config.provider.image_input = "off"
     path = image_file(tmp_path / "disabled.png")
     received = []
-    app = n.TuiApp(on_chat_submit=received.append, images=s.images)
+    app = TuiApp(on_chat_submit=received.append, images=s.images)
 
     app.input_buffer.insert_text(path.name + " ")
 
@@ -386,27 +393,27 @@ def test_tui_reports_and_blocks_disabled_image_input_without_clearing_draft(tmp_
     assert app.input_error_fragments() == [("class:input.error", "Error: Image input is disabled for the active provider/model")]
     app.input_buffer.validate_and_handle()
     assert received == []
-    assert app.input_buffer.text == n.IMAGE_MARKER + " "
+    assert app.input_buffer.text == IMAGE_MARKER + " "
     assert "Image input is disabled" in app.input_error
 
 
 def test_tui_deleting_first_atomic_label_removes_the_matching_image(tmp_path):
     image_file(tmp_path / "first.png")
     image_file(tmp_path / "second.png", color=(65, 43, 21))
-    app = n.TuiApp(image_cwd=str(tmp_path))
+    app = TuiApp(image_cwd=str(tmp_path))
     app.input_buffer.insert_text("first.png second.png ")
 
     app.input_buffer.cursor_position = 1
     app.input_buffer.delete_before_cursor(1)
 
     assert [image.name for image in app.input_images] == ["second.png"]
-    assert n.UserInput(app.input_buffer.text, app.input_images).display_text() == " [Image #1 · second.png] "
+    assert UserInput(app.input_buffer.text, app.input_images).display_text() == " [Image #1 · second.png] "
 
 
 def test_image_label_processor_maps_the_whole_label_to_one_source_cell(tmp_path):
     path = image_file(tmp_path / "chip.png")
-    value = n.ImageInputs(cwd=str(tmp_path)).recognize(path.name)
-    processor = n.tui.ImageLabelProcessor(lambda: value.images)
+    value = ImageInputs(cwd=str(tmp_path)).recognize(path.name)
+    processor = tui_module.ImageLabelProcessor(lambda: value.images)
     document = Document(str(value))
     transformation_input = SimpleNamespace(document=document, lineno=0, fragments=[("", str(value))])
 
@@ -421,14 +428,14 @@ def test_missing_recognized_image_keeps_tui_draft_on_submit(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "gone.png")
     received = []
-    app = n.TuiApp(on_chat_submit=received.append, images=s.images)
+    app = TuiApp(on_chat_submit=received.append, images=s.images)
     app.input_buffer.insert_text(path.name + " ")
     path.unlink()
 
     app.input_buffer.validate_and_handle()
 
     assert received == []
-    assert app.input_buffer.text == n.IMAGE_MARKER + " "
+    assert app.input_buffer.text == IMAGE_MARKER + " "
     assert "Cannot read image" in app.input_error
 
 
@@ -439,10 +446,11 @@ def test_tmux_renders_image_error_above_inline_label_without_control_character(t
     image_file(tmp_path / "tmux.png")
     probe = tmp_path / "image_tui_probe.py"
     probe.write_text(
-        "import minacode as n\n"
-        f"session = n.Session(cwd={str(tmp_path)!r})\n"
+        "from minacode.session import Session\n"
+        "from minacode.tui import TuiApp\n"
+        f"session = Session(cwd={str(tmp_path)!r})\n"
         'session.config.provider.image_input = "off"\n'
-        "n.TuiApp(images=session.images).run()\n"
+        "TuiApp(images=session.images).run()\n"
     )
     socket = "minacode-image-test-" + tmp_path.name
     command = [executable, "-L", socket]

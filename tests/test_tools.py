@@ -1,10 +1,35 @@
+import os
+import shutil
+
+import code_symbol_index as csi
 import pytest
 
-import minacode as n
+import minacode
+from minacode.base import ToolCall, ToolError
+from minacode.engine import ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolRunner
+from minacode.render import UiPrinter
+from minacode.session import HistorySegment, Session
+from minacode.tools import (
+    TOOL_REGISTRY,
+    TOOLS,
+    AskTool,
+    BashTool,
+    CodeIndex,
+    EditTool,
+    InspectCodeTool,
+    MCPTool,
+    NoteTool,
+    ReadTool,
+    RecallContextTool,
+    RecallTool,
+    SearchTool,
+    SkillTool,
+    Tool,
+)
 
 
 def session(tmp_path):
-    return n.Session(cwd=str(tmp_path))
+    return Session(cwd=str(tmp_path))
 
 
 def _q(*items):
@@ -13,40 +38,40 @@ def _q(*items):
 
 
 def test_base_tool_helpers_validate_shared_argument_contracts(tmp_path):
-    class DemoTool(n.Tool):
+    class DemoTool(Tool):
         NAME = "Demo"
 
     tool = DemoTool(session(tmp_path), ["one", "two"])
 
     assert tool.strings(min_count=1, max_count=2) == ["one", "two"]
     assert tool.preview() == "Demo(one, two)"
-    assert n.Tool.line_range([1, 3]) == (1, 3)
-    assert n.Tool.compact({"key": "a long value"}, 16) == '{"key":"a lon...'
-    assert n.Tool.compile_regex("needle").search("NEEDLE")
-    assert not n.Tool.compile_regex("needle", case_sensitive=True).search("NEEDLE")
+    assert Tool.line_range([1, 3]) == (1, 3)
+    assert Tool.compact({"key": "a long value"}, 16) == '{"key":"a lon...'
+    assert Tool.compile_regex("needle").search("NEEDLE")
+    assert not Tool.compile_regex("needle", case_sensitive=True).search("NEEDLE")
 
-    with pytest.raises(n.ToolError, match="requires 1 string args"):
+    with pytest.raises(ToolError, match="requires 1 string args"):
         DemoTool(session(tmp_path), []).strings(min_count=1, max_count=1)
-    with pytest.raises(n.ToolError, match="args must be strings"):
+    with pytest.raises(ToolError, match="args must be strings"):
         DemoTool(session(tmp_path), [1]).strings()
-    with pytest.raises(n.ToolError, match=r"range must be \[start,end\] integers"):
-        n.Tool.line_range([True, 2])
-    with pytest.raises(n.ToolError, match="range values must be >= 0"):
-        n.Tool.line_range([-1, 2])
-    with pytest.raises(n.ToolError, match="invalid regex"):
-        n.Tool.compile_regex("[")
+    with pytest.raises(ToolError, match=r"range must be \[start,end\] integers"):
+        Tool.line_range([True, 2])
+    with pytest.raises(ToolError, match="range values must be >= 0"):
+        Tool.line_range([-1, 2])
+    with pytest.raises(ToolError, match="invalid regex"):
+        Tool.compile_regex("[")
 
 
 def test_read_anchor_parsing_accepts_display_and_index_formats():
-    short = n.ReadTool.line_hash("line\n")
-    indexed = n.ReadTool.indexed_line_hash("line\n")
+    short = ReadTool.line_hash("line\n")
+    indexed = ReadTool.indexed_line_hash("line\n")
 
-    assert n.ReadTool.parse_anchor(f"anchor=7:{short} | line") == (7, short)
-    assert n.ReadTool.parse_anchor(f"7:{indexed}") == (7, indexed)
-    assert n.ReadTool.require_anchor(f"7:{short}") == (7, short)
-    assert n.ReadTool.parse_anchor("not-an-anchor") is None
-    with pytest.raises(n.ToolError, match="invalid anchor"):
-        n.ReadTool.require_anchor("not-an-anchor")
+    assert ReadTool.parse_anchor(f"anchor=7:{short} | line") == (7, short)
+    assert ReadTool.parse_anchor(f"7:{indexed}") == (7, indexed)
+    assert ReadTool.require_anchor(f"7:{short}") == (7, short)
+    assert ReadTool.parse_anchor("not-an-anchor") is None
+    with pytest.raises(ToolError, match="invalid anchor"):
+        ReadTool.require_anchor("not-an-anchor")
 
 
 def test_strict_schema_handles_optional_enum_union_and_container_without_mutation():
@@ -62,7 +87,7 @@ def test_strict_schema_handles_optional_enum_union_and_container_without_mutatio
         "required": ["required"],
     }
 
-    strict = n.Tool._strict_schema(original)
+    strict = Tool._strict_schema(original)
 
     assert original["properties"]["enum"] == {"type": "string", "enum": ["a"]}
     assert strict["required"] == ["required", "enum", "union", "multi", "items"]
@@ -82,20 +107,20 @@ def test_strict_schema_handles_optional_enum_union_and_container_without_mutatio
         ([{"pattern": "needle", "extra": True}], "unexpected field"),
         ([{"pattern": ""}], "requires pattern"),
         ([{"pattern": "needle", "context": True}], "context must be"),
-        ([{"pattern": "needle", "context": n.SearchTool.MAX_CONTEXT + 1}], "context must be"),
+        ([{"pattern": "needle", "context": SearchTool.MAX_CONTEXT + 1}], "context must be"),
     ],
 )
 def test_search_request_validation_is_actionable(tmp_path, args, message):
-    with pytest.raises(n.ToolError, match=message):
-        n.SearchTool(session(tmp_path), args).requests()
+    with pytest.raises(ToolError, match=message):
+        SearchTool(session(tmp_path), args).requests()
 
 
 def test_skill_tool_without_library_reports_missing_capability(tmp_path):
     s = session(tmp_path)
     s.skills = None
 
-    with pytest.raises(n.ToolError, match="no skills are installed"):
-        n.SkillTool(s, ["missing"]).call()
+    with pytest.raises(ToolError, match="no skills are installed"):
+        SkillTool(s, ["missing"]).call()
 
 
 @pytest.mark.parametrize(
@@ -109,8 +134,8 @@ def test_skill_tool_without_library_reports_missing_capability(tmp_path):
     ],
 )
 def test_read_target_validation_is_actionable(tmp_path, args, message):
-    with pytest.raises(n.ToolError, match=message):
-        n.ReadTool(session(tmp_path), args).targets()
+    with pytest.raises(ToolError, match=message):
+        ReadTool(session(tmp_path), args).targets()
 
 
 @pytest.mark.parametrize(
@@ -123,29 +148,29 @@ def test_read_target_validation_is_actionable(tmp_path, args, message):
     ],
 )
 def test_note_validation_errors_are_actionable(tmp_path, payload, message):
-    with pytest.raises(n.ToolError, match=message):
-        n.NoteTool(session(tmp_path), [payload]).call()
+    with pytest.raises(ToolError, match=message):
+        NoteTool(session(tmp_path), [payload]).call()
 
 
 def test_mcp_tool_handles_missing_manager_and_invalid_arguments(tmp_path):
     s = session(tmp_path)
     s.mcp = None
-    tool = n.MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": {}}])
+    tool = MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": {}}])
 
     assert tool.needs_confirmation() is False
-    with pytest.raises(n.ToolError, match="MCP not configured"):
+    with pytest.raises(ToolError, match="MCP not configured"):
         tool.call()
-    with pytest.raises(n.ToolError, match="arguments must be an object"):
-        n.MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": []}]).call()
+    with pytest.raises(ToolError, match="arguments must be an object"):
+        MCPTool(s, [{"action": "call", "server": "docs", "tool": "read", "arguments": []}]).call()
 
 
 def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monkeypatch):
     s = session(tmp_path)
-    index = n.CodeIndex(s)
-    monkeypatch.setattr(n.csi, "status", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("status failed")))
+    index = CodeIndex(s)
+    monkeypatch.setattr(csi, "status", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("status failed")))
 
-    assert n.CodeIndex.status_line("ready") == "index✓ synced"
-    assert n.CodeIndex.status_line("error", "broken") == "index! error: broken"
+    assert CodeIndex.status_line("ready") == "index✓ synced"
+    assert CodeIndex.status_line("error", "broken") == "index! error: broken"
     assert index.status() == ("error", "status failed")
     assert s.state.code_index_status == "error"
     assert s.state.code_index_error == "status failed"
@@ -161,7 +186,7 @@ def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monk
 def test_ask_tool_call_basic(tmp_path):
     """call() returns question text when question_fn is None."""
     s = session(tmp_path)
-    assert n.AskTool(s, _q({"question": "Which approach?"})).call() == "Which approach?"
+    assert AskTool(s, _q({"question": "Which approach?"})).call() == "Which approach?"
 
 
 def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
@@ -173,7 +198,7 @@ def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
         calls.append((spec, position))
         return "free text answer"
 
-    tool = n.AskTool(s, _q({"question": "Name?"}))
+    tool = AskTool(s, _q({"question": "Name?"}))
     tool.question_fn = fake_fn
     assert tool.call() == "free text answer"
     (spec, position) = calls[0]
@@ -186,57 +211,57 @@ def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
 def test_ask_tool_call_empty_list_raises(tmp_path):
     """call() raises ToolError when questions list is missing or empty."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="non-empty 'questions' list"):
-        n.AskTool(s, [{"questions": []}]).call()
-    with pytest.raises(n.ToolError, match="non-empty 'questions' list"):
-        n.AskTool(s, [{}]).call()
+    with pytest.raises(ToolError, match="non-empty 'questions' list"):
+        AskTool(s, [{"questions": []}]).call()
+    with pytest.raises(ToolError, match="non-empty 'questions' list"):
+        AskTool(s, [{}]).call()
 
 
 def test_ask_tool_call_empty_question_raises(tmp_path):
     """call() raises ToolError for empty/missing question text."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="each question requires a 'question' field"):
-        n.AskTool(s, _q({"question": ""})).call()
-    with pytest.raises(n.ToolError, match="each question requires a 'question' field"):
-        n.AskTool(s, _q({})).call()
+    with pytest.raises(ToolError, match="each question requires a 'question' field"):
+        AskTool(s, _q({"question": ""})).call()
+    with pytest.raises(ToolError, match="each question requires a 'question' field"):
+        AskTool(s, _q({})).call()
 
 
 def test_ask_tool_call_invalid_args_raises(tmp_path):
     """call() raises ToolError for malformed top-level args."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="Ask requires named fields"):
-        n.AskTool(s, ["just a string"]).call()
-    with pytest.raises(n.ToolError, match="Ask requires named fields"):
-        n.AskTool(s, []).call()
+    with pytest.raises(ToolError, match="Ask requires named fields"):
+        AskTool(s, ["just a string"]).call()
+    with pytest.raises(ToolError, match="Ask requires named fields"):
+        AskTool(s, []).call()
 
 
 def test_ask_tool_call_invalid_choices_raises(tmp_path):
     """call() validates choices type."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="Ask choices must be a list of strings"):
-        n.AskTool(s, _q({"question": "Q", "choices": "not-a-list"})).call()
-    with pytest.raises(n.ToolError, match="Ask choices must be a list of strings"):
-        n.AskTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call()
+    with pytest.raises(ToolError, match="Ask choices must be a list of strings"):
+        AskTool(s, _q({"question": "Q", "choices": "not-a-list"})).call()
+    with pytest.raises(ToolError, match="Ask choices must be a list of strings"):
+        AskTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call()
 
 
 def test_ask_tool_call_invalid_previews_raises(tmp_path):
     """call() validates previews type and length."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="Ask previews must be a list of strings"):
-        n.AskTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call()
-    with pytest.raises(n.ToolError, match="Ask previews must match choices length"):
-        n.AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call()
+    with pytest.raises(ToolError, match="Ask previews must be a list of strings"):
+        AskTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call()
+    with pytest.raises(ToolError, match="Ask previews must match choices length"):
+        AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call()
 
 
 def test_ask_tool_call_invalid_recommended_raises(tmp_path):
     """call() validates recommended is an in-range choice index."""
     s = session(tmp_path)
-    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
-        n.AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
-    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
-        n.AskTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
-    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
-        n.AskTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
+    with pytest.raises(ToolError, match="valid 0-based choice index"):
+        AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
+    with pytest.raises(ToolError, match="valid 0-based choice index"):
+        AskTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
+    with pytest.raises(ToolError, match="valid 0-based choice index"):
+        AskTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
 
 
 def test_ask_tool_call_invokes_callback(tmp_path):
@@ -248,7 +273,7 @@ def test_ask_tool_call_invokes_callback(tmp_path):
         calls.append((spec, position))
         return "user chose B"
 
-    tool = n.AskTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
+    tool = AskTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
     tool.question_fn = fake_fn
     result = tool.call()
     assert result == "user chose B"
@@ -266,7 +291,7 @@ def test_ask_tool_call_multiple_questions(tmp_path):
         asked.append((spec.question, position))
         return {"Runtime?": "Node", "Name?": "core"}[spec.question]
 
-    tool = n.AskTool(
+    tool = AskTool(
         s,
         _q(
             {"question": "Runtime?", "choices": ["Node", "Deno"]},
@@ -282,19 +307,19 @@ def test_ask_tool_call_multiple_questions(tmp_path):
 def test_ask_tool_call_no_previews_with_choices(tmp_path):
     """call() allows choices without previews."""
     s = session(tmp_path)
-    assert n.AskTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
+    assert AskTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
 
 
 def test_ask_tool_call_with_choices(tmp_path):
     """call() accepts choices and returns fallback question text."""
     s = session(tmp_path)
-    assert n.AskTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call() == "Which?"
+    assert AskTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call() == "Which?"
 
 
 def test_ask_tool_call_with_choices_and_previews(tmp_path):
     """call() accepts choices + previews."""
     s = session(tmp_path)
-    tool = n.AskTool(
+    tool = AskTool(
         s,
         _q(
             {
@@ -309,16 +334,16 @@ def test_ask_tool_call_with_choices_and_previews(tmp_path):
 
 def test_ask_tool_registered():
     """AskTool is in TOOLS and TOOL_REGISTRY."""
-    assert n.AskTool.NAME == "Ask"
-    assert n.AskTool in n.TOOLS
-    assert n.TOOL_REGISTRY["Ask"] is n.AskTool
-    assert "Question" not in n.TOOL_REGISTRY
-    assert not hasattr(n, "QuestionTool")
+    assert AskTool.NAME == "Ask"
+    assert AskTool in TOOLS
+    assert TOOL_REGISTRY["Ask"] is AskTool
+    assert "Question" not in TOOL_REGISTRY
+    assert not hasattr(minacode, "QuestionTool")
 
 
 def test_ask_tool_schema():
     """params_schema requires a questions array of question objects, strict."""
-    schema = n.AskTool.params_schema()
+    schema = AskTool.params_schema()
     assert schema["type"] == "object"
     assert schema["required"] == ["questions"]
     assert schema["additionalProperties"] is False
@@ -337,7 +362,7 @@ def test_ask_tool_schema():
 
 def test_ask_tool_schema_strict(tmp_path):
     """schema() enforces additionalProperties=False at both levels."""
-    schema = n.AskTool.schema()
+    schema = AskTool.schema()
     params = schema["function"]["parameters"]
     assert params["additionalProperties"] is False
     assert "questions" in params["properties"]
@@ -351,14 +376,14 @@ def test_ask_tool_schema_strict(tmp_path):
 def test_ask_tool_short_args(tmp_path):
     """short_args() shows the first question and a count of the rest."""
     s = session(tmp_path)
-    tool = n.AskTool(s, _q({"question": "Which approach should I use?"}))
+    tool = AskTool(s, _q({"question": "Which approach should I use?"}))
     args = tool.short_args()
     assert len(args) == 1
     assert "Which approach" in args[0]
     assert "more" not in args[0]
-    multi = n.AskTool(s, _q({"question": "First?"}, {"question": "Second?"}))
+    multi = AskTool(s, _q({"question": "First?"}, {"question": "Second?"}))
     assert "(+1 more)" in multi.short_args()[0]
-    assert len(n.AskTool(s, []).short_args()) == 1
+    assert len(AskTool(s, []).short_args()) == 1
 
 
 def test_ask_tool_validates_batch_before_asking(tmp_path):
@@ -370,7 +395,7 @@ def test_ask_tool_validates_batch_before_asking(tmp_path):
         asked.append(spec.question)
         return "x"
 
-    tool = n.AskTool(
+    tool = AskTool(
         s,
         _q(
             {"question": "First?", "choices": ["A"]},
@@ -378,7 +403,7 @@ def test_ask_tool_validates_batch_before_asking(tmp_path):
         ),
     )
     tool.question_fn = fake_fn
-    with pytest.raises(n.ToolError, match="valid 0-based choice index"):
+    with pytest.raises(ToolError, match="valid 0-based choice index"):
         tool.call()
     assert asked == []  # validation happens up front, so nothing was asked
 
@@ -386,16 +411,16 @@ def test_ask_tool_validates_batch_before_asking(tmp_path):
 def test_ask_tool_wired_in_tool_runner(tmp_path):
     """ToolRunner injects question_fn into AskTool instances."""
     s = session(tmp_path)
-    ctx = n.ContextManager(s)
+    ctx = ContextManager(s)
     captured = []
 
     def fake_question_fn(spec, position):
         captured.append((spec, position))
         return "test answer"
 
-    runner = n.ToolRunner(s, ctx, output_fn=lambda text: None)
+    runner = ToolRunner(s, ctx, output_fn=lambda text: None)
     runner.question_fn = fake_question_fn
-    results = runner.run([n.ToolCall("q", "Ask", [{"questions": [{"question": "A or B?", "choices": ["A", "B"], "recommended": 0}]}])])
+    results = runner.run([ToolCall("q", "Ask", [{"questions": [{"question": "A or B?", "choices": ["A", "B"], "recommended": 0}]}])])
     assert len(results) == 1
     assert results[0]["tool_call_id"] == "q"
     assert results[0]["role"] == "tool"
@@ -410,8 +435,8 @@ def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True
     out = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(str(text)))
-    runner.run([n.ToolCall("b0", "Bash", [":"])])
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: out.append(str(text)))
+    runner.run([ToolCall("b0", "Bash", [":"])])
     assert len(out) == 1
     assert out[0].startswith("  Bash  ")
     assert out[0].rstrip().endswith("[auto]")
@@ -423,7 +448,7 @@ def test_gitignore_cache_cleanup_on_file_delete(tmp_path):
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("delete_me.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.SearchTool(s, [{"pattern": "x"}])
+    tool = SearchTool(s, [{"pattern": "x"}])
 
     tool.gitignore_patterns(str(tmp_path))
     ws_gitignore = str(gitignore)
@@ -441,7 +466,7 @@ def test_gitignore_cache_invalidates_on_file_change(tmp_path):
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("old.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.SearchTool(s, [{"pattern": "x"}])
+    tool = SearchTool(s, [{"pattern": "x"}])
 
     patterns1 = tool.gitignore_patterns(str(tmp_path))
     assert patterns1 == ["old.txt"]
@@ -466,7 +491,7 @@ def test_gitignore_cache_keyed_by_root(tmp_path):
     (sub / ".gitignore").write_text("sub_ignored.txt\n", encoding="utf-8")
 
     s = session(tmp_path)
-    tool = n.SearchTool(s, [{"pattern": "x"}])
+    tool = SearchTool(s, [{"pattern": "x"}])
 
     # Root patterns include only workspace .gitignore
     root_patterns = tool.gitignore_patterns(str(tmp_path))
@@ -485,7 +510,7 @@ def test_gitignore_cache_keyed_by_root(tmp_path):
 def test_gitignore_cache_noop_when_no_gitignore(tmp_path):
     """When no .gitignore exists, returns empty list and cache stays empty."""
     s = session(tmp_path)
-    tool = n.SearchTool(s, [{"pattern": "x"}])
+    tool = SearchTool(s, [{"pattern": "x"}])
 
     patterns = tool.gitignore_patterns(str(tmp_path))
     assert patterns == []
@@ -496,7 +521,7 @@ def test_gitignore_cache_populated_and_reused(tmp_path):
     """Cache stores parsed patterns and reuses them on subsequent calls."""
     (tmp_path / ".gitignore").write_text("ignored.txt\nbuild/\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.SearchTool(s, [{"pattern": "x"}])
+    tool = SearchTool(s, [{"pattern": "x"}])
 
     # First call populates the cache
     patterns1 = tool.gitignore_patterns(str(tmp_path))
@@ -520,7 +545,7 @@ def test_gitignore_cache_preserves_order(tmp_path):
     """After a no-op stat (no change), patterns come from cache unchanged."""
     (tmp_path / ".gitignore").write_text("a.txt\nb.txt\n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.SearchTool(s, [{"pattern": "x"}])
+    tool = SearchTool(s, [{"pattern": "x"}])
 
     p1 = tool.gitignore_patterns(str(tmp_path))
     p2 = tool.gitignore_patterns(str(tmp_path))
@@ -534,8 +559,8 @@ def test_gitignore_cache_shared_across_tools(tmp_path):
     (tmp_path / ".gitignore").write_text("secret.log\n", encoding="utf-8")
     s = session(tmp_path)
 
-    find = n.SearchTool(s, [{"pattern": "x"}])
-    search = n.SearchTool(s, [{"pattern": "needle", "path": "."}])
+    find = SearchTool(s, [{"pattern": "x"}])
+    search = SearchTool(s, [{"pattern": "needle", "path": "."}])
 
     # Find populates the cache
     find_patterns = find.gitignore_patterns(str(tmp_path))
@@ -555,7 +580,7 @@ def test_gitignore_line_filtering_unchanged(tmp_path):
     """Cache still filters blank lines, comments, and negation patterns."""
     (tmp_path / ".gitignore").write_text("keep.txt\n\n  # comment\n!negated.txt\n  \n", encoding="utf-8")
     s = session(tmp_path)
-    tool = n.SearchTool(s, [{"pattern": "x"}])
+    tool = SearchTool(s, [{"pattern": "x"}])
 
     patterns = tool.gitignore_patterns(str(tmp_path))
     assert patterns == ["keep.txt"]
@@ -565,10 +590,10 @@ def test_gitignore_line_filtering_unchanged(tmp_path):
 
 def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
     s = session(tmp_path)
-    monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)
-    monkeypatch.setattr(n.csi, "search", lambda *args, **kwargs: (_ for _ in ()).throw(n.csi.CodeSymbolIndexError("bad query")))
+    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(csi, "search", lambda *args, **kwargs: (_ for _ in ()).throw(csi.CodeSymbolIndexError("bad query")))
 
-    result = n.InspectCodeTool(s, ["find", "Missing"]).call()
+    result = InspectCodeTool(s, ["find", "Missing"]).call()
 
     assert "* exit_code: 1" in result
     assert "bad query" in result
@@ -579,23 +604,23 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     (tmp_path / "sample.py").write_text("class Example:\n    pass\n", encoding="utf-8")
     calls = []
 
-    monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)
-    monkeypatch.setattr(n.csi, "search", lambda query, **kwargs: calls.append(("search", query, kwargs)) or "search ok")
-    monkeypatch.setattr(n.csi, "inspect", lambda query, **kwargs: calls.append(("inspect", query, kwargs)) or "inspect ok")
-    monkeypatch.setattr(n.csi, "outline", lambda path, **kwargs: calls.append(("outline", path, kwargs)) or "outline ok")
-    monkeypatch.setattr(n.csi, "refs", lambda query, **kwargs: calls.append(("refs", query, kwargs)) or "refs ok")
-    monkeypatch.setattr(n.csi, "impls", lambda query, **kwargs: calls.append(("impls", query, kwargs)) or "impls ok")
-    monkeypatch.setattr(n.csi, "callers", lambda query, **kwargs: calls.append(("callers", query, kwargs)) or "callers ok")
-    monkeypatch.setattr(n.csi, "callees", lambda query, **kwargs: calls.append(("callees", query, kwargs)) or "callees ok")
+    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(csi, "search", lambda query, **kwargs: calls.append(("search", query, kwargs)) or "search ok")
+    monkeypatch.setattr(csi, "inspect", lambda query, **kwargs: calls.append(("inspect", query, kwargs)) or "inspect ok")
+    monkeypatch.setattr(csi, "outline", lambda path, **kwargs: calls.append(("outline", path, kwargs)) or "outline ok")
+    monkeypatch.setattr(csi, "refs", lambda query, **kwargs: calls.append(("refs", query, kwargs)) or "refs ok")
+    monkeypatch.setattr(csi, "impls", lambda query, **kwargs: calls.append(("impls", query, kwargs)) or "impls ok")
+    monkeypatch.setattr(csi, "callers", lambda query, **kwargs: calls.append(("callers", query, kwargs)) or "callers ok")
+    monkeypatch.setattr(csi, "callees", lambda query, **kwargs: calls.append(("callees", query, kwargs)) or "callees ok")
 
-    assert "search ok" in n.InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
-    assert "inspect ok" in n.InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
-    assert "outline ok" in n.InspectCodeTool(s, ["outline", "sample.py"]).call()
-    assert "outline ok" in n.InspectCodeTool(s, ["outline", "sample.py", {"limit": 300}]).call()
-    assert "refs ok" in n.InspectCodeTool(s, ["refs", "Example", {"all_kinds": True, "offset": 5}]).call()
-    assert "impls ok" in n.InspectCodeTool(s, ["impls", "Example", {"kind": "class"}]).call()
-    assert "callers ok" in n.InspectCodeTool(s, ["callers", "Example", {"depth": 2}]).call()
-    assert "callees ok" in n.InspectCodeTool(s, ["callees", "Example"]).call()
+    assert "search ok" in InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
+    assert "inspect ok" in InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
+    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py"]).call()
+    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py", {"limit": 300}]).call()
+    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"all_kinds": True, "offset": 5}]).call()
+    assert "impls ok" in InspectCodeTool(s, ["impls", "Example", {"kind": "class"}]).call()
+    assert "callers ok" in InspectCodeTool(s, ["callers", "Example", {"depth": 2}]).call()
+    assert "callees ok" in InspectCodeTool(s, ["callees", "Example"]).call()
 
     assert calls[0] == (
         "search",
@@ -611,7 +636,7 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
             "path": "sample.py",
             "exact_only": False,
             "format": "text",
-            "limit": n.csi.DEFAULT_PAGE_LIMIT,
+            "limit": csi.DEFAULT_PAGE_LIMIT,
             "anchors": True,
             "anchor_format": "explicit",
         },
@@ -619,7 +644,7 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     assert calls[2] == (
         "outline",
         "sample.py",
-        {"root": str(tmp_path), "symbol": None, "max_symbols": n.csi.DEFAULT_MAX_OUTLINE_SYMBOLS, "format": "text"},
+        {"root": str(tmp_path), "symbol": None, "max_symbols": csi.DEFAULT_MAX_OUTLINE_SYMBOLS, "format": "text"},
     )
     assert calls[3] == (
         "outline",
@@ -635,7 +660,7 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
             "path": None,
             "exact_only": False,
             "format": "text",
-            "limit": n.csi.DEFAULT_MAX_REFERENCES,
+            "limit": csi.DEFAULT_MAX_REFERENCES,
             "offset": 5,
             "ref_kinds": "all",
         },
@@ -643,12 +668,12 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
     assert calls[5] == (
         "impls",
         "Example",
-        {"root": str(tmp_path), "kind": "class", "path": None, "exact_only": False, "format": "text", "limit": n.csi.DEFAULT_MAX_IMPLEMENTORS, "offset": 0},
+        {"root": str(tmp_path), "kind": "class", "path": None, "exact_only": False, "format": "text", "limit": csi.DEFAULT_MAX_IMPLEMENTORS, "offset": 0},
     )
     assert calls[6] == (
         "callers",
         "Example",
-        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text", "limit": n.csi.DEFAULT_MAX_CALLERS, "depth": 2},
+        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text", "limit": csi.DEFAULT_MAX_CALLERS, "depth": 2},
     )
     assert calls[7] == (
         "callees",
@@ -659,74 +684,74 @@ def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
             "path": None,
             "exact_only": False,
             "format": "text",
-            "limit": n.csi.DEFAULT_MAX_CALLEES,
+            "limit": csi.DEFAULT_MAX_CALLEES,
             "depth": 3,
             "loose": False,
         },
     )
 
-    assert "refs ok" in n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call,write"}]).call()
+    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call,write"}]).call()
     assert calls[8][2]["ref_kinds"] == "call,write"
-    assert "callees ok" in n.InspectCodeTool(s, ["callees", "Example", {"loose": True}]).call()
+    assert "callees ok" in InspectCodeTool(s, ["callees", "Example", {"loose": True}]).call()
     assert calls[9][2]["loose"] is True
 
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["outline", "missing.py"]).call()
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["inspect", "sample.py"]).call()
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["outline", "sample.py", {"limit": 1001}]).call()
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["refs", "sample.py"]).call()
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["callers", "Example", {"depth": 9}]).call()
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "bogus"}]).call()
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call", "all_kinds": True}]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["outline", "missing.py"]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["inspect", "sample.py"]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["outline", "sample.py", {"limit": 1001}]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["refs", "sample.py"]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["callers", "Example", {"depth": 9}]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["refs", "Example", {"ref_kind": "bogus"}]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call", "all_kinds": True}]).call()
 
 
 def test_inspect_code_strips_kind_prefix_from_target(tmp_path, monkeypatch):
     s = session(tmp_path)
     calls = []
-    monkeypatch.setattr(n.CodeIndex, "available", lambda self: True)
-    monkeypatch.setattr(n.csi, "search", lambda query, **kwargs: calls.append(query) or "ok")
+    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
+    monkeypatch.setattr(csi, "search", lambda query, **kwargs: calls.append(query) or "ok")
 
     # "class Config" with kind "class" -> the redundant leading kind word is dropped.
-    n.InspectCodeTool(s, ["find", "class Config", {"kind": "class"}]).call()
+    InspectCodeTool(s, ["find", "class Config", {"kind": "class"}]).call()
     assert calls[-1] == "Config"
 
     # Works when the kind option lists several kinds.
-    n.InspectCodeTool(s, ["find", "function handoff", {"kind": "class,function"}]).call()
+    InspectCodeTool(s, ["find", "function handoff", {"kind": "class,function"}]).call()
     assert calls[-1] == "handoff"
 
     # Only the declared kind is stripped: a bare language keyword is not, and still errors.
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["find", "def foo", {"kind": "function"}]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["find", "def foo", {"kind": "function"}]).call()
     # No kind provided -> nothing to key off, still rejected.
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["find", "class Config"]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["find", "class Config"]).call()
 
 
 def test_log_block_aligns_multiline_tool_arguments():
-    block = n.LogBlock.hierarchy(
-        n.LogLine("Bash", 'git commit -m "title\nbody"', n.LogRole.TOOL, syntax="bash"),
-        [n.LogLine("done", role=n.LogRole.META, edge=n.LogEdge.END)],
+    block = LogBlock.hierarchy(
+        LogLine("Bash", 'git commit -m "title\nbody"', LogRole.TOOL, syntax="bash"),
+        [LogLine("done", role=LogRole.META, edge=LogEdge.END)],
     )
     expected = '  Bash  git commit -m "title\n        body"\n    └ done'
 
     assert str(block) == expected
-    rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+    rendered = "".join(text for _style, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
     assert rendered == expected + "\n"
 
 
 def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
     command = 'git commit -m "system prompt: enhance with attitude, updates, review mode, and tooling rules"'
-    block = n.LogBlock([n.LogLine("Bash", command, n.LogRole.TOOL, syntax="bash")])
+    block = LogBlock([LogLine("Bash", command, LogRole.TOOL, syntax="bash")])
 
     with monkeypatch.context() as patch:
-        patch.setattr(n.shutil, "get_terminal_size", lambda fallback=(80, 24): n.os.terminal_size((40, 24)))
-        rendered = "".join(text for _style, text in n.UiPrinter(output_fn=lambda text: None).log_segments(block))
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((40, 24)))
+        rendered = "".join(text for _style, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
 
     assert rendered.splitlines() == [
         '  Bash  git commit -m "system prompt:',
@@ -740,31 +765,31 @@ def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
 def test_note_tool_replace_known(tmp_path):
     s = session(tmp_path)
     s.state.known = ["old fact"]
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    short = runner.short_call(n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
+    short = runner.short_call(ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
     assert short == "Note known:\n  new fact a\n  new fact b"
 
     output = []
     runner.output_fn = output.append
-    runner.run([n.ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
+    runner.run([ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
     assert s.state.known == ["new fact a", "new fact b"]
     assert output == ["known:\n  new fact a\n  new fact b"]
 
-    runner.run([n.ToolCall("n", "Note", [{"replace_known": []}])])
+    runner.run([ToolCall("n", "Note", [{"replace_known": []}])])
     assert s.state.known == []
 
 
 def test_note_tool_set_check(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    short = runner.short_call(n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
+    short = runner.short_call(ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
     assert short == "Note check: pytest -q passed"
 
     output = []
     runner.output_fn = output.append
-    runner.run([n.ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
+    runner.run([ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
     assert s.state.check == "pytest -q passed"
     assert output == ["check: pytest -q passed"]
 
@@ -772,13 +797,13 @@ def test_note_tool_set_check(tmp_path):
 def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     s = session(tmp_path)
     s.state.known = ["existing"]
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     output = []
     runner.output_fn = output.append
     runner.run(
         [
-            n.ToolCall(
+            ToolCall(
                 "note",
                 "Note",
                 [
@@ -805,16 +830,16 @@ def test_note_tool_validates_before_mutating_state(tmp_path):
     s.state.plan = ["old plan"]
     s.state.known = ["old fact"]
 
-    with pytest.raises(n.ToolError) as error:
-        n.NoteTool(s, [{"set_goal": "new goal", "replace_plan": "inspect"}]).call()
+    with pytest.raises(ToolError) as error:
+        NoteTool(s, [{"set_goal": "new goal", "replace_plan": "inspect"}]).call()
 
     assert str(error.value) == 'Note replace_plan must be an array of plan items, e.g. {"replace_plan":[{"status":"doing","text":"inspect"}]}'
     assert s.state.goal == "old goal"
     assert s.state.plan == ["old plan"]
     assert s.state.known == ["old fact"]
 
-    with pytest.raises(n.ToolError, match="Note replace_plan status must be one of"):
-        n.NoteTool(s, [{"replace_plan": [{"status": "started", "text": "inspect"}]}]).call()
+    with pytest.raises(ToolError, match="Note replace_plan status must be one of"):
+        NoteTool(s, [{"replace_plan": [{"status": "started", "text": "inspect"}]}]).call()
 
 
 def test_read_and_search_success_paths(tmp_path):
@@ -822,12 +847,12 @@ def test_read_and_search_success_paths(tmp_path):
     (tmp_path / "blob.bin").write_bytes(b"a\0b")
     s = session(tmp_path)
 
-    read = n.ReadTool(s, [{"path": "sample.py", "ranges": [[0, 2], [2, 0]]}]).call()
-    single_range = n.ReadTool(s, [{"path": "sample.py", "ranges": [0, 2]}]).call()
-    full_default = n.ReadTool(s, [{"path": "sample.py"}]).call()
-    alpha_hash = n.ReadTool.line_hash("alpha\n")
-    needle_hash = n.ReadTool.line_hash("Needle\n")
-    omega_hash = n.ReadTool.line_hash("omega\n")
+    read = ReadTool(s, [{"path": "sample.py", "ranges": [[0, 2], [2, 0]]}]).call()
+    single_range = ReadTool(s, [{"path": "sample.py", "ranges": [0, 2]}]).call()
+    full_default = ReadTool(s, [{"path": "sample.py"}]).call()
+    alpha_hash = ReadTool.line_hash("alpha\n")
+    needle_hash = ReadTool.line_hash("Needle\n")
+    omega_hash = ReadTool.line_hash("omega\n")
     assert f"anchor=0:{alpha_hash} | alpha" in read
     assert f"anchor=1:{needle_hash} | Needle" in read
     assert f"anchor=2:{omega_hash} | omega" in read
@@ -836,10 +861,10 @@ def test_read_and_search_success_paths(tmp_path):
     assert f"anchor=2:{omega_hash} | omega" in full_default
     assert "<total_lines>3</total_lines>" in full_default  # Read reports the line count (replaces LineCount)
 
-    found = n.SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
+    found = SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
     assert f"sample.py anchor=1:{needle_hash} | Needle" in found
 
-    multiline = n.SearchTool(s, [{"pattern": "alpha\\nNeedle", "path": "sample.py"}]).call()
+    multiline = SearchTool(s, [{"pattern": "alpha\\nNeedle", "path": "sample.py"}]).call()
     assert "sample.py anchor=0:" in multiline
 
 
@@ -848,28 +873,28 @@ def test_recall_behaviors(tmp_path):
     first = s.store_tool_result("Read", ["a.txt"], "a0\na1\na2\n")
     second = s.store_tool_result("Search", [{"pattern": "b"}], "b0\nb1\n")
 
-    sliced = n.RecallTool(s, [{"keys": [first, second], "ranges": [[1, 2]]}]).call()
+    sliced = RecallTool(s, [{"keys": [first, second], "ranges": [[1, 2]]}]).call()
     assert "a1" in sliced and "a0" not in sliced
     assert "b1" in sliced and "b0" not in sliced
 
-    common_range = n.RecallTool(s, [{"keys": [first], "ranges": [[0, 1]]}]).call()
+    common_range = RecallTool(s, [{"keys": [first], "ranges": [[0, 1]]}]).call()
     assert "a0" in common_range and "a1" not in common_range
 
-    with pytest.raises(n.ToolError):
-        n.RecallTool(s, [{"key": first, "ranges": [[2, "bad"]]}]).call()
+    with pytest.raises(ToolError):
+        RecallTool(s, [{"key": first, "ranges": [[2, "bad"]]}]).call()
 
 
 def test_recall_history_regex_searches_titles_and_text(tmp_path):
     s = session(tmp_path)
     s.history.extend(
         [
-            n.HistorySegment(key="seg.1", title="cache work", text="user:\nStable prefix design"),
-            n.HistorySegment(key="seg.2", title="notes", text="assistant:\nTask Memory placement"),
-            n.HistorySegment(key="seg.3", title="unrelated", text="assistant:\nNothing relevant"),
+            HistorySegment(key="seg.1", title="cache work", text="user:\nStable prefix design"),
+            HistorySegment(key="seg.2", title="notes", text="assistant:\nTask Memory placement"),
+            HistorySegment(key="seg.3", title="unrelated", text="assistant:\nNothing relevant"),
         ]
     )
 
-    result = n.RecallContextTool(s, [{"query": "stable prefix|task memory"}]).call()
+    result = RecallContextTool(s, [{"query": "stable prefix|task memory"}]).call()
 
     assert '<RecallContextSearchResult query="stable prefix|task memory" matches=2>' in result
     assert "seg.1 2" in result
@@ -883,13 +908,13 @@ def test_recall_history_regex_supports_key_scope_case_and_limit(tmp_path):
     s = session(tmp_path)
     s.history.extend(
         [
-            n.HistorySegment(key="seg.1", title="one", text="Needle first"),
-            n.HistorySegment(key="seg.2", title="two", text="needle second\nneedle third"),
-            n.HistorySegment(key="seg.3", title="three", text="needle fourth"),
+            HistorySegment(key="seg.1", title="one", text="Needle first"),
+            HistorySegment(key="seg.2", title="two", text="needle second\nneedle third"),
+            HistorySegment(key="seg.3", title="three", text="needle fourth"),
         ]
     )
 
-    result = n.RecallContextTool(
+    result = RecallContextTool(
         s,
         [{"keys": ["seg.1", "seg.2"], "query": "needle", "case_sensitive": True, "limit": 1}],
     ).call()
@@ -906,28 +931,28 @@ def test_recall_history_regex_validates_search_arguments(tmp_path):
     s = session(tmp_path)
 
     for payload in ({}, {"query": "["}, {"query": "x", "limit": 0}, {"keys": ["seg.1"], "case_sensitive": True}):
-        with pytest.raises(n.ToolError):
-            n.RecallContextTool(s, [payload]).call()
+        with pytest.raises(ToolError):
+            RecallContextTool(s, [payload]).call()
 
 
 def test_recall_history_rejects_bad_key_format(tmp_path):
     s = session(tmp_path)
 
-    with pytest.raises(n.ToolError):
-        n.RecallContextTool(s, [{"keys": ["tr.1"]}]).call()
+    with pytest.raises(ToolError):
+        RecallContextTool(s, [{"keys": ["tr.1"]}]).call()
 
 
 def test_recall_history_reports_missing_segment(tmp_path):
     s = session(tmp_path)
 
-    assert "seg.9: missing" in n.RecallContextTool(s, [{"keys": ["seg.9"]}]).call()
+    assert "seg.9: missing" in RecallContextTool(s, [{"keys": ["seg.9"]}]).call()
 
 
 def test_recall_history_returns_segment_text(tmp_path):
     s = session(tmp_path)
-    s.history.append(n.HistorySegment(key="seg.1", title="task", text="user:\nfind bug"))
+    s.history.append(HistorySegment(key="seg.1", title="task", text="user:\nfind bug"))
 
-    result = n.RecallContextTool(s, [{"keys": ["seg.1"]}]).call()
+    result = RecallContextTool(s, [{"keys": ["seg.1"]}]).call()
 
     assert "<RecallContextResult>" in result
     assert 'key="seg.1"' in result
@@ -937,9 +962,9 @@ def test_recall_history_returns_segment_text(tmp_path):
 def test_reject_collapses_display(tmp_path):
     s = session(tmp_path)
     out = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: out.append(str(text)))
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: out.append(str(text)))
 
-    msg = runner.reject(n.ToolCall("c", "Read", [{"path": "x"}]), "ToolError: Read requires non-empty ranges")
+    msg = runner.reject(ToolCall("c", "Read", [{"path": "x"}]), "ToolError: Read requires non-empty ranges")
 
     # display collapses to one quiet line, no full [failed]/error block
     assert any("· rejected: Read requires non-empty ranges" in t for t in out)
@@ -949,7 +974,7 @@ def test_reject_collapses_display(tmp_path):
 
 
 def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
-    monkeypatch.setattr(n.shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     (tmp_path / ".gitignore").write_text("ignored.txt\nignored_dir/\n", encoding="utf-8")
     (tmp_path / "visible.txt").write_text("needle\n", encoding="utf-8")
     (tmp_path / ".hidden.txt").write_text("needle\n", encoding="utf-8")
@@ -960,9 +985,9 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
     (tmp_path / "ignored_dir" / "inside.txt").write_text("needle\n", encoding="utf-8")
     s = session(tmp_path)
 
-    found = n.SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
-    direct_hidden = n.SearchTool(s, [{"pattern": "needle", "path": ".hidden.txt"}]).call()
-    direct_ignored = n.SearchTool(s, [{"pattern": "needle", "path": "ignored_dir/inside.txt"}]).call()
+    found = SearchTool(s, [{"pattern": "needle", "path": "."}]).call()
+    direct_hidden = SearchTool(s, [{"pattern": "needle", "path": ".hidden.txt"}]).call()
+    direct_ignored = SearchTool(s, [{"pattern": "needle", "path": "ignored_dir/inside.txt"}]).call()
 
     assert "visible.txt anchor=0:" in found
     assert ".hidden" not in found
@@ -972,34 +997,34 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
 
 
 def test_single_and_batch_payload_shapes_are_supported():
-    assert n.ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[0, 0]]}]
-    assert n.ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
-    assert n.ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
-    assert n.ReadTool(n.Session(cwd="."), [{"path": "minacode.py"}]).targets()[0][1] == [(0, 0)]
-    assert n.ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
-    assert n.ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
-    assert n.ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
+    assert ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[0, 0]]}]
+    assert ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
+    assert ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
+    assert ReadTool(Session(cwd="."), [{"path": "minacode.py"}]).targets()[0][1] == [(0, 0)]
+    assert ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
+    assert ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
+    assert ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
 
 
 def test_tool_runner_finish_display_keeps_ask_answer(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    display = str(runner.finish_display(n.ToolCall("ask", "Ask", _q({"question": "Which?"})), "tr.1", "typed answer", failed=False))
+    display = str(runner.finish_display(ToolCall("ask", "Ask", _q({"question": "Which?"})), "tr.1", "typed answer", failed=False))
 
     assert display.startswith("  Ask  Which? → tr.1\n")
     assert display.endswith("    └ answer typed answer")
 
 
 def test_tool_runner_reject_records_error_and_returns_failed_message(tmp_path):
-    s = n.Session(cwd=str(tmp_path))
-    runner = n.ToolRunner(s, n.ContextManager(s))
-    call = n.ToolCall("e1", "Bash", ["bad cmd"])
+    s = Session(cwd=str(tmp_path))
+    runner = ToolRunner(s, ContextManager(s))
+    call = ToolCall("e1", "Bash", ["bad cmd"])
     out = []
     runner.output_fn = out.append
     result = runner.reject(call, "ToolError: command not found")
     assert len(out) == 1
-    assert isinstance(out[0], n.LogBlock)
+    assert isinstance(out[0], LogBlock)
     assert "command not found" in str(out[0])
     # Should record the error
     assert len(s.tool_errors) == 1
@@ -1012,10 +1037,10 @@ def test_tool_runner_reject_records_error_and_returns_failed_message(tmp_path):
 
 def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     search = runner.short_call(
-        n.ToolCall(
+        ToolCall(
             "s",
             "Search",
             [
@@ -1026,12 +1051,12 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     )
     assert search == 'Search "done in" glob=*.py; "elapsed.*s]" path=tests C=2'
 
-    recall = runner.short_call(n.ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
+    recall = runner.short_call(ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
     s.state.known = ["existing"]
     note = runner.short_call(
-        n.ToolCall(
+        ToolCall(
             "m",
             "Note",
             [
@@ -1047,27 +1072,27 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
 
 
 def test_tool_schemas_are_strict_for_high_risk_tools():
-    bash_params = n.BashTool.schema()["function"]["parameters"]
+    bash_params = BashTool.schema()["function"]["parameters"]
     assert bash_params["required"] == ["command"]
     assert bash_params["properties"]["command"]["pattern"] == r"^.*\S.*$"
 
-    edit_params = n.EditTool.schema()["function"]["parameters"]
+    edit_params = EditTool.schema()["function"]["parameters"]
     assert edit_params["required"] == ["path", "edits"]
     assert set(edit_params["properties"]) == {"path", "edits"}
-    assert "start/end anchors are inclusive" in n.EditTool.schema()["function"]["description"]
+    assert "start/end anchors are inclusive" in EditTool.schema()["function"]["description"]
 
-    recall_keys = n.RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
+    recall_keys = RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"
 
-    read_params = n.ReadTool.schema()["function"]["parameters"]
+    read_params = ReadTool.schema()["function"]["parameters"]
     assert {"path", "ranges", "files"} <= set(read_params["properties"])
 
-    note_params = n.NoteTool.schema()["function"]["parameters"]
+    note_params = NoteTool.schema()["function"]["parameters"]
     assert "minItems" not in note_params["properties"]["replace_plan"]
     assert note_params["properties"]["replace_plan"]["items"]["properties"]["status"]["enum"] == ["todo", "doing", "done", "blocked"]
     assert "minItems" not in note_params["properties"]["replace_known"]
 
-    search_params = n.SearchTool.schema()["function"]["parameters"]
+    search_params = SearchTool.schema()["function"]["parameters"]
     assert {"pattern", "queries"} <= set(search_params["properties"])
     assert search_params["properties"]["queries"]["items"]["properties"]["context"]["type"] == "integer"
 
@@ -1086,7 +1111,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
             for item in value:
                 walk(item)
 
-    for tool in n.TOOLS:
+    for tool in TOOLS:
         params = tool.schema()["function"]["parameters"]
         assert "args" not in params.get("properties", {})
         walk(tool.schema())
@@ -1096,16 +1121,16 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     s = session(tmp_path)
     (tmp_path / "sample.py").write_text("alpha\n", encoding="utf-8")
 
-    with pytest.raises(n.ToolError):
-        n.ReadTool(s, [{"path": "sample.py", "ranges": []}]).call()
-    with pytest.raises(n.ToolError):
-        n.EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "new": "a\n"}]]).call()
-    with pytest.raises(n.ToolError):
-        n.BashTool(s, []).call()
-    with pytest.raises(n.ToolError):
-        n.SearchTool(s, [{"pattern": "["}]).call()
-    with pytest.raises(n.ToolError):
-        n.InspectCodeTool(s, ["inspect", "two words"]).call()
+    with pytest.raises(ToolError):
+        ReadTool(s, [{"path": "sample.py", "ranges": []}]).call()
+    with pytest.raises(ToolError):
+        EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "new": "a\n"}]]).call()
+    with pytest.raises(ToolError):
+        BashTool(s, []).call()
+    with pytest.raises(ToolError):
+        SearchTool(s, [{"pattern": "["}]).call()
+    with pytest.raises(ToolError):
+        InspectCodeTool(s, ["inspect", "two words"]).call()
 
     assert not (tmp_path / "a.txt").exists()
     assert not (tmp_path / "b.txt").exists()
@@ -1113,18 +1138,18 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
 
 def test_uiprinter_highlights_generic_tool_arguments(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s))
+    runner = ToolRunner(s, ContextManager(s))
     line = runner.log_root('Search "done in" glob=*.py C=2')
 
     assert line.syntax == "tool-args"
-    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([line]))
+    segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([line]))
     assert ("fg:#a5d6ff", '"done in"') in segments
     assert ("fg:#79c0ff", "glob=") in segments
     assert ("fg:#d2a8ff", "2") in segments
 
 
 def test_uiprinter_renders_note_memory_status_colors():
-    ui = n.UiPrinter(output_fn=lambda text: None)
+    ui = UiPrinter(output_fn=lambda text: None)
     segs = ui.segments("goal: ship\ncheck: passed\nplan:\n  - [~] inspect\n  - [x] patch\nknown:\n  + pytest")
 
     assert ("ansimagenta", "goal: ship") in segs
@@ -1136,16 +1161,16 @@ def test_uiprinter_renders_note_memory_status_colors():
 
 
 def test_uiprinter_renders_rejected_line_dim():
-    ui = n.UiPrinter(output_fn=lambda text: None)
-    segs = ui.log_segments(n.LogBlock([n.LogLine("Read", "· rejected: needs ranges", n.LogRole.MUTED)]))
+    ui = UiPrinter(output_fn=lambda text: None)
+    segs = ui.log_segments(LogBlock([LogLine("Read", "· rejected: needs ranges", LogRole.MUTED)]))
 
     assert any(style == "ansibrightblack" and "rejected" in text for style, text in segs)
     assert not any(style in ("ansired", "ansigreen") for style, text in segs)
 
 
 def test_uiprinter_renders_stored_result_dim():
-    ui = n.UiPrinter(output_fn=lambda text: None)
-    block = n.LogBlock.hierarchy(None, [n.LogLine("stored", "tr.50 [approved]", n.LogRole.META, n.LogEdge.END)])
+    ui = UiPrinter(output_fn=lambda text: None)
+    block = LogBlock.hierarchy(None, [LogLine("stored", "tr.50 [approved]", LogRole.META, LogEdge.END)])
 
     assert ui.log_segments(block) == [
         ("", "    "),
@@ -1157,8 +1182,8 @@ def test_uiprinter_renders_stored_result_dim():
 
 
 def test_uiprinter_renders_tool_root_without_generic_prefix():
-    block = n.LogBlock([n.LogLine("Read", "minacode.py 0:100 → tr.6 [auto]", n.LogRole.TOOL)])
-    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(block)
+    block = LogBlock([LogLine("Read", "minacode.py 0:100 → tr.6 [auto]", LogRole.TOOL)])
+    segments = UiPrinter(output_fn=lambda text: None).log_segments(block)
     text = "".join(value for _style, value in segments)
 
     assert text == "  Read  minacode.py 0:100 → tr.6 [auto]\n"

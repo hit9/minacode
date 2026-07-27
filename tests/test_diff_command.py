@@ -4,17 +4,22 @@ import subprocess
 import sys
 import time
 
-import minacode as n
+from minacode.base import Config, ToolCall
+from minacode.engine import Agent, ContextManager, ToolRunner
+from minacode.loop import CommandLoop
+from minacode.render import UiPrinter
+from minacode.session import Session, SessionSnapshotStore, TurnDiff
+from minacode.tui import DiffViewState, TabbedViewState
 
 
 def session(tmp_path):
-    config = n.Config()
+    config = Config()
     config.data_dir = str(tmp_path / "data")
-    return n.Session(cwd=str(tmp_path), config=config)
+    return Session(cwd=str(tmp_path), config=config)
 
 
 def loop(session):
-    return n.CommandLoop(n.Agent(session, output_fn=lambda text: None), output_fn=lambda text: None)
+    return CommandLoop(Agent(session, output_fn=lambda text: None), output_fn=lambda text: None)
 
 
 def git_init(path):
@@ -24,15 +29,15 @@ def git_init(path):
 
 
 def test_diff_is_in_completer_commands():
-    assert "/diff" in n.CommandLoop.COMMANDS
+    assert "/diff" in CommandLoop.COMMANDS
 
 
 def test_diff_appears_in_help():
-    assert "/diff" in n.CommandLoop.HELP
+    assert "/diff" in CommandLoop.HELP
 
 
 def test_diff_is_allowed_while_agent_works():
-    assert "/diff" in n.CommandLoop.QUEUE_RUN_COMMANDS
+    assert "/diff" in CommandLoop.QUEUE_RUN_COMMANDS
 
 
 def test_diff_preserves_cli_history_when_tmux_alternate_screen_is_off(tmp_path):
@@ -47,12 +52,16 @@ def test_diff_preserves_cli_history_when_tmux_alternate_screen_is_off(tmp_path):
 import threading
 import time
 
-import minacode as n
+from minacode.base import Config
+from minacode.engine import Agent
+from minacode.loop import CommandLoop
+from minacode.session import Session
+from minacode.tui import TuiApp
 
-session = n.Session(cwd="/tmp", config=n.Config(data_dir=tempfile.mkdtemp()))
+session = Session(cwd="/tmp", config=Config(data_dir=tempfile.mkdtemp()))
 session.store_turn_diff("tr.1", 1, "a.py", "-old\\n+new\\n", round=1)
-loop = n.CommandLoop(n.Agent(session))
-app = n.TuiApp()
+loop = CommandLoop(Agent(session))
+app = TuiApp()
 loop.tui = app
 
 
@@ -97,13 +106,13 @@ def test_alternate_screen_probe_reads_the_resolved_window_option(tmp_path):
     probe.write_text(
         f"""import subprocess
 
-import minacode as n
+from minacode.tui import TuiApp
 
-print(n.TuiApp.alternate_screen_available())
+print(TuiApp.alternate_screen_available())
 subprocess.run([{executable!r}, "set-option", "-wg", "alternate-screen", "off"], check=True)
-print(n.TuiApp.alternate_screen_available())
+print(TuiApp.alternate_screen_available())
 subprocess.run([{executable!r}, "set-option", "-wg", "alternate-screen", "on"], check=True)
-print(n.TuiApp.alternate_screen_available())
+print(TuiApp.alternate_screen_available())
 """
     )
     run = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))} > {shlex.quote(str(tmp_path / 'out'))} 2>&1"
@@ -219,7 +228,7 @@ def test_diff_bounds_large_session_output(tmp_path):
 
 
 def test_ui_segment_lines_keeps_styled_diff_lines_together():
-    ui = n.UiPrinter(output_fn=lambda text: None)
+    ui = UiPrinter(output_fn=lambda text: None)
     diff = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-old\n+return 42\n"
 
     segments = ui.diff_segments(diff)
@@ -233,7 +242,7 @@ def test_ui_segment_lines_keeps_styled_diff_lines_together():
 def test_diff_counts_only_hunk_changes():
     diff = "--- a.py\n+++ a.py\n@@ -1 +1,2 @@\n-old\n+++heading\n+new\n"
 
-    assert n.CommandLoop.diff_counts(diff) == (2, 1)
+    assert CommandLoop.diff_counts(diff) == (2, 1)
 
 
 def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
@@ -263,8 +272,8 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
     s.state.round_count = 1
     s.settings.yolo = True
 
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    call = n.ToolCall("edit-1", "Edit", ["a.py", [{"op": "replace_all", "old": "old\n", "new": "new\n"}]])
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    call = ToolCall("edit-1", "Edit", ["a.py", [{"op": "replace_all", "old": "old\n", "new": "new\n"}]])
     status, message = runner.run_one(call)
 
     assert status == "ok"
@@ -310,9 +319,9 @@ def test_diff_sections_follow_file_across_unambiguous_moves(tmp_path):
 
     assert latest is not None
     assert [path for _status, path, _diff in latest[1]] == ["skill/SKILL.md"]
-    assert n.CommandLoop.diff_counts(latest[1][0][2]) == (2, 2)
+    assert CommandLoop.diff_counts(latest[1][0][2]) == (2, 2)
     assert [path for _status, path, _diff in session_sections] == ["skill/SKILL.md"]
-    assert n.CommandLoop.diff_counts(session_sections[0][2]) == (3, 0)
+    assert CommandLoop.diff_counts(session_sections[0][2]) == (3, 0)
 
 
 def test_diff_sections_do_not_guess_ambiguous_moves(tmp_path):
@@ -333,7 +342,7 @@ def test_session_diff_sections_fall_back_to_legacy_diffs(tmp_path):
 
 def test_store_turn_diff_drops_large_net_snapshots(tmp_path):
     s = session(tmp_path)
-    large = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
+    large = "x" * (TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
     s.store_turn_diff("tr.1", 1, "large.py", "-old\n+new\n", before=large, after="new\n", round=1)
 
     diff = s.turn_diffs[0]
@@ -401,7 +410,7 @@ def test_legacy_diff_falls_back_when_disk_drifted(tmp_path):
 
 def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):
     s = session(tmp_path)
-    large = "x" * (n.TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
+    large = "x" * (TurnDiff.SNAPSHOT_CHAR_LIMIT + 1)
     first = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-old\n+large\n"
     second = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-large\n+new\n"
     s.store_turn_diff("tr.1", 1, "a.py", first, before="old\n", after=large, round=1)
@@ -414,7 +423,7 @@ def test_latest_round_coalesces_legacy_diffs_for_same_path(tmp_path):
     assert latest[1][0][:2] == ("edit", "a.py")
     assert first in latest[1][0][2]
     assert second in latest[1][0][2]
-    assert n.CommandLoop.diff_counts(latest[1][0][2]) == (2, 2)
+    assert CommandLoop.diff_counts(latest[1][0][2]) == (2, 2)
 
 
 def test_latest_round_diffs_include_all_steps_in_round(tmp_path):
@@ -441,9 +450,9 @@ def test_session_snapshot_turn_diff_roundtrip(tmp_path):
     s.messages.append({"role": "user", "content": "seed"})
     s.store_turn_diff("tr.1", 2, "x.py", "-a\n+b\n", round=1)
 
-    store = n.SessionSnapshotStore(s)
+    store = SessionSnapshotStore(s)
     uid = store.save()
-    loaded = n.SessionSnapshotStore.load(uid, s.config, s.settings)
+    loaded = SessionSnapshotStore.load(uid, s.config, s.settings)
 
     assert len(loaded.turn_diffs) == 1
     assert loaded.turn_diffs[0].path == "x.py"
@@ -461,7 +470,7 @@ def test_resume_renders_turn_diffs_from_the_snapshot(tmp_path):
     s.store_turn_diff("tr.1", 1, "x.py", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-old\n+new\n", before="old\n", after="new\n", round=1)
     s.save_snapshot()
 
-    loaded = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings, cwd=str(tmp_path))
+    loaded = Session.load_snapshot(s.uid, config=s.config, settings=s.settings, cwd=str(tmp_path))
     result = loop(loaded).diff_command("")
 
     assert [(diff.key, diff.path, diff.before, diff.after) for diff in loaded.turn_diffs] == [("tr.1", "x.py", "old\n", "new\n")]
@@ -472,7 +481,7 @@ def test_resume_renders_turn_diffs_from_the_snapshot(tmp_path):
 
 
 def _diff(key, turn, path, before, after, text):
-    return n.TurnDiff(key, turn, path, text, before=before, after=after, round=turn)
+    return TurnDiff(key, turn, path, text, before=before, after=after, round=turn)
 
 
 def test_net_diff_emits_one_description_per_path_when_snapshots_stop(tmp_path):
@@ -482,7 +491,7 @@ def test_net_diff_emits_one_description_per_path_when_snapshots_stop(tmp_path):
     kept = _diff("tr.1", 1, "x.py", "a\n", "b\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
     dropped = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
 
-    sections = n.Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
+    sections = Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
 
     assert len(sections) == 1
     text = sections[0][2]
@@ -497,7 +506,7 @@ def test_net_diff_prefers_snapshots_when_the_last_edit_has_them(tmp_path):
     dropped = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
     last = _diff("tr.3", 3, "x.py", "b\n", "c\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
 
-    sections = n.Session.net_diff_sections([first, dropped, last], "overall", cwd=str(tmp_path))
+    sections = Session.net_diff_sections([first, dropped, last], "overall", cwd=str(tmp_path))
 
     # The on-disk content is ignored here: the recorded snapshots already cover the whole history.
     assert len(sections) == 1
@@ -515,7 +524,7 @@ def test_net_diff_recovers_legacy_prefix_when_the_file_shrinks(tmp_path):
     shrink = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
     last = _diff("tr.3", 3, "x.py", "c\n", "d\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-c\n+d\n")
 
-    sections = n.Session.net_diff_sections([prefix, shrink, last], "overall", cwd=str(tmp_path))
+    sections = Session.net_diff_sections([prefix, shrink, last], "overall", cwd=str(tmp_path))
 
     assert len(sections) == 1
     text = sections[0][2]
@@ -529,7 +538,7 @@ def test_net_diff_recovers_snapshot_history_when_the_file_is_gone(tmp_path):
     kept = _diff("tr.1", 1, "gone.py", "a\n", "b\n", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-a\n+b\n")
     dropped = _diff("tr.2", 2, "gone.py", "", "", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-b\n+c\n")
 
-    sections = n.Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
+    sections = Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
 
     assert len(sections) == 1
     text = sections[0][2]
@@ -538,43 +547,43 @@ def test_net_diff_recovers_snapshot_history_when_the_file_is_gone(tmp_path):
 
 
 def test_turn_diff_bounded_snapshots_under_limit():
-    assert n.TurnDiff.bounded_snapshots("a", "b") == ("a", "b")
-    assert n.TurnDiff.bounded_snapshots("", "") == ("", "")
+    assert TurnDiff.bounded_snapshots("a", "b") == ("a", "b")
+    assert TurnDiff.bounded_snapshots("", "") == ("", "")
 
 
 def test_turn_diff_bounded_snapshots_over_limit_drops_both():
     """Either snapshot exceeding the cap drops the pair — one alone would read as a whole-file
     creation or deletion."""
-    limit = n.TurnDiff.SNAPSHOT_CHAR_LIMIT
+    limit = TurnDiff.SNAPSHOT_CHAR_LIMIT
     large = "x" * (limit + 1)
-    assert n.TurnDiff.bounded_snapshots(large, large) == ("", "")
-    assert n.TurnDiff.bounded_snapshots(large, "small\n") == ("", "")
-    assert n.TurnDiff.bounded_snapshots("small\n", large) == ("", "")
+    assert TurnDiff.bounded_snapshots(large, large) == ("", "")
+    assert TurnDiff.bounded_snapshots(large, "small\n") == ("", "")
+    assert TurnDiff.bounded_snapshots("small\n", large) == ("", "")
 
 
 def test_turn_diff_bounded_snapshots_at_limit_keeps_both():
     """The cap applies per snapshot, not to the two summed: a file just under it is still tracked
     even though the pair is twice the cap."""
-    limit = n.TurnDiff.SNAPSHOT_CHAR_LIMIT
+    limit = TurnDiff.SNAPSHOT_CHAR_LIMIT
     before = "x" * limit
     after = "y" * limit
-    result = n.TurnDiff.bounded_snapshots(before, after)
+    result = TurnDiff.bounded_snapshots(before, after)
     assert result == (before, after)
 
 
 def test_diff_view_state_open_and_close_file():
-    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
+    state = DiffViewState(view=TabbedViewState(titles=("Session",)))
     state.open_file(3)
-    assert state.mode is n.DiffViewState.Mode.FILE
+    assert state.mode is DiffViewState.Mode.FILE
     assert state.file == 0
     state.file = 1
     state.close_file()
-    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.mode is DiffViewState.Mode.LIST
     assert state.view.scroll == 0
 
 
 def test_diff_view_state_move_and_clamp_file():
-    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
+    state = DiffViewState(view=TabbedViewState(titles=("Session",)))
     state.move_file(1, 3)
     assert state.file == 1
     state.move_file(2, 3)
@@ -586,32 +595,32 @@ def test_diff_view_state_move_and_clamp_file():
 
 
 def test_diff_view_state_reset_clears_mode_and_scroll():
-    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session",)))
+    state = DiffViewState(view=TabbedViewState(titles=("Session",)))
     state.open_file(2)
     state.file = 1
     state.view.scroll = 10
     state.reset()
-    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.mode is DiffViewState.Mode.LIST
     assert state.file == 0
     assert state.view.scroll == 0
 
 
 def test_diff_view_state_switch_tab_calls_reset():
-    state = n.DiffViewState(view=n.TabbedViewState(titles=("Session", "Latest")))
+    state = DiffViewState(view=TabbedViewState(titles=("Session", "Latest")))
     state.open_file(2)
     state.file = 1
     state.switch_tab(1)
     assert state.view.tab == 1
-    assert state.mode is n.DiffViewState.Mode.LIST
+    assert state.mode is DiffViewState.Mode.LIST
     assert state.file == 0
 
 
 def test_net_diff_for_path_returns_none_when_unchanged():
-    assert n.Session.net_diff_for_path("edit", "a.py", "same\n", "same\n") is None
+    assert Session.net_diff_for_path("edit", "a.py", "same\n", "same\n") is None
 
 
 def test_net_diff_for_path_returns_unified_diff():
-    result = n.Session.net_diff_for_path("edit", "a.py", "old\n", "new\n")
+    result = Session.net_diff_for_path("edit", "a.py", "old\n", "new\n")
     assert result is not None
     status, path, diff = result
     assert status == "edit"
@@ -620,32 +629,32 @@ def test_net_diff_for_path_returns_unified_diff():
 
 
 def test_net_diff_for_path_uses_dev_null_for_created_files():
-    result = n.Session.net_diff_for_path("edit", "new.py", "", "new content\n")
+    result = Session.net_diff_for_path("edit", "new.py", "", "new content\n")
     assert result is not None
     _, _, diff = result
     assert "/dev/null" in diff
 
 
 def test_find_unambiguous_move_returns_none_without_states():
-    assert n.Session._find_unambiguous_move({}, {}) is None
+    assert Session._find_unambiguous_move({}, {}) is None
 
 
 def test_find_unambiguous_move_detects_single_match():
     states = {"old.py": ("content", "moved_content"), "new.py": ("moved_content", "final")}
-    assert n.Session._find_unambiguous_move(states, {}) == ("old.py", "new.py")
+    assert Session._find_unambiguous_move(states, {}) == ("old.py", "new.py")
 
 
 def test_find_unambiguous_move_ignores_ambiguous():
     states = {"a.py": ("c", "x"), "b.py": ("c", "x")}
-    assert n.Session._find_unambiguous_move(states, {}) is None
+    assert Session._find_unambiguous_move(states, {}) is None
 
 
 def test_find_unambiguous_move_skips_self_loop():
     states = {"a.py": ("c", "c")}
-    assert n.Session._find_unambiguous_move(states, {}) is None
+    assert Session._find_unambiguous_move(states, {}) is None
 
 
 def test_find_unambiguous_move_skips_legacy_paths():
     states = {"old.py": ("c", "x"), "new.py": ("x", "c")}
     legacy = {"old.py": ["-- a\n++ b"]}
-    assert n.Session._find_unambiguous_move(states, legacy) is None
+    assert Session._find_unambiguous_move(states, legacy) is None

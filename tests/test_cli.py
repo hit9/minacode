@@ -2,7 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from minacode import __main__ as cli
+import minacode
+import minacode.__main__ as cli
+
+
+def test_package_root_exposes_only_version():
+    assert minacode.__all__ == ["__version__"]
+    assert all(not hasattr(minacode, name) for name in ("Agent", "Session", "TuiApp", "main"))
 
 
 def test_cli_rejects_native_windows(monkeypatch, capsys):

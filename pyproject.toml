@@ -50,7 +50,7 @@ Issues = "https://github.com/hit9/minacode/issues"
 Documentation = "https://minacode.readthedocs.io"
 
 [project.scripts]
-minacode = "minacode:main"
+minacode = "minacode.__main__:main"
 
 [project.optional-dependencies]
 dev = [

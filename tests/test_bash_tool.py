@@ -1,15 +1,22 @@
 import shlex
+import subprocess
 import sys
 import threading
 import time
 
 import pytest
 
-import minacode as n
+import minacode.render as render_module
+from minacode.base import ToolCall, ToolError
+from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ToolDisplay, ToolRunner
+from minacode.loop import CommandLoop
+from minacode.render import BashLivePreview, UiPrinter
+from minacode.session import Session
+from minacode.tools import BashTool, JobTool, Tool
 
 
 def session(tmp_path):
-    return n.Session(cwd=str(tmp_path))
+    return Session(cwd=str(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -23,17 +30,17 @@ def session(tmp_path):
     ],
 )
 def test_job_validation_errors_are_actionable(tmp_path, payload, message):
-    with pytest.raises(n.ToolError, match=message):
-        n.JobTool(session(tmp_path), [payload]).call()
+    with pytest.raises(ToolError, match=message):
+        JobTool(session(tmp_path), [payload]).call()
 
 
 def test_job_wait_and_list_report_completed_output(tmp_path):
     s = session(tmp_path)
-    assert n.JobTool(s, [{"action": "list"}]).call() == "No jobs."
-    n.JobTool(s, [{"action": "start", "command": "printf completed"}]).call()
+    assert JobTool(s, [{"action": "list"}]).call() == "No jobs."
+    JobTool(s, [{"action": "start", "command": "printf completed"}]).call()
 
-    waited = n.JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}]).call()
-    listed = n.JobTool(s, [{"action": "list"}]).call()
+    waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}]).call()
+    listed = JobTool(s, [{"action": "list"}]).call()
 
     assert "Status: done" in waited
     assert "Exit code: 0" in waited
@@ -43,20 +50,20 @@ def test_job_wait_and_list_report_completed_output(tmp_path):
 
 def test_bash_behaviors(tmp_path):
     s = session(tmp_path)
-    bash = n.BashTool(s, ["printf out; printf err >&2; exit 3"]).call()
+    bash = BashTool(s, ["printf out; printf err >&2; exit 3"]).call()
     assert "* exit_code: 3" in bash
     assert "<stdout>\nout\n</stdout>" in bash
     assert "<stderr>\nerr\n</stderr>" in bash
 
     # Multibyte UTF-8 output large enough to span 4096-byte read boundaries must decode cleanly
     # (regression: per-chunk decoding mangled split characters into replacement chars).
-    wide = n.BashTool(s, ['python3 -c "print(chr(0x4e2d)*3000)"']).call()
+    wide = BashTool(s, ['python3 -c "print(chr(0x4e2d)*3000)"']).call()
     assert "�" not in wide
     assert wide.count(chr(0x4E2D)) == 3000
 
 
 def test_bash_cancel_kills_active_process(tmp_path):
-    tool = n.BashTool(session(tmp_path), ["sleep 30"])
+    tool = BashTool(session(tmp_path), ["sleep 30"])
     finished = threading.Event()
 
     def run():
@@ -80,7 +87,7 @@ def test_bash_fast_command_does_not_promote(tmp_path):
     s.settings.bash_wait_timeout = 5
     s.settings.shell_timeout = 30
 
-    output = n.BashTool(s, ["printf hi"]).call()
+    output = BashTool(s, ["printf hi"]).call()
 
     assert "* exit_code: 0" in output
     assert "hi" in output
@@ -91,8 +98,8 @@ def test_bash_fast_command_does_not_promote(tmp_path):
 def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     printed = []
     now = [100.4]
-    monkeypatch.setattr(n.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(n.render, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda ft, **kw: printed.append("".join(t for _, t in ft)))
 
     class FakeOut:
         def write_raw(self, s=""):
@@ -104,7 +111,7 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
         def flush(self):
             pass
 
-    p = n.BashLivePreview()
+    p = BashLivePreview()
     p.output = FakeOut()
     p.active = True
     p.started_at = 100.0
@@ -126,7 +133,7 @@ def test_bash_promoted_job_is_killable(tmp_path):
     s.settings.bash_wait_timeout = 0.2
     s.settings.shell_timeout = 5
 
-    n.BashTool(s, ["sleep 60"]).call()
+    BashTool(s, ["sleep 60"]).call()
     assert "job.1" in s.jobs
     job = s.jobs["job.1"]
     job.kill()
@@ -139,7 +146,7 @@ def test_bash_promotion_disabled_when_wait_timeout_zero(tmp_path):
     s.settings.bash_wait_timeout = 0
     s.settings.shell_timeout = 0.2
 
-    output = n.BashTool(s, ["sleep 5"]).call()
+    output = BashTool(s, ["sleep 5"]).call()
 
     assert "* exit_code: -1" in output
     assert "timeout" in output
@@ -151,7 +158,7 @@ def test_bash_readonly_auto_approval_classification(tmp_path):
     s = session(tmp_path)
 
     def readonly(command):
-        return not n.BashTool(s, [command]).needs_confirmation()
+        return not BashTool(s, [command]).needs_confirmation()
 
     # Safe read-only commands auto-run (no confirmation prompt in non-yolo mode).
     assert readonly("ls -la")
@@ -209,7 +216,7 @@ def test_bash_slow_command_promotes_to_job(tmp_path):
     s.settings.bash_wait_timeout = 0.2
     s.settings.shell_timeout = 5
 
-    output = n.BashTool(s, ["printf early; sleep 0.5; printf late"]).call()
+    output = BashTool(s, ["printf early; sleep 0.5; printf late"]).call()
 
     assert "* exit_code: -1" in output
     assert "early" in output
@@ -238,7 +245,7 @@ def test_bash_timeout_and_live_output(tmp_path):
     s = session(tmp_path)
     s.settings.shell_timeout = 0.2
     events = []
-    tool = n.BashTool(s, ["printf live; sleep 5"])
+    tool = BashTool(s, ["printf live; sleep 5"])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
     output = tool.call()
@@ -254,7 +261,7 @@ def test_bash_timeout_applies_after_output_streams_close(tmp_path):
     s = session(tmp_path)
     s.settings.shell_timeout = 0.05
 
-    output = n.BashTool(s, ["exec 1>&- 2>&-; sleep 1"]).call()
+    output = BashTool(s, ["exec 1>&- 2>&-; sleep 1"]).call()
 
     assert "* exit_code: -1" in output
     assert "timeout" in output
@@ -264,7 +271,7 @@ def test_job_captures_large_output_via_log_file(tmp_path):
     s = session(tmp_path)
     code = 'import sys; sys.stdout.write("x" * 1000000)'
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
-    n.JobTool(s, [{"action": "start", "command": command}]).call()
+    JobTool(s, [{"action": "start", "command": command}]).call()
     job = s.jobs["job.1"]
 
     try:
@@ -283,7 +290,7 @@ def test_job_start_captures_every_stage_of_a_compound_command(tmp_path):
     """The whole command is grouped before redirection, so output from early stages (not just the
     last) lands in the job log instead of leaking to the inherited stdout."""
     s = session(tmp_path)
-    n.JobTool(s, [{"action": "start", "command": "printf first; printf second && printf third"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf first; printf second && printf third"}]).call()
     job = s.jobs["job.1"]
 
     try:
@@ -300,11 +307,11 @@ def test_job_start_captures_every_stage_of_a_compound_command(tmp_path):
 
 def test_job_start_reclaims_finished_capacity(tmp_path, monkeypatch):
     s = session(tmp_path)
-    monkeypatch.setattr(n.JobTool, "MAX_JOBS", 1)
-    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    monkeypatch.setattr(JobTool, "MAX_JOBS", 1)
+    JobTool(s, [{"action": "start", "command": "true"}]).call()
     s.jobs["job.1"].process.wait(timeout=2)
 
-    result = n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    result = JobTool(s, [{"action": "start", "command": "true"}]).call()
 
     assert result.startswith("Started job.2")
     s.jobs["job.2"].process.wait(timeout=2)
@@ -316,7 +323,7 @@ def test_job_start_runs_shell_builtins_and_compound_commands(tmp_path):
     s = session(tmp_path)
     sub = tmp_path / "sub"
     sub.mkdir()
-    n.JobTool(s, [{"action": "start", "command": f"cd {shlex.quote(str(sub))} && printf marker"}]).call()
+    JobTool(s, [{"action": "start", "command": f"cd {shlex.quote(str(sub))} && printf marker"}]).call()
     job = s.jobs["job.1"]
 
     try:
@@ -333,25 +340,25 @@ def test_job_start_runs_shell_builtins_and_compound_commands(tmp_path):
 
 def test_job_start_uses_bash_highlighting(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s))
-    start = n.ToolCall("j1", "Job", [{"action": "start", "command": "pytest -q"}])
-    wait = n.ToolCall("j2", "Job", [{"action": "wait", "job": "job.1"}])
+    runner = ToolRunner(s, ContextManager(s))
+    start = ToolCall("j1", "Job", [{"action": "start", "command": "pytest -q"}])
+    wait = ToolCall("j2", "Job", [{"action": "wait", "job": "job.1"}])
 
     start_line = runner.log_root(runner.short_call(start), call=start)
     wait_line = runner.log_root(runner.short_call(wait), call=wait)
 
     assert start_line.syntax == "bash"
     assert wait_line.syntax == "tool-args"
-    wait_segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([wait_line]))
+    wait_segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([wait_line]))
     assert ("fg:#d2a8ff", "job.1") in wait_segments
 
 
 def test_job_status_accepts_bare_numeric_id(tmp_path):
     s = session(tmp_path)
-    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    JobTool(s, [{"action": "start", "command": "true"}]).call()
     s.jobs["job.1"].process.wait(timeout=2)
 
-    result = n.JobTool(s, [{"action": "status", "job": "1"}]).call()
+    result = JobTool(s, [{"action": "status", "job": "1"}]).call()
 
     assert "Status: done" in result
     assert "Exit code: 0" in result
@@ -359,7 +366,7 @@ def test_job_status_accepts_bare_numeric_id(tmp_path):
 
 def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
     s = session(tmp_path)
-    n.JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf abcdef"}]).call()
     job = s.jobs["job.1"]
     job.process.wait(timeout=2)
 
@@ -370,10 +377,10 @@ def test_job_tail_respects_limits_smaller_than_ellipsis(tmp_path):
 
 def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
     s = session(tmp_path)
-    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    JobTool(s, [{"action": "start", "command": "true"}]).call()
     s.jobs["job.1"].process.wait(timeout=2)
 
-    result = n.JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+    result = JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
 
     assert "status=done" in result
     assert "exit_code=0" in result
@@ -381,9 +388,9 @@ def test_kill_finished_job_does_not_signal_stale_process(tmp_path):
 
 def test_ps_hides_jobs_that_finished_without_polling(tmp_path):
     s = session(tmp_path)
-    n.JobTool(s, [{"action": "start", "command": "true"}]).call()
+    JobTool(s, [{"action": "start", "command": "true"}]).call()
     s.jobs["job.1"].process.wait(timeout=2)
-    command_loop = n.CommandLoop(n.Agent(s), input_fn=lambda prompt="": "", output_fn=lambda text: None)
+    command_loop = CommandLoop(Agent(s), input_fn=lambda prompt="": "", output_fn=lambda text: None)
 
     assert command_loop.ps_command("") == "No active jobs (1 total)."
 
@@ -391,11 +398,11 @@ def test_ps_hides_jobs_that_finished_without_polling(tmp_path):
 def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
     s = session(tmp_path)
     events = []
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: events.append(("display", str(text))))
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: events.append(("display", str(text))))
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
-    runner.run([n.ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
+    runner.run([ToolCall("bash", "Bash", ["bash -lc 'printf approved'"])])
 
     display = [text for kind, text in events if kind == "display"]
     assert display[0].startswith("  Bash  ")
@@ -410,8 +417,8 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
 
 def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-    output = n.Tool.process_result("BashToolResult", 0, "before </stdout> after", "before </stderr> after")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    output = Tool.process_result("BashToolResult", 0, "before </stdout> after", "before </stderr> after")
 
     preview = runner.bash_result_preview(output)
 
@@ -421,29 +428,29 @@ def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
 
 def test_tool_runner_bash_preview_omits_past_limit(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-    lines = [f"line {index}" for index in range(n.ToolRunner.BASH_PREVIEW_LINES + 1)]
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    lines = [f"line {index}" for index in range(ToolRunner.BASH_PREVIEW_LINES + 1)]
 
     preview = runner.preview_lines("\n".join(lines))
 
-    assert len(preview) == n.ToolRunner.BASH_PREVIEW_LINES + 1
+    assert len(preview) == ToolRunner.BASH_PREVIEW_LINES + 1
     assert preview[0] == "line 0"
-    assert preview[n.ToolRunner.BASH_PREVIEW_LINES // 2] == "... 1 line omitted ..."
+    assert preview[ToolRunner.BASH_PREVIEW_LINES // 2] == "... 1 line omitted ..."
     assert preview[-1] == lines[-1]
 
 
 def test_tool_runner_compact_bash_result_keeps_bounded_output_without_live_frame(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-    output = n.Tool.process_result("BashToolResult", 0, "visible output", "")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    output = Tool.process_result("BashToolResult", 0, "visible output", "")
 
     display = str(
         runner.finish_display(
-            n.ToolCall("bash", "Bash", ["printf visible"]),
+            ToolCall("bash", "Bash", ["printf visible"]),
             "tr.1",
             output,
             failed=False,
-            d=n.ToolDisplay(nested_display=True),
+            d=ToolDisplay(nested_display=True),
         )
     )
 
@@ -454,12 +461,12 @@ def test_tool_runner_compact_bash_result_keeps_bounded_output_without_live_frame
 def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypatch):
     s = session(tmp_path)
     output = []
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: output.append(str(text)))
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: output.append(str(text)))
     runner.live_start = lambda: None
     runner.live_output = lambda _stream, _text: None
-    monkeypatch.setattr(n.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
 
-    runner.run([n.ToolCall("bash", "Bash", ["printf duplicate"])])
+    runner.run([ToolCall("bash", "Bash", ["printf duplicate"])])
 
     assert output[0] == "  Bash  printf duplicate"
     assert output[1].startswith("    └ error ")
@@ -469,11 +476,11 @@ def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypa
 
 def test_tool_runner_finish_display_bounds_bash_output(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     stdout = "\n".join(f"out {index}" for index in range(20))
-    output = n.Tool.process_result("BashToolResult", 0, stdout, "err")
+    output = Tool.process_result("BashToolResult", 0, stdout, "err")
 
-    display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
+    display = str(runner.finish_display(ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
 
     assert display.startswith("  Bash  printf lots\n")
     assert "    ├ output Ctrl-O for more" in display
@@ -486,10 +493,10 @@ def test_tool_runner_finish_display_bounds_bash_output(tmp_path):
 
 def test_tool_runner_finish_display_keeps_bounded_bash_output_after_live_preview(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
-    output = n.Tool.process_result("BashToolResult", 0, "live output", "")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    output = Tool.process_result("BashToolResult", 0, "live output", "")
 
-    display = str(runner.finish_display(n.ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
+    display = str(runner.finish_display(ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
 
     assert "    ├ output Ctrl-O for more" in display
     assert "live output" in display
@@ -499,16 +506,16 @@ def test_tool_runner_finish_display_keeps_bounded_bash_output_after_live_preview
 def test_tool_runner_prints_bash_header_before_live_output(tmp_path):
     s = session(tmp_path)
     events = []
-    runner = n.ToolRunner(
+    runner = ToolRunner(
         s,
-        n.ContextManager(s),
+        ContextManager(s),
         input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
         output_fn=lambda text: events.append(("display", str(text))),
     )
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
-    runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
+    runner.run([ToolCall("bash", "Bash", ["printf live"])])
 
     assert events[0] == ("display", "  Bash  printf live")
     assert events[1] == ("start", "")
@@ -527,13 +534,11 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     s = session(tmp_path)
     s.settings.yolo = True
     events = []
-    runner = n.ToolRunner(
-        s, n.ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None
-    )
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")), output_fn=lambda text: None)
     runner.live_start = lambda: events.append(("start", ""))
     runner.live_output = lambda stream, text: events.append((stream, text))
 
-    runner.run([n.ToolCall("bash", "Bash", ["printf live"])])
+    runner.run([ToolCall("bash", "Bash", ["printf live"])])
 
     assert events[0] == ("start", "")
     assert ("stdout", "live") in events
@@ -541,14 +546,14 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
 
 
 def test_uiprinter_renders_bash_preview_like_live_output():
-    ui = n.UiPrinter(output_fn=lambda text: None)
-    block = n.LogBlock.hierarchy(
-        n.LogLine("Bash", "cmd", n.LogRole.TOOL),
+    ui = UiPrinter(output_fn=lambda text: None)
+    block = LogBlock.hierarchy(
+        LogLine("Bash", "cmd", LogRole.TOOL),
         [
-            n.LogLine("", "stderr:", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
-            n.LogLine("", "  Traceback", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
-            n.LogLine("", "    File x", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
-            n.LogLine("", "  AttributeError", n.LogRole.OUTPUT, n.LogEdge.CONTINUE),
+            LogLine("", "stderr:", LogRole.OUTPUT, LogEdge.CONTINUE),
+            LogLine("", "  Traceback", LogRole.OUTPUT, LogEdge.CONTINUE),
+            LogLine("", "    File x", LogRole.OUTPUT, LogEdge.CONTINUE),
+            LogLine("", "  AttributeError", LogRole.OUTPUT, LogEdge.CONTINUE),
         ],
     )
     segs = ui.log_segments(block)
@@ -561,10 +566,10 @@ def test_uiprinter_renders_bash_preview_like_live_output():
 
 def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
     s = session(tmp_path)
-    line = n.ToolRunner(s, n.ContextManager(s)).log_root("Bash cd /tmp && printf '%s\\n' value")
+    line = ToolRunner(s, ContextManager(s)).log_root("Bash cd /tmp && printf '%s\\n' value")
 
     assert line.syntax == "bash"
-    segments = n.UiPrinter(output_fn=lambda text: None).log_segments(n.LogBlock([line]))
+    segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([line]))
     assert ("fg:#79c0ff", "cd") in segments
     assert ("fg:#79c0ff", "printf") in segments
     assert ("fg:#a5d6ff", "'%s\\n'") in segments

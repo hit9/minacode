@@ -1,23 +1,48 @@
 import json
 import os
+import platform
+import shutil
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
 
-import minacode as n
+import minacode.engine as engine_module
+import minacode.loop as loop_module
+from minacode.base import (
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
+    MIN_CONTEXT_SAFETY_TOKENS,
+    SELECTION_FREE_TEXT,
+    Config,
+    ModelError,
+    ProviderConfig,
+    Text,
+    ToolCall,
+    ToolError,
+)
+from minacode.engine import Agent, ContextManager, LogBlock, ModelClient, ToolRunner, TurnBox
+from minacode.loop import CommandLoop
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
+from minacode.render import StatusBar
+from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
+from minacode.skill import SkillLibrary
+from minacode.tools import AskSpec, BashTool, CodeIndex, EditTool, ReadTool, SkillTool, Tool
+from minacode.tui import TuiApp
 
 
 def session(tmp_path):
     # Isolate the data dir so tests never read the developer's real ~/.minacode (sessions, skills).
-    config = n.Config()
+    config = Config()
     config.data_dir = str(tmp_path / "data")
-    return n.Session(cwd=str(tmp_path), config=config)
+    return Session(cwd=str(tmp_path), config=config)
 
 
 def call(name, args):
-    return n.ToolCall(name + "-id", name, args)
+    return ToolCall(name + "-id", name, args)
 
 
 def queue(s, *texts):
@@ -31,14 +56,14 @@ def queued_texts(s):
 
 def test_model_messages_are_ordered_context_messages(tmp_path):
     s = session(tmp_path)
-    s.skills = n.SkillLibrary({})  # no skills: assert the base frame ordering
+    s.skills = SkillLibrary({})  # no skills: assert the base frame ordering
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
     turn = [
         {"role": "user", "content": "current request"},
         {"role": "user", "content": "extra one"},
         {"role": "user", "content": "extra two"},
     ]
-    messages = n.ContextManager(s).model_messages(" system ", turn)
+    messages = ContextManager(s).model_messages(" system ", turn)
 
     assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user", "user"]
     assert messages[0]["content"] == "system"
@@ -58,13 +83,13 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
         calls.append(name)
         return "/bin/" + name if name in {"bash", "rg", "sed"} else None
 
-    monkeypatch.setattr(n.platform, "system", lambda: "TestOS")
-    monkeypatch.setattr(n.platform, "machine", lambda: "test-arch")
-    monkeypatch.setattr(n.shutil, "which", fake_which)
+    monkeypatch.setattr(platform, "system", lambda: "TestOS")
+    monkeypatch.setattr(platform, "machine", lambda: "test-arch")
+    monkeypatch.setattr(shutil, "which", fake_which)
 
     s = session(tmp_path)
     initial_calls = list(calls)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     first = context.environment()
     second = context.model_messages("sys", [{"role": "user", "content": "request"}])[1]["content"]
 
@@ -90,7 +115,7 @@ def test_session_tool_result_store_prunes_old_records(tmp_path):
 
 def test_bounded_output_marks_recall_key(tmp_path):
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
     bounded = context.bound_output(large, "tr.large")
 
@@ -104,9 +129,9 @@ def test_read_tool_message_inlines_bounded_output(tmp_path):
     path = tmp_path / "large.txt"
     path.write_text("first\n" + "\n".join(f"middle-{index}" for index in range(20000)) + "\nlast\n", encoding="utf-8")
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     call_obj = call("Read", [{"path": "large.txt", "ranges": [[0, 0]]}])
-    output = n.ReadTool(s, call_obj.args).call()
+    output = ReadTool(s, call_obj.args).call()
     key = s.store_tool_result("Read", call_obj.args, output)
 
     message = runner.tool_message(call_obj, key, output)
@@ -131,7 +156,7 @@ def test_working_context_includes_recent_tool_errors(tmp_path):
     for index in range(6):
         s.record_tool_error(f"tr.{index}", "Bash", [f"cmd {index}"], f"error {index}")
 
-    context = n.ContextManager(s).model_messages("sys")[-1]["content"]
+    context = ContextManager(s).model_messages("sys")[-1]["content"]
 
     assert "Recent tool errors:" in context
     assert "tr.0" not in context
@@ -149,7 +174,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
         {"role": "user", "content": "latest"},
         {"role": "tool", "content": "tool kept"},
     ]
-    context = n.ContextManager(s)
+    context = ContextManager(s)
 
     class FakeModel:
         def __init__(self):
@@ -172,7 +197,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert [vars(item) for item in s.state.plan] == [{"status": "todo", "text": "next"}]
     assert s.state.known == ["fact"]
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
-    assert s.messages[0]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
+    assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)
     assert "compact summary" in s.messages[0]["content"]
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
@@ -182,12 +207,12 @@ def test_compaction_uses_configured_context_budget(tmp_path):
 def test_compaction_budget_reserves_output_and_safety(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 100_000
-    context = n.ContextManager(s)
+    context = ContextManager(s)
 
-    assert context.request_token_budget() == 100_000 - n.DEFAULT_OUTPUT_RESERVE_TOKENS - n.MIN_CONTEXT_SAFETY_TOKENS
+    assert context.request_token_budget() == 100_000 - DEFAULT_OUTPUT_RESERVE_TOKENS - MIN_CONTEXT_SAFETY_TOKENS
 
     s.config.provider.max_tokens = 10_000
-    assert context.request_token_budget() == 100_000 - 10_000 - n.MIN_CONTEXT_SAFETY_TOKENS
+    assert context.request_token_budget() == 100_000 - 10_000 - MIN_CONTEXT_SAFETY_TOKENS
 
 
 def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
@@ -198,7 +223,7 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
         {"role": "assistant", "content": "old answer"},
         {"role": "user", "content": "latest request"},
     ]
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     turn = [{"role": "user", "content": "continue"}]
     tools = [{"type": "function", "function": {"name": "Large", "description": "x" * 40_000, "parameters": {}}}]
     messages = context.model_messages("system", turn)
@@ -221,7 +246,7 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
 
 def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
     s = session(tmp_path)
-    summary = n.COMPACTION_SUMMARY_TITLE + "\nold summary"
+    summary = COMPACTION_SUMMARY_TITLE + "\nold summary"
     s.messages = [
         {"role": "user", "content": summary},
         {"role": "assistant", "content": "before"},
@@ -233,7 +258,7 @@ def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
         {"role": "tool", "content": "tool tr.1"},
     ]
 
-    compacted, keep = n.ContextManager(s).compaction_parts()
+    compacted, keep = ContextManager(s).compaction_parts()
 
     assert [message["content"] for message in compacted] == ["before", "old request", "old answer"]
     assert [message["content"] for message in keep] == ["latest request", "working", "tool tr.1"]
@@ -242,12 +267,12 @@ def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
 def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
     s = session(tmp_path)
     s.messages = [
-        {"role": "user", "content": n.COMPACTION_SUMMARY_TITLE + "\nold summary"},
+        {"role": "user", "content": COMPACTION_SUMMARY_TITLE + "\nold summary"},
         {"role": "assistant", "content": "answer"},
         {"role": "tool", "content": "tool tr.1"},
     ]
 
-    compacted, keep = n.ContextManager(s).compaction_parts()
+    compacted, keep = ContextManager(s).compaction_parts()
 
     assert compacted == s.messages[1:]
     assert keep == []
@@ -255,13 +280,13 @@ def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
 
 def test_compaction_selection_keeps_assistant_text_that_quotes_summary_marker(tmp_path):
     s = session(tmp_path)
-    quoted = n.COMPACTION_SUMMARY_TITLE + "\nquoted by assistant"
+    quoted = COMPACTION_SUMMARY_TITLE + "\nquoted by assistant"
     s.messages = [
-        {"role": "user", "content": n.COMPACTION_SUMMARY_TITLE + "\nold summary"},
+        {"role": "user", "content": COMPACTION_SUMMARY_TITLE + "\nold summary"},
         {"role": "assistant", "content": quoted},
     ]
 
-    compacted, keep = n.ContextManager(s).compaction_parts()
+    compacted, keep = ContextManager(s).compaction_parts()
 
     assert compacted == [{"role": "assistant", "content": quoted}]
     assert keep == []
@@ -270,7 +295,7 @@ def test_compaction_selection_keeps_assistant_text_that_quotes_summary_marker(tm
 def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
-    summary = n.COMPACTION_SUMMARY_TITLE + "\nold summary"
+    summary = COMPACTION_SUMMARY_TITLE + "\nold summary"
     s.state.summary = "old summary"
     s.messages = [{"role": "user", "content": summary}]
 
@@ -278,7 +303,7 @@ def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
         def compact(self, text):
             raise AssertionError(f"synthetic summary was compacted again: {text}")
 
-    n.ContextManager(s).prepare_messages(FakeModel(), "system")
+    ContextManager(s).prepare_messages(FakeModel(), "system")
 
     assert s.messages == [{"role": "user", "content": summary}]
     assert s.state.compaction_count == 0
@@ -286,8 +311,8 @@ def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
 
 
 def test_turn_compaction_does_not_recompact_a_prior_summary(tmp_path):
-    context = n.ContextManager(session(tmp_path))
-    summary = n.COMPACTION_SUMMARY_TITLE + "\nold summary"
+    context = ContextManager(session(tmp_path))
+    summary = COMPACTION_SUMMARY_TITLE + "\nold summary"
     messages = [
         {"role": "user", "content": "current request"},
         {"role": "user", "content": summary},
@@ -313,11 +338,11 @@ def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
         )
         s.messages.append({"role": "tool", "content": f"tool tr.{i}"})
 
-    compacted, keep = n.ContextManager(s).compaction_parts()
+    compacted, keep = ContextManager(s).compaction_parts()
 
     # The request that started the work is kept, plus a bounded window of what followed.
     assert keep[0] == {"role": "user", "content": "do the big thing"}
-    assert len(keep) <= n.ContextManager.COMPACT_RECENT_MESSAGES + 1
+    assert len(keep) <= ContextManager.COMPACT_RECENT_MESSAGES + 1
     assert len(compacted) == len(s.messages) - len(keep)
     # A kept tool result never loses the call it answers.
     if keep[1].get("role") == "tool":
@@ -327,7 +352,7 @@ def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
 def test_compaction_parts_for_uses_last_fixed_window(tmp_path):
     messages = [{"role": "assistant", "content": f"m{index}"} for index in range(10)]
 
-    older, recent = n.ContextManager(session(tmp_path)).compaction_parts_for(messages)
+    older, recent = ContextManager(session(tmp_path)).compaction_parts_for(messages)
 
     assert [message["content"] for message in older] == ["m0", "m1"]
     assert [message["content"] for message in recent] == [f"m{index}" for index in range(2, 10)]
@@ -342,13 +367,13 @@ def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
         def compact(self, text):
             raise AssertionError(text)
 
-    n.ContextManager(s).prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
+    ContextManager(s).prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
 
     assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
 
 
 def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch):
-    context = n.ContextManager(session(tmp_path))
+    context = ContextManager(session(tmp_path))
     calls = 0
     original = context.model_messages
 
@@ -364,7 +389,7 @@ def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch
 
 
 def test_compaction_keeps_assistant_with_tool_results(tmp_path):
-    context = n.ContextManager(session(tmp_path))
+    context = ContextManager(session(tmp_path))
     messages = [
         *({"role": "user", "content": f"old {index}"} for index in range(3)),
         {
@@ -390,7 +415,7 @@ def test_compaction_keeps_assistant_with_tool_results(tmp_path):
 
 def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     kept = s.store_tool_result("Bash", ["kept"], "kept output")
     dropped = s.store_tool_result("Bash", ["dropped"], "dropped output")
 
@@ -405,9 +430,9 @@ def test_compaction_prunes_unreferenced_tool_records(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("one\n", encoding="utf-8")
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     old_key = s.store_tool_result("Bash", ["old"], "old output")
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
     current_key = s.store_tool_result("Bash", ["current"], "current output")
 
     context.apply_compaction({"summary": "summary"}, [{"role": "tool", "content": f"tool {current_key} Bash current"}])
@@ -429,7 +454,7 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
         def compact(self, text):
             return {"summary": "summary"}
 
-    n.ContextManager(s).prepare_messages(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
+    ContextManager(s).prepare_messages(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
 
     assert old_key not in s.tool_results
     assert current_key in s.tool_results
@@ -440,12 +465,12 @@ def test_compaction_drops_unreferenced_read_edit_records(tmp_path):
     path = tmp_path / "a.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     s = session(tmp_path)
-    context = n.ContextManager(s)
-    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], n.ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
+    context = ContextManager(s)
+    read_key = s.store_tool_result("Read", [{"path": "a.txt", "ranges": [[0, 0]]}], ReadTool(s, [{"path": "a.txt", "ranges": [[0, 0]]}]).call())
     edit_key = s.store_tool_result(
         "Edit",
         ["a.txt"],
-        n.EditTool(s, ["a.txt", [{"op": "delete", "start": "1:" + n.ReadTool.line_hash("b\n"), "end": "1:" + n.ReadTool.line_hash("b\n")}]]).call(),
+        EditTool(s, ["a.txt", [{"op": "delete", "start": "1:" + ReadTool.line_hash("b\n"), "end": "1:" + ReadTool.line_hash("b\n")}]]).call(),
     )
 
     context.apply_compaction({"summary": "summary"}, [])
@@ -457,7 +482,7 @@ def test_compaction_drops_unreferenced_read_edit_records(tmp_path):
 
 def test_compaction_captures_a_history_segment(tmp_path):
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     compacted = [
         {"role": "user", "content": "find the parser bug"},
         {"role": "assistant", "content": "looking into it"},
@@ -474,9 +499,9 @@ def test_compaction_captures_a_history_segment(tmp_path):
 
 
 def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, monkeypatch):
-    monkeypatch.setattr(n.engine, "MAX_TOOL_OUTPUT_TOKENS", 10)
+    monkeypatch.setattr(engine_module, "MAX_TOOL_OUTPUT_TOKENS", 10)
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
 
     context.apply_compaction({"summary": "summary"}, [], compacted=[{"role": "user", "content": "x" * 1000}])
 
@@ -486,7 +511,7 @@ def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, m
 
 def test_compaction_history_keys_increment(tmp_path):
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
 
     context.apply_compaction({"summary": "s"}, [], compacted=[{"role": "user", "content": "first task"}])
     context.apply_compaction({"summary": "s"}, [], compacted=[{"role": "user", "content": "second task"}])
@@ -496,7 +521,7 @@ def test_compaction_history_keys_increment(tmp_path):
 
 def test_compaction_without_compacted_messages_captures_nothing(tmp_path):
     s = session(tmp_path)
-    context = n.ContextManager(s)
+    context = ContextManager(s)
 
     context.apply_compaction({"summary": "summary"}, [])
 
@@ -513,7 +538,7 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
         {"role": "assistant", "content": "old answer"},
         {"role": "user", "content": "latest request"},
     ]
-    context = n.ContextManager(s)
+    context = ContextManager(s)
     turn = [{"role": "user", "content": "current request"}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
 
     class FakeModel:
@@ -534,13 +559,13 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
     assert "step 11" in s.history[1].text
     # The turn keeps its request and recent window; the compacted prefix is replaced by the summary.
     assert turn[0]["content"] == "current request"
-    assert turn[1]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
+    assert turn[1]["content"].startswith(COMPACTION_SUMMARY_TITLE)
 
 
 def test_history_title_skips_summary_blocks(tmp_path):
-    context = n.ContextManager(session(tmp_path))
+    context = ContextManager(session(tmp_path))
     messages = [
-        {"role": "user", "content": n.COMPACTION_SUMMARY_TITLE + "\nold summary"},
+        {"role": "user", "content": COMPACTION_SUMMARY_TITLE + "\nold summary"},
         {"role": "assistant", "content": "answer"},
         {"role": "user", "content": "the real request"},
     ]
@@ -551,8 +576,8 @@ def test_history_title_skips_summary_blocks(tmp_path):
 def test_history_index_precedes_conversation_and_memory_excludes_it(tmp_path):
     s = session(tmp_path)
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
-    s.history.append(n.HistorySegment(key="seg.1", title="find the bug", text="..."))
-    context = n.ContextManager(s)
+    s.history.append(HistorySegment(key="seg.1", title="find the bug", text="..."))
+    context = ContextManager(s)
 
     messages = context.model_messages("system", [{"role": "user", "content": "current request"}])
     memory = context.memory_context()
@@ -565,12 +590,12 @@ def test_history_index_precedes_conversation_and_memory_excludes_it(tmp_path):
 
 
 def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch):
-    monkeypatch.setattr(n.engine, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    monkeypatch.setattr(engine_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
     s = session(tmp_path)
     for index in range(1, 51):
-        s.history.append(n.HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
+        s.history.append(HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
 
-    history_index = n.ContextManager(s).history_index_context()
+    history_index = ContextManager(s).history_index_context()
 
     assert "<bounded_output" in history_index
     assert "seg.1" in history_index
@@ -579,14 +604,14 @@ def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch
 
 
 def test_bounded_history_index_marker_stays_stable_when_appended(tmp_path, monkeypatch):
-    monkeypatch.setattr(n.engine, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    monkeypatch.setattr(engine_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
     s = session(tmp_path)
     for index in range(1, 51):
-        s.history.append(n.HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
-    context = n.ContextManager(s)
+        s.history.append(HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
+    context = ContextManager(s)
 
     before = context.history_index_context()
-    s.history.append(n.HistorySegment(key="seg.51", title="task 51 " + "x" * 20))
+    s.history.append(HistorySegment(key="seg.51", title="task 51 " + "x" * 20))
     after = context.history_index_context()
 
     before_head, before_marker, _ = before.split("\n", 2)
@@ -598,7 +623,7 @@ def test_bounded_history_index_marker_stays_stable_when_appended(tmp_path, monke
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "skip it", output_fn=lambda text: None)
     runner.run([call("Bash", [":"]), call("Edit", ["second.txt", [{"op": "create", "content": "second"}]])])
 
     assert s.tool_records == []
@@ -608,7 +633,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
 
     outputs = []
     bad = session(tmp_path)
-    n.ToolRunner(bad, n.ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run([call("Bash", [])])
+    ToolRunner(bad, ContextManager(bad), output_fn=lambda text: outputs.append(str(text))).run([call("Bash", [])])
     assert bad.tool_records == []
     assert len(bad.tool_errors) == 1
     assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line
@@ -616,7 +641,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
 
 def test_tool_runner_refuses_without_reason_on_n(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
     runner.run([call("Bash", [":"])])
 
@@ -625,7 +650,7 @@ def test_tool_runner_refuses_without_reason_on_n(tmp_path):
 
 def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
     s = session(tmp_path)
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "not now", output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "not now", output_fn=lambda text: None)
 
     runner.run([call("Bash", [":"])])
 
@@ -637,7 +662,7 @@ def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
 def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
     s = session(tmp_path)
     key = s.store_tool_result("Read", ["a.txt"], "result")
-    runner = n.ToolRunner(s, n.ContextManager(s), output_fn=lambda text: None)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     runner.run([call("Recall", [key])])
     assert [record.key for record in s.tool_records] == [key]
@@ -646,8 +671,8 @@ def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
 def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
-    s.skills = n.SkillLibrary({})  # no skills: assert the base frame layout
-    agent = n.Agent(s, output_fn=lambda text: None)
+    s.skills = SkillLibrary({})  # no skills: assert the base frame layout
+    agent = Agent(s, output_fn=lambda text: None)
 
     class FakeModel:
         def __init__(self):
@@ -675,9 +700,9 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert s.state.goal == ""
 
     limited = session(tmp_path)
-    limited.skills = n.SkillLibrary({})
+    limited.skills = SkillLibrary({})
     limited.settings.max_steps = 2
-    limited_agent = n.Agent(limited, output_fn=lambda text: None)
+    limited_agent = Agent(limited, output_fn=lambda text: None)
 
     class LoopingModel:
         def request(self, messages, tools=None):
@@ -692,8 +717,8 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
 
 def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
     s = session(tmp_path)
-    s.skills = n.SkillLibrary({})
-    agent = n.Agent(s, output_fn=lambda _text: None)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda _text: None)
 
     class FakeModel:
         def request(self, messages, tools=None):
@@ -721,7 +746,7 @@ def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
     assert agent.run("finish") == "done"
     assert s.messages[-1]["_responses_output"][0]["type"] == "reasoning"
     s.save_snapshot()
-    restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     restored_assistant = next(message for message in reversed(restored.messages) if message.get("role") == "assistant")
     assert restored_assistant["_responses_output"] == s.messages[-1]["_responses_output"]
 
@@ -729,8 +754,8 @@ def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
 def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
-    s.skills = n.SkillLibrary({})
-    agent = n.Agent(s, output_fn=lambda text: None)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
 
     class InterruptingModel:
         calls = 0
@@ -746,12 +771,12 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
         agent.run("read file")
 
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
-    assert s.messages[-1]["content"] == n.INTERRUPT_MARKER
+    assert s.messages[-1]["content"] == INTERRUPT_MARKER
     assert s._active_turn_messages == []
-    restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
-    messages = [message for message in restored.messages if not n.SessionSnapshotCodec.is_internal_message(message)]
+    restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    messages = [message for message in restored.messages if not SessionSnapshotCodec.is_internal_message(message)]
     assert [message["role"] for message in messages] == ["user", "assistant", "tool", "user"]
-    assert messages[-1]["content"] == n.INTERRUPT_MARKER
+    assert messages[-1]["content"] == INTERRUPT_MARKER
     assert messages[1]["tool_calls"][0]["id"] == "Read-id"
     assert messages[2]["tool_call_id"] == "Read-id"
     assert "<Read" in messages[2]["content"]
@@ -760,8 +785,8 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
 
 def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
     s = session(tmp_path)
-    s.skills = n.SkillLibrary({})
-    agent = n.Agent(s, output_fn=lambda text: None)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
 
     class InterruptingModel:
         def request(self, messages, tools=None):
@@ -775,15 +800,15 @@ def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
     # while the input history (a separate FileHistory) still recalls it for Ctrl-P.
     assert s.messages == []
     assert s._active_turn_messages == []
-    restored = n.Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
-    messages = [message for message in restored.messages if not n.SessionSnapshotCodec.is_internal_message(message)]
+    restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    messages = [message for message in restored.messages if not SessionSnapshotCodec.is_internal_message(message)]
     assert messages == []
 
 
 def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
     s = session(tmp_path)
-    s.skills = n.SkillLibrary({})
-    agent = n.Agent(s, output_fn=lambda text: None)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
 
     class Model:
         def request(self, messages, tools=None):
@@ -810,11 +835,11 @@ def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
     assert s.messages[2]["tool_call_id"] == "Read-id"
     assert "Cancelled" in s.messages[2]["content"]
-    assert s.messages[3]["content"] == n.INTERRUPT_MARKER
+    assert s.messages[3]["content"] == INTERRUPT_MARKER
 
 
 def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
-    agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
+    agent = Agent(session(tmp_path), output_fn=lambda text: None)
 
     class Model:
         calls = 0
@@ -844,14 +869,14 @@ def test_agent_cancel_stops_after_active_tool_batch(tmp_path):
 
 
 def test_agent_rejects_empty_final_response(tmp_path):
-    agent = n.Agent(session(tmp_path), output_fn=lambda text: None)
+    agent = Agent(session(tmp_path), output_fn=lambda text: None)
 
     class EmptyModel:
         def request(self, messages, tools=None):
             return {"role": "assistant", "content": ""}, [], ""
 
     agent.model = EmptyModel()
-    with pytest.raises(n.ModelError, match="empty final response"):
+    with pytest.raises(ModelError, match="empty final response"):
         agent.run("answer me")
 
 
@@ -875,7 +900,7 @@ def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
         def close(self):
             closed.set()
 
-    model = n.ModelClient(s)
+    model = ModelClient(s)
     model.client = Client
     errors = []
 
@@ -899,7 +924,7 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     s = session(tmp_path)
     queue(s, "extra instruction")
     output = []
-    agent = n.Agent(s, output_fn=output.append)
+    agent = Agent(s, output_fn=output.append)
 
     class FakeModel:
         def __init__(self):
@@ -919,12 +944,12 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     second = "\n\n".join(message.get("content") or "" for message in agent.model.messages[1])
     first_followup = next(message["content"] for message in agent.model.messages[0] if "extra instruction" in (message.get("content") or ""))
     second_followup = next(message["content"] for message in agent.model.messages[1] if "second instruction" in (message.get("content") or ""))
-    assert "[Live follow-up received while you were working]" in n.LIVE_FOLLOWUP_PREFIX
-    assert "[Live follow-up received while you were working]" in n.SYSTEM_PROMPT
-    assert "must include a brief visible text response" in n.LIVE_FOLLOWUP_PREFIX
-    assert "never respond with tool calls only" in n.SYSTEM_PROMPT
-    assert first_followup == n.LIVE_FOLLOWUP_PREFIX + "extra instruction"
-    assert second_followup == n.LIVE_FOLLOWUP_PREFIX + "second instruction"
+    assert "[Live follow-up received while you were working]" in LIVE_FOLLOWUP_PREFIX
+    assert "[Live follow-up received while you were working]" in SYSTEM_PROMPT
+    assert "must include a brief visible text response" in LIVE_FOLLOWUP_PREFIX
+    assert "never respond with tool calls only" in SYSTEM_PROMPT
+    assert first_followup == LIVE_FOLLOWUP_PREFIX + "extra instruction"
+    assert second_followup == LIVE_FOLLOWUP_PREFIX + "second instruction"
     assert "extra instruction" in first
     assert "extra instruction" in second
     assert "checking" in second
@@ -944,7 +969,7 @@ def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_pa
     s = session(tmp_path)
     queue(s, "first follow-up", "second follow-up")
     output = []
-    agent = n.Agent(s, output_fn=output.append)
+    agent = Agent(s, output_fn=output.append)
 
     class FakeModel:
         def __init__(self):
@@ -983,7 +1008,7 @@ def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_pa
 
 def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
     s = session(tmp_path)
-    agent = n.Agent(s, output_fn=lambda text: None)
+    agent = Agent(s, output_fn=lambda text: None)
     tools = [{"type": "function", "function": {"name": "Test", "parameters": {}}}]
     resolved = []
 
@@ -998,7 +1023,7 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
             self.received_tools = request_tools
             return {"role": "assistant", "content": "done"}, [], "done"
 
-    monkeypatch.setattr(n.Tool, "resolved_schemas", staticmethod(resolve))
+    monkeypatch.setattr(Tool, "resolved_schemas", staticmethod(resolve))
     agent.model = FakeModel()
 
     assert agent.run("hello") == "done"
@@ -1009,7 +1034,7 @@ def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
 def test_ps_command_uses_markdown_renderer(tmp_path):
     s = session(tmp_path)
     s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7, update_status=lambda: None)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     rendered = []
     plain = []
     loop.ui.emit_answer = rendered.append
@@ -1024,36 +1049,36 @@ def test_ps_command_uses_markdown_renderer(tmp_path):
 
 
 def test_tui_completion_applies_single_match():
-    class OneCompletion(n.Completer):
+    class OneCompletion(Completer):
         def get_completions(self, document, _complete_event):
-            yield n.Completion("hello", start_position=-len(document.text))
+            yield Completion("hello", start_position=-len(document.text))
 
-    buffer = n.Buffer(document=n.Document("he"), completer=OneCompletion())
-    n.TuiApp.complete_input(buffer)
+    buffer = Buffer(document=Document("he"), completer=OneCompletion())
+    TuiApp.complete_input(buffer)
     assert buffer.text == "hello"
 
 
 def test_tui_completion_starts_and_cycles_multiple_matches():
-    class MultipleCompletions(n.Completer):
+    class MultipleCompletions(Completer):
         def get_completions(self, document, _complete_event):
-            yield n.Completion("alpha", start_position=-len(document.text))
-            yield n.Completion("alpine", start_position=-len(document.text))
+            yield Completion("alpha", start_position=-len(document.text))
+            yield Completion("alpine", start_position=-len(document.text))
 
     completer = MultipleCompletions()
-    buffer = n.Buffer(document=n.Document("al"), completer=completer)
+    buffer = Buffer(document=Document("al"), completer=completer)
     started = []
     buffer.start_completion = lambda **kwargs: started.append(kwargs)
 
-    n.TuiApp.complete_input(buffer)
+    TuiApp.complete_input(buffer)
     assert started == [{"select_first": False}]
 
-    completions = list(completer.get_completions(buffer.document, n.CompleteEvent()))
+    completions = list(completer.get_completions(buffer.document, CompleteEvent()))
     buffer._set_completions(completions)
-    n.TuiApp.complete_input(buffer)
+    TuiApp.complete_input(buffer)
     assert buffer.text == "alpha"
-    n.TuiApp.complete_input(buffer, reverse=True)
+    TuiApp.complete_input(buffer, reverse=True)
     assert buffer.text == "al"
-    n.TuiApp.complete_input(buffer, reverse=True)
+    TuiApp.complete_input(buffer, reverse=True)
     assert buffer.text == "alpine"
 
 
@@ -1084,7 +1109,7 @@ def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
     s = session(tmp_path)
     queue(s, "first", "second")
     s.claim_user_inputs()
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     retried = []
 
     text = loop.recall_pending_input(lambda: retried.append(True))
@@ -1098,12 +1123,12 @@ def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
 def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
     s = session(tmp_path)
     queue(s, "first", "delete me")
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
     assert loop.recall_pending_input(lambda: None) == "delete me"
 
     assert queued_texts(s) == ["first"]
-    restored = n.Session.load_snapshot(s.uid, config=s.config)
+    restored = Session.load_snapshot(s.uid, config=s.config)
     assert queued_texts(restored) == ["first"]
 
 
@@ -1116,13 +1141,13 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
         def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
-    agent = n.Agent(s, output_fn=lambda text: None)
+    agent = Agent(s, output_fn=lambda text: None)
     agent.model = FakeModel()
 
     def fake_read(prompt="", **kw):
         raise EOFError()
 
-    loop = n.CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
 
     loop.run()
 
@@ -1132,7 +1157,7 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
 
 def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     queue(s, "run tests", "then push")
 
     text = "".join(t for _, t in loop.queue_region_fragments())
@@ -1143,7 +1168,7 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     with pytest.MonkeyPatch.context() as mp:
         seen_head = False
         for tick in range(200):
-            mp.setattr(n.time, "monotonic", lambda tick=tick: tick * 0.1)
+            mp.setattr(time, "monotonic", lambda tick=tick: tick * 0.1)
             fragments = loop.queue_divider_fragments()
             seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
             assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
@@ -1157,11 +1182,11 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
 
 def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
     s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     queue(s, "follow up")
     loop.live_preview.active = True
     loop.live_preview.text = "live output"
-    loop.live_preview.started_at = n.time.monotonic()
+    loop.live_preview.started_at = time.monotonic()
 
     text = "".join(fragment for _, fragment in loop.tui_activity_fragments())
 
@@ -1171,12 +1196,12 @@ def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
 
 def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     s = session(tmp_path)
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda _text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda _text: None)
     # The agent's flush hook is wired to move queued messages up into the scrollback log.
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
 
     echoed = []
-    monkeypatch.setattr(n.loop, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _style, text in value)))
+    monkeypatch.setattr(loop_module, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _style, text in value)))
 
     loop.flush_queued_to_log(["do a thing", "then verify", "  "])
 
@@ -1187,7 +1212,7 @@ def test_queue_command_runs_readonly(tmp_path):
     """A read-only slash command in the queue runs immediately and is not queued for the LLM."""
     s = session(tmp_path)
     out = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
     loop.run_queued_command("/status")
 
@@ -1199,7 +1224,7 @@ def test_queue_command_runs_yolo_toggle(tmp_path):
     """/yolo flips the runtime flag from the queue while the agent works."""
     s = session(tmp_path)
     out = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
     before = s.settings.yolo
     loop.run_queued_command("/yolo")
@@ -1212,7 +1237,7 @@ def test_queue_command_rejects_mutating(tmp_path):
     """A state-mutating slash command is refused while the agent works, not queued or run."""
     s = session(tmp_path)
     out = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
     loop.run_queued_command("/model")
 
@@ -1224,7 +1249,7 @@ def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
     """Read-only /mcp is allowed; mutating subcommands like connect are refused."""
     s = session(tmp_path)
     out = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
     loop.run_queued_command("/mcp connect test")
 
@@ -1234,8 +1259,8 @@ def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
 def test_tool_input_without_tui_uses_injected_input(tmp_path):
     s = session(tmp_path)
     calls = []
-    loop = n.CommandLoop(
-        n.Agent(s, output_fn=lambda text: None),
+    loop = CommandLoop(
+        Agent(s, output_fn=lambda text: None),
         input_fn=lambda prompt: calls.append(prompt) or "y",
         output_fn=lambda text: None,
     )
@@ -1248,8 +1273,8 @@ def test_tool_input_without_tui_uses_injected_input(tmp_path):
 def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
     s = session(tmp_path)
     outputs = []
-    monkeypatch.setattr(n.CodeIndex, "update", lambda self, paths: "")
-    runner = n.ToolRunner(s, n.ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
     content = "".join(f"line {index}\n" for index in range(50))
 
     runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
@@ -1264,25 +1289,25 @@ def test_exit_command_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     output = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
     handled, exit_now = loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
     assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
-    assert os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+    assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
 def test_empty_exit_does_not_print_resume_command(tmp_path):
     s = session(tmp_path)
     output = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
     handled, exit_now = loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
     assert output == []
-    assert not os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+    assert not os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
 def test_resumed_session_does_not_render_tool_results(tmp_path):
@@ -1301,9 +1326,9 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
             {"role": "system", "content": f"[Session resumed: uid={s.uid}]"},
         ]
     )
-    s.tool_records.append(n.ToolResultRecord("tr.1", "Read", [{"path": "a.py", "ranges": [[0, 1]]}], "raw tool result", "a.py 0:1"))
+    s.tool_records.append(ToolResultRecord("tr.1", "Read", [{"path": "a.py", "ranges": [[0, 1]]}], "raw tool result", "a.py 0:1"))
     output = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
     loop.render_resumed_session()
 
@@ -1327,9 +1352,9 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
             {"role": "assistant", "content": "compacted answer\nfinal detail"},
         ]
     )
-    s.tool_records.append(n.ToolResultRecord("tr.1", "Bash", ["wc -l minacode.py"], "999 minacode.py", "wc -l minacode.py"))
+    s.tool_records.append(ToolResultRecord("tr.1", "Bash", ["wc -l minacode.py"], "999 minacode.py", "wc -l minacode.py"))
     output = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
     loop.render_resumed_session()
 
@@ -1353,7 +1378,7 @@ def test_resumed_session_separates_turn_boxes(tmp_path):
         ]
     )
     output = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), output_fn=output.append)
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
 
     loop.render_resumed_session()
 
@@ -1369,7 +1394,7 @@ def test_turn_box_groups_followup_users_until_final_assistant():
         {"role": "user", "content": "next"},
     ]
 
-    boxes = n.TurnBox.group(messages)
+    boxes = TurnBox.group(messages)
 
     assert [len(box.messages) for box in boxes] == [4, 1]
 
@@ -1383,7 +1408,7 @@ def test_turn_box_groups_tool_results_with_calling_assistant():
         {"role": "tool", "tool_call_id": "tr.1", "content": "# file content"},
         {"role": "assistant", "content": "done"},
     ]
-    boxes = n.TurnBox.group(messages)
+    boxes = TurnBox.group(messages)
     assert len(boxes) == 1
     assert len(boxes[0].messages) == 4
     roles = [m["role"] for m in boxes[0].messages]
@@ -1394,17 +1419,17 @@ def test_eof_exit_prints_resume_command(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     output = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=output.append), input_fn=lambda prompt="": (_ for _ in ()).throw(EOFError()), output_fn=output.append)
+    loop = CommandLoop(Agent(s, output_fn=output.append), input_fn=lambda prompt="": (_ for _ in ()).throw(EOFError()), output_fn=output.append)
 
     assert loop.run() == 0
 
     assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
-    assert os.path.exists(n.SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+    assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
 def test_select_choice_noninteractive_does_not_prompt(tmp_path):
     output = []
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "1", output_fn=output.append)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "1", output_fn=output.append)
 
     assert loop.select_choice("Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
     assert output == []
@@ -1412,7 +1437,7 @@ def test_select_choice_noninteractive_does_not_prompt(tmp_path):
 
 def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     output = []
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
     loop.interactive_input = True
     rendered = []
 
@@ -1441,12 +1466,12 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
 
 def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     output = []
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
     loop.interactive_input = True
     emitted = []
     prompts = []
     loop.emit = emitted.append
-    loop.choice_application = lambda *args, **kwargs: n.SELECTION_FREE_TEXT
+    loop.choice_application = lambda *args, **kwargs: SELECTION_FREE_TEXT
 
     def fake_read_input(prompt_text="> ", **kwargs):
         prompts.append(prompt_text)
@@ -1454,41 +1479,41 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
 
     loop.read_input = fake_read_input
 
-    assert loop.question_application(n.AskSpec("Pick?", choices=["A"], previews=["preview"])) == "typed answer"
+    assert loop.question_application(AskSpec("Pick?", choices=["A"], previews=["preview"])) == "typed answer"
     assert prompts == ["> "]
     assert all(not prompt.startswith("\n") for prompt in prompts)
     assert emitted[-1] == ""
 
 
 def test_ask_without_choices_uses_shared_tui_input(tmp_path):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
     prompts = []
     loop.tui = SimpleNamespace(request_input=lambda prompt: prompts.append(prompt) or "typed answer")
 
-    assert loop.question_application(n.AskSpec("Explain the issue")) == "typed answer"
+    assert loop.question_application(AskSpec("Explain the issue")) == "typed answer"
     assert prompts == ["\nExplain the issue"]
 
 
 def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     emitted = []
     loop.emit = emitted.append
     loop.question_application = lambda spec, position="": "B"
 
-    assert loop.question_interaction(n.AskSpec("Which?", choices=["A", "B"])) == "B"
+    assert loop.question_interaction(AskSpec("Which?", choices=["A", "B"])) == "B"
     assert emitted == []
 
 
 def test_elapsed_since_uses_whole_seconds(monkeypatch):
-    monkeypatch.setattr(n.time, "monotonic", lambda: 104.9)
-    assert n.Text.elapsed_since(100.0) == "4s"
+    monkeypatch.setattr(time, "monotonic", lambda: 104.9)
+    assert Text.elapsed_since(100.0) == "4s"
 
-    monkeypatch.setattr(n.time, "monotonic", lambda: 162.9)
-    assert n.Text.elapsed_since(100.0) == "1m02s"
+    monkeypatch.setattr(time, "monotonic", lambda: 162.9)
+    assert Text.elapsed_since(100.0) == "1m02s"
 
 
 def test_bash_live_start_pauses_standalone_status(tmp_path):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     loop.ui.color = True
     loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
     loop.status_bar.thread = object()
@@ -1508,7 +1533,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     output = []
-    agent = n.Agent(s, output_fn=output.append)
+    agent = Agent(s, output_fn=output.append)
 
     class TalkingModel:
         def __init__(self):
@@ -1523,7 +1548,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     agent.model = TalkingModel()
     assert agent.run("read file") == "done"
     assert output[0] == "I'll inspect that first."
-    assert any(isinstance(line, n.LogBlock) and str(line).startswith("  Read  ") for line in output)
+    assert any(isinstance(line, LogBlock) and str(line).startswith("  Read  ") for line in output)
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]
     assert s.messages[0]["content"] == "read file"
     assert s.messages[1]["content"] == "I'll inspect that first."
@@ -1536,7 +1561,7 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
 
 def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
     output = []
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
 
     loop.emit_agent_output("First line.\nSecond line.")
     loop.ui.emit_answer("Done.\nFinal detail.")
@@ -1549,16 +1574,16 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     s.settings.max_context_tokens = 1
     s.state.summary = "existing"
     s.messages = [{"role": "user", "content": str(index)} for index in range(10)]
-    context = n.ContextManager(s)
+    context = ContextManager(s)
 
     class FailingModel:
         def compact(self, text):
-            raise n.ModelError("failed")
+            raise ModelError("failed")
 
     context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
     assert s.state.summary != "existing"
     assert len(s.messages) == 2
-    assert s.messages[0]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
+    assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)
     assert "deterministically trimmed" in s.messages[0]["content"]
     assert s.messages[1]["content"] == "9"
     # Even though summarization failed, the evicted conversation is still captured as a recallable
@@ -1577,7 +1602,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
         {"role": "tool", "content": "tool kept"},
     ]
     s.state.context_percent = 80
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
     transitions = []
     loop.tui = SimpleNamespace(set_running=transitions.append, set_dispatching=lambda: transitions.append("dispatch"))
 
@@ -1590,7 +1615,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     result = loop.compact("")
 
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
-    assert s.messages[0]["content"].startswith(n.COMPACTION_SUMMARY_TITLE)
+    assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)
     assert s.messages[1]["content"] == "latest"
     assert s.messages[2]["content"] == "tool kept"
     assert s.state.summary == "summary"
@@ -1601,7 +1626,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
 
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     s = session(tmp_path)
-    agent = n.Agent(s, output_fn=lambda text: None)
+    agent = Agent(s, output_fn=lambda text: None)
 
     class FeedbackModel:
         def __init__(self):
@@ -1624,22 +1649,22 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
 
 
 def test_provider_compatibility_and_prompt_cache_key(tmp_path):
-    opencode_claude = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="claude-sonnet", api="auto")
+    opencode_claude = ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="claude-sonnet", api="auto")
     assert opencode_claude.resolve().api == "anthropic"
 
-    opencode_qwen = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="qwen3.7-max", api="auto")
+    opencode_qwen = ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="qwen3.7-max", api="auto")
     assert opencode_qwen.resolve().api == "anthropic"
 
-    opencode_deepseek = n.ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="deepseek-v4-flash", api="auto")
+    opencode_deepseek = ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="deepseek-v4-flash", api="auto")
     resolved = opencode_deepseek.resolve()
     assert resolved.api == "chat"
     assert resolved.chat_reasoning == "off"
 
-    provider = n.ProviderConfig(url="https://api.openai.com/v1", key="k", model="gpt-5-mini", prompt_cache_key="auto")
-    s = n.Session(cwd=str(tmp_path), config=n.Config(active_provider="p", providers={"p": provider}))
-    client = n.ModelClient(s)
-    first = client.prompt_cache_key(provider, [n.BashTool.schema(), n.ReadTool.schema()])
-    second = client.prompt_cache_key(provider, [n.ReadTool.schema(), n.BashTool.schema()])
+    provider = ProviderConfig(url="https://api.openai.com/v1", key="k", model="gpt-5-mini", prompt_cache_key="auto")
+    s = Session(cwd=str(tmp_path), config=Config(active_provider="p", providers={"p": provider}))
+    client = ModelClient(s)
+    first = client.prompt_cache_key(provider, [BashTool.schema(), ReadTool.schema()])
+    second = client.prompt_cache_key(provider, [ReadTool.schema(), BashTool.schema()])
     assert first == second
     assert first.startswith("minacode-")
 
@@ -1650,9 +1675,9 @@ def test_provider_compatibility_and_prompt_cache_key(tmp_path):
 
 
 def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
-    provider = n.ProviderConfig(url="https://api.anthropic.com/v1/messages", key="k", model="claude-sonnet", api="anthropic", reasoning="off", temperature=0.2)
-    s = n.Session(cwd=str(tmp_path), config=n.Config(active_provider="p", providers={"p": provider}))
-    client = n.ModelClient(s)
+    provider = ProviderConfig(url="https://api.anthropic.com/v1/messages", key="k", model="claude-sonnet", api="anthropic", reasoning="off", temperature=0.2)
+    s = Session(cwd=str(tmp_path), config=Config(active_provider="p", providers={"p": provider}))
+    client = ModelClient(s)
     arguments = json.dumps({"files": [{"path": "a.txt", "ranges": [[0, 1]]}]})
     messages = [
         {"role": "system", "content": "system"},
@@ -1662,11 +1687,11 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
         {"role": "tool", "tool_call_id": "tc.1", "content": "tool output"},
     ]
 
-    params = client.anthropic_params(messages, [n.ReadTool.schema()])
+    params = client.anthropic_params(messages, [ReadTool.schema()])
     # system is a cache_control-marked block so the tools+system prefix is cached across turns.
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert params["temperature"] == 0.2
-    assert params["max_tokens"] == n.DEFAULT_OUTPUT_RESERVE_TOKENS
+    assert params["max_tokens"] == DEFAULT_OUTPUT_RESERVE_TOKENS
     # An unversioned gateway alias remains generic rather than guessing a thinking generation.
     assert "thinking" not in params
     assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}
@@ -1692,14 +1717,14 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assistant, calls, text = client.anthropic_result(result)
     assert text == "answer"
     assert assistant["tool_calls"][0]["function"]["name"] == "Bash"
-    assert calls == [n.ToolCall(id="tc.2", name="Bash", args=["pwd"])]
+    assert calls == [ToolCall(id="tc.2", name="Bash", args=["pwd"])]
 
 
 def test_malformed_tool_args_defer_to_execution_chat(tmp_path):
     """A live chat tool call whose args fail payload validation (Bash with empty command) must not
     raise out of parsing; the error is deferred onto the call so the turn is not aborted."""
-    s = n.Session(cwd=str(tmp_path))
-    client = n.ModelClient(s)
+    s = Session(cwd=str(tmp_path))
+    client = ModelClient(s)
     raw = SimpleNamespace(id="x1", function=SimpleNamespace(name="Bash", arguments='{"command": ""}'))
     message = SimpleNamespace(tool_calls=[raw])
     calls = client.tool_calls(message)  # must not raise ToolError
@@ -1710,8 +1735,8 @@ def test_malformed_tool_args_defer_to_execution_chat(tmp_path):
 
 def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
     """Same deferral on the anthropic path: a tool_use with invalid input is captured, not raised."""
-    s = n.Session(cwd=str(tmp_path))
-    client = n.ModelClient(s)
+    s = Session(cwd=str(tmp_path))
+    client = ModelClient(s)
     result = SimpleNamespace(
         content=[SimpleNamespace(type="tool_use", id="a1", name="Bash", input={"command": ""})],
         usage={},
@@ -1724,10 +1749,10 @@ def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
 def test_deferred_tool_error_surfaces_as_tool_result(tmp_path):
     """A deferred-error call runs through ToolRunner and is reported back to the model as a failed
     tool result (so it can self-correct), rather than escaping to abort the turn."""
-    s = n.Session(cwd=str(tmp_path))
-    ctx = n.ContextManager(s)
-    runner = n.ToolRunner(s, ctx, input_fn=lambda *a: "", output_fn=lambda *a: None)
-    call = n.ToolCall(id="x1", name="Bash", args=[], error="Bash command must be non-empty")
+    s = Session(cwd=str(tmp_path))
+    ctx = ContextManager(s)
+    runner = ToolRunner(s, ctx, input_fn=lambda *a: "", output_fn=lambda *a: None)
+    call = ToolCall(id="x1", name="Bash", args=[], error="Bash command must be non-empty")
     results = runner.run([call])
     assert len(results) == 1
     assert results[0]["role"] == "tool"
@@ -1735,15 +1760,15 @@ def test_deferred_tool_error_surfaces_as_tool_result(tmp_path):
 
 
 def _runner(tmp_path, input_reply=""):
-    s = n.Session(cwd=str(tmp_path))
-    return s, n.ToolRunner(s, n.ContextManager(s), input_fn=lambda *a: input_reply, output_fn=lambda *a: None)
+    s = Session(cwd=str(tmp_path))
+    return s, ToolRunner(s, ContextManager(s), input_fn=lambda *a: input_reply, output_fn=lambda *a: None)
 
 
 def test_parallel_safe_classification(tmp_path):
     _, runner = _runner(tmp_path)
 
     def safe(name, args):
-        return runner.parallel_safe(n.ToolCall(id="x", name=name, args=args))
+        return runner.parallel_safe(ToolCall(id="x", name=name, args=args))
 
     assert safe("Read", [{"path": "f.txt"}])
     assert safe("Search", [{"pattern": "x"}])
@@ -1760,12 +1785,12 @@ def test_parallel_readonly_preserves_request_order(tmp_path):
         (tmp_path / f"f{i}.txt").write_text(f"content-{i}\n")
     s, runner = _runner(tmp_path)
     s.settings.max_parallel_tools = 4
-    calls = [n.ToolCall(id=f"r{i}", name="Read", args=[{"path": f"f{i}.txt", "ranges": [[0, 0]]}]) for i in range(5)]
+    calls = [ToolCall(id=f"r{i}", name="Read", args=[{"path": f"f{i}.txt", "ranges": [[0, 0]]}]) for i in range(5)]
 
     # Force overlapping execution and record peak concurrency.
     active = {"cur": 0, "max": 0}
     guard = threading.Lock()
-    original = n.ReadTool.call
+    original = ReadTool.call
 
     def traced(self):
         with guard:
@@ -1778,11 +1803,11 @@ def test_parallel_readonly_preserves_request_order(tmp_path):
             with guard:
                 active["cur"] -= 1
 
-    n.ReadTool.call = traced
+    ReadTool.call = traced
     try:
         messages = runner.run(calls)
     finally:
-        n.ReadTool.call = original
+        ReadTool.call = original
 
     assert [m["tool_call_id"] for m in messages] == [f"r{i}" for i in range(5)]
     assert active["max"] >= 2  # actually ran concurrently
@@ -1793,11 +1818,11 @@ def test_parallel_disabled_runs_serial(tmp_path):
         (tmp_path / f"f{i}.txt").write_text(f"c{i}\n")
     s, runner = _runner(tmp_path)
     s.settings.max_parallel_tools = 1  # disabled -> identical to legacy serial behavior
-    calls = [n.ToolCall(id=f"r{i}", name="Read", args=[{"path": f"f{i}.txt", "ranges": [[0, 0]]}]) for i in range(3)]
+    calls = [ToolCall(id=f"r{i}", name="Read", args=[{"path": f"f{i}.txt", "ranges": [[0, 0]]}]) for i in range(3)]
 
     active = {"cur": 0, "max": 0}
     guard = threading.Lock()
-    original = n.ReadTool.call
+    original = ReadTool.call
 
     def traced(self):
         with guard:
@@ -1810,11 +1835,11 @@ def test_parallel_disabled_runs_serial(tmp_path):
             with guard:
                 active["cur"] -= 1
 
-    n.ReadTool.call = traced
+    ReadTool.call = traced
     try:
         messages = runner.run(calls)
     finally:
-        n.ReadTool.call = original
+        ReadTool.call = original
 
     assert [m["tool_call_id"] for m in messages] == ["r0", "r1", "r2"]
     assert active["max"] == 1  # never overlapped
@@ -1826,10 +1851,10 @@ def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
     s, runner = _runner(tmp_path, input_reply="no")  # decline confirmation
     s.settings.max_parallel_tools = 4
     calls = [
-        n.ToolCall(id="r0", name="Read", args=[{"path": "f0.txt", "ranges": [[0, 0]]}]),
-        n.ToolCall(id="r1", name="Read", args=[{"path": "f1.txt", "ranges": [[0, 0]]}]),
-        n.ToolCall(id="b0", name="Bash", args=[":"]),  # confirmation required, refused
-        n.ToolCall(id="r2", name="Read", args=[{"path": "f2.txt", "ranges": [[0, 0]]}]),  # skipped
+        ToolCall(id="r0", name="Read", args=[{"path": "f0.txt", "ranges": [[0, 0]]}]),
+        ToolCall(id="r1", name="Read", args=[{"path": "f1.txt", "ranges": [[0, 0]]}]),
+        ToolCall(id="b0", name="Bash", args=[":"]),  # confirmation required, refused
+        ToolCall(id="r2", name="Read", args=[{"path": "f2.txt", "ranges": [[0, 0]]}]),  # skipped
     ]
     messages = runner.run(calls)
     by_id = {m["tool_call_id"]: m["content"] for m in messages}
@@ -1868,7 +1893,7 @@ def test_skill_project_overrides_user(tmp_path, monkeypatch):
     user_skill.mkdir(parents=True)
     (user_skill / "SKILL.md").write_text("---\nname: shared\ndescription: user version\n---\nuser body\n", encoding="utf-8")
     _write_skill(tmp_path, "shared", "project version", "project body")
-    monkeypatch.setattr(n.os.path, "expanduser", lambda path: path.replace("~", str(user_home)))
+    monkeypatch.setattr(os.path, "expanduser", lambda path: path.replace("~", str(user_home)))
 
     s = session(tmp_path)
     skill = s.skills.get("shared")
@@ -1880,7 +1905,7 @@ def test_skill_tool_expands_skill_dir(tmp_path):
     folder = _write_skill(tmp_path, "build", "build it", 'Run python "{skill_dir}/scripts/go.py".', scripts={"go.py": "print(1)"})
     s = session(tmp_path)
 
-    output = n.SkillTool(s, ["build"]).call()
+    output = SkillTool(s, ["build"]).call()
     assert output.startswith('<Skill name="build">')
     assert f'python "{folder}/scripts/go.py"' in output
     assert "{skill_dir}" not in output
@@ -1889,8 +1914,8 @@ def test_skill_tool_expands_skill_dir(tmp_path):
 def test_skill_tool_unknown_lists_available(tmp_path):
     _write_skill(tmp_path, "known", "known skill", "body")
     s = session(tmp_path)
-    with pytest.raises(n.ToolError) as excinfo:
-        n.SkillTool(s, ["nope"]).call()
+    with pytest.raises(ToolError) as excinfo:
+        SkillTool(s, ["nope"]).call()
     assert "unknown skill 'nope'" in str(excinfo.value)
     assert "known" in str(excinfo.value)
 
@@ -1910,27 +1935,27 @@ def test_skill_mentions_inject_body(tmp_path):
 
 def test_skill_tool_absent_only_when_no_skills(tmp_path):
     _write_skill(tmp_path, "available", "available skill", "body")
-    withskill = n.ContextManager(session(tmp_path))
+    withskill = ContextManager(session(tmp_path))
     assert "--- SKILLS ---" in withskill.skills_context()
-    assert any(t["function"]["name"] == "Skill" for t in n.Tool.resolved_schemas(withskill.session))
+    assert any(t["function"]["name"] == "Skill" for t in Tool.resolved_schemas(withskill.session))
     messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
     assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
 
     # When truly no skills exist, the tool and section drop out and the prefix stays clean.
-    bare = n.ContextManager(session(tmp_path))
-    bare.session.skills = n.SkillLibrary({})
+    bare = ContextManager(session(tmp_path))
+    bare.session.skills = SkillLibrary({})
     assert bare.skills_context() == ""
-    tools = n.Tool.resolved_schemas(bare.session)
+    tools = Tool.resolved_schemas(bare.session)
     assert not any(t["function"]["name"] == "Skill" for t in tools)
-    assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(n.SYSTEM_PROMPT))
+    assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(SYSTEM_PROMPT))
 
 
 def test_skills_command_lists_installed(tmp_path):
-    base = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    base = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
     assert "No skills installed" in base.skills_command("")
 
     _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
     output = loop.skills_command("")
     assert "| skill | source | description |" in output
     assert "| `release-notes` | project | Draft a CHANGELOG entry. |" in output
@@ -1939,10 +1964,10 @@ def test_skills_command_lists_installed(tmp_path):
 def test_skill_loads_dedup_on_repeat(tmp_path):
     _write_skill(tmp_path, "guide", "a guide", "FULL GUIDE INSTRUCTIONS")
     s = session(tmp_path)
-    body = n.SkillTool(s, ["guide"]).call()
+    body = SkillTool(s, ["guide"]).call()
     messages = [{"role": "tool", "content": "tr.1 " + body}, {"role": "tool", "content": "tr.7 " + body}]
 
-    deduped = n.ContextManager(s).dedup_skill_loads(messages)
+    deduped = ContextManager(s).dedup_skill_loads(messages)
     assert "FULL GUIDE INSTRUCTIONS" in deduped[0]["content"]  # first copy kept
     assert "FULL GUIDE INSTRUCTIONS" not in deduped[1]["content"]  # repeat collapsed
     assert "repeat load of skill guide" in deduped[1]["content"]
@@ -1959,7 +1984,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     }
     s.mcp.tools["connected"] = []
     s.mcp.resources["connected"] = []
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
 
     count = len(s.skills.skills)
     assert count == 2
@@ -1969,7 +1994,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in status
     assert "| cache | (no requests yet) |" in status
     assert "| status | value |" in status
-    bar_text = " | ".join(text for text, _ in n.StatusBar(s).entries(show_elapsed=False))
+    bar_text = " | ".join(text for text, _ in StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
 
@@ -1977,13 +2002,13 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 100_000
     s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
-    context = n.ContextManager(s)
-    active_messages = context.model_messages(n.SYSTEM_PROMPT, s._active_turn_messages)
-    tools = n.Tool.resolved_schemas(s)
+    context = ContextManager(s)
+    active_messages = context.model_messages(SYSTEM_PROMPT, s._active_turn_messages)
+    tools = Tool.resolved_schemas(s)
     active_percent = context.update_percent(active_messages, tools)
-    persisted_percent = context.request_tokens(context.model_messages(n.SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
+    persisted_percent = context.request_tokens(context.model_messages(SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
     assert active_percent > persisted_percent
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
     status = loop.status("")
 
@@ -1998,7 +2023,7 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
     s.usage.last_prompt_tokens = 76_100
     s.usage.cached_prompt_tokens = 83_400
     s.usage.prompt_tokens = 100_000
-    loop = n.CommandLoop(n.Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
     cache_row = next(line for line in loop.status("").splitlines() if line.startswith("| cache |"))
 
@@ -2007,7 +2032,7 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
 
 
 def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
-    loop = n.CommandLoop(n.Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     plain = []
     rich = []
     loop.emit = plain.append
@@ -2023,13 +2048,13 @@ def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
 def test_session_from_config_file_theme_param(tmp_path):
     cfg = tmp_path / "minacode.toml"
     cfg.write_text('[runtime]\ntheme = "light"\n')
-    s = n.Session.from_config_file(path=str(cfg), theme="dark")
+    s = Session.from_config_file(path=str(cfg), theme="dark")
     assert s.settings.theme == "dark"
 
-    s2 = n.Session.from_config_file(path=str(cfg))
+    s2 = Session.from_config_file(path=str(cfg))
     assert s2.settings.theme == "light"
 
-    s3 = n.Session.from_config_file(path=str(cfg), theme="")
+    s3 = Session.from_config_file(path=str(cfg), theme="")
     assert s3.settings.theme == "light"
 
 
@@ -2039,7 +2064,7 @@ def test_memory_context_includes_tool_errors_when_present(tmp_path):
     s.state.check = "all good"
     s.record_tool_error("tr.1", "Bash", ["bad"], "failed")
 
-    ctx = n.ContextManager(s).memory_context()
+    ctx = ContextManager(s).memory_context()
 
     assert "Goal:" in ctx
     assert "test goal" in ctx
