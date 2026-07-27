@@ -28,6 +28,10 @@ msgid "Unreleased"
 msgstr ""
 
 #: ../../../CHANGELOG.md:8
+msgid "Keep agent action within the phase the user actually requested: preparation, investigation, and plans no longer imply permission to implement, and live follow-ups can pause or narrow work immediately. Calibrate reasoning depth to task risk so routine, reversible work proceeds once the next step is clear while ambiguous or high-risk decisions retain deeper analysis."
+msgstr "将 agent 的行动限制在用户实际要求的阶段内：准备、调查和计划不再隐含实施权限，实时追加指令可以立即暂停或收窄工作。根据任务风险校准推理深度，使常规、可逆的工作在下一步明确后立即推进，同时为模糊或高风险决策保留更深入的分析。"
+
+#: ../../../CHANGELOG.md:8
 msgid "Move follow-ups already sent in the active request above the working divider while retaining them internally for safe retry, keep only unsent input in the queue region, and let recalled-input retries return to the normal `retrying`, `thinking`, and `responding` states instead of leaving a stale `revising queued input` label."
 msgstr "将已随当前请求发送的追加指令移到 working 分隔线上方，同时在内部保留以供安全重试；排队区只显示尚未发送的输入；召回输入触发重试后恢复正常的 `retrying`、`thinking` 和 `responding` 状态，不再残留 `revising queued input` 标签。"
 

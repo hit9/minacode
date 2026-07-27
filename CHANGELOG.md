@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+### Changed
+- Keep agent action within the phase the user actually requested: preparation, investigation, and plans no longer imply permission to implement, and live follow-ups can pause or narrow work immediately. Calibrate reasoning depth to task risk so routine, reversible work proceeds once the next step is clear while ambiguous or high-risk decisions retain deeper analysis.
+
 ### Fixed
 - Move follow-ups already sent in the active request above the working divider while retaining them internally for safe retry, keep only unsent input in the queue region, and let recalled-input retries return to the normal `retrying`, `thinking`, and `responding` states instead of leaving a stale `revising queued input` label.
 
