@@ -739,24 +739,51 @@ def test_tool_runner_batch_edit_rejects_patch_missing_file_without_create(tmp_pa
 
 
 def test_validate_edit_target_branches(tmp_path):
-    s = session(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    s = session(workspace)
     tool = EditTool(s, [])
-    (tmp_path / "a.py").write_text("x", encoding="utf-8")
-    (tmp_path / "sub").mkdir()
+    (workspace / "a.py").write_text("x", encoding="utf-8")
+    (workspace / "sub").mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    external_parent_file = tmp_path / "not-a-directory"
+    external_parent_file.write_text("x", encoding="utf-8")
 
     # Existing file, editing -> True (caller should read it).
-    assert tool._validate_target(str(tmp_path / "a.py"), creating=False) is True
+    assert tool._validate_target(str(workspace / "a.py"), creating=False) is True
     # Missing file, creating inside the workspace -> False (create fresh).
-    assert tool._validate_target(str(tmp_path / "new.py"), creating=True) is False
+    assert tool._validate_target(str(workspace / "new.py"), creating=True) is False
+    # A missing file may be created in an existing external directory; only implicit
+    # creation of external parent directories is forbidden.
+    assert tool._validate_target(str(external / "new.py"), creating=True) is False
     # Each invalid state raises the same ToolError both edit paths relied on.
     with pytest.raises(ToolError, match="file already exists"):
-        tool._validate_target(str(tmp_path / "a.py"), creating=True)
+        tool._validate_target(str(workspace / "a.py"), creating=True)
     with pytest.raises(ToolError, match="path is a directory"):
-        tool._validate_target(str(tmp_path / "sub"), creating=False)
+        tool._validate_target(str(workspace / "sub"), creating=False)
     with pytest.raises(ToolError, match="does not exist"):
-        tool._validate_target(str(tmp_path / "missing.py"), creating=False)
-    with pytest.raises(ToolError, match="outside workspace"):
-        tool._validate_target("/etc/minacode_should_not_create.py", creating=True)
+        tool._validate_target(str(workspace / "missing.py"), creating=False)
+    with pytest.raises(ToolError, match="parent path is not a directory"):
+        tool._validate_target(str(external_parent_file / "new.py"), creating=True)
+    with pytest.raises(ToolError, match="create it with an approved Bash mkdir"):
+        tool._validate_target(str(tmp_path / "missing-external" / "new.py"), creating=True)
+
+
+def test_edit_creates_file_in_existing_external_directory(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    s = session(workspace)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("create", "Edit", ["../external/new.py", [{"op": "create", "content": "value = 1\n"}]])])
+
+    assert (external / "new.py").read_text(encoding="utf-8") == "value = 1\n"
+    assert not s.tool_errors
 
 
 def test_yolo_approves_mutating_tools_without_prompt(tmp_path):

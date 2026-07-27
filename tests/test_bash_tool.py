@@ -62,6 +62,19 @@ def test_bash_behaviors(tmp_path):
     assert wide.count(chr(0x4E2D)) == 3000
 
 
+def test_bash_starts_in_workspace_but_can_create_external_directory_after_approval(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    s = session(workspace)
+    prompts = []
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
+
+    runner.run([ToolCall("mkdir", "Bash", ["mkdir ../external"])])
+
+    assert (tmp_path / "external").is_dir()
+    assert len(prompts) == 1
+
+
 def test_bash_cancel_kills_active_process(tmp_path):
     tool = BashTool(session(tmp_path), ["sleep 30"])
     finished = threading.Event()

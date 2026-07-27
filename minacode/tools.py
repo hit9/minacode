@@ -1008,8 +1008,12 @@ class EditTool(Tool):
             return True
         if creating:
             parent = os.path.dirname(path) or "."
+            if os.path.isdir(parent):
+                return False
+            if os.path.exists(parent):
+                raise ToolError("parent path is not a directory")
             if not self.session.in_cwd(parent):
-                raise ToolError("refusing to create parent directories outside workspace")
+                raise ToolError("parent directory outside workspace does not exist; create it with an approved Bash mkdir, then retry Edit")
             return False
         raise ToolError("file does not exist; use op=create to create it")
 
@@ -1157,7 +1161,7 @@ class EditTool(Tool):
 class BashTool(Tool):
     NAME = "Bash"
     LOG_LEXER = "bash"
-    DESCRIPTION = "Run one bash shell invocation in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
+    DESCRIPTION = "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
     SIGNATURE = "Bash(command)"
     # fmt: off
     EXAMPLE = (
@@ -1297,7 +1301,7 @@ class BashTool(Tool):
     # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run in the workspace; filter noisy output with head/tail/rg"}}, ["command"])
+        return cls.object_schema({"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run starting in the workspace; filter noisy output with head/tail/rg"}}, ["command"])
     # fmt: on
 
     @classmethod
