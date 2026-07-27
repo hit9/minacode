@@ -759,13 +759,13 @@ def _strict_check(node, path="root"):
             _strict_check(item, f"{path}[{index}]")
 
 
-def test_strict_tools_off_path_emits_legacy_schema_unchanged():
+def test_strict_tools_off_path_emits_non_strict_schema():
     for tool in TOOL_REGISTRY.values():
         legacy = {
             "type": "function",
             "function": {
                 "name": tool.NAME,
-                "description": "\n".join([tool.DESCRIPTION, "Signature: " + tool.SIGNATURE, *(("- " + item) for item in tool.EXAMPLE if item)]),
+                "description": "\n".join([tool.DESCRIPTION, *(("- " + item) for item in tool.EXAMPLE if item)]),
                 "parameters": tool.params_schema(),
             },
         }

@@ -32,7 +32,6 @@ from minacode.session import AgentState, BackgroundJob, HistorySegment, PlanItem
 class Tool:
     NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[str] = ""
-    SIGNATURE: ClassVar[str] = ""
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
     RANGE_SCHEMA: ClassVar[Json] = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
     SKIP_DIRS: ClassVar[set[str]] = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
@@ -51,7 +50,7 @@ class Tool:
 
     @classmethod
     def schema(cls, strict: bool = False) -> Json:
-        description = "\n".join([cls.DESCRIPTION, "Signature: " + cls.SIGNATURE, *(("- " + item) for item in cls.EXAMPLE if item)])
+        description = "\n".join([cls.DESCRIPTION, *(("- " + item) for item in cls.EXAMPLE if item)])
         function: Json = {"name": cls.NAME, "description": description, "parameters": cls.params_schema()}
         if strict and cls._strictifiable(function["parameters"]):
             function["parameters"] = cls._strict_schema(function["parameters"])
@@ -250,7 +249,6 @@ class Tool:
 class ReadTool(Tool):
     NAME = "Read"
     DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; use Recall(tr.N) for full stored output."
-    SIGNATURE = "Read(path,ranges=[[start,end],...]) or Read(files=[{path,ranges}]); lines are 0-based, end-exclusive"
     # fmt: off
     EXAMPLE = (
         'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
@@ -385,12 +383,10 @@ class ReadTool(Tool):
 class SearchTool(Tool):
     NAME = "Search"
     DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path anchor=line:hash matches."
-    SIGNATURE = "Search(pattern,path?,glob?,context?) or Search(queries=[...]); pattern is regex, A|B|C is ok"
     # fmt: off
     EXAMPLE = (
         'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
         'Search multiple queries. Example: {"queries":[{"pattern":"TODO","glob":"*.py"},{"pattern":"FIXME","path":"tests","glob":"*.py"}]}',
-        'Batch regex terms. Example: {"queries":[{"pattern":"done in|elapsed|duration","glob":"*.py","context":2}]}',
     )
     # fmt: on
     MAX_FILE_BYTES = 2_000_000
@@ -735,15 +731,11 @@ class InspectCodeTool(Tool):
     CHAIN_MODES: ClassVar[frozenset[str]] = frozenset({"callers", "callees"})
     OPTION_KEYS: ClassVar[tuple[str, ...]] = ("limit", "kind", "path", "symbol", "exact_only", "depth", "offset", "all_kinds", "ref_kind", "loose")
     DESCRIPTION = "Use the code index: find returns symbols; inspect returns anchors/members/references; outline returns a file symbol tree; refs lists classified references; impls lists implementors; callers/callees walk the call chain."
-    SIGNATURE = "InspectCode(mode,target,kind?,path?,symbol?,limit?,exact_only?,depth?,offset?,all_kinds?,ref_kind?,loose?)"
     # fmt: off
     EXAMPLE = (
         'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
         'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
         'Outline one file; symbol narrows subtree. Example: {"mode":"outline","target":"src/app.py","symbol":"App","limit":300}',
-        'List references; default hides import/attribute noise, ref_kind filters to call|read|write|inherit|type|import|attribute|usage (comma-ok), all_kinds shows everything, offset pages. Example: {"mode":"refs","target":"Tool","ref_kind":"call,write","offset":0}',
-        'List implementors of an interface/base. Example: {"mode":"impls","target":"Tool","kind":"class"}',
-        'Walk transitive callers/callees up to depth; callees loose includes ambiguous cross-module matches. Example: {"mode":"callers","target":"handle_job","depth":3}',
     )
     # fmt: on
 
@@ -878,14 +870,10 @@ class EditApplyResult:
 class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
-    SIGNATURE = "Edit(path, edits=[{op,start?,end?,content?,old?,new?}]); ops=create|replace|delete|insert_before|insert_after|replace_all"
     # fmt: off
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
-        'delete range. Example: {"path":"src/app.py","edits":[{"op":"delete","start":"20:0aa11","end":"22:0bb22"}]}',
-        'insert_before line. Example: {"path":"src/app.py","edits":[{"op":"insert_before","start":"30:0cc33","content":"setup()\\n"}]}',
-        'insert_after line. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"40:0dd44","content":"cleanup()\\n"}]}',
         'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
     # fmt: on
@@ -1162,13 +1150,6 @@ class BashTool(Tool):
     NAME = "Bash"
     LOG_LEXER = "bash"
     DESCRIPTION = "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
-    SIGNATURE = "Bash(command)"
-    # fmt: off
-    EXAMPLE = (
-        'Check environment. Example: {"command":"python3 --version"}',
-        'Run a project command. Example: {"command":"python3 -m py_compile minacode.py"}',
-    )
-    # fmt: on
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 
@@ -1506,7 +1487,6 @@ class BashTool(Tool):
 class JobTool(Tool):
     NAME = "Job"
     DESCRIPTION = "Start, monitor, wait for, list, and kill background shell jobs. Processes run in their own process group and do not block the agent."
-    SIGNATURE = 'Job(action="start"|"status"|"wait"|"list"|"kill", command?, job?, timeout?, limit?)'
     MUTATES = True
     ACTIONS: ClassVar[tuple[str, ...]] = ("start", "status", "wait", "list", "kill")
     MAX_JOBS: ClassVar[int] = 8
@@ -1657,13 +1637,6 @@ class JobTool(Tool):
 class RecallTool(Tool):
     NAME = "Recall"
     DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
-    SIGNATURE = "Recall(keys=[tr.N,...], ranges?); ranges are 0-based [start,end] output lines"
-    # fmt: off
-    EXAMPLE = (
-        'Recall full result. Example: {"keys":["tr.1"]}',
-        'Recall output line ranges. Example: {"keys":["tr.1","tr.2"],"ranges":[[0,80]]}',
-    )
-    # fmt: on
     STORES_RESULT = False
 
     # fmt: off
@@ -1736,16 +1709,13 @@ class RecallTool(Tool):
 class RecallContextTool(Tool):
     NAME = "RecallContext"
     DESCRIPTION = "Recall stored compacted-conversation excerpts by seg.N key, or regex-search their titles and text; query alternation A|B|C is allowed."
-    SIGNATURE = "RecallContext(keys=[seg.N,...]) or RecallContext(query=REGEX,keys?,case_sensitive?,limit?)"
     DEFAULT_LIMIT = 20
     MAX_LIMIT = 100
     MAX_QUERY_LENGTH = 500
     # fmt: off
     EXAMPLE = (
         'Recall one segment. Example: {"keys":["seg.1"]}',
-        'Recall several segments. Example: {"keys":["seg.1","seg.3"]}',
         'Search all segments. Example: {"query":"cache prefix|task memory","limit":10}',
-        'Search selected segments. Example: {"keys":["seg.1","seg.3"],"query":"compaction","case_sensitive":false}',
     )
     # fmt: on
     STORES_RESULT = False
@@ -1848,12 +1818,6 @@ class RecallContextTool(Tool):
 class NoteTool(Tool):
     NAME = "Note"
     DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. Plan items are objects with status todo|doing|done|blocked and text."
-    SIGNATURE = "Note(set_goal?, replace_plan?, append_known?, replace_known?, set_check?)"
-    # fmt: off
-    EXAMPLE = (
-        'Set memory. Example: {"set_goal":"ship parser fix","replace_plan":[{"status":"doing","text":"inspect parser"},{"status":"todo","text":"patch bug"}],"append_known":["tests use pytest"],"set_check":"pytest -q passed"}',
-    )
-    # fmt: on
     STORES_RESULT = False
 
     @classmethod
@@ -1949,7 +1913,6 @@ class AskSpec:
 class AskTool(Tool):
     NAME = "Ask"
     DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
-    SIGNATURE = "Ask(questions=[{question, choices?, previews?, recommended?}, ...])"
     # fmt: off
     EXAMPLE = (
         'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["auth/\\n  session.py  (new, +87)\\n  views.py    (-12)","auth.py -> deleted\\nauth/*      all new (+430)"],"recommended":0}]}',
@@ -2024,7 +1987,6 @@ class AskTool(Tool):
 class MCPTool(Tool):
     NAME = "MCP"
     DESCRIPTION = "Call/describe external MCP server tools, and list/read MCP resources"
-    SIGNATURE = 'MCP(action="call"|"describe"|"list_resources"|"read_resource", server, tool?, arguments?, uri?)'
     MUTATES = True
 
     @classmethod
@@ -2114,8 +2076,6 @@ class MCPTool(Tool):
 class SkillTool(Tool):
     NAME = "Skill"
     DESCRIPTION = "Load a skill's full instructions by name (skills are listed in the SKILLS section). Follow the returned steps, running any bundled scripts it references via Bash."
-    SIGNATURE = "Skill(name)"
-    EXAMPLE = ('Load a skill. Example: {"name":"release-notes"}',)
 
     # fmt: off
     @classmethod
