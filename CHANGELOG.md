@@ -47,6 +47,7 @@
 - Add documented compatibility overrides for Kimi and Z.AI across their international and China endpoints. Kimi Code remains distinct from the open platform; both Z.AI regions share GLM-5.2+ `reasoning_effort`, Kimi keeps its documented `prompt_cache_key`, and Z.AI relies on automatic context caching.
 
 ### Fixed
+- Prevent models from narrating assumed tool failures and issuing speculative retries before minacode has executed their pending calls by making the tool-result boundary explicit in the system prompt.
 - Clear the transient thinking preview before printing `Cancelled`, so interrupted reasoning does not remain in terminal scrollback. Protocol-required reasoning data is still retained in the session.
 - Preserve image references when the simple CLI combines resumed queued inputs; joining their text previously left internal image markers without attachments and crashed before dispatch.
 - Reject an ambiguous streamed Chat tool-call fragment when a compatibility endpoint omits both `index` and `id`, instead of silently appending its arguments to the wrong parallel tool call.
