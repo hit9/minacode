@@ -198,6 +198,7 @@ class CommandLoop:
     )
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
+    INPUT_HISTORY_BYTES: ClassVar[int] = 512 * 1024
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
@@ -319,6 +320,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if self.interactive_input:
             history_path = self.session.data_path("history.txt")
             os.makedirs(os.path.dirname(history_path), exist_ok=True)
+            self.trim_input_history(history_path)
             self.input_history = FileHistory(history_path)
         else:
             self.input_history = None
@@ -340,6 +342,33 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.question_fn = self.question_interaction
+
+    @classmethod
+    def trim_input_history(cls, path: str) -> None:
+        """Bound the input history file, which prompt_toolkit only ever appends to.
+
+        Keeps the newest entries that fit in `INPUT_HISTORY_BYTES` and drops the rest. The cut is
+        made at an entry header rather than at a byte offset, so what survives is always loadable:
+        a header is written as "\n# <timestamp>\n" and content lines are "+"-prefixed, which is why
+        a user line beginning with "#" cannot be mistaken for one. The replacement is atomic, so an
+        interrupted trim cannot leave a truncated history behind, and every failure is ignored —
+        recall is a convenience and must never keep the session from starting.
+        """
+        try:
+            if os.path.getsize(path) <= cls.INPUT_HISTORY_BYTES:
+                return
+            with open(path, "rb") as file:
+                file.seek(-cls.INPUT_HISTORY_BYTES, os.SEEK_END)
+                tail = file.read()
+            start = tail.find(b"\n# ")
+            if start < 0:
+                return  # a single entry larger than the budget; keep it rather than cut inside it
+            temp = path + ".tmp"
+            with open(temp, "wb") as file:
+                file.write(tail[start + 1 :])
+            os.replace(temp, path)
+        except OSError:
+            return
 
     def flush_queued_to_log(self, texts: list[str]) -> None:
         # Move flushed queued messages from the live activity region into terminal scrollback.

@@ -2468,3 +2468,58 @@ def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
         assert ran_on and ran_on[0] is not threading.main_thread()
     finally:
         allow_finish.set()
+
+
+def history_file(path, entries, line="x" * 200):
+    """Write a prompt_toolkit history file with `entries` numbered entries."""
+    with open(path, "wb") as file:
+        file.writelines(f"\n# 2026-01-01 00:00:{index:02d}\n+{index}-{line}\n".encode() for index in range(entries))
+    return path
+
+
+def test_input_history_is_trimmed_to_a_bounded_size(tmp_path):
+    path = history_file(tmp_path / "history.txt", 5000)
+    assert os.path.getsize(path) > CommandLoop.INPUT_HISTORY_BYTES
+
+    CommandLoop.trim_input_history(str(path))
+
+    assert os.path.getsize(path) <= CommandLoop.INPUT_HISTORY_BYTES
+    # The newest entries survive, the oldest are the ones dropped, and what remains still loads.
+    kept = list(FileHistory(str(path)).load_history_strings())
+    assert kept[0].startswith("4999-")
+    assert not any(entry.startswith("0-") for entry in kept)
+    assert all(entry.split("-")[0].isdigit() for entry in kept)
+
+
+def test_input_history_trim_cuts_only_at_an_entry_boundary(tmp_path):
+    path = history_file(tmp_path / "history.txt", 4000)
+
+    CommandLoop.trim_input_history(str(path))
+
+    # A cut inside an entry would leave a partial first line; the survivor must start with a header.
+    with open(path, "rb") as file:
+        assert file.read(2) == b"# "
+    text = open(path, encoding="utf-8").read()
+    assert all(line.startswith(("#", "+")) for line in text.splitlines() if line)
+
+
+def test_input_history_under_the_cap_is_left_alone(tmp_path):
+    path = history_file(tmp_path / "history.txt", 10)
+    before = open(path, "rb").read()
+
+    CommandLoop.trim_input_history(str(path))
+
+    assert open(path, "rb").read() == before
+
+
+def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):
+    CommandLoop.trim_input_history(str(tmp_path / "absent.txt"))  # must not raise
+
+    # One entry larger than the whole budget is kept rather than cut in half.
+    path = tmp_path / "huge.txt"
+    path.write_bytes(b"\n# 2026-01-01 00:00:00\n+" + b"y" * (CommandLoop.INPUT_HISTORY_BYTES + 1000) + b"\n")
+    before = path.read_bytes()
+
+    CommandLoop.trim_input_history(str(path))
+
+    assert path.read_bytes() == before

@@ -3,6 +3,12 @@
 
 ## Unreleased
 
+### Fixed
+- Cap the input history file at 512 KB instead of letting it grow for the life of the install.
+  prompt-toolkit only appends to it, so every line ever typed was kept. The newest entries are
+  retained and older ones dropped at an entry boundary, so recall keeps working and the file stays
+  loadable.
+
 ### Changed
 - Start roughly four times faster, so the prompt echoes keystrokes immediately instead of dropping
   the first characters typed into a fresh session. The Anthropic and OpenAI SDKs cost about 0.8s to
