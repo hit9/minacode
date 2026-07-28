@@ -4,8 +4,8 @@
 ## Unreleased
 
 ### Changed
-- Drop the per-request response-language reminder added in 0.14.0 and state the contract once, in the system prompt. The reminder sat immediately before the user's request as a block of English prose, which reinforced the English drift it was meant to prevent; the contract now also requires reasoning to *start* in the user's language instead of being translated at the end, and marks the English system prompt itself as not a language signal.
-- Reduce fixed model-context overhead by consolidating repeated system instructions and removing tool signatures and redundant examples already expressed by each tool's JSON Schema, without changing tool names, parameters, or execution behavior. Keep visible model output concise by default without limiting detail when requested or necessary.
+- Drop the per-request response-language reminder added in 0.14.0 and state the contract once, in the system prompt. The reminder sat immediately before the user's request as a block of English prose, which reinforced the English drift it was meant to prevent; every visible message and reasoning step now follows the dominant language of the user's recent substantive messages.
+- Reduce fixed model-context overhead by consolidating repeated system instructions and removing tool signatures and redundant examples already expressed by each tool's JSON Schema, while retaining concise system guidance for tool selection and lifecycle. Tool names, parameters, and execution behavior remain unchanged. Keep visible model output concise by default without limiting detail when requested or necessary.
 
 
 ## 0.14.0 - 2026-07-27
