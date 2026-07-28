@@ -2525,14 +2525,19 @@ def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_expired_session_cleanup_is_reported_once(monkeypatch, tmp_path):
+def test_expired_session_cleanup_reports_without_blocking_startup(monkeypatch, tmp_path):
+    """The sweep runs on a daemon thread, so the notice arrives through the background channel."""
     command_loop = loop(tmp_path)
     command_loop.session.settings.session_retention_days = 7
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 3)
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
 
-    command_loop.report_expired_sessions(SessionSnapshotStore.clean_expired(command_loop.session))
+    command_loop.clean_expired_sessions_async()
+    for _ in range(200):
+        if lines:
+            break
+        time.sleep(0.01)
 
     assert len(lines) == 1
     # Says what was lost and which setting governs it, so the knob is discoverable when it acts.
@@ -2543,20 +2548,31 @@ def test_expired_session_cleanup_is_reported_once(monkeypatch, tmp_path):
 
 def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     lines = []
     monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
 
-    command_loop.report_expired_sessions(0)
+    command_loop.clean_expired_sessions_async()
+    time.sleep(0.1)
 
     assert lines == []
 
 
-def test_expired_session_notice_reads_correctly_when_singular(monkeypatch, tmp_path):
+def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path):
+    """A failing sweep must not escape the thread; retention is not worth a broken session."""
+    command_loop = loop(tmp_path)
+
+    def boom(_session):
+        raise OSError("data dir unreadable")
+
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", boom)
+
+    command_loop.clean_expired_sessions_async()
+    time.sleep(0.1)
+
+
+def test_expired_session_notice_reads_correctly_when_singular(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.settings.session_retention_days = 1
-    lines = []
-    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
 
-    command_loop.report_expired_sessions(1)
-
-    assert "removed 1 saved session inactive for over 1 day " in lines[0]
+    assert "removed 1 saved session inactive for over 1 day " in command_loop.expired_sessions_notice(1) + " "

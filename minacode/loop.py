@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -637,7 +638,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         UpdateChecker(self.session).start()
         if self.session.update.newer_than(__version__):
             self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `{' '.join(UpdateChecker.upgrade_command())}`.")
-        self.report_expired_sessions(SessionSnapshotStore.clean_expired(self.session))
+        self.clean_expired_sessions_async()
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Discover auto_connect servers in the background so an unreachable one cannot block the
@@ -646,18 +647,35 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if mcp is not None:
             threading.Thread(target=mcp.discover_auto, name="mcp-discover", daemon=True).start()
 
-    def report_expired_sessions(self, removed: int) -> None:
-        """Say once, quietly, that startup deleted saved sessions.
+    def clean_expired_sessions_async(self) -> None:
+        """Sweep expired sessions off the startup path.
+
+        The sweep stats every session file in every project directory. That is microseconds on a
+        local disk, but a home directory on a network filesystem pays a round trip per file and can
+        turn it into seconds — spent before the prompt accepts a keystroke. Nothing about a first
+        keystroke depends on retention having run, so it runs on a daemon thread like the code
+        index and MCP discovery beside it, and reports through the background channel that stays
+        quiet once this loop no longer owns the terminal.
+        """
+
+        def sweep() -> None:
+            with contextlib.suppress(Exception):
+                removed = SessionSnapshotStore.clean_expired(self.session)
+                if removed:
+                    self.emit_background(self.expired_sessions_notice(removed))
+
+        threading.Thread(target=sweep, name="session-cleanup", daemon=True).start()
+
+    def expired_sessions_notice(self, removed: int) -> str:
+        """Word the retention notice.
 
         Retention removes work the user cannot get back, so it is reported rather than done
-        silently; naming the setting turns the notice into the one moment the knob is worth
-        knowing about. Nothing is printed when nothing was deleted, which is the common case.
+        silently, and naming the setting turns the notice into the one moment that knob is worth
+        knowing about.
         """
-        if not removed:
-            return
         days = self.session.settings.session_retention_days
         sessions = "session" if removed == 1 else "sessions"
-        self.emit(f"removed {removed} saved {sessions} inactive for over {days} {'day' if days == 1 else 'days'} (runtime.session_retention_days)")
+        return f"removed {removed} saved {sessions} inactive for over {days} {'day' if days == 1 else 'days'} (runtime.session_retention_days)"
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()

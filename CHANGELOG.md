@@ -4,9 +4,10 @@
 ## Unreleased
 
 ### Added
-- Report at startup when retention deleted saved sessions, naming the count, the inactivity window,
+- Report when retention deleted saved sessions, naming the count, the inactivity window,
   and the setting that governs it. The cleanup already ran on every start; it now says so instead of
-  removing unrecoverable work silently.
+  removing unrecoverable work silently, and runs off the startup path so a slow filesystem cannot
+  delay the prompt.
 
 ### Fixed
 - Cap the input history file at 512 KB instead of letting it grow for the life of the install.
