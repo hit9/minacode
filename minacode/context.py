@@ -60,6 +60,10 @@ class ContextManager:
     def __init__(self, session: Session, model: ModelClient | None = None):
         self.session = session
         self.model = model
+        # Automatic compaction runs inside request projection, below the UI layer. This lifecycle
+        # hook lets orchestration expose that real phase without making context depend on a renderer.
+        # False is emitted in a finally block, including model failures that fall back to trimming.
+        self.on_compaction: Callable[[bool], None] | None = None
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         messages: list[Json] = [
@@ -185,11 +189,25 @@ class ContextManager:
     ) -> bool:
         if not compacted:
             return False
+        on_compaction = self.on_compaction
+        if on_compaction is not None:
+            on_compaction(True)
         try:
-            data = model.compact(self.compaction_input(compacted))
-        except Exception:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
-            data = None
-        self.apply_compaction(data, keep, tool_messages, turn_messages=turn_messages, fallback_note=fallback_note if data is None else "", compacted=compacted)
+            try:
+                data = model.compact(self.compaction_input(compacted))
+            except Exception:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
+                data = None
+            self.apply_compaction(
+                data,
+                keep,
+                tool_messages,
+                turn_messages=turn_messages,
+                fallback_note=fallback_note if data is None else "",
+                compacted=compacted,
+            )
+        finally:
+            if on_compaction is not None:
+                on_compaction(False)
         return True
 
     def memory_context(self, *, with_date: bool = False) -> str:

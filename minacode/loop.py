@@ -339,11 +339,17 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.output_fn = self.agent_output
         self.agent.model.on_stream = self.model_stream_output
         self.agent.on_queue_flush = self.flush_queued_to_log
+        self.agent.context.on_compaction = self.automatic_compaction_status
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.question_fn = self.question_interaction
+
+    def automatic_compaction_status(self, active: bool) -> None:
+        """Show automatic context compaction as a distinct phase of the running turn."""
+        if self.tui is not None:
+            self.tui.set_running("compacting context" if active else "working")
 
     @classmethod
     def trim_input_history(cls, path: str) -> None:

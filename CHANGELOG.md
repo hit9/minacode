@@ -19,6 +19,9 @@
   scrollback before tool output begins. Responses and Anthropic use their explicit text/tool block
   boundaries without assuming which arrives first; Chat Completions promotes at its tool-call
   finish boundary.
+- Label the working divider `compacting context` during automatic context compaction, then restore
+  `working` before the normal model request, instead of presenting a long compaction call as generic
+  work while the context meter remains full.
 
 
 ## 0.15.0 - 2026-07-28

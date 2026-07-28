@@ -183,6 +183,8 @@ def test_compaction_uses_configured_context_budget(tmp_path):
         {"role": "tool", "content": "tool kept"},
     ]
     context = ContextManager(s)
+    compaction_phases = []
+    context.on_compaction = compaction_phases.append
 
     class FakeModel:
         def __init__(self):
@@ -194,6 +196,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
 
     model = FakeModel()
     context.prepare_messages(model, "system", [{"role": "user", "content": "request"}])
+    assert compaction_phases == [True, False]
     assert model.input is not None
     assert "Older Messages:" in model.input
     assert "old answer" in model.input
@@ -370,13 +373,17 @@ def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 999_999
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
+    context = ContextManager(s)
+    compaction_phases = []
+    context.on_compaction = compaction_phases.append
 
     class ExplodingModel:
         def compact(self, text):
             raise AssertionError(text)
 
-    ContextManager(s).prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
+    context.prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
 
+    assert compaction_phases == []
     assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
 
 
@@ -1864,12 +1871,16 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     s.state.summary = "existing"
     s.messages = [{"role": "user", "content": str(index)} for index in range(10)]
     context = ContextManager(s)
+    compaction_phases = []
+    context.on_compaction = compaction_phases.append
 
     class FailingModel:
         def compact(self, text):
             raise ModelError("failed")
 
     context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
+
+    assert compaction_phases == [True, False]
     assert s.state.summary != "existing"
     assert len(s.messages) == 2
     assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)

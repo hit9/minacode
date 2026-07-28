@@ -795,6 +795,30 @@ def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monk
     assert output[:3] == ["\n• answer me", "", "set_running:working"]
 
 
+def test_automatic_compaction_replaces_working_divider_status(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.settings.max_context_tokens = 1
+    command_loop.session.messages = [
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old answer"},
+        *({"role": "assistant", "content": f"recent {index}"} for index in range(8)),
+        {"role": "user", "content": "latest request"},
+    ]
+    command_loop.tui = TuiApp()
+    divider_during_compaction = []
+
+    def compact(_context):
+        divider_during_compaction.append(fragment_list_to_text(command_loop.queue_divider_fragments()))
+        return {"summary": "compact summary"}
+
+    command_loop.agent.model.compact = compact
+
+    command_loop.agent.context.prepare_messages(command_loop.agent.model, "system")
+
+    assert "compacting context" in divider_during_compaction[0]
+    assert command_loop.tui.status_label == "working"
+
+
 def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
