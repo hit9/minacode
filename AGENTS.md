@@ -4,6 +4,9 @@ Keep this file short. It is an entry point, not a second design document.
 
 ## Start here
 
+- New to the codebase: read [Orientation](DESIGN.md#orientation) for the objectives, the module
+  layers, and the shape of one turn. Then skim [Common pitfalls](DESIGN.md#common-pitfalls) — those
+  are the changes that look like cleanups and are not.
 - Read [DESIGN.md](DESIGN.md) before changing cross-cutting behavior or module ownership.
 - Follow the nearest existing pattern before introducing a new abstraction or dependency.
 

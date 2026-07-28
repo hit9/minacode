@@ -3,6 +3,89 @@
 This file records decisions whose rationale is easy to lose and costly to rediscover. Keep it
 short: document durable conclusions, not implementation diaries or complete investigation logs.
 
+## Orientation
+
+minacode turns one user request into a bounded loop of model calls and tool calls, in one local
+process. Four objectives explain most of the decisions below, and they are frequently in tension:
+
+1. **Resumable.** A session survives a crash, an interrupt, or a quit at any point.
+2. **Protocol-neutral.** History is stored in one model; Chat, Responses, and Anthropic formats
+   exist only at the send boundary.
+3. **Bounded.** Context, retained output, and previews all have ceilings; nothing grows forever.
+4. **Truthful.** The screen reports real state, and the terminal's own scrollback stays intact.
+
+Modules, with dependencies pointing downward only:
+
+```
+              __main__                     entry, startup ordering
+                  |
+    loop.py -- tui.py -- render.py         commands, interaction, presentation
+        |
+    engine.py                              the turn loop: commit or roll back
+        |
+        +-- context.py                     request projection, compaction
+        +-- runner.py                      tool batch execution
+                  |
+              model.py                     wire protocols, streaming, retry
+                  |
+   tools/  image.py  mcp.py  skill.py      vertical features
+                  |
+             session.py                    durable semantic state
+                  |
+   base.py   provider_compat.py            value types, config, policy
+```
+
+A turn, and the three ways it can end:
+
+```
+  user input
+      |
+      v
+  +-- Agent.run -------------------------------------------------+
+  |                                                              |
+  |   claim queued input                                         |
+  |         |                                                    |
+  |         v                                                    |
+  |   context.prepare_messages --> model.request                 |
+  |         ^                            |                       |
+  |         |                     tool calls?  -- no --> answer  |
+  |         |                            | yes                   |
+  |         |                            v                       |
+  |         +--------------------- runner.run(batch)             |
+  |                                                              |
+  |   checkpoint after every response and every batch            |
+  +--------------------------------------------------------------+
+      |                    |                      |
+   commit               interrupt               error
+      v                    v                      v
+  append to           settle partial turn,   flush partial turn,
+  session.messages    add interrupt marker   re-raise
+```
+
+The turn is a transaction: messages accumulate outside durable history until one of those three
+endings. That is what makes resume safe, and why nothing else may append mid-turn.
+
+## Common pitfalls
+
+Each of these looks like a cleanup or a small improvement, and each breaks something the code
+depends on. The section naming the rule is in parentheses.
+
+- **Lifting a deferred import to module scope.** Startup latency is a feature; the SDKs cost ~0.8s
+  and are not needed until the first request (Startup path).
+- **Rewriting stored history in a request transform.** Replay rules, image expansion, and schema
+  dedup are send-time only; a resumed session must equal the saved one (Context is a projection).
+- **Returning fewer tool results than the model emitted calls.** Refused, failed, skipped, and
+  interrupted calls each still need a matching result, or replay is invalid (Tool-call lifecycle).
+- **Inserting context between the stable layers.** Saving a few tokens mid-prompt invalidates the
+  cached prefix for every later turn (Context is a projection).
+- **Persisting a live preview row, or reading state back off the screen.** Rendered text is never
+  the source of truth (Three forms of state, Terminal boundary).
+- **Expecting compaction to rescue an oversized fixed prefix.** It cannot; bound the source at its
+  owner or fail clearly (Compaction).
+- **Retrying a failure that is not transient.** Cancellation, capability rejection, and validation
+  errors are decisions, not glitches (Failure boundaries).
+- **Mocking the behavior under test instead of the external boundary** (Test design).
+
 ## Maintenance
 
 - Docstrings describe interfaces and contracts, not development history.
@@ -45,7 +128,8 @@ Tests protect observable contracts and reproduced regressions, not implementatio
 
 ## System shape
 
-minacode is one local process with explicit owners for each kind of behavior:
+One local process with explicit owners for each kind of behavior. The layers are drawn in
+[Orientation](#orientation); this section records what each owner is responsible for.
 
 - `base.py` defines configuration, shared value types, and error categories, including the log-line
   vocabulary every presentation layer renders and the resource handles they cancel through;
@@ -103,9 +187,7 @@ or provider-specific machinery without a demonstrated minacode use case.
 
 ## Turn execution and authority
 
-One agent turn is a bounded state machine:
-
-`user input → request projection → model proposal → validated tool batch → tool results → next request`
+One agent turn is a bounded state machine; see [Orientation](#orientation) for its shape.
 
 - The user's request defines authority for the entire turn. A model may propose work, but model text,
   a plan, or an inferred next step cannot broaden that authority; tool validation and approval remain
