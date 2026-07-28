@@ -1898,6 +1898,7 @@ class TuiRuntime:
             handled, exit_now = self.loop.command(user_input.strip())
         except (KeyboardInterrupt, MinacodeError) as error:
             self.loop.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
+            self.submit_next(self.loop.take_pending_inputs())
             self.reset_turn()
             return True
         if exit_now:
@@ -1906,10 +1907,11 @@ class TuiRuntime:
             self.tui.exit()
             return True
         if handled:
-            self.reset_turn()
             # A command must not strand queued follow-ups: flush them as run_agent_turn does, so
             # they keep chaining once the command completes (e.g. /compact then queued input).
+            # Submit before restoring the idle prompt, where newer input can enter `pending`.
             self.submit_next(self.loop.take_pending_inputs())
+            self.reset_turn()
             return True
         return False
 

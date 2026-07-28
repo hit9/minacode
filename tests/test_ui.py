@@ -33,6 +33,7 @@ from minacode.base import (
     LogLine,
     LogRole,
     MalformedToolCallError,
+    MinacodeError,
     ProviderConfig,
     Text,
 )
@@ -691,6 +692,46 @@ def test_tui_dispatch_command_flushes_single_followup_completely(tmp_path):
     assert runtime.pending.qsize() == 1
     assert runtime.pending.get_nowait() == "only followup"
     assert command_loop.session.pending_user_inputs == []
+
+
+def test_tui_dispatch_failed_command_still_flushes_followup(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    command_loop.session.enqueue_user_input("followup after error")
+    command_loop.command = lambda _text: (_ for _ in ()).throw(MinacodeError("command failed"))
+
+    assert runtime.dispatch("/broken")
+
+    assert runtime.pending.get_nowait() == "followup after error"
+    assert command_loop.session.pending_user_inputs == []
+
+
+def test_tui_dispatch_queues_older_followup_before_restoring_idle(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.command = lambda _text: (True, False)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    command_loop.session.enqueue_user_input("older followup")
+    events = []
+    real_submit_next = runtime.submit_next
+    real_reset_turn = runtime.reset_turn
+
+    def submit_next(entered):
+        events.append("submit")
+        real_submit_next(entered)
+
+    def reset_turn():
+        events.append("idle")
+        real_reset_turn()
+
+    runtime.submit_next = submit_next
+    runtime.reset_turn = reset_turn
+
+    assert runtime.dispatch("/slow-command")
+
+    assert events == ["submit", "idle"]
+    assert runtime.pending.get_nowait() == "older followup"
 
 
 def test_tui_dispatch_command_with_empty_queue_stays_idle(tmp_path):
