@@ -93,6 +93,13 @@ class SearchTool(Tool):
         return requests
 
     def search(self, request: Json) -> str:
+        """Search one request, preferring ripgrep and falling back to a Python scan.
+
+        Three cases, in order: a hidden or gitignored target returns no rows without touching disk; a
+        multiline pattern skips ripgrep, which matches within a line; anything else tries ripgrep and
+        falls back when it is absent or exits in a way the caller cannot interpret. The fallback is a
+        requirement rather than an optimization, because ripgrep is not a dependency.
+        """
         patterns = self.gitignore_patterns(str(request["path"]))
         rows = [] if self.default_ignored(str(request["path"]), patterns) else None
         rows = rows if rows is not None or "\n" in str(request["pattern"]) else self.rg_matches(request)

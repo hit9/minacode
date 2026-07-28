@@ -403,6 +403,18 @@ class EditTool(Tool):
         return path, original, created, result
 
     def apply(self, original: str, edits: list[Edit], anchor_resolver: Callable[[str], int] | None = None) -> EditApplyResult:
+        """Apply one call's edits to a file's lines, returning the new content and its change spans.
+
+        Anchors are resolved against the original lines before anything is spliced, and the splices are
+        then applied in reverse index order so each one leaves the earlier indices untouched. Resolving
+        as you go, or splicing forward, shifts every later anchor by the size of the previous edit.
+        Overlaps are rejected once the anchors are known and before any splice runs: two edits
+        claiming the same range cannot both be honored, and the model needs to be told rather than
+        silently obeyed.
+
+        `changes` is rebuilt afterwards in forward order with a running delta, because it describes
+        positions in the file that now exists rather than the one the anchors named.
+        """
         if edits[0].op == "create":
             lines = self.content_lines(edits[0].content, False)
             return EditApplyResult("".join(lines), [(0, 0, 0, len(lines))], [])

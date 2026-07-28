@@ -382,6 +382,16 @@ class ToolRunner:
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
         plan_error: str = "",
     ) -> tuple[str, str, Json | None]:
+        """Run one tool call, returning (status, tool message, optional observation).
+
+        Every exit produces a message — unknown tool, malformed arguments, refusal, exception — because
+        the batch owes the model one result per emitted call. The status is what the caller acts on:
+        "refused" short-circuits the remaining calls, "failed" does not.
+
+        Ordering carries meaning. The display line is built before confirmation so a declined call still
+        shows what was asked, and Bash's live preview starts only after approval so nothing streams out
+        of a call the user has not agreed to run.
+        """
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", d=ToolDisplay(batch_suffix=batch_suffix)), None

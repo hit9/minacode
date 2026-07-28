@@ -367,6 +367,15 @@ class ModelClient:
         return assistant, calls, content
 
     def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any]:
+        """Reassemble a streamed chat completion into one assistant message.
+
+        Tool calls are the hard part. The spec streams them as deltas keyed by `index`, but providers
+        variously omit it, restart it, or send only `id`. `resolve_tool_call_index` recovers the
+        association from whatever a chunk carries, in decreasing order of reliability, and raises
+        instead of guessing when nothing identifies the call: a wrong association concatenates two
+        calls' argument fragments into one call with corrupt JSON, which the model cannot correct
+        because it looks like something it wrote.
+        """
         content: list[str] = []
         reasoning_content: list[str] = []
         reasoning: list[str] = []

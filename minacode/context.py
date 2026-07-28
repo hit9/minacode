@@ -276,6 +276,12 @@ class ContextManager:
         return [message for message in messages if not self.is_compaction_summary(message)]
 
     def compaction_parts_for(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+        """Split messages into a compactable head and a recent tail, never inside a tool exchange.
+
+        The cut walks back past a run of tool results and the assistant message that called them, since
+        a history with tool calls whose results were summarized away — or results whose call is gone —
+        is rejected by every provider. Giving a few extra messages to the summary is the cheaper loss.
+        """
         cut = max(0, len(messages) - self.COMPACT_RECENT_MESSAGES)
         if cut < len(messages) and messages[cut].get("role") == "tool":
             while cut > 0 and messages[cut - 1].get("role") == "tool":
