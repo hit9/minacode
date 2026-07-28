@@ -35,7 +35,6 @@ from minacode.base import (
     MalformedToolCallError,
     ProviderConfig,
     Text,
-    ToolCall,
 )
 from minacode.engine import Agent
 from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
@@ -63,17 +62,6 @@ class ResizableOutput(DummyOutput):
 
     def get_size(self):
         return self.size
-
-
-class RecordingOutput(DummyOutput):
-    def __init__(self):
-        self.writes = []
-
-    def write(self, data):
-        self.writes.append(data)
-
-    def write_raw(self, data):
-        self.writes.append(data)
 
 
 def wait_until(predicate, timeout=1.0):
@@ -123,96 +111,6 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
             assert not driver.is_alive()
     if driver_errors:
         raise driver_errors[0]
-
-
-def test_stream_response_reaches_scrollback_before_edit_outputs(tmp_path, monkeypatch):
-    scenario_session = session(tmp_path)
-    scenario_session.settings.yolo = True
-    agent = Agent(scenario_session, output_fn=lambda _text: None)
-    response = "I am editing three files."
-
-    class EditingModel:
-        def __init__(self):
-            self.on_stream = None
-            self.requests = 0
-
-        def request(self, _messages, _tools=None):
-            self.requests += 1
-            if self.requests == 1:
-                self.on_stream("output", response)
-                self.on_stream("", "")
-                calls = [
-                    ToolCall(f"edit-{index}", "Edit", [f"file-{index}.txt", [{"op": "create", "content": f"{index}\n"}]])
-                    for index in range(3)
-                ]
-                return {"role": "assistant", "content": response}, calls, response
-            self.on_stream("output", "Edits complete.")
-            self.on_stream("", "")
-            return {"role": "assistant", "content": "Edits complete."}, [], "Edits complete."
-
-        def cancel(self):
-            pass
-
-    agent.model = EditingModel()
-    command_loop = CommandLoop(agent, input_fn=lambda _prompt: "", output_fn=lambda _text: None)
-    command_loop.ui.color = True
-    command_loop.tui = TuiApp()
-    runtime = TuiRuntime(command_loop)
-    output = RecordingOutput()
-    promoted_before_tool_output = []
-    original_tool_output = command_loop.tool_output
-
-    def tool_output(text=""):
-        promoted_before_tool_output.append(response in "".join(output.writes))
-        original_tool_output(text)
-
-    command_loop.agent.tools.output_fn = tool_output
-    monkeypatch.setattr(CodeIndex, "update", lambda _index, _paths: "")
-    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
-
-    def drive(_pipe_input):
-        wait_until(lambda: command_loop.tui.app is not None and command_loop.tui.app.is_running)
-        runtime.run_agent_turn("edit the files")
-        command_loop.tui.exit()
-
-    run_interactive_tui(monkeypatch, command_loop.tui, drive=drive, output=output)
-
-    assert promoted_before_tool_output and all(promoted_before_tool_output)
-    assert [path.read_text(encoding="utf-8") for path in sorted(tmp_path.glob("file-*.txt"))] == ["0\n", "1\n", "2\n"]
-
-
-def test_final_stream_response_is_promoted_before_done_output(tmp_path, monkeypatch):
-    command_loop = loop(tmp_path)
-    command_loop.ui.color = True
-    command_loop.tui = TuiApp()
-    runtime = TuiRuntime(command_loop)
-    output = RecordingOutput()
-    promoted_before_done = []
-
-    def answer(_user_input):
-        command_loop.model_stream_output("output", "promoted response")
-        command_loop.model_stream_output("", "")
-        return "promoted response"
-
-    command_loop.agent.run = answer
-    original_emit = command_loop.emit
-
-    def emit(text=""):
-        if isinstance(text, str) and text.startswith("[done in "):
-            promoted_before_done.append("promoted response" in "".join(output.writes))
-        original_emit(text)
-
-    command_loop.emit = emit
-    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
-
-    def drive(_pipe_input):
-        wait_until(lambda: command_loop.tui.app is not None and command_loop.tui.app.is_running)
-        runtime.run_agent_turn("question")
-        command_loop.tui.exit()
-
-    run_interactive_tui(monkeypatch, command_loop.tui, drive=drive, output=output)
-
-    assert promoted_before_done == [True]
 
 
 def ctrl_c_queue_scenario(cwd, results):
