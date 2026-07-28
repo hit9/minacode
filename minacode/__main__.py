@@ -51,7 +51,10 @@ def warm_provider_sdks() -> None:
     """
 
     def load() -> None:
-        with contextlib.suppress(ImportError):
+        # Warming is only an optimization, and an uncaught failure here would print a thread
+        # traceback over the live prompt. Any real problem resurfaces on the request path, which
+        # imports the same modules and reports the failure to the user.
+        with contextlib.suppress(Exception):
             import anthropic  # noqa: F401 - imported for its side effect of populating sys.modules
             import openai  # noqa: F401
 
