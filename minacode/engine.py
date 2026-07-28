@@ -37,6 +37,7 @@ from minacode.base import (
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
     Json,
+    MalformedToolCallError,
     MinacodeError,
     ModelError,
     ModelRequestRetry,
@@ -86,6 +87,13 @@ from minacode.tools import (
 _IdentityT = TypeVar("_IdentityT", bound=Hashable)
 _ResourceT = TypeVar("_ResourceT")
 _ResultT = TypeVar("_ResultT")
+
+_TEXTUAL_INVOKE_RE = re.compile(
+    r"<invoke\s+name\s*=\s*(?P<quote>[\"'])(?P<name>[A-Za-z0-9_.:-]{1,128})(?P=quote)\s*>"
+    r"(?:(?!<invoke\b).)*</invoke>\s*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_FENCE_RE = re.compile(r" {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 
 
 class UpdateChecker:
@@ -2184,6 +2192,7 @@ class Agent:
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
         tool_batches = 0
+        corrected_tool_name = ""
         user_message = self.session.images.message(user_input)
         user_text = self.session.images.label_text(user_message)
         turn_messages: list[Json] = [user_message]
@@ -2206,6 +2215,28 @@ class Agent:
                         request = self.prepare_request(turn_messages)
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
                         self.raise_if_cancelled()
+                        textual_tool = self.textual_tool_call(content, request.tools) if not tool_calls else None
+                        if textual_tool:
+                            if corrected_tool_name:
+                                raise self.malformed_tool_call_error(corrected_tool_name, textual_tool)
+                            corrected_tool_name = textual_tool
+                            on_stream = getattr(self.model, "on_stream", None)
+                            if callable(on_stream):
+                                on_stream(f"correcting malformed tool call · {textual_tool}", "")
+                            correction_messages = [
+                                *request.messages,
+                                {"role": "user", "content": self.tool_call_correction(textual_tool)},
+                            ]
+                            while True:
+                                try:
+                                    assistant, tool_calls, content = self.model.request(correction_messages, request.tools)
+                                    break
+                                except ModelRequestRetry:
+                                    continue
+                            self.raise_if_cancelled()
+                            repeated_tool = self.textual_tool_call(content, request.tools) if not tool_calls else None
+                            if repeated_tool:
+                                raise self.malformed_tool_call_error(corrected_tool_name, repeated_tool)
                         if request.pending and not content.strip():
                             assistant, _, content = self.model.request(request.messages, [])
                             self.raise_if_cancelled()
@@ -2296,6 +2327,50 @@ class Agent:
         messages = self.context.prepare_messages(self.model, SYSTEM_PROMPT, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending)
+
+    @classmethod
+    def textual_tool_call(cls, content: str, tools: list[Json]) -> str | None:
+        """Recognize a terminal textual invoke without interpreting any of its arguments."""
+
+        match = _TEXTUAL_INVOKE_RE.search(content)
+        if match is None or cls.inside_fenced_code(content, match.start()):
+            return None
+        known = {str(function.get("name") or "") for schema in tools if isinstance(schema, dict) and isinstance((function := schema.get("function")), dict)}
+        name = match.group("name")
+        return name if name in known else None
+
+    @staticmethod
+    def inside_fenced_code(content: str, offset: int) -> bool:
+        fence: tuple[str, int] | None = None
+        for line in content[:offset].splitlines():
+            match = _FENCE_RE.match(line)
+            if match is None:
+                continue
+            marker = match.group("marker")
+            rest = match.group("rest")
+            if fence is None:
+                if marker[0] == "`" and "`" in rest:
+                    continue
+                fence = marker[0], len(marker)
+            elif marker[0] == fence[0] and len(marker) >= fence[1] and not rest.strip():
+                fence = None
+        return fence is not None
+
+    @staticmethod
+    def tool_call_correction(name: str) -> str:
+        return "\n".join(
+            [
+                "[Runtime protocol correction]",
+                f"The previous generation printed a textual <invoke> for {name}. Nothing was executed.",
+                "Continue the same task using the native tool interface. Do not output tool markup.",
+            ]
+        )
+
+    @staticmethod
+    def malformed_tool_call_error(first_name: str, repeated_name: str) -> MalformedToolCallError:
+        if first_name == repeated_name:
+            return MalformedToolCallError(f"Model emitted {repeated_name} as text twice; nothing was executed.")
+        return MalformedToolCallError(f"Model emitted tool calls as text twice ({first_name}, then {repeated_name}); nothing was executed.")
 
     def accept_pending_inputs(self, turn_messages: list[Json], pending: list[QueuedInput]) -> None:
         if not pending:

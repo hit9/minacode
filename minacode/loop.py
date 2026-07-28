@@ -34,6 +34,7 @@ from minacode.base import (
     SELECTION_FREE_TEXT,
     ConfigError,
     Json,
+    MalformedToolCallError,
     MinacodeError,
     ProviderConfig,
     Text,
@@ -551,6 +552,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                 continue
             self.emit("")
             started = time.monotonic()
+            malformed_tool_call = False
             try:
                 self.status_bar.start()
                 try:
@@ -558,6 +560,9 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                 except KeyboardInterrupt:
                     self.emit("Cancelled")
                     continue
+                except MalformedToolCallError as error:
+                    answer = str(error)
+                    malformed_tool_call = True
                 except MinacodeError as error:
                     answer = f"Error: {error}"
             finally:
@@ -565,7 +570,8 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
                 self.status_bar.stop()
             elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
-            self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+            if not malformed_tool_call:
+                self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
             self.session.save_snapshot()
 
     def start_session(self) -> None:
@@ -793,6 +799,8 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
         with self.model_stream_lock:
             if not kind:
                 self.model_stream_kind = self.model_stream_text = ""
+            elif not text:
+                self.model_stream_kind, self.model_stream_text = kind, ""
             elif text:
                 if kind != self.model_stream_kind:
                     self.model_stream_kind, self.model_stream_text = kind, ""
@@ -1791,12 +1799,16 @@ class TuiRuntime:
         self.tui.set_running("working")
         started = time.monotonic()
         cancelled = False
+        malformed_tool_call = False
         try:
             answer = self.loop.agent.run(user_input)
         except KeyboardInterrupt:
             self.submit_next(self.loop.take_pending_inputs())
             answer = ""
             cancelled = True
+        except MalformedToolCallError as error:
+            answer = str(error)
+            malformed_tool_call = True
         except MinacodeError as error:
             answer = f"Error: {error}"
         finally:
@@ -1808,7 +1820,8 @@ class TuiRuntime:
             return
         elapsed = time.monotonic() - started
         self.loop.ui.emit_answer(answer)
-        self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+        if not malformed_tool_call:
+            self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
         self.loop.session.save_snapshot()
         self.submit_next(self.loop.take_pending_inputs())
 

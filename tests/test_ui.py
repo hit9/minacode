@@ -22,7 +22,16 @@ from rich.console import Console
 import minacode.loop as loop_module
 import minacode.render as render_module
 import minacode.tui as tui_module
-from minacode.base import PROVIDER_API_CHOICES, REASONING_CHOICES, SELECTION_BACK, SELECTION_FREE_TEXT, Config, ProviderConfig, Text
+from minacode.base import (
+    PROVIDER_API_CHOICES,
+    REASONING_CHOICES,
+    SELECTION_BACK,
+    SELECTION_FREE_TEXT,
+    Config,
+    MalformedToolCallError,
+    ProviderConfig,
+    Text,
+)
 from minacode.engine import Agent, LogBlock, LogEdge, LogLine, LogRole, UpdateChecker
 from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
@@ -663,6 +672,27 @@ def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypat
     runtime.run_agent_turn("question")
 
     assert emitted[-1] == ("Cancelled", [])
+
+
+def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    answers = []
+    emitted = []
+
+    def fail(_user_input):
+        raise MalformedToolCallError("Model emitted Bash as text twice; nothing was executed.")
+
+    command_loop.agent.run = fail
+    command_loop.ui.emit_answer = answers.append
+    command_loop.emit = emitted.append
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+
+    runtime.run_agent_turn("continue")
+
+    assert answers == ["Model emitted Bash as text twice; nothing was executed."]
+    assert not any("[done in " in text for text in emitted)
 
 
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):

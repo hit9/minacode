@@ -148,6 +148,9 @@ active turn, and tool schemas.
 A tool call is intent, not a result. Consume a stream to its protocol terminal event before
 dispatching its complete call set, then return results before the model may judge or retry them.
 
+- Text that resembles tool markup never has execution authority. When a response has no native
+  calls but ends with a complete `<invoke>` for a known tool, the agent may discard it and retry
+  once with a request-local correction. Never parse its arguments or synthesize a call id or result.
 - Every emitted call receives a matching result, including malformed, refused, failed, skipped,
   and interrupted calls. This keeps replay valid across protocols.
 - Independent read-only calls may run concurrently. Mutating or interactive calls remain ordered;

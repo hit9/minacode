@@ -18,6 +18,7 @@ from minacode.base import (
     MIN_CONTEXT_SAFETY_TOKENS,
     SELECTION_FREE_TEXT,
     Config,
+    MalformedToolCallError,
     ModelError,
     ProviderConfig,
     Text,
@@ -879,6 +880,143 @@ def test_agent_rejects_empty_final_response(tmp_path):
     agent.model = EmptyModel()
     with pytest.raises(ModelError, match="empty final response"):
         agent.run("answer me")
+
+
+def test_agent_corrects_textual_tool_call_with_request_local_message(tmp_path):
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+    pseudo = 'course\n<invoke name="Bash">\n<parameter name="command">secret command</parameter>\n</invoke>'
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+            self.on_stream = None
+
+        def request(self, messages, tools=None):
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                return {"role": "assistant", "content": pseudo}, [], pseudo
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+
+    assert agent.run("continue") == "done"
+    assert len(agent.model.requests) == 2
+    first_messages = agent.model.requests[0][0]
+    correction_messages = agent.model.requests[1][0]
+    assert correction_messages[:-1] == first_messages
+    correction = correction_messages[-1]
+    assert correction["role"] == "user"
+    assert correction["content"] == Agent.tool_call_correction("Bash")
+    assert "secret command" not in correction["content"]
+    assert [message["role"] for message in s.messages] == ["user", "assistant"]
+    assert s.messages[-1]["content"] == "done"
+    assert all("<invoke" not in str(message.get("content") or "") for message in s.messages)
+    assert s.tool_records == []
+
+
+def test_agent_executes_native_call_after_textual_tool_correction_without_replaying_message(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+    pseudo = 'course\n<invoke name="Read">\n<parameter name="path">ignored.txt</parameter>\n</invoke>'
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+            self.on_stream = None
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                return {}, [], pseudo
+            if len(self.requests) == 2:
+                return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+
+    assert agent.run("read it") == "done"
+    assert len(agent.model.requests) == 3
+    assert agent.model.requests[1][:-1] == agent.model.requests[0]
+    assert "[Runtime protocol correction]" in agent.model.requests[1][-1]["content"]
+    assert all("[Runtime protocol correction]" not in str(message.get("content") or "") for message in agent.model.requests[2])
+    assert [record.name for record in s.tool_records] == ["Read"]
+    assert all("<invoke" not in str(message.get("content") or "") for message in s.messages)
+
+
+def test_agent_stops_after_second_textual_tool_call_without_persisting_either_response(tmp_path):
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+    pseudo = 'course\n<invoke name="Bash">\n<parameter name="command">never run</parameter>\n</invoke>'
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+            self.on_stream = None
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            return {}, [], pseudo
+
+    agent.model = Model()
+
+    with pytest.raises(MalformedToolCallError, match=r"Model emitted Bash as text twice; nothing was executed\."):
+        agent.run("continue")
+
+    assert len(agent.model.requests) == 2
+    assert s.tool_records == []
+    assert s.messages == [{"role": "user", "content": "continue"}]
+    assert s._active_turn_messages == []
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    restored_messages = [message for message in restored.messages if not SessionSnapshotCodec.is_internal_message(message)]
+    assert restored_messages == s.messages
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '```xml\n<invoke name="Bash">\n<parameter name="command">echo safe</parameter>\n</invoke>',
+        '<invoke name="Unknown">\n<parameter name="command">echo safe</parameter>\n</invoke>',
+        '<invoke name="Bash">\n<parameter name="command">echo incomplete</parameter>',
+        '<invoke name="Bash"><parameter name="command">echo middle</parameter></invoke>\nordinary tail',
+    ],
+)
+def test_textual_tool_call_detector_rejects_non_executable_boundaries(content):
+    tools = [{"type": "function", "function": {"name": "Bash", "parameters": {}}}]
+
+    assert Agent.textual_tool_call(content, tools) is None
+
+
+def test_agent_does_not_reclassify_content_when_native_tool_call_exists(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    output = []
+    agent = Agent(s, output_fn=output.append)
+    pseudo = '<invoke name="Bash"><parameter name="command">not trusted</parameter></invoke>'
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], pseudo
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+
+    assert agent.run("read it") == "done"
+    assert len(agent.model.requests) == 2
+    assert all("[Runtime protocol correction]" not in str(message.get("content") or "") for message in agent.model.requests[1])
+    assert [record.name for record in s.tool_records] == ["Read"]
+    assert output[0] == pseudo
+    assert len(output) == 2
+
+
+def test_system_prompt_requires_native_tool_calls():
+    assert "Use native tool calls; never print tool XML or tool-call JSON." in SYSTEM_PROMPT
 
 
 def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
