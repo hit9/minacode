@@ -28,12 +28,17 @@ Modules, with dependencies pointing downward only:
                   |
               model.py                     wire protocols, streaming, retry
                   |
-   tools/  image.py  mcp.py  skill.py      vertical features
+   tools/   mcp.py   skill.py             vertical features
                   |
              session.py                    durable semantic state
                   |
+              image.py                     image storage and model projection
+                  |
    base.py   provider_compat.py            value types, config, policy
 ```
+
+`session.py` reaches `tools/`, `mcp.py`, and `skill.py` through deferred imports, commented at
+those call sites; that is why features sit above it without a module-scope cycle.
 
 A turn, and the three ways it can end:
 
@@ -53,13 +58,13 @@ A turn, and the three ways it can end:
   |         |                            v                       |
   |         +--------------------- runner.run(batch)             |
   |                                                              |
-  |   checkpoint after every response and every batch            |
+  |   checkpoint: turn start, each tool batch, each follow-up    |
   +--------------------------------------------------------------+
       |                    |                      |
    commit               interrupt               error
       v                    v                      v
-  append to           settle partial turn,   flush partial turn,
-  session.messages    add interrupt marker   re-raise
+  append to           retract, or keep       flush partial turn,
+  session.messages    partial + marker       re-raise
 ```
 
 The turn is a transaction: messages accumulate outside durable history until one of those three
