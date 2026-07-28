@@ -906,7 +906,19 @@ class EditTool(Tool):
 
     @classmethod
     def payload_args(cls, payload: Json) -> ToolArgs:
-        return [payload.get("path", ""), payload.get("edits", [])]
+        path = payload.get("path", "")
+        raw_edits = payload.get("edits", [])
+        if not isinstance(raw_edits, list):
+            return [path, raw_edits]
+
+        # Some models repeat the top-level path inside an edit operation. It is safe to discard
+        # only an exact duplicate; a different nested path remains invalid and is rejected later.
+        edits = []
+        for item in raw_edits:
+            if isinstance(item, dict) and item.get("path") == path:
+                item = {key: value for key, value in item.items() if key != "path"}
+            edits.append(item)
+        return [path, edits]
 
     def call(self) -> str:
         path, original, created, result = self.build()

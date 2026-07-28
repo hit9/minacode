@@ -9,6 +9,7 @@
 
 ### Fixed
 - Let Edit safely relocate a stale anchor when the same line hash is unique across the file and moved by at most 50 lines; ambiguous, distant, and content-changing edits remain rejected.
+- Accept a model's harmless duplicate of Edit's top-level path inside an operation while continuing to reject conflicting nested paths and other unexpected fields.
 
 
 ## 0.14.0 - 2026-07-27

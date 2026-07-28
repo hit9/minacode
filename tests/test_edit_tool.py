@@ -5,7 +5,7 @@ import pytest
 from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import ToolCall, ToolError
-from minacode.engine import ContextManager, EditBatchPlan, LogBlock, LogEdge, LogLine, LogRole, ToolRunner
+from minacode.engine import ContextManager, EditBatchPlan, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolRunner
 from minacode.render import UiPrinter
 from minacode.session import Session
 from minacode.tools import CodeIndex, EditTool, ReadTool
@@ -224,6 +224,37 @@ def test_edit_create_decodes_escaped_newlines_for_preview_and_write(tmp_path):
     assert "+print(1)\n+print(2)\n" in preview
     assert (tmp_path / "script.py").read_text(encoding="utf-8") == "print(1)\nprint(2)\n"
     assert "<Edit path=" in output
+
+
+def test_edit_accepts_redundant_matching_path_in_model_operation(tmp_path):
+    payload = {
+        "path": "script.py",
+        "edits": [{"op": "create", "content": "print(1)\n", "path": "script.py"}],
+    }
+
+    call = ModelClient.tool_call("edit", "Edit", payload)
+    EditTool(session(tmp_path), call.args).call()
+
+    assert call.error == ""
+    assert (tmp_path / "script.py").read_text(encoding="utf-8") == "print(1)\n"
+    assert payload["edits"][0]["path"] == "script.py"
+
+
+def test_edit_rejects_different_nested_path_in_model_operation(tmp_path):
+    call = ModelClient.tool_call(
+        "edit",
+        "Edit",
+        {
+            "path": "script.py",
+            "edits": [{"op": "create", "content": "print(1)\n", "path": "other.py"}],
+        },
+    )
+
+    with pytest.raises(ToolError, match="Edit unexpected field: path"):
+        EditTool(session(tmp_path), call.args).call()
+
+    assert not (tmp_path / "script.py").exists()
+    assert not (tmp_path / "other.py").exists()
 
 
 def test_edit_creates_and_patches_file(tmp_path):
