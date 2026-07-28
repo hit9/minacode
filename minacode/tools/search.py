@@ -200,6 +200,20 @@ class SearchTool(Tool):
 
 
 class CodeIndex:
+    """Keep the symbol index usable without ever making the user wait for it.
+
+    The index is an optional accelerator: when it is absent, stale, or broken, symbol lookups
+    degrade to ordinary search rather than failing, so every integration failure here is caught and
+    turned into a status rather than an exception. Its state is published for the status bar to
+    display, which is why the work reports progress instead of returning it.
+
+    Freshness is maintained opportunistically. Checking the working tree hashes files and is slow
+    on a large repository, so it runs on a background thread after a turn rather than in the path
+    of an answer, and a single flag keeps concurrent scans from stacking up. A small number of
+    changed files is re-indexed automatically; beyond that the index is marked stale and left for
+    an explicit sync, because a large rebuild is the user's decision to spend time on.
+    """
+
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20
     # fmt: off
     SYMBOLS: ClassVar[dict[str, str]] = {

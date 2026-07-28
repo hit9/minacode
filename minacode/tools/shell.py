@@ -23,6 +23,22 @@ from minacode.tools.base import Tool
 
 
 class BashTool(Tool):
+    """Run one bash invocation in the workspace, streaming its output as it arrives.
+
+    Confirmation is the default and the read-only allowlist is the narrow exception, which exists
+    because this tool replaced the dedicated listing and search tools and prompting for every `ls`
+    would be unusable. Auto-approval therefore has to hold for the whole command, not its first
+    word: every stage of a pipeline or `&&` chain must independently be read-only, redirections to
+    real paths and command substitution disqualify it, and wrapper commands that can hide arbitrary
+    execution are never approved. The guarantee is deliberately common-sense rather than exhaustive
+    — it is a prompting heuristic, not a sandbox, and confirmation remains the real boundary.
+
+    The process runs in its own session so that cancelling kills the whole group rather than
+    orphaning children of a shell that has already exited. Output is decoded incrementally per
+    stream, so a multibyte character split across reads survives, and is streamed to the live
+    preview while it accumulates for the model.
+    """
+
     NAME = "Bash"
     _DEV_NULL_REDIRECT_RE: ClassVar[re.Pattern] = re.compile(r"(?:\d*>>?|&>|<)\s*/dev/null(?![\w./])")
     _BACKGROUND_AMP_RE: ClassVar[re.Pattern] = re.compile(r"(?<!&)&(?!&)")

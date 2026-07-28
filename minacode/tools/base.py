@@ -14,6 +14,24 @@ from minacode.session import Session, TurnDiff
 
 
 class Tool:
+    """One capability the model can invoke: its schema, its arguments, and its single call.
+
+    A subclass declares what it is through class attributes and implements `call`. The declarations
+    are not documentation — the runner reads them to decide behavior: `MUTATES` selects whether a
+    call needs confirmation, `STORES_RESULT` whether its output is retained for later recall, and
+    `PRODUCES_MODEL_OBSERVATION` whether it contributes something beyond text. `DESCRIPTION` and
+    `EXAMPLE` are prompt surface, so they cost context on every request and belong in the model's
+    language rather than the implementation's.
+
+    The JSON Schema is generated from `params_schema` and rewritten when the provider requires
+    strict function calling, where every property must be required and optionals become nullable.
+    A tool whose schema contains a free-form object cannot be expressed that way and falls back to
+    non-strict rather than being silently narrowed.
+
+    An instance is per call, not per session: it holds the arguments of exactly one invocation, so
+    state a caller reads afterward, such as the diff an edit produced, describes that call alone.
+    """
+
     NAME: ClassVar[str] = ""
     DESCRIPTION: ClassVar[str] = ""
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
