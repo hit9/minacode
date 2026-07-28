@@ -2217,15 +2217,7 @@ class Agent:
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
                         self.raise_if_cancelled()
                         while not tool_calls and (textual_tool := self.textual_tool_call(content, request.tools)):
-                            if len(malformed_tool_names) >= MAX_TEXTUAL_TOOL_CORRECTIONS:
-                                raise self.malformed_tool_call_error([*malformed_tool_names, textual_tool])
-                            malformed_tool_names.append(textual_tool)
-                            on_stream = getattr(self.model, "on_stream", None)
-                            if callable(on_stream):
-                                on_stream(
-                                    f"correcting malformed tool call {len(malformed_tool_names)}/{MAX_TEXTUAL_TOOL_CORRECTIONS} · {textual_tool}",
-                                    "",
-                                )
+                            self.start_textual_tool_correction(malformed_tool_names, textual_tool)
                             correction_messages = [
                                 *request.messages,
                                 {"role": "user", "content": self.tool_call_correction(textual_tool)},
@@ -2238,8 +2230,21 @@ class Agent:
                                     continue
                             self.raise_if_cancelled()
                         if request.pending and not content.strip():
-                            assistant, _, content = self.model.request(request.messages, [])
+                            assistant, followup_tool_calls, content = self.model.request(request.messages, [])
                             self.raise_if_cancelled()
+                            while not followup_tool_calls and (textual_tool := self.textual_tool_call(content, request.tools)):
+                                self.start_textual_tool_correction(malformed_tool_names, textual_tool)
+                                correction_messages = [
+                                    *request.messages,
+                                    {"role": "user", "content": self.followup_tool_call_correction(textual_tool)},
+                                ]
+                                while True:
+                                    try:
+                                        assistant, followup_tool_calls, content = self.model.request(correction_messages, [])
+                                        break
+                                    except ModelRequestRetry:
+                                        continue
+                                self.raise_if_cancelled()
                             if not content.strip():
                                 raise ModelError("empty live follow-up response")
                             followup_response = True
@@ -2333,14 +2338,20 @@ class Agent:
         """Recognize a terminal textual invoke without interpreting any of its arguments."""
 
         match = _TEXTUAL_INVOKE_RE.search(content)
-        if match is None or cls.inside_fenced_code(content, match.start()):
+        if match is None or cls.inside_markdown_literal(content, match.start()):
             return None
         known = {str(function.get("name") or "") for schema in tools if isinstance(schema, dict) and isinstance((function := schema.get("function")), dict)}
         name = match.group("name")
         return name if name in known else None
 
     @staticmethod
-    def inside_fenced_code(content: str, offset: int) -> bool:
+    def inside_markdown_literal(content: str, offset: int) -> bool:
+        line_start = content.rfind("\n", 0, offset) + 1
+        prefix = content[line_start:offset]
+        leading_whitespace = prefix[: len(prefix) - len(prefix.lstrip(" \t"))]
+        if len(leading_whitespace.expandtabs(4)) >= 4 or re.match(r" {0,3}>", prefix):
+            return True
+
         fence: tuple[str, int] | None = None
         for line in content[:offset].splitlines():
             match = _FENCE_RE.match(line)
@@ -2356,6 +2367,14 @@ class Agent:
                 fence = None
         return fence is not None
 
+    def start_textual_tool_correction(self, names: list[str], name: str) -> None:
+        if len(names) >= MAX_TEXTUAL_TOOL_CORRECTIONS:
+            raise self.malformed_tool_call_error([*names, name])
+        names.append(name)
+        on_stream = getattr(self.model, "on_stream", None)
+        if callable(on_stream):
+            on_stream(f"correcting malformed tool call {len(names)}/{MAX_TEXTUAL_TOOL_CORRECTIONS} · {name}", "")
+
     @staticmethod
     def tool_call_correction(name: str) -> str:
         return "\n".join(
@@ -2363,6 +2382,16 @@ class Agent:
                 "[Runtime protocol correction]",
                 f"The previous generation printed a textual <invoke> for {name}. Nothing was executed.",
                 "Continue the same task using the native tool interface. Do not output tool markup.",
+            ]
+        )
+
+    @staticmethod
+    def followup_tool_call_correction(name: str) -> str:
+        return "\n".join(
+            [
+                "[Runtime protocol correction]",
+                f"The previous generation printed a textual <invoke> for {name}. Nothing was executed.",
+                "Respond briefly in natural language to the live follow-up. Do not call a tool or output tool markup in this response.",
             ]
         )
 

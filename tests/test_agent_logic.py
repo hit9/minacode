@@ -1016,6 +1016,8 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
     "content",
     [
         '```xml\n<invoke name="Bash">\n<parameter name="command">echo safe</parameter>\n</invoke>',
+        'Example only:\n> <invoke name="Bash"><parameter name="command">echo safe</parameter></invoke>',
+        'Example only:\n    <invoke name="Bash"><parameter name="command">echo safe</parameter></invoke>',
         '<invoke name="Unknown">\n<parameter name="command">echo safe</parameter>\n</invoke>',
         '<invoke name="Bash">\n<parameter name="command">echo incomplete</parameter>',
         '<invoke name="Bash"><parameter name="command">echo middle</parameter></invoke>\nordinary tail',
@@ -1182,6 +1184,80 @@ def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_pa
     assert s.messages[3]["_responses_output"][0]["id"] == "rs_followup"
     assert s.tool_records == []
     assert s.pending_user_inputs == []
+
+
+def test_agent_corrects_textual_tool_call_in_forced_followup_response(tmp_path):
+    s = session(tmp_path)
+    queue(s, "live follow-up")
+    output = []
+    agent = Agent(s, output_fn=output.append)
+    pseudo = '<invoke name="Bash"><parameter name="command">should-not-run</parameter></invoke>'
+
+    class FakeModel:
+        def __init__(self):
+            self.requests = []
+            self.on_stream = None
+
+        def request(self, messages, tools=None):
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                return {}, [call("Bash", ["should-not-run"])], ""
+            if len(self.requests) == 2:
+                return {"role": "assistant", "content": pseudo}, [], pseudo
+            if len(self.requests) == 3:
+                return {"role": "assistant", "content": "I hear the follow-up; checking now."}, [], "I hear the follow-up; checking now."
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+
+    assert agent.run("initial request") == "done"
+    assert len(agent.model.requests) == 4
+    assert agent.model.requests[1][1] == []
+    correction_messages, correction_tools = agent.model.requests[2]
+    assert correction_tools == []
+    assert correction_messages[:-1] == agent.model.requests[1][0]
+    assert correction_messages[-1] == {"role": "user", "content": Agent.followup_tool_call_correction("Bash")}
+    assert output == ["I hear the follow-up; checking now."]
+    assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
+    assert s.tool_records == []
+    assert s.pending_user_inputs == []
+
+
+def test_agent_shares_textual_tool_call_limit_with_forced_followup_response(tmp_path):
+    s = session(tmp_path)
+    queue(s, "live follow-up")
+    output = []
+    agent = Agent(s, output_fn=output.append)
+    pseudo = '<invoke name="Bash"><parameter name="command">never-run</parameter></invoke>'
+
+    class FakeModel:
+        def __init__(self):
+            self.requests = []
+            self.on_stream = None
+
+        def request(self, messages, tools=None):
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                return {"role": "assistant", "content": pseudo}, [], pseudo
+            if len(self.requests) == 2:
+                return {}, [call("Bash", ["never-run"])], ""
+            return {"role": "assistant", "content": pseudo}, [], pseudo
+
+    agent.model = FakeModel()
+
+    with pytest.raises(
+        MalformedToolCallError,
+        match=r"Model emitted Bash as text 6 times; none of the textual calls were executed\.",
+    ):
+        agent.run("initial request")
+
+    assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 2
+    assert agent.model.requests[1][1]
+    assert all(tools == [] for _messages, tools in agent.model.requests[2:])
+    assert output == []
+    assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
+    assert s.tool_records == []
+    assert [item.text for item in s.pending_user_inputs] == ["live follow-up"]
 
 
 def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
