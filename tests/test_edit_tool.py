@@ -363,6 +363,56 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
     assert "current is anchor=0:" + ReadTool.line_hash("old\n") + " | old" in str(error.value)
 
 
+@pytest.mark.parametrize(
+    ("stale", "current", "expected"),
+    [
+        (anchor(1, "target\n"), "x\na\ntarget\nc\n", "x\na\nupdated\nc\n"),
+        (anchor(2, "target\n"), "a\ntarget\nc\n", "a\nupdated\nc\n"),
+    ],
+)
+def test_edit_relocates_unique_nearby_anchor(tmp_path, stale, current, expected):
+    path = tmp_path / "note.txt"
+    path.write_text(current, encoding="utf-8")
+
+    EditTool(session(tmp_path), ["note.txt", [{"op": "replace", "start": stale, "end": stale, "content": "updated\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == expected
+
+
+def test_edit_relocates_both_range_anchors(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("x\na\nb\nc\nd\n", encoding="utf-8")
+
+    EditTool(
+        session(tmp_path),
+        ["note.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(2, "c\n"), "content": "updated\n"}]],
+    ).call()
+
+    assert path.read_text(encoding="utf-8") == "x\na\nupdated\nd\n"
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        "x\na\ntarget\n" + "filler\n" * 60 + "target\n",
+        "filler\n" * (ReadTool.MAX_ANCHOR_DRIFT + 2) + "target\n",
+        "a\nchanged\n",
+    ],
+    ids=("duplicate-anywhere", "beyond-drift-limit", "content-changed"),
+)
+def test_edit_does_not_guess_unsafe_anchor_relocation(tmp_path, current):
+    path = tmp_path / "note.txt"
+    path.write_text(current, encoding="utf-8")
+
+    with pytest.raises(ToolError, match="stale anchor"):
+        EditTool(
+            session(tmp_path),
+            ["note.txt", [{"op": "replace", "start": anchor(1, "target\n"), "end": anchor(1, "target\n"), "content": "updated\n"}]],
+        ).call()
+
+    assert path.read_text(encoding="utf-8") == current
+
+
 def test_line_hash_ignores_trailing_newline():
     # An anchor must depend only on the visible content, so a line's anchor stays stable when only
     # the trailing newline changes (e.g. the last line gaining/losing the final "\n"). It must also
@@ -495,12 +545,26 @@ def test_tool_runner_batch_edit_accepts_drifted_anchor(tmp_path, monkeypatch):
     assert s.tool_errors == []
 
 
-def test_tool_runner_batch_edit_barrier_stops_original_anchor_mapping(tmp_path, monkeypatch):
+def test_tool_runner_relocates_anchor_drifted_before_batch(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
     path = tmp_path / "code.txt"
-    path.write_text("a\nb\nc\n", encoding="utf-8")
+    path.write_text("x\na\nb\nc\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run([ToolCall("replace", "Edit", ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]])])
+
+    assert path.read_text(encoding="utf-8") == "x\na\nB\nc\n"
+    assert s.tool_errors == []
+
+
+def test_tool_runner_batch_edit_barrier_rejects_ambiguous_relocation(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nc\n", encoding="utf-8")
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
     runner.run(
@@ -511,7 +575,7 @@ def test_tool_runner_batch_edit_barrier_stops_original_anchor_mapping(tmp_path, 
         ]
     )
 
-    assert path.read_text(encoding="utf-8") == "a\nx\nb\nc\n"
+    assert path.read_text(encoding="utf-8") == "a\nx\nb\nc\nc\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
     assert s.tool_errors
 

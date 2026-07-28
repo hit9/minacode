@@ -750,6 +750,9 @@ class EditBatchPlan:
             if current is not None:
                 return current
             raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
+        relocated = ReadTool.relocated_anchor([line.text for line in state.lines], index, expected)
+        if relocated is not None:
+            return relocated
         current_line = ReadTool.anchor_line(index, state.lines[index].text) if index < len(state.lines) else "out of range"
         raise ToolError(f"stale anchor {anchor}; current is {current_line}")
 

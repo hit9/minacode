@@ -248,6 +248,7 @@ class Tool:
 
 class ReadTool(Tool):
     NAME = "Read"
+    MAX_ANCHOR_DRIFT: ClassVar[int] = 50
     DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; use Recall(tr.N) for full stored output."
     # fmt: off
     EXAMPLE = (
@@ -336,6 +337,13 @@ class ReadTool(Tool):
     @classmethod
     def anchor_matches(cls, line: str, expected: str) -> bool:
         return expected == cls.line_hash(line) or expected == cls.indexed_line_hash(line)
+
+    @classmethod
+    def relocated_anchor(cls, lines: list[str], index: int, expected: str) -> int | None:
+        matches = [current for current, line in enumerate(lines) if cls.anchor_matches(line, expected)]
+        if len(matches) != 1 or abs(matches[0] - index) > cls.MAX_ANCHOR_DRIFT:
+            return None
+        return matches[0]
 
     def needs_confirmation(self) -> bool:
         return any(not self.session.in_cwd(path) for path, _ in self.targets())
@@ -1138,12 +1146,15 @@ class EditTool(Tool):
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
         index, expected = ReadTool.require_anchor(anchor)
+        if index < len(lines) and ReadTool.anchor_matches(lines[index], expected):
+            return index
+        relocated = ReadTool.relocated_anchor(lines, index, expected)
+        if relocated is not None:
+            return relocated
         if index >= len(lines):
             raise ToolError("anchor line out of range")
-        if not ReadTool.anchor_matches(lines[index], expected):
-            current = ReadTool.anchor_line(index, lines[index])
-            raise ToolError(f"stale anchor {anchor}; current is {current}")
-        return index
+        current = ReadTool.anchor_line(index, lines[index])
+        raise ToolError(f"stale anchor {anchor}; current is {current}")
 
 
 class BashTool(Tool):
