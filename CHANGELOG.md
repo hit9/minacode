@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.15.0 - 2026-07-28
+
 ### Added
 - Report when retention deletes saved sessions, naming the count, the inactivity window, and the
   setting that governs it, instead of removing unrecoverable work silently.
