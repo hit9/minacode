@@ -71,6 +71,21 @@ Dependencies point toward stable concepts: configuration and value types do not 
 feature and session modules do not know the command loop or terminal; orchestration composes them at
 the boundary. Do not introduce a shared module merely to break a cycle—fix the ownership instead.
 
+### Startup path
+
+Nothing a first keystroke does not need may be imported at startup. Interactive startup was once
+939ms, of which 934ms was imports and 5ms was work; the prompt could not echo a character until it
+finished. The heavy third-party SDKs are therefore imported at their point of use, not at module
+scope: `MCPManager` defers `fastmcp` (~0.35s) and `ModelClient` defers `anthropic` and `openai`
+(~0.8s together), each declaring the names under `TYPE_CHECKING` so annotations and type checking
+stay complete. Do not lift these back to module scope for tidiness; that is the regression, and
+`tests/test_cli.py` asserts a fresh interpreter loads neither SDK.
+
+`main` then warms the deferred SDKs on a daemon thread so the deferral does not simply move the
+cost onto the first request. Racing that thread is safe because CPython locks imports per module;
+the reasoning and its limits are recorded on `warm_provider_sdks`, beside the code that depends on
+them.
+
 ### Future MCP client lifecycle
 
 `MCPManager` currently opens a short-lived client for each discovery, tool, or resource operation.

@@ -46,8 +46,24 @@ def warm_provider_sdks() -> None:
     ModelClient imports them lazily because they cost ~0.8s, which was the whole of the delay
     before a fresh prompt echoed keystrokes. Loading them here in the background keeps the prompt
     instant without moving that cost onto the first request: the user's first message takes far
-    longer to type than the import takes to finish, and Python's per-module import locks make a
-    concurrent import from the request path simply wait for this one.
+    longer to type than the import takes to finish.
+
+    Racing this thread against the request path is safe, and deliberately so:
+
+    - CPython locks imports per module (`importlib._bootstrap._ModuleLock`), so a request-path
+      `from openai import OpenAI` that lands mid-warm-up blocks on that module's lock and then
+      reads the finished module from `sys.modules`. It cannot observe a half-initialized module,
+      and both threads therefore bind the same class object.
+    - Per-module locks can deadlock only on an import cycle entered from two threads at once.
+      `anthropic` and `openai` do not import each other, and their shared dependencies form a DAG,
+      so the lock-wait graph has no cycle. `_DeadlockError` detection is the backstop if that ever
+      stops being true.
+    - The thread is a daemon because warming must never delay exit. CPython freezes daemon threads
+      at finalization rather than letting them run against a torn-down import system, so quitting
+      mid-import is silent.
+
+    Verified by stress test: a barrier-synchronized four-way race and repeated immediate-exit runs
+    produce no deadlock, no exception, and no stderr noise.
     """
 
     def load() -> None:
