@@ -1907,6 +1907,9 @@ class TuiRuntime:
             return True
         if handled:
             self.reset_turn()
+            # A command must not strand queued follow-ups: flush them as run_agent_turn does, so
+            # they keep chaining once the command completes (e.g. /compact then queued input).
+            self.submit_next(self.loop.take_pending_inputs())
             return True
         return False
 

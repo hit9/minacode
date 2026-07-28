@@ -662,6 +662,77 @@ def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
     assert dispatched == [entered.strip()]
 
 
+def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    command_loop.session.enqueue_user_input("followup A")
+    command_loop.session.enqueue_user_input("followup B")
+
+    # Empty history makes /compact return early (no model) yet still exercise the command path.
+    assert runtime.dispatch("/compact")
+
+    # The queued follow-ups flush exactly as they do after a model turn: the first is ready to
+    # run and the rest stay queued, instead of being stranded behind the command.
+    assert runtime.pending.qsize() == 1
+    assert runtime.pending.get_nowait() == "followup A"
+    assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup B"]
+
+
+def test_tui_dispatch_command_flushes_single_followup_completely(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.command = lambda text: (True, False)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    command_loop.session.enqueue_user_input("only followup")
+
+    assert runtime.dispatch("/compact")
+
+    assert runtime.pending.qsize() == 1
+    assert runtime.pending.get_nowait() == "only followup"
+    assert command_loop.session.pending_user_inputs == []
+
+
+def test_tui_dispatch_command_with_empty_queue_stays_idle(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.command = lambda text: (True, False)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+
+    assert runtime.dispatch("/help")
+
+    assert runtime.pending.qsize() == 0
+    assert command_loop.session.pending_user_inputs == []
+
+
+def test_tui_dispatch_non_command_leaves_followups_for_agent_turn(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    command_loop.session.enqueue_user_input("followup A")
+
+    # A plain message is not a command: dispatch returns False and must not flush the queue,
+    # because run_agent_turn owns follow-up dispatch for model turns (no double dispatch).
+    assert not runtime.dispatch("answer me")
+
+    assert runtime.pending.qsize() == 0
+    assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup A"]
+
+
+def test_tui_dispatch_exit_does_not_flush_queued_followups(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.command = lambda text: (True, True)
+    command_loop.tui = TuiApp()
+    command_loop.tui.exit = lambda: None
+    runtime = TuiRuntime(command_loop)
+    command_loop.session.enqueue_user_input("followup A")
+
+    assert runtime.dispatch("/exit")
+
+    assert runtime.pending.qsize() == 0
+    assert [item.text for item in command_loop.session.pending_user_inputs] == ["followup A"]
+
+
 def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monkeypatch):
     output = []
     scenario_session = session(tmp_path)
