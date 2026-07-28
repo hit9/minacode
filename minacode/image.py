@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 IMAGE_MARKER = "\ufffc"
 IMAGE_REFS_KEY = "_images"
+TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
+TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
 SUPPORTED_FORMATS = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -205,6 +207,29 @@ class ImageInputs:
             "content": stored.display_text(),
             IMAGE_REFS_KEY: [image.to_json() for image in stored.images],
         }
+
+    def load(self, path: str, *, source_text: str = "") -> ImageRef:
+        """Validate and store one explicit local image for model input."""
+
+        image = self._inspect(path, source_text=source_text or path)
+        assert image is not None
+        return self.prepare(UserInput(IMAGE_MARKER, (image,))).images[0]
+
+    def tool_observation(self, images: tuple[ImageRef, ...]) -> Json:
+        """Build a durable multimodal user-role observation produced by a tool batch."""
+
+        markers = " ".join(IMAGE_MARKER for _image in images)
+        message = self.message(UserInput(TOOL_IMAGE_OBSERVATION_PREFIX + "\n" + markers, images))
+        message[TOOL_IMAGE_OBSERVATION_KEY] = True
+        return message
+
+    @classmethod
+    def is_tool_observation(cls, message: Json) -> bool:
+        return (
+            message.get("role") == "user"
+            and message.get(TOOL_IMAGE_OBSERVATION_KEY) is True
+            and str(message.get("content") or "").startswith(TOOL_IMAGE_OBSERVATION_PREFIX)
+        )
 
     def retain(self, images: tuple[ImageRef, ...]) -> None:
         self.retained_refs.update(image.ref for image in images)

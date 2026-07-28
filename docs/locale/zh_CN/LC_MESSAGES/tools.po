@@ -55,6 +55,14 @@ msgid ""
 " that later edits can verify."
 msgstr "读取一个或多个 UTF-8 文件中的指定行范围。返回的每一行都有可供后续编辑验证的锚点。"
 
+#: ../../tools.md:39
+msgid "**`ViewImage`**"
+msgstr "**`ViewImage`**"
+
+#: ../../tools.md:40
+msgid "Opens one local PNG, JPEG, WebP, or single-frame GIF as visual input for the active model. The agent can use it proactively for screenshots, mockups, diagrams, and generated assets. Images outside the workspace require confirmation, and the active provider/model must support image input."
+msgstr "将一个本地 PNG、JPEG、WebP 或单帧 GIF 作为视觉输入提供给当前模型。Agent 可主动用它查看截图、模型图、图表和生成的素材。查看 workspace 外的图片需要确认，且当前 provider/model 必须支持图片输入。"
+
 #: ../../tools.md:21
 msgid "A shortened result looks like this:"
 msgstr "缩短后的结果如下："

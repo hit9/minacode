@@ -15,11 +15,20 @@ from prompt_toolkit.history import FileHistory
 
 import minacode.loop as loop_module
 import minacode.tui as tui_module
-from minacode.base import Config, ModelError, ProviderConfig
-from minacode.engine import Agent, ContextManager, ModelClient
-from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
+from minacode.base import Config, ModelError, ProviderConfig, ToolCall, ToolError
+from minacode.engine import Agent, ContextManager, ModelClient, ToolRunner
+from minacode.image import (
+    IMAGE_MARKER,
+    IMAGE_REFS_KEY,
+    TOOL_IMAGE_OBSERVATION_KEY,
+    TOOL_IMAGE_OBSERVATION_PREFIX,
+    ImageInputs,
+    ImageRef,
+    UserInput,
+)
 from minacode.loop import CommandLoop
 from minacode.session import Session, SessionSnapshotStore
+from minacode.tools import ViewImageTool
 from minacode.tui import TuiApp
 
 
@@ -206,6 +215,133 @@ def test_protocol_payloads_use_each_standard_image_shape(tmp_path):
     model = ModelClient(s)
     assert model.responses_input([message]) == [{"role": "user", "content": s.images.responses_content(message)}]
     assert model.anthropic_messages([message]) == [{"role": "user", "content": s.images.anthropic_content(message)}]
+
+
+def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path):
+    s = session(tmp_path)
+    path = image_file(tmp_path / "screen shot.png", size=(640, 480))
+    tool = ViewImageTool(s, [path.name])
+
+    output = tool.call()
+    observation = tool.model_observation()
+
+    assert tool.needs_confirmation() is False
+    assert 'path="screen shot.png"' in output
+    assert 'media_type="image/png" width=640 height=480' in output
+    assert observation is not None
+    assert ImageInputs.is_tool_observation(observation)
+    assert observation["content"] == TOOL_IMAGE_OBSERVATION_PREFIX + "\n[Image #1 · screen shot.png]"
+    assert s.images.chat_content(observation)[0]["type"] == "image_url"
+    assert ImageInputs.is_tool_observation({key: value for key, value in observation.items() if key != IMAGE_REFS_KEY})
+    assert not ImageInputs.is_tool_observation({"role": "user", "content": observation["content"]})
+    without_marker = {key: value for key, value in observation.items() if key != TOOL_IMAGE_OBSERVATION_KEY}
+    assert ContextManager(s).estimated_tokens([observation]) == ContextManager(s).estimated_tokens([without_marker])
+
+
+def test_view_image_tool_rejects_invalid_or_disabled_input(tmp_path):
+    s = session(tmp_path)
+    (tmp_path / "not-image.png").write_text("not pixels", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="Cannot read image"):
+        ViewImageTool(s, ["not-image.png"]).call()
+
+    path = image_file(tmp_path / "disabled.png")
+    s.config.provider.image_input = "off"
+    with pytest.raises(ToolError, match="Image input is disabled"):
+        ViewImageTool(s, [path.name]).call()
+
+
+def test_view_image_tool_requires_confirmation_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = image_file(tmp_path / "outside.png")
+    s = Session(cwd=str(workspace), config=Config(data_dir=str(tmp_path / "data")))
+    tool = ViewImageTool(s, [str(outside)])
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "no", output_fn=lambda _text: None)
+
+    assert tool.needs_confirmation() is True
+    messages = runner.run([ToolCall("outside", "ViewImage", [str(outside)])])
+    assert [message["role"] for message in messages] == ["tool"]
+    assert "refused" in messages[0]["content"]
+    assert s.tool_records == []
+
+
+def test_view_image_batch_returns_all_tool_results_before_observation(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "screen.png")
+    (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None)
+    calls = [
+        ToolCall("image", "ViewImage", ["screen.png"]),
+        ToolCall("read", "Read", [{"path": "notes.txt", "ranges": [[0, 1]]}]),
+    ]
+
+    messages = runner.run(calls)
+
+    assert [message["role"] for message in messages] == ["tool", "tool", "user"]
+    assert [message["tool_call_id"] for message in messages[:2]] == ["image", "read"]
+    assert ImageInputs.is_tool_observation(messages[-1])
+    assert runner.parallel_safe(calls[0]) is False
+
+
+def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "screen.png", size=(8, 6))
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None)
+    call = ToolCall("image", "ViewImage", ["screen.png"])
+    assistant = Agent.assistant_turn_message({}, [call], "")
+    active = [assistant, *runner.run([call])]
+    model = ModelClient(s)
+
+    chat = model.chat_messages(active)
+    assert [message["role"] for message in chat] == ["assistant", "tool", "user"]
+    assert [part["type"] for part in chat[-1]["content"]] == ["image_url", "text"]
+    assert TOOL_IMAGE_OBSERVATION_KEY not in chat[-1]
+
+    responses = model.responses_input(active)
+    assert [item.get("type", item.get("role")) for item in responses] == ["function_call", "function_call_output", "user"]
+    assert [part["type"] for part in responses[-1]["content"]] == ["input_image", "input_text"]
+
+    anthropic = model.anthropic_messages(active)
+    assert [message["role"] for message in anthropic] == ["assistant", "user"]
+    assert [part["type"] for part in anthropic[-1]["content"]] == ["tool_result", "image", "text"]
+
+
+def test_agent_persists_view_image_observation_without_replaying_it_as_user_input(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "screen.png")
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                return {}, [ToolCall("image", "ViewImage", ["screen.png"])], ""
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+
+    assert agent.run("inspect the screenshot") == "done"
+    assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user", "assistant"]
+    observation = s.messages[-2]
+    assert ImageInputs.is_tool_observation(observation)
+    assert ContextManager(s).latest_user_index(s.messages) == 0
+    assert ContextManager(s).history_title(s.messages) == "inspect the screenshot"
+
+    rendered = []
+    command_loop = CommandLoop(agent, output_fn=lambda _text: None)
+    command_loop.ui.emit_answer = lambda *args, **kwargs: rendered.append((args, kwargs))
+    command_loop.render_transcript_message(observation)
+    assert rendered == []
+
+    s.save_snapshot()
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    restored_observation = next(message for message in restored.messages if ImageInputs.is_tool_observation(message))
+    assert ImageInputs.is_tool_observation(restored_observation)
+    assert restored.images.chat_content(restored_observation)[0]["type"] == "image_url"
 
 
 def test_disabled_image_input_degrades_historical_messages_to_labels(tmp_path):

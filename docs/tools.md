@@ -36,6 +36,11 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     In `684:234ew`, `684` is the zero-based line number and `234ew` is a short hash of that
     line's content. The line number locates the edit; the hash proves that the line has not
     changed since it was read.
+* - **`ViewImage`**
+  - Opens one local PNG, JPEG, WebP, or single-frame GIF as visual input for the active model.
+    The agent can use it proactively for screenshots, mockups, diagrams, and generated assets.
+    Images outside the workspace require confirmation, and the active provider/model must support
+    image input.
 * - **`Search`**
   - Finds text with case-insensitive regular expressions, optionally limited by path or filename
     pattern. It skips hidden, binary, and gitignored files and returns editable anchors.

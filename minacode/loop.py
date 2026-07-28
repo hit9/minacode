@@ -226,7 +226,7 @@ class CommandLoop:
 
 ### Tools
 
-Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
+Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
 
 `Skill(name)` loads a skill's full instructions on demand (see the SKILLS section / `$skill`).
 """
@@ -622,7 +622,7 @@ Read, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
             self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL if has_tool_calls else TurnBox.ROOT_LEVEL)
         if role == "assistant":
             return self.render_transcript_tool_calls(message, tool_record_index, diffs or {})
-        if role == "user" and content:
+        if role == "user" and content and not ImageInputs.is_tool_observation(message):
             self.ui.emit_answer(content, role=role, rule=False)
         return tool_record_index
 

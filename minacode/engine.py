@@ -50,7 +50,7 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.image import IMAGE_REFS_KEY, ImageInputs, UserInput
+from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs, UserInput
 from minacode.prompts import (
     COMPACTION_PROMPT,
     COMPACTION_SUMMARY_TITLE,
@@ -502,7 +502,11 @@ class ContextManager:
 
     def history_title(self, messages: list[Json]) -> str:
         for message in messages:
-            if message.get("role") == "user" and not str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE):
+            if (
+                message.get("role") == "user"
+                and not str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE)
+                and not ImageInputs.is_tool_observation(message)
+            ):
                 return Tool.compact(str(message.get("content") or ""), 80)
         return Tool.compact(self.messages_text(messages[:1]), 80) or "compacted context"
 
@@ -552,7 +556,11 @@ class ContextManager:
 
     def latest_user_index(self, messages: list[Json]) -> int | None:
         for index in range(len(messages) - 1, -1, -1):
-            if messages[index].get("role") == "user" and not self.is_compaction_summary(messages[index]):
+            if (
+                messages[index].get("role") == "user"
+                and not self.is_compaction_summary(messages[index])
+                and not ImageInputs.is_tool_observation(messages[index])
+            ):
                 return index
         return None
 
@@ -609,7 +617,7 @@ class ContextManager:
 
         payload: list[Json] = []
         for message in messages:
-            estimated = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
+            estimated = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY)}
             if readable := readable_provider_context(message):
                 estimated["_provider_context"] = readable
             payload.append(estimated)
@@ -829,6 +837,7 @@ class ToolRunner:
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []
+        observations: list[Json] = []
         # Shared, mutated across segments: `first` controls which display carries batch_suffix;
         # `refused` short-circuits the rest of the batch once a confirmation is declined.
         state = {"first": True, "refused": False}
@@ -844,22 +853,26 @@ class ToolRunner:
                 index = end
                 continue
             end = index + 1 if self.edit_barrier(calls[index]) else self.edit_segment_end(calls, index)
-            messages.extend(self.run_serial(calls[index:end], batch_suffix, state))
+            messages.extend(self.run_serial(calls[index:end], batch_suffix, state, observations))
             index = end
-        return messages
+        return [*messages, *observations]
 
     def skip_message(self, call: ToolCall) -> Json:
         content = self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True)
         return {"role": "tool", "tool_call_id": call.id, "content": content}
 
-    def run_serial(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool]) -> list[Json]:
+    def run_serial(self, segment: list[ToolCall], batch_suffix: str, state: dict[str, bool], observations: list[Json]) -> list[Json]:
         messages: list[Json] = []
         plan = EditBatchPlan(self.session).build(segment) if any(call.name == "Edit" for call in segment) else EditBatchPlan(self.session)
         for call in segment:
             suffix = batch_suffix if state["first"] else ""
             state["first"] = False
-            status, content = self.run_one(call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
+            status, content, observation = self.run_one(
+                call, batch_suffix=suffix, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, "")
+            )
             messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+            if observation is not None:
+                observations.append(observation)
             if status == "refused":
                 state["refused"] = True
         return messages
@@ -895,7 +908,7 @@ class ToolRunner:
         # read-only MCP). Edit is coordinated serially by EditBatchPlan;
         # Bash streams live output and mutates; Ask blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or call.name == "Edit" or tool_class in (BashTool, JobTool, AskTool):
+        if tool_class is None or call.name == "Edit" or tool_class in (BashTool, JobTool, AskTool) or tool_class.PRODUCES_MODEL_OBSERVATION:
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()
@@ -940,7 +953,7 @@ class ToolRunner:
 
     def edit_barrier(self, call: ToolCall) -> bool:
         tool_class = TOOL_REGISTRY.get(call.name)
-        return call.name != "Edit" and (tool_class is None or tool_class.MUTATES)
+        return call.name != "Edit" and (tool_class is None or tool_class.MUTATES or tool_class.PRODUCES_MODEL_OBSERVATION)
 
     def run_one(
         self,
@@ -948,12 +961,12 @@ class ToolRunner:
         batch_suffix: str = "",
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
         plan_error: str = "",
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, Json | None]:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
-            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", d=ToolDisplay(batch_suffix=batch_suffix))
+            return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", d=ToolDisplay(batch_suffix=batch_suffix)), None
         if call.error:
-            return "failed", self.reject(call, f"ToolError: {call.error}", d=ToolDisplay(batch_suffix=batch_suffix))
+            return "failed", self.reject(call, f"ToolError: {call.error}", d=ToolDisplay(batch_suffix=batch_suffix)), None
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
@@ -980,7 +993,7 @@ class ToolRunner:
                 confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
-                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, d=d)
+                    return "refused", self.finish(call, output, failed=True, elapsed=time.monotonic() - started, d=d), None
                 d.approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 if not d.nested_display:
@@ -988,11 +1001,12 @@ class ToolRunner:
                     d.nested_display = True
                 self.live_start()
             output = self.call_tool(tool, planned_edit)
+            observation = tool.model_observation()
         except ToolError as error:
-            return "failed", self.reject(call, f"ToolError: {error}", d=d)
+            return "failed", self.reject(call, f"ToolError: {error}", d=d), None
         except Exception as error:  # noqa: BLE001 - tool failures are serialized back to the model.
-            return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d)
-        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d)
+            return "failed", self.finish(call, f"ToolError: {error}", failed=True, elapsed=time.monotonic() - started, d=d), None
+        return "ok", self.finish(call, output, elapsed=time.monotonic() - started, turn_diff=tool.turn_diff(), d=d), observation
 
     def reject(
         self,
@@ -1270,9 +1284,12 @@ class ModelClient:
             history = "all"
 
         converted: list[Json] = []
-        latest_user = max((index for index, message in enumerate(messages) if message.get("role") == "user"), default=-1)
+        latest_user = max(
+            (index for index, message in enumerate(messages) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
+            default=-1,
+        )
         for index, message in enumerate(messages):
-            clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY)}
+            clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY)}
             keep_reasoning = history == "all" or (
                 bool(message.get("tool_calls")) and (history == "tool_calls" or (history == "current_turn" and index > latest_user))
             )
@@ -1299,7 +1316,10 @@ class ModelClient:
             system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
             estimated_messages = projected
             if not anthropic_keeps_prior_thinking(self.session.config.provider.model):
-                latest_user = max((index for index, message in enumerate(projected) if message.get("role") == "user"), default=-1)
+                latest_user = max(
+                    (index for index, message in enumerate(projected) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
+                    default=-1,
+                )
                 active_assistants = [index for index, message in enumerate(projected) if index > latest_user and message.get("role") == "assistant"]
                 keep_from = (
                     latest_user

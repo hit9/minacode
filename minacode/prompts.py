@@ -10,7 +10,7 @@ SCOPE:
 TOOLS:
 - Use exact tools and named arguments; schemas are authoritative. A call is a request: end the response and wait; never invent or retry unseen results.
 - Use native tool calls; never print tool XML or tool-call JSON.
-- Read inspects files; Search finds text and editable anchors; InspectCode handles symbols, references, implementations, and call chains; Edit writes files.
+- Read inspects text files; ViewImage inspects local images; Search finds text and editable anchors; InspectCode handles symbols, references, implementations, and call chains; Edit writes files.
 - Bash runs quick shell commands; prefer `rg`, and write source with Edit. Use Job for long commands; poll or kill it when done, and wait for jobs needed by the task.
 - Recall retrieves bounded tr.N tool output; RecallContext retrieves compacted seg.N history; Note maintains goal, plan, facts, and checks; MCP calls external tools. Ask only after safe progress and when blocked.
 - Batch independent calls in one request; serialize dependencies. Never repeat a failed call unchanged; diagnose, then adjust.

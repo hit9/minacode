@@ -158,6 +158,9 @@ dispatching its complete call set, then return results before the model may judg
   and interrupted calls. This keeps replay valid across protocols.
 - Independent read-only calls may run concurrently. Mutating or interactive calls remain ordered;
   all outcomes are displayed, stored, and returned in the model's original order.
+- A tool may produce a model observation in addition to its matched textual result. Observations
+  follow every result in the proposed batch, use the durable protocol-neutral message model, and
+  are projected into each provider's native multimodal shape only at the request boundary.
 - Interrupting before assistant activity retracts the turn. Once text or a tool call is visible,
   preserve the partial turn and add cancellation results for unanswered calls.
 

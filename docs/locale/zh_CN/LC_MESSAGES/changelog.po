@@ -28,6 +28,10 @@ msgid "Unreleased"
 msgstr ""
 
 #: ../../../CHANGELOG.md:8
+msgid "Add a `ViewImage` tool that lets the agent proactively inspect local PNG, JPEG, WebP, and single-frame GIF files through the active model's image input, with confirmation for paths outside the workspace and durable provider-neutral replay across Chat Completions, Responses, and Anthropic Messages."
+msgstr "新增 `ViewImage` 工具，使 agent 可通过当前模型的图片输入主动查看本地 PNG、JPEG、WebP 和单帧 GIF 文件；查看 workspace 外的路径需要确认，并可在 Chat Completions、Responses 和 Anthropic Messages 间以 provider-neutral 形式持久回放。"
+
+#: ../../../CHANGELOG.md:8
 msgid "Keep agent action within the phase the user actually requested: preparation, investigation, and plans no longer imply permission to implement, and live follow-ups can pause or narrow work immediately. Calibrate reasoning depth to task risk so routine, reversible work proceeds once the next step is clear while ambiguous or high-risk decisions retain deeper analysis."
 msgstr "将 agent 的行动限制在用户实际要求的阶段内：准备、调查和计划不再隐含实施权限，实时追加指令可以立即暂停或收窄工作。根据任务风险校准推理深度，使常规、可逆的工作在下一步明确后立即推进，同时为模糊或高风险决策保留更深入的分析。"
 
@@ -72,7 +76,7 @@ msgstr "将已随当前请求发送的追加指令移到 working 分隔线上方
 #: ../../../CHANGELOG.md:774 ../../../CHANGELOG.md:799
 #: ../../../CHANGELOG.md:814
 msgid "Added"
-msgstr ""
+msgstr "新增"
 
 #: ../../../CHANGELOG.md:8
 msgid "Stream reasoning and answer text by default over OpenAI-compatible Chat Completions, OpenAI Responses, and Anthropic Messages. The running TUI now distinguishes `thinking` from `responding` while preserving the completed Rich transcript, tool-call replay, usage accounting, cancellation, and retry behavior."

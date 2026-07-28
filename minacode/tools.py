@@ -25,7 +25,8 @@ from typing import Any, ClassVar, cast
 
 import code_symbol_index as csi
 
-from minacode.base import Json, Text, ToolArgs, ToolError
+from minacode.base import Json, ModelError, Text, ToolArgs, ToolError
+from minacode.image import ImageRef
 from minacode.session import AgentState, BackgroundJob, HistorySegment, PlanItem, Session, TurnDiff
 
 
@@ -36,6 +37,7 @@ class Tool:
     RANGE_SCHEMA: ClassVar[Json] = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
     SKIP_DIRS: ClassVar[set[str]] = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
     MUTATES: ClassVar[bool] = False
+    PRODUCES_MODEL_OBSERVATION: ClassVar[bool] = False
     STORES_RESULT: ClassVar[bool] = True
     LOG_LEXER: ClassVar[str] = "tool-args"
 
@@ -46,6 +48,10 @@ class Tool:
     def turn_diff(self) -> TurnDiff | None:
         """The file diff this tool produced on its last run, or None if it made no edit. Overridden
         by EditTool; the runner records it against the stored result for the /diff viewer."""
+        return None
+
+    def model_observation(self) -> Json | None:
+        """A model-facing observation produced by the completed call, if any."""
         return None
 
     @classmethod
@@ -386,6 +392,53 @@ class ReadTool(Tool):
             out.append("</content>")
         out.append("</Read>")
         return "\n".join(out)
+
+
+class ViewImageTool(Tool):
+    NAME = "ViewImage"
+    DESCRIPTION = (
+        "View one local image as visual model input. Supports PNG, JPEG, WebP, and single-frame GIF; paths outside the workspace require confirmation."
+    )
+    PRODUCES_MODEL_OBSERVATION = True
+
+    def __init__(self, session: Session, args: ToolArgs):
+        super().__init__(session, args)
+        self.image: ImageRef | None = None
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        return cls.object_schema({"path": {"type": "string", "minLength": 1, "description": "Local image path to view"}}, ["path"])
+
+    @classmethod
+    def payload_args(cls, payload: Json) -> ToolArgs:
+        return [payload.get("path")]
+
+    def path(self) -> str:
+        path = self.strings(min_count=1, max_count=1)[0].strip()
+        if not path:
+            raise ToolError("ViewImage path must be non-empty")
+        return self.session.resolve_path(path)
+
+    def needs_confirmation(self) -> bool:
+        return not self.session.in_cwd(self.path())
+
+    def short_args(self) -> list[str]:
+        return [self.session.relpath(self.path())]
+
+    def call(self) -> str:
+        path = self.path()
+        try:
+            self.image = self.session.images.load(path, source_text=self.session.relpath(path))
+        except ModelError as error:
+            raise ToolError(str(error)) from error
+        return (
+            f"<ViewImage path={json.dumps(self.session.relpath(path))} "
+            f"media_type={json.dumps(self.image.media_type)} width={self.image.width} "
+            f"height={self.image.height} bytes={self.image.size}/>"
+        )
+
+    def model_observation(self) -> Json | None:
+        return self.session.images.tool_observation((self.image,)) if self.image is not None else None
 
 
 class SearchTool(Tool):
@@ -2123,7 +2176,7 @@ class SkillTool(Tool):
 
 # fmt: off
 TOOLS: tuple[type[Tool], ...] = (
-    MCPTool, SkillTool, ReadTool, InspectCodeTool, SearchTool, EditTool,
+    MCPTool, SkillTool, ReadTool, ViewImageTool, InspectCodeTool, SearchTool, EditTool,
     BashTool, JobTool, RecallTool, RecallContextTool, NoteTool, AskTool,
 )
 # fmt: on

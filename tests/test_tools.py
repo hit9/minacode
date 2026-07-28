@@ -25,6 +25,7 @@ from minacode.tools import (
     SearchTool,
     SkillTool,
     Tool,
+    ViewImageTool,
 )
 
 
@@ -60,6 +61,9 @@ def test_base_tool_helpers_validate_shared_argument_contracts(tmp_path):
         Tool.line_range([-1, 2])
     with pytest.raises(ToolError, match="invalid regex"):
         Tool.compile_regex("[")
+
+    assert ViewImageTool in TOOLS
+    assert TOOL_REGISTRY["ViewImage"] is ViewImageTool
 
 
 def test_read_anchor_parsing_accepts_display_and_index_formats():
