@@ -23,10 +23,13 @@ from rich.text import Text as RichText
 
 from minacode.base import (
     MODEL_REQUEST_RETRIES,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
     Text,
     __version__,
 )
-from minacode.engine import LogBlock, LogEdge, LogLine, LogRole
 from minacode.session import Session
 from minacode.tools import CodeIndex
 

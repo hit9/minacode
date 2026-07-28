@@ -9,7 +9,10 @@ Keep this file short. It is an entry point, not a second design document.
 
 ## Project map
 
-- `minacode/engine.py`: agent loop, context projection, protocols, compaction, and tool lifecycle.
+- `minacode/engine.py`: the agent turn loop that composes context, model, and tools.
+- `minacode/context.py`, `minacode/model.py`, `minacode/runner.py`: context projection and
+  compaction, provider request protocols, and the tool execution lifecycle.
+- `minacode/update.py`: the background version check.
 - `minacode/session.py`: durable semantic state and persistence.
 - `minacode/tools/`, `minacode/image.py`, `minacode/mcp.py`, `minacode/skill.py`: vertical feature modules.
   `tools/` splits the built-in tool set by capability and owns the registry in its `__init__.py`.

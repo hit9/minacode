@@ -38,9 +38,10 @@ from prompt_toolkit.widgets import SearchToolbar
 from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
+    LogBlock,
+    LogEdge,
     MinacodeError,
 )
-from minacode.engine import LogBlock, LogEdge
 from minacode.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
 from minacode.render import UiPrinter
 

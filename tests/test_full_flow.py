@@ -14,7 +14,9 @@ import httpx
 from openai import OpenAI
 
 from minacode.base import MIN_CONTEXT_SAFETY_TOKENS, Config, ProviderConfig
-from minacode.engine import Agent, ContextManager, ModelClient
+from minacode.context import ContextManager
+from minacode.engine import Agent
+from minacode.model import ModelClient
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
 from minacode.session import Session
 from minacode.skill import SkillLibrary

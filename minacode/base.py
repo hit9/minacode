@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import platform
 import re
 import shutil
 import sys
+import threading
 import time
 import tomllib
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from enum import Enum, auto
+from typing import Any, ClassVar, Generic, TypeVar
 from urllib.parse import urlparse
 
 from prompt_toolkit.utils import get_cwidth
@@ -26,6 +30,8 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
 __version__ = "0.14.1"
+
+_ResourceT = TypeVar("_ResourceT")
 
 Json = dict[str, Any]
 ToolArgs = list[Any]
@@ -588,3 +594,122 @@ class ToolCall:
     # A malformed-argument error captured while parsing the call. Deferred so it surfaces as a
     # tool result the model can correct from, instead of aborting the whole turn at parse time.
     error: str = ""
+
+
+class LogEdge(Enum):
+    NONE = ""
+    BRANCH = "├"
+    CONTINUE = "│"
+    END = "└"
+
+
+class LogRole(Enum):
+    TOOL = auto()
+    AUTO = auto()
+    META = auto()
+    OUTPUT = auto()
+    ERROR = auto()
+    MUTED = auto()
+    DIFF = auto()
+
+
+@dataclass(frozen=True)
+class LogLine:
+    label: str
+    text: str = ""
+    role: LogRole = LogRole.OUTPUT
+    edge: LogEdge = LogEdge.NONE
+    meta: str = ""
+    syntax: str = ""
+
+    def text_prefix(self) -> str:
+        edge = "" if self.edge is LogEdge.NONE else self.edge.value + " "
+        separator = "  " if self.edge is LogEdge.NONE else " "
+        return edge + self.label + (separator if self.label and self.text else "")
+
+
+@dataclass
+class LogBlock:
+    INDENT: ClassVar[str] = "  "
+    items: list[LogLine | LogBlock]
+
+    @classmethod
+    def hierarchy(cls, root: LogLine | None, children: list[LogLine]) -> LogBlock:
+        items: list[LogLine | LogBlock] = [root] if root else []
+        if children:
+            items.append(cls(list(children)))
+        return cls(items)
+
+    @property
+    def has_children(self) -> bool:
+        return any(isinstance(item, LogBlock) for item in self.items)
+
+    @classmethod
+    def margin(cls, level: int) -> str:
+        return cls.INDENT * level
+
+    @classmethod
+    def prefix(cls, level: int, edge: LogEdge = LogEdge.NONE) -> str:
+        return cls.margin(level) + ((edge.value + " ") if edge is not LogEdge.NONE else "")
+
+    def walk(self, parent_level: int = 0):
+        level = parent_level + 1
+        for item in self.items:
+            if isinstance(item, LogLine):
+                yield item, level
+            else:
+                yield from item.walk(level)
+
+    def __str__(self) -> str:
+        rows = []
+        for line, level in self.walk():
+            prefix = self.margin(level) + line.text_prefix()
+            continuation = self.margin(level) + " " * get_cwidth(line.text_prefix())
+            rows.extend(Text.wrap_styled([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
+        return "\n".join("".join(text for _style, text in row) for row in rows)
+
+
+@dataclass
+class TurnBox:
+    ROOT_LEVEL: ClassVar[int] = 0
+    CONTENT_LEVEL: ClassVar[int] = 1
+    SEPARATOR: ClassVar[str] = ""
+    messages: list[Json]
+
+    @classmethod
+    def group(cls, messages: list[Json]) -> list[TurnBox]:
+        boxes: list[TurnBox] = []
+        current: list[Json] = []
+        for message in messages:
+            current.append(message)
+            if message.get("role") == "assistant" and not message.get("tool_calls"):
+                boxes.append(cls(current))
+                current = []
+        if current:
+            boxes.append(cls(current))
+        return boxes
+
+
+class ActiveResource(Generic[_ResourceT]):
+    """Thread-safe lifecycle for a resource that another thread may need to cancel."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.value: _ResourceT | None = None
+
+    @contextlib.contextmanager
+    def track(self, value: _ResourceT) -> Iterator[None]:
+        with self.lock:
+            self.value = value
+        try:
+            yield
+        finally:
+            with self.lock:
+                if self.value is value:
+                    self.value = None
+
+    def apply(self, action: Callable[[_ResourceT], None]) -> None:
+        with self.lock:
+            value = self.value
+        if value is not None:
+            action(value)

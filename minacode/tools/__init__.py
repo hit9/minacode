@@ -11,12 +11,21 @@ from minacode.tools.search import CodeIndex, InspectCodeTool, SearchTool
 from minacode.tools.shell import BashTool, JobTool
 from minacode.tools.skill import SkillTool
 
-# fmt: off
 TOOLS: tuple[type[Tool], ...] = (
-    MCPTool, SkillTool, ReadTool, ViewImageTool, InspectCodeTool, SearchTool, EditTool,
-    BashTool, JobTool, RecallTool, RecallContextTool, NoteTool, AskTool,
+    MCPTool,
+    SkillTool,
+    ReadTool,
+    ViewImageTool,
+    InspectCodeTool,
+    SearchTool,
+    EditTool,
+    BashTool,
+    JobTool,
+    RecallTool,
+    RecallContextTool,
+    NoteTool,
+    AskTool,
 )
-# fmt: on
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
 
 __all__ = [

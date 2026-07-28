@@ -11,10 +11,11 @@ import subprocess
 import sys
 
 from minacode.base import Config, ConfigError, ConfigFile, MinacodeError, RuntimeSettings, UpdateStatus, __version__
-from minacode.engine import Agent, UpdateChecker
+from minacode.engine import Agent
 from minacode.loop import CommandLoop
 from minacode.render import Theme
 from minacode.session import Session
+from minacode.update import UpdateChecker
 
 
 def run_update() -> int:

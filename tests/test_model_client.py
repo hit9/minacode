@@ -13,9 +13,9 @@ import pytest
 from anthropic import Anthropic
 from openai import OpenAI
 
-import minacode.engine as engine_module
+import minacode.model as model_module
 from minacode.base import Config, ModelError, ModelResponseTimeout, ProviderConfig, ToolCall
-from minacode.engine import ModelClient
+from minacode.model import ModelClient
 from minacode.session import Session
 from minacode.tools import BashTool
 
@@ -1308,7 +1308,7 @@ def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monke
     s = _session(tmp_path)
     model = ModelClient(s)
     client = Client()
-    monkeypatch.setattr(engine_module.threading, "Timer", ImmediateTimer)
+    monkeypatch.setattr(model_module.threading, "Timer", ImmediateTimer)
 
     with pytest.raises(ModelResponseTimeout, match=r"provider\.response_timeout=600s") as caught:
         model.call_client(client, lambda: "completed after deadline")
@@ -1345,7 +1345,7 @@ def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypat
     def unexpected_timer(*_args, **_kwargs):
         raise AssertionError("response_timeout=0 must not create a timer")
 
-    monkeypatch.setattr(engine_module.threading, "Timer", unexpected_timer)
+    monkeypatch.setattr(model_module.threading, "Timer", unexpected_timer)
 
     assert model.call_client(client, lambda: "complete") == "complete"
     assert client.closed is True
@@ -1369,7 +1369,7 @@ def test_total_response_timeout_relabels_interrupted_transport(tmp_path, monkeyp
 
     s = _session(tmp_path)
     model = ModelClient(s)
-    monkeypatch.setattr(engine_module.threading, "Timer", ImmediateTimer)
+    monkeypatch.setattr(model_module.threading, "Timer", ImmediateTimer)
 
     def interrupted_request():
         raise RuntimeError("connection closed")

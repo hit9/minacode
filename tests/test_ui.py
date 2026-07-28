@@ -28,17 +28,22 @@ from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
     Config,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
     MalformedToolCallError,
     ProviderConfig,
     Text,
 )
-from minacode.engine import Agent, LogBlock, LogEdge, LogLine, LogRole, UpdateChecker
+from minacode.engine import Agent
 from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex, Tool
 from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
+from minacode.update import UpdateChecker
 
 
 def session(tmp_path):

@@ -34,21 +34,30 @@ from minacode.base import (
     SELECTION_FREE_TEXT,
     ConfigError,
     Json,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
     MalformedToolCallError,
     MinacodeError,
     ProviderConfig,
     Text,
     ToolCall,
     ToolError,
+    TurnBox,
     __version__,
 )
-from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolDisplay, TurnBox, UpdateChecker
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.image import ImageInputs, UserInput
+from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.render import BashLivePreview, StatusBar, UiPrinter
+from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
+from minacode.update import UpdateChecker
 
 
 class CommandCompleter(Completer):

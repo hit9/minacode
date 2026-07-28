@@ -4,9 +4,11 @@ import shutil
 import pytest
 from prompt_toolkit.utils import get_cwidth
 
-from minacode.base import ToolCall, ToolError
-from minacode.engine import ContextManager, EditBatchPlan, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolRunner
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from minacode.context import ContextManager
+from minacode.model import ModelClient
 from minacode.render import UiPrinter
+from minacode.runner import EditBatchPlan, ToolRunner
 from minacode.session import Session
 from minacode.tools import CodeIndex, EditTool, ReadTool
 

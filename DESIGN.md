@@ -47,13 +47,17 @@ Tests protect observable contracts and reproduced regressions, not implementatio
 
 minacode is one local process with explicit owners for each kind of behavior:
 
-- `base.py` defines configuration, shared value types, and error categories;
+- `base.py` defines configuration, shared value types, and error categories, including the log-line
+  vocabulary every presentation layer renders and the resource handles they cancel through;
   `provider_compat.py` folds documented compatibility into resolved request policy.
 - `Session` owns protocol-neutral semantic state: messages, active-turn checkpoints, queued input,
   retained output, diffs, usage, and session-scoped resources such as jobs and images. Its snapshot
   codec decides which of that state is persistable.
-- `engine.py` owns agent semantics: context construction, model protocol adapters, compaction, tool
-  execution, cancellation, and turn commit or rollback.
+- Agent semantics are split by owner: `context.py` builds and compacts the model-facing context,
+  `model.py` owns provider protocol adapters, streaming, and retry policy, `runner.py` owns tool
+  execution and cancellation, and `engine.py` composes them into the turn loop with its commit or
+  rollback. They depend downward only: `engine.py` -> `context.py`/`runner.py` -> `model.py` ->
+  `base.py`, so no pair needs a deferred import to break a cycle.
 - `CommandLoop` and `TuiRuntime` orchestrate commands and runtime transitions. `TuiApp` owns input,
   key bindings, layout, and modals; `render.py` owns transcript and status presentation.
 - `tools/`, `image.py`, `mcp.py`, and `skill.py` are vertical feature modules. They expose useful

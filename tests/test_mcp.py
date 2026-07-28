@@ -9,13 +9,16 @@ from types import SimpleNamespace
 import pytest
 
 from minacode.base import SELECTION_BACK, Config, ToolCall, ToolError
-from minacode.engine import Agent, ContextManager, ToolRunner, UpdateChecker
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.loop import CommandCompleter, CommandLoop
 from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig, MCPToolInfo
 from minacode.render import StatusBar, UiPrinter
+from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex, MCPTool, Tool
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
+from minacode.update import UpdateChecker
 
 # ---------------------------------------------------------------------------
 # Helpers

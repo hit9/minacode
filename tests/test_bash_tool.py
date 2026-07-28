@@ -7,10 +7,12 @@ import time
 import pytest
 
 import minacode.render as render_module
-from minacode.base import ToolCall, ToolError
-from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ToolDisplay, ToolRunner
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.loop import CommandLoop
 from minacode.render import BashLivePreview, UiPrinter
+from minacode.runner import ToolDisplay, ToolRunner
 from minacode.session import Session
 from minacode.tools import BashTool, JobTool, Tool
 

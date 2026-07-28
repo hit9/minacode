@@ -16,7 +16,8 @@ from prompt_toolkit.history import FileHistory
 import minacode.loop as loop_module
 import minacode.tui as tui_module
 from minacode.base import Config, ModelError, ProviderConfig, ToolCall, ToolError
-from minacode.engine import Agent, ContextManager, ModelClient, ToolRunner
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.image import (
     IMAGE_MARKER,
     IMAGE_REFS_KEY,
@@ -27,6 +28,8 @@ from minacode.image import (
     UserInput,
 )
 from minacode.loop import CommandLoop
+from minacode.model import ModelClient
+from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import ViewImageTool
 from minacode.tui import TuiApp
