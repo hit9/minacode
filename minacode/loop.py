@@ -61,6 +61,8 @@ from minacode.update import UpdateChecker
 
 
 class CommandCompleter(Completer):
+    MCP_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"@([A-Za-z0-9_.-]*)$")
+    SKILL_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$")
     # fmt: on
     # fmt: off
     SET_HANDLERS: ClassVar[dict[str, tuple[str, str, Callable[[str], int | float | None] | None]]] = {
@@ -146,7 +148,7 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_connected_servers(), value)
                 return
 
-        at_match = re.search(r"@([A-Za-z0-9_.-]*)$", text)
+        at_match = CommandCompleter.MCP_MENTION_RE.search(text)
         if at_match:
             server_part, dot, tool_part = at_match.group(1).partition(".")
             if dot:
@@ -155,7 +157,7 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_servers(), server_part)
             return
 
-        skill_match = re.search(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$", text)
+        skill_match = CommandCompleter.SKILL_MENTION_RE.search(text)
         if skill_match:
             yield from self.matches(self.skills(), skill_match.group(1))
             return
@@ -169,6 +171,9 @@ class CommandCompleter(Completer):
 
 
 class CommandLoop:
+    HUNK_HEADER_RE: ClassVar[re.Pattern] = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+    HELP_HEADING_RE: ClassVar[re.Pattern] = re.compile(r"^### (.+)$", re.MULTILINE)
+    HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
     IDLE_HINTS = (
@@ -261,9 +266,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def diff_counts(text: str) -> tuple[int, int]:
         added = removed = 0
         old_remaining = new_remaining = 0
-        hunk_header = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
         for line in text.splitlines():
-            if match := hunk_header.match(line):
+            if match := CommandLoop.HUNK_HEADER_RE.match(line):
                 old_remaining = int(match.group(1) or 1)
                 new_remaining = int(match.group(2) or 1)
             elif line.startswith("+") and new_remaining:
@@ -1138,8 +1142,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if self.ui.color:
             return text
         text = text.replace("`", "")
-        text = re.sub(r"^### (.+)$", r"\1:", text, flags=re.MULTILINE)
-        return re.sub(r"^- (.+?) — ", r"  \1  ", text, flags=re.MULTILINE)
+        text = self.HELP_HEADING_RE.sub(r"\1:", text)
+        return self.HELP_ENTRY_RE.sub(r"  \1  ", text)
 
     def status(self, args: str) -> str:
         def progress_bar(value: int, total: int, width: int = 14) -> str:

@@ -24,6 +24,9 @@ from minacode.tools.base import Tool
 
 class BashTool(Tool):
     NAME = "Bash"
+    _DEV_NULL_REDIRECT_RE: ClassVar[re.Pattern] = re.compile(r"(?:\d*>>?|&>|<)\s*/dev/null(?![\w./])")
+    _BACKGROUND_AMP_RE: ClassVar[re.Pattern] = re.compile(r"(?<!&)&(?!&)")
+    _CONTROL_OPERATOR_RE: ClassVar[re.Pattern] = re.compile(r"&&|\|\||[|;\n]")
     LOG_LEXER = "bash"
     DESCRIPTION = (
         "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; "
@@ -83,18 +86,18 @@ class BashTool(Tool):
         # Normalize away the ubiquitous harmless redirections — discarding output to /dev/null and
         # merging stderr/stdout — so the common `cmd 2>/dev/null` / `cmd >/dev/null 2>&1` forms are
         # not treated as file writes.
-        scan = re.sub(r"(?:\d*>>?|&>|<)\s*/dev/null(?![\w./])", " ", command)
+        scan = cls._DEV_NULL_REDIRECT_RE.sub(" ", command)
         scan = scan.replace("2>&1", " ").replace(">&2", " ")
         # Anything still redirecting to/from a real path, or substituting a command, can write or
         # run arbitrary code.
         if any(ch in scan for ch in (">", "<", "`")) or "$(" in scan:
             return False
         # Reject a lone background & (detaches a process); && and || are allowed sequence operators.
-        if re.search(r"(?<!&)&(?!&)", scan):
+        if cls._BACKGROUND_AMP_RE.search(scan):
             return False
         # Split on every control operator (&& || | ; newline) and require EVERY stage to be a safe
         # read-only command — so `git log && rm x` is not auto-approved on the strength of `git log`.
-        return all(cls._safe_segment(part) for part in re.split(r"&&|\|\||[|;\n]", scan) if part.strip())
+        return all(cls._safe_segment(part) for part in cls._CONTROL_OPERATOR_RE.split(scan) if part.strip())
 
     @classmethod
     def _safe_segment(cls, segment: str) -> bool:

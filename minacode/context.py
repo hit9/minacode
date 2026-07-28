@@ -39,6 +39,7 @@ class ContextManager:
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
+    TOOL_RECORD_KEY: ClassVar[re.Pattern] = re.compile(r"\btr\.\d+\b")
 
     def __init__(self, session: Session, model: ModelClient | None = None):
         self.session = session
@@ -107,7 +108,7 @@ class ContextManager:
                 continue
             first_key = seen.get(identity)
             if first_key is None:
-                key = re.search(r"\btr\.\d+\b", content)
+                key = ContextManager.TOOL_RECORD_KEY.search(content)
                 seen[identity] = key.group(0) if key else "above"
                 result.append(message)
                 continue
@@ -320,7 +321,7 @@ class ContextManager:
 
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
         records = self.session.tool_records
-        keep = set(re.findall(r"\btr\.\d+\b", self.messages_text(keep_messages)))
+        keep = set(self.TOOL_RECORD_KEY.findall(self.messages_text(keep_messages)))
         self.session.tool_records = [record for record in records if record.key in keep][-400:]
         self.session.tool_results = {record.key: record.output for record in self.session.tool_records}
 

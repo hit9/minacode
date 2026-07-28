@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 import anthropic
 import openai
@@ -66,6 +66,10 @@ class PreparedRequest:
 
 
 class ModelClient:
+    _RETRYABLE_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b")
+    _STATUS_CODE_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b")
+    _JSON_FENCE_RE: ClassVar[re.Pattern] = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
+
     def __init__(self, session: Session):
         self.session = session
         self.cancel_requested = threading.Event()
@@ -283,7 +287,7 @@ class ModelClient:
             if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
                 return True
         text = str(error).lower()
-        if re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b", text):
+        if ModelClient._RETRYABLE_STATUS_RE.search(text):
             return True
         return any(
             part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
@@ -298,7 +302,7 @@ class ModelClient:
             if 400 <= status_code <= 599:
                 return str(status_code)
         text = str(error).lower()
-        match = re.search(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b", text)
+        match = ModelClient._STATUS_CODE_RE.search(text)
         if match:
             return match.group(1)
         if "timeout" in text or "timed out" in text:
@@ -652,7 +656,7 @@ class ModelClient:
 
     @staticmethod
     def strip_json_fence(text: str) -> str:
-        match = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.IGNORECASE | re.DOTALL)
+        match = ModelClient._JSON_FENCE_RE.match(text)
         return (match.group(1) if match else text).strip()
 
     def client(self) -> OpenAI:

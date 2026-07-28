@@ -35,6 +35,7 @@ _TEXTUAL_INVOKE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _FENCE_RE = re.compile(r" {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
+_BLOCKQUOTE_RE = re.compile(r" {0,3}>")
 MAX_TEXTUAL_TOOL_CORRECTIONS = 5
 
 
@@ -220,7 +221,7 @@ class Agent:
         line_start = content.rfind("\n", 0, offset) + 1
         prefix = content[line_start:offset]
         leading_whitespace = prefix[: len(prefix) - len(prefix.lstrip(" \t"))]
-        if len(leading_whitespace.expandtabs(4)) >= 4 or re.match(r" {0,3}>", prefix):
+        if len(leading_whitespace.expandtabs(4)) >= 4 or _BLOCKQUOTE_RE.match(prefix):
             return True
 
         fence: tuple[str, int] | None = None

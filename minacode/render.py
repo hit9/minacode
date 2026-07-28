@@ -177,6 +177,7 @@ class UiPrinter:
     # as a solid band. We track the SGR bg state per token and only strip whitespace rendered with
     # bg off.
     SGR_RE: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[([0-9;]*)m")
+    RECORD_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"(?:tr|job)\.\d+|\d+(?::\d+)?")
     # OSC / APC / DCS / SOS / PM sequences are terminal control strings that prompt_toolkit's ANSI
     # parser doesn't recognize. When they slip through Rich's output (OSC 8 hyperlinks were the
     # historical culprit, iTerm image escapes / Kitty graphics / shell-integration marks are
@@ -408,7 +409,7 @@ class UiPrinter:
                 style = Theme.style("syntax.assign")
             elif token.startswith(('"', "'")):
                 style = Theme.style("syntax.string")
-            elif re.fullmatch(r"(?:tr|job)\.\d+|\d+(?::\d+)?", token):
+            elif UiPrinter.RECORD_TOKEN_RE.fullmatch(token):
                 style = Theme.style("syntax.number")
             elif token in {";", ","}:
                 style = "ansibrightblack"

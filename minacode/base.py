@@ -547,6 +547,7 @@ class ModelUsage:
 
 @dataclass
 class UpdateStatus:
+    _VERSION_RE: ClassVar[re.Pattern] = re.compile(r"^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?")
     latest: str = ""
     checking: bool = False
     error: str = ""
@@ -558,7 +559,7 @@ class UpdateStatus:
 
     @staticmethod
     def version_tuple(value: str) -> tuple[int, ...]:
-        match = re.match(r"^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?", value)
+        match = UpdateStatus._VERSION_RE.match(value)
         return tuple(int(part or 0) for part in match.groups()) if match else ()
 
 

@@ -174,6 +174,7 @@ class MCPManager:
     INDEX_SCHEMA_LIMIT: ClassVar[int] = 700  # per-tool schema cap in the early (cached) tools index
     INDEX_TOTAL_LIMIT: ClassVar[int] = 16_000  # overall cap for the tools index block
     STATUS_MARKER: ClassVar[str] = "●"
+    AUTH_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"\b(?:401|403)\b")
 
     def __init__(self, session: Session):
         self.session = session
@@ -394,7 +395,7 @@ class MCPManager:
             return False
         message = issue[1].lower()
         markers = ("authentication required", "unauthorized", "invalid token", "invalid_token", "invalid_request", "invalid client")
-        return any(marker in message for marker in markers) or re.search(r"\b(?:401|403)\b", message) is not None
+        return any(marker in message for marker in markers) or MCPManager.AUTH_STATUS_RE.search(message) is not None
 
     def _connect_result(self, name: str, *, compact: bool = False) -> str:
         if issue := self.server_issue(name):

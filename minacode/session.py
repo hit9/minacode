@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class PlanItem:
+    _PLAN_LINE_RE: ClassVar[re.Pattern] = re.compile(r"\[( |x|X|~|-)\]\s+(.+)")
     STATUSES: ClassVar[tuple[str, ...]] = ("todo", "doing", "done", "blocked")
     SYMBOLS: ClassVar[dict[str, str]] = {"todo": " ", "doing": "~", "done": "x", "blocked": "-"}
     LEGACY_MARKERS: ClassVar[dict[str, str]] = {" ": "todo", "~": "doing", "x": "done", "X": "done", "-": "blocked"}
@@ -45,7 +46,7 @@ class PlanItem:
             text = str(value.get("text") or "").strip()
         else:
             raw = str(value).strip()
-            match = re.fullmatch(r"\[( |x|X|~|-)\]\s+(.+)", raw)
+            match = PlanItem._PLAN_LINE_RE.fullmatch(raw)
             status = cls.LEGACY_MARKERS[match.group(1)] if match else "todo"
             text = match.group(2).strip() if match else raw
         if not text:
@@ -418,6 +419,7 @@ class SessionSnapshotStore:
 
     FORMAT_VERSION: ClassVar[int] = 2
     PROJECTS_DIR: ClassVar[str] = "projects"
+    _SLUG_RE: ClassVar[re.Pattern] = re.compile(r"[^A-Za-z0-9._-]+")
 
     def __init__(self, session: Session):
         self.session = session
@@ -482,7 +484,7 @@ class SessionSnapshotStore:
         """Readable basename plus a hash of the real path: browsable, and still unique across
         same-named directories."""
         real = os.path.realpath(cwd)
-        name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(real)).strip("-") or "root"
+        name = SessionSnapshotStore._SLUG_RE.sub("-", os.path.basename(real)).strip("-") or "root"
         return name + "-" + hashlib.sha256(real.encode("utf-8")).hexdigest()[:10]
 
     @classmethod

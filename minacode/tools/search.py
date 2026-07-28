@@ -358,6 +358,7 @@ class CodeIndex:
 
 
 class InspectCodeTool(Tool):
+    _WHITESPACE_RE: ClassVar[re.Pattern] = re.compile(r"\s")
     NAME = "InspectCode"
     MAX_LIMIT: ClassVar[int] = 80
     MAX_OUTLINE_LIMIT: ClassVar[int] = 1000
@@ -415,7 +416,7 @@ class InspectCodeTool(Tool):
             raise ToolError("InspectCode mode must be one of: " + ", ".join(self.MODES))
         if not target:
             raise ToolError("InspectCode target is required")
-        if mode in self.SYMBOL_MODES and re.search(r"\s", target):
+        if mode in self.SYMBOL_MODES and self._WHITESPACE_RE.search(target):
             # Models often repeat the kind inside the target, e.g. target "class Config" with
             # kind "class". When the first word duplicates a declared kind, drop it — that is the one
             # case we can strip deterministically (no guessing at per-language keywords).
@@ -423,7 +424,7 @@ class InspectCodeTool(Tool):
             first, _, rest = target.partition(" ")
             if kinds and first.lower() in kinds and rest.strip():
                 target = rest.strip()
-            if re.search(r"\s", target):
+            if self._WHITESPACE_RE.search(target):
                 raise ToolError("InspectCode symbol target must not contain whitespace")
         if mode in self.RESOLVE_MODES and (target.endswith(".py") or os.path.exists(self.session.resolve_path(target))):
             raise ToolError(f"InspectCode {mode} target must be a symbol, not a file")

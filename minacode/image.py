@@ -12,7 +12,7 @@ import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from PIL import Image, UnidentifiedImageError
 
@@ -36,6 +36,8 @@ SUPPORTED_FORMATS = {
 
 @dataclass(frozen=True)
 class ImageRef:
+    _DIGEST_RE: ClassVar[re.Pattern] = re.compile(r"[0-9a-f]{64}")
+    _CONTROL_CHAR_RE: ClassVar[re.Pattern] = re.compile(r"[\x00-\x1f\x7f]")
     ref: str
     name: str
     media_type: str
@@ -70,13 +72,13 @@ class ImageRef:
         except (KeyError, TypeError, ValueError):
             return None
         name = cls._safe_name(name)
-        if not re.fullmatch(r"[0-9a-f]{64}", ref) or not name or media_type not in SUPPORTED_FORMATS.values() or width <= 0 or height <= 0 or size <= 0:
+        if not ImageRef._DIGEST_RE.fullmatch(ref) or not name or media_type not in SUPPORTED_FORMATS.values() or width <= 0 or height <= 0 or size <= 0:
             return None
         return cls(ref, name, media_type, width, height, size, str(value.get("source_text") or ""))
 
     @staticmethod
     def _safe_name(name: str) -> str:
-        return re.sub(r"[\x00-\x1f\x7f]", "\ufffd", os.path.basename(name))
+        return ImageRef._CONTROL_CHAR_RE.sub("\ufffd", os.path.basename(name))
 
 
 class UserInput(str):
@@ -109,6 +111,8 @@ class ImageInputs:
     """Own image recognition, storage, transport, and learned model capability for a session."""
 
     _TOKEN_RE = re.compile(r"(?:'[^'\n]*'|\"(?:\\.|[^\"\n])*\"|(?:\\.|[^\s])+)")
+    _IMAGE_STATUS_RE = re.compile(r"\b(?:400|415|422)\b")
+    _IMAGE_VARIANT_REJECTION_RE = re.compile(r"\bunknown variant\b\s*[`'\"]?(?:image_url|input_image|image)\b[`'\"]?[\s\S]*\bexpected\b[\s\S]*\btext\b")
     _LEADING_PUNCTUATION = "([{<"
     _TRAILING_PUNCTUATION = ",;:!?)]}>"
     _MODALITY_TERMS = ("image", "vision", "multimodal", "input_image", "image_url", "modality")
@@ -377,17 +381,11 @@ class ImageInputs:
             numeric_status = int(status) if status is not None else None
         if numeric_status is not None and numeric_status not in {400, 415, 422}:
             return False
-        if numeric_status is None and not re.search(r"\b(?:400|415|422)\b", text):
+        if numeric_status is None and not cls._IMAGE_STATUS_RE.search(text):
             return False
         mentions_image = any(term in text for term in cls._MODALITY_TERMS)
         rejects_modality = any(term in text for term in cls._UNSUPPORTED_TERMS)
-        rejects_image_schema = (
-            re.search(
-                r"\bunknown variant\b\s*[`'\"]?(?:image_url|input_image|image)\b[`'\"]?[\s\S]*\bexpected\b[\s\S]*\btext\b",
-                text,
-            )
-            is not None
-        )
+        rejects_image_schema = cls._IMAGE_VARIANT_REJECTION_RE.search(text) is not None
         return (mentions_image and rejects_modality) or rejects_image_schema
 
     def _session(self) -> Session:

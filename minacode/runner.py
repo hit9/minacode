@@ -198,6 +198,8 @@ class ToolRunner:
     BASH_TRANSCRIPT_PREVIEW_LINES: ClassVar[int] = 3
     BASH_PREVIEW_LINES: ClassVar[int] = 24
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
+    EDIT_PATH_RE: ClassVar[re.Pattern] = re.compile(r'<Edit\s+path=(".*?")')
+    MCP_CALL_RE: ClassVar[re.Pattern] = re.compile(r"(?s)<MCPCall\b[^>]*>\n?(.*?)\n?</MCPCall>\s*$")
 
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
@@ -457,7 +459,7 @@ class ToolRunner:
         if call.name != "Edit":
             return
         paths = [str(call.args[0])] if call.args and isinstance(call.args[0], str) else []
-        for match in re.finditer(r'<Edit\s+path=(".*?")', output):
+        for match in self.EDIT_PATH_RE.finditer(output):
             with contextlib.suppress(json.JSONDecodeError):
                 paths.append(str(json.loads(match.group(1))))
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
@@ -586,7 +588,7 @@ class ToolRunner:
         if str((call.args[0] if call.args and isinstance(call.args[0], dict) else {}).get("action")) != "call":
             return ""
         inner = output
-        match = re.match(r"(?s)<MCPCall\b[^>]*>\n?(.*?)\n?</MCPCall>\s*$", output)
+        match = self.MCP_CALL_RE.match(output)
         if match:
             inner = match.group(1).strip()
         if not inner:

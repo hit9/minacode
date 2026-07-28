@@ -20,6 +20,7 @@ from minacode.tools.base import Tool
 class ReadTool(Tool):
     NAME = "Read"
     MAX_ANCHOR_DRIFT: ClassVar[int] = 50
+    _ANCHOR_RE: ClassVar[re.Pattern] = re.compile(r"(\d+):([0-9a-z]{5}|[0-9a-f]{8})")
     DESCRIPTION = (
         "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; "
         "use Recall(tr.N) for full stored output."
@@ -95,7 +96,7 @@ class ReadTool(Tool):
         text = value.split("|", 1)[0].strip()
         if text.startswith("anchor="):
             text = text.removeprefix("anchor=").strip()
-        match = re.fullmatch(r"(\d+):([0-9a-z]{5}|[0-9a-f]{8})", text)
+        match = ReadTool._ANCHOR_RE.fullmatch(text)
         return (int(match.group(1)), match.group(2).lower()) if match else None
 
     @staticmethod

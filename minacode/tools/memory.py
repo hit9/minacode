@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import cast
+from typing import ClassVar, cast
 
 from minacode.base import Json, ToolArgs, ToolError
 from minacode.session import AgentState, HistorySegment, PlanItem
@@ -13,6 +13,7 @@ from minacode.tools.base import Tool
 
 class RecallTool(Tool):
     NAME = "Recall"
+    _KEY_RE: ClassVar[re.Pattern] = re.compile(r"tr\.\d+")
     DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
     STORES_RESULT = False
 
@@ -65,7 +66,7 @@ class RecallTool(Tool):
         keys = []
         for item in raw_keys:
             key = str(item).strip()
-            if not re.fullmatch(r"tr\.\d+", key):
+            if not self._KEY_RE.fullmatch(key):
                 raise ToolError("Recall key must look like tr.N")
             keys.append(key)
         return list(dict.fromkeys((key, ranges) for key in keys))
@@ -88,6 +89,7 @@ class RecallTool(Tool):
 
 class RecallContextTool(Tool):
     NAME = "RecallContext"
+    _KEY_RE: ClassVar[re.Pattern] = re.compile(r"seg\.\d+")
     DESCRIPTION = "Recall stored compacted-conversation excerpts by seg.N key, or regex-search their titles and text; query alternation A|B|C is allowed."
     DEFAULT_LIMIT = 20
     MAX_LIMIT = 100
@@ -148,7 +150,7 @@ class RecallContextTool(Tool):
         keys = []
         for item in raw_keys or []:
             key = str(item).strip()
-            if not re.fullmatch(r"seg\.\d+", key):
+            if not self._KEY_RE.fullmatch(key):
                 raise ToolError("RecallContext key must look like seg.N")
             keys.append(key)
         query = payload.get("query")
