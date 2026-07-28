@@ -64,11 +64,9 @@ class Theme:
         "status.reason": "#a5b4fc",
         "status.mcp": "#93c5fd",
         "status.ctx": "#facc15",
-        "status.cache": "#2dd4bf",
         "status.update": "#fb923c",
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
-        "status.runtime": "#c084fc",
         "user.log": "#e0a96d",
         "pygments": "github-dark",
     }
@@ -90,11 +88,9 @@ class Theme:
         "status.reason": "#5b21b6",
         "status.mcp": "#1e40af",
         "status.ctx": "#a16207",
-        "status.cache": "#0d9488",
         "status.update": "#9a3412",
         "status.index": "#475569",
         "status.warn": "#b91c1c",
-        "status.runtime": "#6b21a8",
         "user.log": "#9a5b2e",
         "pygments": "default",
     }
@@ -747,7 +743,7 @@ class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
-    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "cache", "update", "index", "warn", "runtime")
+    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn")
 
     @classmethod
     def role_style(cls, role: str) -> str:
@@ -850,10 +846,11 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
         usage = self.session.usage
+        ctx_text = "ctx " + str(self.session.state.context_percent) + "%"
         if usage.last_prompt_tokens:
-            parts.append((f"cache {usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens}%", "cache"))
+            ctx_text += " · cache " + str(usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens) + "%"
+        parts.append((ctx_text, "ctx"))
         update_status = self.update_status()
         if update_status:
             parts.append((update_status, "update"))
@@ -863,7 +860,11 @@ class StatusBar:
         if self.session.settings.yolo:
             parts.append(("yolo", "warn"))
         if show_elapsed:
-            parts.append(("step " + str(self.session.state.turn_step) + "/" + str(self.session.settings.max_steps), "runtime"))
+            turn_step = self.session.state.turn_step
+            max_steps = self.session.settings.max_steps
+            # Only meaningful near the cap, where the turn is about to be cut off; hidden while far from it.
+            if turn_step * 5 >= max_steps * 4:
+                parts.append((f"step {turn_step}/{max_steps}", "warn"))
             if retry_status := self.retry_status():
                 parts.append((retry_status, "warn"))
             elif attempt_status := self.model_attempt_status():

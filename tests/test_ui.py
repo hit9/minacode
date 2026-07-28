@@ -2258,18 +2258,34 @@ def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkey
 def test_status_bar_shows_last_request_cache_hit_ratio(tmp_path):
     s = session(tmp_path)
     bar = StatusBar(s)
-    assert all(role != "cache" for _text, role in bar.entries(show_elapsed=False))
+
+    def ctx_text() -> str:
+        return next(text for text, role in bar.entries(show_elapsed=False) if role == "ctx")
+
+    # No requests yet: the ctx segment carries no cache suffix.
+    assert "cache" not in ctx_text()
 
     s.usage.last_prompt_tokens = 1000
     s.usage.last_cached_prompt_tokens = 870
-    entries = bar.entries(show_elapsed=False)
-    assert ("cache 87%", "cache") in entries
-    # Rendering exercises the status.cache theme style resolution end-to-end.
+    assert ctx_text().endswith("· cache 87%")
+    # Rendering exercises the merged ctx/cache segment end-to-end.
     rendered = bar.fragments(sweep=False, show_elapsed=False)
-    assert any(text == "cache 87%" for _style, text in rendered)
+    assert any("cache 87%" in text for _style, text in rendered)
 
     s.usage.last_cached_prompt_tokens = 0
-    assert ("cache 0%", "cache") in bar.entries(show_elapsed=False)
+    assert ctx_text().endswith("· cache 0%")
+
+
+def test_status_bar_shows_step_only_near_max_steps(tmp_path):
+    s = session(tmp_path)
+    bar = StatusBar(s)
+    s.settings.max_steps = 200
+
+    s.state.turn_step = 1
+    assert all(not text.startswith("step ") for text, _role in bar.entries(show_elapsed=True))
+
+    s.state.turn_step = 160
+    assert ("step 160/200", "warn") in bar.entries(show_elapsed=True)
 
 
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):
