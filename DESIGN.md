@@ -12,12 +12,14 @@ short: document durable conclusions, not implementation diaries or complete inve
 
 ### Engineering posture
 
+- **Abstract:** Use deep, local, earned abstractions that hide real complexity behind small
+  interfaces; remove dead code and pass-through wrappers, and keep a private helper with its owner.
+- **Layer:** Keep dependencies directed from higher-level orchestration toward stable lower-level
+  concepts; lower modules never import presentation or orchestration layers.
+- **Keep it simple:** Choose the smallest cohesive, behavior-preserving implementation, avoid
+  speculative specialization, separate unrelated changes, and keep the changelog aligned.
 - Prefer a generic standards path. Specialize only for a necessary, documented incompatibility,
   and keep primary evidence beside the rule.
-- Keep abstractions deep, local, and earned. Remove dead code and pass-through wrappers; keep a
-  private helper with its sole owner instead of making it global or adding another module layer.
-- Favor the smallest behavior-preserving change. Separate unrelated concerns into cohesive commits
-  and keep the changelog aligned with user-visible behavior.
 - Prefer explicit imports and pragmatic typing: model domain shapes precisely, keep JSON as
   `dict[str, Any]`, and suppress a type error only when runtime behavior is demonstrably safe.
 - Test contracts and reproduced regressions at their boundaries, not private spelling or prompt
