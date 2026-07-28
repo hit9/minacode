@@ -74,6 +74,9 @@ again for the most recent request:
 
 <div class="term-shot" role="img" aria-label="The usage row of /status, showing call count, total tokens, cached tokens for the whole session, and cached tokens for the latest request."><span><span class="fs-i fs-dim">usage</span>  calls 14; total 182304; cached <span class="fs-i fs-add">148992/162880</span> (<span class="fs-i fs-add">91.5%</span>); last <span class="fs-i fs-sel">21120/22016</span> (<span class="fs-i fs-sel">95.9%</span>)</span><span class="fs-dim">                                  └─ whole session ─┘        └─ latest request ─┘</span></div>
 
+The latest-request ratio also shows live in the status bar, beside the context fill,
+updating with each response.
+
 The ratio varies with the provider, model, prompt length, and conversation. When request prefixes
 line up, it <span class="marker">can reach 90–99%</span>. This is an observation, not a guaranteed
 rate.

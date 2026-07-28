@@ -3,6 +3,17 @@
 
 ## Unreleased
 
+### Added
+- Show the latest request's prompt-cache hit ratio live in the status bar, beside the context
+  fill as `ctx 23% · cache 98%`, refreshing with each model response so a drop in prefix reuse
+  is visible without running `/status`. The ratio stays hidden until the first request.
+
+### Changed
+- Declutter the status bar. The cache ratio folds into the context segment instead of taking its
+  own field, and the `step N/M` counter now appears only once the turn reaches the final fifth of
+  `max_agent_steps`, since a count like `step 1/200` carries no information
+  far from the cap and only matters as the turn approaches the cutoff that ends it.
+
 
 ## 0.15.0 - 2026-07-28
 

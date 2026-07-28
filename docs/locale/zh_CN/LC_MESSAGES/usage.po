@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-28 10:20-0700\n"
+"POT-Creation-Date: 2026-07-28 11:24-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -65,7 +65,7 @@ msgstr "按键"
 msgid "When"
 msgstr "使用时机"
 
-#: ../../usage.md ../../usage.md:121
+#: ../../usage.md ../../usage.md:137
 msgid "Effect"
 msgstr "作用"
 
@@ -191,10 +191,39 @@ msgstr ""
 "界面都会在低调的带标签分隔线上方留出一个空行，使其与终端回滚内容分开。"
 
 #: ../../usage.md:62
+msgid "Status bar"
+msgstr "状态栏"
+
+#: ../../usage.md:64
+msgid ""
+"A single line beneath the prompt summarizes the runtime. At rest it shows"
+" the steady state: the active provider and model, the reasoning level, "
+"context fill and the latest request's cache hit ratio together as `ctx "
+"23% · cache 98%`, the code index state, and any background jobs. MCP and "
+"skill counts and an update notice appear when relevant. The cache ratio "
+"shows after the first request and refreshes with each response, and "
+"`/status` reports the same figures for the whole session."
+msgstr ""
+"提示符下方的一行概括了运行状态。空闲时它显示稳定信息：当前 provider 与模型、推理级别、上下文占用与最近一次请求的缓存命中率（合并显示为 "
+"`ctx 23% · cache 98%`）、代码索引状态，以及后台任务。MCP "
+"与技能数量、更新提示会在相关时出现。缓存命中率自首次请求后显示，并随每次响应刷新；`/status` 会报告整个 session 的同样数据。"
+
+#: ../../usage.md:71
+msgid ""
+"While the agent works, the role colors give way to a blue-to-purple sweep"
+" that scrolls across the line, and the live counters join it: a retry or "
+"attempt notice, and the `step N/M` counter once the turn reaches the "
+"final fifth of `max_agent_steps`, signaling that the turn is about to be "
+"cut off."
+msgstr ""
+"agent 工作时，角色色会让位于一道蓝到紫的扫光，扫过整行，并加入实时计数：重试或尝试提示，"
+"以及当本轮步数进入 `max_agent_steps` 的最后五分之一时出现的 `step N/M` 计数，提示本轮即将被截断。"
+
+#: ../../usage.md:78
 msgid "Commands"
 msgstr "命令"
 
-#: ../../usage.md:64
+#: ../../usage.md:80
 msgid ""
 "Type `/` commands at the prompt to inspect state, switch models, manage "
 "the session, or configure runtime behavior on the fly. Run `/help` for "
@@ -203,11 +232,11 @@ msgstr ""
 "在 prompt 中输入 `/` 命令，可以查看状态、切换模型、管理 session 或即时修改 runtime 行为。运行 `/help` "
 "查看内置参考。"
 
-#: ../../usage.md:68
+#: ../../usage.md:84
 msgid "Looking around"
 msgstr "查看状态"
 
-#: ../../usage.md:70
+#: ../../usage.md:86
 msgid ""
 "**`/status`** — Shows everything about the runtime at a glance: workspace"
 " path, session id, active provider and model, calculated compaction-"
@@ -217,29 +246,29 @@ msgstr ""
 "**`/status`** — 一览 runtime 全貌：工作目录、session id、当前 provider 和模型、计算出的 "
 "compaction 预算占用百分比、对话历史、prompt-cache 命中率、代码索引状态、后台任务以及是否有可用更新。"
 
-#: ../../usage.md:75
+#: ../../usage.md:91
 msgid ""
 "The /status command showing workspace, session, provider, context, and "
 "code index state"
 msgstr "`/status` 显示工作目录、session、provider、context 和代码索引状态"
 
-#: ../../usage.md:80
+#: ../../usage.md:96
 msgid "The /status output at a glance."
 msgstr "`/status` 输出概览。"
 
-#: ../../usage.md:83
+#: ../../usage.md:99
 msgid ""
 "**`/diff`** — Review changes from the latest turn or the whole session. "
 "See [Reviewing changes](#reviewing-changes) below."
 msgstr "**`/diff`** — 审查最近一轮或整个 session 的修改。见下方[审查修改](#reviewing-changes)。"
 
-#: ../../usage.md:88
+#: ../../usage.md:104
 msgid ""
 "The two tabs pick the range; each row is one changed file with its added "
 "and removed line counts. `Enter` opens the selected file's diff."
 msgstr "两个 tab 用于选择范围；每行代表一个已修改文件，并显示新增和删除行数。按 `Enter` 打开所选文件的 diff。"
 
-#: ../../usage.md:91
+#: ../../usage.md:107
 msgid ""
 "**`/ps`** — Lists active background jobs (see [Tools](tools.md#built-in-"
 "tools)). Each row shows job id, state, command, and elapsed time."
@@ -247,23 +276,23 @@ msgstr ""
 "**`/ps`** — 列出活动的后台任务（见[工具](tools.md#built-in-tools)）。每行显示任务 "
 "id、状态、命令和运行时间。"
 
-#: ../../usage.md:94
+#: ../../usage.md:110
 msgid ""
 "**`/skills`** — Lists every installed [skill](skills.md) by name, source,"
 " and description."
 msgstr "**`/skills`** — 按名称、来源和描述列出所有已安装 [skill](skills.md)。"
 
-#: ../../usage.md:97
+#: ../../usage.md:113
 msgid ""
 "**`/config`** — Shows the active configuration: provider blocks, runtime "
 "settings, and their resolved values."
 msgstr "**`/config`** — 显示当前配置：provider block、runtime 设置及其解析后的值。"
 
-#: ../../usage.md:100
+#: ../../usage.md:116
 msgid "The code index"
 msgstr "代码索引"
 
-#: ../../usage.md:102
+#: ../../usage.md:118
 msgid ""
 "**`/index [force]`** — Build or rebuild the code symbol index that powers"
 " `InspectCode`. The first build walks every source file; later syncs are "
@@ -274,11 +303,11 @@ msgstr ""
 "使用的代码符号索引。首次构建扫描所有源文件，后续同步很快。加上 `force` 可从头重建。详见[代码符号索引](tools.md#code-"
 "symbol-index)。"
 
-#: ../../usage.md:107
+#: ../../usage.md:123
 msgid "Switching models"
 msgstr "切换模型"
 
-#: ../../usage.md:109
+#: ../../usage.md:125
 msgid ""
 "**`/provider [NAME]`** — Show or switch the active provider. Without an "
 "argument it lists every configured provider (see "
@@ -288,7 +317,7 @@ msgstr ""
 "**`/provider [NAME]`** — 显示或切换当前 provider。不带参数时列出全部已配置 provider（参见 "
 "[配置](configuration.md#providers)），并打开交互式选择器；提供名称时立即切换。"
 
-#: ../../usage.md:113
+#: ../../usage.md:129
 msgid ""
 "**`/model [MODEL]`** — Show or switch the model for the current provider."
 " Without an argument it opens an interactive picker with configured and "
@@ -298,7 +327,7 @@ msgstr ""
 "**`/model [MODEL]`** — 显示或切换当前 provider "
 "的模型。不带参数时打开选择器，显示已配置和发现的模型。切换模型时还会要求选择 reasoning effort。"
 
-#: ../../usage.md:117
+#: ../../usage.md:133
 msgid ""
 "**`/reason [EFFORT]`** — Show or set reasoning effort (OpenAI o-series "
 "and DeepSeek R1). Values: `off`, `minimal`, `low`, `medium`, `high`, "
@@ -308,46 +337,47 @@ msgstr ""
 "DeepSeek "
 "R1）。可选值：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`。不带参数时打开选择器。"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "Switching providers and models interactively during a session"
 msgstr "在 session 中交互式切换 provider 和模型"
 
-#: ../../usage.md:126
+#: ../../usage.md:142
 msgid "Switching providers and models mid-session."
 msgstr "在 session 中切换 provider 和模型。"
 
-#: ../../usage.md:129
+#: ../../usage.md:145
 msgid "Managing the session"
 msgstr "管理 session"
 
-#: ../../usage.md:131
+#: ../../usage.md:147
 msgid ""
 "**`/compact`** — Summarize and shrink the conversation immediately. "
 "minacode keeps long sessions within budget on its own, but `/compact` "
 "trims on demand."
 msgstr "**`/compact`** — 立即总结并缩短对话。minacode 会自动控制长 session 的预算；`/compact` 用于按需压缩。"
 
-#: ../../usage.md:134
+#: ../../usage.md:150
 msgid ""
 "**`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before"
 " turning this off permanently."
 msgstr "**`/yolo`** — 切换操作确认。永久关闭前请阅读[安全](safety.md)。"
 
-#: ../../usage.md:137
+#: ../../usage.md:153
 msgid "**`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek)."
 msgstr "**`/strict`** — 切换严格 tool-call schema（OpenAI / DeepSeek）。"
 
-#: ../../usage.md:139
+#: ../../usage.md:155
 msgid ""
 "**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, "
 "`responses`, `anthropic`) used to reach the model. `/provider` and "
 "`/model` also confirm it as a step in their selection chain, since the "
 "right protocol depends on the model you just picked."
-msgstr "**`/api [API]`** — 选择或设置访问模型所用的请求协议（`auto`、`chat`、"
-"`responses`、`anthropic`）。`/provider` 和 `/model` 也会在各自的选择流程中确认该项，"
-"因为合适的协议取决于刚选定的模型。"
+msgstr ""
+"**`/api [API]`** — "
+"选择或设置访问模型所用的请求协议（`auto`、`chat`、`responses`、`anthropic`）。`/provider` 和 "
+"`/model` 也会在各自的选择流程中确认该项，因为合适的协议取决于刚选定的模型。"
 
-#: ../../usage.md:143
+#: ../../usage.md:159
 msgid ""
 "An endpoint that serves several model families often exposes them on "
 "different protocols, and an OpenAI-compatible `/models` listing says "
@@ -356,12 +386,12 @@ msgid ""
 "different protocol with `/api` (or `auto` to re-infer from the URL and "
 "model). The reply names the wire that took effect, and history is "
 "protocol-neutral, so switching mid-session is safe."
-msgstr "同一个端点常常以不同协议提供多个模型系列，而兼容 OpenAI 的 `/models` 列表并不会说明"
-"哪个模型由哪种协议提供——因此 `/model` 列出的模型仍可能被拒绝为不受支持。出现这种情况时，"
-"用 `/api` 换一种协议（或用 `auto` 依据 URL 和模型重新推断）。回复会指明实际生效的协议，"
-"并且历史记录与协议无关，所以中途切换是安全的。"
+msgstr ""
+"同一个端点常常以不同协议提供多个模型系列，而兼容 OpenAI 的 `/models` 列表并不会说明哪个模型由哪种协议提供——因此 "
+"`/model` 列出的模型仍可能被拒绝为不受支持。出现这种情况时，用 `/api` 换一种协议（或用 `auto` 依据 URL "
+"和模型重新推断）。回复会指明实际生效的协议，并且历史记录与协议无关，所以中途切换是安全的。"
 
-#: ../../usage.md:149
+#: ../../usage.md:165
 msgid ""
 "**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; "
 "tab-completes both keys and, where the values are a fixed set, the "
@@ -370,7 +400,7 @@ msgstr ""
 "**`/set KEY VALUE`** — 为当前 session 设置 `provider.*` 或 `runtime.*`；key "
 "以及有固定选项的 value 均支持 Tab 补全。例如：`/set provider.response_timeout 900`。"
 
-#: ../../usage.md:152
+#: ../../usage.md:168
 msgid ""
 "**`/resend`** — Cancel and re-send the in-flight model request without "
 "restarting the turn. Type it while a model request is waiting; it has no "
@@ -386,73 +416,73 @@ msgstr ""
 "`working`。自动重试还会显示当前尝试次数和简短原因，例如 `retrying 2/6 · timeout`；随后在该请求继续时显示 "
 "`working · attempt 2/6`："
 
-#: ../../usage.md:161
+#: ../../usage.md:177
 msgid "MCP"
 msgstr "MCP"
 
-#: ../../usage.md:163
+#: ../../usage.md:179
 msgid "**`/mcp`** — Manage [MCP](mcp.md) server connections. Sub-commands:"
 msgstr "**`/mcp`** — 管理 [MCP](mcp.md) server 连接。子命令如下："
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "Usage"
 msgstr "用法"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "`/mcp`"
 msgstr "`/mcp`"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "List servers and connection status"
 msgstr "列出 server 及连接状态"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "`/mcp connect <server> [server ...]`"
 msgstr "`/mcp connect <server> [server ...]`"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "Connect servers now"
 msgstr "立即连接 server"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "`/mcp disconnect <server>`"
 msgstr "`/mcp disconnect <server>`"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "Disconnect a server"
 msgstr "断开一个 server"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "`/mcp tools [server]`"
 msgstr "`/mcp tools [server]`"
 
-#: ../../usage.md:121
+#: ../../usage.md:137
 msgid "List tools from a connected server"
 msgstr "列出已连接 server 的工具"
 
-#: ../../usage.md:172
+#: ../../usage.md:188
 msgid "Help and exit"
 msgstr "帮助与退出"
 
-#: ../../usage.md:174
+#: ../../usage.md:190
 msgid "**`/help`** — Show the built-in command and tool reference."
 msgstr "**`/help`** — 显示内置命令和工具参考。"
 
-#: ../../usage.md:176
+#: ../../usage.md:192
 msgid ""
 "**`/exit`, `/quit`** — Leave minacode. Your session is saved "
 "automatically and can be resumed with `-c` or `--resume`."
 msgstr "**`/exit`, `/quit`** — 退出 minacode。Session 会自动保存，可使用 `-c` 或 `--resume` 恢复。"
 
-#: ../../usage.md:179
+#: ../../usage.md:195
 msgid "Mentions"
 msgstr "引用"
 
-#: ../../usage.md:181
+#: ../../usage.md:197
 msgid "Two inline references, both Tab-completed as you type:"
 msgstr "支持两种行内引用，输入时均可按 Tab 补全："
 
-#: ../../usage.md:183
+#: ../../usage.md:199
 msgid ""
 "`@server` or `@server.tool` — connect to an [MCP](mcp.md) server on "
 "demand and point the agent at that server or tool. <span "
@@ -462,83 +492,83 @@ msgstr ""
 "`@server` 或 `@server.tool` — 按需连接 [MCP](mcp.md) server，并让 agent 关注该 "
 "server 或工具。<span class=\"marker\">连接会保持，直到主动断开。</span>"
 
-#: ../../usage.md:186
+#: ../../usage.md:202
 msgid ""
 "`$skill` — inject a [skill](skills.md)'s full instructions into the "
 "current turn."
 msgstr "`$skill` — 将 [skill](skills.md) 的完整指令注入当前一轮。"
 
-#: ../../usage.md:188
+#: ../../usage.md:204
 msgid "Keys and input editing"
 msgstr "按键与输入编辑"
 
-#: ../../usage.md:190
+#: ../../usage.md:206
 msgid ""
 "**Interactive selectors** (model picker, MCP manager, diff viewer) "
 "support:"
 msgstr "**交互式选择器**（模型选择器、MCP 管理器、diff viewer）支持："
 
-#: ../../usage.md:192
+#: ../../usage.md:208
 msgid "`j` / `k` or arrow keys to move"
 msgstr "使用 `j` / `k` 或方向键移动"
 
-#: ../../usage.md:193
+#: ../../usage.md:209
 msgid "`g` / `G` to jump to top / bottom"
 msgstr "使用 `g` / `G` 跳到顶部或底部"
 
-#: ../../usage.md:194
+#: ../../usage.md:210
 msgid "`/` to search, `Enter` to accept, `Esc` to cancel"
 msgstr "使用 `/` 搜索，`Enter` 确认，`Esc` 取消"
 
-#: ../../usage.md:196
+#: ../../usage.md:212
 msgid "**The input line** supports:"
 msgstr "**输入行**支持："
 
-#: ../../usage.md:198
+#: ../../usage.md:214
 msgid "history recall and completion"
 msgstr "历史记录与补全"
 
-#: ../../usage.md:199
+#: ../../usage.md:215
 msgid ""
 "`Ctrl-C` — clear the current input; with the input empty while running, "
 "interrupt the turn (retracting it if the agent has not answered yet)"
 msgstr "`Ctrl-C` — 清空当前输入；运行时若输入为空则中断当前轮（若 agent 尚未回答则撤回它）"
 
-#: ../../usage.md:200
+#: ../../usage.md:216
 msgid ""
 "`Ctrl-U` — clear the whole input line, in the idle prompt and the follow-"
 "up editor alike"
 msgstr "`Ctrl-U` — 清空整行输入，空闲提示符和后续消息编辑器中行为一致"
 
-#: ../../usage.md:201
+#: ../../usage.md:217
 msgid "`Ctrl-D` — exit from an empty prompt"
 msgstr "`Ctrl-D` — 在空 prompt 中退出"
 
-#: ../../usage.md:202
+#: ../../usage.md:218
 msgid "`Ctrl-R` — reverse-search your history"
 msgstr "`Ctrl-R` — 反向搜索历史记录"
 
-#: ../../usage.md:203
+#: ../../usage.md:219
 msgid ""
 "`Ctrl-O` — browse the ten most recent completed Bash output previews; "
 "press it again to close"
 msgstr "`Ctrl-O` — 浏览最近十次已完成的 Bash 输出预览；再次按下即可关闭"
 
-#: ../../usage.md:204
+#: ../../usage.md:220
 msgid ""
 "`Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / "
 "`$EDITOR` (falls back to vim)"
 msgstr "`Ctrl-X Ctrl-E` 或 `Ctrl-G` — 在 `$VISUAL` / `$EDITOR` 中编辑当前输入（找不到时使用 vim）"
 
-#: ../../usage.md:206
+#: ../../usage.md:222
 msgid "Editing a follow-up message in an external editor"
 msgstr "在外部编辑器中编辑追加指令"
 
-#: ../../usage.md:211
+#: ../../usage.md:227
 msgid "Typing a follow-up message in an external editor."
 msgstr "在外部编辑器中输入追加指令。"
 
-#: ../../usage.md:214
+#: ../../usage.md:230
 msgid ""
 "When you open the editor in reply to the agent, its most recent reply is "
 "appended below a git-style scissors line, so you can read what you are "
@@ -548,18 +578,18 @@ msgstr ""
 "当你在回复 agent 时打开编辑器，它最近一次的回复会被追加到一条 git "
 "风格剪刀线下方，方便你在撰写时阅读所要回答的内容（全屏编辑器会遮住那部分滚动历史）："
 
-#: ../../usage.md:218
+#: ../../usage.md:234
 msgid ""
 "Everything from the scissors line down is stripped before the message is "
 "sent; a scissors line you type yourself is left untouched. Long replies "
 "are capped to their most recent lines."
 msgstr "剪刀线及其下方的所有内容都会在消息发送前被剥离；你自己输入的剪刀线则原样保留。过长的回复只保留最近的若干行。"
 
-#: ../../usage.md:220
+#: ../../usage.md:236
 msgid "Image input"
 msgstr "图片输入"
 
-#: ../../usage.md:222
+#: ../../usage.md:238
 msgid ""
 "Paste or type the path of an existing local image directly into the "
 "prompt. minacode replaces the path with an inline label such as `[Image "
@@ -572,7 +602,7 @@ msgstr ""
 "screenshot.png]` 的内联标签，因此你可以清楚看到将要提交哪些图片，并继续编辑周围的文字。相对路径以 workspace "
 "为基准；带引号的路径和使用反斜杠转义空格的路径也可以识别。"
 
-#: ../../usage.md:229
+#: ../../usage.md:245
 msgid ""
 "PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends"
 " images using the selected standard API. If the provider explicitly "
@@ -588,11 +618,11 @@ msgstr ""
 "[`provider.image_input`](configuration.md#optional-provider-settings) "
 "覆盖自动检测。"
 
-#: ../../usage.md:235
+#: ../../usage.md:251
 msgid "Sessions"
 msgstr "Session"
 
-#: ../../usage.md:237
+#: ../../usage.md:253
 msgid ""
 "<span class=\"marker\">Your work is saved automatically</span> — the "
 "conversation, edits, and diffs are tied to the project directory you "
@@ -601,16 +631,17 @@ msgid ""
 " when minacode starts; it reports how many it removed. Resuming a session"
 " resets its clock, so one you keep returning to is never removed. Set "
 "`runtime.session_retention_days = 0` to keep them indefinitely."
-msgstr "<span class=\"marker\">工作会自动保存</span>：对话、编辑和 diff "
-"都与启动时所在的项目目录关联，因此中断后可以从原处继续。默认会删除超过七天未被使用的 session，"
-"清理在 minacode 启动时于后台进行，并会报告删除了多少个。恢复某个 session 会重置它的计时，"
-"因此经常使用的 session 不会被删除。设置 `runtime.session_retention_days = 0` 可永久保留。"
+msgstr ""
+"<span class=\"marker\">工作会自动保存</span>：对话、编辑和 diff "
+"都与启动时所在的项目目录关联，因此中断后可以从原处继续。默认会删除超过七天未被使用的 session，清理在 minacode "
+"启动时于后台进行，并会报告删除了多少个。恢复某个 session 会重置它的计时，因此经常使用的 session 不会被删除。设置 "
+"`runtime.session_retention_days = 0` 可永久保留。"
 
-#: ../../usage.md:244
+#: ../../usage.md:260
 msgid "Resume from the command line:"
 msgstr "从命令行恢复："
 
-#: ../../usage.md:252
+#: ../../usage.md:268
 msgid ""
 "Sessions are stored per project, so `-c` and a bare `--resume` never "
 "reach into another project's history — even when your most recent session"
@@ -620,7 +651,7 @@ msgstr ""
 "Session 按项目分开存储，因此 `-c` 和不带参数的 `--resume` 不会读取其他项目的历史，即使你最近一次 session "
 "发生在别处也是如此。而 `UID` 会在所有项目中查找，所以你可以在任意目录下按 id 恢复某个 session。"
 
-#: ../../usage.md:256
+#: ../../usage.md:272
 msgid ""
 "Resuming replays the conversation into your scrollback, including the "
 "diff each edit made. Long diffs are trimmed there; `/diff` always has the"
@@ -629,47 +660,47 @@ msgstr ""
 "恢复 session 时会把对话重新输出到终端回滚缓冲区，其中也包含每次编辑产生的 diff。这里的长 diff 会被截断；`/diff` "
 "中始终保留完整内容。"
 
-#: ../../usage.md:259
+#: ../../usage.md:275
 msgid "Reviewing changes"
 msgstr "审查修改"
 
-#: ../../usage.md:261
+#: ../../usage.md:277
 msgid "`/diff` opens an interactive, tabbed viewer with two views:"
 msgstr "`/diff` 会打开带 tab 的交互式 viewer，包含两个视图："
 
-#: ../../usage.md:263
+#: ../../usage.md:279
 msgid "**Latest** — what changed during the most recent round of your requests"
 msgstr "**Latest** — 最近一轮请求产生的修改"
 
-#: ../../usage.md:264
+#: ../../usage.md:280
 msgid "**Session** — the net diff for everything since the session began"
 msgstr "**Session** — 从 session 开始至今的净 diff"
 
-#: ../../usage.md:266
+#: ../../usage.md:282
 msgid "Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close."
 msgstr "使用 `j`/`k`、`g`/`G` 和 `/` 搜索进行导航；按 `Esc` 关闭。"
 
-#: ../../usage.md:268
+#: ../../usage.md:284
 msgid "Interactive diff list showing changed files from the latest turn"
 msgstr "交互式 diff 列表显示最近一轮修改的文件"
 
-#: ../../usage.md:273
+#: ../../usage.md:289
 msgid "Choosing a file to diff."
 msgstr "选择要查看 diff 的文件。"
 
-#: ../../usage.md:276
+#: ../../usage.md:292
 msgid "Side-by-side file diff with syntax highlighting"
 msgstr "带语法高亮的并排文件 diff"
 
-#: ../../usage.md:281
+#: ../../usage.md:297
 msgid "Side-by-side detail view of a changed file."
 msgstr "文件 diff 的并排详情视图。"
 
-#: ../../usage.md:284
+#: ../../usage.md:300
 msgid "Long sessions"
 msgstr "长 session"
 
-#: ../../usage.md:286
+#: ../../usage.md:302
 msgid ""
 "minacode keeps long conversations within a working budget on its own, "
 "summarizing older context as needed so a session can run indefinitely. "
@@ -684,4 +715,26 @@ msgstr ""
 #~ "with the editor empty, interrupt the "
 #~ "current task"
 #~ msgstr "中断当前任务，并保留编辑器中的草稿"
+
+#~ msgid ""
+#~ "A single line beneath the prompt "
+#~ "summarizes the runtime while you work:"
+#~ " the active provider and model, the"
+#~ " reasoning level, context fill and "
+#~ "the latest request's cache hit ratio "
+#~ "shown together as `ctx 23% · cache"
+#~ " 87%`, the code index state, and "
+#~ "any background jobs. MCP and skill "
+#~ "counts and an update notice appear "
+#~ "when relevant. The cache ratio shows "
+#~ "after the first request and refreshes"
+#~ " with each response; `/status` reports "
+#~ "the same figures for the whole "
+#~ "session. The `step N/M` counter joins"
+#~ " the line in the warning color "
+#~ "only once the turn reaches the "
+#~ "final fifth of `max_agent_steps`, signaling"
+#~ " that the turn is about to be"
+#~ " cut off."
+#~ msgstr ""
 

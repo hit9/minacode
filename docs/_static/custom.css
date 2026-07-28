@@ -181,6 +181,17 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-tab-off { color: #56b6c2; }
 .fs-goal { color: #c678dd; }
 .fs-doing { color: #e5c07b; }
+/* Status bar roles, mirroring the dark palette in minacode/render.py (Theme.DARK). */
+.sb-base { color: #e6edf3; }
+.sb-sep { color: #4b5563; }
+.sb-reason { color: #a5b4fc; }
+.sb-ctx { color: #facc15; }
+.sb-index { color: #94a3b8; }
+.sb-warn { color: #fb7185; }
+/* Working-state sweep (render.py sweep_fragments): a blue-to-purple gradient with a bright band. */
+.sb-sweep-a { color: #4bb4eb; }
+.sb-sweep-b { color: #b482eb; }
+.sb-sweep-hi { color: #e6f5ff; }
 
 /* Admonitions */
 .admonition, .note, .topic, .seealso {

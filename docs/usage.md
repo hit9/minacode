@@ -59,6 +59,22 @@ a blank row above its subdued labeled rule, separating it from terminal scrollba
 
 <div class="term-shot" role="img" aria-label="A completed Bash command with bounded output, followed by the Ctrl-O list of recent Bash commands and one larger output preview, each separated from scrollback by a labeled rule."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O for more</span><span class="fs-dim">    │ stdout:</span><span class="fs-output">    │   708 passed in 14.84s</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-divider">──── Bash outputs · latest 3 ───────────────</span><span class="fs-sel">&gt;  1. tr.18  Bash pytest -q</span><span class="fs-dim">   2. tr.17  Bash git diff --check</span><span class="fs-dim">   3. tr.16  Bash git status --short</span><span> </span><span class="fs-divider">──── Bash output · tr.18 ──────────────────</span><span class="fs-dim">  Bash pytest -q</span><span class="fs-dim"> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    708 passed in 14.84s</span><span class="fs-dim"> </span><span class="fs-dim">  Esc / ← back · Ctrl-O / q closes</span></div>
 
+## Status bar
+
+A single line beneath the prompt summarizes the runtime. At rest it shows the steady
+state: the active provider and model, the reasoning level, context fill and the latest
+request's cache hit ratio together as `ctx 23% · cache 98%`, the code index state, and
+any background jobs. MCP and skill counts and an update notice appear when relevant.
+The cache ratio shows after the first request and refreshes with each response, and
+`/status` reports the same figures for the whole session.
+
+While the agent works, the role colors give way to a blue-to-purple sweep that scrolls
+across the line, and the live counters join it: a retry or attempt notice, and the
+`step N/M` counter once the turn reaches the final fifth of `max_agent_steps`, signaling
+that the turn is about to be cut off.
+
+<div class="term-shot" role="img" aria-label="The status bar in two states. At rest: provider and model, reasoning, context fill with the cache ratio, and index, each in its role color. While working: the same line rendered as a blue-to-purple sweep with a bright band, plus a step counter near the cap."><span><span class="fs-i fs-dim">idle    </span><span class="fs-i sb-base">dashscope/qwen3.7-plus</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">high</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 23% · cache 98%</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-index">index ✓</span></span><span><span class="fs-i fs-dim">working </span><span class="fs-i sb-sweep-a">dashscope/qwen3.7-plus | high | </span><span class="fs-i sb-sweep-hi">ctx 41% · cache 95%</span><span class="fs-i sb-sweep-b"> | index ✓ | step 160/200</span></span></div>
+
 ## Commands
 
 Type `/` commands at the prompt to inspect state, switch models, manage the
