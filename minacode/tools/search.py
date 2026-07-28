@@ -200,18 +200,17 @@ class SearchTool(Tool):
 
 
 class CodeIndex:
-    """Keep the symbol index usable without ever making the user wait for it.
+    """Keep the symbol index useful without ever making the user wait for it.
 
-    The index is an optional accelerator: when it is absent, stale, or broken, symbol lookups
-    degrade to ordinary search rather than failing, so every integration failure here is caught and
-    turned into a status rather than an exception. Its state is published for the status bar to
-    display, which is why the work reports progress instead of returning it.
+    An optional accelerator: absent, stale, or broken, symbol lookups fall back to ordinary search
+    rather than failing, which is why every integration failure here becomes a status instead of an
+    exception. That status is published for the status bar to display.
 
-    Freshness is maintained opportunistically. Checking the working tree hashes files and is slow
-    on a large repository, so it runs on a background thread after a turn rather than in the path
-    of an answer, and a single flag keeps concurrent scans from stacking up. A small number of
-    changed files is re-indexed automatically; beyond that the index is marked stale and left for
-    an explicit sync, because a large rebuild is the user's decision to spend time on.
+    Freshness is opportunistic. Checking the working tree hashes files and is slow on a large
+    repository, so it runs on a background thread after a turn, never in the path of an answer, and a
+    flag keeps scans from stacking up. A few changed files are re-indexed automatically; beyond that
+    the index is marked stale for an explicit sync, because a large rebuild is the user's time to
+    spend.
     """
 
     AUTO_UPDATE_LIMIT: ClassVar[int] = 20

@@ -167,20 +167,18 @@ class MCPResourceInfo:
 class MCPManager:
     """Discover and call tools and resources on the configured MCP servers.
 
-    Servers are external processes and endpoints, so nothing here is allowed to be load-bearing.
-    Discovery runs concurrently in the background and a server that is slow, broken, or
-    unauthorized records its reason and drops out of the index rather than failing the session;
-    what the model sees is whatever answered. That is why connection status is state to be
-    displayed rather than an error to be raised.
+    Servers are external, so nothing here may be load-bearing. Discovery runs concurrently in the
+    background, and a slow, broken, or unauthorized server records its reason and drops out of the
+    index rather than failing the session. Connection state is therefore something to display, not an
+    error to raise.
 
-    Only a bounded summary of a server's catalog reaches the model. Schemas and descriptions are
-    capped per tool and overall, because a verbose server would otherwise consume the context
-    budget every turn merely by existing; the full schema is available on demand through describe.
+    Only a bounded summary of a catalog reaches the model: schemas and descriptions are capped per
+    tool and overall, because a verbose server would otherwise spend the context budget every turn
+    merely by existing. Full schemas stay available on demand through describe.
 
-    Each operation opens its own short-lived client, so no connection is durable state and none
-    survives a snapshot. That costs a process start per stdio call and is why the lifecycle rework
-    is on the roadmap in DESIGN.md. Discovery and the asyncio loop that carries it run off the main
-    thread, so the mutable catalog and status are guarded by a lock.
+    Each operation opens its own short-lived client, so no connection is durable state. That costs a
+    process start per stdio call and is why the lifecycle rework is on the roadmap in DESIGN.md.
+    Discovery and its asyncio loop run off the main thread, so the catalog and status are lock-guarded.
     """
 
     RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000

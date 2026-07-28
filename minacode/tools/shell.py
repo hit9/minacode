@@ -25,18 +25,16 @@ from minacode.tools.base import Tool
 class BashTool(Tool):
     """Run one bash invocation in the workspace, streaming its output as it arrives.
 
-    Confirmation is the default and the read-only allowlist is the narrow exception, which exists
-    because this tool replaced the dedicated listing and search tools and prompting for every `ls`
-    would be unusable. Auto-approval therefore has to hold for the whole command, not its first
-    word: every stage of a pipeline or `&&` chain must independently be read-only, redirections to
-    real paths and command substitution disqualify it, and wrapper commands that can hide arbitrary
-    execution are never approved. The guarantee is deliberately common-sense rather than exhaustive
-    — it is a prompting heuristic, not a sandbox, and confirmation remains the real boundary.
+    Confirmation is the default, and the read-only allowlist is the narrow exception — it exists
+    because this tool replaced the dedicated listing and search tools, and prompting for every `ls`
+    would be unusable. Auto-approval must hold for the whole command, not its first word: every stage
+    of a pipeline or `&&` chain must independently be read-only, redirection to a real path or command
+    substitution disqualifies it, and wrappers that can hide execution are never approved. This is a
+    prompting heuristic, not a sandbox; confirmation remains the real boundary.
 
-    The process runs in its own session so that cancelling kills the whole group rather than
-    orphaning children of a shell that has already exited. Output is decoded incrementally per
-    stream, so a multibyte character split across reads survives, and is streamed to the live
-    preview while it accumulates for the model.
+    The process gets its own session, so cancelling kills the whole group instead of orphaning
+    children of an already-exited shell. Output is decoded incrementally per stream, so a multibyte
+    character split across reads survives.
     """
 
     NAME = "Bash"

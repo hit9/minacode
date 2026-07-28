@@ -69,22 +69,19 @@ class PreparedRequest:
 
 
 class ModelClient:
-    """Send one request over the selected provider protocol and normalize what comes back.
+    """Send one request over the selected provider protocol and normalize the reply.
 
-    Three wire formats live here — Chat Completions, Responses, and Anthropic Messages — chosen by
-    the resolved provider, not by scattered host checks. Each returns the same triple of assistant
-    message, tool calls, and text, so callers never learn which protocol ran. Session history stays
-    one normalized model; protocol continuation data such as reasoning blocks round-trips through
-    namespaced opaque fields rather than being flattened into text, because providers verify what
-    they produced comes back unchanged.
+    Chat Completions, Responses, and Anthropic Messages all return the same (assistant message, tool
+    calls, text) triple, so callers never learn which ran. History stays one normalized model;
+    continuation data such as reasoning blocks round-trips through namespaced opaque fields, because
+    providers verify that what they produced comes back unchanged — flattening it into text breaks
+    the next request.
 
-    Retries are the caller's invisible business: a request retries on transport and 5xx-class
-    failures with a bounded backoff and republishes its progress through session state for the
-    status bar. Errors that a retry cannot fix — a missing model, a refused modality — surface
-    immediately. Streaming is an optimization of the same call, never a different code path.
+    Retries are invisible to the caller: bounded backoff on transport and 5xx failures, with progress
+    published through session state for the status bar. A missing model or a refused modality is a
+    decision rather than a glitch and surfaces at once. Streaming is the same call, not a second path.
 
-    Cancellation arrives from another thread and closes the in-flight client, so a blocked network
-    read ends rather than waiting for its timeout.
+    Cancelling closes the in-flight client, so a blocked read ends instead of waiting out its timeout.
     """
 
     _RETRYABLE_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b")

@@ -229,19 +229,18 @@ class EditApplyResult:
 class EditTool(Tool):
     """Create or patch one file through content-verified anchors rather than line numbers.
 
-    An anchor pairs a line index with a hash of that line's content, so an edit carries proof of
-    what the model believed it was editing. A line number alone silently targets whatever moved
-    into that position; here a mismatch is caught and reported with the line actually found. That
-    check is the reason edits can be planned and confirmed before any write.
+    An anchor pairs a line index with a hash of that line's content, so an edit carries proof of what
+    the model believed it was editing. A bare line number silently targets whatever moved into that
+    position; here a mismatch is refused and reported with the line actually found. That check is what
+    makes edits safe to plan and confirm before writing.
 
-    Verification is strict but not brittle. When the expected content still exists exactly once and
-    has drifted by only a small distance, the anchor relocates to it, since an edit elsewhere in
-    the same file shifting lines is ordinary rather than a conflict. Ambiguity or distance is
-    refused instead of guessed, because the wrong resolution corrupts a file silently.
+    Strict but not brittle: when the expected content still exists exactly once and has drifted only a
+    short distance, the anchor relocates to it, since earlier edits shifting lines is ordinary rather
+    than a conflict. Ambiguity or distance is refused instead of guessed, because a wrong resolution
+    corrupts a file silently.
 
-    Every operation is expressed as replace, delete, insert, create, or exact-text replace_all, and
-    a call that would change nothing is an error rather than a silent success — the model needs to
-    learn its anchor or search text was wrong.
+    A call that would change nothing is an error rather than a silent success — the model needs to
+    learn that its anchor or search text was wrong.
     """
 
     NAME = "Edit"

@@ -42,19 +42,16 @@ MAX_TEXTUAL_TOOL_CORRECTIONS = 5
 class Agent:
     """Run one user turn to a final answer, composing context, model, and tools.
 
-    A turn is a transaction. Messages accumulate in a local list and are checkpointed to the
-    session's active-turn buffer after every model response and tool batch, so a crash or an
-    interrupt can be resumed or settled from durable state; they reach the durable message history
-    only when the turn commits, settles after an interrupt, or is flushed by an unexpected error.
-    Nothing else may append to that history mid-turn.
+    A turn is a transaction: messages accumulate in a local list, checkpoint into the session's
+    active-turn buffer, and reach durable history only on commit, on settle after an interrupt, or
+    on an error flush. Nothing else may append to that history mid-turn.
 
     The loop alternates model requests and tool batches until the model answers without calling a
-    tool, `max_steps` is exhausted, or the user cancels. Cancellation is cooperative and arrives
-    from another thread: `cancel` sets the flag and forwards it to the model and tool runner, and
-    the loop only observes it at the checkpoints between those steps.
+    tool, `max_steps` runs out, or the user cancels. Cancellation arrives from another thread and is
+    observed only at those boundaries.
 
-    Input queued while the turn runs is claimed per request and acknowledged only once that request
-    succeeds, so a retried or interrupted request never swallows a follow-up.
+    Queued input is claimed per request and acknowledged only once that request succeeds, so a retry
+    never swallows a follow-up.
     """
 
     def __init__(self, session: Session, input_fn=input, output_fn=print):

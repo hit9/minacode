@@ -41,16 +41,22 @@ from minacode.tools import (
 class EditBatchPlan:
     """Resolve a batch of Edit calls against an in-memory file model before anything is written.
 
-    Every anchor the model sends names a line in the file as it read it, but the second edit in a
-    batch lands on a file the first has already shifted. Each line therefore carries the index it
-    came from, so a later anchor still resolves after earlier edits inserted or deleted lines above
-    it. Planning the whole batch first is also what lets the confirmation prompt show the final
-    result rather than the first step of it.
+    Every anchor names a line as the model read it, but the second edit in a batch lands on a file the
+    first already shifted. Each line therefore carries the index it came from, so `12:hash` still
+    resolves after an insertion moved that line down:
 
-    Planning touches no file. Each planned edit records the exact content it expects to find, and
-    re-checks it at write time, so an edit computed against a file that changed underneath is
-    rejected rather than clobbering the newer content. A call that cannot be planned records its
-    error against the call id instead of raising, keeping the batch's one-result-per-call contract.
+        read as        after edit 1
+        11 ...         11 ...
+        12 target      12 <inserted>
+                       13 target      <- origin 12, still the anchor's line
+
+    Planning the batch first is also what lets confirmation show the final result rather than the
+    first step of it.
+
+    Planning touches no file. Each planned edit records the content it expects and re-checks it at
+    write time, so an edit computed against a file that changed underneath is rejected instead of
+    clobbering it. A call that cannot be planned records its error against the call id rather than
+    raising, keeping the one-result-per-call contract.
     """
 
     @dataclass
@@ -209,21 +215,19 @@ class ToolDisplay:
 
 
 class ToolRunner:
-    """Execute one batch of tool calls, and return a result for every call the model emitted.
+    """Execute one batch of tool calls, returning exactly one result per call the model emitted.
 
-    That last part is the invariant replay depends on: malformed, refused, failed, skipped, and
-    interrupted calls each still produce a matching tool message, because a protocol history with
-    an unanswered call is invalid on every provider.
+    That count is what replay depends on: refused, failed, skipped, malformed, and interrupted calls
+    each still produce a matching tool message, because a history with an unanswered call is invalid
+    on every provider.
 
-    A batch is not a flat list. Independent read-only calls are grouped into segments that run
-    concurrently, while mutating and interactive calls stay ordered; the concurrency covers only
-    the pure `call()` work, and every side effect — display, session bookkeeping, the returned
-    messages — is applied on this thread in the order the model issued the calls. Edits in one
-    segment are planned together first, so anchors resolve against the file as the earlier edits in
-    the same batch will have left it. A declined confirmation short-circuits the rest of the batch.
+    A batch is segmented rather than flat. Independent read-only calls run concurrently; mutating and
+    interactive ones stay ordered, and edits in one segment are planned together so their anchors
+    resolve against the file the earlier edits will have left behind.
 
-    Tools that produce a model observation, such as an image, return it alongside the textual
-    result; observations follow all results so the batch stays replayable.
+    Concurrency covers only `call()`. Every side effect — display, session bookkeeping, the returned
+    messages — is applied on this thread in the model's original order. A declined confirmation
+    short-circuits the rest of the batch, and observations follow all results so it stays replayable.
     """
 
     BASH_TRANSCRIPT_PREVIEW_LINES: ClassVar[int] = 3

@@ -36,23 +36,20 @@ _IdentityT = TypeVar("_IdentityT", bound=Hashable)
 
 
 class ContextManager:
-    """Project session state into the message list for one request, and keep it inside the budget.
+    """Project session state into one request's messages, and keep it inside the budget.
 
-    The projection is derived at the send boundary and never stored: every request rebuilds it from
-    the session's messages, so nothing here may write back into durable history. Layers are ordered
-    for prompt-cache stability, from the version-stable system prompt and tool schemas through
-    session-stable capability indexes and append-only conversation to volatile memory and the
-    active turn at the tail; reordering a layer or rewriting an earlier one invalidates the cached
-    prefix for every later turn.
+    Derived at the send boundary and never stored: each request rebuilds it, so nothing here may
+    write back into history. Layer order exists for prompt-cache stability — version-stable system
+    and tools, then session-stable indexes, then append-only conversation, then volatile memory and
+    the active turn. Inserting anything mid-prefix invalidates the cache for every later turn, which
+    no token saving repays.
 
-    Request-local transforms belong here rather than in the stored messages. Repeated MCP schema
-    dumps and skill loads collapse into a pointer at the first full copy, which is re-promoted when
-    compaction removes it.
+    Request-local transforms belong here rather than in stored messages: repeated MCP schemas and
+    skill loads collapse to a pointer at the first copy, re-promoted when compaction removes it.
 
-    Space is claimed before it is spent: the budget is the context limit less the provider's output
-    reserve and a safety margin, measured against the payload that will actually cross the selected
-    protocol boundary. Exceeding it compacts prior history first and only then the current turn,
-    since the turn is what the model still needs verbatim.
+    The budget is the context limit less the provider's output reserve and a safety margin, measured
+    against the payload that actually crosses the wire. Over budget compacts prior history first, and
+    the current turn only if still over.
     """
 
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
