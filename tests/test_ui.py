@@ -2438,6 +2438,44 @@ def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch
     assert get_cwidth("".join(text for _style, text in fragments)) < 20
 
 
+def test_status_bar_idle_clip_keeps_role_colors(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    bar = StatusBar(s)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((30, 24)))
+        fragments = bar.fragments(sweep=False, show_elapsed=False)
+
+    # A narrow idle bar clips but keeps its per-role colors instead of collapsing the whole line
+    # to one status.base tone, which read as a colorless white bar in a tmux split.
+    styles = {style for style, text in fragments if text.strip()}
+    assert len(styles) > 1
+    assert Theme.style("status.base") in styles
+    assert Theme.style("status.reason") in styles
+    assert get_cwidth("".join(text for _style, text in fragments)) < 30
+
+
+def test_status_bar_clip_fragments_preserves_segment_styles():
+    fragments = [("#aaaaaa", "alpha "), ("#bbbbbb", "beta "), ("#cccccc", "gamma")]
+
+    clipped = StatusBar.clip_fragments(fragments, 12)
+
+    # The clip cuts mid-second segment; each surviving segment keeps its own style and the
+    # ellipsis inherits the style of the segment it interrupted.
+    assert "".join(text for _style, text in clipped) == "alpha bet..."
+    assert {style for style, _ in clipped} == {"#aaaaaa", "#bbbbbb"}
+
+
+def test_status_bar_clip_fragments_mirrors_clip_width_ellipsis():
+    fragments = [("#aaaaaa", "hello world")]
+
+    assert StatusBar.clip_fragments(fragments, 0) == [("", "")]
+    for width in (1, 2, 3, 4, 8):
+        clipped = StatusBar.clip_fragments(fragments, width)
+        assert "".join(text for _style, text in clipped) == Text.clip_width("hello world", width)
+        assert get_cwidth("".join(text for _style, text in clipped)) <= width
+
+
 def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.provider.timeout = 120

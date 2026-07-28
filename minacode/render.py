@@ -827,8 +827,11 @@ class StatusBar:
         text = " | ".join(text for text, _ in entries)
         columns = shutil.get_terminal_size((120, 20)).columns
         if get_cwidth(text) >= columns:
-            text = Text.clip_width(text, columns - 1)
-            return self.sweep_fragments(text) if sweep else [(Theme.style("status.base"), text)]
+            if sweep:
+                return self.sweep_fragments(Text.clip_width(text, columns - 1))
+            # Idle: clip per segment so the role colors survive instead of the whole line
+            # collapsing to one status.base tone (a colorless white bar in a narrow pane).
+            return self.clip_fragments(self.styled_fragments(entries), columns - 1)
         return self.sweep_fragments(text) if sweep else self.styled_fragments(entries)
 
     def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
@@ -878,6 +881,28 @@ class StatusBar:
                 fragments.append((Theme.style("status.sep"), " | "))
             fragments.append((self.role_style(role), text))
         return fragments or [("", "")]
+
+    @staticmethod
+    def clip_fragments(fragments: StyleAndTextTuples, width: int) -> StyleAndTextTuples:
+        """Clip styled fragments to a display width while keeping each segment's style, mirroring
+        Text.clip_width's trailing ellipsis. Lets the idle status bar keep its role colors when the
+        line is wider than the terminal instead of collapsing to a single tone."""
+        width = max(0, width)
+        if width == 0:
+            return [("", "")]
+        ellipsis = "." * min(3, width)
+        available = width - get_cwidth(ellipsis)
+        clipped: StyleAndTextTuples = []
+        used = 0
+        for style, text in fragments:
+            for char in text:
+                char_width = max(0, get_cwidth(char))
+                if used + char_width > available:
+                    clipped.append((style, ellipsis))
+                    return clipped
+                clipped.append((style, char))
+                used += char_width
+        return clipped or [("", "")]
 
     def sweep_fragments(self, text: str) -> StyleAndTextTuples:
         if not text:
