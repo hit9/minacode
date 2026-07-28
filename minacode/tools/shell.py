@@ -25,7 +25,10 @@ from minacode.tools.base import Tool
 class BashTool(Tool):
     NAME = "Bash"
     LOG_LEXER = "bash"
-    DESCRIPTION = "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
+    DESCRIPTION = (
+        "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; "
+        "limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
+    )
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
 

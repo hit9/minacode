@@ -21,7 +21,13 @@ class AskSpec:
 
 class AskTool(Tool):
     NAME = "Ask"
-    DESCRIPTION = "Ask the user one or more questions (asked in sequence) and wait for their answers. Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; prefer offering choices with previews, and optionally a recommended index when one option is clearly best. Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; if a reasonable default exists, proceed."
+    DESCRIPTION = (
+        "Ask the user one or more questions (asked in sequence) and wait for their answers. "
+        "Use when intent is genuinely ambiguous, a choice affects the codebase's external shape (module layout, public API, naming), or you need prioritization; "
+        "prefer offering choices with previews, and optionally a recommended index when one option is clearly best. "
+        "Do NOT ask about trivial internal details or anything determinable from context (Read/InspectCode/Bash) or already specified; "
+        "if a reasonable default exists, proceed."
+    )
     EXAMPLE = (
         'One question, recommending a choice. Example: {"questions":[{"question":"Which approach?","choices":["Refactor","Rewrite"],"previews":["auth/\\n  session.py  (new, +87)\\n  views.py    (-12)","auth.py -> deleted\\nauth/*      all new (+430)"],"recommended":0}]}',
         'Batch related questions. Example: {"questions":[{"question":"Target runtime?","choices":["Node","Deno"]},{"question":"Name the module?"}]}',

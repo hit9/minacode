@@ -20,7 +20,10 @@ from minacode.tools.base import Tool
 class ReadTool(Tool):
     NAME = "Read"
     MAX_ANCHOR_DRIFT: ClassVar[int] = 50
-    DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; use Recall(tr.N) for full stored output."
+    DESCRIPTION = (
+        "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; "
+        "use Recall(tr.N) for full stored output."
+    )
     EXAMPLE = (
         'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
         'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',

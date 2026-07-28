@@ -195,7 +195,11 @@ class RecallContextTool(Tool):
 
 class NoteTool(Tool):
     NAME = "Note"
-    DESCRIPTION = "Maintain durable working notes; set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. Plan items are objects with status todo|doing|done|blocked and text."
+    DESCRIPTION = (
+        "Maintain durable working notes; "
+        "set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. "
+        "Plan items are objects with status todo|doing|done|blocked and text."
+    )
     STORES_RESULT = False
 
     @classmethod

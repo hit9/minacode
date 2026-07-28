@@ -367,7 +367,10 @@ class InspectCodeTool(Tool):
     RESOLVE_MODES: ClassVar[frozenset[str]] = frozenset({"inspect", "refs", "impls", "callers", "callees"})
     CHAIN_MODES: ClassVar[frozenset[str]] = frozenset({"callers", "callees"})
     OPTION_KEYS: ClassVar[tuple[str, ...]] = ("limit", "kind", "path", "symbol", "exact_only", "depth", "offset", "all_kinds", "ref_kind", "loose")
-    DESCRIPTION = "Use the code index: find returns symbols; inspect returns anchors/members/references; outline returns a file symbol tree; refs lists classified references; impls lists implementors; callers/callees walk the call chain."
+    DESCRIPTION = (
+        "Use the code index: find returns symbols; inspect returns anchors/members/references; outline returns a file symbol tree; "
+        "refs lists classified references; impls lists implementors; callers/callees walk the call chain."
+    )
     EXAMPLE = (
         'Find symbols; kind can be class|function|method|variable|constant|enum|struct|interface|module|type|trait|field|property|impl|namespace|dict_key, comma-ok. Example: {"mode":"find","target":"Tool","kind":"class,function","limit":20}',
         'Inspect one symbol; path narrows candidates. Example: {"mode":"inspect","target":"Tool","path":"src/app.py"}',
