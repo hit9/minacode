@@ -881,7 +881,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.with_status_paused(lambda: self.emit(text))
 
     def agent_output(self, text: str = "") -> None:
-        self.with_status_paused(lambda: self.emit_agent_output(text))
+        action = lambda: self.emit_agent_output(text)
+        tui = self.tui
+        if tui is not None:
+            action = lambda: tui.write_to_scrollback(lambda: self.emit_agent_output(text))
+        self.with_status_paused(action)
 
     def model_stream_output(self, kind: str, text: str) -> None:
         with self.model_stream_lock:
@@ -1910,7 +1914,7 @@ class TuiRuntime:
             self.loop.emit("Cancelled")
             return
         elapsed = time.monotonic() - started
-        self.loop.ui.emit_answer(answer)
+        self.tui.write_to_scrollback(lambda: self.loop.ui.emit_answer(answer))
         if not malformed_tool_call:
             self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
         self.loop.session.save_snapshot()

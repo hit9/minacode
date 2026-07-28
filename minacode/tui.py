@@ -16,7 +16,7 @@ from enum import Enum, auto
 from typing import Any, ClassVar, TypeVar
 
 from prompt_toolkit import search as pt_search
-from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application import Application, create_app_session, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
@@ -247,6 +247,42 @@ class TuiApp:
     def invalidate(self) -> None:
         if self.app is not None:
             self.app.invalidate()
+
+    def write_to_scrollback(self, callback: Callable[[], None]) -> None:
+        """Synchronously print completed output above the live application."""
+        app = self.app
+        if app is None or not app.is_running:
+            callback()
+            return
+        done = threading.Event()
+        failures: list[BaseException] = []
+
+        async def write() -> None:
+            try:
+
+                def render() -> None:
+                    # Keep print_formatted_text on the already-suspended terminal instead of
+                    # scheduling another asynchronous run_in_terminal call.
+                    with create_app_session(output=app.output):
+                        callback()
+
+                await run_in_terminal(render)
+            except BaseException as error:  # noqa: BLE001 - preserve output failures for the caller.
+                failures.append(error)
+            finally:
+                done.set()
+
+        def start() -> None:
+            try:
+                app.create_background_task(write())
+            except BaseException as error:  # noqa: BLE001 - do not strand the agent thread.
+                failures.append(error)
+                done.set()
+
+        self._schedule(start)
+        done.wait()
+        if failures:
+            raise failures[0]
 
     def _schedule(self, callback: Callable[..., None], *args: Any) -> None:
         app = self.app

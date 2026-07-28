@@ -14,6 +14,10 @@
   `max_agent_steps`, since a count like `step 1/200` carries no information
   far from the cap and only matters as the turn approaches the cutoff that ends it.
 
+### Fixed
+- Promote a completed streamed response into white scrollback before subsequent tool or completion
+  output, instead of letting prompt-toolkit batch them together.
+
 
 ## 0.15.0 - 2026-07-28
 
