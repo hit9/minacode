@@ -16,7 +16,7 @@ from enum import Enum, auto
 from typing import Any, ClassVar, TypeVar
 
 from prompt_toolkit import search as pt_search
-from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application import Application, create_app_session, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
@@ -247,6 +247,41 @@ class TuiApp:
     def invalidate(self) -> None:
         if self.app is not None:
             self.app.invalidate()
+
+    def write_to_scrollback(self, callback: Callable[[], None]) -> None:
+        """Print above the live application and wait until the terminal has accepted it.
+
+        `run_in_terminal` owns the erase/write/redraw sequence, while `create_app_session` routes
+        nested prompt-toolkit printers to this application's output. Waiting is intentional: the
+        caller must not start tool output until the promoted response is permanent scrollback.
+        """
+        app = self.app
+        if app is None or not app.is_running:
+            callback()
+            return
+        done = threading.Event()
+        errors: list[Exception] = []
+
+        async def write() -> None:
+            try:
+
+                def render() -> None:
+                    with create_app_session(output=app.output):
+                        callback()
+
+                await run_in_terminal(render)
+            except Exception as error:  # noqa: BLE001 - return terminal failures to the agent thread.
+                errors.append(error)
+            finally:
+                done.set()
+
+        def schedule_write() -> None:
+            app.create_background_task(write())
+
+        self._schedule(schedule_write)
+        done.wait()
+        if errors:
+            raise errors[0]
 
     def _schedule(self, callback: Callable[..., None], *args: Any) -> None:
         app = self.app

@@ -64,6 +64,25 @@ class ResizableOutput(DummyOutput):
         return self.size
 
 
+class TextRecordingOutput(ResizableOutput):
+    def __init__(self, rows=24, columns=80):
+        super().__init__(rows, columns)
+        self.writes = []
+        self.lock = threading.Lock()
+
+    def write(self, data):
+        with self.lock:
+            self.writes.append(data)
+
+    def write_raw(self, data):
+        with self.lock:
+            self.writes.append(data)
+
+    def text(self):
+        with self.lock:
+            return "".join(self.writes)
+
+
 def wait_until(predicate, timeout=1.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -681,6 +700,114 @@ def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypat
     runtime.run_agent_turn("question")
 
     assert emitted[-1] == ("Cancelled", [])
+
+
+def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.session.config.provider.api = "responses"
+    command_loop.session.config.provider.model = "gpt-5"
+    command_loop.session.config.provider.url = "http://test"
+    command_loop.session.config.provider.key = "sk-test"
+    command_loop.ui.color = True
+    app = TuiApp(activity_fragments_fn=command_loop.tui_activity_fragments)
+    command_loop.tui = app
+    output = TextRecordingOutput()
+    arguments_blocked = threading.Event()
+    release_arguments = threading.Event()
+    request_finished = threading.Event()
+    worker_errors = []
+    timeline = []
+    response = "I am editing the files."
+    terminal = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": response}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "Bash",
+                "arguments": '{"command":"echo hi"}',
+            },
+        ],
+    }
+
+    def events():
+        yield {"type": "response.output_text.delta", "delta": response}
+        yield {"type": "response.output_text.done"}
+        yield {"type": "response.output_item.added", "item": {"type": "function_call"}}
+        timeline.append("tool arguments")
+        arguments_blocked.set()
+        assert release_arguments.wait(timeout=2)
+        yield {"type": "response.function_call_arguments.delta", "delta": '{"args"'}
+        yield {"type": "response.completed", "response": terminal}
+
+    responses = SimpleNamespace(create=lambda **_params: events())
+    monkeypatch.setattr(command_loop.agent.model, "client", lambda: SimpleNamespace(responses=responses))
+    real_emit = command_loop.emit_agent_output
+
+    def emit_promoted(text):
+        real_emit(text)
+        timeline.append("white response")
+
+    monkeypatch.setattr(command_loop, "emit_agent_output", emit_promoted)
+
+    def request():
+        try:
+            _assistant, _calls, content = command_loop.agent.model.request([{"role": "user", "content": "make the change"}], [])
+            command_loop.agent_output(content)
+        except Exception as error:
+            worker_errors.append(error)
+        finally:
+            request_finished.set()
+
+    def drive(_pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        worker = threading.Thread(target=request, daemon=True)
+        worker.start()
+        try:
+            wait_until(lambda: arguments_blocked.is_set() or request_finished.is_set(), timeout=2)
+            assert arguments_blocked.is_set(), worker_errors
+            assert timeline[:2] == ["white response", "tool arguments"]
+            assert command_loop.model_stream_fragments() == []
+            assert response in output.text()
+            assert not request_finished.is_set()
+        finally:
+            release_arguments.set()
+        assert request_finished.wait(timeout=2)
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, output=output)
+
+    assert worker_errors == []
+    assert timeline.count("white response") == 1
+
+
+def test_non_tui_stream_completion_keeps_normal_agent_output(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    emitted = []
+    monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
+
+    command_loop.model_stream_output("output_done", "completed response")
+    command_loop.agent_output("completed response")
+
+    assert emitted == ["completed response"]
+
+
+def test_tui_turn_reset_clears_unconsumed_stream_promotion(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop.model_stream_promoted_text = "stale response"
+    runtime = TuiRuntime(command_loop)
+
+    runtime.reset_turn()
+
+    assert command_loop.model_stream_promoted_text == ""
 
 
 def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_path, monkeypatch):

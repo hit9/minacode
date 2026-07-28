@@ -311,6 +311,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.model_stream_lock = threading.Lock()
         self.model_stream_kind = ""
         self.model_stream_text = ""
+        self.model_stream_promoted_text = ""
         self.live_status_paused = False
         self.background_output_lock = threading.Lock()
         self.background_output_open = True
@@ -881,11 +882,31 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.with_status_paused(lambda: self.emit(text))
 
     def agent_output(self, text: str = "") -> None:
+        # An early promotion is presentation-only: Agent still publishes the same semantic text
+        # after ModelClient returns. Consume the one-shot marker instead of printing it twice.
+        with self.model_stream_lock:
+            promoted = self.model_stream_promoted_text
+            self.model_stream_promoted_text = ""
+        if promoted and text.strip() == promoted:
+            return
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def model_stream_output(self, kind: str, text: str) -> None:
+        """Update the dim preview or permanently promote a protocol-complete response.
+
+        `output_done` is internal and emitted only when ModelClient has seen both completed text and
+        a tool call. The scrollback write is synchronous so prompt-toolkit cannot batch it with the
+        immediately following ToolRunner output and leave the `responding` preview covering it.
+        """
+        promote = ""
+        tui = self.tui
         with self.model_stream_lock:
-            if not kind:
+            if kind == "output_done":
+                promote = text.strip()
+                self.model_stream_kind = self.model_stream_text = ""
+                if promote and tui is not None:
+                    self.model_stream_promoted_text = promote
+            elif not kind:
                 self.model_stream_kind = self.model_stream_text = ""
             elif not text:
                 self.model_stream_kind, self.model_stream_text = kind, ""
@@ -893,8 +914,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 if kind != self.model_stream_kind:
                     self.model_stream_kind, self.model_stream_text = kind, ""
                 self.model_stream_text = (self.model_stream_text + text)[-8000:]
-        if self.tui is not None:
-            self.tui.invalidate()
+        if tui is not None:
+            tui.invalidate()
+            if promote:
+                self.with_status_paused(lambda: tui.write_to_scrollback(lambda: self.emit_agent_output(promote)))
 
     def tool_input(self, prompt: str = "") -> str:
         # When the TUI is running, route agent approvals through TuiApp's
@@ -1859,6 +1882,10 @@ class TuiRuntime:
 
     def reset_turn(self) -> None:
         self.loop.model_stream_output("", "")
+        # A request can fail after permanent promotion but before Agent re-publishes the text and
+        # consumes its marker. Never let that stale marker suppress an identical later response.
+        with self.loop.model_stream_lock:
+            self.loop.model_stream_promoted_text = ""
         self.tui.set_idle()
         self.cancel_pending.clear()
         self.main_busy.clear()

@@ -375,6 +375,10 @@ class ModelClient:
         instead of guessing when nothing identifies the call: a wrong association concatenates two
         calls' argument fragments into one call with corrupt JSON, which the model cannot correct
         because it looks like something it wrote.
+
+        Unlike Responses, Chat has no separate text-done event. Do not promote on the first tool
+        delta: compatible providers can vary their delta order. `finish_reason=tool_calls` is the
+        first protocol boundary that proves this assistant message is complete.
         """
         content: list[str] = []
         reasoning_content: list[str] = []
@@ -386,6 +390,7 @@ class ModelClient:
         tool_call_positions: dict[int, int] = {}
         next_index = 0
         usage: Any = None
+        output_promoted = False
 
         def allocate_tool_call() -> int:
             nonlocal next_index
@@ -424,7 +429,8 @@ class ModelClient:
                 choices = self.message_field(chunk, "choices") or []
                 if not choices:
                     continue
-                delta = self.message_field(choices[0], "delta")
+                choice = choices[0]
+                delta = self.message_field(choice, "delta")
                 reasoning_content_delta = str(self.message_field(delta, "reasoning_content") or "")
                 reasoning_delta = str(self.message_field(delta, "reasoning") or "")
                 if reasoning_content_delta:
@@ -462,6 +468,9 @@ class ModelClient:
                         target["name"] = str(name)
                     if arguments := self.message_field(function, "arguments"):
                         target["arguments"] = str(target["arguments"]) + str(arguments)
+                if self.message_field(choice, "finish_reason") == "tool_calls" and content and tool_calls and not output_promoted:
+                    self._emit_stream("output_done", "".join(content))
+                    output_promoted = True
         finally:
             self._emit_stream("", "")
         message: Json = {"content": "".join(content) or None}
@@ -528,16 +537,43 @@ class ModelClient:
         return self.responses_result(result)
 
     def _responses_stream(self, client: OpenAI, params: Json) -> Any:
-        """Consume a Responses event stream and return its terminal response."""
+        """Consume a Responses stream, promoting completed text before tool arguments finish.
+
+        Text completion and function-call discovery are independent events and either can arrive
+        first. Promotion is therefore a two-condition state transition, not an ordering assumption;
+        the terminal response is still consumed normally for history, tool calls, and usage.
+        """
 
         terminal: Any = None
+        output: list[str] = []
+        text_done = tool_seen = output_promoted = False
+
+        def promote_output() -> None:
+            nonlocal output_promoted
+            if text_done and tool_seen and output and not output_promoted:
+                self._emit_stream("output_done", "".join(output))
+                output_promoted = True
+
         try:
             for event in client.responses.create(**params):
                 event_type = str(self.message_field(event, "type") or "")
                 if event_type == "response.reasoning_summary_text.delta":
                     self._emit_stream("reasoning", str(self.message_field(event, "delta") or ""))
                 elif event_type in ("response.output_text.delta", "response.refusal.delta"):
-                    self._emit_stream("output", str(self.message_field(event, "delta") or ""))
+                    delta = str(self.message_field(event, "delta") or "")
+                    output.append(delta)
+                    self._emit_stream("output", delta)
+                elif event_type in ("response.output_text.done", "response.refusal.done"):
+                    text_done = True
+                    promote_output()
+                elif event_type == "response.output_item.added":
+                    item = self.message_field(event, "item")
+                    if self.message_field(item, "type") == "function_call":
+                        tool_seen = True
+                        promote_output()
+                elif event_type == "response.function_call_arguments.delta":
+                    tool_seen = True
+                    promote_output()
                 elif event_type in ("response.completed", "response.failed", "response.incomplete"):
                     terminal = self.message_field(event, "response")
         finally:
@@ -756,17 +792,50 @@ class ModelClient:
         return assistant, calls, content
 
     def _anthropic_stream(self, client: Anthropic, params: Json) -> Any:
+        """Consume Messages blocks and promote text once both text and tool blocks are known.
+
+        Content blocks need not put text before `tool_use`, so block start/stop events feed the same
+        order-independent transition as Responses. Input JSON may continue after promotion when the
+        completed text block came first.
+        """
+        output: list[str] = []
+        text_blocks: set[int] = set()
+        text_done = tool_seen = output_promoted = False
+
+        def promote_output() -> None:
+            nonlocal output_promoted
+            if text_done and tool_seen and output and not output_promoted:
+                self._emit_stream("output_done", "".join(output))
+                output_promoted = True
+
         try:
             with client.messages.stream(**params) as stream:
                 for event in stream:
-                    if self.message_field(event, "type") != "content_block_delta":
+                    event_type = self.message_field(event, "type")
+                    if event_type == "content_block_start":
+                        block = self.message_field(event, "content_block")
+                        block_type = self.message_field(block, "type")
+                        if block_type == "text":
+                            text_blocks.add(int(self.message_field(event, "index") or 0))
+                        elif block_type == "tool_use":
+                            tool_seen = True
+                            promote_output()
+                        continue
+                    if event_type == "content_block_stop":
+                        if int(self.message_field(event, "index") or 0) in text_blocks:
+                            text_done = True
+                            promote_output()
+                        continue
+                    if event_type != "content_block_delta":
                         continue
                     delta = self.message_field(event, "delta")
                     delta_type = self.message_field(delta, "type")
                     if delta_type == "thinking_delta":
                         self._emit_stream("reasoning", str(self.message_field(delta, "thinking") or ""))
                     elif delta_type == "text_delta":
-                        self._emit_stream("output", str(self.message_field(delta, "text") or ""))
+                        text = str(self.message_field(delta, "text") or "")
+                        output.append(text)
+                        self._emit_stream("output", text)
                 return stream.get_final_message()
         finally:
             self._emit_stream("", "")

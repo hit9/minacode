@@ -14,6 +14,12 @@
   `max_agent_steps`, since a count like `step 1/200` carries no information
   far from the cap and only matters as the turn approaches the cutoff that ends it.
 
+### Fixed
+- Promote completed streamed response text from the dim `responding` preview into terminal
+  scrollback before tool output begins. Responses and Anthropic use their explicit text/tool block
+  boundaries without assuming which arrives first; Chat Completions promotes at its tool-call
+  finish boundary.
+
 
 ## 0.15.0 - 2026-07-28
 

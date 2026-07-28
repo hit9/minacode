@@ -7,6 +7,7 @@ hitting real providers.
 
 import json
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -246,12 +247,51 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     assert factory.calls[0].url.path.endswith("/chat/completions")
     assert body["stream"] is True
     assert body["stream_options"] == {"include_usage": True}
-    assert streamed == [("reasoning", "check"), ("output", "hello"), ("", "")]
+    assert streamed == [("reasoning", "check"), ("output", "hello"), ("output_done", "hello"), ("", "")]
     assert content == "hello"
     assert assistant["reasoning_content"] == "check"
     assert assistant["tool_calls"][0]["function"] == {"name": "Bash", "arguments": '{"command":"echo hi"}'}
     assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert s.usage.total_tokens == 15
+
+
+def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
+    model = ModelClient(_session(tmp_path))
+    timeline = []
+
+    def chunks():
+        yield {"choices": [{"delta": {"content": "hello"}, "finish_reason": None}]}
+        yield {
+            "choices": [
+                {
+                    "delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "Bash", "arguments": '{"command":"echo'}}]},
+                    "finish_reason": None,
+                }
+            ]
+        }
+        timeline.append(("wire", "remaining tool arguments"))
+        yield {
+            "choices": [
+                {
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": ' hi"}'}}]},
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+
+    completions = SimpleNamespace(create=lambda **_params: chunks())
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    model.on_stream = lambda kind, delta: timeline.append((kind, delta))
+
+    message, _usage = model._chat_stream(client, {})
+
+    assert timeline == [
+        ("output", "hello"),
+        ("wire", "remaining tool arguments"),
+        ("output_done", "hello"),
+        ("", ""),
+    ]
+    assert message["tool_calls"][0]["function"]["arguments"] == '{"command":"echo hi"}'
 
 
 def test_chat_stream_preserves_openrouter_reasoning_alias_and_details(tmp_path, monkeypatch):
@@ -444,7 +484,8 @@ def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_pa
         },
     ]
     factory = _StreamClientFactory(chunks)
-    model.on_stream = lambda _kind, _delta: None
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
     assistant, calls, _content = model.chat_request([{"role": "user", "content": "read"}], [])
@@ -453,6 +494,7 @@ def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_pa
     assert [call.id for call in calls] == ["call_1", "call_2"]
     assert [call.name for call in calls] == ["Read", "Read"]
     assert [call["function"]["arguments"] for call in assistant["tool_calls"]] == ['{"path":"a"}', '{"path":"b"}']
+    assert streamed == [("", "")]
 
 
 def test_chat_stream_rejects_ambiguous_tool_fragments_without_indexes_or_ids(tmp_path, monkeypatch):
@@ -688,6 +730,50 @@ def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, mo
     assert calls == []
     assert s.usage.prompt_tokens == 10
     assert s.usage.cached_prompt_tokens == 7
+
+
+@pytest.mark.parametrize("order", ["text-first", "tool-first"])
+def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(tmp_path, monkeypatch, order):
+    model = ModelClient(_session(tmp_path, api="responses", model="gpt-5"))
+    text_delta = {"type": "response.output_text.delta", "delta": "I am editing the files."}
+    text_done = {"type": "response.output_text.done"}
+    tool_added = {"type": "response.output_item.added", "item": {"type": "function_call"}}
+    prefix = [text_delta, text_done, tool_added] if order == "text-first" else [tool_added, text_delta, text_done]
+    terminal = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "I am editing the files."}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "Bash",
+                "arguments": '{"command":"echo hi"}',
+            },
+        ],
+    }
+    timeline = []
+
+    def events():
+        yield from prefix
+        timeline.append(("wire", "tool arguments"))
+        yield {"type": "response.function_call_arguments.delta", "delta": '{"args"'}
+        yield {"type": "response.completed", "response": terminal}
+
+    responses = SimpleNamespace(create=lambda **_params: events())
+    monkeypatch.setattr(model, "client", lambda: SimpleNamespace(responses=responses))
+    model.on_stream = lambda kind, delta: timeline.append((kind, delta))
+
+    _assistant, calls, content = model.request([{"role": "user", "content": "make the change"}], [])
+
+    promoted = ("output_done", "I am editing the files.")
+    assert timeline.index(promoted) < timeline.index(("wire", "tool arguments"))
+    assert timeline.count(promoted) == 1
+    assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
+    assert content == "I am editing the files."
 
 
 def test_responses_stream_returns_incomplete_terminal_response_and_clears_preview(tmp_path, monkeypatch):
@@ -1194,7 +1280,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     body = json.loads(factory.calls[0].content)
     assert factory.calls[0].url.path.endswith("/messages")
     assert body["stream"] is True
-    assert streamed == [("reasoning", "check"), ("output", "hello"), ("", "")]
+    assert streamed == [("reasoning", "check"), ("output", "hello"), ("output_done", "hello"), ("", "")]
     assert content == "hello"
     assert calls == [ToolCall("tool_1", "Bash", ["echo hi"])]
     assert assistant["_anthropic_content"] == [
@@ -1204,6 +1290,39 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     ]
     assert s.usage.prompt_tokens == 10
     assert s.usage.completion_tokens == 5
+
+
+def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
+    model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "hello"}},
+        {"type": "content_block_stop", "index": 1},
+    ]
+
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __iter__(self):
+            return iter(events)
+
+        def get_final_message(self):
+            return {"content": []}
+
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
+
+    model._anthropic_stream(client, {})
+
+    assert streamed == [("output", "hello"), ("output_done", "hello"), ("", "")]
 
 
 def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):
