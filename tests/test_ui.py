@@ -214,6 +214,10 @@ def test_theme_palettes_have_identical_complete_keys():
     assert all(Theme.LIGHT.values())
 
 
+def test_status_roles_have_theme_entries():
+    assert all(f"status.{role}" in Theme.DARK and f"status.{role}" in Theme.LIGHT for role in StatusBar.ROLE_KEYS)
+
+
 def test_editor_command_prefers_visual_then_editor_then_vim(monkeypatch):
     monkeypatch.delenv("VISUAL", raising=False)
     monkeypatch.delenv("EDITOR", raising=False)
@@ -2249,6 +2253,23 @@ def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkey
 
     assert bar.sweep_fragments("status") == initial
     assert all("resend" not in text for text, _role in bar.entries(show_elapsed=True))
+
+
+def test_status_bar_shows_last_request_cache_hit_ratio(tmp_path):
+    s = session(tmp_path)
+    bar = StatusBar(s)
+    assert all(role != "cache" for _text, role in bar.entries(show_elapsed=False))
+
+    s.usage.last_prompt_tokens = 1000
+    s.usage.last_cached_prompt_tokens = 870
+    entries = bar.entries(show_elapsed=False)
+    assert ("cache 87%", "cache") in entries
+    # Rendering exercises the status.cache theme style resolution end-to-end.
+    rendered = bar.fragments(sweep=False, show_elapsed=False)
+    assert any(text == "cache 87%" for _style, text in rendered)
+
+    s.usage.last_cached_prompt_tokens = 0
+    assert ("cache 0%", "cache") in bar.entries(show_elapsed=False)
 
 
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):

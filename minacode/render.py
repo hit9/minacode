@@ -64,6 +64,7 @@ class Theme:
         "status.reason": "#a5b4fc",
         "status.mcp": "#93c5fd",
         "status.ctx": "#facc15",
+        "status.cache": "#2dd4bf",
         "status.update": "#fb923c",
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
@@ -89,6 +90,7 @@ class Theme:
         "status.reason": "#5b21b6",
         "status.mcp": "#1e40af",
         "status.ctx": "#a16207",
+        "status.cache": "#0d9488",
         "status.update": "#9a3412",
         "status.index": "#475569",
         "status.warn": "#b91c1c",
@@ -745,7 +747,7 @@ class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
-    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn", "runtime")
+    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "cache", "update", "index", "warn", "runtime")
 
     @classmethod
     def role_style(cls, role: str) -> str:
@@ -849,6 +851,9 @@ class StatusBar:
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
         parts.append(("ctx " + str(self.session.state.context_percent) + "%", "ctx"))
+        usage = self.session.usage
+        if usage.last_prompt_tokens:
+            parts.append((f"cache {usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens}%", "cache"))
         update_status = self.update_status()
         if update_status:
             parts.append((update_status, "update"))
