@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -16,7 +17,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from openai import OpenAI
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
@@ -34,24 +34,35 @@ from minacode.base import (
     SELECTION_FREE_TEXT,
     ConfigError,
     Json,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
     MalformedToolCallError,
     MinacodeError,
     ProviderConfig,
     Text,
     ToolCall,
     ToolError,
+    TurnBox,
     __version__,
 )
-from minacode.engine import Agent, ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolDisplay, TurnBox, UpdateChecker
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.image import ImageInputs, UserInput
+from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.render import BashLivePreview, StatusBar, UiPrinter
+from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
+from minacode.update import UpdateChecker
 
 
 class CommandCompleter(Completer):
+    MCP_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"@([A-Za-z0-9_.-]*)$")
+    SKILL_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$")
     # fmt: on
     # fmt: off
     SET_HANDLERS: ClassVar[dict[str, tuple[str, str, Callable[[str], int | float | None] | None]]] = {
@@ -137,7 +148,7 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_connected_servers(), value)
                 return
 
-        at_match = re.search(r"@([A-Za-z0-9_.-]*)$", text)
+        at_match = CommandCompleter.MCP_MENTION_RE.search(text)
         if at_match:
             server_part, dot, tool_part = at_match.group(1).partition(".")
             if dot:
@@ -146,7 +157,7 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_servers(), server_part)
             return
 
-        skill_match = re.search(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$", text)
+        skill_match = CommandCompleter.SKILL_MENTION_RE.search(text)
         if skill_match:
             yield from self.matches(self.skills(), skill_match.group(1))
             return
@@ -160,6 +171,25 @@ class CommandCompleter(Completer):
 
 
 class CommandLoop:
+    """Own session behavior: read input, dispatch commands, drive turns, and route output.
+
+    Slash commands are handled here and never reach the model. The agent runs on this thread while
+    prompt-toolkit runs on another, which is why output has two destinations: completed user,
+    assistant, and tool output goes to native scrollback, while drafts, previews, queue state, and
+    selectors belong to the TUI. Anything transient the terminal leaves in scrollback is an artifact,
+    not history — the transcript is always rebuilt from semantic records.
+
+    Input entered mid-turn is queued, and only an allowlist of read-only commands may run against a
+    busy session; anything that mutates configuration would change the meaning of a turn already in
+    flight.
+
+    The same object serves the non-interactive path, where there is no TUI and input and output are
+    plain callables — which is also how the tests drive it.
+    """
+
+    HUNK_HEADER_RE: ClassVar[re.Pattern] = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+    HELP_HEADING_RE: ClassVar[re.Pattern] = re.compile(r"^### (.+)$", re.MULTILINE)
+    HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
     IDLE_HINTS = (
@@ -169,6 +199,7 @@ class CommandLoop:
     )
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
+    INPUT_HISTORY_BYTES: ClassVar[int] = 512 * 1024
     # fmt: off
     COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
@@ -252,9 +283,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def diff_counts(text: str) -> tuple[int, int]:
         added = removed = 0
         old_remaining = new_remaining = 0
-        hunk_header = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
         for line in text.splitlines():
-            if match := hunk_header.match(line):
+            if match := CommandLoop.HUNK_HEADER_RE.match(line):
                 old_remaining = int(match.group(1) or 1)
                 new_remaining = int(match.group(2) or 1)
             elif line.startswith("+") and new_remaining:
@@ -291,6 +321,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if self.interactive_input:
             history_path = self.session.data_path("history.txt")
             os.makedirs(os.path.dirname(history_path), exist_ok=True)
+            self.trim_input_history(history_path)
             self.input_history = FileHistory(history_path)
         else:
             self.input_history = None
@@ -312,6 +343,33 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.question_fn = self.question_interaction
+
+    @classmethod
+    def trim_input_history(cls, path: str) -> None:
+        """Bound the input history file, which prompt_toolkit only ever appends to.
+
+        Keeps the newest entries that fit in `INPUT_HISTORY_BYTES` and drops the rest. The cut is
+        made at an entry header rather than at a byte offset, so what survives is always loadable:
+        a header is written as "\n# <timestamp>\n" and content lines are "+"-prefixed, which is why
+        a user line beginning with "#" cannot be mistaken for one. The replacement is atomic, so an
+        interrupted trim cannot leave a truncated history behind, and every failure is ignored —
+        recall is a convenience and must never keep the session from starting.
+        """
+        try:
+            if os.path.getsize(path) <= cls.INPUT_HISTORY_BYTES:
+                return
+            with open(path, "rb") as file:
+                file.seek(-cls.INPUT_HISTORY_BYTES, os.SEEK_END)
+                tail = file.read()
+            start = tail.find(b"\n# ")
+            if start < 0:
+                return  # a single entry larger than the budget; keep it rather than cut inside it
+            temp = path + ".tmp"
+            with open(temp, "wb") as file:
+                file.write(tail[start + 1 :])
+            os.replace(temp, path)
+        except OSError:
+            return
 
     def flush_queued_to_log(self, texts: list[str]) -> None:
         # Move flushed queued messages from the live activity region into terminal scrollback.
@@ -580,7 +638,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         UpdateChecker(self.session).start()
         if self.session.update.newer_than(__version__):
             self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `{' '.join(UpdateChecker.upgrade_command())}`.")
-        SessionSnapshotStore.clean_expired(self.session)
+        self.clean_expired_sessions_async()
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Discover auto_connect servers in the background so an unreachable one cannot block the
@@ -588,6 +646,36 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         mcp = self.session.mcp
         if mcp is not None:
             threading.Thread(target=mcp.discover_auto, name="mcp-discover", daemon=True).start()
+
+    def clean_expired_sessions_async(self) -> None:
+        """Sweep expired sessions off the startup path.
+
+        The sweep stats every session file in every project directory. That is microseconds on a
+        local disk, but a home directory on a network filesystem pays a round trip per file and can
+        turn it into seconds — spent before the prompt accepts a keystroke. Nothing about a first
+        keystroke depends on retention having run, so it runs on a daemon thread like the code
+        index and MCP discovery beside it, and reports through the background channel that stays
+        quiet once this loop no longer owns the terminal.
+        """
+
+        def sweep() -> None:
+            with contextlib.suppress(Exception):
+                removed = SessionSnapshotStore.clean_expired(self.session)
+                if removed:
+                    self.emit_background(self.expired_sessions_notice(removed))
+
+        threading.Thread(target=sweep, name="session-cleanup", daemon=True).start()
+
+    def expired_sessions_notice(self, removed: int) -> str:
+        """Word the retention notice.
+
+        Retention removes work the user cannot get back, so it is reported rather than done
+        silently, and naming the setting turns the notice into the one moment that knob is worth
+        knowing about.
+        """
+        days = self.session.settings.session_retention_days
+        sessions = "session" if removed == 1 else "sessions"
+        return f"removed {removed} saved {sessions} inactive for over {days} {'day' if days == 1 else 'days'} (runtime.session_retention_days)"
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()
@@ -1129,8 +1217,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if self.ui.color:
             return text
         text = text.replace("`", "")
-        text = re.sub(r"^### (.+)$", r"\1:", text, flags=re.MULTILINE)
-        return re.sub(r"^- (.+?) — ", r"  \1  ", text, flags=re.MULTILINE)
+        text = self.HELP_HEADING_RE.sub(r"\1:", text)
+        return self.HELP_ENTRY_RE.sub(r"  \1  ", text)
 
     def status(self, args: str) -> str:
         def progress_bar(value: int, total: int, width: int = 14) -> str:
@@ -1570,6 +1658,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if not provider.url or not provider.key:
             return ()
         try:
+            # lazy import: /model discovery is the only OpenAI use here, so the SDK stays off the startup path
+            from openai import OpenAI
+
             page = OpenAI(
                 api_key=provider.key,
                 base_url=provider.resolve().base_url,

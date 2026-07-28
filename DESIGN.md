@@ -3,6 +3,94 @@
 This file records decisions whose rationale is easy to lose and costly to rediscover. Keep it
 short: document durable conclusions, not implementation diaries or complete investigation logs.
 
+## Orientation
+
+minacode turns one user request into a bounded loop of model calls and tool calls, in one local
+process. Four objectives explain most of the decisions below, and they are frequently in tension:
+
+1. **Resumable.** A session survives a crash, an interrupt, or a quit at any point.
+2. **Protocol-neutral.** History is stored in one model; Chat, Responses, and Anthropic formats
+   exist only at the send boundary.
+3. **Bounded.** Context, retained output, and previews all have ceilings; nothing grows forever.
+4. **Truthful.** The screen reports real state, and the terminal's own scrollback stays intact.
+
+Modules, with dependencies pointing downward only:
+
+```
+              __main__                     entry, startup ordering
+                  |
+    loop.py -- tui.py -- render.py         commands, interaction, presentation
+        |
+    engine.py                              the turn loop: commit or roll back
+        |
+        +-- context.py                     request projection, compaction
+        +-- runner.py                      tool batch execution
+                  |
+              model.py                     wire protocols, streaming, retry
+                  |
+   tools/   mcp.py   skill.py             vertical features
+                  |
+             session.py                    durable semantic state
+                  |
+              image.py                     image storage and model projection
+                  |
+   base.py   provider_compat.py            value types, config, policy
+```
+
+`session.py` reaches `tools/`, `mcp.py`, and `skill.py` through deferred imports, commented at
+those call sites; that is why features sit above it without a module-scope cycle.
+
+A turn, and the three ways it can end:
+
+```
+  user input
+      |
+      v
+  +-- Agent.run -------------------------------------------------+
+  |                                                              |
+  |   claim queued input                                         |
+  |         |                                                    |
+  |         v                                                    |
+  |   context.prepare_messages --> model.request                 |
+  |         ^                            |                       |
+  |         |                     tool calls?  -- no --> answer  |
+  |         |                            | yes                   |
+  |         |                            v                       |
+  |         +--------------------- runner.run(batch)             |
+  |                                                              |
+  |   checkpoint: turn start, each tool batch, each follow-up    |
+  +--------------------------------------------------------------+
+      |                    |                      |
+   commit               interrupt               error
+      v                    v                      v
+  append to           retract, or keep       flush partial turn,
+  session.messages    partial + marker       re-raise
+```
+
+The turn is a transaction: messages accumulate outside durable history until one of those three
+endings. That is what makes resume safe, and why nothing else may append mid-turn.
+
+## Common pitfalls
+
+Each of these looks like a cleanup or a small improvement, and each breaks something the code
+depends on. The section naming the rule is in parentheses.
+
+- **Lifting a deferred import to module scope.** Startup latency is a feature; the SDKs cost ~0.8s
+  and are not needed until the first request (Startup path).
+- **Rewriting stored history in a request transform.** Replay rules, image expansion, and schema
+  dedup are send-time only; a resumed session must equal the saved one (Context is a projection).
+- **Returning fewer tool results than the model emitted calls.** Refused, failed, skipped, and
+  interrupted calls each still need a matching result, or replay is invalid (Tool-call lifecycle).
+- **Inserting context between the stable layers.** Saving a few tokens mid-prompt invalidates the
+  cached prefix for every later turn (Context is a projection).
+- **Persisting a live preview row, or reading state back off the screen.** Rendered text is never
+  the source of truth (Three forms of state, Terminal boundary).
+- **Expecting compaction to rescue an oversized fixed prefix.** It cannot; bound the source at its
+  owner or fail clearly (Compaction).
+- **Retrying a failure that is not transient.** Cancellation, capability rejection, and validation
+  errors are decisions, not glitches (Failure boundaries).
+- **Mocking the behavior under test instead of the external boundary** (Test design).
+
 ## Maintenance
 
 - Docstrings describe interfaces and contracts, not development history.
@@ -45,25 +133,47 @@ Tests protect observable contracts and reproduced regressions, not implementatio
 
 ## System shape
 
-minacode is one local process with explicit owners for each kind of behavior:
+One local process with explicit owners for each kind of behavior. The layers are drawn in
+[Orientation](#orientation); this section records what each owner is responsible for.
 
-- `base.py` defines configuration, shared value types, and error categories;
+- `base.py` defines configuration, shared value types, and error categories, including the log-line
+  vocabulary every presentation layer renders and the resource handles they cancel through;
   `provider_compat.py` folds documented compatibility into resolved request policy.
 - `Session` owns protocol-neutral semantic state: messages, active-turn checkpoints, queued input,
   retained output, diffs, usage, and session-scoped resources such as jobs and images. Its snapshot
   codec decides which of that state is persistable.
-- `engine.py` owns agent semantics: context construction, model protocol adapters, compaction, tool
-  execution, cancellation, and turn commit or rollback.
+- Agent semantics are split by owner: `context.py` builds and compacts the model-facing context,
+  `model.py` owns provider protocol adapters, streaming, and retry policy, `runner.py` owns tool
+  execution and cancellation, and `engine.py` composes them into the turn loop with its commit or
+  rollback. They depend downward only: `engine.py` -> `context.py`/`runner.py` -> `model.py` ->
+  `base.py`, so no pair needs a deferred import to break a cycle.
 - `CommandLoop` and `TuiRuntime` orchestrate commands and runtime transitions. `TuiApp` owns input,
   key bindings, layout, and modals; `render.py` owns transcript and status presentation.
-- `tools.py`, `image.py`, `mcp.py`, and `skill.py` are vertical feature modules. They expose useful
-  behavior to the engine without making the engine understand their storage or UI details.
+- `tools/`, `image.py`, `mcp.py`, and `skill.py` are vertical feature modules. They expose useful
+  behavior to the engine without making the engine understand their storage or UI details. Inside
+  `tools/`, each module owns one capability (files, search, shell, memory, ask, plugin) over the
+  shared `Tool` base; `__init__.py` owns the registry and is the package's only import surface.
 
 State changes belong to the module that owns their meaning. Higher layers may request a transition
 or observe it through callbacks, but rendered text and widget state are never the source of truth.
 Dependencies point toward stable concepts: configuration and value types do not know the runtime;
 feature and session modules do not know the command loop or terminal; orchestration composes them at
 the boundary. Do not introduce a shared module merely to break a cycle—fix the ownership instead.
+
+### Startup path
+
+Nothing a first keystroke does not need may be imported at startup. Interactive startup was once
+939ms, of which 934ms was imports and 5ms was work; the prompt could not echo a character until it
+finished. The heavy third-party SDKs are therefore imported at their point of use, not at module
+scope: `MCPManager` defers `fastmcp` (~0.35s) and `ModelClient` defers `anthropic` and `openai`
+(~0.8s together), each declaring the names under `TYPE_CHECKING` so annotations and type checking
+stay complete. Do not lift these back to module scope for tidiness; that is the regression, and
+`tests/test_cli.py` asserts a fresh interpreter loads neither SDK.
+
+`main` then warms the deferred SDKs on a daemon thread so the deferral does not simply move the
+cost onto the first request. Racing that thread is safe because CPython locks imports per module;
+the reasoning and its limits are recorded on `warm_provider_sdks`, beside the code that depends on
+them.
 
 ### Future MCP client lifecycle
 
@@ -82,9 +192,7 @@ or provider-specific machinery without a demonstrated minacode use case.
 
 ## Turn execution and authority
 
-One agent turn is a bounded state machine:
-
-`user input → request projection → model proposal → validated tool batch → tool results → next request`
+One agent turn is a bounded state machine; see [Orientation](#orientation) for its shape.
 
 - The user's request defines authority for the entire turn. A model may propose work, but model text,
   a plan, or an inferred next step cannot broaden that authority; tool validation and approval remain

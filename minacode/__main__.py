@@ -6,15 +6,18 @@ Invoked through the ``minacode`` console script or ``python -m minacode``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import subprocess
 import sys
+import threading
 
 from minacode.base import Config, ConfigError, ConfigFile, MinacodeError, RuntimeSettings, UpdateStatus, __version__
-from minacode.engine import Agent, UpdateChecker
+from minacode.engine import Agent
 from minacode.loop import CommandLoop
 from minacode.render import Theme
 from minacode.session import Session
+from minacode.update import UpdateChecker
 
 
 def run_update() -> int:
@@ -35,6 +38,43 @@ def run_update() -> int:
     except OSError as error:
         print(f"Error: could not run the upgrade command: {error}", file=sys.stderr)
         return 1
+
+
+def warm_provider_sdks() -> None:
+    """Import the provider SDKs off the main thread so the prompt accepts input immediately.
+
+    ModelClient imports them lazily because they cost ~0.8s, which was the whole of the delay
+    before a fresh prompt echoed keystrokes. Loading them here in the background keeps the prompt
+    instant without moving that cost onto the first request: the user's first message takes far
+    longer to type than the import takes to finish.
+
+    Racing this thread against the request path is safe, and deliberately so:
+
+    - CPython locks imports per module (`importlib._bootstrap._ModuleLock`), so a request-path
+      `from openai import OpenAI` that lands mid-warm-up blocks on that module's lock and then
+      reads the finished module from `sys.modules`. It cannot observe a half-initialized module,
+      and both threads therefore bind the same class object.
+    - Per-module locks can deadlock only on an import cycle entered from two threads at once.
+      `anthropic` and `openai` do not import each other, and their shared dependencies form a DAG,
+      so the lock-wait graph has no cycle. `_DeadlockError` detection is the backstop if that ever
+      stops being true.
+    - The thread is a daemon because warming must never delay exit. CPython freezes daemon threads
+      at finalization rather than letting them run against a torn-down import system, so quitting
+      mid-import is silent.
+
+    Verified by stress test: a barrier-synchronized four-way race and repeated immediate-exit runs
+    produce no deadlock, no exception, and no stderr noise.
+    """
+
+    def load() -> None:
+        # Warming is only an optimization, and an uncaught failure here would print a thread
+        # traceback over the live prompt. Any real problem resurfaces on the request path, which
+        # imports the same modules and reports the failure to the user.
+        with contextlib.suppress(Exception):
+            import anthropic  # noqa: F401 - imported for its side effect of populating sys.modules
+            import openai  # noqa: F401
+
+    threading.Thread(target=load, name="sdk-warmup", daemon=True).start()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
         Theme.set_mode(Theme.resolve(session.settings.theme))
+        warm_provider_sdks()
         command_loop = CommandLoop(Agent(session))
         try:
             return command_loop.run()

@@ -7,6 +7,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+import openai as openai_module
 import pytest
 from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Size
@@ -19,7 +20,6 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 
-import minacode.loop as loop_module
 import minacode.render as render_module
 import minacode.tui as tui_module
 from minacode.base import (
@@ -28,17 +28,22 @@ from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
     Config,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
     MalformedToolCallError,
     ProviderConfig,
     Text,
 )
-from minacode.engine import Agent, LogBlock, LogEdge, LogLine, LogRole, UpdateChecker
+from minacode.engine import Agent
 from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex, Tool
 from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
+from minacode.update import UpdateChecker
 
 
 def session(tmp_path):
@@ -1928,7 +1933,7 @@ def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
         calls.append(kwargs)
         return SimpleNamespace(models=Models())
 
-    monkeypatch.setattr(loop_module, "OpenAI", openai)
+    monkeypatch.setattr(openai_module, "OpenAI", openai)
 
     assert command_loop.remote_models(provider) == ("alpha", "zeta")
     assert calls[0]["api_key"] == "secret"
@@ -1943,7 +1948,7 @@ def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
 
     provider.url = "https://example.com/v1"
     provider.key = "secret"
-    monkeypatch.setattr(loop_module, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(openai_module, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
 
     assert command_loop.remote_models(provider) == ()
 
@@ -2463,3 +2468,111 @@ def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
         assert ran_on and ran_on[0] is not threading.main_thread()
     finally:
         allow_finish.set()
+
+
+def history_file(path, entries, line="x" * 200):
+    """Write a prompt_toolkit history file with `entries` numbered entries."""
+    with open(path, "wb") as file:
+        file.writelines(f"\n# 2026-01-01 00:00:{index:02d}\n+{index}-{line}\n".encode() for index in range(entries))
+    return path
+
+
+def test_input_history_is_trimmed_to_a_bounded_size(tmp_path):
+    path = history_file(tmp_path / "history.txt", 5000)
+    assert os.path.getsize(path) > CommandLoop.INPUT_HISTORY_BYTES
+
+    CommandLoop.trim_input_history(str(path))
+
+    assert os.path.getsize(path) <= CommandLoop.INPUT_HISTORY_BYTES
+    # The newest entries survive, the oldest are the ones dropped, and what remains still loads.
+    kept = list(FileHistory(str(path)).load_history_strings())
+    assert kept[0].startswith("4999-")
+    assert not any(entry.startswith("0-") for entry in kept)
+    assert all(entry.split("-")[0].isdigit() for entry in kept)
+
+
+def test_input_history_trim_cuts_only_at_an_entry_boundary(tmp_path):
+    path = history_file(tmp_path / "history.txt", 4000)
+
+    CommandLoop.trim_input_history(str(path))
+
+    # A cut inside an entry would leave a partial first line; the survivor must start with a header.
+    with open(path, "rb") as file:
+        assert file.read(2) == b"# "
+    text = open(path, encoding="utf-8").read()
+    assert all(line.startswith(("#", "+")) for line in text.splitlines() if line)
+
+
+def test_input_history_under_the_cap_is_left_alone(tmp_path):
+    path = history_file(tmp_path / "history.txt", 10)
+    before = open(path, "rb").read()
+
+    CommandLoop.trim_input_history(str(path))
+
+    assert open(path, "rb").read() == before
+
+
+def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):
+    CommandLoop.trim_input_history(str(tmp_path / "absent.txt"))  # must not raise
+
+    # One entry larger than the whole budget is kept rather than cut in half.
+    path = tmp_path / "huge.txt"
+    path.write_bytes(b"\n# 2026-01-01 00:00:00\n+" + b"y" * (CommandLoop.INPUT_HISTORY_BYTES + 1000) + b"\n")
+    before = path.read_bytes()
+
+    CommandLoop.trim_input_history(str(path))
+
+    assert path.read_bytes() == before
+
+
+def test_expired_session_cleanup_reports_without_blocking_startup(monkeypatch, tmp_path):
+    """The sweep runs on a daemon thread, so the notice arrives through the background channel."""
+    command_loop = loop(tmp_path)
+    command_loop.session.settings.session_retention_days = 7
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 3)
+    lines = []
+    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
+
+    command_loop.clean_expired_sessions_async()
+    for _ in range(200):
+        if lines:
+            break
+        time.sleep(0.01)
+
+    assert len(lines) == 1
+    # Says what was lost and which setting governs it, so the knob is discoverable when it acts.
+    assert "removed 3 saved sessions" in lines[0]
+    assert "7 days" in lines[0]
+    assert "session_retention_days" in lines[0]
+
+
+def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
+    lines = []
+    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
+
+    command_loop.clean_expired_sessions_async()
+    time.sleep(0.1)
+
+    assert lines == []
+
+
+def test_expired_session_sweep_never_breaks_startup(monkeypatch, tmp_path):
+    """A failing sweep must not escape the thread; retention is not worth a broken session."""
+    command_loop = loop(tmp_path)
+
+    def boom(_session):
+        raise OSError("data dir unreadable")
+
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", boom)
+
+    command_loop.clean_expired_sessions_async()
+    time.sleep(0.1)
+
+
+def test_expired_session_notice_reads_correctly_when_singular(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.settings.session_retention_days = 1
+
+    assert "removed 1 saved session inactive for over 1 day " in command_loop.expired_sessions_notice(1) + " "

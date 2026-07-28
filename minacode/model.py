@@ -1,0 +1,1034 @@
+"""minacode model client: provider request protocols, streaming, and retry policy."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import json
+import re
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+
+from json_repair import repair_json
+
+from minacode.base import (
+    ANTHROPIC_CONTENT_KEY,
+    ANTHROPIC_DEFAULT_MAX_TOKENS,
+    HTTP_USER_AGENT,
+    MODEL_REQUEST_RETRIES,
+    PROVIDER_ECHO_KEYS,
+    RESPONSES_OUTPUT_KEY,
+    ActiveResource,
+    Json,
+    ModelError,
+    ModelRequestRetry,
+    ModelResponseTimeout,
+    ProviderConfig,
+    Text,
+    ToolArgs,
+    ToolCall,
+    ToolError,
+)
+from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
+from minacode.prompts import (
+    COMPACTION_PROMPT,
+)
+from minacode.provider_compat import (
+    CHAT_REASONING_EFFORT_VALUES,
+    ResolvedProvider,
+    anthropic_keeps_prior_thinking,
+    anthropic_thinking_always_on,
+    anthropic_thinking_params,
+)
+
+if TYPE_CHECKING:
+    # The provider SDKs cost ~0.8s to import and are not needed until the first request;
+    # the runtime imports below keep them off the startup path (see MCPManager for the same pattern).
+    from anthropic import Anthropic
+    from openai import OpenAI
+
+from minacode.session import QueuedInput, Session
+from minacode.tools import (
+    TOOL_REGISTRY,
+    Tool,
+)
+
+_ResultT = TypeVar("_ResultT")
+
+
+@dataclass(frozen=True)
+class PreparedRequest:
+    messages: list[Json]
+    tools: list[Json]
+    pending: list[QueuedInput]
+
+
+class ModelClient:
+    """Send one request over the selected provider protocol and normalize the reply.
+
+    Chat Completions, Responses, and Anthropic Messages all return the same (assistant message, tool
+    calls, text) triple, so callers never learn which ran. History stays one normalized model;
+    continuation data such as reasoning blocks round-trips through namespaced opaque fields, because
+    providers verify that what they produced comes back unchanged — flattening it into text breaks
+    the next request.
+
+    Retries are invisible to the caller: bounded backoff on transport and 5xx failures, with progress
+    published through session state for the status bar. A missing model or a refused modality is a
+    decision rather than a glitch and surfaces at once. Streaming is the same call, not a second path.
+
+    Cancelling closes the in-flight client, so a blocked read ends instead of waiting out its timeout.
+    """
+
+    _RETRYABLE_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b")
+    _STATUS_CODE_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b")
+    _JSON_FENCE_RE: ClassVar[re.Pattern] = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
+
+    def __init__(self, session: Session):
+        self.session = session
+        self.cancel_requested = threading.Event()
+        self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
+        self.on_stream: Callable[[str, str], None] | None = None
+
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+        with contextlib.suppress(Exception):
+            self.active_client.apply(lambda client: client.close())
+
+    def chat_messages(self, messages: list[Json]) -> list[Json]:
+        """Build Chat Completions history using the provider's documented replay contract."""
+
+        provider = self.session.config.provider
+        resolved = provider.resolve()
+        history = resolved.chat_reasoning_history
+        thinking = provider.extra_body.get("thinking")
+        if provider.extra_body.get("preserve_thinking") is True or (
+            isinstance(thinking, dict) and (thinking.get("keep") == "all" or thinking.get("clear_thinking") is False)
+        ):
+            history = "all"
+
+        converted: list[Json] = []
+        latest_user = max(
+            (index for index, message in enumerate(messages) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
+            default=-1,
+        )
+        for index, message in enumerate(messages):
+            clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY)}
+            keep_reasoning = history == "all" or (
+                bool(message.get("tool_calls")) and (history == "tool_calls" or (history == "current_turn" and index > latest_user))
+            )
+            if message.get("role") == "assistant" and not keep_reasoning:
+                for key in ("reasoning_content", "reasoning", "reasoning_details"):
+                    clean.pop(key, None)
+            if message.get("role") == "user" and self.session.images.refs(message):
+                clean["content"] = self.session.images.chat_content(message)
+            converted.append(clean)
+        return Text.value(converted)
+
+    def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
+        """Estimate the actual protocol payload instead of minacode's normalized history."""
+
+        api = self.session.config.provider.resolve().api
+        # Payload builders would otherwise expand every local image to base64 merely to throw the
+        # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
+        projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
+        if api == "responses":
+            payload: Json = {"input": self.responses_input(Text.value(projected))}
+            if tools:
+                payload["tools"] = self.responses_tool_schemas(tools)
+        elif api == "anthropic":
+            system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
+            estimated_messages = projected
+            if not anthropic_keeps_prior_thinking(self.session.config.provider.model):
+                latest_user = max(
+                    (index for index, message in enumerate(projected) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
+                    default=-1,
+                )
+                active_assistants = [index for index, message in enumerate(projected) if index > latest_user and message.get("role") == "assistant"]
+                keep_from = (
+                    latest_user
+                    if active_assistants
+                    else max((index for index, message in enumerate(projected) if message.get("role") == "assistant"), default=len(projected))
+                )
+                estimated_messages = []
+                for index, message in enumerate(projected):
+                    estimated = dict(message)
+                    saved = estimated.get(ANTHROPIC_CONTENT_KEY)
+                    if index < keep_from and isinstance(saved, list):
+                        estimated[ANTHROPIC_CONTENT_KEY] = [
+                            block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
+                        ]
+                    estimated_messages.append(estimated)
+            payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
+            if tools:
+                payload["tools"] = self.anthropic_tool_schemas(tools)
+        else:
+            payload = {"messages": self.chat_messages(projected)}
+            if tools:
+                payload["tools"] = tools
+
+        def prompt_value(value: object) -> object:
+            if isinstance(value, list):
+                return [prompt_value(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            kind = value.get("type")
+            clean: Json = {}
+            for key, item in value.items():
+                if key in ("encrypted_content", "signature"):
+                    continue
+                if key == "data" and kind in ("reasoning.encrypted", "redacted_thinking"):
+                    continue
+                if (key == "data" and kind == "base64") or (key in ("image_url", "url") and isinstance(item, str) and item.startswith("data:")):
+                    clean[key] = ""
+                else:
+                    clean[key] = prompt_value(item)
+            return clean
+
+        chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")))
+        images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
+        return (chars + 3) // 4 + images
+
+    def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT]) -> _ResultT:
+        response_timeout = self.session.config.provider.response_timeout
+        expired = threading.Event()
+        timer: threading.Timer | None = None
+        if response_timeout:
+
+            def expire() -> None:
+                expired.set()
+                with contextlib.suppress(Exception):
+                    client.close()
+
+            timer = threading.Timer(response_timeout, expire)
+            timer.daemon = True
+        with self.active_client.track(client):
+            if timer is not None:
+                timer.start()
+            try:
+                result = request()
+                if self.cancel_requested.is_set():
+                    raise KeyboardInterrupt
+                if expired.is_set():
+                    raise ModelResponseTimeout(
+                        f"Model response exceeded provider.response_timeout={response_timeout}s; set it to 0 to disable the total-generation limit"
+                    )
+                return result
+            except ModelResponseTimeout:
+                raise
+            except Exception as error:
+                if self.cancel_requested.is_set():
+                    raise KeyboardInterrupt from None
+                if expired.is_set():
+                    raise ModelResponseTimeout(
+                        f"Model response exceeded provider.response_timeout={response_timeout}s; set it to 0 to disable the total-generation limit"
+                    ) from error
+                raise ModelError(str(error)) from error
+            finally:
+                if timer is not None:
+                    timer.cancel()
+                with contextlib.suppress(Exception):
+                    client.close()
+
+    def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
+        if missing := self.session.missing_config():
+            raise ModelError("missing config: " + ", ".join(missing))
+        self.cancel_requested.clear()
+        tools = tools if tools is not None else Tool.resolved_schemas(self.session)
+        state = self.session.state
+        state.model_retry_reason = ""
+        try:
+            attempt = 0
+            while True:
+                state.current_model_attempt = attempt + 1
+                state.current_model_call_started_at = time.monotonic()
+                try:
+                    result = self.api_request(messages, tools)
+                    self.session.images.note_success(messages)
+                    return result
+                except KeyboardInterrupt:
+                    if state.manual_model_retry_requested:
+                        state.manual_model_retry_requested = False
+                        raise ModelRequestRetry() from None
+                    raise
+                except ModelError as error:
+                    if self.session.images.note_error(messages, error):
+                        provider = self.session.config.provider
+                        identity = f"{self.session.config.active_provider}/{provider.model or '(no model)'}"
+                        raise ModelError(
+                            f"{identity} does not support image input. Switch to an image-capable model, or continue with image labels only."
+                        ) from error
+                    retryable = self.retryable_error(error)
+                    if attempt >= MODEL_REQUEST_RETRIES or not retryable:
+                        if attempt:
+                            raise ModelError(f"{error} (after {attempt + 1} attempts)") from error
+                        raise
+                    state.current_model_attempt = attempt + 2
+                    state.model_retry_reason = self.retry_reason(error)
+                    state.model_retry_count += 1
+                    time.sleep(0.5 * (attempt + 1))
+                finally:
+                    state.current_model_call_started_at = 0.0
+                attempt += 1
+        finally:
+            state.current_model_attempt = 0
+            state.model_retry_reason = ""
+
+    @staticmethod
+    def retryable_error(error: Exception) -> bool:
+        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
+        import anthropic
+        import openai
+
+        if isinstance(error, ModelResponseTimeout):
+            return False
+        cause = getattr(error, "__cause__", None)
+
+        # SDK status errors expose status_code directly.
+        if isinstance(cause, (openai.APIStatusError, anthropic.APIStatusError)):
+            return cause.status_code in {408, 409, 425, 429} or 500 <= cause.status_code < 600
+
+        # SDK connection/timeout errors are always retryable.
+        if isinstance(
+            cause,
+            (openai.APIConnectionError, openai.APITimeoutError, anthropic.APIConnectionError, anthropic.APITimeoutError),
+        ):
+            return True
+
+        # Built-in network/timeout errors are retryable.
+        if isinstance(cause, (TimeoutError, asyncio.TimeoutError, ConnectionError, ConnectionResetError, ConnectionAbortedError)):
+            return True
+
+        # Fallback: parse status codes embedded in the error text or cause attributes.
+        status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
+        with contextlib.suppress(Exception):
+            if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
+                return True
+        text = str(error).lower()
+        if ModelClient._RETRYABLE_STATUS_RE.search(text):
+            return True
+        return any(
+            part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
+        )
+
+    @staticmethod
+    def retry_reason(error: Exception) -> str:
+        cause = getattr(error, "__cause__", None)
+        status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
+        with contextlib.suppress(Exception):
+            status_code = int(status)
+            if 400 <= status_code <= 599:
+                return str(status_code)
+        text = str(error).lower()
+        match = ModelClient._STATUS_CODE_RE.search(text)
+        if match:
+            return match.group(1)
+        if "timeout" in text or "timed out" in text:
+            return "timeout"
+        if any(part in text for part in ("connection", "reset", "aborted")):
+            return "connection"
+        if "internal server error" in text or "temporarily unavailable" in text:
+            return "server error"
+        return "transient error"
+
+    def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+        messages = self.chat_messages(messages)
+        provider = self.session.config.provider
+        resolved = provider.resolve()
+        stream = allow_stream and provider.stream and self.on_stream is not None
+        params: Json = {"model": provider.model, "messages": messages, "stream": stream}
+        if provider.max_tokens > 0:
+            params["max_tokens"] = provider.max_tokens
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = "auto"
+            params["parallel_tool_calls"] = True
+        prompt_cache_key = self.prompt_cache_key(provider, tools)
+        if prompt_cache_key:
+            params["prompt_cache_key"] = prompt_cache_key
+        self.apply_provider_params(params, provider, resolved)
+        if stream:
+            params["stream_options"] = {"include_usage": True}
+        client = self.client()
+        if stream:
+            message, usage = self.call_client(client, lambda: self._chat_stream(client, params))
+        else:
+            response = self.call_client(client, lambda: client.chat.completions.create(**params))
+            usage = getattr(response, "usage", None)
+            message = response.choices[0].message
+        self.session.usage.add(usage)
+        assistant = self.assistant_message(message)
+        calls = self.tool_calls(message)
+        content = str(self.message_field(message, "content") or "")
+        return assistant, calls, content
+
+    def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any]:
+        """Reassemble a streamed chat completion into one assistant message.
+
+        Tool calls are the hard part. The spec streams them as deltas keyed by `index`, but providers
+        variously omit it, restart it, or send only `id`. `resolve_tool_call_index` recovers the
+        association from whatever a chunk carries, in decreasing order of reliability, and raises
+        instead of guessing when nothing identifies the call: a wrong association concatenates two
+        calls' argument fragments into one call with corrupt JSON, which the model cannot correct
+        because it looks like something it wrote.
+        """
+        content: list[str] = []
+        reasoning_content: list[str] = []
+        reasoning: list[str] = []
+        reasoning_details: list[Json] = []
+        tool_calls: dict[int, Json] = {}
+        tool_call_functions: dict[int, Json] = {}
+        tool_call_ids: dict[str, int] = {}
+        tool_call_positions: dict[int, int] = {}
+        next_index = 0
+        usage: Any = None
+
+        def allocate_tool_call() -> int:
+            nonlocal next_index
+            while next_index in tool_calls:
+                next_index += 1
+            index = next_index
+            next_index += 1
+            return index
+
+        def resolve_tool_call_index(raw_index: object, call_id: str, position: int, chunk_size: int) -> int:
+            nonlocal next_index
+            if isinstance(raw_index, int):
+                index = raw_index
+            elif call_id and call_id in tool_call_ids:
+                index = tool_call_ids[call_id]
+            elif call_id:
+                index = allocate_tool_call()
+            elif chunk_size == 1 and len(tool_calls) == 1:
+                index = next(iter(tool_calls))
+            elif position in tool_call_positions and chunk_size == len(tool_call_positions):
+                index = tool_call_positions[position]
+            elif position not in tool_call_positions:
+                index = allocate_tool_call()
+            else:
+                raise ModelError("Chat stream tool-call delta omitted both index and id; cannot associate it safely")
+            next_index = max(next_index, index + 1)
+            tool_call_positions[position] = index
+            if call_id:
+                tool_call_ids[call_id] = index
+            return index
+
+        try:
+            for chunk in client.chat.completions.create(**params):
+                if chunk_usage := self.message_field(chunk, "usage"):
+                    usage = chunk_usage
+                choices = self.message_field(chunk, "choices") or []
+                if not choices:
+                    continue
+                delta = self.message_field(choices[0], "delta")
+                reasoning_content_delta = str(self.message_field(delta, "reasoning_content") or "")
+                reasoning_delta = str(self.message_field(delta, "reasoning") or "")
+                if reasoning_content_delta:
+                    reasoning_content.append(reasoning_content_delta)
+                    self._emit_stream("reasoning", reasoning_content_delta)
+                elif reasoning_delta:
+                    reasoning.append(reasoning_delta)
+                    self._emit_stream("reasoning", reasoning_delta)
+                raw_details = self.message_field(delta, "reasoning_details") or []
+                details = [self.dump_message_item(item) for item in raw_details]
+                reasoning_details.extend(item for item in details if item)
+                if not reasoning_content_delta and not reasoning_delta:
+                    for detail in details:
+                        text = detail.get("text") if detail.get("type") == "reasoning.text" else detail.get("summary")
+                        if text:
+                            self._emit_stream("reasoning", str(text))
+                if content_delta := str(self.message_field(delta, "content") or ""):
+                    content.append(content_delta)
+                    self._emit_stream("output", content_delta)
+                raw_tool_calls = self.message_field(delta, "tool_calls") or []
+                for position, raw in enumerate(raw_tool_calls):
+                    raw_index = self.message_field(raw, "index")
+                    call_id = str(self.message_field(raw, "id") or "")
+                    index = resolve_tool_call_index(raw_index, call_id, position, len(raw_tool_calls))
+                    if index not in tool_calls:
+                        function_target: Json = {"name": "", "arguments": ""}
+                        tool_calls[index] = {"id": "", "type": "function", "function": function_target}
+                        tool_call_functions[index] = function_target
+                    call = tool_calls[index]
+                    if call_id:
+                        call["id"] = call_id
+                    function = self.message_field(raw, "function")
+                    target = tool_call_functions[index]
+                    if name := self.message_field(function, "name"):
+                        target["name"] = str(name)
+                    if arguments := self.message_field(function, "arguments"):
+                        target["arguments"] = str(target["arguments"]) + str(arguments)
+        finally:
+            self._emit_stream("", "")
+        message: Json = {"content": "".join(content) or None}
+        if reasoning_content:
+            message["reasoning_content"] = "".join(reasoning_content)
+        if reasoning:
+            message["reasoning"] = "".join(reasoning)
+        if reasoning_details:
+            # OpenRouter defines the complete sequence as the ordered concatenation of each
+            # delta's reasoning_details array; replay it unchanged on the assistant message.
+            # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+            message["reasoning_details"] = reasoning_details
+        if tool_calls:
+            message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+        return message, usage
+
+    def api_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+        api = self.session.config.provider.resolve().api
+        if api == "anthropic":
+            request = self.anthropic_request
+        elif api == "responses":
+            request = self.responses_request
+        else:
+            request = self.chat_request
+        return request(messages, tools) if allow_stream else request(messages, tools, allow_stream=False)
+
+    def responses_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+        provider = self.session.config.provider
+        resolved = provider.resolve()
+        stream = allow_stream and provider.stream and self.on_stream is not None
+        params: Json = {
+            "model": provider.model,
+            "input": self.responses_input(Text.value(messages)),
+            "stream": stream,
+            "store": False,
+        }
+        if provider.max_tokens > 0:
+            params["max_output_tokens"] = provider.max_tokens
+        if tools:
+            params["tools"] = self.responses_tool_schemas(tools)
+            params["tool_choice"] = "auto"
+            params["parallel_tool_calls"] = True
+        if prompt_cache_key := self.prompt_cache_key(provider, tools):
+            params["prompt_cache_key"] = prompt_cache_key
+        # Stateless requests return encrypted reasoning items by default, so the replay below
+        # needs no `include`; effort goes through the compatibility fold like the chat path, and
+        # a host that defines an explicit "off" spelling still gets it when reasoning is off.
+        if resolved.responses_reasoning:
+            if effort := resolved.reasoning_effort:
+                params["reasoning"] = {"effort": effort}
+            elif provider.reasoning == "off":
+                raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
+        if provider.temperature is not None and not resolved.suppress_temperature:
+            params["temperature"] = provider.temperature
+        if provider.extra_body:
+            params["extra_body"] = provider.extra_body
+        client = self.client()
+        result = (
+            self.call_client(client, lambda: self._responses_stream(client, params))
+            if stream
+            else self.call_client(client, lambda: client.responses.create(**params))
+        )
+        self.session.usage.add(self.message_field(result, "usage"))
+        return self.responses_result(result)
+
+    def _responses_stream(self, client: OpenAI, params: Json) -> Any:
+        """Consume a Responses event stream and return its terminal response."""
+
+        terminal: Any = None
+        try:
+            for event in client.responses.create(**params):
+                event_type = str(self.message_field(event, "type") or "")
+                if event_type == "response.reasoning_summary_text.delta":
+                    self._emit_stream("reasoning", str(self.message_field(event, "delta") or ""))
+                elif event_type in ("response.output_text.delta", "response.refusal.delta"):
+                    self._emit_stream("output", str(self.message_field(event, "delta") or ""))
+                elif event_type in ("response.completed", "response.failed", "response.incomplete"):
+                    terminal = self.message_field(event, "response")
+        finally:
+            self._emit_stream("", "")
+        if terminal is None:
+            raise ModelError("Responses stream ended without a terminal response")
+        return terminal
+
+    def _emit_stream(self, kind: str, delta: str) -> None:
+        if self.on_stream is not None:
+            self.on_stream(kind, delta)
+
+    def responses_input(self, messages: list[Json]) -> list[Json]:
+        converted: list[Json] = []
+        for message in messages:
+            role = str(message.get("role") or "")
+            saved_output = message.get(RESPONSES_OUTPUT_KEY)
+            if role == "assistant" and isinstance(saved_output, list):
+                converted.extend(item for item in saved_output if isinstance(item, dict) and self.replayable_output_item(item))
+                continue
+            if role == "tool":
+                converted.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(message.get("tool_call_id") or ""),
+                        "output": str(message.get("content") or ""),
+                    }
+                )
+                continue
+            if role not in ("system", "developer", "user", "assistant"):
+                continue
+            content = message.get("content")
+            if content is not None:
+                converted.append(
+                    {
+                        "role": role,
+                        "content": self.session.images.responses_content(message) if role == "user" and self.session.images.refs(message) else str(content),
+                    }
+                )
+            if role == "assistant":
+                for raw in message.get("tool_calls") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    raw_function = raw.get("function")
+                    function = raw_function if isinstance(raw_function, dict) else {}
+                    converted.append(
+                        {
+                            "type": "function_call",
+                            "call_id": str(raw.get("id") or uuid.uuid4().hex),
+                            "name": str(function.get("name") or ""),
+                            "arguments": str(function.get("arguments") or "{}"),
+                        }
+                    )
+        return converted
+
+    @staticmethod
+    def replayable_output_item(item: Json) -> bool:
+        """Whether a saved output item still carries something a later request can use.
+
+        Stateless reasoning travels in the encrypted payload, which the id alone cannot stand in
+        for once the response was never stored. A host that returns neither that payload nor any
+        readable reasoning leaves an empty shell, so it is dropped instead of replayed."""
+        return item.get("type") != "reasoning" or any(item.get(key) for key in ("encrypted_content", "content", "summary"))
+
+    @staticmethod
+    def responses_tool_schemas(tools: list[Json]) -> list[Json]:
+        converted: list[Json] = []
+        for schema in tools:
+            raw_function = schema.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
+            converted.append(
+                {
+                    "type": "function",
+                    "name": str(function.get("name") or ""),
+                    "description": str(function.get("description") or ""),
+                    "parameters": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
+                    "strict": bool(function.get("strict", False)),
+                }
+            )
+        return converted
+
+    def responses_result(self, result: Any) -> tuple[Json, list[ToolCall], str]:
+        if self.message_field(result, "status") == "failed":
+            error = self.message_field(result, "error") or "unknown error"
+            raise ModelError(f"Responses request failed: {error}")
+        output = self.message_field(result, "output") or []
+        saved_output = [self.dump_message_item(item) for item in output]
+        text_parts: list[str] = []
+        tool_calls: list[Json] = []
+        calls: list[ToolCall] = []
+        for item in output:
+            item_type = self.message_field(item, "type")
+            if item_type == "message":
+                for part in self.message_field(item, "content") or []:
+                    part_type = self.message_field(part, "type")
+                    if part_type == "output_text":
+                        text_parts.append(str(self.message_field(part, "text") or ""))
+                    elif part_type == "refusal":
+                        text_parts.append(str(self.message_field(part, "refusal") or ""))
+            elif item_type == "function_call":
+                name = str(self.message_field(item, "name") or "")
+                call_id = str(self.message_field(item, "call_id") or self.message_field(item, "id") or uuid.uuid4().hex)
+                arguments = str(self.message_field(item, "arguments") or "{}")
+                try:
+                    payload = json.loads(arguments, strict=False)
+                except json.JSONDecodeError:
+                    payload = {}
+                tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
+                calls.append(self.tool_call(call_id, name, payload))
+        text = "".join(text_parts) or str(self.message_field(result, "output_text") or "")
+        assistant: Json = {"role": "assistant", "content": text or None, RESPONSES_OUTPUT_KEY: saved_output}
+        if tool_calls:
+            assistant["tool_calls"] = tool_calls
+        return assistant, calls, text
+
+    @staticmethod
+    def dump_message_item(item: Any) -> Json:
+        if isinstance(item, dict):
+            return Text.value(item)
+        if hasattr(item, "model_dump"):
+            dumped = item.model_dump(mode="json", exclude_none=True)
+            if isinstance(dumped, dict):
+                return Text.value(dumped)
+        return {}
+
+    def compact(self, context: str) -> Json:
+        self.cancel_requested.clear()
+        messages = [{"role": "system", "content": COMPACTION_PROMPT}, {"role": "user", "content": Text.clean(context)}]
+        _, _, content = self.api_request(messages, None, allow_stream=False)
+        data = self.parse_json_object(content)
+        if not isinstance(data, dict):
+            raise ModelError("compactor returned non-object JSON")
+        return data
+
+    @classmethod
+    def parse_json_object(cls, text: str) -> Json:
+        text = cls.strip_json_fence(Text.clean(text).strip())
+        if not text:
+            raise ModelError("compactor returned empty output")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = repair_json(text, return_objects=True)
+        if isinstance(data, dict):
+            return data
+        raise ModelError("compactor returned invalid JSON: " + Tool.compact(text, 200))
+
+    @staticmethod
+    def strip_json_fence(text: str) -> str:
+        match = ModelClient._JSON_FENCE_RE.match(text)
+        return (match.group(1) if match else text).strip()
+
+    def client(self) -> OpenAI:
+        provider = self.session.config.provider
+        if missing := self.session.missing_config():
+            raise ModelError("missing config: " + ", ".join(missing))
+        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
+        from openai import OpenAI
+
+        return OpenAI(
+            api_key=provider.key, base_url=provider.resolve().base_url, timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
+        )
+
+    def anthropic_client(self) -> Anthropic:
+        provider = self.session.config.provider
+        if missing := self.session.missing_config():
+            raise ModelError("missing config: " + ", ".join(missing))
+        url = provider.resolve().base_url.rstrip("/")
+        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
+        from anthropic import Anthropic
+
+        return Anthropic(
+            api_key=provider.key,
+            base_url=url.removesuffix("/v1"),
+            timeout=provider.timeout,
+            max_retries=0,
+            default_headers={"User-Agent": HTTP_USER_AGENT},
+        )
+
+    def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
+        configured = provider.prompt_cache_key
+        if configured == "off":
+            return ""
+        if configured != "auto":
+            return configured
+        resolved = provider.resolve()
+        if not resolved.prompt_cache_key:
+            return ""
+        tool_names: list[str] = []
+        for schema in tools or []:
+            raw_function = schema.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
+            tool_names.append(str(function.get("name") or schema.get("name") or "(unknown)"))
+        payload = {
+            "api": resolved.api,
+            "cwd": self.session.cwd,
+            "host": resolved.host,
+            "model": provider.model,
+            "tools": ",".join(sorted(tool_names)) or "(none)",
+        }
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return "minacode-" + digest[:24]
+
+    def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+        messages = Text.value(messages)
+        params = self.anthropic_params(messages, tools)
+        client = self.anthropic_client()
+        stream = allow_stream and self.session.config.provider.stream and self.on_stream is not None
+        result = (
+            self.call_client(client, lambda: self._anthropic_stream(client, params))
+            if stream
+            else self.call_client(client, lambda: client.messages.create(**params))
+        )
+        self.session.usage.add(self.message_field(result, "usage"))
+        assistant, calls, content = self.anthropic_result(result)
+        return assistant, calls, content
+
+    def _anthropic_stream(self, client: Anthropic, params: Json) -> Any:
+        try:
+            with client.messages.stream(**params) as stream:
+                for event in stream:
+                    if self.message_field(event, "type") != "content_block_delta":
+                        continue
+                    delta = self.message_field(event, "delta")
+                    delta_type = self.message_field(delta, "type")
+                    if delta_type == "thinking_delta":
+                        self._emit_stream("reasoning", str(self.message_field(delta, "thinking") or ""))
+                    elif delta_type == "text_delta":
+                        self._emit_stream("output", str(self.message_field(delta, "text") or ""))
+                return stream.get_final_message()
+        finally:
+            self._emit_stream("", "")
+
+    def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
+        provider = self.session.config.provider
+        system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
+        # Anthropic prompt caching is a prefix match that only takes effect at explicit
+        # cache_control breakpoints; without one, every turn reprocesses the whole prompt from
+        # scratch. Render order is tools -> system -> messages, so a breakpoint on the (single)
+        # system block caches the stable tools+system prefix and is reused on every later turn.
+        system: str | list[Json] = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}] if system_text else system_text
+        params: Json = {
+            "model": provider.model,
+            "system": system,
+            "messages": self.anthropic_messages(messages),
+            "max_tokens": provider.output_token_budget(),
+        }
+        # Thinking pins temperature to its default; sending any other value is rejected.
+        if tools:
+            params["tools"] = self.anthropic_tool_schemas(tools)
+            params["tool_choice"] = {"type": "auto"}
+        effort = provider.reasoning_effort()
+        budget = int(CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(effort, 4096))
+        thinking_params = anthropic_thinking_params(
+            provider.model,
+            provider.reasoning,
+            effort,
+            min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, budget),
+        )
+        params.update(thinking_params)
+        thinking = thinking_params.get("thinking")
+        thinking_active = anthropic_thinking_always_on(provider.model) or (isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive"))
+        if provider.temperature is not None and not thinking_active:
+            params["temperature"] = provider.temperature
+        return params
+
+    def anthropic_messages(self, messages: list[Json]) -> list[Json]:
+        converted: list[Json] = []
+        for message in messages:
+            role = message.get("role")
+            if role == "system":
+                continue
+            if role == "user":
+                self.append_anthropic_message(converted, "user", self.session.images.anthropic_content(message))
+            elif role == "assistant":
+                blocks = self.anthropic_assistant_blocks(message)
+                if blocks:
+                    self.append_anthropic_message(converted, "assistant", blocks)
+            elif role == "tool":
+                block = {"type": "tool_result", "tool_use_id": str(message.get("tool_call_id") or ""), "content": str(message.get("content") or "")}
+                self.append_anthropic_message(converted, "user", [block])
+        return converted or [{"role": "user", "content": ""}]
+
+    @staticmethod
+    def append_anthropic_message(messages: list[Json], role: str, content: str | list[Json]) -> None:
+        if messages and messages[-1].get("role") == role:
+            previous = messages[-1].get("content")
+            if isinstance(previous, list) and isinstance(content, list):
+                previous.extend(content)
+                return
+            if isinstance(previous, list) and isinstance(content, str):
+                if content:
+                    previous.append({"type": "text", "text": content})
+                return
+            if isinstance(previous, str) and isinstance(content, list):
+                messages[-1]["content"] = ([{"type": "text", "text": previous}] if previous else []) + content
+                return
+            if isinstance(previous, str) and isinstance(content, str):
+                messages[-1]["content"] = (previous + "\n\n" + content).strip()
+                return
+        messages.append({"role": role, "content": content})
+
+    def anthropic_assistant_blocks(self, message: Json) -> list[Json]:
+        # The API verifies that thinking blocks come back exactly as it produced them, signature
+        # included, so a turn it produced is echoed rather than rebuilt from text and tool calls.
+        saved = message.get(ANTHROPIC_CONTENT_KEY)
+        if isinstance(saved, list) and saved:
+            return [block for block in saved if isinstance(block, dict)]
+        blocks: list[Json] = []
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            blocks.append({"type": "text", "text": content})
+        for raw in message.get("tool_calls") or []:
+            if not isinstance(raw, dict):
+                continue
+            raw_function = raw.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
+            try:
+                # strict=False: tool-call argument strings often contain literal newlines
+                # (e.g. a multi-line git commit message), which are not valid JSON otherwise.
+                payload = json.loads(str(function.get("arguments") or "{}"), strict=False)
+            except json.JSONDecodeError:
+                payload = {}
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": str(raw.get("id") or uuid.uuid4().hex),
+                    "name": str(function.get("name") or ""),
+                    "input": payload if isinstance(payload, dict) else {"args": [payload]},
+                }
+            )
+        return blocks
+
+    @staticmethod
+    def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
+        def convert(schema: Json) -> Json:
+            raw_function = schema.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
+            return {
+                "name": str(function.get("name") or ""),
+                "description": str(function.get("description") or ""),
+                "input_schema": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
+            }
+
+        return [convert(schema) for schema in tools]
+
+    def anthropic_result(self, result: Any) -> tuple[Json, list[ToolCall], str]:
+        text_parts: list[str] = []
+        tool_calls: list[Json] = []
+        calls: list[ToolCall] = []
+        content_blocks = self.message_field(result, "content") or []
+        saved_content = [self.dump_message_item(block) for block in content_blocks]
+        for block in content_blocks:
+            block_type = self.message_field(block, "type")
+            if block_type == "text":
+                text_parts.append(str(self.message_field(block, "text") or ""))
+            elif block_type == "tool_use":
+                raw_input = self.message_field(block, "input")
+                payload = raw_input if isinstance(raw_input, dict) else {}
+                name = str(self.message_field(block, "name") or "")
+                call_id = str(self.message_field(block, "id") or uuid.uuid4().hex)
+                arguments = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
+                calls.append(self.tool_call(call_id, name, payload))
+        text = "".join(text_parts)
+        assistant: Json = {"role": "assistant", "content": text or None, ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
+        if tool_calls:
+            assistant["tool_calls"] = tool_calls
+        return assistant, calls, text
+
+    def apply_provider_params(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider | None = None) -> None:
+        resolved = resolved or provider.resolve()
+        chat_reasoning = resolved.chat_reasoning
+        reasoning_enabled = provider.reasoning != "off"
+        effort = provider.reasoning_effort()
+        # Some native APIs fix or reject temperature for all or part of their thinking modes.
+        if provider.temperature is not None and not resolved.suppress_temperature:
+            params["temperature"] = provider.temperature
+        extra: Json = {}
+        if reasoning_enabled and chat_reasoning == "reasoning":
+            extra["reasoning"] = {"effort": effort}
+        elif chat_reasoning == "reasoning_effort":
+            if value := resolved.reasoning_effort:
+                params["reasoning_effort"] = value
+        elif chat_reasoning == "thinking":
+            extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
+            if reasoning_enabled:
+                params["reasoning_effort"] = CHAT_REASONING_EFFORT_VALUES["thinking"].get(effort, "high")
+        elif chat_reasoning in ("thinking_toggle", "thinking_effort"):
+            extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
+            if reasoning_enabled and chat_reasoning == "thinking_effort":
+                params["reasoning_effort"] = resolved.reasoning_effort
+        elif chat_reasoning == "enable_thinking":
+            extra["enable_thinking"] = reasoning_enabled
+            if reasoning_enabled:
+                values = CHAT_REASONING_EFFORT_VALUES["enable_thinking"]
+                extra["thinking_budget"] = values.get(effort, values["medium"])
+        # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; minacode's
+        # own reasoning fields are layered on top so they stay authoritative on key conflicts.
+        extra_body = {**provider.extra_body, **extra}
+        configured_thinking = provider.extra_body.get("thinking")
+        managed_thinking = extra.get("thinking")
+        if isinstance(configured_thinking, dict) and isinstance(managed_thinking, dict):
+            extra_body["thinking"] = {**configured_thinking, **managed_thinking}
+        if extra_body:
+            params["extra_body"] = extra_body
+
+    def assistant_message(self, message: Any) -> Json:
+        data: Json = {"role": "assistant", "content": self.message_field(message, "content")}
+        for key in ("reasoning_content", "reasoning"):
+            value = self.message_field(message, key)
+            if value:
+                data[key] = Text.value(value)
+        raw_details = self.message_field(message, "reasoning_details") or []
+        details = [item for item in (self.dump_message_item(raw) for raw in raw_details) if item]
+        if details:
+            data["reasoning_details"] = details
+        tool_calls: list[Json] = []
+        for call in self.message_field(message, "tool_calls") or []:
+            function = self.message_field(call, "function")
+            tool_calls.append(
+                {
+                    "id": str(self.message_field(call, "id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(self.message_field(function, "name") or ""),
+                        "arguments": str(self.message_field(function, "arguments") or "{}"),
+                    },
+                }
+            )
+        if tool_calls:
+            data["tool_calls"] = tool_calls
+        return data
+
+    @staticmethod
+    def message_field(message: Any, key: str) -> Any:
+        if isinstance(message, dict):
+            return message.get(key)
+        value = getattr(message, key, None)
+        if value is not None:
+            return value
+        extra = getattr(message, "model_extra", None)
+        if isinstance(extra, dict) and key in extra:
+            return extra[key]
+        if hasattr(message, "model_dump"):
+            dumped = message.model_dump(mode="json")
+            if isinstance(dumped, dict):
+                return dumped.get(key)
+        return None
+
+    def tool_calls(self, message: Any) -> list[ToolCall]:
+        calls = []
+        for raw in self.message_field(message, "tool_calls") or []:
+            function = self.message_field(raw, "function")
+            call_id = str(self.message_field(raw, "id") or "")
+            name = str(self.message_field(function, "name") or "")
+            arguments = str(self.message_field(function, "arguments") or "{}")
+            try:
+                # strict=False so literal newlines in argument strings (e.g. a multi-line
+                # git commit message) parse instead of dropping the call's args.
+                payload = json.loads(arguments, strict=False)
+            except json.JSONDecodeError:
+                calls.append(ToolCall(id=call_id, name=name, args=[]))
+                continue
+            calls.append(self.tool_call(call_id, name, payload))
+        return calls
+
+    @classmethod
+    def tool_payload(cls, name: str, payload: object) -> ToolArgs:
+        if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
+            # Strict schemas express optional params as nullable, so the model may send explicit
+            # null for an omitted argument. In every minacode tool null means "absent", so drop it.
+            cleaned = cls.drop_nulls(payload)
+            assert isinstance(cleaned, dict)
+            return tool.payload_args(cleaned)
+        return [payload]
+
+    @classmethod
+    def drop_nulls(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {key: cls.drop_nulls(item) for key, item in value.items() if item is not None}
+        if isinstance(value, list):
+            return [cls.drop_nulls(item) for item in value]
+        return value
+
+    @classmethod
+    def tool_call(cls, call_id: str, name: str, payload: object) -> ToolCall:
+        # payload_args may reject malformed arguments (e.g. Bash with an empty command). Capture that
+        # error on the call so it is replayed as a tool result during execution, letting the model
+        # self-correct, rather than escaping to abort the entire agent turn.
+        try:
+            return ToolCall(id=call_id, name=name, args=cls.tool_payload(name, payload))
+        except ToolError as error:
+            return ToolCall(id=call_id, name=name, args=[], error=str(error))

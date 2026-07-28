@@ -165,6 +165,22 @@ class MCPResourceInfo:
 
 
 class MCPManager:
+    """Discover and call tools and resources on the configured MCP servers.
+
+    Servers are external, so nothing here may be load-bearing. Discovery runs concurrently in the
+    background, and a slow, broken, or unauthorized server records its reason and drops out of the
+    index rather than failing the session. Connection state is therefore something to display, not an
+    error to raise.
+
+    Only a bounded summary of a catalog reaches the model: schemas and descriptions are capped per
+    tool and overall, because a verbose server would otherwise spend the context budget every turn
+    merely by existing. Full schemas stay available on demand through describe.
+
+    Each operation opens its own short-lived client, so no connection is durable state. That costs a
+    process start per stdio call and is why the lifecycle rework is on the roadmap in DESIGN.md.
+    Discovery and its asyncio loop run off the main thread, so the catalog and status are lock-guarded.
+    """
+
     RAW_OUTPUT_LIMIT: ClassVar[int] = 200_000
     DISCOVERY_TIMEOUT: ClassVar[int] = 10
     MAX_DISCOVERY_WORKERS: ClassVar[int] = 8
@@ -174,6 +190,7 @@ class MCPManager:
     INDEX_SCHEMA_LIMIT: ClassVar[int] = 700  # per-tool schema cap in the early (cached) tools index
     INDEX_TOTAL_LIMIT: ClassVar[int] = 16_000  # overall cap for the tools index block
     STATUS_MARKER: ClassVar[str] = "●"
+    AUTH_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"\b(?:401|403)\b")
 
     def __init__(self, session: Session):
         self.session = session
@@ -394,7 +411,7 @@ class MCPManager:
             return False
         message = issue[1].lower()
         markers = ("authentication required", "unauthorized", "invalid token", "invalid_token", "invalid_request", "invalid client")
-        return any(marker in message for marker in markers) or re.search(r"\b(?:401|403)\b", message) is not None
+        return any(marker in message for marker in markers) or MCPManager.AUTH_STATUS_RE.search(message) is not None
 
     def _connect_result(self, name: str, *, compact: bool = False) -> str:
         if issue := self.server_issue(name):

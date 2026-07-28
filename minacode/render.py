@@ -23,10 +23,13 @@ from rich.text import Text as RichText
 
 from minacode.base import (
     MODEL_REQUEST_RETRIES,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
     Text,
     __version__,
 )
-from minacode.engine import LogBlock, LogEdge, LogLine, LogRole
 from minacode.session import Session
 from minacode.tools import CodeIndex
 
@@ -135,6 +138,21 @@ class Theme:
 
 
 class UiPrinter:
+    """Render completed output into native terminal scrollback.
+
+    The durable half of the terminal boundary: what it prints survives the session and stays
+    searchable with the terminal's own tools, so nothing here clears the screen. Live previews and
+    status belong to the prompt-toolkit application instead.
+
+    Because the output is permanent it is sanitized rather than passed through. Rich pads every line
+    to the console width, which bakes trailing whitespace into scrollback and becomes wrap artifacts
+    when the terminal is later narrowed, so padding is stripped unless it carries a background color
+    and is part of a visible band. Terminal control strings prompt-toolkit cannot parse are stripped
+    up front, since it drops their framing but leaks the payload as visible garbage.
+
+    Color is decided once, from whether output is a real terminal.
+    """
+
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
@@ -174,6 +192,7 @@ class UiPrinter:
     # as a solid band. We track the SGR bg state per token and only strip whitespace rendered with
     # bg off.
     SGR_RE: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[([0-9;]*)m")
+    RECORD_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"(?:tr|job)\.\d+|\d+(?::\d+)?")
     # OSC / APC / DCS / SOS / PM sequences are terminal control strings that prompt_toolkit's ANSI
     # parser doesn't recognize. When they slip through Rich's output (OSC 8 hyperlinks were the
     # historical culprit, iTerm image escapes / Kitty graphics / shell-integration marks are
@@ -405,7 +424,7 @@ class UiPrinter:
                 style = Theme.style("syntax.assign")
             elif token.startswith(('"', "'")):
                 style = Theme.style("syntax.string")
-            elif re.fullmatch(r"(?:tr|job)\.\d+|\d+(?::\d+)?", token):
+            elif UiPrinter.RECORD_TOKEN_RE.fullmatch(token):
                 style = Theme.style("syntax.number")
             elif token in {";", ","}:
                 style = "ansibrightblack"
@@ -713,6 +732,16 @@ class BashLivePreview:
 
 
 class StatusBar:
+    """Show what the agent is doing now, on a timer thread, owning none of it.
+
+    Every value displayed is read from session state the engine already maintains. It is a view: it
+    never blocks a turn, and must never become the reason a piece of state exists.
+
+    It writes to stderr, and only when stderr is a terminal, so the repainting line stays out of piped
+    transcripts and clear of the completed output on stdout. It redraws in place and erases on stop,
+    leaving nothing in scrollback.
+    """
+
     INTERVAL: ClassVar[float] = 0.2
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")

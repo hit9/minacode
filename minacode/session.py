@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class PlanItem:
+    _PLAN_LINE_RE: ClassVar[re.Pattern] = re.compile(r"\[( |x|X|~|-)\]\s+(.+)")
     STATUSES: ClassVar[tuple[str, ...]] = ("todo", "doing", "done", "blocked")
     SYMBOLS: ClassVar[dict[str, str]] = {"todo": " ", "doing": "~", "done": "x", "blocked": "-"}
     LEGACY_MARKERS: ClassVar[dict[str, str]] = {" ": "todo", "~": "doing", "x": "done", "X": "done", "-": "blocked"}
@@ -45,7 +46,7 @@ class PlanItem:
             text = str(value.get("text") or "").strip()
         else:
             raw = str(value).strip()
-            match = re.fullmatch(r"\[( |x|X|~|-)\]\s+(.+)", raw)
+            match = PlanItem._PLAN_LINE_RE.fullmatch(raw)
             status = cls.LEGACY_MARKERS[match.group(1)] if match else "todo"
             text = match.group(2).strip() if match else raw
         if not text:
@@ -160,6 +161,22 @@ class HistorySegment:
 
 
 class SessionSnapshotCodec:
+    """Decide what is durable, and encode it so saving stays cheap as the session grows.
+
+    A session is snapshotted after every response and tool batch, so rewriting all of it each time
+    would make saving cost more the longer the session runs. Each save records lengths and digests of
+    the append-only sequences, and the next save emits only what was appended; the loader replays
+    those deltas onto the last full snapshot. A sequence that changed in any way other than growing is
+    rewritten whole, so a stale prefix can never be persisted silently.
+
+    Large repeated text — file snapshots behind diffs, message text evicted by compaction — is stored
+    once per unique content and referenced by hash, because the same content routinely appears as one
+    edit's `before` and the previous edit's `after`.
+
+    The resume marker is a live-session artifact and is filtered out here, so repeated resumes do not
+    stack up markers.
+    """
+
     @staticmethod
     def digest(value: object) -> str:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -418,6 +435,7 @@ class SessionSnapshotStore:
 
     FORMAT_VERSION: ClassVar[int] = 2
     PROJECTS_DIR: ClassVar[str] = "projects"
+    _SLUG_RE: ClassVar[re.Pattern] = re.compile(r"[^A-Za-z0-9._-]+")
 
     def __init__(self, session: Session):
         self.session = session
@@ -482,7 +500,7 @@ class SessionSnapshotStore:
         """Readable basename plus a hash of the real path: browsable, and still unique across
         same-named directories."""
         real = os.path.realpath(cwd)
-        name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(real)).strip("-") or "root"
+        name = SessionSnapshotStore._SLUG_RE.sub("-", os.path.basename(real)).strip("-") or "root"
         return name + "-" + hashlib.sha256(real.encode("utf-8")).hexdigest()[:10]
 
     @classmethod
@@ -790,6 +808,20 @@ class QueuedInput:
 
 @dataclass
 class Session:
+    """Everything that semantically happened, protocol-neutral, and sufficient to resume.
+
+    The source of truth everything else derives from: messages, retained tool output, diffs, usage,
+    and session-scoped resources such as jobs and images — but nothing about how any of it was sent
+    or displayed. Provider clients, timers, stream fragments, and terminal layout are absent by
+    design; they are reconstructed, and only what lives here is snapshotted.
+
+    A turn in progress is staged apart from committed history, so an interrupted or crashed turn can
+    be settled or dropped without leaving half a turn in the record.
+
+    Queued input and snapshot writes are lock-guarded: input arrives on the UI thread while the agent
+    runs on another.
+    """
+
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
     config: Config = field(default_factory=Config)

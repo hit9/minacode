@@ -75,6 +75,8 @@ ANTHROPIC_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "medium", "
 # Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
 #           https://api-docs.deepseek.com/guides/thinking_mode/
 #           https://docs.qwencloud.com/api-reference/chat/openai-chat
+_FAMILY_SPLIT_RE = re.compile(r"[^0-9a-z]+")
+
 CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
     # DeepSeek accepts only high/max and documents these compatibility folds.
     "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "max", "xhigh": "max"},
@@ -86,7 +88,7 @@ CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
 def anthropic_model_version(model: str) -> tuple[int, int] | None:
     """Return the first short numeric generation in a Claude model id, if present."""
 
-    tokens = [token for token in re.split(r"[^0-9a-z]+", model.lower()) if token]
+    tokens = [token for token in _FAMILY_SPLIT_RE.split(model.lower()) if token]
     for index, token in enumerate(tokens):
         if not (token.isdigit() and len(token) <= 2):
             continue
@@ -110,7 +112,7 @@ def anthropic_thinking_params(model: str, reasoning: str, effort: str, budget_to
     version = anthropic_model_version(model)
     if version is None:
         return {}
-    families = re.split(r"[^0-9a-z]+", model.lower())
+    families = _FAMILY_SPLIT_RE.split(model.lower())
     adaptive = version >= ANTHROPIC_ADAPTIVE_MIN_VERSION
     always_thinking = any(family in families for family in ANTHROPIC_ALWAYS_THINKING_FAMILIES)
     if reasoning == "off":
@@ -127,7 +129,7 @@ def anthropic_thinking_params(model: str, reasoning: str, effort: str, budget_to
 
 
 def anthropic_thinking_always_on(model: str) -> bool:
-    families = re.split(r"[^0-9a-z]+", model.lower())
+    families = _FAMILY_SPLIT_RE.split(model.lower())
     return any(family in families for family in ANTHROPIC_ALWAYS_THINKING_FAMILIES)
 
 
@@ -141,7 +143,7 @@ def anthropic_keeps_prior_thinking(model: str) -> bool:
     version = anthropic_model_version(model)
     if version is None:
         return True
-    families = re.split(r"[^0-9a-z]+", model.lower())
+    families = _FAMILY_SPLIT_RE.split(model.lower())
     return version >= ANTHROPIC_ADAPTIVE_MIN_VERSION or (version == (4, 5) and "opus" in families)
 
 

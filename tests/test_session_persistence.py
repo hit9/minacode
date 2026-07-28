@@ -5,8 +5,9 @@ import time
 import pytest
 
 from minacode.base import Config, MinacodeError, RuntimeSettings
-from minacode.engine import Agent, ModelClient
+from minacode.engine import Agent
 from minacode.loop import CommandLoop
+from minacode.model import ModelClient
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
 
 

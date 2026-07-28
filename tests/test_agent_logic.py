@@ -11,6 +11,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
+import minacode.context as context_module
 import minacode.engine as engine_module
 import minacode.loop as loop_module
 from minacode.base import (
@@ -18,17 +19,22 @@ from minacode.base import (
     MIN_CONTEXT_SAFETY_TOKENS,
     SELECTION_FREE_TEXT,
     Config,
+    LogBlock,
     MalformedToolCallError,
     ModelError,
     ProviderConfig,
     Text,
     ToolCall,
     ToolError,
+    TurnBox,
 )
-from minacode.engine import Agent, ContextManager, LogBlock, ModelClient, ToolRunner, TurnBox
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.loop import CommandLoop
+from minacode.model import ModelClient
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from minacode.render import StatusBar
+from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.skill import SkillLibrary
 from minacode.tools import AskSpec, BashTool, CodeIndex, EditTool, ReadTool, SkillTool, Tool
@@ -501,7 +507,7 @@ def test_compaction_captures_a_history_segment(tmp_path):
 
 
 def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, monkeypatch):
-    monkeypatch.setattr(engine_module, "MAX_TOOL_OUTPUT_TOKENS", 10)
+    monkeypatch.setattr(context_module, "MAX_TOOL_OUTPUT_TOKENS", 10)
     s = session(tmp_path)
     context = ContextManager(s)
 
@@ -592,7 +598,7 @@ def test_history_index_precedes_conversation_and_memory_excludes_it(tmp_path):
 
 
 def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch):
-    monkeypatch.setattr(engine_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    monkeypatch.setattr(context_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
     s = session(tmp_path)
     for index in range(1, 51):
         s.history.append(HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
@@ -606,7 +612,7 @@ def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch
 
 
 def test_bounded_history_index_marker_stays_stable_when_appended(tmp_path, monkeypatch):
-    monkeypatch.setattr(engine_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
+    monkeypatch.setattr(context_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
     s = session(tmp_path)
     for index in range(1, 51):
         s.history.append(HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))

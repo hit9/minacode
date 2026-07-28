@@ -5,9 +5,11 @@ import code_symbol_index as csi
 import pytest
 
 import minacode
-from minacode.base import ToolCall, ToolError
-from minacode.engine import ContextManager, LogBlock, LogEdge, LogLine, LogRole, ModelClient, ToolRunner
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from minacode.context import ContextManager
+from minacode.model import ModelClient
 from minacode.render import UiPrinter
+from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session
 from minacode.tools import (
     TOOL_REGISTRY,

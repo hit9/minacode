@@ -7,7 +7,7 @@ import code_symbol_index as csi
 import pytest
 
 import minacode.__main__ as cli
-import minacode.engine as engine_module
+import minacode.update as update_module
 from minacode.__main__ import main
 from minacode.base import (
     CHAT_REASONING_CHOICES,
@@ -24,11 +24,15 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
-from minacode.engine import Agent, ContextManager, ModelClient, ToolRunner, UpdateChecker
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.loop import CommandLoop
+from minacode.model import ModelClient
 from minacode.render import StatusBar
+from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import TOOL_REGISTRY, CodeIndex, Tool
+from minacode.update import UpdateChecker
 
 
 def session(tmp_path):
@@ -1101,7 +1105,7 @@ def test_update_checker_fetch_latest_uses_bounded_timeout(tmp_path, monkeypatch)
         seen["user_agent"] = request.get_header("User-agent")
         return Response()
 
-    monkeypatch.setattr(engine_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(update_module, "urlopen", fake_urlopen)
 
     assert UpdateChecker(data_session(tmp_path)).fetch_latest() == "9.8.7"
     assert seen == {"timeout": UpdateChecker.TIMEOUT, "user_agent": HTTP_USER_AGENT}

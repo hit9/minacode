@@ -5,9 +5,11 @@ import sys
 import time
 
 from minacode.base import Config, ToolCall
-from minacode.engine import Agent, ContextManager, ToolRunner
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.loop import CommandLoop
 from minacode.render import UiPrinter
+from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore, TurnDiff
 from minacode.tui import DiffViewState, TabbedViewState
 

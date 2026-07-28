@@ -236,8 +236,10 @@ resumed sessions, and providers with image input disabled keep readable image la
 
 <span class="marker">Your work is saved automatically</span> — the conversation, edits, and diffs
 are tied to the project directory you started in, so an interrupted session picks up where it
-stopped. Inactive sessions older than seven days are removed at startup by default; set
-`runtime.session_retention_days = 0` to keep them indefinitely.
+stopped. Sessions untouched for seven days are removed by default, swept in the background when
+minacode starts; it reports how many it removed. Resuming a session resets its clock, so one you
+keep returning to is never removed. Set `runtime.session_retention_days = 0` to keep them
+indefinitely.
 
 Resume from the command line:
 
