@@ -36,6 +36,25 @@ _IdentityT = TypeVar("_IdentityT", bound=Hashable)
 
 
 class ContextManager:
+    """Project session state into the message list for one request, and keep it inside the budget.
+
+    The projection is derived at the send boundary and never stored: every request rebuilds it from
+    the session's messages, so nothing here may write back into durable history. Layers are ordered
+    for prompt-cache stability, from the version-stable system prompt and tool schemas through
+    session-stable capability indexes and append-only conversation to volatile memory and the
+    active turn at the tail; reordering a layer or rewriting an earlier one invalidates the cached
+    prefix for every later turn.
+
+    Request-local transforms belong here rather than in the stored messages. Repeated MCP schema
+    dumps and skill loads collapse into a pointer at the first full copy, which is re-promoted when
+    compaction removes it.
+
+    Space is claimed before it is spent: the budget is the context limit less the provider's output
+    reserve and a safety margin, measured against the payload that will actually cross the selected
+    protocol boundary. Exceeding it compacts prior history first and only then the current turn,
+    since the turn is what the model still needs verbatim.
+    """
+
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)

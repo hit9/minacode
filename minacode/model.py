@@ -69,6 +69,24 @@ class PreparedRequest:
 
 
 class ModelClient:
+    """Send one request over the selected provider protocol and normalize what comes back.
+
+    Three wire formats live here — Chat Completions, Responses, and Anthropic Messages — chosen by
+    the resolved provider, not by scattered host checks. Each returns the same triple of assistant
+    message, tool calls, and text, so callers never learn which protocol ran. Session history stays
+    one normalized model; protocol continuation data such as reasoning blocks round-trips through
+    namespaced opaque fields rather than being flattened into text, because providers verify what
+    they produced comes back unchanged.
+
+    Retries are the caller's invisible business: a request retries on transport and 5xx-class
+    failures with a bounded backoff and republishes its progress through session state for the
+    status bar. Errors that a retry cannot fix — a missing model, a refused modality — surface
+    immediately. Streaming is an optimization of the same call, never a different code path.
+
+    Cancellation arrives from another thread and closes the in-flight client, so a blocked network
+    read ends rather than waiting for its timeout.
+    """
+
     _RETRYABLE_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b")
     _STATUS_CODE_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b")
     _JSON_FENCE_RE: ClassVar[re.Pattern] = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
