@@ -25,6 +25,22 @@ short: document durable conclusions, not implementation diaries or complete inve
 - Keep UI and user documentation quiet and direct. Show truthful state with progressive detail;
   keep compatibility machinery and investigation history out of the common user path.
 
+### Test design
+
+Tests protect observable contracts and reproduced regressions, not implementation shape.
+
+- Prefer black-box tests through the narrowest stable public boundary that observes the complete
+  behavior. Use white-box tests only when a pure algorithm or difficult edge condition cannot be
+  exercised clearly there.
+- A bug fix should reproduce the real failure, then cover the intended result and any unsafe path
+  that must remain rejected.
+- Assert semantic output, durable state, or protocol payloads. Assert exact text, call order, or
+  rendering only when those details are themselves the contract.
+- Mock external or nondeterministic boundaries such as providers, clocks, processes, and terminals;
+  do not mock the core behavior under test.
+- Keep tests deterministic and fast. Replace sleeps with events or controlled time, and reserve
+  PTY or tmux tests for behavior that truly depends on a terminal.
+
 ## System shape
 
 minacode is one local process with explicit owners for each kind of behavior:
