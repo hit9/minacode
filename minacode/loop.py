@@ -170,6 +170,24 @@ class CommandCompleter(Completer):
 
 
 class CommandLoop:
+    """Own session behavior: read input, dispatch commands, drive turns, and route output.
+
+    Slash commands are handled here and never reach the model. The agent runs on this thread while
+    prompt-toolkit runs on another, which is what makes the two output paths distinct: completed
+    user, assistant, and tool output is printed into native terminal scrollback, while drafts, live
+    previews, queue state, and selectors belong to the TUI application on the primary screen.
+    Anything transient the terminal happens to leave in scrollback is a visual artifact, not
+    history; the transcript is always rebuilt from semantic records rather than from preview rows.
+
+    Input entered mid-turn is queued rather than dropped, and only a small allowlist of read-only
+    commands may run against a busy session. Everything else waits for the turn, because a command
+    that mutates configuration while a request is in flight would change the meaning of that turn
+    halfway through it.
+
+    The same object serves the non-interactive path, where there is no TUI at all and input and
+    output are plain callables — which is also how the tests drive it.
+    """
+
     HUNK_HEADER_RE: ClassVar[re.Pattern] = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
     HELP_HEADING_RE: ClassVar[re.Pattern] = re.compile(r"^### (.+)$", re.MULTILINE)
     HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)

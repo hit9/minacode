@@ -161,6 +161,24 @@ class HistorySegment:
 
 
 class SessionSnapshotCodec:
+    """Decide which session state is durable, and encode it so saving stays cheap as it grows.
+
+    A session is snapshotted after every model response and tool batch, so re-serializing the whole
+    thing each time would make saving cost more the longer the session runs. Instead each save
+    records a marker of lengths and digests for the append-only sequences, and the next save emits
+    only what was appended since; the loader replays those deltas onto the last full snapshot.
+    A sequence that changed in any way other than growing falls back to being written whole, so the
+    optimization can never silently persist a stale prefix.
+
+    Large text — file snapshots behind diffs, and the message text evicted by compaction — is
+    stored once per unique content and referenced by hash. The same file content routinely appears
+    as one edit's `before` and the previous edit's `after`, and history segments would otherwise be
+    rewritten on every append.
+
+    Not everything in the session is persistable. The resume marker is a live-session artifact and
+    is filtered out here, so resuming a session repeatedly does not accumulate a marker per resume.
+    """
+
     @staticmethod
     def digest(value: object) -> str:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -792,6 +810,23 @@ class QueuedInput:
 
 @dataclass
 class Session:
+    """Everything that semantically happened, in protocol-neutral form, and enough to resume.
+
+    This is the source of truth the rest of the system derives from. It holds what was said and
+    done — messages, retained tool output, diffs, usage, and session-scoped resources such as
+    background jobs and images — but nothing about how any of it was sent or shown. Provider
+    clients, timers, stream fragments, and terminal layout are deliberately absent: they are
+    reconstructed, and only what lives here is snapshotted.
+
+    Ownership runs one way. Higher layers ask this object to change state and observe the result;
+    they never treat rendered text or widget state as the record of what happened.
+
+    A turn in progress is staged separately from the committed history, so an interrupted or
+    crashed turn can be settled or discarded without leaving a half-turn in the durable record.
+    Queued user input and snapshot writes are each guarded by a lock, because input arrives on the
+    UI thread while the agent runs on another.
+    """
+
     cwd: str = field(default_factory=os.getcwd)
     system_info: SystemInfo | None = None
     config: Config = field(default_factory=Config)

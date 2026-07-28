@@ -138,6 +138,23 @@ class Theme:
 
 
 class UiPrinter:
+    """Render completed output into native terminal scrollback.
+
+    This is the durable half of the terminal boundary: whatever it prints stays in the user's
+    scrollback, survives the session, and can be copied and searched with the terminal's own tools.
+    Live previews and status belong to the prompt-toolkit application instead. Preserving that
+    scrollback is worth more than making every frame durable, so nothing here clears the screen.
+
+    Because the output is permanent, it is sanitized rather than passed through. Rich pads every
+    line to the console width, which bakes trailing whitespace into scrollback and turns into wrap
+    artifacts when the terminal is later narrowed, so padding is stripped unless it carries a
+    background color and is therefore part of a visible band. Terminal control strings that
+    prompt-toolkit's ANSI parser does not understand are stripped up front, since it drops their
+    framing but leaks the payload as visible garbage.
+
+    Color is decided once, from whether output is a real terminal, so redirected output is plain.
+    """
+
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
@@ -717,6 +734,18 @@ class BashLivePreview:
 
 
 class StatusBar:
+    """Show what the agent is doing right now, on a timer thread, without owning any of it.
+
+    Every value it displays — elapsed time, retry reason, context percentage, index progress — is
+    read from session state that the engine already maintains. It is a view, so it never blocks a
+    turn and never becomes the reason a piece of state exists.
+
+    It writes to stderr rather than stdout, and only when stderr is a terminal. That keeps the
+    repainting line out of piped or redirected transcripts, and out of the way of the completed
+    output going to stdout: the bar redraws in place and erases itself on stop, so it leaves
+    nothing in scrollback.
+    """
+
     INTERVAL: ClassVar[float] = 0.2
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
