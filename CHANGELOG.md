@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.14.1 - 2026-07-28
+
 ### Added
 - Add a `ViewImage` tool that lets the agent proactively inspect local PNG, JPEG, WebP, and single-frame GIF files through the active model's image input, with confirmation for paths outside the workspace and durable provider-neutral replay across Chat Completions, Responses, and Anthropic Messages.
 
