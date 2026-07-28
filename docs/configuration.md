@@ -95,7 +95,7 @@ Optional; the defaults shown are used when omitted.
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |
 | `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |
 | `max_parallel_tools` | `4` | Maximum read-only tool calls executed concurrently; `1` disables parallelism |
-| `session_retention_days` | `7` | Delete inactive saved sessions older than this at startup; `0` keeps them indefinitely |
+| `session_retention_days` | `7` | Delete saved sessions untouched for this many days, swept in the background at startup; `0` keeps them indefinitely |
 | `theme` | `auto` | Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme` |
 
 Selected tuning values can be changed for the current session with `/set` (Tab completion
@@ -105,9 +105,12 @@ lists the supported keys). `/yolo` toggles `yolo`.
 
 ```toml
 [paths]
-data_dir = "~/.minacode"   # sessions, code index, OAuth tokens, user skills, update cache
+data_dir = "~/.minacode"   # sessions, input history, OAuth tokens, user skills, update cache
 ```
 
 Sessions live under `<data_dir>/projects/<project>/`, one directory per working directory. Each
 holds that project's session logs and a `latest` pointer, so a resume stays scoped to the project
 it belongs to. A project directory is removed once its last session expires.
+
+`<data_dir>/history.txt` holds the input history that Up and Ctrl-P recall, across every project.
+It is capped at 512 KB, keeping the most recent entries.

@@ -4,22 +4,23 @@
 ## Unreleased
 
 ### Added
-- Report when retention deleted saved sessions, naming the count, the inactivity window,
-  and the setting that governs it. The cleanup already ran on every start; it now says so instead of
-  removing unrecoverable work silently, and runs off the startup path so a slow filesystem cannot
-  delay the prompt.
+- Report when retention deletes saved sessions, naming the count, the inactivity window, and the
+  setting that governs it, instead of removing unrecoverable work silently.
+
+### Changed
+- Start roughly four times faster, so a fresh prompt accepts and echoes input immediately instead
+  of lagging behind the first characters typed. The Anthropic and OpenAI SDKs cost about 0.8s to
+  import and are not needed until the first request; they now load lazily and are warmed in the
+  background while the prompt is already accepting input.
+- Sweep expired sessions on a background thread. The scan reads every session file's timestamp,
+  which is negligible on a local disk but can take seconds on a network-mounted home directory,
+  where it previously delayed the prompt.
 
 ### Fixed
 - Cap the input history file at 512 KB instead of letting it grow for the life of the install.
   prompt-toolkit only appends to it, so every line ever typed was kept. The newest entries are
   retained and older ones dropped at an entry boundary, so recall keeps working and the file stays
   loadable.
-
-### Changed
-- Start roughly four times faster, so the prompt echoes keystrokes immediately instead of dropping
-  the first characters typed into a fresh session. The Anthropic and OpenAI SDKs cost about 0.8s to
-  import and are not needed until the first request; they now load lazily and are warmed in the
-  background while the prompt is already accepting input.
 
 
 ## 0.14.1 - 2026-07-28
