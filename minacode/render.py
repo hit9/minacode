@@ -894,7 +894,7 @@ class StatusBar:
         available = width - get_cwidth(ellipsis)
         clipped: StyleAndTextTuples = []
         used = 0
-        for style, text in fragments:
+        for style, text, *_ in fragments:
             for char in text:
                 char_width = max(0, get_cwidth(char))
                 if used + char_width > available:
