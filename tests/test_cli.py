@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -165,3 +168,24 @@ def test_upgrade_command_falls_back_to_pip(monkeypatch):
     monkeypatch.setattr(cli.os.path, "realpath", lambda path: path)
 
     assert cli.UpdateChecker.upgrade_command() == [executable, "-m", "pip", "install", "--upgrade", "minacode"]
+
+
+def test_startup_does_not_import_the_provider_sdks():
+    """The prompt must accept input immediately, so the ~0.8s SDK imports stay off the startup path.
+
+    A fresh interpreter is used because the test session has already imported both SDKs.
+    """
+    probe = "import minacode.__main__, sys; print(int(any(m in sys.modules for m in ('anthropic', 'openai'))))"
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+
+    assert result.stdout.strip() == "0"
+
+
+def test_warm_provider_sdks_loads_them_in_the_background():
+    cli.warm_provider_sdks()
+    for _ in range(200):
+        if all(name in sys.modules for name in ("anthropic", "openai")):
+            break
+        time.sleep(0.05)
+
+    assert {"anthropic", "openai"} <= sys.modules.keys()

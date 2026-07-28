@@ -7,6 +7,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+import openai as openai_module
 import pytest
 from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Size
@@ -19,7 +20,6 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 
-import minacode.loop as loop_module
 import minacode.render as render_module
 import minacode.tui as tui_module
 from minacode.base import (
@@ -1933,7 +1933,7 @@ def test_remote_models_normalizes_sdk_results(monkeypatch, tmp_path):
         calls.append(kwargs)
         return SimpleNamespace(models=Models())
 
-    monkeypatch.setattr(loop_module, "OpenAI", openai)
+    monkeypatch.setattr(openai_module, "OpenAI", openai)
 
     assert command_loop.remote_models(provider) == ("alpha", "zeta")
     assert calls[0]["api_key"] == "secret"
@@ -1948,7 +1948,7 @@ def test_remote_models_is_optional_and_failure_safe(monkeypatch, tmp_path):
 
     provider.url = "https://example.com/v1"
     provider.key = "secret"
-    monkeypatch.setattr(loop_module, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(openai_module, "OpenAI", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
 
     assert command_loop.remote_models(provider) == ()
 

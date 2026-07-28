@@ -3,6 +3,12 @@
 
 ## Unreleased
 
+### Changed
+- Start roughly four times faster, so the prompt echoes keystrokes immediately instead of dropping
+  the first characters typed into a fresh session. The Anthropic and OpenAI SDKs cost about 0.8s to
+  import and are not needed until the first request; they now load lazily and are warmed in the
+  background while the prompt is already accepting input.
+
 
 ## 0.14.1 - 2026-07-28
 

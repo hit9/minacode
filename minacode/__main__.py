@@ -6,9 +6,11 @@ Invoked through the ``minacode`` console script or ``python -m minacode``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import subprocess
 import sys
+import threading
 
 from minacode.base import Config, ConfigError, ConfigFile, MinacodeError, RuntimeSettings, UpdateStatus, __version__
 from minacode.engine import Agent
@@ -36,6 +38,24 @@ def run_update() -> int:
     except OSError as error:
         print(f"Error: could not run the upgrade command: {error}", file=sys.stderr)
         return 1
+
+
+def warm_provider_sdks() -> None:
+    """Import the provider SDKs off the main thread so the prompt accepts input immediately.
+
+    ModelClient imports them lazily because they cost ~0.8s, which was the whole of the delay
+    before a fresh prompt echoed keystrokes. Loading them here in the background keeps the prompt
+    instant without moving that cost onto the first request: the user's first message takes far
+    longer to type than the import takes to finish, and Python's per-module import locks make a
+    concurrent import from the request path simply wait for this one.
+    """
+
+    def load() -> None:
+        with contextlib.suppress(ImportError):
+            import anthropic  # noqa: F401 - imported for its side effect of populating sys.modules
+            import openai  # noqa: F401
+
+    threading.Thread(target=load, name="sdk-warmup", daemon=True).start()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
         Theme.set_mode(Theme.resolve(session.settings.theme))
+        warm_provider_sdks()
         command_loop = CommandLoop(Agent(session))
         try:
             return command_loop.run()

@@ -16,7 +16,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from openai import OpenAI
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
@@ -1583,6 +1582,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if not provider.url or not provider.key:
             return ()
         try:
+            # lazy import: /model discovery is the only OpenAI use here, so the SDK stays off the startup path
+            from openai import OpenAI
+
             page = OpenAI(
                 api_key=provider.key,
                 base_url=provider.resolve().base_url,

@@ -12,13 +12,9 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
-import anthropic
-import openai
-from anthropic import Anthropic
 from json_repair import repair_json
-from openai import OpenAI
 
 from minacode.base import (
     ANTHROPIC_CONTENT_KEY,
@@ -49,6 +45,13 @@ from minacode.provider_compat import (
     anthropic_thinking_always_on,
     anthropic_thinking_params,
 )
+
+if TYPE_CHECKING:
+    # The provider SDKs cost ~0.8s to import and are not needed until the first request;
+    # the runtime imports below keep them off the startup path (see MCPManager for the same pattern).
+    from anthropic import Anthropic
+    from openai import OpenAI
+
 from minacode.session import QueuedInput, Session
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -262,6 +265,10 @@ class ModelClient:
 
     @staticmethod
     def retryable_error(error: Exception) -> bool:
+        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
+        import anthropic
+        import openai
+
         if isinstance(error, ModelResponseTimeout):
             return False
         cause = getattr(error, "__cause__", None)
@@ -663,6 +670,9 @@ class ModelClient:
         provider = self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
+        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
+        from openai import OpenAI
+
         return OpenAI(
             api_key=provider.key, base_url=provider.resolve().base_url, timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
         )
@@ -672,6 +682,9 @@ class ModelClient:
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         url = provider.resolve().base_url.rstrip("/")
+        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
+        from anthropic import Anthropic
+
         return Anthropic(
             api_key=provider.key,
             base_url=url.removesuffix("/v1"),
