@@ -155,11 +155,13 @@ class BashTool(Tool):
             return False
         return not (sub == "grep" and any(t.startswith(("-O", "--open-files-in-pager")) for t in args))
 
-    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({"command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run starting in the workspace; filter noisy output with head/tail/rg"}}, ["command"])
-    # fmt: on
+        # fmt: off
+        return cls.object_schema({
+            "command": {"type": "string", "minLength": 1, "pattern": "^.*\\S.*$", "description": "Bash command to run starting in the workspace; filter noisy output with head/tail/rg"},
+        }, ["command"])
+        # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> ToolArgs:

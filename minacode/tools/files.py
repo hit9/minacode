@@ -21,12 +21,10 @@ class ReadTool(Tool):
     NAME = "Read"
     MAX_ANCHOR_DRIFT: ClassVar[int] = 50
     DESCRIPTION = "Read UTF-8 file line ranges; returns file stat, total lines, and anchor=line:hash(line_content) text. Large outputs are bounded in conversation; use Recall(tr.N) for full stored output."
-    # fmt: off
     EXAMPLE = (
         'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
         'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',
     )
-    # fmt: on
 
     @classmethod
     def arg_schema(cls) -> Json:
@@ -227,13 +225,11 @@ class EditApplyResult:
 class EditTool(Tool):
     NAME = "Edit"
     DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
-    # fmt: off
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
         'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
-    # fmt: on
     MUTATES = True
 
     @classmethod

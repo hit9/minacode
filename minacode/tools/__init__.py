@@ -5,10 +5,11 @@ from __future__ import annotations
 from minacode.tools.ask import AskSpec, AskTool
 from minacode.tools.base import Tool
 from minacode.tools.files import Edit, EditApplyResult, EditTool, ReadTool, ViewImageTool
+from minacode.tools.mcp import MCPTool
 from minacode.tools.memory import NoteTool, RecallContextTool, RecallTool
-from minacode.tools.plugin import MCPTool, SkillTool
 from minacode.tools.search import CodeIndex, InspectCodeTool, SearchTool
 from minacode.tools.shell import BashTool, JobTool
+from minacode.tools.skill import SkillTool
 
 # fmt: off
 TOOLS: tuple[type[Tool], ...] = (

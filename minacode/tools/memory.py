@@ -16,11 +16,14 @@ class RecallTool(Tool):
     DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
     STORES_RESULT = False
 
-    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({"keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": "Stored result keys to recall, e.g. [\"tr.3\",\"tr.5\"]"}, "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"}}, ["keys"])
-    # fmt: on
+        # fmt: off
+        return cls.object_schema({
+            "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": 'Stored result keys to recall, e.g. ["tr.3","tr.5"]'},
+            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"},
+        }, ["keys"])
+        # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> ToolArgs:
@@ -89,24 +92,22 @@ class RecallContextTool(Tool):
     DEFAULT_LIMIT = 20
     MAX_LIMIT = 100
     MAX_QUERY_LENGTH = 500
-    # fmt: off
     EXAMPLE = (
         'Recall one segment. Example: {"keys":["seg.1"]}',
         'Search all segments. Example: {"query":"cache prefix|task memory","limit":10}',
     )
-    # fmt: on
     STORES_RESULT = False
 
-    # fmt: off
     @classmethod
     def params_schema(cls) -> Json:
+        # fmt: off
         return cls.object_schema({
             "keys": {"type": "array", "items": {"type": "string", "pattern": "^seg\\.\\d+$"}, "minItems": 1, "description": "Segment keys to retrieve, or to restrict query search"},
             "query": {"type": "string", "maxLength": cls.MAX_QUERY_LENGTH, "description": "Case-insensitive regex over segment titles and text; A|B|C is allowed"},
             "case_sensitive": {"type": "boolean", "description": "Make query matching case-sensitive; default false"},
             "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Maximum matching lines to return; default {cls.DEFAULT_LIMIT}"},
         })
-    # fmt: on
+        # fmt: on
 
     @classmethod
     def payload_args(cls, payload: Json) -> ToolArgs:
