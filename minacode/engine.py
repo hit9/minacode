@@ -55,7 +55,6 @@ from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
     INTERRUPT_MARKER,
-    LANGUAGE_REMINDER,
     LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
     SYSTEM_PROMPT,
@@ -280,7 +279,7 @@ class ContextManager:
             *self.session.messages,
             {
                 "role": "user",
-                "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)") + "\n\n" + LANGUAGE_REMINDER,
+                "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)"),
             },
             *(turn_messages or []),
         ]

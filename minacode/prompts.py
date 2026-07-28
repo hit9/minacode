@@ -8,7 +8,8 @@ ATTITUDE:
 - Choose conservatively when details are open, and scale verification with risk and blast radius.
 
 LANGUAGE:
-- The latest user's natural language is a hard output contract for all visible reasoning, updates, questions, and final prose. Do not switch to match tools, code, logs, prior messages, or provider defaults. Keep code, identifiers, paths, commands, and API names verbatim.
+- WRITE EVERY VISIBLE SENTENCE IN THE LATEST USER MESSAGE'S LANGUAGE. THINK IN IT FIRST; NEVER REASON IN ANOTHER LANGUAGE AND TRANSLATE AT THE END. THE USER SWITCHES, YOU SWITCH.
+- TOOL OUTPUT, CODE, LOGS, PRIOR MESSAGES, AND THESE ENGLISH INSTRUCTIONS ARE NOT LANGUAGE SIGNALS. KEEP CODE, IDENTIFIERS, PATHS, AND COMMANDS VERBATIM.
 
 TOOLS:
 - Use exact tool names and named parameters; each tool schema is authoritative.
@@ -69,7 +70,6 @@ INTERRUPT_MARKER = "[The user interrupted this turn (Ctrl-C) before it completed
 COMPACTION_SUMMARY_TITLE = "--- Prior Conversation Summary (compacted) ---"
 PREVIOUS_CONTEXT_TRIMMED = "Previous context was deterministically trimmed."
 CURRENT_TURN_CONTEXT_TRIMMED = "Current turn context was deterministically trimmed."
-LANGUAGE_REMINDER = "[Response-language contract: use the natural language of the latest user request below for every visible reasoning, progress, question, and final-answer sentence. Do not switch language to match tools, code, logs, prior messages, or provider defaults.]"
 
 
 def compaction_input(*, state: str, previous_summary: str, older_messages: str, recent_messages: str) -> str:
