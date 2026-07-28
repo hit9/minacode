@@ -945,7 +945,43 @@ def test_agent_executes_native_call_after_textual_tool_correction_without_replay
     assert all("<invoke" not in str(message.get("content") or "") for message in s.messages)
 
 
-def test_agent_stops_after_second_textual_tool_call_without_persisting_either_response(tmp_path):
+def test_agent_recovers_after_five_textual_tool_corrections_with_only_latest_message(tmp_path):
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+    names = ["Edit", "Job", "Bash", "Note", "Read"]
+    statuses = []
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+            self.on_stream = lambda kind, text: statuses.append((kind, text))
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            if len(self.requests) <= len(names):
+                name = names[len(self.requests) - 1]
+                pseudo = f'course\n<invoke name="{name}"><parameter name="args">untrusted</parameter></invoke>'
+                return {}, [], pseudo
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+
+    assert agent.run("continue") == "done"
+    assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
+    base_messages = agent.model.requests[0]
+    for index, name in enumerate(names, start=1):
+        correction_request = agent.model.requests[index]
+        assert correction_request[:-1] == base_messages
+        assert correction_request[-1] == {"role": "user", "content": Agent.tool_call_correction(name)}
+        assert "untrusted" not in correction_request[-1]["content"]
+    assert statuses == [
+        (f"correcting malformed tool call {index}/{engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS} · {name}", "") for index, name in enumerate(names, start=1)
+    ]
+    assert [message["role"] for message in s.messages] == ["user", "assistant"]
+    assert s.messages[-1]["content"] == "done"
+
+
+def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
     pseudo = 'course\n<invoke name="Bash">\n<parameter name="command">never run</parameter>\n</invoke>'
@@ -961,10 +997,13 @@ def test_agent_stops_after_second_textual_tool_call_without_persisting_either_re
 
     agent.model = Model()
 
-    with pytest.raises(MalformedToolCallError, match=r"Model emitted Bash as text twice; nothing was executed\."):
+    with pytest.raises(
+        MalformedToolCallError,
+        match=r"Model emitted Bash as text 6 times; none of the textual calls were executed\.",
+    ):
         agent.run("continue")
 
-    assert len(agent.model.requests) == 2
+    assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     assert s.tool_records == []
     assert s.messages == [{"role": "user", "content": "continue"}]
     assert s._active_turn_messages == []

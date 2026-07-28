@@ -682,7 +682,7 @@ def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_
     emitted = []
 
     def fail(_user_input):
-        raise MalformedToolCallError("Model emitted Bash as text twice; nothing was executed.")
+        raise MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed.")
 
     command_loop.agent.run = fail
     command_loop.ui.emit_answer = answers.append
@@ -691,7 +691,7 @@ def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_
 
     runtime.run_agent_turn("continue")
 
-    assert answers == ["Model emitted Bash as text twice; nothing was executed."]
+    assert answers == ["Model emitted Bash as text 6 times; none of the textual calls were executed."]
     assert not any("[done in " in text for text in emitted)
 
 

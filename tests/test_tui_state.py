@@ -177,9 +177,9 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     assert "checking the request" not in output
     assert "responding" in "".join(text for _style, text in loop.queue_divider_fragments())
 
-    loop.model_stream_output("correcting malformed tool call · Bash", "")
+    loop.model_stream_output("correcting malformed tool call 1/5 · Bash", "")
     assert loop.model_stream_fragments() == []
-    assert "correcting malformed tool call · Bash" in "".join(text for _style, text in loop.queue_divider_fragments())
+    assert "correcting malformed tool call 1/5 · Bash" in "".join(text for _style, text in loop.queue_divider_fragments())
 
     loop.model_stream_output("", "")
     assert loop.model_stream_fragments() == []

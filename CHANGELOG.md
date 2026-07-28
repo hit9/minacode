@@ -8,7 +8,7 @@
 - Reduce fixed model-context overhead by consolidating repeated system instructions and removing tool signatures and redundant examples already expressed by each tool's JSON Schema, while retaining concise system guidance for tool selection and lifecycle. Tool names, parameters, and execution behavior remain unchanged. Keep visible model output concise by default without limiting detail when requested or necessary.
 
 ### Fixed
-- Recover once when a model prints a known tool's `<invoke>` markup as final text: discard the malformed response, clear its live preview, and retry with a request-local native-call correction. Repeated textual calls stop without execution, session-history pollution, or a misleading done marker.
+- Recover up to five times when a model prints a known tool's `<invoke>` markup as final text: discard each malformed response, clear its live preview, and retry with a request-local native-call correction. A sixth textual call stops without execution, session-history pollution, or a misleading done marker.
 - Let Edit safely relocate a stale anchor when the same line hash is unique across the file and moved by at most 50 lines; ambiguous, distant, and content-changing edits remain rejected.
 - Accept a model's harmless duplicate of Edit's top-level path inside an operation while continuing to reject conflicting nested paths and other unexpected fields.
 
