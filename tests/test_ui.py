@@ -2523,3 +2523,40 @@ def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):
     CommandLoop.trim_input_history(str(path))
 
     assert path.read_bytes() == before
+
+
+def test_expired_session_cleanup_is_reported_once(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.settings.session_retention_days = 7
+    monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 3)
+    lines = []
+    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
+
+    command_loop.report_expired_sessions(SessionSnapshotStore.clean_expired(command_loop.session))
+
+    assert len(lines) == 1
+    # Says what was lost and which setting governs it, so the knob is discoverable when it acts.
+    assert "removed 3 saved sessions" in lines[0]
+    assert "7 days" in lines[0]
+    assert "session_retention_days" in lines[0]
+
+
+def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    lines = []
+    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
+
+    command_loop.report_expired_sessions(0)
+
+    assert lines == []
+
+
+def test_expired_session_notice_reads_correctly_when_singular(monkeypatch, tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.settings.session_retention_days = 1
+    lines = []
+    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
+
+    command_loop.report_expired_sessions(1)
+
+    assert "removed 1 saved session inactive for over 1 day " in lines[0]

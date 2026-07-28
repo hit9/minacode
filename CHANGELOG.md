@@ -3,6 +3,11 @@
 
 ## Unreleased
 
+### Added
+- Report at startup when retention deleted saved sessions, naming the count, the inactivity window,
+  and the setting that governs it. The cleanup already ran on every start; it now says so instead of
+  removing unrecoverable work silently.
+
 ### Fixed
 - Cap the input history file at 512 KB instead of letting it grow for the life of the install.
   prompt-toolkit only appends to it, so every line ever typed was kept. The newest entries are

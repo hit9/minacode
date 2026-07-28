@@ -637,7 +637,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         UpdateChecker(self.session).start()
         if self.session.update.newer_than(__version__):
             self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `{' '.join(UpdateChecker.upgrade_command())}`.")
-        SessionSnapshotStore.clean_expired(self.session)
+        self.report_expired_sessions(SessionSnapshotStore.clean_expired(self.session))
         self.render_resumed_session()
         CodeIndex(self.session).refresh_existing_async()
         # Discover auto_connect servers in the background so an unreachable one cannot block the
@@ -645,6 +645,19 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         mcp = self.session.mcp
         if mcp is not None:
             threading.Thread(target=mcp.discover_auto, name="mcp-discover", daemon=True).start()
+
+    def report_expired_sessions(self, removed: int) -> None:
+        """Say once, quietly, that startup deleted saved sessions.
+
+        Retention removes work the user cannot get back, so it is reported rather than done
+        silently; naming the setting turns the notice into the one moment the knob is worth
+        knowing about. Nothing is printed when nothing was deleted, which is the common case.
+        """
+        if not removed:
+            return
+        days = self.session.settings.session_retention_days
+        sessions = "session" if removed == 1 else "sessions"
+        self.emit(f"removed {removed} saved {sessions} inactive for over {days} {'day' if days == 1 else 'days'} (runtime.session_retention_days)")
 
     def run_tui(self) -> int:
         return TuiRuntime(self).run()
