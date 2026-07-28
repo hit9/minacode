@@ -56,8 +56,10 @@ minacode is one local process with explicit owners for each kind of behavior:
   execution, cancellation, and turn commit or rollback.
 - `CommandLoop` and `TuiRuntime` orchestrate commands and runtime transitions. `TuiApp` owns input,
   key bindings, layout, and modals; `render.py` owns transcript and status presentation.
-- `tools.py`, `image.py`, `mcp.py`, and `skill.py` are vertical feature modules. They expose useful
-  behavior to the engine without making the engine understand their storage or UI details.
+- `tools/`, `image.py`, `mcp.py`, and `skill.py` are vertical feature modules. They expose useful
+  behavior to the engine without making the engine understand their storage or UI details. Inside
+  `tools/`, each module owns one capability (files, search, shell, memory, ask, plugin) over the
+  shared `Tool` base; `__init__.py` owns the registry and is the package's only import surface.
 
 State changes belong to the module that owns their meaning. Higher layers may request a transition
 or observe it through callbacks, but rendered text and widget state are never the source of truth.

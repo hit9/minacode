@@ -60,7 +60,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["minacode"]
+packages = ["minacode", "minacode.tools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -11,7 +11,8 @@ Keep this file short. It is an entry point, not a second design document.
 
 - `minacode/engine.py`: agent loop, context projection, protocols, compaction, and tool lifecycle.
 - `minacode/session.py`: durable semantic state and persistence.
-- `minacode/tools.py`, `minacode/image.py`, `minacode/mcp.py`, `minacode/skill.py`: vertical feature modules.
+- `minacode/tools/`, `minacode/image.py`, `minacode/mcp.py`, `minacode/skill.py`: vertical feature modules.
+  `tools/` splits the built-in tool set by capability and owns the registry in its `__init__.py`.
 - `minacode/provider_compat.py`: evidence-backed provider compatibility policy.
 - `minacode/loop.py`, `minacode/tui.py`, `minacode/render.py`: commands, interaction, and presentation.
 - `tests/`: behavior-oriented tests grouped by subsystem and boundary.
