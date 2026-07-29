@@ -203,9 +203,7 @@ class Agent:
         batches = tool_batches + 1
         turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else ""))
         self.raise_if_cancelled()
-        final_message = dict(assistant or {})
-        final_message.pop("tool_calls", None)
-        self.finish_turn(turn_messages, self.assistant_turn_message(final_message, [], answer))
+        self.finish_turn(turn_messages, {"role": "assistant", "content": answer})
         return answer
 
     def settle_interrupted_turn(self, turn_messages: list[Json]) -> None:

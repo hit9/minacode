@@ -71,6 +71,31 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     assert streamed == []
 
 
+def test_anthropic_terminal_tool_split_replays_text_once(tmp_path):
+    model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
+    converted = model.anthropic_messages(
+        [
+            {"role": "user", "content": "finish"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{}],
+                "_anthropic_content": [
+                    {"type": "thinking", "thinking": "reasoning", "signature": "signature"},
+                    {"type": "text", "text": "done"},
+                    {"type": "tool_use", "id": "call_1", "name": "NextHints", "input": {}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+            {"role": "assistant", "content": "done"},
+        ]
+    )
+
+    assert [message["role"] for message in converted] == ["user", "assistant", "user", "assistant"]
+    assert [block["type"] for block in converted[1]["content"]] == ["thinking", "tool_use"]
+    assert converted[-1]["content"] == [{"type": "text", "text": "done"}]
+
+
 def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic")
     model = ModelClient(s)

@@ -350,6 +350,26 @@ def test_responses_tool_items_are_converted_and_replayed(tmp_path):
     ]
 
 
+def test_responses_replay_repairs_duplicated_terminal_tool_reply(tmp_path):
+    model = ModelClient(_session(tmp_path, api="responses"))
+    saved_output = [
+        {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
+        {"id": "msg_1", "type": "message", "content": [{"type": "output_text", "text": "done"}]},
+        {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "NextHints", "arguments": "{}"},
+    ]
+    converted = model.responses_input(
+        [
+            {"role": "user", "content": "finish"},
+            {"role": "assistant", "content": None, "tool_calls": [{}], "_responses_output": saved_output},
+            {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+            {"role": "assistant", "content": "done", "_responses_output": saved_output},
+        ]
+    )
+
+    assert [item.get("id") for item in converted if item.get("id")] == ["rs_1", "fc_1", "msg_1"]
+    assert [item.get("type", "message") for item in converted] == ["message", "reasoning", "function_call", "function_call_output", "message"]
+
+
 def test_responses_function_call_round_trip_over_sdk_transport(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses")
     model = ModelClient(s)

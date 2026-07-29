@@ -588,11 +588,23 @@ class ModelClient:
 
     def responses_input(self, messages: list[Json]) -> list[Json]:
         converted: list[Json] = []
+        seen_output_ids: set[str] = set()
         for message in messages:
             role = str(message.get("role") or "")
+            content = message.get("content")
             saved_output = message.get(RESPONSES_OUTPUT_KEY)
             if role == "assistant" and isinstance(saved_output, list):
-                converted.extend(item for item in saved_output if isinstance(item, dict) and self.replayable_output_item(item))
+                for item in saved_output:
+                    if not isinstance(item, dict) or not self.replayable_output_item(item):
+                        continue
+                    if content is None and item.get("type") == "message":
+                        continue
+                    item_id = str(item.get("id") or "")
+                    if item_id and item_id in seen_output_ids:
+                        continue
+                    if item_id:
+                        seen_output_ids.add(item_id)
+                    converted.append(item)
                 continue
             if role == "tool":
                 converted.append(
@@ -605,7 +617,6 @@ class ModelClient:
                 continue
             if role not in ("system", "developer", "user", "assistant"):
                 continue
-            content = message.get("content")
             if content is not None:
                 converted.append(
                     {
@@ -914,7 +925,7 @@ class ModelClient:
         # included, so a turn it produced is echoed rather than rebuilt from text and tool calls.
         saved = message.get(ANTHROPIC_CONTENT_KEY)
         if isinstance(saved, list) and saved:
-            return [block for block in saved if isinstance(block, dict)]
+            return [block for block in saved if isinstance(block, dict) and (message.get("content") is not None or block.get("type") != "text")]
         blocks: list[Json] = []
         content = message.get("content")
         if isinstance(content, str) and content:

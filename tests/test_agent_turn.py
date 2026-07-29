@@ -738,18 +738,28 @@ def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(tmp_pa
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda text: None)
     turn_messages = [{"role": "user", "content": "hi"}]
-    assistant = {"role": "assistant", "content": "the answer"}
+    assistant = {
+        "role": "assistant",
+        "content": "the answer",
+        "reasoning_content": "reasoning",
+        "_responses_output": [
+            {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
+            {"id": "msg_1", "type": "message", "content": [{"type": "output_text", "text": "the answer"}]},
+            {"id": "fc_1", "type": "function_call", "call_id": "NextHints-id", "name": "NextHints", "arguments": "{}"},
+        ],
+    }
     calls = [call("NextHints", [{"inputs": ["run tests", "show diff"]}])]
 
     assert agent.finish_with_next_hints(turn_messages, assistant, calls, "the answer", 0) == "the answer"
     assert s.quick_hints == ("run tests", "show diff")
     # user, tool-bearing assistant (no content), tool result, plain final answer
     assert [m["role"] for m in s.messages] == ["user", "assistant", "tool", "assistant"]
-    assert s.messages[-1]["content"] == "the answer"
-    assert "tool_calls" not in s.messages[-1]
+    assert s.messages[-1] == {"role": "assistant", "content": "the answer"}
     assert s.messages[-3].get("content") is None
     assert [c["function"]["name"] for c in s.messages[-3]["tool_calls"]] == ["NextHints"]
     assert [m.get("content") for m in s.messages if m.get("role") == "assistant" and m.get("content")] == ["the answer"]
+    replayed = ModelClient(s).responses_input(s.messages)
+    assert [item.get("id") for item in replayed if item.get("id")] == ["rs_1", "fc_1"]
 
 
 def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_path):

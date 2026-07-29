@@ -12,6 +12,10 @@
 - `--resume` accepts a name or a uid prefix, not just a full uid. An ambiguous query lists the
   sessions it matched instead of guessing between them.
 
+### Fixed
+- Keep terminal `NextHints` turns from replaying the same provider response twice, which made the
+  next Responses API request fail with a duplicate message ID.
+
 
 ## 0.16.0 - 2026-07-29
 

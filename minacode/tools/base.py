@@ -73,7 +73,11 @@ class Tool:
         # Optional tool families stay out of the model prefix until they have usable session state.
         has_skills = bool(session.skills and session.skills.skills)
         has_mcp = bool(session.mcp and (session.mcp.tools or session.mcp.resources))
-        return [tool.schema(strict) for tool in TOOL_REGISTRY.values() if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp) and (tool is not NextHintsTool or session.settings.quick_hints)]
+        return [
+            tool.schema(strict)
+            for tool in TOOL_REGISTRY.values()
+            if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp) and (tool is not NextHintsTool or session.settings.quick_hints)
+        ]
 
     @staticmethod
     def _strictifiable(schema: object) -> bool:
