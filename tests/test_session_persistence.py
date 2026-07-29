@@ -1055,3 +1055,44 @@ def test_ambiguous_resume_names_its_candidates(tmp_path):
     # Guessing between them would resume the wrong work silently.
     assert "2 sessions match" in str(error.value)
     assert first.uid in str(error.value) and second.uid in str(error.value)
+
+
+def test_listing_survives_a_malformed_sidecar(tmp_path):
+    config = Config(data_dir=str(tmp_path / "data"))
+    s = Session(cwd=str(tmp_path), config=config)
+    s.messages.append({"role": "user", "content": "labelled session"})
+    s.save_snapshot()
+    # A hand-edited or torn sidecar: valid JSON, but the turn count is not a number.
+    with open(SessionSnapshotStore.meta_path(config.data_dir, s.cwd, s.uid), "w", encoding="utf-8") as file:
+        json.dump({"name": "kept", "opening": "labelled session", "rounds": "many", "cwd": s.cwd}, file)
+
+    entry = SessionSnapshotStore.list_sessions(config.data_dir, s.cwd)[0]
+
+    # The bad turn count is dropped, not the session: one corrupt cache must not break the picker.
+    assert (entry.uid, entry.name, entry.rounds) == (s.uid, "kept", 0)
+
+
+def test_search_widens_only_after_a_miss(tmp_path, monkeypatch):
+    config = Config(data_dir=str(tmp_path / "data"))
+    here = tmp_path / "here"
+    here.mkdir()
+    local = Session(cwd=str(here), config=config)
+    local.messages.append({"role": "user", "content": "a local session"})
+    local.save_snapshot()
+    calls = []
+    real = SessionSnapshotStore.list_sessions
+
+    def spy(cls, data_dir, cwd="", *, all_projects=False):
+        calls.append(all_projects)
+        return real(data_dir, cwd, all_projects=all_projects)
+
+    monkeypatch.setattr(SessionSnapshotStore, "list_sessions", classmethod(spy))
+
+    # A hit in the current project never scans the rest.
+    assert SessionSnapshotStore.search_sessions("local", config.data_dir, str(here))
+    assert calls == [False]
+
+    # Only a miss widens to every project.
+    calls.clear()
+    assert SessionSnapshotStore.search_sessions("local", config.data_dir, str(tmp_path / "elsewhere"))
+    assert calls == [False, True]

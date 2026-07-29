@@ -592,13 +592,19 @@ class SessionSnapshotStore:
                     continue
                 uid = entry.name[:-6]
                 meta = cls.read_meta(directory, uid)
+                try:
+                    rounds = int(meta.get("rounds") or 0)
+                except (TypeError, ValueError):
+                    # A sidecar is a cache, never the record; a malformed one loses its turn count,
+                    # not the whole listing (str() already shields the text fields above).
+                    rounds = 0
                 with contextlib.suppress(OSError):
                     entries.append(
                         SessionEntry(
                             uid=uid,
                             name=str(meta.get("name") or ""),
                             opening=str(meta.get("opening") or ""),
-                            rounds=int(meta.get("rounds") or 0),
+                            rounds=rounds,
                             cwd=str(meta.get("cwd") or ""),
                             updated_at=entry.stat().st_mtime,
                             path=entry.path,
@@ -613,11 +619,11 @@ class SessionSnapshotStore:
         Searching only the current project would hide the session the user means whenever they have
         moved directories, so a miss here widens rather than fails.
         """
-        for entries in (cls.list_sessions(data_dir, cwd), cls.list_sessions(data_dir, all_projects=True)):
-            matches = [entry for entry in entries if entry.matches(query)]
-            if matches:
-                return matches
-        return []
+        matches = [entry for entry in cls.list_sessions(data_dir, cwd) if entry.matches(query)]
+        if matches:
+            return matches
+        # Widen only on a miss: the tuple form scanned every project even when this one matched.
+        return [entry for entry in cls.list_sessions(data_dir, all_projects=True) if entry.matches(query)]
 
     @classmethod
     def project_dirs(cls, data_dir: str) -> list[str]:
