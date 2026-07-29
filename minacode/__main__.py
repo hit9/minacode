@@ -113,26 +113,34 @@ def main(argv: list[str] | None = None) -> int:
             path, created = ConfigFile.init(args.config)
             print(("Created" if created else "Exists") + " config: " + path)
             return 0
-        if args.resume or args.continue_project:
-            data = ConfigFile.load(args.config)
-            config = Config.from_dict(data)
-            session = Session.load_snapshot(
-                args.resume or "latest",
-                config=config,
-                settings=RuntimeSettings.from_dict(data, yolo=args.yolo, theme=args.theme),
-                cwd=os.getcwd(),
-            )
-        else:
-            session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
-        Theme.set_mode(Theme.resolve(session.settings.theme))
-        warm_provider_sdks()
-        command_loop = CommandLoop(Agent(session))
-        try:
-            return command_loop.run()
-        finally:
-            command_loop.close_background_output()
-            if session.mcp is not None:
-                session.mcp.close()
+        # Switching sessions ends one run and starts the next rather than re-pointing a live
+        # object graph at another Session: everything below is built around one, and this is the
+        # only moment nothing is running. Teardown stays in the `finally` that already does it.
+        resume = args.resume or ("latest" if args.continue_project else "")
+        while True:
+            if resume:
+                data = ConfigFile.load(args.config)
+                config = Config.from_dict(data)
+                session = Session.load_snapshot(
+                    resume,
+                    config=config,
+                    settings=RuntimeSettings.from_dict(data, yolo=args.yolo, theme=args.theme),
+                    cwd=os.getcwd(),
+                )
+            else:
+                session = Session.from_config_file(path=args.config, yolo=args.yolo, theme=args.theme)
+            Theme.set_mode(Theme.resolve(session.settings.theme))
+            warm_provider_sdks()
+            command_loop = CommandLoop(Agent(session))
+            try:
+                code = command_loop.run()
+            finally:
+                command_loop.close_background_output()
+                if session.mcp is not None:
+                    session.mcp.close()
+            resume = command_loop.resume_request
+            if not resume:
+                return code
     except ConfigError as error:
         print("ConfigError: " + str(error), file=sys.stderr)
         return 2

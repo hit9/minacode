@@ -60,6 +60,8 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
     )
 
     class Loop:
+        resume_request = ""
+
         def run(self):
             return 0
 
@@ -72,6 +74,44 @@ def test_continue_flags_resume_latest_session_in_current_project(tmp_path, monke
     assert main([flag]) == 0
     # The alias is resolved against the current project, not a global pointer.
     assert selected == [("latest", config, settings, str(tmp_path))]
+
+
+def test_resume_request_starts_the_next_run_on_the_chosen_session(tmp_path, monkeypatch):
+    """/sessions ends one run and main starts the next on the session it named, instead of
+    re-pointing a live object graph at a different Session."""
+    config = Config(data_dir=str(tmp_path / "data"))
+    settings = RuntimeSettings()
+    loaded = []
+
+    monkeypatch.setattr(ConfigFile, "load", lambda _path: {})
+    monkeypatch.setattr(Config, "from_dict", classmethod(lambda _cls, _data: config))
+    monkeypatch.setattr(RuntimeSettings, "from_dict", classmethod(lambda _cls, _data, **_kwargs: settings))
+    monkeypatch.setattr(
+        Session,
+        "load_snapshot",
+        classmethod(lambda _cls, uid, config=None, settings=None, cwd="": loaded.append(uid) or SimpleNamespace(settings=settings, mcp=None)),
+    )
+    closed = []
+    handovers = iter(["second-uid", ""])
+
+    class Loop:
+        def __init__(self, _agent):
+            self.resume_request = ""
+
+        def run(self):
+            self.resume_request = next(handovers)
+            return 3
+
+        def close_background_output(self):
+            closed.append(self.resume_request)
+
+    monkeypatch.setattr(cli, "CommandLoop", Loop)
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["--resume", "first-uid"]) == 3
+    assert loaded == ["first-uid", "second-uid"]
+    # Each run is torn down before the next is built; nothing is carried across.
+    assert closed == ["second-uid", ""]
 
 
 def test_runtime_settings_reads_limits_and_yolo_override():

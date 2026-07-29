@@ -55,7 +55,7 @@ from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
 from minacode.runner import ToolDisplay
-from minacode.session import QueuedInput, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
+from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 from minacode.update import UpdateChecker
@@ -207,7 +207,7 @@ class CommandLoop:
         "/skills": "skills_command", "/config": "config",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
-        "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command",
+        "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
@@ -235,6 +235,7 @@ class CommandLoop:
 - `/config` — Show active config.
 - `/compact` — Compact context now.
 - `/name [TEXT]` — Name this session for later, or show the current name.
+- `/sessions [all]` — Browse saved sessions and re-enter one (`all` widens past this project).
 - `/resend` — Resend the in-flight model request (type it while a turn is working).
 - `/index [force]` — Sync or rebuild code symbol index.
 - `/provider [NAME]` — Select or show the active provider.
@@ -316,6 +317,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.model_stream_text = ""
         self.model_stream_promoted_text = ""
         self.live_status_paused = False
+        # Set to the uid this run should hand over to. `main` reads it after run() returns and
+        # builds the next CommandLoop around that session.
+        self.resume_request = ""
         self.background_output_lock = threading.Lock()
         self.background_output_open = True
         self.interactive_input = input_fn is input and sys.stdin.isatty()
@@ -1007,7 +1011,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 self.ui.emit_answer(output, rule=False)
             else:
                 (self.ui.emit_answer if name in {"/help", "/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
-        return True, False
+        # A handler that asked to switch sessions ends this run the way /exit does; `main` starts
+        # the next one on the session it named.
+        return True, bool(self.resume_request)
 
     def resend_command(self, _args: str) -> str | None:
         """Resend the in-flight model request. Available only in the running queue-input region:
@@ -1576,6 +1582,42 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
             ]
         )
+
+    def sessions_command(self, args: str) -> str | None:
+        """Browse saved sessions and re-enter one. `/sessions all` widens past this project."""
+        argument = args.strip().lower()
+        if argument not in {"", "all"}:
+            return "Usage: /sessions [all]"
+        entries = SessionSnapshotStore.list_sessions(self.session.config.data_dir, self.session.cwd, all_projects=argument == "all")
+        if not entries:
+            return "No saved sessions yet."
+        labels = {entry.uid: self.session_label(entry, all_projects=argument == "all") for entry in entries}
+        if self.tui is None or not self.interactive_input:
+            return "\n".join(f"{entry.uid}  {labels[entry.uid]}" for entry in entries)
+        title = "Sessions" + (" · all projects" if argument == "all" else "")
+        chosen = self.choice_application(title, tuple(entry.uid for entry in entries), labels, self.session.uid, set(), preview_fn=self.session_preview)
+        if not isinstance(chosen, str) or chosen == self.session.uid:
+            return None
+        self.resume_request = chosen
+        self.save_and_emit_resume()
+        return None
+
+    def session_label(self, entry: SessionEntry, *, all_projects: bool = False) -> str:
+        rounds = f"{entry.rounds} round" + ("s" if entry.rounds > 1 else "") if entry.rounds else "no turns"
+        parts = [Text.age(time.time() - entry.updated_at), rounds]
+        if all_projects and entry.cwd:
+            parts.append(os.path.basename(entry.cwd.rstrip(os.sep)) or entry.cwd)
+        if entry.uid == self.session.uid:
+            parts.append("current")
+        return f"{entry.label()}  ·  " + " · ".join(parts)
+
+    def session_preview(self, uid: str) -> str:
+        entries = SessionSnapshotStore.list_sessions(self.session.config.data_dir, self.session.cwd, all_projects=True)
+        entry = next((item for item in entries if item.uid == uid), None)
+        if entry is None:
+            return ""
+        rows = [f"uid   {entry.uid}", f"start {entry.opening or '(no message)'}", f"where {entry.cwd or '(unknown)'}"]
+        return "\n".join(rows)
 
     def name_command(self, args: str) -> str:
         """Show or set the session's name, the label a later `--resume` can be given instead of a uid."""

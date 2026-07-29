@@ -44,6 +44,8 @@ def test_cli_runs_session_and_closes_resources(monkeypatch):
     monkeypatch.setattr(cli, "Agent", lambda value: ("agent", value))
 
     class FakeLoop:
+        resume_request = ""
+
         def __init__(self, agent):
             assert agent == ("agent", session)
 
@@ -74,7 +76,7 @@ def test_cli_loads_resumed_session_with_runtime_overrides(monkeypatch):
     monkeypatch.setattr(cli.Theme, "resolve", lambda theme: theme)
     monkeypatch.setattr(cli.Theme, "set_mode", lambda _theme: None)
     monkeypatch.setattr(cli, "Agent", lambda value: value)
-    monkeypatch.setattr(cli, "CommandLoop", lambda _agent: SimpleNamespace(run=lambda: 0, close_background_output=lambda: None))
+    monkeypatch.setattr(cli, "CommandLoop", lambda _agent: SimpleNamespace(run=lambda: 0, close_background_output=lambda: None, resume_request=""))
     monkeypatch.setattr(cli.os, "getcwd", lambda: "/workspace")
 
     assert cli.main(["--resume", "saved", "--config", "custom.toml", "--yolo", "--theme", "light"]) == 0

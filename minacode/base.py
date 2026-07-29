@@ -130,6 +130,15 @@ class Text:
         return f"{minutes}m{seconds:02d}s"
 
     @staticmethod
+    def age(seconds: float) -> str:
+        """Wall-clock age in the coarsest unit that still says something. `elapsed_since` measures a
+        running turn from a monotonic clock; this reads a stored timestamp, where minutes rarely matter."""
+        for unit, size in (("d", 86400.0), ("h", 3600.0), ("m", 60.0)):
+            if seconds >= size:
+                return f"{int(seconds // size)}{unit} ago"
+        return "just now"
+
+    @staticmethod
     def clip_width(text: str, width: int) -> str:
         width = max(0, width)
         if get_cwidth(text) <= width:

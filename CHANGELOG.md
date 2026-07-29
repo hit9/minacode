@@ -1,6 +1,18 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+- Name sessions and find them again. Every session takes a name from its opening message, then
+  from the agent's goal once there is one, and `/name TEXT` sets your own that nothing overwrites.
+- `/sessions` browses saved sessions and re-enters one, with search, ages, and turn counts;
+  `/sessions all` widens past the current project. Choosing a session ends the current run and
+  starts the next one on it.
+- `--resume` accepts a name or a uid prefix, not just a full uid. An ambiguous query lists the
+  sessions it matched instead of guessing between them.
+
+
 ## 0.16.0 - 2026-07-29
 
 ### Added

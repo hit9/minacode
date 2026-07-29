@@ -15,6 +15,7 @@ from prompt_toolkit.document import Document
 import minacode.loop as loop_module
 from minacode.base import (
     SELECTION_FREE_TEXT,
+    Config,
     Text,
     ToolError,
     TurnBox,
@@ -389,6 +390,90 @@ def test_exit_command_prints_resume_command(tmp_path):
     # The session took its name from the opening message; the pasted line still carries the uid.
     assert output[-1] == f"Resume 'hello' with:\nminacode --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+
+
+def stored_session(tmp_path, text, *, name=""):
+    """A saved session in the same project, so /sessions has something to list."""
+    other = Session(cwd=str(tmp_path), config=Config(data_dir=str(tmp_path / "data")))
+    other.messages.append({"role": "user", "content": text})
+    if name:
+        other.rename(name)
+    other.save_snapshot()
+    return other
+
+
+def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    assert loop.sessions_command("") == "No saved sessions yet."
+
+    older = stored_session(tmp_path, "sort the picker by date")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.save_snapshot()
+    listed = loop.sessions_command("")
+
+    assert older.uid in listed and "sort the picker by date" in listed
+    assert s.uid in listed and "current" in listed
+    assert loop.sessions_command("nonsense") == "Usage: /sessions [all]"
+    assert loop.resume_request == ""
+
+
+def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path):
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.save_snapshot()
+    target = stored_session(tmp_path, "the one we want", name="picked")
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.tui = TuiApp()
+    loop.interactive_input = True
+    loop.choice_application = lambda *args, **kwargs: target.uid
+
+    handled, exit_now = loop.command("/sessions")
+
+    # Choosing a session ends this run the way /exit does; main() starts the next one on it.
+    assert (handled, exit_now) == (True, True)
+    assert loop.resume_request == target.uid
+
+
+def test_sessions_command_choosing_the_current_session_changes_nothing(tmp_path):
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.save_snapshot()
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.tui = TuiApp()
+    loop.interactive_input = True
+    loop.choice_application = lambda *args, **kwargs: s.uid
+
+    assert loop.command("/sessions") == (True, False)
+    assert loop.resume_request == ""
+
+    # Cancelling the picker is likewise not a request to go anywhere.
+    loop.choice_application = lambda *args, **kwargs: None
+    assert loop.command("/sessions") == (True, False)
+    assert loop.resume_request == ""
+
+
+def test_session_labels_carry_age_and_size(tmp_path):
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.state.round_count = 4
+    s.save_snapshot()
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
+    label = loop.session_label(entry)
+
+    assert label.startswith("current work")
+    assert "just now" in label and "4 rounds" in label and "current" in label
+    s.state.round_count = 1
+    s.save_snapshot()
+    assert "1 round " in loop.session_label(SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]) + " "
+    assert entry.uid in loop.session_preview(entry.uid)
 
 
 def test_name_command_shows_and_sets_the_session_name(tmp_path):
