@@ -9,7 +9,7 @@ from agent_harness import call, session
 
 import minacode.context as context_module
 from minacode.base import (
-    DEFAULT_OUTPUT_RESERVE_TOKENS,
+    DEFAULT_MAX_TOKENS,
     MIN_CONTEXT_SAFETY_TOKENS,
     ModelError,
 )
@@ -182,7 +182,7 @@ def test_compaction_budget_reserves_output_and_safety(tmp_path):
     s.settings.max_context_tokens = 100_000
     context = ContextManager(s)
 
-    assert context.request_token_budget() == 100_000 - DEFAULT_OUTPUT_RESERVE_TOKENS - MIN_CONTEXT_SAFETY_TOKENS
+    assert context.request_token_budget() == 100_000 - DEFAULT_MAX_TOKENS - MIN_CONTEXT_SAFETY_TOKENS
 
     s.config.provider.max_tokens = 10_000
     assert context.request_token_budget() == 100_000 - 10_000 - MIN_CONTEXT_SAFETY_TOKENS
@@ -198,7 +198,7 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
     ]
     context = ContextManager(s)
     turn = [{"role": "user", "content": "continue"}]
-    tools = [{"type": "function", "function": {"name": "Large", "description": "x" * 40_000, "parameters": {}}}]
+    tools = [{"type": "function", "function": {"name": "Large", "description": "x" * 80_000, "parameters": {}}}]
     messages = context.model_messages("system", turn)
     assert context.request_tokens(messages) < context.request_token_budget()
     assert context.request_token_budget() <= context.request_tokens(messages, tools) < s.settings.max_context_tokens

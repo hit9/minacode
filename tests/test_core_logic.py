@@ -11,6 +11,7 @@ import minacode.update as update_module
 from minacode.__main__ import main
 from minacode.base import (
     CHAT_REASONING_CHOICES,
+    DEFAULT_MAX_TOKENS,
     HTTP_USER_AGENT,
     RESPONSES_OUTPUT_KEY,
     Config,
@@ -138,6 +139,13 @@ def test_provider_timeout_defaults_distinguish_inactivity_from_total_generation(
     assert Config.from_dict({}).provider.response_timeout == 600
     assert ProviderConfig.from_dict({"response_timeout": 0}).response_timeout == 0
     assert "# response_timeout = 600" in ConfigFile.DEFAULT_TEXT
+
+
+def test_provider_max_tokens_defaults_to_bounded_output_and_allows_opt_out():
+    assert ProviderConfig().max_tokens == DEFAULT_MAX_TOKENS
+    assert Config.from_dict({}).provider.max_tokens == DEFAULT_MAX_TOKENS
+    assert ProviderConfig.from_dict({"max_tokens": 0}).max_tokens == 0
+    assert "# max_tokens = 8192" in ConfigFile.DEFAULT_TEXT
 
 
 def test_provider_stream_defaults_on_and_can_be_disabled():

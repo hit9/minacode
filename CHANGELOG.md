@@ -12,6 +12,10 @@
 - `--resume` accepts a name or a uid prefix, not just a full uid. An ambiguous query lists the
   sessions it matched instead of guessing between them.
 
+### Changed
+- Cap model output at 8,192 tokens per request by default instead of leaving compatible providers
+  unbounded; set `provider.max_tokens = 0` to use the provider default.
+
 ### Fixed
 - Keep terminal `NextHints` turns from replaying the same provider response twice, which made the
   next Responses API request fail with a duplicate message ID.

@@ -78,6 +78,15 @@ msgstr ""
 "。当查询有歧义时，会列出匹配到的 session，而不是替你猜一个。"
 
 #: ../../../CHANGELOG.md:17
+msgid ""
+"Cap model output at 8,192 tokens per request by default instead of "
+"leaving compatible providers unbounded; set `provider.max_tokens = 0` to "
+"use the provider default."
+msgstr ""
+"默认将每次请求的模型输出限制为 8,192 tokens，而不是让兼容 provider 无上限生成；设置 "
+"`provider.max_tokens = 0` 可使用 provider 默认值。"
+
+#: ../../../CHANGELOG.md:17
 msgid "0.16.0 - 2026-07-29"
 msgstr ""
 
@@ -4015,4 +4024,3 @@ msgstr ""
 
 #~ msgid "Unreleased"
 #~ msgstr ""
-

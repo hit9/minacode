@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-29 03:23-0700\n"
+"POT-Creation-Date: 2026-07-29 09:37-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -211,8 +211,14 @@ msgid "`max_tokens`"
 msgstr "`max_tokens`"
 
 #: ../../configuration.md
-msgid "Output-token cap and reserved compaction space"
-msgstr "输出 token 上限及 compaction 预留空间"
+msgid "`8192`"
+msgstr "`8192`"
+
+#: ../../configuration.md
+msgid ""
+"Output-token cap per model request and reserved compaction space; `0` "
+"uses the provider default"
+msgstr "每次模型请求的输出 token 上限及 compaction 预留空间；`0` 使用 provider 默认值"
 
 #: ../../configuration.md
 msgid "`timeout`"
@@ -594,4 +600,3 @@ msgstr ""
 #~ "`model`</span>。显式设置的值始终优先。已测试 DeepSeek、OpenCode、阿里云和 "
 #~ "ZenMux；其他 OpenAI-compatible 与 Anthropic "
 #~ "endpoint 也可以使用。"
-

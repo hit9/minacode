@@ -56,7 +56,7 @@ Most users can leave these unset.
 | `reasoning` | `medium` | Reasoning effort; change it during a session with `/reason` |
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
-| `max_tokens` | — | Output-token cap and reserved compaction space |
+| `max_tokens` | `8192` | Output-token cap per model request and reserved compaction space; `0` uses the provider default |
 | `timeout` | `120` | Transport inactivity timeout in seconds |
 | `response_timeout` | `600` | Total generation limit in seconds; `0` disables it |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
