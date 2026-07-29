@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-29 03:23-0700\n"
+"POT-Creation-Date: 2026-07-29 07:33-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -17,6 +17,14 @@ msgstr ""
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
+
+#: ../../index.md:58
+msgid "Guide"
+msgstr "指南"
+
+#: ../../index.md:68
+msgid "Reference"
+msgstr "参考"
 
 #: ../../index.md:1
 msgid "minacode"
@@ -100,8 +108,16 @@ msgid "**[Interaction](usage.md)**"
 msgstr "**[交互](usage.md)**"
 
 #: ../../index.md:40
-msgid "Follow-ups, commands, keys — how you drive the agent."
-msgstr "追加指令、命令与按键：如何驱动 agent。"
+msgid "Follow-ups, streaming, keys — how you drive the agent."
+msgstr "追加指令、流式输出与按键：如何驱动 agent。"
+
+#: ../../index.md:40
+msgid "**[Commands](commands.md)**"
+msgstr "**[命令](commands.md)**"
+
+#: ../../index.md:40
+msgid "The `/` command reference: status, models, sessions, MCP."
+msgstr "`/` 命令参考：状态、模型、session、MCP。"
 
 #: ../../index.md:40
 msgid "**[Tools](tools.md)**"
@@ -119,9 +135,7 @@ msgstr "**[Session](usage.md#sessions)**"
 msgid ""
 "Your work is saved, named, and resumable with `/sessions`, `-c`, or "
 "`--resume`."
-msgstr ""
-"工作会自动保存并命名，可通过 `/sessions`、`-c` 或 `-"
-"-resume` 恢复。"
+msgstr "工作会自动保存并命名，可通过 `/sessions`、`-c` 或 `--resume` 恢复。"
 
 #: ../../index.md:40
 msgid "**[MCP](mcp.md)**"

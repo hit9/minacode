@@ -1,0 +1,295 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the minacode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: minacode 0.16\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-29 07:33-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../commands.md:1
+msgid "Commands"
+msgstr "命令"
+
+#: ../../commands.md:3
+msgid ""
+"Type `/` commands at the prompt to inspect state, switch models, manage "
+"the session, or configure runtime behavior on the fly. Run `/help` for "
+"the built-in reference."
+msgstr ""
+"在 prompt 中输入 `/` 命令，可以查看状态、切换模型、管理 session 或即时修改 runtime 行为。运行 `/help` "
+"查看内置参考。"
+
+#: ../../commands.md:7
+msgid "Looking around"
+msgstr "查看状态"
+
+#: ../../commands.md:9
+msgid ""
+"**`/status`** — Shows everything about the runtime at a glance: workspace"
+" path, session id, active provider and model, calculated compaction-"
+"budget fill percentage, conversation history, prompt-cache hit ratio, "
+"code index state, background jobs, and whether an update is available."
+msgstr ""
+"**`/status`** — 一览 runtime 全貌：工作目录、session id、当前 provider 和模型、计算出的 "
+"compaction 预算占用百分比、对话历史、prompt-cache 命中率、代码索引状态、后台任务以及是否有可用更新。"
+
+#: ../../commands.md:14
+msgid ""
+"The /status command showing workspace, session, provider, context, and "
+"code index state"
+msgstr "`/status` 显示工作目录、session、provider、context 和代码索引状态"
+
+#: ../../commands.md:19
+msgid "The /status output at a glance."
+msgstr "`/status` 输出概览。"
+
+#: ../../commands.md:22
+msgid ""
+"**`/diff`** — Review changes from the latest turn or the whole session. "
+"See [Reviewing changes](usage.md#reviewing-changes)."
+msgstr "**`/diff`** — 审查最近一轮或整个 session 的修改。见[审查修改](usage.md#reviewing-changes)。"
+
+#: ../../commands.md:27
+msgid ""
+"The two tabs pick the range; each row is one changed file with its added "
+"and removed line counts. `Enter` opens the selected file's diff."
+msgstr "两个 tab 用于选择范围；每行代表一个已修改文件，并显示新增和删除行数。按 `Enter` 打开所选文件的 diff。"
+
+#: ../../commands.md:30
+msgid ""
+"**`/ps`** — Lists active background jobs (see [Tools](tools.md#built-in-"
+"tools)). Each row shows job id, state, command, and elapsed time."
+msgstr ""
+"**`/ps`** — 列出活动的后台任务（见[工具](tools.md#built-in-tools)）。每行显示任务 "
+"id、状态、命令和运行时间。"
+
+#: ../../commands.md:33
+msgid ""
+"**`/skills`** — Lists every installed [skill](skills.md) by name, source,"
+" and description."
+msgstr "**`/skills`** — 按名称、来源和描述列出所有已安装 [skill](skills.md)。"
+
+#: ../../commands.md:36
+msgid ""
+"**`/config`** — Shows the active configuration: provider blocks, runtime "
+"settings, and their resolved values."
+msgstr "**`/config`** — 显示当前配置：provider block、runtime 设置及其解析后的值。"
+
+#: ../../commands.md:39
+msgid "The code index"
+msgstr "代码索引"
+
+#: ../../commands.md:41
+msgid ""
+"**`/index [force]`** — Build or rebuild the code symbol index that powers"
+" `InspectCode`. The first build walks every source file; later syncs are "
+"fast. Add `force` to rebuild from scratch. See [Code symbol "
+"index](tools.md#code-symbol-index) for details."
+msgstr ""
+"**`/index [force]`** — 构建或重建 `InspectCode` "
+"使用的代码符号索引。首次构建扫描所有源文件，后续同步很快。加上 `force` 可从头重建。详见[代码符号索引](tools.md#code-"
+"symbol-index)。"
+
+#: ../../commands.md:46
+msgid "Switching models"
+msgstr "切换模型"
+
+#: ../../commands.md:48
+msgid ""
+"**`/provider [NAME]`** — Show or switch the active provider. Without an "
+"argument it lists every configured provider (see "
+"[Configuration](configuration.md#providers)) and lets you pick one "
+"interactively. With a name it switches immediately."
+msgstr ""
+"**`/provider [NAME]`** — 显示或切换当前 provider。不带参数时列出全部已配置 provider（参见 "
+"[配置](configuration.md#providers)），并打开交互式选择器；提供名称时立即切换。"
+
+#: ../../commands.md:52
+msgid ""
+"**`/model [MODEL]`** — Show or switch the model for the current provider."
+" Without an argument it opens an interactive picker with configured and "
+"discovered models. Changing the model also prompts you to pick a "
+"reasoning effort."
+msgstr ""
+"**`/model [MODEL]`** — 显示或切换当前 provider "
+"的模型。不带参数时打开选择器，显示已配置和发现的模型。切换模型时还会要求选择 reasoning effort。"
+
+#: ../../commands.md:56
+msgid ""
+"**`/reason [EFFORT]`** — Show or set reasoning effort (OpenAI o-series "
+"and DeepSeek R1). Values: `off`, `minimal`, `low`, `medium`, `high`, "
+"`xhigh`. Without an argument it opens a picker."
+msgstr ""
+"**`/reason [EFFORT]`** — 显示或设置 reasoning effort（OpenAI o-series 与 "
+"DeepSeek "
+"R1）。可选值：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`。不带参数时打开选择器。"
+
+#: ../../commands.md:60
+msgid "Switching providers and models interactively during a session"
+msgstr "在 session 中交互式切换 provider 和模型"
+
+#: ../../commands.md:65
+msgid "Switching providers and models mid-session."
+msgstr "在 session 中切换 provider 和模型。"
+
+#: ../../commands.md:68
+msgid "Managing the session"
+msgstr "管理 session"
+
+#: ../../commands.md:70
+msgid ""
+"**`/name [TEXT]`** — Show or set this session's name. See "
+"[Names](usage.md#names)."
+msgstr "**`/name [TEXT]`** — 查看或设置当前 session 的名称。参见[名称](usage.md#names)。"
+
+#: ../../commands.md:72
+msgid ""
+"**`/sessions [all]`** — Browse saved sessions and re-enter one; `/resume`"
+" is the same command. See [Switching sessions](usage.md#switching-"
+"sessions)."
+msgstr ""
+"**`/sessions [all]`** — 浏览已保存的 session 并进入其中一个；`/resume` 是同一条命令。参见[切换 "
+"session](usage.md#switching-sessions)。"
+
+#: ../../commands.md:75
+msgid ""
+"**`/compact`** — Summarize and shrink the conversation immediately. "
+"minacode keeps long sessions within budget on its own, but `/compact` "
+"trims on demand."
+msgstr "**`/compact`** — 立即总结并缩短对话。minacode 会自动控制长 session 的预算；`/compact` 用于按需压缩。"
+
+#: ../../commands.md:78
+msgid ""
+"**`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before"
+" turning this off permanently."
+msgstr "**`/yolo`** — 切换操作确认。永久关闭前请阅读[安全](safety.md)。"
+
+#: ../../commands.md:81
+msgid "**`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek)."
+msgstr "**`/strict`** — 切换严格 tool-call schema（OpenAI / DeepSeek）。"
+
+#: ../../commands.md:83
+msgid ""
+"**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, "
+"`responses`, `anthropic`) used to reach the model. `/provider` and "
+"`/model` also confirm it as a step in their selection chain, since the "
+"right protocol depends on the model you just picked."
+msgstr ""
+"**`/api [API]`** — "
+"选择或设置访问模型所用的请求协议（`auto`、`chat`、`responses`、`anthropic`）。`/provider` 和 "
+"`/model` 也会在各自的选择流程中确认该项，因为合适的协议取决于刚选定的模型。"
+
+#: ../../commands.md:87
+msgid ""
+"An endpoint that serves several model families often exposes them on "
+"different protocols, and an OpenAI-compatible `/models` listing says "
+"nothing about which protocol serves which model — so a model offered by "
+"`/model` can still be rejected as unsupported. When that happens, pick a "
+"different protocol with `/api` (or `auto` to re-infer from the URL and "
+"model). The reply names the wire that took effect, and history is "
+"protocol-neutral, so switching mid-session is safe."
+msgstr ""
+"同一个端点常常以不同协议提供多个模型系列，而兼容 OpenAI 的 `/models` 列表并不会说明哪个模型由哪种协议提供——因此 "
+"`/model` 列出的模型仍可能被拒绝为不受支持。出现这种情况时，用 `/api` 换一种协议（或用 `auto` 依据 URL "
+"和模型重新推断）。回复会指明实际生效的协议，并且历史记录与协议无关，所以中途切换是安全的。"
+
+#: ../../commands.md:93
+msgid ""
+"**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; "
+"tab-completes both keys and, where the values are a fixed set, the "
+"values. Example: `/set provider.response_timeout 900`."
+msgstr ""
+"**`/set KEY VALUE`** — 为当前 session 设置 `provider.*` 或 `runtime.*`；key "
+"以及有固定选项的 value 均支持 Tab 补全。例如：`/set provider.response_timeout 900`。"
+
+#: ../../commands.md:96
+msgid ""
+"**`/resend`** — Cancel and re-send the in-flight model request without "
+"restarting the turn. Type it while a model request is waiting; it has no "
+"effect while the agent is running a tool or otherwise between model "
+"calls. The divider briefly reports the retry, keeps its elapsed timer and"
+" waiting pulse, then returns to `working` for the replacement request. "
+"Automatic retries also show their attempt and concise reason, such as "
+"`retrying 2/6 · timeout`, followed by `working · attempt 2/6` while that "
+"request continues:"
+msgstr ""
+"**`/resend`** — 取消并重新发送正在进行的模型请求，而不重新开始当前轮次。仅在模型请求等待响应时输入；agent "
+"正在运行工具或处于两次模型调用之间时，该命令不会生效。分隔线会短暂显示重试状态，同时保留已用时间和等待脉冲，随后在替代请求继续期间恢复为 "
+"`working`。自动重试还会显示当前尝试次数和简短原因，例如 `retrying 2/6 · timeout`；随后在该请求继续时显示 "
+"`working · attempt 2/6`："
+
+#: ../../commands.md:105
+msgid "MCP"
+msgstr "MCP"
+
+#: ../../commands.md:107
+msgid "**`/mcp`** — Manage [MCP](mcp.md) server connections. Sub-commands:"
+msgstr "**`/mcp`** — 管理 [MCP](mcp.md) server 连接。子命令如下："
+
+#: ../../commands.md:60
+msgid "Usage"
+msgstr "用法"
+
+#: ../../commands.md:60
+msgid "Effect"
+msgstr "作用"
+
+#: ../../commands.md:60
+msgid "`/mcp`"
+msgstr "`/mcp`"
+
+#: ../../commands.md:60
+msgid "List servers and connection status"
+msgstr "列出 server 及连接状态"
+
+#: ../../commands.md:60
+msgid "`/mcp connect <server> [server ...]`"
+msgstr "`/mcp connect <server> [server ...]`"
+
+#: ../../commands.md:60
+msgid "Connect servers now"
+msgstr "立即连接 server"
+
+#: ../../commands.md:60
+msgid "`/mcp disconnect <server>`"
+msgstr "`/mcp disconnect <server>`"
+
+#: ../../commands.md:60
+msgid "Disconnect a server"
+msgstr "断开一个 server"
+
+#: ../../commands.md:60
+msgid "`/mcp tools [server]`"
+msgstr "`/mcp tools [server]`"
+
+#: ../../commands.md:60
+msgid "List tools from a connected server"
+msgstr "列出已连接 server 的工具"
+
+#: ../../commands.md:116
+msgid "Help and exit"
+msgstr "帮助与退出"
+
+#: ../../commands.md:118
+msgid "**`/help`** — Show the built-in command and tool reference."
+msgstr "**`/help`** — 显示内置命令和工具参考。"
+
+#: ../../commands.md:120
+msgid ""
+"**`/exit`, `/quit`** — Leave minacode. Your session is saved "
+"automatically and can be resumed with `-c` or `--resume`."
+msgstr "**`/exit`, `/quit`** — 退出 minacode。Session 会自动保存，可使用 `-c` 或 `--resume` 恢复。"
+

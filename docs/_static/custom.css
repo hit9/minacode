@@ -130,6 +130,17 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
     font-size: 1rem;
 }
 
+/* Toctree captions group the navigation into Guide / Reference. */
+.sphinxsidebar p.caption {
+    margin: 1.5rem 0 0.35rem;
+    font-family: var(--nc-sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--nc-muted);
+}
+
 /* Use one stable highlight for both the current page and subsection. None of
    these properties affect layout, so moving the highlight cannot shift links. */
 .sphinxsidebar a.current,
