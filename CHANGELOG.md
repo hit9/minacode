@@ -11,14 +11,21 @@
   starts the next one on it.
 - `--resume` accepts a name or a uid prefix, not just a full uid. An ambiguous query lists the
   sessions it matched instead of guessing between them.
+- The model can offer 2–3 short next-step prompts after its answer with `NextHints`; they show as
+  selectable chips at the idle prompt (Tab cycles, Enter submits), `/hints` toggles them off, and an
+  all-`NextHints` batch ends the turn in a single model call so the answer appears once.
 
 ### Changed
 - Cap model output at 8,192 tokens per request by default instead of leaving compatible providers
   unbounded; set `provider.max_tokens = 0` to use the provider default.
+- A successful `NextHints` call prints no call/result log line: its effect shows as chips at the idle
+  prompt, so the line was noise. Failed calls still surface their error.
 
 ### Fixed
 - Keep terminal `NextHints` turns from replaying the same provider response twice, which made the
   next Responses API request fail with a duplicate message ID.
+- Stop replaying a streamed answer at the end of a terminal `NextHints` turn. The batch promotes its
+  answer into scrollback like any tool batch, but the post-turn emit then printed the same text again.
 
 
 ## 0.16.0 - 2026-07-29
