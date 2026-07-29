@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.16.0 - 2026-07-29
 
 ### Added
 - Show the latest request's prompt-cache hit ratio live in the status bar, beside the context
@@ -13,17 +13,16 @@
   own field, and the `step N/M` counter now appears only once the turn reaches the final fifth of
   `max_agent_steps`, since a count like `step 1/200` carries no information
   far from the cap and only matters as the turn approaches the cutoff that ends it.
-
-- Lighten the status bar. Its working sweep is a softer crest over a quieter gradient, quantized
-  into bands so neighbouring cells share a color: the terminal receives about a third of the escape
-  sequences per frame and the set of styles stays bounded instead of growing for the life of the
-  process. The sweep now follows the theme, so a light terminal gets a dark crest rather than a
-  washed-out bright one, and the idle line sits a shade below full white.
 - Smooth and lighten the working divider. Its comet head advanced 6.8 cells between redraws, more
   than the width of its own glow, so the motion read as a dash blinking at scattered positions; the
   animation now runs on a 30fps ticker while the running region is up, at one cell per frame, and
   fades between cells so a late frame does not snap. The head is a softer cyan fading into a muted
   rule instead of bold bright cyan over the terminal's default gray.
+- Lighten the status bar. Its working sweep is a softer crest over a quieter gradient, quantized
+  into bands so neighbouring cells share a color: the terminal receives about a third of the escape
+  sequences per frame and the set of styles stays bounded instead of growing for the life of the
+  process. The sweep now follows the theme, so a light terminal gets a dark crest rather than a
+  washed-out bright one, and the idle line sits a shade below full white.
 
 ### Fixed
 - Keep a streamed response's promotion below the live follow-up it answers. Follow-ups reach
