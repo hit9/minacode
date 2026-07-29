@@ -58,9 +58,14 @@ class Theme:
         "syntax.ident": "fg:#a5d6ff",
         "syntax.builtin": "fg:#79c0ff",
         "syntax.default_hex": "e6edf3",
-        "status.base": "#e6edf3",
+        # The status line sits under the conversation and should read as a quiet footer, not compete
+        # with it, so its plain tone stays below full white.
+        "status.base": "#cbd5e1",
         "status.sep": "#4b5563",
-        "status.provider": "#e6edf3",
+        "status.provider": "#cbd5e1",
+        "status.sweep.start": "#4f9fc4",
+        "status.sweep.end": "#9b82c9",
+        "status.sweep.crest": "#cfe6f2",
         "status.reason": "#a5b4fc",
         "status.mcp": "#93c5fd",
         "status.ctx": "#facc15",
@@ -84,9 +89,14 @@ class Theme:
         "syntax.ident": "fg:#032f62",
         "syntax.builtin": "fg:#005cc5",
         "syntax.default_hex": "24292e",
-        "status.base": "#24292e",
+        "status.base": "#4b5563",
         "status.sep": "#9ca3af",
-        "status.provider": "#24292e",
+        "status.provider": "#4b5563",
+        # On a light terminal the crest is the darkest point: contrast, not brightness, is what
+        # makes the travelling band read as a highlight.
+        "status.sweep.start": "#3b7ea3",
+        "status.sweep.end": "#6b52a3",
+        "status.sweep.crest": "#1f2937",
         "status.reason": "#5b21b6",
         "status.mcp": "#1e40af",
         "status.ctx": "#a16207",
@@ -119,10 +129,11 @@ class Theme:
         """
         start, end = cls.rgb(cls.style(start_key)), cls.rgb(cls.style(end_key))
         span = max(1, steps - 1)
-        return [
-            "#" + "".join(f"{round(channel + (channel_end - channel) * index / span):02x}" for channel, channel_end in zip(start, end, strict=True))
-            for index in range(steps)
-        ]
+        return [cls.mix(start, end, index / span) for index in range(steps)]
+
+    @staticmethod
+    def mix(start: tuple[int, int, int], end: tuple[int, int, int], ratio: float) -> str:
+        return "#" + "".join(f"{round(channel + (channel_end - channel) * ratio):02x}" for channel, channel_end in zip(start, end, strict=True))
 
     @staticmethod
     def rgb(color: str) -> tuple[int, int, int]:
@@ -767,6 +778,13 @@ class StatusBar:
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
     ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn")
+    # The working sweep: one crest crossing the line every couple of seconds. `SWEEP_FALLOFF` sets
+    # its half width as a fraction of the line (5.0 → a fifth), wide enough that it drifts rather
+    # than blinks. Bands and levels quantize the gradient and the crest; see `sweep_fragments`.
+    SWEEP_CYCLES_PER_SEC: ClassVar[float] = 0.55
+    SWEEP_FALLOFF: ClassVar[float] = 5.0
+    SWEEP_BANDS: ClassVar[int] = 10
+    SWEEP_LEVELS: ClassVar[int] = 10
 
     @classmethod
     def role_style(cls, role: str) -> str:
@@ -928,21 +946,26 @@ class StatusBar:
         return clipped or [("", "")]
 
     def sweep_fragments(self, text: str) -> StyleAndTextTuples:
+        """Paint the working status line as a crest travelling over a quiet gradient.
+
+        Both the gradient and the crest are quantized, so neighbouring cells share one style string.
+        A continuous per-cell color costs an escape sequence per column every frame and mints a
+        style string prompt-toolkit caches forever; in bands the renderer emits one escape per run
+        and the set of strings stays small. The steps are far finer than the eye resolves over a
+        crest this wide, so the motion still reads as continuous.
+        """
         if not text:
             return [("", "")]
         width = max(1, len(text) - 1)
-        sweep = (time.monotonic() * 0.55) % 1.0
+        sweep = (time.monotonic() * self.SWEEP_CYCLES_PER_SEC) % 1.0
+        bases = Theme.ramp("status.sweep.start", "status.sweep.end", self.SWEEP_BANDS)
+        crest = Theme.rgb(Theme.style("status.sweep.crest"))
         fragments: StyleAndTextTuples = []
         for index, char in enumerate(text):
             ratio = index / width
-            red = round(75 + (180 - 75) * ratio)
-            green = round(180 + (130 - 180) * ratio)
-            blue = 235
-            intensity = max(0.0, 1.0 - abs(ratio - sweep) * 5.0) ** 2
-            red = round(red + (230 - red) * intensity)
-            green = round(green + (245 - green) * intensity)
-            blue = round(blue + (255 - blue) * intensity)
-            fragments.append((f"#{red:02x}{green:02x}{blue:02x}", char))
+            base = bases[round(ratio * (self.SWEEP_BANDS - 1))]
+            level = round(max(0.0, 1.0 - abs(ratio - sweep) * self.SWEEP_FALLOFF) ** 2 * (self.SWEEP_LEVELS - 1))
+            fragments.append((base if not level else Theme.mix(Theme.rgb(base), crest, level / (self.SWEEP_LEVELS - 1)), char))
         return fragments
 
     def index_status(self) -> str:

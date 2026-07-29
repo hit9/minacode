@@ -325,6 +325,52 @@ def test_status_bar_clip_fragments_mirrors_clip_width_ellipsis():
         assert get_cwidth("".join(text for _style, text in clipped)) <= width
 
 
+def test_status_bar_sweep_shares_styles_between_neighbouring_cells(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    bar = StatusBar(s)
+    text = "dashscope/qwen3.7-plus | high | ctx 23% · cache 98% | index | step 160/200"
+    now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    runs = []
+    seen = set()
+    for frame in range(120):  # four seconds of frames
+        now[0] = 1000.0 + frame / 30
+        styles = [style for style, _text in bar.sweep_fragments(text)]
+        assert len(styles) == len(text)
+        seen.update(styles)
+        runs.append(1 + sum(1 for left, right in zip(styles, styles[1:], strict=False) if left != right))
+
+    # A colour per cell costs an escape sequence per column on every frame, and mints a style string
+    # that prompt-toolkit's renderer caches for the life of the process. Quantized, neighbours share
+    # a style, so the runs collapse and the set of strings stays bounded however long a turn runs.
+    assert max(runs) < len(text) / 2
+    assert len(seen) <= bar.SWEEP_BANDS * bar.SWEEP_LEVELS
+
+
+def test_status_bar_sweep_crest_travels_and_stays_within_the_palette(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    bar = StatusBar(s)
+    text = "x" * 80
+    now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    def crest_at(offset: float) -> int:
+        now[0] = 1000.0 + offset
+        styles = [style for style, _text in bar.sweep_fragments(text)]
+        crest = Theme.style("status.sweep.crest")
+        return min(range(len(styles)), key=lambda index: sum(abs(a - b) for a, b in zip(Theme.rgb(styles[index]), Theme.rgb(crest), strict=True)))
+
+    # The crest crosses the line once per cycle and drifts by a cell or so per frame, which is what
+    # keeps the band reading as a travelling light rather than a blink.
+    positions = [crest_at(frame / 30) for frame in range(10)]
+    assert positions == sorted(positions)
+    assert 0 < positions[-1] - positions[0] <= 30
+
+    quarter = crest_at(0.25 / bar.SWEEP_CYCLES_PER_SEC)
+    assert abs(quarter - len(text) // 4) <= 2
+
+
 def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.provider.timeout = 120

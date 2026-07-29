@@ -14,6 +14,11 @@
   `max_agent_steps`, since a count like `step 1/200` carries no information
   far from the cap and only matters as the turn approaches the cutoff that ends it.
 
+- Lighten the status bar. Its working sweep is a softer crest over a quieter gradient, quantized
+  into bands so neighbouring cells share a color: the terminal receives about a third of the escape
+  sequences per frame and the set of styles stays bounded instead of growing for the life of the
+  process. The sweep now follows the theme, so a light terminal gets a dark crest rather than a
+  washed-out bright one, and the idle line sits a shade below full white.
 - Smooth and lighten the working divider. Its comet head advanced 6.8 cells between redraws, more
   than the width of its own glow, so the motion read as a dash blinking at scattered positions; the
   animation now runs on a 30fps ticker while the running region is up, at one cell per frame, and
