@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.17.0 - 2026-07-29
 
 ### Added
 - Name sessions and find them again. Every session takes a name from its opening message, then

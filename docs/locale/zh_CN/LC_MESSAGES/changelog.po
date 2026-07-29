@@ -23,9 +23,8 @@ msgid "Changelog"
 msgstr ""
 
 #: ../../../CHANGELOG.md:5
-msgid "Unreleased"
+msgid "0.17.0 - 2026-07-29"
 msgstr ""
-"未发布"
 
 #: ../../../CHANGELOG.md:7 ../../../CHANGELOG.md:19 ../../../CHANGELOG.md:58
 #: ../../../CHANGELOG.md:80 ../../../CHANGELOG.md:109 ../../../CHANGELOG.md:177
