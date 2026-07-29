@@ -96,6 +96,7 @@ class Agent:
         try:
             for step in range(self.session.settings.max_steps):
                 self.session.state.turn_step = step + 1
+                self.session.clear_quick_hints()  # a later step supersedes hints from a non-terminal batch; only the terminal batch keeps its hints
                 followup_response = False
                 while True:
                     try:

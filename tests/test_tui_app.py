@@ -1103,7 +1103,7 @@ def test_quick_hint_enter_on_empty_unfocused_input_does_nothing():
 
 def test_quick_hint_fragments_highlight_focused_chip():
     app, _ = quick_hint_app(("a", "b"))
-    assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint", "  "), ("class:quickhint", " b ")]
+    assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint.sep", " │ "), ("class:quickhint", " b ")]
     app.quick_hint_focus = 0
     assert ("class:quickhint.focused", " a ") in app.quick_hint_fragments()
 

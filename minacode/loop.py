@@ -599,6 +599,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
         if self.interactive_input:
             return self.run_tui()
+        self.session.settings.quick_hints = False  # the simple REPL has no hint UI; don't invite the model to offer them
         self.start_session()
         while True:
             try:
@@ -825,8 +826,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 "queue.rule": rule,
                 **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("divider.glow", "divider.rule", self.GLOW_STEPS))},
                 "queue.hint": "ansibrightblack",
-                "quickhint": "ansibrightblack",
+                "quickhint": "ansicyan",
                 "quickhint.focused": "reverse",
+                "quickhint.sep": "ansibrightblack",
                 "image.attachment": "ansicyan bold",
                 "input.error": "ansired",
                 "divider.working": "ansimagenta bold",

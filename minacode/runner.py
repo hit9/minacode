@@ -328,7 +328,7 @@ class ToolRunner:
         # read-only MCP). Edit is coordinated serially by EditBatchPlan;
         # Bash streams live output and mutates; Ask blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or call.name == "Edit" or tool_class in (BashTool, JobTool, AskTool) or tool_class.PRODUCES_MODEL_OBSERVATION:
+        if tool_class is None or call.name in ("Edit", "NextHints") or tool_class in (BashTool, JobTool, AskTool) or tool_class.PRODUCES_MODEL_OBSERVATION:
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()

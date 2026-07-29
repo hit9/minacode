@@ -867,6 +867,8 @@ def test_suggest_tool_validates_before_writing(tmp_path):
         NextHintsTool(s, [{"inputs": "run"}]).call()
     with pytest.raises(ToolError, match="at least one non-empty"):
         NextHintsTool(s, [{"inputs": ["  "]}]).call()
+    with pytest.raises(ToolError, match="inputs must be an array"):
+        NextHintsTool(s, [{"inputs": [1, {"x": 1}]}]).call()  # non-string elements are rejected
     with pytest.raises(ToolError, match="unexpected field"):
         NextHintsTool(s, [{"inputs": ["a"], "extra": 1}]).call()
     assert s.quick_hints == ()

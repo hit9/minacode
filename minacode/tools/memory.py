@@ -295,7 +295,7 @@ class NextHintsTool(Tool):
     )
     STORES_RESULT = False
     MAX_HINTS: ClassVar[int] = 4
-    MAX_LEN: ClassVar[int] = 80
+    MAX_LEN: ClassVar[int] = 48
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -310,9 +310,9 @@ class NextHintsTool(Tool):
         if unexpected := sorted(set(data) - {"inputs"}):
             raise ToolError("NextHints unexpected field: " + ", ".join(unexpected))
         raw = data.get("inputs")
-        if not isinstance(raw, list):
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
             raise ToolError('NextHints inputs must be an array of strings, e.g. {"inputs":["run the tests"]}')
-        hints = list(dict.fromkeys(Tool.compact(item, self.MAX_LEN) for item in raw if str(item).strip()))[: self.MAX_HINTS]
+        hints = list(dict.fromkeys(Tool.compact(item, self.MAX_LEN) for item in raw if item.strip()))[: self.MAX_HINTS]
         if not hints:
             raise ToolError("NextHints inputs must contain at least one non-empty string")
         self.session.set_quick_hints(hints)

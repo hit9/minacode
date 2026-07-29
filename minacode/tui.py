@@ -397,7 +397,7 @@ class TuiApp:
         parts: StyleAndTextTuples = []
         for index, hint in enumerate(hints):
             if index:
-                parts.append(("class:quickhint", "  "))
+                parts.append(("class:quickhint.sep", " │ "))
             style = "class:quickhint.focused" if index == self.quick_hint_focus else "class:quickhint"
             parts.append((style, f" {hint} "))
         return parts
@@ -624,9 +624,11 @@ class TuiApp:
         modal_active = Condition(lambda: self.modal is not None)
         exclusive_active = Condition(lambda: self.modal is not None and self.modal.exclusive)
         idle = Condition(lambda: self.input_mode == "chat")
+        has_quick_hints = idle & Condition(lambda: bool(self.quick_hints()))
+        quick_hints_gap = ConditionalContainer(Window(height=1, dont_extend_height=True), filter=has_quick_hints)
         quick_hints_row = ConditionalContainer(
-            Window(FormattedTextControl(self.quick_hint_fragments), height=1, dont_extend_height=True),
-            filter=idle & Condition(lambda: bool(self.quick_hints())),
+            Window(FormattedTextControl(self.quick_hint_fragments), wrap_lines=True, dont_extend_height=True),
+            filter=has_quick_hints,
         )
         normal_region = ConditionalContainer(
             HSplit(
@@ -636,6 +638,7 @@ class TuiApp:
                     running_gap_below,
                     input_error,
                     self.input_window,
+                    quick_hints_gap,
                     quick_hints_row,
                     completion_space,
                     self.search_toolbar,

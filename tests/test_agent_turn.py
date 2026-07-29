@@ -784,6 +784,30 @@ def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_pat
     assert "tool_calls" not in s.messages[-1]
 
 
+def test_non_terminal_next_hints_do_not_leak_into_a_later_answer(tmp_path):
+    """A NextHints batch without answer text runs as a normal tool batch; the next step supersedes
+    its hints, so a later final answer never displays stale suggestions beside it."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
+            if len(self.messages) == 1:
+                # No answer text: not terminal, so it runs as an ordinary batch and publishes hints.
+                return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": ["stale suggestion"]}])], ""
+            return {"role": "assistant", "content": "different final answer"}, [], "different final answer"
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == "different final answer"
+    assert len(agent.model.messages) == 2  # the turn continued past the non-terminal batch
+    assert s.quick_hints == ()  # the stale hints were cleared, not shown next to the answer
+
+
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda text: None)
@@ -932,6 +956,7 @@ def test_parallel_safe_classification(tmp_path):
     assert not safe("Bash", ["echo hi"])  # live-output command
     assert not safe("Edit", ["f.txt", [{"op": "insert_after", "start": "0:a", "content": "x"}]])
     assert not safe("Ask", [{"question": "q?"}])  # interactive
+    assert not safe("NextHints", [{"inputs": ["x"]}])  # writes session state; serial so model order wins
     assert not safe("Nope", [])  # unknown tool
 
 
