@@ -189,3 +189,12 @@ def test_warm_provider_sdks_loads_them_in_the_background():
         time.sleep(0.05)
 
     assert {"anthropic", "openai"} <= sys.modules.keys()
+
+
+def test_py_compile():
+    """Package compiles without errors."""
+    import py_compile
+    from pathlib import Path
+
+    for source in sorted(Path("minacode").glob("*.py")):
+        py_compile.compile(str(source), doraise=True)

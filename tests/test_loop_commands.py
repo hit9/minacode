@@ -1,0 +1,767 @@
+"""CommandLoop surfaces around a turn: the input queue, slash commands, skills, transcript
+rendering, and status output."""
+
+import json
+import os
+import time
+from types import SimpleNamespace
+
+import pytest
+from agent_harness import call, queue, session
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
+
+import minacode.loop as loop_module
+from minacode.base import (
+    SELECTION_FREE_TEXT,
+    Text,
+    ToolError,
+    TurnBox,
+)
+from minacode.context import ContextManager
+from minacode.engine import Agent
+from minacode.loop import CommandLoop
+from minacode.prompts import SYSTEM_PROMPT
+from minacode.render import StatusBar
+from minacode.runner import ToolRunner
+from minacode.session import Session, SessionSnapshotStore, ToolResultRecord
+from minacode.skill import SkillLibrary
+from minacode.tools import AskSpec, CodeIndex, SkillTool, Tool
+from minacode.tui import TuiApp
+
+
+def _write_skill(root, name, description, body, *, scripts=None):
+    folder = os.path.join(root, ".minacode", "skills", name)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
+        handle.write(f"---\nname: {name}\ndescription: {description}\n---\n{body}\n")
+    for script_name, script_body in (scripts or {}).items():
+        script_dir = os.path.join(folder, "scripts")
+        os.makedirs(script_dir, exist_ok=True)
+        with open(os.path.join(script_dir, script_name), "w", encoding="utf-8") as handle:
+            handle.write(script_body)
+    return folder
+
+
+def queued_texts(s):
+    return [item.text for item in s.pending_user_inputs]
+
+
+def test_ps_command_uses_markdown_renderer(tmp_path):
+    s = session(tmp_path)
+    s.jobs["job.1"] = SimpleNamespace(id="job.1", status="running", command="pytest -q", elapsed=lambda: 13.7, update_status=lambda: None)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    rendered = []
+    plain = []
+    loop.ui.emit_answer = rendered.append
+    loop.emit = plain.append
+
+    assert loop.command("/ps") == (True, False)
+
+    assert plain == []
+    assert len(rendered) == 1
+    assert rendered[0].startswith("### Active jobs")
+    assert "| id | status | elapsed | command |" in rendered[0]
+
+
+def test_tui_completion_applies_single_match():
+    class OneCompletion(Completer):
+        def get_completions(self, document, _complete_event):
+            yield Completion("hello", start_position=-len(document.text))
+
+    buffer = Buffer(document=Document("he"), completer=OneCompletion())
+    TuiApp.complete_input(buffer)
+    assert buffer.text == "hello"
+
+
+def test_tui_completion_starts_and_cycles_multiple_matches():
+    class MultipleCompletions(Completer):
+        def get_completions(self, document, _complete_event):
+            yield Completion("alpha", start_position=-len(document.text))
+            yield Completion("alpine", start_position=-len(document.text))
+
+    completer = MultipleCompletions()
+    buffer = Buffer(document=Document("al"), completer=completer)
+    started = []
+    buffer.start_completion = lambda **kwargs: started.append(kwargs)
+
+    TuiApp.complete_input(buffer)
+    assert started == [{"select_first": False}]
+
+    completions = list(completer.get_completions(buffer.document, CompleteEvent()))
+    buffer._set_completions(completions)
+    TuiApp.complete_input(buffer)
+    assert buffer.text == "alpha"
+    TuiApp.complete_input(buffer, reverse=True)
+    assert buffer.text == "al"
+    TuiApp.complete_input(buffer, reverse=True)
+    assert buffer.text == "alpine"
+
+
+def test_queue_acknowledges_only_claimed_duplicate_messages(tmp_path):
+    s = session(tmp_path)
+    queue(s, "same", "same")
+    claimed = s.claim_user_inputs()
+    s.enqueue_user_input("same")
+
+    s.acknowledge_user_inputs(claimed)
+
+    assert queued_texts(s) == ["same"]
+    assert not s.pending_user_inputs[0].inflight
+
+
+def test_queue_release_restores_interrupted_inputs(tmp_path):
+    s = session(tmp_path)
+    s.enqueue_user_input("ready")
+    queued = s.pending_user_inputs[0]
+
+    assert s.claim_user_inputs() == [queued]
+    s.release_user_inputs()
+
+    assert not queued.inflight
+
+
+def test_recall_pending_input_can_revise_latest_inflight_message(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first", "second")
+    s.claim_user_inputs()
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    retried = []
+
+    text = loop.recall_pending_input(lambda: retried.append(True))
+
+    assert text == "second"
+    assert queued_texts(s) == ["first"]
+    assert s.pending_user_inputs[0].inflight is False
+    assert retried == [True]
+
+
+def test_clearing_recalled_message_leaves_it_deleted(tmp_path):
+    s = session(tmp_path)
+    queue(s, "first", "delete me")
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    assert loop.recall_pending_input(lambda: None) == "delete me"
+
+    assert queued_texts(s) == ["first"]
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert queued_texts(restored) == ["first"]
+
+
+def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
+    """Unconsumed pending_user_inputs are auto-submitted as next input."""
+    s = session(tmp_path)
+    queue(s, "leftover instruction")
+
+    class FakeModel:
+        def request(self, messages, tools=None):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+
+    def fake_read(prompt="", **kw):
+        raise EOFError()
+
+    loop = CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+
+    loop.run()
+
+    assert s.pending_user_inputs == []
+    assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
+
+
+def test_queue_live_region_shows_divider_and_pending(tmp_path):
+    s = session(tmp_path)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    queue(s, "run tests", "then push")
+
+    sent, waiting = loop.followup_fragments()
+    text = "".join(t for _, t in [*sent, *waiting])
+    assert "2 queued" in text and "working" in text
+    assert "+ run tests" in text and "+ then push" in text
+
+    claimed = s.claim_user_inputs()
+    sent, waiting = loop.followup_fragments()
+    sent_text = "".join(t for _, t in sent)
+    waiting_text = "".join(t for _, t in waiting)
+    assert "• run tests" in sent_text and "• then push" in sent_text
+    assert "queued" not in waiting_text
+    assert "run tests" not in waiting_text and "then push" not in waiting_text
+
+    queue(s, "after claim")
+    sent, waiting = loop.followup_fragments()
+    assert "• run tests" in "".join(t for _, t in sent)
+    assert "1 queued" in "".join(t for _, t in waiting)
+    assert "+ after claim" in "".join(t for _, t in waiting)
+
+    s.release_user_inputs()
+    sent, waiting = loop.followup_fragments()
+    assert sent == []
+    released = "".join(t for _, t in waiting)
+    assert "3 queued" in released
+    assert "+ run tests" in released and "+ then push" in released and "+ after claim" in released
+
+    s.claim_user_inputs()
+    s.acknowledge_user_inputs(claimed)
+    sent, waiting = loop.followup_fragments()
+    assert "run tests" not in "".join(t for _, t in [*sent, *waiting])
+    assert "then push" not in "".join(t for _, t in [*sent, *waiting])
+
+    # The divider animates a comet head across the dashes while its label remains stable.
+    with pytest.MonkeyPatch.context() as mp:
+        seen_head = False
+        for tick in range(200):
+            mp.setattr(time, "monotonic", lambda tick=tick: tick * 0.1)
+            fragments = loop.queue_divider_fragments()
+            seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
+            assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
+            assert all(not style.startswith("class:divider.glow") or text == "-" for style, text in fragments)
+        assert seen_head
+
+    s.pending_user_inputs = []
+    sent, waiting = loop.followup_fragments()
+    empty = "".join(t for _, t in [*sent, *waiting])
+    assert "working" in empty and "queued" not in empty and "run tests" not in empty
+
+
+def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
+    s = session(tmp_path)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    queue(s, "follow up")
+    loop.live_preview.active = True
+    loop.live_preview.text = "live output"
+    loop.live_preview.started_at = time.monotonic()
+
+    text = "".join(fragment for _, fragment in loop.tui_activity_fragments())
+
+    assert text.index("live output") < text.index("working") < text.index("+ follow up")
+    assert "live output\n\n---" in text
+
+
+def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda _text: None)
+    # The agent's flush hook is wired to move queued messages up into the scrollback log.
+    assert loop.agent.on_queue_flush == loop.flush_queued_to_log
+
+    echoed = []
+    monkeypatch.setattr(loop_module, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _style, text in value)))
+
+    loop.flush_queued_to_log(["do a thing", "then verify", "  "])
+
+    assert echoed == ["\n• do a thing\n\n• then verify\n\n"]
+
+
+def test_queue_command_runs_readonly(tmp_path):
+    """A read-only slash command in the queue runs immediately and is not queued for the LLM."""
+    s = session(tmp_path)
+    out = []
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    loop.run_queued_command("/status")
+
+    assert s.pending_user_inputs == []
+    assert out and not any("unavailable" in t for t in out)
+
+
+def test_queue_command_runs_yolo_toggle(tmp_path):
+    """/yolo flips the runtime flag from the queue while the agent works."""
+    s = session(tmp_path)
+    out = []
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    before = s.settings.yolo
+    loop.run_queued_command("/yolo")
+
+    assert s.settings.yolo is (not before)
+    assert s.pending_user_inputs == []
+
+
+def test_queue_command_rejects_mutating(tmp_path):
+    """A state-mutating slash command is refused while the agent works, not queued or run."""
+    s = session(tmp_path)
+    out = []
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    loop.run_queued_command("/model")
+
+    assert s.pending_user_inputs == []
+    assert any("unavailable while the agent is working" in t for t in out)
+
+
+def test_queue_command_rejects_mutating_mcp_subcommand(tmp_path):
+    """Read-only /mcp is allowed; mutating subcommands like connect are refused."""
+    s = session(tmp_path)
+    out = []
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    loop.run_queued_command("/mcp connect test")
+
+    assert any("read-only /mcp" in t for t in out)
+
+
+def test_tool_input_without_tui_uses_injected_input(tmp_path):
+    s = session(tmp_path)
+    calls = []
+    loop = CommandLoop(
+        Agent(s, output_fn=lambda text: None),
+        input_fn=lambda prompt: calls.append(prompt) or "y",
+        output_fn=lambda text: None,
+    )
+
+    assert loop.tool_input("[Y/n or reason] ") == "y"
+
+    assert calls == ["[Y/n or reason] "]
+
+
+def test_tool_runner_edit_approval_prints_full_inline_preview(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    outputs = []
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=lambda text: outputs.append(str(text)))
+    content = "".join(f"line {index}\n" for index in range(50))
+
+    runner.run([call("Edit", ["new.txt", [{"op": "create", "content": content}]])])
+
+    assert outputs[0].startswith("  Edit  new.txt\n    ├ preview")
+    assert "+line 49" in outputs[0]
+    assert "preview truncated" not in outputs[0]
+    assert any("[approved]" in output for output in outputs)
+
+
+def test_exit_command_prints_resume_command(tmp_path):
+    s = session(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    handled, exit_now = loop.command("/exit")
+
+    assert (handled, exit_now) == (True, True)
+    assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
+    assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+
+
+def test_empty_exit_does_not_print_resume_command(tmp_path):
+    s = session(tmp_path)
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    handled, exit_now = loop.command("/exit")
+
+    assert (handled, exit_now) == (True, True)
+    assert output == []
+    assert not os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+
+
+def test_resumed_session_does_not_render_tool_results(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    arguments = json.dumps({"files": [{"path": "a.py", "ranges": [[0, 1]]}]})
+    s.messages.extend(
+        [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "need tool",
+                "tool_calls": [{"id": "tc.1", "type": "function", "function": {"name": "Read", "arguments": arguments}}],
+            },
+            {"role": "tool", "tool_call_id": "tc.1", "content": "raw tool result"},
+            {"role": "system", "content": f"[Session resumed: uid={s.uid}]"},
+        ]
+    )
+    s.tool_records.append(ToolResultRecord("tr.1", "Read", [{"path": "a.py", "ranges": [[0, 1]]}], "raw tool result", "a.py 0:1"))
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    assert s.resumed is False
+    assert f"Restored session: {s.uid}" in text
+    assert "• hello" in text
+    assert "  need tool" in text
+    assert "user:" not in text and "assistant:" not in text
+    assert "Read  a.py 0:1 → tr.1" in text
+    assert "tool:" not in text
+    assert "raw tool result" not in text
+
+
+def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "compacted answer\nfinal detail"},
+        ]
+    )
+    s.tool_records.append(ToolResultRecord("tr.1", "Bash", ["wc -l minacode.py"], "999 minacode.py", "wc -l minacode.py"))
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    assert f"Restored session: {s.uid}" in text
+    assert "compacted answer\nfinal detail" in text
+    assert "user:" not in text and "assistant:" not in text
+    assert "  Bash  wc -l minacode.py\n    └ stored tr.1" in text
+    assert "999 minacode.py" not in text
+
+
+def test_resumed_session_separates_turn_boxes(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+        ]
+    )
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    assert output[1:] == ["\n• first", "one", "", "\n• second", "two"]
+
+
+def test_turn_box_groups_followup_users_until_final_assistant():
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "working", "tool_calls": [{"id": "one"}]},
+        {"role": "user", "content": "follow-up"},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "next"},
+    ]
+
+    boxes = TurnBox.group(messages)
+
+    assert [len(box.messages) for box in boxes] == [4, 1]
+
+
+def test_turn_box_groups_tool_results_with_calling_assistant():
+    # Tool results (role="tool") are kept in the same TurnBox as the
+    # assistant that issued the tool_calls, not split prematurely.
+    messages = [
+        {"role": "user", "content": "read a.py"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "tr.1", "function": {"name": "Read"}}]},
+        {"role": "tool", "tool_call_id": "tr.1", "content": "# file content"},
+        {"role": "assistant", "content": "done"},
+    ]
+    boxes = TurnBox.group(messages)
+    assert len(boxes) == 1
+    assert len(boxes[0].messages) == 4
+    roles = [m["role"] for m in boxes[0].messages]
+    assert roles == ["user", "assistant", "tool", "assistant"]
+
+
+def test_eof_exit_prints_resume_command(tmp_path):
+    s = session(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), input_fn=lambda prompt="": (_ for _ in ()).throw(EOFError()), output_fn=output.append)
+
+    assert loop.run() == 0
+
+    assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
+    assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+
+
+def test_select_choice_noninteractive_does_not_prompt(tmp_path):
+    output = []
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "1", output_fn=output.append)
+
+    assert loop.select_choice("Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
+    assert output == []
+
+
+def test_choice_application_expands_escaped_preview_newlines(tmp_path):
+    output = []
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop.interactive_input = True
+    rendered = []
+
+    class Modal:
+        def show_modal(self, fragments_fn, key_fn):
+            rendered.extend(fragments_fn())
+            return key_fn("enter", "")
+
+    loop.tui = Modal()
+
+    result = loop.choice_application(
+        "Select:",
+        ("A", "B"),
+        {},
+        "",
+        set(),
+        preview_fn=lambda choice: "one\\ntwo" if choice == "A" else "",
+        free_text=True,
+    )
+
+    assert result == "A"
+    previews = [text for style, text in rendered if style == "class:choice.preview"]
+    assert previews == ["  │ one\n", "  │ two\n"]
+    assert all("\\n" not in text for _, text in rendered)
+
+
+def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
+    output = []
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop.interactive_input = True
+    emitted = []
+    prompts = []
+    loop.emit = emitted.append
+    loop.choice_application = lambda *args, **kwargs: SELECTION_FREE_TEXT
+
+    def fake_read_input(prompt_text="> ", **kwargs):
+        prompts.append(prompt_text)
+        return "typed answer"
+
+    loop.read_input = fake_read_input
+
+    assert loop.question_application(AskSpec("Pick?", choices=["A"], previews=["preview"])) == "typed answer"
+    assert prompts == ["> "]
+    assert all(not prompt.startswith("\n") for prompt in prompts)
+    assert emitted[-1] == ""
+
+
+def test_ask_without_choices_uses_shared_tui_input(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "fallback", output_fn=lambda text: None)
+    prompts = []
+    loop.tui = SimpleNamespace(request_input=lambda prompt: prompts.append(prompt) or "typed answer")
+
+    assert loop.question_application(AskSpec("Explain the issue")) == "typed answer"
+    assert prompts == ["\nExplain the issue"]
+
+
+def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    emitted = []
+    loop.emit = emitted.append
+    loop.question_application = lambda spec, position="": "B"
+
+    assert loop.question_interaction(AskSpec("Which?", choices=["A", "B"])) == "B"
+    assert emitted == []
+
+
+def test_elapsed_since_uses_whole_seconds(monkeypatch):
+    monkeypatch.setattr(time, "monotonic", lambda: 104.9)
+    assert Text.elapsed_since(100.0) == "4s"
+
+    monkeypatch.setattr(time, "monotonic", lambda: 162.9)
+    assert Text.elapsed_since(100.0) == "1m02s"
+
+
+def test_bash_live_start_pauses_standalone_status(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
+    loop.ui.color = True
+    loop.live_preview.start = lambda: setattr(loop.live_preview, "active", True)
+    loop.status_bar.thread = object()
+    loop.status_bar.stop = lambda: setattr(loop.status_bar, "thread", None)
+    loop.status_bar.start = lambda **_kwargs: setattr(loop.status_bar, "thread", object())
+
+    loop.tool_live_start()
+    assert loop.live_status_paused is True
+    assert loop.status_bar.thread is None
+
+    loop.tool_live_output("", "")
+    assert loop.live_status_paused is False
+    assert loop.status_bar.thread is not None
+
+
+def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
+    output = []
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), output_fn=output.append)
+
+    loop.emit_agent_output("First line.\nSecond line.")
+    loop.ui.emit_answer("Done.\nFinal detail.")
+
+    assert output == ["  First line.\n  Second line.", "Done.\nFinal detail."]
+
+
+def test_skill_library_index_and_lookup(tmp_path):
+    _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "Do the thing.")
+    s = session(tmp_path)
+
+    index = s.skills.index()
+    assert index.startswith("--- SKILLS ---")
+    assert "- release-notes: Draft a CHANGELOG entry." in index
+    assert s.skills.get("Release-Notes").name == "release-notes"  # case-insensitive
+    assert s.skills.get("missing") is None
+
+
+def test_skill_project_overrides_user(tmp_path, monkeypatch):
+    user_home = tmp_path / "home"
+    user_skill = user_home / ".minacode" / "skills" / "shared"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("---\nname: shared\ndescription: user version\n---\nuser body\n", encoding="utf-8")
+    _write_skill(tmp_path, "shared", "project version", "project body")
+    monkeypatch.setattr(os.path, "expanduser", lambda path: path.replace("~", str(user_home)))
+
+    s = session(tmp_path)
+    skill = s.skills.get("shared")
+    assert skill.source == "project"
+    assert skill.description == "project version"
+
+
+def test_skill_tool_expands_skill_dir(tmp_path):
+    folder = _write_skill(tmp_path, "build", "build it", 'Run python "{skill_dir}/scripts/go.py".', scripts={"go.py": "print(1)"})
+    s = session(tmp_path)
+
+    output = SkillTool(s, ["build"]).call()
+    assert output.startswith('<Skill name="build">')
+    assert f'python "{folder}/scripts/go.py"' in output
+    assert "{skill_dir}" not in output
+
+
+def test_skill_tool_unknown_lists_available(tmp_path):
+    _write_skill(tmp_path, "known", "known skill", "body")
+    s = session(tmp_path)
+    with pytest.raises(ToolError) as excinfo:
+        SkillTool(s, ["nope"]).call()
+    assert "unknown skill 'nope'" in str(excinfo.value)
+    assert "known" in str(excinfo.value)
+
+
+def test_skill_mentions_inject_body(tmp_path):
+    _write_skill(tmp_path, "triage", "triage a bug", "Reproduce first.")
+    s = session(tmp_path)
+
+    resolved = s.skills.resolve_mentions("please $triage this")
+    assert "--- SKILL MENTIONS ---" in resolved
+    assert "[triage] triage a bug" in resolved
+    assert "Reproduce first." in resolved
+    # a bare word without $ is not a mention; an unknown $token is ignored
+    assert s.skills.resolve_mentions("triage this") == ""
+    assert s.skills.resolve_mentions("$unknown") == ""
+
+
+def test_skill_tool_absent_only_when_no_skills(tmp_path):
+    _write_skill(tmp_path, "available", "available skill", "body")
+    withskill = ContextManager(session(tmp_path))
+    assert "--- SKILLS ---" in withskill.skills_context()
+    assert any(t["function"]["name"] == "Skill" for t in Tool.resolved_schemas(withskill.session))
+    messages = withskill.model_messages("system", [{"role": "user", "content": "hi"}])
+    assert any(m["content"].startswith("--- SKILLS ---") for m in messages)
+
+    # When truly no skills exist, the tool and section drop out and the prefix stays clean.
+    bare = ContextManager(session(tmp_path))
+    bare.session.skills = SkillLibrary({})
+    assert bare.skills_context() == ""
+    tools = Tool.resolved_schemas(bare.session)
+    assert not any(t["function"]["name"] == "Skill" for t in tools)
+    assert all("--- SKILLS ---" not in str(message.get("content", "")) for message in bare.model_messages(SYSTEM_PROMPT))
+
+
+def test_skills_command_lists_installed(tmp_path):
+    base = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    assert "No skills installed" in base.skills_command("")
+
+    _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
+    output = loop.skills_command("")
+    assert "| skill | source | description |" in output
+    assert "| `release-notes` | project | Draft a CHANGELOG entry. |" in output
+
+
+def test_skill_loads_dedup_on_repeat(tmp_path):
+    _write_skill(tmp_path, "guide", "a guide", "FULL GUIDE INSTRUCTIONS")
+    s = session(tmp_path)
+    body = SkillTool(s, ["guide"]).call()
+    messages = [{"role": "tool", "content": "tr.1 " + body}, {"role": "tool", "content": "tr.7 " + body}]
+
+    deduped = ContextManager(s).dedup_skill_loads(messages)
+    assert "FULL GUIDE INSTRUCTIONS" in deduped[0]["content"]  # first copy kept
+    assert "FULL GUIDE INSTRUCTIONS" not in deduped[1]["content"]  # repeat collapsed
+    assert "repeat load of skill guide" in deduped[1]["content"]
+    assert "tr.1" in deduped[1]["content"]
+
+
+def test_status_and_bar_show_skill_count(tmp_path):
+    _write_skill(tmp_path, "one", "d1", "b")
+    _write_skill(tmp_path, "two", "d2", "b")
+    s = session(tmp_path)
+    s.config.mcp = {
+        "connected": {"url": "https://connected.example/mcp"},
+        "disconnected": {"url": "https://disconnected.example/mcp"},
+    }
+    s.mcp.tools["connected"] = []
+    s.mcp.resources["connected"] = []
+    loop = CommandLoop(Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
+
+    count = len(s.skills.skills)
+    assert count == 2
+    status = loop.status("")
+    assert "mcp `1`" in status
+    assert f"skills `{count}`" in status
+    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in status
+    assert "| cache | (no requests yet) |" in status
+    assert "| status | value |" in status
+    bar_text = " | ".join(text for text, _ in StatusBar(s).entries(show_elapsed=False))
+    assert f"skills {count}" in bar_text
+
+
+def test_status_keeps_active_turn_in_context_percentage(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 100_000
+    s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
+    context = ContextManager(s)
+    active_messages = context.model_messages(SYSTEM_PROMPT, s._active_turn_messages)
+    tools = Tool.resolved_schemas(s)
+    active_percent = context.update_percent(active_messages, tools)
+    persisted_percent = context.request_tokens(context.model_messages(SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
+    assert active_percent > persisted_percent
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    status = loop.status("")
+
+    assert s.state.context_percent == active_percent
+    context_row = next(line for line in status.splitlines() if line.startswith("| context |"))
+    assert f"`{active_percent}%`" in context_row
+
+
+def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
+    s = session(tmp_path)
+    s.usage.last_cached_prompt_tokens = 76_000
+    s.usage.last_prompt_tokens = 76_100
+    s.usage.cached_prompt_tokens = 83_400
+    s.usage.prompt_tokens = 100_000
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    cache_row = next(line for line in loop.status("").splitlines() if line.startswith("| cache |"))
+
+    assert "last `76.0K / 76.1K (99.9%)`" in cache_row
+    assert "session `83.4K / 100.0K (83.4%)`" in cache_row
+
+
+def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
+    plain = []
+    rich = []
+    loop.emit = plain.append
+    loop.ui.emit_answer = lambda text, **kwargs: rich.append((text, kwargs))
+
+    assert loop.command("/status") == (True, False)
+    assert plain == []
+    assert len(rich) == 1
+    assert rich[0][0].startswith("| status | value |")
+    assert rich[0][1] == {"rule": False}
+
+
+def test_session_from_config_file_theme_param(tmp_path):
+    cfg = tmp_path / "minacode.toml"
+    cfg.write_text('[runtime]\ntheme = "light"\n')
+    s = Session.from_config_file(path=str(cfg), theme="dark")
+    assert s.settings.theme == "dark"
+
+    s2 = Session.from_config_file(path=str(cfg))
+    assert s2.settings.theme == "light"
+
+    s3 = Session.from_config_file(path=str(cfg), theme="")
+    assert s3.settings.theme == "light"

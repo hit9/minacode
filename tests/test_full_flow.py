@@ -1,7 +1,7 @@
 """Full-flow tests: the real agent loop driving the real ModelClient over a mocked wire.
 
-Existing tests cover the two halves separately — `test_model_client.py` exercises ModelClient
-against `httpx.MockTransport`, and `test_agent_logic.py` runs the agent loop against a hand-scripted
+Existing tests cover the two halves separately — the `test_model_*.py` modules exercise ModelClient
+against `httpx.MockTransport`, and `test_agent_turn.py` runs the agent loop against a hand-scripted
 Python fake injected at `agent.model`. Neither crosses the seam between them: how the agent's
 messages and tool schemas serialize onto the wire, and how a provider's response parses back into
 tool calls that the runner then executes. These tests close that seam by pointing the real
