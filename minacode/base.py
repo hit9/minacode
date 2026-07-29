@@ -533,10 +533,16 @@ class ModelUsage:
         self.calls += 1
         prompt_tokens = self.field(usage, "prompt_tokens", "input_tokens")
         completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
-        total_tokens = self.field(usage, "total_tokens") or prompt_tokens + completion_tokens
         # fmt: off
         cached_tokens = self.field(usage, "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens")
         # fmt: on
+        # OpenAI-shaped usage counts cache hits inside `prompt_tokens`, but Anthropic's
+        # `input_tokens` is only what was neither read from nor written to the cache. Fold the cache
+        # legs back in so the prompt total means the same thing for every provider; otherwise a
+        # cached Anthropic request reports a hit ratio far above 100% and a tiny token total.
+        if not self.field(usage, "prompt_tokens"):
+            prompt_tokens += self.field(usage, "cache_read_input_tokens") + self.field(usage, "cache_creation_input_tokens")
+        total_tokens = self.field(usage, "total_tokens") or prompt_tokens + completion_tokens
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens

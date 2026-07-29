@@ -937,6 +937,20 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.last_cached_prompt_tokens == 2
 
 
+def test_model_usage_folds_anthropic_cache_legs_into_prompt_tokens():
+    usage = ModelUsage()
+
+    # Anthropic reports input_tokens without the cached legs, so a cache hit must not read as a
+    # ratio above 100% or shrink the request's token total to the uncached remainder.
+    usage.add(SimpleNamespace(input_tokens=20, output_tokens=5, cache_read_input_tokens=30_000, cache_creation_input_tokens=1_000))
+
+    assert usage.last_prompt_tokens == 31_020
+    assert usage.last_cached_prompt_tokens == 30_000
+    assert usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens == 96
+    assert usage.prompt_tokens == 31_020
+    assert usage.total_tokens == 31_025
+
+
 def test_context_cleans_surrogate_text(tmp_path):
     bad = "bad \udce5 text"
     s = session(tmp_path)
