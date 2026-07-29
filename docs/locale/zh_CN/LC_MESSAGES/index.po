@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-26 01:46-0700\n"
+"POT-Creation-Date: 2026-07-29 03:23-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -27,11 +27,22 @@ msgid "A small terminal coding agent"
 msgstr "一个小巧的终端 coding agent"
 
 #: ../../index.md:5
-msgid "minacode works in your terminal: you describe a task, and it reads code, edits files, runs commands, and reports back. It keeps <span class=\"marker\">stable prompt prefixes</span> so supported providers can reuse work, maintains a searchable code index, runs background jobs, tracks its own working notes, and <span class=\"marker\">resumes where you left off</span>."
-msgstr "minacode 在终端中工作：你描述任务，它读取代码、编辑文件、运行命令并汇报结果。它维护<span class=\"marker\">稳定的 prompt 前缀</span>，让支持缓存的 provider 复用计算；同时维护可搜索的代码索引、运行后台任务、记录工作笔记，并能<span class=\"marker\">从上次中断处继续</span>。"
+msgid ""
+"minacode works in your terminal: you describe a task, and it reads code, "
+"edits files, runs commands, and reports back. It keeps <span "
+"class=\"marker\">stable prompt prefixes</span> so supported providers can"
+" reuse work, maintains a searchable code index, runs background jobs, "
+"tracks its own working notes, and <span class=\"marker\">resumes where "
+"you left off</span>."
+msgstr ""
+"minacode 在终端中工作：你描述任务，它读取代码、编辑文件、运行命令并汇报结果。它维护<span class=\"marker\">稳定的 "
+"prompt 前缀</span>，让支持缓存的 provider 复用计算；同时维护可搜索的代码索引、运行后台任务、记录工作笔记，并能<span "
+"class=\"marker\">从上次中断处继续</span>。"
 
 #: ../../index.md:10
-msgid "minacode is the former nanocode, renamed once it outgrew the single file that made it *nano*."
+msgid ""
+"minacode is the former nanocode, renamed once it outgrew the single file "
+"that made it *nano*."
 msgstr "minacode 即原来的 nanocode，当它超出了那个让其得名 *nano* 的单文件后便改了名。"
 
 #: ../../index.md:12
@@ -47,8 +58,14 @@ msgid "Use at your own risk"
 msgstr "使用风险自负"
 
 #: ../../index.md:22
-msgid "minacode edits files and runs shell commands in the directory where you start it. It has **no sandbox of its own**. Run it inside a container, VM, or another isolated environment when you need isolation. See [Safety](safety.md)."
-msgstr "minacode 会在启动目录中编辑文件并执行 shell 命令，**自身不提供 sandbox**。需要隔离时，请在容器、虚拟机或其他隔离环境中运行。参见[安全](safety.md)。"
+msgid ""
+"minacode edits files and runs shell commands in the directory where you "
+"start it. It has **no sandbox of its own**. Run it inside a container, "
+"VM, or another isolated environment when you need isolation. See "
+"[Safety](safety.md)."
+msgstr ""
+"minacode 会在启动目录中编辑文件并执行 shell 命令，**自身不提供 "
+"sandbox**。需要隔离时，请在容器、虚拟机或其他隔离环境中运行。参见[安全](safety.md)。"
 
 #: ../../index.md:27
 msgid "Install and run"
@@ -99,8 +116,12 @@ msgid "**[Sessions](usage.md#sessions)**"
 msgstr "**[Session](usage.md#sessions)**"
 
 #: ../../index.md:40
-msgid "Your work is saved and resumable with `-c` or `--resume`."
-msgstr "工作会自动保存，可通过 `-c` 或 `--resume` 恢复。"
+msgid ""
+"Your work is saved, named, and resumable with `/sessions`, `-c`, or "
+"`--resume`."
+msgstr ""
+"工作会自动保存并命名，可通过 `/sessions`、`-c` 或 `-"
+"-resume` 恢复。"
 
 #: ../../index.md:40
 msgid "**[MCP](mcp.md)**"
@@ -125,3 +146,4 @@ msgstr "**[配置](configuration.md)**"
 #: ../../index.md:40
 msgid "Providers, runtime settings, and data location."
 msgstr "Provider、runtime 设置和数据目录。"
+

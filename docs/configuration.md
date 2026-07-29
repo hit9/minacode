@@ -112,5 +112,9 @@ Sessions live under `<data_dir>/projects/<project>/`, one directory per working 
 holds that project's session logs and a `latest` pointer, so a resume stays scoped to the project
 it belongs to. A project directory is removed once its last session expires.
 
+Beside each log sits a small `<uid>.meta.json` holding what the session picker shows — name,
+opening line, round count. The log stays the source of truth; deleting a sidecar only costs that
+session its label in the list.
+
 `<data_dir>/history.txt` holds the input history that Up and Ctrl-P recall, across every project.
 It is capped at 512 KB, keeping the most recent entries.

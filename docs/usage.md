@@ -144,6 +144,11 @@ Switching providers and models mid-session.
 
 ### Managing the session
 
+**`/name [TEXT]`** — Show or set this session's name. See [Names](#names).
+
+**`/sessions [all]`** — Browse saved sessions and re-enter one; `/resume` is the same command.
+See [Switching sessions](#switching-sessions).
+
 **`/compact`** — Summarize and shrink the conversation immediately. minacode keeps
 long sessions within budget on its own, but `/compact` trims on demand.
 
@@ -260,17 +265,55 @@ indefinitely.
 Resume from the command line:
 
 ```sh
-minacode -c            # resume the latest session in this project
-minacode --resume      # same, explicit
-minacode --resume UID  # resume a specific session by id, from any directory
+minacode -c              # resume the latest session in this project
+minacode --resume        # same, explicit
+minacode --resume UID    # resume a specific session by id, from any directory
+minacode --resume "fd leak"   # or by name, or by the first few characters of an id
 ```
 
 Sessions are stored per project, so `-c` and a bare `--resume` never reach into another project's
 history — even when your most recent session anywhere was somewhere else. A `UID` is looked up
 across every project, so you can resume one by id from wherever you are.
 
+A name or id prefix is searched in the current project first, then everywhere — you can resume a
+session by name after moving directories. When a query matches more than one session, minacode
+<span class="marker">lists the candidates instead of guessing</span> between them.
+
 Resuming replays the conversation into your scrollback, including the diff each edit made. Long
 diffs are trimmed there; `/diff` always has the full text.
+
+### Names
+
+Every session has a name, so you have something to recognize it by later. It starts as the first
+line you typed, becomes the agent's current goal once it has one, and stays whatever you set with
+`/name`:
+
+```text
+/name                 # show the current name and where it came from
+/name auth refactor   # set your own; nothing overwrites it afterwards
+```
+
+A name is a label, not an identity — sessions may share one, and the id is what makes each unique.
+Names are decided once rather than re-read from the conversation, so a session you found under one
+name yesterday is still under it today, even after its early messages have been compacted away.
+
+### Switching sessions
+
+`/sessions` — or `/resume`, the same command — lists what is saved, newest first, with how long ago
+each was touched and how many rounds it ran. Type to filter across names and opening lines, and
+press Enter to re-enter one:
+
+<div class="term-shot" role="img" aria-label="The session picker: a searchable list of saved sessions, each showing its name, age, and round count, with the current session marked, above a preview of the highlighted session's id, opening message, and directory."><span class="fs-divider">──── Sessions ─────────────────────────────</span><span class="fs-sel">&gt; port the tool runner to asyncio<span class="fs-i fs-dim">  ·  2h ago · 14 rounds</span></span><span class="fs-dim">  split the large test modules<span class="fs-i fs-dim">  ·  yesterday · 31 rounds</span></span><span class="fs-dim">  fix the fd leak in MCPFileTokenStore<span class="fs-i fs-dim">  ·  3d ago · 1 round</span></span><span class="fs-dim">  what I am doing right now<span class="fs-i fs-dim">  ·  just now · 2 rounds · current</span></span><span> </span><span class="fs-dim">  uid   20260728074943-e22e69e8-070</span><span class="fs-dim">  start port the tool runner to asyncio, starting with Bash</span><span class="fs-dim">  where ~/dev/github/minacode</span><span> </span><span class="fs-hint">  ↑/↓ or j/k move · / search · Enter open · Esc close</span></div>
+
+`/sessions all` widens the list past the current project, adding each session's directory to its
+row. Choosing a session ends the current one — it is saved first — and starts the next in its
+place, exactly as if you had launched with `--resume`. Choosing the session you are already in, or
+pressing `Esc`, changes nothing.
+
+Run it from the prompt between turns. While the agent is working, minacode says so and asks you to
+press `Ctrl-C` first: switching sessions mid-turn would abandon a request already in flight.
+
+Sessions saved before names existed list under their id until the next time they are saved.
 
 ### Reviewing changes
 

@@ -49,7 +49,7 @@ Working through a repository task in an interactive session.
 |---|---|
 | **[Interaction](usage.md)** | Follow-ups, commands, keys — how you drive the agent. |
 | **[Tools](tools.md)** | Read, search, navigate code; edit files; run commands; background jobs. |
-| **[Sessions](usage.md#sessions)** | Your work is saved and resumable with `-c` or `--resume`. |
+| **[Sessions](usage.md#sessions)** | Your work is saved, named, and resumable with `/sessions`, `-c`, or `--resume`. |
 | **[MCP](mcp.md)** | Connect external Model Context Protocol servers and use their tools. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |
 | **[Configuration](configuration.md)** | Providers, runtime settings, and data location. |
