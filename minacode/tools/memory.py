@@ -282,3 +282,47 @@ class NoteTool(Tool):
             if known:
                 lines.extend(["known:", *(f"  {item}" for item in known)])
         return ["\n".join(lines) or "{}"]
+
+
+class NextHintsTool(Tool):
+    NAME = "NextHints"
+    DESCRIPTION = (
+        "Offer 2-3 short next-step prompts shown to the user after your answer. "
+        "Call it only once you have finished the turn's work and know your answer; base the prompts on what you completed and the resulting task state, not on wording you have not written yet. "
+        "Use sparingly: only at a natural stopping point when genuinely useful follow-ups exist; most turns need none, so call nothing then. "
+        "Call it in the same response as your final answer: output your answer text together with this call, and the turn ends right there. "
+        "Each input is a complete short one-line message the user would send; never restate what was just done."
+    )
+    STORES_RESULT = False
+    MAX_HINTS: ClassVar[int] = 4
+    MAX_LEN: ClassVar[int] = 80
+
+    @classmethod
+    def params_schema(cls) -> Json:
+        # fmt: off
+        return cls.object_schema({
+            "inputs": {"type": "array", "items": {"type": "string"}, "description": 'Short one-line next-step prompts to offer, e.g. ["run the tests", "show the diff"]'},
+        }, ["inputs"])
+        # fmt: on
+
+    def call(self) -> str:
+        data = self.single_dict_arg("NextHints requires named fields")
+        if unexpected := sorted(set(data) - {"inputs"}):
+            raise ToolError("NextHints unexpected field: " + ", ".join(unexpected))
+        raw = data.get("inputs")
+        if not isinstance(raw, list):
+            raise ToolError('NextHints inputs must be an array of strings, e.g. {"inputs":["run the tests"]}')
+        hints = list(dict.fromkeys(Tool.compact(item, self.MAX_LEN) for item in raw if str(item).strip()))[: self.MAX_HINTS]
+        if not hints:
+            raise ToolError("NextHints inputs must contain at least one non-empty string")
+        self.session.set_quick_hints(hints)
+        return f"Offered {len(hints)} quick input(s)"
+
+    def short_args(self) -> list[str]:
+        data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
+        inputs = data.get("inputs")
+        if isinstance(inputs, list):
+            items = [Tool.compact(item, 120) for item in inputs if str(item).strip()]
+            if items:
+                return ["inputs:\n" + "\n".join(f"  - {item}" for item in items)]
+        return ["{}"]

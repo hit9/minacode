@@ -726,6 +726,54 @@ def test_agent_emits_and_records_intermediate_content_before_tools(tmp_path):
     assert any("I'll inspect that first." in (message.get("content") or "") for message in agent.model.messages[1])
 
 
+def test_terminal_next_hints_recognizes_all_next_hints_batch(tmp_path):
+    agent = Agent(session(tmp_path), output_fn=lambda text: None)
+    assert agent.terminal_next_hints([call("NextHints", [{"inputs": ["x"]}])])
+    assert agent.terminal_next_hints([call("NextHints", [{"inputs": ["x"]}]), call("NextHints", [{"inputs": ["y"]}])])
+    assert not agent.terminal_next_hints([call("NextHints", [{"inputs": ["x"]}]), call("Read", [{"path": "f"}])])
+    assert not agent.terminal_next_hints([])
+
+
+def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(tmp_path):
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda text: None)
+    turn_messages = [{"role": "user", "content": "hi"}]
+    assistant = {"role": "assistant", "content": "the answer"}
+    calls = [call("NextHints", [{"inputs": ["run tests", "show diff"]}])]
+
+    assert agent.finish_with_next_hints(turn_messages, assistant, calls, "the answer", 0) == "the answer"
+    assert s.quick_hints == ("run tests", "show diff")
+    # user, tool-bearing assistant (no content), tool result, plain final answer
+    assert [m["role"] for m in s.messages] == ["user", "assistant", "tool", "assistant"]
+    assert s.messages[-1]["content"] == "the answer"
+    assert "tool_calls" not in s.messages[-1]
+    assert s.messages[-3].get("content") is None
+    assert [c["function"]["name"] for c in s.messages[-3]["tool_calls"]] == ["NextHints"]
+    assert [m.get("content") for m in s.messages if m.get("role") == "assistant" and m.get("content")] == ["the answer"]
+
+
+def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_path):
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
+            return {"role": "assistant", "content": "all done"}, [call("NextHints", [{"inputs": ["run tests"]}])], "all done"
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == "all done"
+    assert len(agent.model.messages) == 1  # finished on the first call, no extra round trip
+    assert s.quick_hints == ("run tests",)
+    assert [m["role"] for m in s.messages] == ["user", "assistant", "tool", "assistant"]
+    assert s.messages[-1]["content"] == "all done"
+    assert "tool_calls" not in s.messages[-1]
+
+
 def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda text: None)

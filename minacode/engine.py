@@ -76,6 +76,7 @@ class Agent:
 
     def run(self, user_input: str | UserInput) -> str:
         self.cancel_requested.clear()
+        self.session.clear_quick_hints()  # a new turn invalidates whatever the previous turn offered
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
         tool_batches = 0
@@ -150,6 +151,8 @@ class Agent:
                     answer = content.strip()
                     self.finish_turn(turn_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
+                if content.strip() and self.terminal_next_hints(tool_calls):
+                    return self.finish_with_next_hints(turn_messages, assistant, tool_calls, content, tool_batches)
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)
                 turn_messages.append(assistant)
                 if content.strip():
@@ -182,6 +185,28 @@ class Agent:
         self.session.messages.extend([*turn_messages, assistant])
         self.session._active_turn_messages.clear()
         self.session.state.turn_messages = 0
+
+    def terminal_next_hints(self, tool_calls: list[ToolCall]) -> bool:
+        """True when a batch is nothing but NextHints calls — a terminal batch that ends the turn."""
+        return bool(tool_calls) and all(call.name == "NextHints" for call in tool_calls)
+
+    def finish_with_next_hints(self, turn_messages: list[Json], assistant: Json, tool_calls: list[ToolCall], content: str, tool_batches: int) -> str:
+        """Run an all-NextHints batch and finish the turn with `content` in a single model call.
+
+        The tool-bearing assistant message keeps only the calls; the answer becomes its own final
+        message so it appears exactly once in history."""
+        answer = content.strip()
+        tool_message = dict(assistant or {})
+        tool_message["content"] = None
+        tool_message.pop("tool_calls", None)
+        turn_messages.append(self.assistant_turn_message(tool_message, tool_calls, ""))
+        batches = tool_batches + 1
+        turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else ""))
+        self.raise_if_cancelled()
+        final_message = dict(assistant or {})
+        final_message.pop("tool_calls", None)
+        self.finish_turn(turn_messages, self.assistant_turn_message(final_message, [], answer))
+        return answer
 
     def settle_interrupted_turn(self, turn_messages: list[Json]) -> None:
         """Settle a turn the user interrupted with Ctrl-C.

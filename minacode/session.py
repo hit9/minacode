@@ -962,6 +962,7 @@ class Session:
     tool_records: list[ToolResultRecord] = field(default_factory=list)
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[QueuedInput] = field(default_factory=list)
+    quick_hints: tuple[str, ...] = field(default_factory=tuple)  # transient offered next-step inputs; never serialized, cleared each turn
     tool_counter: int = 0
     turn_diffs: list[TurnDiff] = field(default_factory=list)
     history: list[HistorySegment] = field(default_factory=list)
@@ -1092,6 +1093,15 @@ class Session:
         with self._queue_lock:
             for item in self.pending_user_inputs:
                 item.inflight = False
+
+    def set_quick_hints(self, hints: list[str]) -> None:
+        """Transient next-step inputs offered at the idle prompt; replaced wholesale, never snapshotted."""
+        with self._queue_lock:
+            self.quick_hints = tuple(hints)
+
+    def clear_quick_hints(self) -> None:
+        with self._queue_lock:
+            self.quick_hints = ()
 
     @staticmethod
     def net_diff_for_path(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:

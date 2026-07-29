@@ -146,6 +146,7 @@ class TuiApp:
         status_fragments_fn: Callable[[], StyleAndTextTuples] | None = None,
         activity_fragments_fn: Callable[[], StyleAndTextTuples] | None = None,
         input_hint_fn: Callable[[], str] | None = None,
+        quick_hints_fn: Callable[[], tuple[str, ...]] | None = None,
         editor_context_fn: Callable[[], str] | None = None,
         images: ImageInputs | None = None,
         image_cwd: str = "",
@@ -164,6 +165,7 @@ class TuiApp:
         self.status_fragments_fn: Callable[[], StyleAndTextTuples] = status_fragments_fn or list
         self.activity_fragments_fn: Callable[[], StyleAndTextTuples] = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
+        self.quick_hints_fn: Callable[[], tuple[str, ...]] = quick_hints_fn or (lambda: ())
         self.editor_context_fn = editor_context_fn or (lambda: "")
         self.images = images if images is not None else ImageInputs(cwd=image_cwd)
         self.input_images: tuple[ImageRef, ...] = ()
@@ -184,6 +186,7 @@ class TuiApp:
         self.app: Application | None = None
         self.ready = threading.Event()
         self.input_mode = "chat"  # chat | dispatch | running | approval
+        self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
         self.input_prompt = UiPrinter.PROMPT_PREFIX
         self._input_pending: threading.Event | None = None
         self._input_result: str = ""
@@ -246,6 +249,7 @@ class TuiApp:
     def _set_mode(self, mode: str, prompt: str) -> None:
         self.input_mode = mode
         self.input_prompt = prompt
+        self.quick_hint_focus = -1
         if mode not in {"chat", "running"}:
             self.input_error = ""
         self.invalidate()
@@ -320,6 +324,9 @@ class TuiApp:
         self._schedule(close)
 
     def _accept(self, buffer: Buffer) -> bool:
+        if self.input_mode == "chat" and not buffer.text.strip() and 0 <= self.quick_hint_focus < len(self.quick_hints()):
+            self._reset_input(self.quick_hints()[self.quick_hint_focus])
+            self.quick_hint_focus = -1
         text = buffer.text
         if self.input_mode == "approval" and self._input_pending is not None:
             self._input_result = text
@@ -379,6 +386,43 @@ class TuiApp:
             self.input_buffer.reset(Document(str(user_input), cursor_position=position))
         finally:
             self._changing_input = False
+
+    def quick_hints(self) -> tuple[str, ...]:
+        return self.quick_hints_fn()
+
+    def quick_hint_fragments(self) -> StyleAndTextTuples:
+        hints = self.quick_hints()
+        if not hints:
+            return []
+        parts: StyleAndTextTuples = []
+        for index, hint in enumerate(hints):
+            if index:
+                parts.append(("class:quickhint", "  "))
+            style = "class:quickhint.focused" if index == self.quick_hint_focus else "class:quickhint"
+            parts.append((style, f" {hint} "))
+        return parts
+
+    def cycle_quick_hint_focus(self, reverse: bool = False) -> None:
+        count = len(self.quick_hints())
+        if not count:
+            return
+        focus = self.quick_hint_focus + (-1 if reverse else 1)
+        if focus >= count or focus < -1:
+            focus = count - 1 if reverse else -1
+        self.quick_hint_focus = focus
+        self.invalidate()
+
+    def tab_or_complete(self, buffer: Buffer, *, reverse: bool) -> None:
+        # On an empty idle prompt Tab cycles the offered quick inputs; anywhere else it completes.
+        if not reverse and self.input_mode == "chat" and not buffer.text and buffer.complete_state is None and self.quick_hints():
+            self.cycle_quick_hint_focus()
+            return
+        self.complete_input(buffer, reverse=reverse)
+
+    def placeholder_text(self) -> str:
+        if self.input_mode == "chat" and self.quick_hints():
+            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter submits"
+        return self.input_hint_fn()
 
     def _sync_input_images(self, buffer: Buffer) -> None:
         text = buffer.text
@@ -543,7 +587,7 @@ class TuiApp:
             HighlightIncrementalSearchProcessor(),
             ImageLabelProcessor(lambda: self.input_images),
             BeforeInput(self.status_fragments),
-            CallbackPlaceholder(self.input_hint_fn),
+            CallbackPlaceholder(self.placeholder_text),
         ]
         self.input_window = Window(
             BufferControl(
@@ -580,6 +624,10 @@ class TuiApp:
         modal_active = Condition(lambda: self.modal is not None)
         exclusive_active = Condition(lambda: self.modal is not None and self.modal.exclusive)
         idle = Condition(lambda: self.input_mode == "chat")
+        quick_hints_row = ConditionalContainer(
+            Window(FormattedTextControl(self.quick_hint_fragments), height=1, dont_extend_height=True),
+            filter=idle & Condition(lambda: bool(self.quick_hints())),
+        )
         normal_region = ConditionalContainer(
             HSplit(
                 [
@@ -588,6 +636,7 @@ class TuiApp:
                     running_gap_below,
                     input_error,
                     self.input_window,
+                    quick_hints_row,
                     completion_space,
                     self.search_toolbar,
                     Window(height=1, dont_extend_height=True),
@@ -638,7 +687,7 @@ class TuiApp:
         bindings.add("enter", filter=~modal, eager=True)(lambda event: event.current_buffer.validate_and_handle())
         bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
         for key, reverse in (("tab", False), ("s-tab", True)):
-            bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.complete_input(event.current_buffer, reverse=reverse))
+            bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.tab_or_complete(event.current_buffer, reverse=reverse))
 
         def paste(event):
             event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))

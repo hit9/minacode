@@ -326,6 +326,19 @@ def test_queue_command_runs_yolo_toggle(tmp_path):
     assert s.pending_user_inputs == []
 
 
+def test_queue_command_runs_hints_toggle(tmp_path):
+    """/hints flips the quick hints flag from the queue while the agent works."""
+    s = session(tmp_path)
+    out = []
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
+
+    before = s.settings.quick_hints
+    loop.run_queued_command("/hints")
+
+    assert s.settings.quick_hints is (not before)
+    assert s.pending_user_inputs == []
+
+
 def test_queue_command_rejects_mutating(tmp_path):
     """A state-mutating slash command is refused while the agent works, not queued or run."""
     s = session(tmp_path)

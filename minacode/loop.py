@@ -206,7 +206,7 @@ class CommandLoop:
         "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
         "/skills": "skills_command", "/config": "config",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
-        "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
+        "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict", "/hints": "hints",
         "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command", "/resume": "sessions_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
@@ -214,7 +214,7 @@ class CommandLoop:
 
     # Commands safe to run from the follow-up input while the agent works: read-only
     # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/diff", "/yolo", "/resend"})
+    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/diff", "/yolo", "/hints", "/resend"})
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -245,6 +245,7 @@ class CommandLoop:
 - `/api [API]` — Select or set the request protocol used to reach the model.
 - `/set KEY VALUE` — Set `provider.*` and `runtime.*`.
 - `/yolo` — Toggle tool confirmations.
+- `/hints` — Toggle next-step quick hints.
 - `/strict` — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 - `/mcp` — Manage MCP server connections.
 - `/exit`, `/quit` — Exit.
@@ -824,6 +825,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 "queue.rule": rule,
                 **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("divider.glow", "divider.rule", self.GLOW_STEPS))},
                 "queue.hint": "ansibrightblack",
+                "quickhint": "ansibrightblack",
+                "quickhint.focused": "reverse",
                 "image.attachment": "ansicyan bold",
                 "input.error": "ansired",
                 "divider.working": "ansimagenta bold",
@@ -1819,6 +1822,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.session.settings.yolo = not self.session.settings.yolo
         return "yolo: " + ("on" if self.session.settings.yolo else "off")
 
+    def hints(self, args: str) -> str:
+        self.session.settings.quick_hints = not self.session.settings.quick_hints
+        return "quick hints: " + ("on" if self.session.settings.quick_hints else "off")
+
     def strict(self, args: str) -> str:
         if args:
             return "Usage: /strict"
@@ -1934,6 +1941,7 @@ class TuiRuntime:
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
             activity_fragments_fn=self.loop.tui_activity_fragments,
             input_hint_fn=self.loop.tui_input_hint,
+            quick_hints_fn=lambda: self.loop.session.quick_hints if self.loop.session.settings.quick_hints else (),
             editor_context_fn=self.loop.editor_context,
             images=self.loop.session.images,
             history=self.loop.input_history,
@@ -2023,6 +2031,7 @@ class TuiRuntime:
             except queue.Empty:
                 continue
             self.main_busy.set()
+            self.loop.session.clear_quick_hints()  # the user acted; drop last turn's offerings (also covers slash commands, which skip Agent.run)
             if self.cancel_pending.is_set():
                 self.loop.emit("Cancelled")
                 self.reset_turn()

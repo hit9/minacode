@@ -5,12 +5,12 @@ import code_symbol_index as csi
 import pytest
 
 import minacode
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole, RuntimeSettings, ToolCall, ToolError
 from minacode.context import ContextManager
 from minacode.model import ModelClient
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
-from minacode.session import HistorySegment, Session
+from minacode.session import HistorySegment, Session, SessionSnapshotCodec
 from minacode.tools import (
     TOOL_REGISTRY,
     TOOLS,
@@ -20,6 +20,7 @@ from minacode.tools import (
     EditTool,
     InspectCodeTool,
     MCPTool,
+    NextHintsTool,
     NoteTool,
     ReadTool,
     RecallContextTool,
@@ -846,6 +847,65 @@ def test_note_tool_validates_before_mutating_state(tmp_path):
 
     with pytest.raises(ToolError, match="Note replace_plan status must be one of"):
         NoteTool(s, [{"replace_plan": [{"status": "started", "text": "inspect"}]}]).call()
+
+
+def test_suggest_tool_sets_transient_quick_hints(tmp_path):
+    s = session(tmp_path)
+    assert NextHintsTool(s, [{"inputs": ["run the tests", "show the diff"]}]).call() == "Offered 2 quick input(s)"
+    assert s.quick_hints == ("run the tests", "show the diff")
+
+
+def test_suggest_tool_dedupes_and_caps(tmp_path):
+    s = session(tmp_path)
+    NextHintsTool(s, [{"inputs": ["a", "a", "b", "c", "d", "e"]}]).call()
+    assert s.quick_hints == ("a", "b", "c", "d")
+
+
+def test_suggest_tool_validates_before_writing(tmp_path):
+    s = session(tmp_path)
+    with pytest.raises(ToolError, match="inputs must be an array"):
+        NextHintsTool(s, [{"inputs": "run"}]).call()
+    with pytest.raises(ToolError, match="at least one non-empty"):
+        NextHintsTool(s, [{"inputs": ["  "]}]).call()
+    with pytest.raises(ToolError, match="unexpected field"):
+        NextHintsTool(s, [{"inputs": ["a"], "extra": 1}]).call()
+    assert s.quick_hints == ()
+
+
+def test_suggest_tool_does_not_store_result():
+    assert NextHintsTool.STORES_RESULT is False
+
+
+def test_suggest_tool_short_args(tmp_path):
+    tool = NextHintsTool(session(tmp_path), [{"inputs": ["run the tests", "show the diff"]}])
+    assert tool.short_args() == ["inputs:\n  - run the tests\n  - show the diff"]
+
+
+def test_quick_hints_are_transient_and_never_serialized(tmp_path):
+    s = session(tmp_path)
+    s.set_quick_hints(["run the tests", "show the diff"])
+    assert s.quick_hints == ("run the tests", "show the diff")
+    snapshot = SessionSnapshotCodec.snapshot(s, {})
+    assert "quick_hints" not in snapshot
+    assert "quick_hints" not in snapshot["state"]
+    s.clear_quick_hints()
+    assert s.quick_hints == ()
+
+
+def test_runtime_settings_quick_hints_default_and_override():
+    assert RuntimeSettings.from_dict({}).quick_hints is True
+    assert RuntimeSettings.from_dict({"runtime": {"quick_hints": False}}).quick_hints is False
+
+
+def test_resolved_schemas_hide_next_hints_when_disabled(tmp_path):
+    s = session(tmp_path)
+
+    def names():
+        return {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
+
+    assert "NextHints" in names()
+    s.settings.quick_hints = False
+    assert "NextHints" not in names()
 
 
 def test_read_and_search_success_paths(tmp_path):

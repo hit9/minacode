@@ -343,6 +343,7 @@ class RuntimeSettings:
     # Max read-only tool calls from one model batch to execute concurrently; 1 disables parallelism.
     max_parallel_tools: int = 4
     yolo: bool = False
+    quick_hints: bool = True
     theme: str = "auto"
 
     @classmethod
@@ -356,6 +357,7 @@ class RuntimeSettings:
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
+            quick_hints=Config.bool(runtime, "quick_hints", True),
             theme=theme or Config.str(runtime, "theme", "auto"),
         )
 

@@ -1057,3 +1057,71 @@ def test_interactive_tui_choice_ctrl_c_reports_cancellation(monkeypatch, tmp_pat
 
     assert result == [None]
     assert output == ["Cancelled"]
+
+
+def quick_hint_app(hints=("run the tests", "show the diff", "commit")):
+    submitted = []
+    app = TuiApp(on_chat_submit=submitted.append, quick_hints_fn=lambda: hints)
+    app.set_idle()
+    return app, submitted
+
+
+def test_quick_hint_tab_cycles_focus_and_wraps():
+    app, _ = quick_hint_app()
+    assert app.quick_hint_focus == -1
+    for expected in (0, 1, 2, -1):
+        app.tab_or_complete(app.input_buffer, reverse=False)
+        assert app.quick_hint_focus == expected
+
+
+def test_quick_hint_tab_falls_through_to_completion_with_text():
+    app, _ = quick_hint_app()
+    app.input_buffer.insert_text("/mod")
+    app.tab_or_complete(app.input_buffer, reverse=False)
+    assert app.quick_hint_focus == -1
+
+
+def test_quick_hint_tab_ignored_without_hints():
+    app, _ = quick_hint_app(())
+    app.tab_or_complete(app.input_buffer, reverse=False)
+    assert app.quick_hint_focus == -1
+
+
+def test_quick_hint_enter_submits_focused_chip():
+    app, submitted = quick_hint_app()
+    app.quick_hint_focus = 1
+    app._accept(app.input_buffer)
+    assert [str(value) for value in submitted] == ["show the diff"]
+    assert app.quick_hint_focus == -1
+
+
+def test_quick_hint_enter_on_empty_unfocused_input_does_nothing():
+    app, submitted = quick_hint_app()
+    app._accept(app.input_buffer)
+    assert submitted == []
+
+
+def test_quick_hint_fragments_highlight_focused_chip():
+    app, _ = quick_hint_app(("a", "b"))
+    assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint", "  "), ("class:quickhint", " b ")]
+    app.quick_hint_focus = 0
+    assert ("class:quickhint.focused", " a ") in app.quick_hint_fragments()
+
+
+def test_quick_hint_placeholder_hints_keys_until_focused():
+    app, _ = quick_hint_app()
+    assert app.placeholder_text() == "Tab cycles suggestions \u00b7 Enter submits"
+    app.quick_hint_focus = 0
+    assert app.placeholder_text() == ""
+
+
+def test_quick_hint_placeholder_falls_back_without_hints():
+    app, _ = quick_hint_app(())
+    assert app.placeholder_text() == app.input_hint_fn()
+
+
+def test_quick_hint_mode_change_resets_focus():
+    app, _ = quick_hint_app()
+    app.quick_hint_focus = 2
+    app.set_running("working")
+    assert app.quick_hint_focus == -1
