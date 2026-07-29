@@ -906,6 +906,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         """
         promote = ""
         tui = self.tui
+        if kind == "output_done" and self.session.has_inflight_user_inputs():
+            # A request that carried live follow-ups logs them to scrollback only once it returns,
+            # so promoting here would place the response above the message it answers. Leave the
+            # preview standing and let the ordinary post-request output keep the transcript ordered.
+            return
         with self.model_stream_lock:
             if kind == "output_done":
                 promote = text.strip()

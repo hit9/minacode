@@ -953,6 +953,10 @@ class Session:
         with self._queue_lock:
             self.pending_user_inputs = [item for item in self.pending_user_inputs if item not in inputs]
 
+    def has_inflight_user_inputs(self) -> bool:
+        with self._queue_lock:
+            return any(item.inflight for item in self.pending_user_inputs)
+
     def release_user_inputs(self) -> None:
         with self._queue_lock:
             for item in self.pending_user_inputs:

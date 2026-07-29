@@ -36,6 +36,7 @@ from minacode.base import (
     MinacodeError,
     ProviderConfig,
     Text,
+    ToolCall,
 )
 from minacode.engine import Agent
 from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
@@ -933,6 +934,41 @@ def test_non_tui_stream_completion_keeps_normal_agent_output(tmp_path, monkeypat
     command_loop.agent_output("completed response")
 
     assert emitted == ["completed response"]
+
+
+def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()  # no running application: scrollback writes run inline
+    timeline = []
+    monkeypatch.setattr(command_loop, "emit_agent_output", lambda text: timeline.append(("assistant", text)))
+    monkeypatch.setattr(command_loop, "flush_queued_to_log", lambda texts: timeline.append(("user", list(texts))))
+    command_loop.agent.on_queue_flush = command_loop.flush_queued_to_log
+    command_loop.session.enqueue_user_input("also update the README")
+
+    class FakeModel:
+        on_stream = None
+
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, messages, tools=None):
+            self.calls += 1
+            if self.calls > 1:
+                return {"role": "assistant", "content": "done"}, [], "done"
+            # The follow-up rides along with this request, so its answer must not reach scrollback
+            # before the request returns and logs the message that prompted it.
+            command_loop.model_stream_output("output_done", "Sure, editing both files.")
+            return {}, [ToolCall("call_1", "Bash", ["ls"])], "Sure, editing both files."
+
+        def estimated_request_tokens(self, messages, tools=None):
+            return 10
+
+    command_loop.agent.model = FakeModel()
+    command_loop.agent.context.model = None
+
+    assert command_loop.agent.run("update the code") == "done"
+
+    assert timeline == [("user", ["also update the README"]), ("assistant", "Sure, editing both files.")]
 
 
 def test_tui_turn_reset_clears_unconsumed_stream_promotion(tmp_path):
