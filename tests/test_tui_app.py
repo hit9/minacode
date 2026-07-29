@@ -95,7 +95,7 @@ def ctrl_c_queue_scenario(cwd, results):
                     elapsed.append(time.monotonic() - began)
                     command_loop.tui.input_buffer.reset(Document(""))
                     pipe_input.send_text("\x04")
-                except BaseException as error:
+                except BaseException as error:  # noqa: BLE001 - harness collects every driver-thread failure
                     driver_errors.append(repr(error))
                     if first_running.is_set():
                         os.kill(os.getpid(), signal.SIGINT)
@@ -123,7 +123,7 @@ def ctrl_c_queue_scenario(cwd, results):
                 "return_code": return_code,
             }
         )
-    except BaseException as error:
+    except BaseException as error:  # noqa: BLE001 - surface every failure from the TUI thread onto the test
         results.put({"fatal": repr(error)})
 
 

@@ -70,7 +70,7 @@ def run_interactive_tui(monkeypatch, tui, *, text="", drive=None, output=None, a
             def run_driver():
                 try:
                     drive(pipe_input)
-                except BaseException as error:
+                except BaseException as error:  # noqa: BLE001 - harness collects every driver-thread failure
                     driver_errors.append(error)
                     if tui.app is not None:
                         tui.app.loop.call_soon_threadsafe(tui.app.exit)

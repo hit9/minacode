@@ -498,7 +498,7 @@ def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
     def request():
         try:
             model.request([{"role": "user", "content": "hello"}], [])
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - harness collects every thread failure, KeyboardInterrupt included
             errors.append(error)
 
     thread = threading.Thread(target=request)

@@ -392,7 +392,7 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
         try:
             _assistant, _calls, content = command_loop.agent.model.request([{"role": "user", "content": "make the change"}], [])
             command_loop.agent_output(content)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - harness collects every worker-thread failure
             worker_errors.append(error)
         finally:
             request_finished.set()
