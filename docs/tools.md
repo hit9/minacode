@@ -97,6 +97,14 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     <div class="term-shot" role="img" aria-label="An Ask prompt: the question, then a selector listing two choices with the recommended one pre-selected, and a preview line for the highlighted choice."><span class="fs-user">Which approach?</span><span> </span><span>Select:</span><span class="fs-dim">  j/k move, / search, Esc/q back/cancel</span><span class="fs-sel">&gt;  1. Refactor <span class="fs-i fs-add">(recommended)</span></span><span class="fs-dim">   2. Rewrite</span><span class="fs-dim">  │ Extract module +87 -12</span></div>
 
     Pressing `Esc` declines the question; typing instead of choosing answers in free text.
+* - **`NextHints`**
+  - Offers 2–3 short next-step prompts the model suggests after its answer. They appear as
+    selectable chips at the idle prompt; `Tab` cycles focus, `Enter` submits, and `/hints`
+    toggles them off. An all-`NextHints` batch ends the turn in a single model call.
+
+    <div class="term-shot" role="img" aria-label="A terminal at the idle prompt after a NextHints call: the answer text above, then an empty prompt with a caret, a gap line, and one horizontal row of three cyan suggestion chips separated by grey bars with the middle chip highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
+
+    `Tab` moves the highlight; `Enter` submits the focused chip as your next message.
 * - **`Skill`**
   - Loads an installed skill's full instructions when needed. It appears only when skills are
     installed; see [Skills](skills.md).

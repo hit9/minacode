@@ -5,7 +5,16 @@ import code_symbol_index as csi
 import pytest
 
 import minacode
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, RuntimeSettings, ToolCall, ToolError
+from minacode.base import (
+    ConfigFile,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
+    RuntimeSettings,
+    ToolCall,
+    ToolError,
+)
 from minacode.context import ContextManager
 from minacode.model import ModelClient
 from minacode.render import UiPrinter
@@ -897,6 +906,7 @@ def test_quick_hints_are_transient_and_never_serialized(tmp_path):
 def test_runtime_settings_quick_hints_default_and_override():
     assert RuntimeSettings.from_dict({}).quick_hints is True
     assert RuntimeSettings.from_dict({"runtime": {"quick_hints": False}}).quick_hints is False
+    assert "# quick_hints = true" in ConfigFile.DEFAULT_TEXT
 
 
 def test_resolved_schemas_hide_next_hints_when_disabled(tmp_path):

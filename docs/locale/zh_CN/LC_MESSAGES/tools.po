@@ -203,6 +203,23 @@ msgstr "在确实需要用户决定时暂停。问题可以包含选项和推荐
 msgid "Pressing `Esc` declines the question; typing instead of choosing answers in free text."
 msgstr "按 `Esc` 可拒绝问题；直接输入文字可自由回答，而不必选择预设项。"
 
+#: ../../tools.md:99
+msgid "**`NextHints`**"
+msgstr "**`NextHints`**"
+
+#: ../../tools.md:100
+msgid ""
+"Offers 2–3 short next-step prompts the model suggests after its answer. They appear as "
+"selectable chips at the idle prompt; `Tab` cycles focus, `Enter` submits, and `/hints` "
+"toggles them off. An all-`NextHints` batch ends the turn in a single model call."
+msgstr ""
+"在给出答案后提供 2-3 个简短的下一步提示。它们以可选 chip 形式出现在 idle 提示符处；"
+"`Tab` 循环高亮、`Enter` 提交，`/hints` 可开关。纯 `NextHints` 的工具批在一个模型调用内结束本轮。"
+
+#: ../../tools.md:106
+msgid "`Tab` moves the highlight; `Enter` submits the focused chip as your next message."
+msgstr "`Tab` 移动高亮；`Enter` 提交高亮的 chip 作为下一条消息。"
+
 #: ../../tools.md:95
 msgid "**`Skill`**"
 msgstr "**`Skill`**"

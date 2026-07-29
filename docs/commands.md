@@ -78,6 +78,9 @@ long sessions within budget on its own, but `/compact` trims on demand.
 **`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before turning
 this off permanently.
 
+**`/hints`** — Toggle the model's suggested next-step chips at the idle prompt (the
+`NextHints` tool). See [Tools](tools.md).
+
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)

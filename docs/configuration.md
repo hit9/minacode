@@ -90,6 +90,7 @@ Optional; the defaults shown are used when omitted.
 | Key | Default | Meaning |
 |---|---|---|
 | `yolo` | `false` | Start without confirmation prompts |
+| `quick_hints` | `true` | Let the model offer selectable next-step chips; toggle with `/hints` |
 | `max_context_tokens` | `245760` (240K) | Total context ceiling used to calculate the automatic-compaction budget |
 | `max_agent_steps` | `200` | Maximum tool steps in one turn |
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |

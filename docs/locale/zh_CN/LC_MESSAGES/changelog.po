@@ -77,6 +77,16 @@ msgstr ""
 "`--resume` 现在接受名称或 uid 前缀，而不只是完整 uid"
 "。当查询有歧义时，会列出匹配到的 session，而不是替你猜一个。"
 
+#: ../../../CHANGELOG.md:15
+msgid ""
+"The model can offer 2–3 short next-step prompts after its answer with "
+"`NextHints`; they show as selectable chips at the idle prompt (Tab "
+"cycles, Enter submits), `/hints` toggles them off, and an all-`NextHints`"
+" batch ends the turn in a single model call so the answer appears once."
+msgstr ""
+"模型可在回答后通过 `NextHints` 提供 2–3 个简短的下一步提示；它们会以可选择的 chip 形式显示在 idle "
+"提示符处（Tab 循环、Enter 提交），`/hints` 可将其关闭；纯 `NextHints` 工具批会在一次模型调用内结束本轮，使答案只显示一次。"
+
 #: ../../../CHANGELOG.md:17
 msgid ""
 "Cap model output at 8,192 tokens per request by default instead of "
@@ -85,6 +95,30 @@ msgid ""
 msgstr ""
 "默认将每次请求的模型输出限制为 8,192 tokens，而不是让兼容 provider 无上限生成；设置 "
 "`provider.max_tokens = 0` 可使用 provider 默认值。"
+
+#: ../../../CHANGELOG.md:22
+msgid ""
+"A successful `NextHints` call prints no call/result log line: its effect "
+"shows as chips at the idle prompt, so the line was noise. Failed calls "
+"still surface their error."
+msgstr ""
+"成功调用 `NextHints` 时不打印调用/结果日志行：其效果已显示为 idle 提示符处的 chip，因此该日志只是噪声。失败的调用仍会显示错误。"
+
+#: ../../../CHANGELOG.md:26
+msgid ""
+"Keep terminal `NextHints` turns from replaying the same provider response"
+" twice, which made the next Responses API request fail with a duplicate "
+"message ID."
+msgstr ""
+"避免终止型 `NextHints` 回合重复回放同一 provider response；此前会导致下一次 Responses API 请求因 message ID 重复而失败。"
+
+#: ../../../CHANGELOG.md:28
+msgid ""
+"Stop replaying a streamed answer at the end of a terminal `NextHints` "
+"turn. The batch promotes its answer into scrollback like any tool batch, "
+"but the post-turn emit then printed the same text again."
+msgstr ""
+"终止型 `NextHints` 回合结束时不再重复显示已流式输出的答案。该工具批会像其他工具批一样将答案提升到 scrollback，但回合结束后的输出此前又打印了一次相同文本。"
 
 #: ../../../CHANGELOG.md:17
 msgid "0.16.0 - 2026-07-29"

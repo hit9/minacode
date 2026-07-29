@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-29 09:37-0700\n"
+"POT-Creation-Date: 2026-07-29 10:34-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -347,6 +347,14 @@ msgid "Start without confirmation prompts"
 msgstr "启动时关闭确认提示"
 
 #: ../../configuration.md
+msgid "`quick_hints`"
+msgstr "`quick_hints`"
+
+#: ../../configuration.md
+msgid "Let the model offer selectable next-step chips; toggle with `/hints`"
+msgstr "允许模型提供可选择的下一步 chip；可用 `/hints` 切换"
+
+#: ../../configuration.md
 msgid "`max_context_tokens`"
 msgstr "`max_context_tokens`"
 
@@ -432,17 +440,17 @@ msgstr "`theme`"
 msgid "Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme`"
 msgstr "终端主题：`auto`、`light` 或 `dark`；`--theme` 可覆盖"
 
-#: ../../configuration.md:101
+#: ../../configuration.md:102
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:104
+#: ../../configuration.md:105
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:111
+#: ../../configuration.md:112
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -453,7 +461,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:115
+#: ../../configuration.md:116
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -464,7 +472,7 @@ msgstr ""
 "ssion 选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源"
 "；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:119
+#: ../../configuration.md:120
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "

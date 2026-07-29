@@ -477,6 +477,7 @@ model = ""
 
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false
+# quick_hints = true           # model-suggested next-step chips; toggle with /hints
 # max_context_tokens = 245760      # 240K
 # max_agent_steps = 200
 # shell_timeout = 60

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.16\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-29 07:33-0700\n"
+"POT-Creation-Date: 2026-07-29 10:35-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -178,10 +178,17 @@ msgid ""
 msgstr "**`/yolo`** — 切换操作确认。永久关闭前请阅读[安全](safety.md)。"
 
 #: ../../commands.md:81
+msgid ""
+"**`/hints`** — Toggle the model's suggested next-step chips at the idle "
+"prompt (the `NextHints` tool). See [Tools](tools.md)."
+msgstr ""
+"**`/hints`** — 切换 idle 提示符处由模型建议的下一步 chip（`NextHints` 工具）。参见[工具](tools.md)。"
+
+#: ../../commands.md:84
 msgid "**`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek)."
 msgstr "**`/strict`** — 切换严格 tool-call schema（OpenAI / DeepSeek）。"
 
-#: ../../commands.md:83
+#: ../../commands.md:86
 msgid ""
 "**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, "
 "`responses`, `anthropic`) used to reach the model. `/provider` and "
@@ -192,7 +199,7 @@ msgstr ""
 "选择或设置访问模型所用的请求协议（`auto`、`chat`、`responses`、`anthropic`）。`/provider` 和 "
 "`/model` 也会在各自的选择流程中确认该项，因为合适的协议取决于刚选定的模型。"
 
-#: ../../commands.md:87
+#: ../../commands.md:90
 msgid ""
 "An endpoint that serves several model families often exposes them on "
 "different protocols, and an OpenAI-compatible `/models` listing says "
@@ -206,7 +213,7 @@ msgstr ""
 "`/model` 列出的模型仍可能被拒绝为不受支持。出现这种情况时，用 `/api` 换一种协议（或用 `auto` 依据 URL "
 "和模型重新推断）。回复会指明实际生效的协议，并且历史记录与协议无关，所以中途切换是安全的。"
 
-#: ../../commands.md:93
+#: ../../commands.md:96
 msgid ""
 "**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; "
 "tab-completes both keys and, where the values are a fixed set, the "
@@ -215,7 +222,7 @@ msgstr ""
 "**`/set KEY VALUE`** — 为当前 session 设置 `provider.*` 或 `runtime.*`；key "
 "以及有固定选项的 value 均支持 Tab 补全。例如：`/set provider.response_timeout 900`。"
 
-#: ../../commands.md:96
+#: ../../commands.md:99
 msgid ""
 "**`/resend`** — Cancel and re-send the in-flight model request without "
 "restarting the turn. Type it while a model request is waiting; it has no "
@@ -231,11 +238,11 @@ msgstr ""
 "`working`。自动重试还会显示当前尝试次数和简短原因，例如 `retrying 2/6 · timeout`；随后在该请求继续时显示 "
 "`working · attempt 2/6`："
 
-#: ../../commands.md:105
+#: ../../commands.md:108
 msgid "MCP"
 msgstr "MCP"
 
-#: ../../commands.md:107
+#: ../../commands.md:110
 msgid "**`/mcp`** — Manage [MCP](mcp.md) server connections. Sub-commands:"
 msgstr "**`/mcp`** — 管理 [MCP](mcp.md) server 连接。子命令如下："
 
@@ -279,17 +286,16 @@ msgstr "`/mcp tools [server]`"
 msgid "List tools from a connected server"
 msgstr "列出已连接 server 的工具"
 
-#: ../../commands.md:116
+#: ../../commands.md:119
 msgid "Help and exit"
 msgstr "帮助与退出"
 
-#: ../../commands.md:118
+#: ../../commands.md:121
 msgid "**`/help`** — Show the built-in command and tool reference."
 msgstr "**`/help`** — 显示内置命令和工具参考。"
 
-#: ../../commands.md:120
+#: ../../commands.md:123
 msgid ""
 "**`/exit`, `/quit`** — Leave minacode. Your session is saved "
 "automatically and can be resumed with `-c` or `--resume`."
 msgstr "**`/exit`, `/quit`** — 退出 minacode。Session 会自动保存，可使用 `-c` 或 `--resume` 恢复。"
-
