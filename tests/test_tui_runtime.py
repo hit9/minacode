@@ -247,6 +247,51 @@ def test_tui_runtime_keeps_space_around_user_input_before_working(tmp_path, monk
     assert output[:3] == ["\n• answer me", "", "set_running:working"]
 
 
+def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypatch):
+    # A terminal NextHints batch promotes its answer into scrollback the way any tool batch does,
+    # but unlike an ordinary batch nothing re-publishes it through agent_output. The post-turn emit
+    # must therefore skip an answer that was already promoted, or it shows up twice.
+    scenario_session = session(tmp_path)
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=lambda _text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda _text: None,
+    )
+    runtime = TuiRuntime(command_loop)
+    command_loop.tui = TuiApp()
+    command_loop.tui.set_running = lambda label: None
+    command_loop.agent.run = lambda _text: "the final answer"
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+    emitted: list[tuple] = []
+    command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
+
+    command_loop.model_stream_promoted_text = "the final answer"  # already permanent scrollback
+    runtime.run_agent_turn("do it")
+
+    assert emitted == []
+
+
+def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch):
+    # A plain final answer is never promoted, so the post-turn emit is its only path to scrollback.
+    scenario_session = session(tmp_path)
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=lambda _text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda _text: None,
+    )
+    runtime = TuiRuntime(command_loop)
+    command_loop.tui = TuiApp()
+    command_loop.tui.set_running = lambda label: None
+    command_loop.agent.run = lambda _text: "the final answer"
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+    emitted: list[tuple] = []
+    command_loop.ui.emit_answer = lambda *args, **kwargs: emitted.append(args)
+
+    runtime.run_agent_turn("do it")
+
+    assert emitted == [("the final answer",)]
+
+
 def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.settings.max_context_tokens = 1

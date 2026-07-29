@@ -2001,6 +2001,7 @@ class TuiRuntime:
         started = time.monotonic()
         cancelled = False
         malformed_tool_call = False
+        promoted_answer = ""
         try:
             answer = self.loop.agent.run(user_input)
         except KeyboardInterrupt:
@@ -2013,6 +2014,11 @@ class TuiRuntime:
         except MinacodeError as error:
             answer = f"Error: {error}"
         finally:
+            # Snapshot the stream-promotion marker before reset_turn clears it: a terminal NextHints
+            # batch promotes its answer into scrollback like any tool batch, but nothing re-publishes
+            # it through agent_output, so without this the final emit below would print it again.
+            with self.loop.model_stream_lock:
+                promoted_answer = self.loop.model_stream_promoted_text
             self.reset_turn()
             self.loop.session.state.manual_model_retry_requested = False
             CodeIndex(self.loop.session).update_pending_async()
@@ -2020,7 +2026,8 @@ class TuiRuntime:
             self.loop.emit("Cancelled")
             return
         elapsed = time.monotonic() - started
-        self.loop.ui.emit_answer(answer)
+        if answer.strip() != promoted_answer:
+            self.loop.ui.emit_answer(answer)
         if not malformed_tool_call:
             self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
         self.loop.session.save_snapshot()
