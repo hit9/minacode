@@ -402,6 +402,20 @@ def stored_session(tmp_path, text, *, name=""):
     return other
 
 
+def test_resume_is_an_alias_for_sessions(tmp_path):
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    emitted = []
+    loop.emit = emitted.append
+
+    assert loop.command("/resume") == (True, False)
+
+    # `--resume` is the flag people already know; the command answers to the same word.
+    assert emitted == ["No saved sessions yet."]
+    assert "/resume" in CommandLoop.COMMANDS
+
+
 def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
@@ -473,7 +487,7 @@ def test_session_labels_carry_age_and_size(tmp_path):
     s.state.round_count = 1
     s.save_snapshot()
     assert "1 round " in loop.session_label(SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]) + " "
-    assert entry.uid in loop.session_preview(entry.uid)
+    assert entry.uid in loop.session_preview(entry)
 
 
 def test_name_command_shows_and_sets_the_session_name(tmp_path):

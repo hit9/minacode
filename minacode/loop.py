@@ -207,7 +207,7 @@ class CommandLoop:
         "/skills": "skills_command", "/config": "config",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
-        "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command",
+        "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command", "/resume": "sessions_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
@@ -235,7 +235,8 @@ class CommandLoop:
 - `/config` — Show active config.
 - `/compact` — Compact context now.
 - `/name [TEXT]` — Name this session for later, or show the current name.
-- `/sessions [all]` — Browse saved sessions and re-enter one (`all` widens past this project).
+- `/sessions [all]` — Browse saved sessions and re-enter one (alias: `/resume`; `all` widens
+  past this project).
 - `/resend` — Resend the in-flight model request (type it while a turn is working).
 - `/index [force]` — Sync or rebuild code symbol index.
 - `/provider [NAME]` — Select or show the active provider.
@@ -1595,7 +1596,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if self.tui is None or not self.interactive_input:
             return "\n".join(f"{entry.uid}  {labels[entry.uid]}" for entry in entries)
         title = "Sessions" + (" · all projects" if argument == "all" else "")
-        chosen = self.choice_application(title, tuple(entry.uid for entry in entries), labels, self.session.uid, set(), preview_fn=self.session_preview)
+        # The preview renders on every frame, so it reads the list already in hand, never the store.
+        by_uid = {entry.uid: entry for entry in entries}
+        chosen = self.choice_application(
+            title, tuple(entry.uid for entry in entries), labels, self.session.uid, set(), preview_fn=lambda uid: self.session_preview(by_uid.get(uid))
+        )
         if not isinstance(chosen, str) or chosen == self.session.uid:
             return None
         self.resume_request = chosen
@@ -1611,13 +1616,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             parts.append("current")
         return f"{entry.label()}  ·  " + " · ".join(parts)
 
-    def session_preview(self, uid: str) -> str:
-        entries = SessionSnapshotStore.list_sessions(self.session.config.data_dir, self.session.cwd, all_projects=True)
-        entry = next((item for item in entries if item.uid == uid), None)
+    def session_preview(self, entry: SessionEntry | None) -> str:
         if entry is None:
             return ""
-        rows = [f"uid   {entry.uid}", f"start {entry.opening or '(no message)'}", f"where {entry.cwd or '(unknown)'}"]
-        return "\n".join(rows)
+        return "\n".join([f"uid   {entry.uid}", f"start {entry.opening or '(no message)'}", f"where {entry.cwd or '(unknown)'}"])
 
     def name_command(self, args: str) -> str:
         """Show or set the session's name, the label a later `--resume` can be given instead of a uid."""
