@@ -294,6 +294,7 @@ class NextHintsTool(Tool):
         "Each input is a complete short one-line message the user would send; never restate what was just done."
     )
     STORES_RESULT = False
+    SILENT = True
     MAX_HINTS: ClassVar[int] = 4
     MAX_LEN: ClassVar[int] = 48
 
@@ -324,5 +325,5 @@ class NextHintsTool(Tool):
         if isinstance(inputs, list):
             items = [Tool.compact(item, 120) for item in inputs if str(item).strip()]
             if items:
-                return ["inputs:\n" + "\n".join(f"  - {item}" for item in items)]
+                return ["inputs: " + ", ".join(f'"{item}"' for item in items)]
         return ["{}"]

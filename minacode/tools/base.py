@@ -40,6 +40,7 @@ class Tool:
     PRODUCES_MODEL_OBSERVATION: ClassVar[bool] = False
     STORES_RESULT: ClassVar[bool] = True
     LOG_LEXER: ClassVar[str] = "tool-args"
+    SILENT: ClassVar[bool] = False  # a pure-UI tool whose effect is shown elsewhere; suppress its call/result log line
 
     def __init__(self, session: Session, args: ToolArgs):
         self.session = session

@@ -489,7 +489,8 @@ class ToolRunner:
                     after=turn_diff.after,
                     round=self.session.state.round_count,
                 )
-        self.output_fn(self.finish_display(call, key, output, failed=failed, elapsed=elapsed, d=d))
+        if not (tool_class is not None and tool_class.SILENT) or failed:
+            self.output_fn(self.finish_display(call, key, output, failed=failed, elapsed=elapsed, d=d))
         return self.tool_message(call, key, output, failed=failed, display=d.display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:

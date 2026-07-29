@@ -880,7 +880,7 @@ def test_suggest_tool_does_not_store_result():
 
 def test_suggest_tool_short_args(tmp_path):
     tool = NextHintsTool(session(tmp_path), [{"inputs": ["run the tests", "show the diff"]}])
-    assert tool.short_args() == ["inputs:\n  - run the tests\n  - show the diff"]
+    assert tool.short_args() == ['inputs: "run the tests", "show the diff"']
 
 
 def test_quick_hints_are_transient_and_never_serialized(tmp_path):

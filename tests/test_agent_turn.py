@@ -1041,3 +1041,28 @@ def test_refusal_short_circuits_across_parallel_and_serial(tmp_path):
     assert [m["tool_call_id"] for m in messages] == ["r0", "r1", "b0", "r2"]
     assert "refused" in by_id["b0"].lower()
     assert "Skipped" in by_id["r2"]
+
+
+def test_silent_tool_success_emits_no_log_line(tmp_path):
+    # NextHints is a pure-UI tool: its effect (the chips) shows at the idle prompt, so a successful
+    # call must not print a call/result log line at all. The model still gets its tool result.
+    s = session(tmp_path)
+    outputs: list[str] = []
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: outputs.append(str(text)))
+    messages = runner.run([call("NextHints", [{"inputs": ["run the tests", "show the diff"]}])])
+
+    assert outputs == []  # no log line for a successful pure-UI tool
+    assert len(messages) == 1  # the model still receives its tool result
+    assert s.quick_hints == ("run the tests", "show the diff")
+
+
+def test_silent_tool_failure_still_emits_a_log_line(tmp_path):
+    # A failed silent-tool call is a real error the user must see, so the suppression does not apply.
+    s = session(tmp_path)
+    outputs: list[str] = []
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: outputs.append(str(text)))
+    messages = runner.run([call("NextHints", [{"inputs": []}])])
+
+    assert outputs and "rejected" in outputs[0]  # argument error is surfaced, not swallowed
+    assert len(messages) == 1
+    assert "at least one non-empty" in messages[0]["content"]
