@@ -15,8 +15,8 @@
     --nc-fg-strong: #e8eaed;
     --nc-muted: #8b929c;
     --nc-border: #2c3138;
-    --nc-link: #8ab4f8;
-    --nc-link-hover: #adc8fb;
+    --nc-link: #8fb0e0;
+    --nc-link-hover: #c2d8f6;
 }
 
 /* Serif body, a touch larger, on a dark page. */
@@ -34,8 +34,8 @@ h1, h2, h3, h4, h5, h6 {
     letter-spacing: -0.01em;
 }
 h1 { font-size: 2.4rem; line-height: 1.2; }
-h2 { font-size: 1.8rem; margin-top: 2rem; }
-h3 { font-size: 1.35rem; margin-top: 1.5rem; }
+h2 { font-size: 1.8rem; margin-top: 2.5rem; }
+h3 { font-size: 1.35rem; margin-top: 1.75rem; }
 
 /* The project name belongs to the sidebar; keep the index title for Sphinx
    metadata while showing only the subtitle in the content column. */
@@ -47,9 +47,15 @@ h3 { font-size: 1.35rem; margin-top: 1.5rem; }
     line-height: 1.2;
 }
 
-/* Links */
-a, a:visited { color: var(--nc-link); }
+/* Links: a muted blue at rest, a quiet underline on hover. The underline is
+   scoped to the content column so the sidebar and relbars stay clean. */
+a, a:visited { color: var(--nc-link); text-decoration: none; }
 a:hover { color: var(--nc-link-hover); }
+.body a:hover {
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+    text-decoration-color: rgba(194, 216, 246, 0.55);
+}
 
 /* Header, relbars, footer */
 header#pageheader h1 a, header#pageheader h1 a:visited { color: var(--nc-fg-strong); }
@@ -94,7 +100,12 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 }
 .sphinxsidebar h3.site-title a,
 .sphinxsidebar h3.site-title a:visited { color: var(--nc-fg-strong); }
-.sphinxsidebar a:hover { color: var(--nc-link); }
+.sphinxsidebar a:hover {
+    color: var(--nc-link);
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+    text-decoration-color: rgba(194, 216, 246, 0.4);
+}
 
 .sphinxsidebar .github-star {
     display: block;
@@ -112,7 +123,9 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 }
 .sphinxsidebar .doc-language a:hover {
     color: var(--nc-link-hover);
-    text-decoration: underline;
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+    text-decoration-color: rgba(194, 216, 246, 0.55);
 }
 .sphinxsidebar .doc-language-current { color: var(--nc-fg-strong); }
 .sphinxsidebar .doc-language-sep {
@@ -129,16 +142,22 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
     color: var(--nc-muted);
     font-size: 1rem;
 }
+.sphinxsidebar .toctree-l1 > a:hover,
+.sphinxsidebar .toctree-l2 > a:hover {
+    color: var(--nc-link);
+}
 
 /* Toctree captions group the navigation into Guide / Reference. */
 .sphinxsidebar p.caption {
-    margin: 1.5rem 0 0.35rem;
+    margin: 1.75rem 0 0.5rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--nc-border);
     font-family: var(--nc-sans);
     font-size: 0.78rem;
     font-weight: 600;
-    letter-spacing: 0.09em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--nc-muted);
+    color: #aab1ba;
 }
 
 /* Use one stable highlight for both the current page and subsection. None of
@@ -146,8 +165,8 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
 .sphinxsidebar a.current,
 .sphinxsidebar a.nc-active {
     color: var(--nc-fg-strong);
-    background: rgba(138, 180, 248, 0.16);
-    box-shadow: 0 0 0 3px rgba(138, 180, 248, 0.16);
+    background: rgba(159, 184, 222, 0.16);
+    box-shadow: 0 0 0 3px rgba(159, 184, 222, 0.16);
     border-radius: 2px;
 }
 .sphinxsidebar input {
@@ -172,7 +191,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
     padding: 0.9rem 1.1rem;
     background: #282c34;
     border: 1px solid #21252b;
-    border-radius: 8px;
+    border-radius: 6px;
     font-family: var(--nc-mono);
     font-size: 0.9rem;
     line-height: 1.7;
@@ -227,7 +246,7 @@ pre, tt, code, kbd, .highlight pre {
 div.highlight {
     background: #282c34;
     border: 1px solid #21252b;
-    border-radius: 8px;
+    border-radius: 6px;
     margin: 1rem 0;
     overflow-x: auto;
 }
@@ -245,7 +264,7 @@ div.highlight pre {
 pre {
     background: #282c34;
     border: 1px solid #21252b;
-    border-radius: 8px;
+    border-radius: 6px;
     margin: 1rem 0;
     padding: 0.85rem 1rem;
     font-size: 0.95rem;
@@ -256,12 +275,11 @@ pre {
 
 /* Inline code */
 code.docutils.literal, tt.docutils.literal, code.literal {
-    background: #2d333b;
-    border: 1px solid var(--nc-border);
-    border-radius: 5px;
-    padding: 0.06em 0.36em;
+    background: #2b313a;
+    border-radius: 4px;
+    padding: 0.08em 0.4em;
     font-size: 0.9em;
-    color: #e6e6e6;
+    color: #e6edf3;
 }
 code.docutils.literal .pre { color: inherit; }
 
@@ -271,7 +289,7 @@ figure img {
     max-width: 100%;
     height: auto;
     border: 1px solid var(--nc-border);
-    border-radius: 10px;
+    border-radius: 6px;
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
 }
 figure figcaption {
