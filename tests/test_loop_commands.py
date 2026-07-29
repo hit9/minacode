@@ -386,8 +386,29 @@ def test_exit_command_prints_resume_command(tmp_path):
     handled, exit_now = loop.command("/exit")
 
     assert (handled, exit_now) == (True, True)
-    assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
+    # The session took its name from the opening message; the pasted line still carries the uid.
+    assert output[-1] == f"Resume 'hello' with:\nminacode --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
+
+
+def test_name_command_shows_and_sets_the_session_name(tmp_path):
+    s = session(tmp_path)
+    s.messages.append({"role": "user", "content": "make the divider smoother"})
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    s.save_snapshot()
+
+    assert loop.name_command("") == "Session name: make the divider smoother (from the opening message)"
+
+    assert loop.name_command("divider polish").startswith("Session named: divider polish")
+    assert loop.name_command("") == "Session name: divider polish (set by you)"
+    # The rename is durable on its own, without waiting for the next turn to save.
+    assert Session.load_snapshot(s.uid, config=s.config).name == "divider polish"
+
+
+def test_name_command_reports_an_unnamed_session(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    assert loop.name_command("") == "Session name: (unnamed)"
 
 
 def test_empty_exit_does_not_print_resume_command(tmp_path):
@@ -515,7 +536,8 @@ def test_eof_exit_prints_resume_command(tmp_path):
 
     assert loop.run() == 0
 
-    assert output[-1] == f"Resume with:\nminacode --resume {s.uid}"
+    # The session took its name from the opening message; the pasted line still carries the uid.
+    assert output[-1] == f"Resume 'hello' with:\nminacode --resume {s.uid}"
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 

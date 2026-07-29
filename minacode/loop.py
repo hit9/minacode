@@ -8,6 +8,7 @@ import os
 import queue
 import random
 import re
+import shlex
 import shutil
 import signal
 import sys
@@ -206,7 +207,7 @@ class CommandLoop:
         "/skills": "skills_command", "/config": "config",
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict",
-        "/mcp": "mcp_command", "/resend": "resend_command",
+        "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
@@ -233,6 +234,7 @@ class CommandLoop:
 - `/skills` — List installed skills (load with `Skill(name)` or reference inline with `$name`).
 - `/config` — Show active config.
 - `/compact` — Compact context now.
+- `/name [TEXT]` — Name this session for later, or show the current name.
 - `/resend` — Resend the in-flight model request (type it while a turn is working).
 - `/index [force]` — Sync or rebuild code symbol index.
 - `/provider [NAME]` — Select or show the active provider.
@@ -253,7 +255,8 @@ class CommandLoop:
 ### CLI
 
 - `-c`, `--last`, `--latest` — Resume the latest session in the current project.
-- `--resume [UID]` — Resume a saved session; defaults to latest (`last` also works).
+- `--resume [UID]` — Resume a saved session by uid, name, or uid prefix; defaults to latest
+  (`last` also works).
 
 ### Tools
 
@@ -802,7 +805,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def save_and_emit_resume(self) -> None:
         uid = self.session.save_snapshot()
         if uid:
-            self.emit(f"Resume with:\nminacode --resume {uid}")
+            # The name goes in the sentence, never in the command: the line below is meant to be
+            # pasted, and only the uid is guaranteed to still mean this session tomorrow.
+            name = self.session.name
+            self.emit(f"Resume {name!r} with:\nminacode --resume {uid}" if name else f"Resume with:\nminacode --resume {uid}")
 
     def style(self) -> Style:
         rule = Theme.style("divider.rule")
@@ -1570,6 +1576,18 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
             ]
         )
+
+    def name_command(self, args: str) -> str:
+        """Show or set the session's name, the label a later `--resume` can be given instead of a uid."""
+        text = args.strip()
+        if not text:
+            current = self.session.name
+            source = {"user": "set by you", "goal": "from the current goal", "input": "from the opening message"}
+            described = source.get(self.session.state.name_source, "")
+            return f"Session name: {current} ({described})" if current and described else f"Session name: {current or '(unnamed)'}"
+        name = self.session.rename(text)
+        self.session.save_snapshot()
+        return f"Session named: {name}\nResume with: minacode --resume {shlex.quote(name)}"
 
     def compact(self, args: str) -> str:
         if args.strip():

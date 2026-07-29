@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, ClassVar, cast
 
 from minacode.base import Config, ConfigFile, Json, MinacodeError, ModelUsage, RuntimeSettings, SystemInfo, Text, ToolArgs, UpdateStatus
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX
 
 if TYPE_CHECKING:
     from minacode.mcp import MCPManager
@@ -65,6 +66,10 @@ class AgentState:
     known: list[str] = field(default_factory=list)
     check: str = ""
     summary: str = ""
+    # How this session is labelled when listed, and where that label came from. `apply` never sets
+    # either: the name follows the user and the goal, not whatever a tool call happens to write.
+    name: str = ""
+    name_source: str = ""  # "" | user | goal | input
     code_index_status: str = ""
     code_index_error: str = ""
     code_index_notice: str = ""
@@ -291,6 +296,8 @@ class SessionSnapshotCodec:
                 "known",
                 "check",
                 "summary",
+                "name",
+                "name_source",
                 "compaction_count",
                 "round_count",
             )
@@ -424,6 +431,26 @@ class SessionSnapshotCodec:
         return [ToolErrorRecord(key=err["key"], name=err["name"], args=err.get("args", []), error=err.get("error", "")) for err in data]
 
 
+@dataclass(frozen=True)
+class SessionEntry:
+    """One stored session as a listing sees it: labels and facts, no conversation."""
+
+    uid: str
+    name: str
+    opening: str
+    rounds: int
+    cwd: str
+    updated_at: float
+    path: str
+
+    def matches(self, query: str) -> bool:
+        needle = query.strip().lower()
+        return bool(needle) and (self.uid.lower().startswith(needle) or needle in (self.name + " " + self.opening).lower())
+
+    def label(self) -> str:
+        return self.name or self.opening or self.uid
+
+
 class SessionSnapshotStore:
     """Session logs live at `<data_dir>/projects/<project>/<uid>.jsonl`, one directory per working
     directory, each holding its own `latest` pointer. Sharding keeps a resume scoped to the project
@@ -435,6 +462,7 @@ class SessionSnapshotStore:
 
     FORMAT_VERSION: ClassVar[int] = 2
     PROJECTS_DIR: ClassVar[str] = "projects"
+    META_SUFFIX: ClassVar[str] = ".meta.json"
     _SLUG_RE: ClassVar[re.Pattern] = re.compile(r"[^A-Za-z0-9._-]+")
 
     def __init__(self, session: Session):
@@ -455,8 +483,29 @@ class SessionSnapshotStore:
         self.write_jsonl(path, record, mode="a")
         self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
         self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
+        self.write_meta()
         self.garbage_collect_assets()
         return self.session.uid
+
+    def write_meta(self) -> None:
+        """Keep what a listing shows beside the log, so browsing sessions never parses one.
+
+        The log stays the source of truth; this is a cache of values derived from it, rewritten only
+        when one of them changes. A missing or unreadable file costs a listing its labels for that
+        session and nothing else, which is why it is never read back into a resumed session.
+        """
+        meta: Json = {
+            "name": self.session.name,
+            "opening": self.session.clip_name(self.session.opening_text()),
+            "rounds": self.session.state.round_count,
+            "cwd": self.session.cwd,
+        }
+        if meta == self.session._meta_written:
+            return
+        path = self.meta_path(self.session.config.data_dir, self.session.cwd, self.session.uid)
+        with contextlib.suppress(OSError):
+            self.write_jsonl(path, meta, mode="w")
+            self.session._meta_written = meta
 
     def garbage_collect_assets(self) -> None:
         directory = self.session.images.assets_dir()
@@ -512,6 +561,65 @@ class SessionSnapshotStore:
         return os.path.join(cls.project_dir(data_dir, cwd), uid + ".jsonl")
 
     @classmethod
+    def meta_path(cls, data_dir: str, cwd: str, uid: str) -> str:
+        return os.path.join(cls.project_dir(data_dir, cwd), uid + cls.META_SUFFIX)
+
+    @classmethod
+    def read_meta(cls, directory: str, uid: str) -> Json:
+        try:
+            with open(os.path.join(directory, uid + cls.META_SUFFIX), encoding="utf-8") as file:
+                data = json.loads(file.read())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @classmethod
+    def list_sessions(cls, data_dir: str, cwd: str = "", *, all_projects: bool = False) -> list[SessionEntry]:
+        """Every stored session, newest first, without opening a single log.
+
+        One directory scan plus one small sidecar read per session. A session whose sidecar is
+        missing still lists — under its uid — because the log on disk is what makes it real.
+        """
+        directories = cls.project_dirs(data_dir) if all_projects else [cls.project_dir(data_dir, cwd)]
+        entries: list[SessionEntry] = []
+        for directory in directories:
+            try:
+                found = list(os.scandir(directory))
+            except OSError:
+                continue
+            for entry in found:
+                if not entry.name.endswith(".jsonl") or not entry.is_file():
+                    continue
+                uid = entry.name[:-6]
+                meta = cls.read_meta(directory, uid)
+                with contextlib.suppress(OSError):
+                    entries.append(
+                        SessionEntry(
+                            uid=uid,
+                            name=str(meta.get("name") or ""),
+                            opening=str(meta.get("opening") or ""),
+                            rounds=int(meta.get("rounds") or 0),
+                            cwd=str(meta.get("cwd") or ""),
+                            updated_at=entry.stat().st_mtime,
+                            path=entry.path,
+                        )
+                    )
+        return sorted(entries, key=lambda item: item.updated_at, reverse=True)
+
+    @classmethod
+    def search_sessions(cls, query: str, data_dir: str, cwd: str = "") -> list[SessionEntry]:
+        """Sessions matching a uid prefix or a word in the name, this project before the rest.
+
+        Searching only the current project would hide the session the user means whenever they have
+        moved directories, so a miss here widens rather than fails.
+        """
+        for entries in (cls.list_sessions(data_dir, cwd), cls.list_sessions(data_dir, all_projects=True)):
+            matches = [entry for entry in entries if entry.matches(query)]
+            if matches:
+                return matches
+        return []
+
+    @classmethod
     def project_dirs(cls, data_dir: str) -> list[str]:
         try:
             return [entry.path for entry in os.scandir(cls.path_for(data_dir, cls.PROJECTS_DIR)) if entry.is_dir()]
@@ -552,6 +660,9 @@ class SessionSnapshotStore:
                         continue
                     os.unlink(entry.path)
                     shutil.rmtree(os.path.join(directory, uid + ".assets"), ignore_errors=True)
+                    # The sidecar describes a log that no longer exists; it expires with it.
+                    with contextlib.suppress(OSError):
+                        os.unlink(os.path.join(directory, uid + cls.META_SUFFIX))
                     removed += 1
                     stale_latest = stale_latest or cls.read_latest(directory) == uid
                 except OSError:
@@ -645,13 +756,26 @@ class SessionSnapshotStore:
 
     @classmethod
     def resolve_uid(cls, uid: str, data_dir: str, cwd: str) -> str:
-        """`latest`/`last` mean the latest session *in this project*, never one from elsewhere."""
-        if uid not in {"latest", "last"}:
+        """`latest`/`last` mean the latest session *in this project*, never one from elsewhere.
+
+        Anything else is a uid, or failing that a search: nobody retypes a uid they can describe.
+        An ambiguous search names its candidates rather than picking one of them.
+        """
+        if uid in {"latest", "last"}:
+            resolved = cls.latest_uid(data_dir, cwd)
+            if not resolved:
+                raise MinacodeError(f"No previous session for this project: {cwd}")
+            return resolved
+        if cls.find_session_path(data_dir, uid):
             return uid
-        resolved = cls.latest_uid(data_dir, cwd)
-        if not resolved:
-            raise MinacodeError(f"No previous session for this project: {cwd}")
-        return resolved
+        matches = cls.search_sessions(uid, data_dir, cwd)
+        if len(matches) == 1:
+            return matches[0].uid
+        if matches:
+            listed = "\n".join(f"  {entry.uid}  {entry.label()}" for entry in matches[:5])
+            more = f"\n  ... and {len(matches) - 5} more" if len(matches) > 5 else ""
+            raise MinacodeError(f"{len(matches)} sessions match {uid!r}:\n{listed}{more}")
+        return uid
 
     @classmethod
     def read_merged(cls, path: str) -> tuple[Json, dict[str, str]]:
@@ -847,6 +971,7 @@ class Session:
     resumed: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
     _blobs_written: set[str] = field(default_factory=set)
+    _meta_written: dict = field(default_factory=dict)
     _active_turn_messages: list[Json] = field(default_factory=list)
     _queue_lock: threading.RLock = field(default_factory=threading.RLock)
     _snapshot_lock: threading.RLock = field(default_factory=threading.RLock)
@@ -1183,9 +1308,53 @@ class Session:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))
         self.tool_errors = self.tool_errors[-5:]
 
+    NAME_WIDTH: ClassVar[int] = 72
+
+    @property
+    def name(self) -> str:
+        """What this session is called when it is listed. Empty only before the first message."""
+        return self.state.name
+
+    def rename(self, text: str) -> str:
+        """Name the session explicitly. A user's name is never replaced by a derived one."""
+        self.state.name, self.state.name_source = self.clip_name(text), "user"
+        return self.state.name
+
+    def refresh_name(self) -> str:
+        """Latch a name, then let it follow the goal until the user sets one of their own.
+
+        Deriving on every read would be simpler but wrong: compaction eventually drops the opening
+        message, and a session listed under one name yesterday must not appear under another today
+        just because its history was trimmed. A name is therefore decided once and only revised for
+        a better source, never for a later one.
+        """
+        if self.state.name_source == "user":
+            return self.state.name
+        if goal := self.clip_name(self.state.goal):
+            self.state.name, self.state.name_source = goal, "goal"
+        elif not self.state.name and (opening := self.opening_text()):
+            self.state.name, self.state.name_source = self.clip_name(opening), "input"
+        return self.state.name
+
+    def opening_text(self) -> str:
+        """The first thing the user asked for, as one line. Compaction summaries are not it."""
+        for message in self.messages:
+            content = message.get("content")
+            if message.get("role") != "user" or not isinstance(content, str):
+                continue
+            text = ImageInputs.label_text(message).strip()
+            if text and not text.startswith(COMPACTION_SUMMARY_TITLE) and not text.startswith(LIVE_FOLLOWUP_PREFIX):
+                return text.splitlines()[0]
+        return ""
+
+    @classmethod
+    def clip_name(cls, text: str) -> str:
+        return Text.clip_width(" ".join(str(text).split()), cls.NAME_WIDTH)
+
     def save_snapshot(self) -> str:
         # Session owns the persistence boundary; callers should not depend on the snapshot store.
         with self._snapshot_lock, self._queue_lock:
+            self.refresh_name()
             return SessionSnapshotStore(self).save()
 
     @classmethod
