@@ -1,5 +1,6 @@
 """TuiApp behavior: layout, input modes, key bindings, modals, and approval prompts."""
 
+import asyncio
 import multiprocessing
 import os
 import signal
@@ -167,6 +168,50 @@ def test_tui_non_editing_modes_clear_stale_input_errors():
     app.input_error = "another stale image error"
     app._set_mode("approval", "Continue? ")
     assert app.input_error_fragments() == []
+
+
+def test_stream_deltas_leave_the_frame_rate_to_the_animation_ticker(tmp_path):
+    command_loop = loop(tmp_path)
+    app = TuiApp()
+    command_loop.tui = app
+    frames = []
+    app.invalidate = lambda: frames.append(True)
+
+    # While the running region is up, the ticker already redraws at the frame rate; redrawing per
+    # token on top of it only makes the animation's cadence swing with the model's pace.
+    app.set_running("working")
+    frames.clear()  # entering the mode redraws once; the deltas are what must not
+    for token in ("thinking", " about", " it"):
+        command_loop.model_stream_output("output", token)
+    assert frames == []
+
+    # Anywhere else there is no ticker, so a delta still has to ask for its own redraw.
+    app.set_idle()
+    frames.clear()
+    command_loop.model_stream_output("output", "late token")
+    assert frames == [True]
+
+
+def test_animation_ticker_only_asks_for_frames_while_the_running_region_is_up():
+    app = TuiApp()
+    frames = []
+    app.invalidate = lambda: frames.append(app.input_mode)
+
+    async def run_ticker():
+        ticker = asyncio.ensure_future(app.animate())
+        app.set_running("working")
+        await asyncio.sleep(app.ANIMATION_INTERVAL * 4)
+        app.input_mode = "chat"
+        running = len(frames)
+        await asyncio.sleep(app.ANIMATION_INTERVAL * 4)
+        ticker.cancel()
+        return running
+
+    running = asyncio.run(run_ticker())
+
+    assert running >= 2  # the divider is animating: keep drawing it
+    assert len(frames) == running  # the idle screen has nothing to animate: stop
+    assert set(frames) == {"running"}
 
 
 def test_interactive_tui_uses_cpr_again_after_resize_without_warning(monkeypatch):

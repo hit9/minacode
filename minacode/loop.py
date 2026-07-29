@@ -52,7 +52,7 @@ from minacode.engine import Agent
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
-from minacode.render import BashLivePreview, StatusBar, UiPrinter
+from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
 from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
@@ -412,16 +412,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         idx = min(len(self.WAITING_PULSE_STYLES) - 1, int(intensity * len(self.WAITING_PULSE_STYLES)))
         return [(self.WAITING_PULSE_STYLES[idx], "● ")]
 
-    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 34.0
-    # A comet: a bright head with a fading tail, by distance from the head. Beyond the tail the dash
-    # falls back to the dim rule. The divider is only ever drawn while working, so there is no idle look.
-    GLOW_STYLES: ClassVar[tuple[str, ...]] = (
-        "class:divider.glow0",
-        "class:divider.glow1",
-        "class:divider.glow2",
-        "class:divider.glow3",
-        "class:divider.glow4",
-    )
+    # One cell per frame. A head that advances further than its own glow between redraws stops
+    # reading as motion and starts reading as a dash blinking at scattered positions.
+    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 1.0 / TuiApp.ANIMATION_INTERVAL
+    # A comet: a soft head with a tail fading into the dim rule, by distance from the head. The ramp
+    # is finer than one shade per cell, so a head between two cells lights both partially instead of
+    # snapping onto the nearer one. The divider is only drawn while working; there is no idle look.
+    GLOW_REACH: ClassVar[float] = 4.0
+    GLOW_STEPS: ClassVar[int] = 12
 
     def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: StyleAndTextTuples | None = None) -> StyleAndTextTuples:
         prefix = prefix or []
@@ -441,8 +439,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         def dashes(offset: int, count: int) -> StyleAndTextTuples:
             fragments: StyleAndTextTuples = []
             for i in range(count):
-                distance = round(abs(offset + i - head))
-                fragments.append((self.GLOW_STYLES[distance] if distance < len(self.GLOW_STYLES) else "class:queue.rule", "-"))
+                step = int(abs(offset + i - head) / self.GLOW_REACH * self.GLOW_STEPS)
+                fragments.append((f"class:divider.glow{step}" if step < self.GLOW_STEPS else "class:queue.rule", "-"))
             return fragments
 
         return [
@@ -807,20 +805,17 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             self.emit(f"Resume with:\nminacode --resume {uid}")
 
     def style(self) -> Style:
+        rule = Theme.style("divider.rule")
         return Style.from_dict(
             {
                 "prompt": "ansicyan bold",
-                "queue.rule": "ansibrightblack",
+                # The comet fades into the rule it travels over, so both come from the palette.
+                "queue.rule": rule,
+                **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("divider.glow", "divider.rule", self.GLOW_STEPS))},
                 "queue.hint": "ansibrightblack",
                 "image.attachment": "ansicyan bold",
                 "input.error": "ansired",
                 "divider.working": "ansimagenta bold",
-                # Comet gradient: bright head fading through cyan into the dim rule.
-                "divider.glow0": "ansibrightcyan bold",
-                "divider.glow1": "ansicyan bold",
-                "divider.glow2": "ansicyan",
-                "divider.glow3": "ansibrightblack",
-                "divider.glow4": "ansibrightblack",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
@@ -926,7 +921,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                     self.model_stream_kind, self.model_stream_text = kind, ""
                 self.model_stream_text = (self.model_stream_text + text)[-8000:]
         if tui is not None:
-            tui.invalidate()
+            tui.invalidate_frame()
             if promote:
                 self.with_status_paused(lambda: tui.write_to_scrollback(lambda: self.emit_agent_output(promote)))
 

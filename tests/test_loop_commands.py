@@ -226,6 +226,52 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
 
+def divider_glow_steps(fragments):
+    """The comet's glow step per dash, None where the dash fell back to the plain rule."""
+    return [int(style.removeprefix("class:divider.glow")) if style.startswith("class:divider.glow") else None for style, text in fragments if text == "-"]
+
+
+def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    # A head that outruns its own glow between frames stops reading as motion, so the sweep speed
+    # is tied to the frame rate rather than chosen independently of it.
+    assert loop.QUEUE_SWEEP_CELLS_PER_SEC * TuiApp.ANIMATION_INTERVAL == pytest.approx(1.0)
+
+    with pytest.MonkeyPatch.context() as mp:
+        heads = []
+        for frame in range(6):
+            mp.setattr(time, "monotonic", lambda frame=frame: 1000.0 + frame * TuiApp.ANIMATION_INTERVAL)
+            steps = divider_glow_steps(loop.queue_divider_fragments())
+            heads.append(min(range(len(steps)), key=lambda index: (steps[index] is None, steps[index])))
+
+    assert [second - first for first, second in zip(heads, heads[1:], strict=False)] == [1, 1, 1, 1, 1]
+
+
+def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    styled = {rule for rule, _style in loop.style().style_rules}
+
+    with pytest.MonkeyPatch.context() as mp:
+        seen = set()
+        for tick in range(400):
+            mp.setattr(time, "monotonic", lambda tick=tick: 1000.0 + tick * 0.017)
+            seen.update(step for step in divider_glow_steps(loop.queue_divider_fragments()) if step is not None)
+
+    # Every shade the comet can emit must exist in the style, or those cells render as plain text.
+    assert seen and all(f"divider.glow{step}" in styled for step in seen)
+    # A head resting between two cells lights both at the same reduced shade instead of snapping
+    # onto the nearer one, which is what keeps the motion smooth when a frame arrives late.
+    with pytest.MonkeyPatch.context() as mp:
+        span = loop.GLOW_STEPS / loop.GLOW_REACH
+        mp.setattr(time, "monotonic", lambda: (3 + 0.5) / loop.QUEUE_SWEEP_CELLS_PER_SEC)
+        steps = divider_glow_steps(loop.queue_divider_fragments())
+
+    assert steps[3] == steps[4] == int(0.5 * span)
+    assert steps[3] > 0  # dimmer than a head sitting exactly on a cell
+    assert steps[2] == steps[5] > steps[3]
+
+
 def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
     s = session(tmp_path)
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import shlex
@@ -124,6 +125,11 @@ class TuiApp:
     MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple(
         "j k h l g G up down left right tab enter escape q r pagedown pageup c-d c-u c-o backspace c-h /".split()  # noqa: SIM905 - compact key table.
     )
+    # Frame budget for the running divider. Motion is smooth only while a moving highlight advances
+    # about one cell per frame, so this rate is what `CommandLoop.QUEUE_SWEEP_CELLS_PER_SEC` follows.
+    ANIMATION_INTERVAL: ClassVar[float] = 1 / 30
+    # Idle refresh: no animation runs on the idle screen, only the 0.2s index and MCP spinners.
+    IDLE_REFRESH_INTERVAL: ClassVar[float] = 0.2
 
     def __init__(
         self,
@@ -247,6 +253,16 @@ class TuiApp:
     def invalidate(self) -> None:
         if self.app is not None:
             self.app.invalidate()
+
+    def invalidate_frame(self) -> None:
+        """Ask for a redraw from a source that fires far faster than the eye needs.
+
+        Model output arrives token by token. While the running region is on screen the animation
+        ticker already redraws at the frame rate, so redrawing per token only makes the cadence
+        swing with the model's pace; anywhere else there is no ticker, so redraw normally.
+        """
+        if self.input_mode != "running":
+            self.invalidate()
 
     def write_to_scrollback(self, callback: Callable[[], None]) -> None:
         """Print above the live application and wait until the terminal has accepted it.
@@ -815,13 +831,25 @@ class TuiApp:
         if self.app is not None:
             self.app.create_background_task(self._run_input_editor())
 
+    async def animate(self) -> None:
+        """Invalidate at the animation frame rate while the running region is on screen.
+
+        prompt-toolkit captures `refresh_interval` when it starts its own refresh task, so the rate
+        cannot be raised for the running turn alone. This second ticker owns the animated mode and
+        stops asking for frames as soon as the divider is gone, leaving the idle screen slow.
+        """
+        while True:
+            await asyncio.sleep(self.ANIMATION_INTERVAL)
+            if self.input_mode == "running":
+                self.invalidate()
+
     def run(self, style: Style | None = None) -> None:  # pragma: no cover — interactive
         app = Application(
             layout=self.build_layout(),
             key_bindings=self.make_bindings(),
             full_screen=False,
             mouse_support=False,
-            refresh_interval=0.2,
+            refresh_interval=self.IDLE_REFRESH_INTERVAL,
             style=style,
             erase_when_done=True,
         )
@@ -831,9 +859,16 @@ class TuiApp:
         app.renderer.cpr_not_supported_callback = lambda: None
         self.app = app
         self.ready.clear()
+
+        def start() -> None:
+            # pre_run already runs inside the application's loop, and the task it starts is
+            # cancelled with the rest of the application's background tasks on exit.
+            app.create_background_task(self.animate())
+            self.ready.set()
+
         try:
             with patch_stdout():
-                app.run(pre_run=self.ready.set)
+                app.run(pre_run=start)
         finally:
             self.ready.set()
             self.app = None

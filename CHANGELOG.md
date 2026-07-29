@@ -14,7 +14,19 @@
   `max_agent_steps`, since a count like `step 1/200` carries no information
   far from the cap and only matters as the turn approaches the cutoff that ends it.
 
+- Smooth and lighten the working divider. Its comet head advanced 6.8 cells between redraws, more
+  than the width of its own glow, so the motion read as a dash blinking at scattered positions; the
+  animation now runs on a 30fps ticker while the running region is up, at one cell per frame, and
+  fades between cells so a late frame does not snap. The head is a softer cyan fading into a muted
+  rule instead of bold bright cyan over the terminal's default gray.
+
 ### Fixed
+- Keep a streamed response's promotion below the live follow-up it answers. Follow-ups reach
+  scrollback only once the request that carried them returns, so promoting mid-stream printed the
+  answer above the message that prompted it.
+- Count Anthropic's cache tokens in the prompt total. `input_tokens` excludes what was read from or
+  written to the cache, so a warm request reported a cache ratio far above 100% and a token total
+  covering only the uncached remainder.
 - Promote completed streamed response text from the dim `responding` preview into terminal
   scrollback before tool output begins. Responses and Anthropic use their explicit text/tool block
   boundaries without assuming which arrives first; Chat Completions promotes at its tool-call

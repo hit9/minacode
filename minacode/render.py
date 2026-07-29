@@ -67,6 +67,8 @@ class Theme:
         "status.update": "#fb923c",
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
+        "divider.glow": "#67e8f9",
+        "divider.rule": "#4b5563",
         "user.log": "#e0a96d",
         "pygments": "github-dark",
     }
@@ -91,6 +93,8 @@ class Theme:
         "status.update": "#9a3412",
         "status.index": "#475569",
         "status.warn": "#b91c1c",
+        "divider.glow": "#0e7490",
+        "divider.rule": "#9ca3af",
         "user.log": "#9a5b2e",
         "pygments": "default",
     }
@@ -105,6 +109,25 @@ class Theme:
     @classmethod
     def style(cls, key: str) -> str:
         return (cls.LIGHT if cls._mode == "light" else cls.DARK)[key]
+
+    @classmethod
+    def ramp(cls, start_key: str, end_key: str, steps: int) -> list[str]:
+        """Interpolate `steps` hex colors from one palette entry to another.
+
+        Used for gradients that need more shades than the palette names, so a moving highlight can
+        fade between two cells instead of snapping from one named color to the next.
+        """
+        start, end = cls.rgb(cls.style(start_key)), cls.rgb(cls.style(end_key))
+        span = max(1, steps - 1)
+        return [
+            "#" + "".join(f"{round(channel + (channel_end - channel) * index / span):02x}" for channel, channel_end in zip(start, end, strict=True))
+            for index in range(steps)
+        ]
+
+    @staticmethod
+    def rgb(color: str) -> tuple[int, int, int]:
+        value = color.rpartition(":")[2].lstrip("#")
+        return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
 
     @classmethod
     def detect(cls) -> str:
