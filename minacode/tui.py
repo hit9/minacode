@@ -413,9 +413,9 @@ class TuiApp:
         self.invalidate()
 
     def tab_or_complete(self, buffer: Buffer, *, reverse: bool) -> None:
-        # On an empty idle prompt Tab cycles the offered quick inputs; anywhere else it completes.
-        if not reverse and self.input_mode == "chat" and not buffer.text and buffer.complete_state is None and self.quick_hints():
-            self.cycle_quick_hint_focus()
+        # On an empty idle prompt Tab/Shift-Tab cycle the offered quick inputs; anywhere else they complete.
+        if self.input_mode == "chat" and not buffer.text and buffer.complete_state is None and self.quick_hints():
+            self.cycle_quick_hint_focus(reverse=reverse)
             return
         self.complete_input(buffer, reverse=reverse)
 

@@ -1074,6 +1074,14 @@ def test_quick_hint_tab_cycles_focus_and_wraps():
         assert app.quick_hint_focus == expected
 
 
+def test_quick_hint_shift_tab_cycles_focus_backwards_and_wraps():
+    app, _ = quick_hint_app()
+    assert app.quick_hint_focus == -1
+    for expected in (2, 1, 0, -1):
+        app.tab_or_complete(app.input_buffer, reverse=True)
+        assert app.quick_hint_focus == expected
+
+
 def test_quick_hint_tab_falls_through_to_completion_with_text():
     app, _ = quick_hint_app()
     app.input_buffer.insert_text("/mod")
