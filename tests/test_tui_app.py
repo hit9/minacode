@@ -780,6 +780,17 @@ def test_tui_idle_hint_rerolls_each_turn(tmp_path):
     assert command_loop.tui_input_hint() == "second"  # a new turn re-rolls
 
 
+def test_edit_delta_frames_minimal_edit():
+    delta = tui_module._edit_delta("please refactor the auth module", "please refactor the auth")
+    assert (delta.prefix, delta.removed, delta.inserted) == (24, " module", "")
+    delta = tui_module._edit_delta("abc", "aXc")
+    assert (delta.prefix, delta.removed, delta.inserted) == (1, "b", "X")
+    delta = tui_module._edit_delta("same", "same")
+    assert (delta.prefix, delta.removed, delta.inserted) == (4, "", "")
+    delta = tui_module._edit_delta("", "added")
+    assert (delta.prefix, delta.removed, delta.inserted) == (0, "", "added")
+
+
 def test_tui_sigint_interrupts_dispatch_and_running_modes():
     interrupted = []
     app = TuiApp(on_interrupt=lambda: interrupted.append(True))

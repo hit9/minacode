@@ -59,6 +59,31 @@ class TuiModal:
     result: Any = None
 
 
+@dataclass(frozen=True)
+class _EditDelta:
+    """The minimal single-edit difference between two strings (pure data)."""
+
+    prefix: int  # length of the unchanged common prefix
+    removed: str  # slice of the old text that was deleted
+    inserted: str  # slice of the new text that was added
+
+
+def _edit_delta(old: str, new: str) -> _EditDelta:
+    """Compute the minimal edit turning ``old`` into ``new`` via common prefix/suffix framing."""
+    prefix = 0
+    limit = min(len(old), len(new))
+    while prefix < limit and old[prefix] == new[prefix]:
+        prefix += 1
+    suffix = 0
+    while suffix < len(old) - prefix and suffix < len(new) - prefix and old[-suffix - 1] == new[-suffix - 1]:
+        suffix += 1
+    return _EditDelta(
+        prefix=prefix,
+        removed=old[prefix : len(old) - suffix],
+        inserted=new[prefix : len(new) - suffix],
+    )
+
+
 class CallbackPlaceholder(Processor):
     def __init__(self, text_fn: Callable[[], str]):
         self.text_fn = text_fn
@@ -181,7 +206,7 @@ class TuiApp:
             multiline=True,
             accept_handler=self._accept,
         )
-        self.input_buffer.on_text_changed += self._sync_input_images
+        self.input_buffer.on_text_changed += self._on_input_text_changed
         self.search_toolbar = SearchToolbar()
         self.app: Application | None = None
         self.ready = threading.Event()
@@ -424,7 +449,8 @@ class TuiApp:
             return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter submits"
         return self.input_hint_fn()
 
-    def _sync_input_images(self, buffer: Buffer) -> None:
+    def _on_input_text_changed(self, buffer: Buffer) -> None:
+        """Reconcile everything that tracks the input text after an edit (image markers, recognition)."""
         text = buffer.text
         if self._changing_input:
             self._last_input_text = text
@@ -433,22 +459,19 @@ class TuiApp:
         if old == text:
             return
         self.input_error = ""
-        prefix = 0
-        while prefix < min(len(old), len(text)) and old[prefix] == text[prefix]:
-            prefix += 1
-        suffix = 0
-        while suffix < len(old) - prefix and suffix < len(text) - prefix and old[-suffix - 1] == text[-suffix - 1]:
-            suffix += 1
-        removed_end = len(old) - suffix
-        first = old[:prefix].count(IMAGE_MARKER)
-        removed = old[prefix:removed_end].count(IMAGE_MARKER)
-        if removed:
-            self.input_images = self.input_images[:first] + self.input_images[first + removed :]
+        delta = _edit_delta(old, text)
+        self._sync_input_images(old, delta)
         self._last_input_text = text
-        inserted_end = len(text) - suffix
-        inserted = text[prefix:inserted_end]
-        if inserted and inserted[-1].isspace() and self.input_mode in {"chat", "running"}:
+        if delta.inserted and delta.inserted[-1].isspace() and self.input_mode in {"chat", "running"}:
             self._recognize_input()
+
+    def _sync_input_images(self, old: str, delta: _EditDelta) -> None:
+        """Drop image markers that an edit removed from the input text."""
+        removed = delta.removed.count(IMAGE_MARKER)
+        if not removed:
+            return
+        first = old[: delta.prefix].count(IMAGE_MARKER)
+        self.input_images = self.input_images[:first] + self.input_images[first + removed :]
 
     def show_modal(
         self,
