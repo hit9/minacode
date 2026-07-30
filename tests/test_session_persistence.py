@@ -946,6 +946,23 @@ def test_session_name_latches_then_follows_the_goal(tmp_path):
     assert Session.load_snapshot(s.uid, config=s.config).name == "token store cleanup"
 
 
+
+def test_session_name_does_not_change_when_goal_changes(tmp_path):
+    """Once the name is derived from a goal, later goal changes do not overwrite it."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "fix the parser"})
+    s.save_snapshot()
+    assert (s.name, s.state.name_source) == ("fix the parser", "input")
+
+    s.state.goal = "rewrite the tokenizer"
+    s.save_snapshot()
+    assert (s.name, s.state.name_source) == ("rewrite the tokenizer", "goal")
+
+    s.state.goal = "add error recovery to the parser"
+    s.save_snapshot()
+    # Goal changed, but the name was already latched from the first goal — stays put.
+    assert (s.name, s.state.name_source) == ("rewrite the tokenizer", "goal")
+    assert Session.load_snapshot(s.uid, config=s.config).name == "rewrite the tokenizer"
 def test_session_name_survives_compaction_dropping_the_opening_message(tmp_path):
     from minacode.prompts import COMPACTION_SUMMARY_TITLE
 

@@ -1346,7 +1346,7 @@ class Session:
         """
         if self.state.name_source == "user":
             return self.state.name
-        if goal := self.clip_name(self.state.goal):
+        if self.state.name_source != "goal" and (goal := self.clip_name(self.state.goal)):
             self.state.name, self.state.name_source = goal, "goal"
         elif not self.state.name and (opening := self.opening_text()):
             self.state.name, self.state.name_source = self.clip_name(opening), "input"
