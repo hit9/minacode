@@ -18,12 +18,14 @@ from prompt_toolkit.output import DummyOutput
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, session, wait_until
 
 import minacode.tui as tui_module
+from minacode import hints
 from minacode.base import (
     Config,
     LogBlock,
     LogEdge,
 )
 from minacode.engine import Agent
+from minacode.hints import HintPicker
 from minacode.loop import CommandCompleter, CommandLoop
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
@@ -694,10 +696,38 @@ def test_tui_chat_input_shows_random_idle_placeholder(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
 
-    assert "Ctrl-X Ctrl-E opens $EDITOR" in CommandLoop.IDLE_HINTS
     hint = command_loop.tui_input_hint()
-    assert hint in CommandLoop.IDLE_HINTS
-    assert command_loop.tui_input_hint() == hint  # stable within a session (no flicker)
+    assert hint in {entry.text for entry in hints.HINTS}
+    assert command_loop.tui_input_hint() == hint  # stable within a situation (no flicker)
+
+
+def test_tui_idle_hint_sessions_only_before_work(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop._hint_picker = HintPicker(choice=lambda pool: pool[-1])
+
+    # Early session: the pool ends with the /sessions hint (the only early-only entry).
+    assert command_loop.tui_input_hint() == "/sessions resumes a past session"
+
+    # Once work exists the session is no longer early and /sessions leaves the pool.
+    command_loop.session.store_tool_result("Bash", ["ls"], "ok")
+    assert command_loop.tui_input_hint() == "Type / for commands"  # last technique hint
+
+
+def test_tui_idle_hint_favors_diff_right_after_editing(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop._hint_picker = HintPicker(choice=lambda pool: pool[-1])
+    command_loop.session.store_tool_result("Bash", ["ls"], "ok")  # mature phase
+    command_loop.session.state.round_count = 1
+    command_loop.session.store_turn_diff("tr.1", 1, "a.py", "diff", round=1)
+
+    # The post-edit pool ends with the weighted /diff copies.
+    assert command_loop.tui_input_hint() == "/diff reviews recent edits"
+
+    # A later round without edits drops /diff back out of the pool.
+    command_loop.session.state.round_count = 2
+    assert command_loop.tui_input_hint() == "Type / for commands"
 
 
 def test_tui_sigint_interrupts_dispatch_and_running_modes():

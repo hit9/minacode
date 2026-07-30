@@ -6,7 +6,6 @@ import contextlib
 import json
 import os
 import queue
-import random
 import re
 import shlex
 import shutil
@@ -50,6 +49,8 @@ from minacode.base import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
+from minacode.hints import Context as HintContext
+from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
@@ -193,11 +194,6 @@ class CommandLoop:
     HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
-    IDLE_HINTS = (
-        "Ctrl-X Ctrl-E opens $EDITOR",
-        "Type / for commands",
-        "Ctrl-U clears the line",
-    )
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     INPUT_HISTORY_BYTES: ClassVar[int] = 512 * 1024
@@ -307,9 +303,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
         self.agent = agent
         self.session = agent.session
-        # A single idle-input tip, chosen once per session so the empty prompt stays stable
-        # (no per-render flicker) while still surfacing different shortcuts across sessions.
-        self._idle_hint = random.choice(self.IDLE_HINTS)
+        self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/hints.py
         self.input_fn = input_fn
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
@@ -538,8 +532,20 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
             return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
         if self.tui.input_mode == "chat":
-            return self._idle_hint
+            return self._hint_picker.pick(self._hint_context())
         return ""
+
+    def _hint_context(self) -> HintContext:
+        """Project the session into the small situation the hint mechanism selects on.
+
+        round_count only advances at the start of the next turn, so at idle it still names the
+        round that just finished; edited_round therefore clears on its own once a later round
+        makes no edits.
+        """
+        session = self.session
+        round_count = session.state.round_count
+        edited = any((diff.round or diff.turn) == round_count for diff in session.turn_diffs)
+        return HintContext(early=not session.tool_records, edited_round=round_count if edited else None)
 
     def editor_context(self) -> str:
         """The agent's most recent reply, restated as read-only reference inside the external
