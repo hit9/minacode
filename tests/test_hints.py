@@ -4,6 +4,10 @@ from minacode.hints import HINTS, Context, HintPicker
 
 DIFF = "/diff reviews recent edits"
 SESSIONS = "/sessions resumes a past session"
+SKILL = "$skill loads a skill inline"
+MCP = "@server.tool mentions an MCP tool"
+IMAGE = "Paste an image path to attach it"
+PS = "/ps lists background jobs"
 
 
 def _pool_for(ctx: Context) -> list[str]:
@@ -65,3 +69,32 @@ def test_editing_pool_weights_diff_high():
     pool = _pool_for(Context(early=False, edited_round=3))
     assert pool.count(DIFF) == diff_hint.weight
     assert SESSIONS not in pool  # a mature session
+
+
+def test_skill_and_mcp_hints_gated_on_availability():
+    skill = next(hint for hint in HINTS if hint.text == SKILL)
+    mcp = next(hint for hint in HINTS if hint.text == MCP)
+    assert skill.when is not None and mcp.when is not None
+    base = Context(early=False, edited_round=None)
+    assert not skill.when(base) and not mcp.when(base)
+    assert skill.when(Context(early=False, edited_round=None, skills_available=True))
+    assert mcp.when(Context(early=False, edited_round=None, mcp_connected=True))
+
+
+def test_unavailable_features_drop_out_of_the_pool():
+    bare = _pool_for(Context(early=False, edited_round=None))
+    assert SKILL not in bare and MCP not in bare
+    rich = _pool_for(Context(early=False, edited_round=None, skills_available=True, mcp_connected=True))
+    assert SKILL in rich and MCP in rich
+
+
+def test_image_hint_is_always_available():
+    assert IMAGE in _pool_for(Context(early=False, edited_round=None))
+
+
+def test_ps_hint_only_while_jobs_running_and_weighted():
+    ps = next(hint for hint in HINTS if hint.text == PS)
+    assert ps.weight > 1
+    assert PS not in _pool_for(Context(early=False, edited_round=None))
+    pool = _pool_for(Context(early=False, edited_round=None, jobs_running=True))
+    assert pool.count(PS) == ps.weight

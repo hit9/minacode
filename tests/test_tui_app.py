@@ -6,6 +6,7 @@ import os
 import signal
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit.application import Application
@@ -728,6 +729,43 @@ def test_tui_idle_hint_favors_diff_right_after_editing(tmp_path):
     # A later round without edits drops /diff back out of the pool.
     command_loop.session.state.round_count = 2
     assert command_loop.tui_input_hint() == "Type / for commands"
+
+
+class _StubJob:
+    def __init__(self, status):
+        self.status = status
+
+
+def test_tui_idle_hint_ps_while_jobs_running(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop._hint_picker = HintPicker(choice=lambda pool: pool[-1])
+    command_loop.session.store_tool_result("Bash", ["ls"], "ok")  # mature
+
+    assert command_loop.tui_input_hint() == "Type / for commands"  # no jobs yet
+
+    command_loop.session.jobs["j1"] = _StubJob("running")
+    assert command_loop.tui_input_hint() == "/ps lists background jobs"
+
+    command_loop.session.jobs["j1"] = _StubJob("done")  # finished -> hint clears
+    assert command_loop.tui_input_hint() == "Type / for commands"
+
+
+def test_tui_hint_context_projects_availability(tmp_path):
+    command_loop = loop(tmp_path)
+    session = command_loop.session
+
+    session.skills = None
+    session.mcp = None
+    session.jobs.clear()
+    ctx = command_loop._hint_context()
+    assert not ctx.skills_available and not ctx.mcp_connected and not ctx.jobs_running
+
+    session.skills = SimpleNamespace(skills={"demo": object()})
+    session.mcp = SimpleNamespace(tools={"srv": []})
+    session.jobs["j1"] = _StubJob("running")
+    ctx = command_loop._hint_context()
+    assert ctx.skills_available and ctx.mcp_connected and ctx.jobs_running
 
 
 def test_tui_sigint_interrupts_dispatch_and_running_modes():

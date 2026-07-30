@@ -545,7 +545,13 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         session = self.session
         round_count = session.state.round_count
         edited = any((diff.round or diff.turn) == round_count for diff in session.turn_diffs)
-        return HintContext(early=not session.tool_records, edited_round=round_count if edited else None)
+        return HintContext(
+            early=not session.tool_records,
+            edited_round=round_count if edited else None,
+            skills_available=bool(session.skills and session.skills.skills),
+            mcp_connected=bool(session.mcp and session.mcp.tools),
+            jobs_running=any(job.status == "running" for job in session.jobs.values()),
+        )
 
     def editor_context(self) -> str:
         """The agent's most recent reply, restated as read-only reference inside the external
