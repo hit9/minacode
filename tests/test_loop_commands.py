@@ -16,6 +16,8 @@ import minacode.loop as loop_module
 from minacode.base import (
     SELECTION_FREE_TEXT,
     Config,
+    LogBlock,
+    LogLine,
     Text,
     ToolError,
     TurnBox,
@@ -763,6 +765,24 @@ def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
     loop.ui.emit_answer("Done.\nFinal detail.")
 
     assert output == ["  First line.\n  Second line.", "Done.\nFinal detail."]
+
+
+def test_colored_assistant_and_tool_blocks_each_start_with_one_blank_line(tmp_path):
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop.ui.color = True
+    events = []
+    loop.emit = lambda text="": events.append(text)
+    loop.ui.emit_answer = lambda text, **_kwargs: events.append(text)
+    first = LogBlock.hierarchy(LogLine("Bash", "first"), [])
+    first_result = LogBlock.hierarchy(None, [LogLine("stored", "tr.1")])
+    second = LogBlock.hierarchy(LogLine("Bash", "second"), [])
+
+    loop.emit_agent_output("Working on it.")
+    loop.tool_output(first)
+    loop.tool_output(first_result)
+    loop.tool_output(second)
+
+    assert events == ["", "Working on it.", "", first, first_result, "", second]
 
 
 def test_skill_library_index_and_lookup(tmp_path):

@@ -1,6 +1,13 @@
 # Changelog
 
 
+## Unreleased
+
+### Fixed
+- Keep exactly one blank line between assistant progress and tool calls, and between consecutive
+  tool calls, without splitting a tool's header from its result.
+
+
 ## 0.17.0 - 2026-07-29
 
 ### Added

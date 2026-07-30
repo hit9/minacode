@@ -896,7 +896,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 self.status_bar.start(reset=False)
 
     def tool_output(self, text: str | LogBlock = "") -> None:
-        self.with_status_paused(lambda: self.emit(text))
+        def output() -> None:
+            if self.ui.color and (isinstance(text, str) or (text.items and isinstance(text.items[0], LogLine))):
+                self.emit()
+            self.emit(text)
+
+        self.with_status_paused(output)
 
     def agent_output(self, text: str = "") -> None:
         # An early promotion is presentation-only: Agent still publishes the same semantic text
@@ -953,9 +958,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def emit_agent_output(self, text: str) -> None:
         if self.ui.color and text.strip():
             self.emit()
-            self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
-            self.emit()
-            return
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
     def _begin_cli_preview(self) -> None:
