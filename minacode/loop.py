@@ -532,7 +532,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
             return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
         if self.tui.input_mode == "chat":
-            return self._hint_picker.pick(self._hint_context())
+            return self._hint_picker.pick(self._hint_context(), self.session.state.round_count)
         return ""
 
     def _hint_context(self) -> HintContext:

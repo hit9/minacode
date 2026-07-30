@@ -98,3 +98,12 @@ def test_ps_hint_only_while_jobs_running_and_weighted():
     assert PS not in _pool_for(Context(early=False, edited_round=None))
     pool = _pool_for(Context(early=False, edited_round=None, jobs_running=True))
     assert pool.count(PS) == ps.weight
+
+
+def test_pick_varies_across_rounds_but_is_stable_within_one():
+    picks = iter(["first", "second"])
+    picker = HintPicker(choice=lambda pool: next(picks))
+    ctx = Context(early=False, edited_round=None)
+    assert picker.pick(ctx, 1) == "first"
+    assert picker.pick(ctx, 1) == "first"  # cached: no flicker within a round
+    assert picker.pick(ctx, 2) == "second"  # a new round re-rolls the random pick

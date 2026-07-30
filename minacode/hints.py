@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Context:
-    """The session situation that decides which hints apply and when to re-roll."""
+    """The session situation that decides which hints apply."""
 
     early: bool  # the session has done no work yet; navigation tips are welcome
     edited_round: int | None  # the round that just edited files, or None
@@ -80,18 +80,20 @@ HINTS: tuple[Hint, ...] = (
 class HintPicker:
     """Weighted, per-Context cached selection over HINTS (see module docstring).
 
-    The pick is cached per Context so a frequently re-rendered placeholder does not flicker; it
-    re-rolls only when the Context changes. Inject `choice` for deterministic tests.
+    The pick is cached per (Context, round_no) so a frequently re-rendered placeholder does not
+    flicker; it re-rolls when the situation changes or a new round begins. The caller supplies
+    round_no (e.g. the session round counter); the picker keeps no round state of its own. Inject
+    `choice` for deterministic tests.
     """
 
     def __init__(self, choice: Callable[[Sequence[str]], str] = random.choice) -> None:
         self._choice = choice
-        self._cache: tuple[Context, str] | None = None
+        self._cache: tuple[Context, int, str] | None = None
 
-    def pick(self, ctx: Context) -> str:
-        if self._cache is None or self._cache[0] != ctx:
-            self._cache = (ctx, self._select(ctx))
-        return self._cache[1]
+    def pick(self, ctx: Context, round_no: int = 0) -> str:
+        if self._cache is None or self._cache[:2] != (ctx, round_no):
+            self._cache = (ctx, round_no, self._select(ctx))
+        return self._cache[2]
 
     def _select(self, ctx: Context) -> str:
         pool = [hint.text for hint in HINTS if hint.when is None or hint.when(ctx) for _ in range(hint.weight)]

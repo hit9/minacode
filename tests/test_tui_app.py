@@ -768,6 +768,18 @@ def test_tui_hint_context_projects_availability(tmp_path):
     assert ctx.skills_available and ctx.mcp_connected and ctx.jobs_running
 
 
+def test_tui_idle_hint_rerolls_each_turn(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    picks = iter(["first", "second"])
+    command_loop._hint_picker = HintPicker(choice=lambda pool: next(picks))
+    command_loop.session.state.round_count = 1
+    assert command_loop.tui_input_hint() == "first"
+    assert command_loop.tui_input_hint() == "first"  # stable within the round
+    command_loop.session.state.round_count = 2
+    assert command_loop.tui_input_hint() == "second"  # a new turn re-rolls
+
+
 def test_tui_sigint_interrupts_dispatch_and_running_modes():
     interrupted = []
     app = TuiApp(on_interrupt=lambda: interrupted.append(True))
