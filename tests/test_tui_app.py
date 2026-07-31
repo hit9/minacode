@@ -28,7 +28,7 @@ from minacode.base import (
 )
 from minacode.engine import Agent
 from minacode.hints import HintPicker
-from minacode.loop import CommandCompleter, CommandLoop
+from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
@@ -307,71 +307,50 @@ def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
     assert app.app is None
 
 
-@pytest.mark.parametrize("draft", ["", "unfinished draft"])
-def test_interactive_tui_ctrl_c_cancels_idle_input_like_master(monkeypatch, draft):
-    cancelled = []
-    app = TuiApp(on_input_cancel=lambda: cancelled.append(True))
+@pytest.mark.parametrize(
+    ("mode", "draft", "expected_interrupts"),
+    [
+        ("chat", "", []),
+        ("chat", "unfinished draft", []),
+        ("dispatch", "", ["interrupt"]),
+        ("dispatch", "unfinished draft", []),
+        ("running", "", ["interrupt"]),
+        ("running", "unfinished draft", []),
+    ],
+)
+def test_interactive_tui_ctrl_c_input_state_matrix(monkeypatch, tmp_path, mode, draft, expected_interrupts):
+    command_loop = loop(tmp_path)
+    output = []
+    command_loop.emit = output.append
+    runtime = TuiRuntime(command_loop)
+    app = runtime.build_tui()
+    command_loop.tui = app
+    interrupts = []
+    app.on_interrupt = lambda: interrupts.append("interrupt")
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
-        pipe_input.send_text(draft + "\x03")
-        wait_until(lambda: cancelled == [True])
-        assert app.input_buffer.text == ""
-        pipe_input.send_text("\x04")
+        if mode == "chat":
+            app.set_idle()
+        elif mode == "dispatch":
+            app.set_dispatching()
+        else:
+            app.set_running("working")
+        pipe_input.send_text(draft + "\x03x")
+        wait_until(lambda: app.input_buffer.text == "x")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
-    assert cancelled == [True]
-
-
-def test_tui_ctrl_c_consumes_a_running_draft_before_interrupting(monkeypatch):
-    """While the agent works, a draft absorbs the first Ctrl-C; the turn keeps running."""
-    events = []
-    app = TuiApp(on_interrupt=lambda: events.append("interrupt"))
-
-    def drive(pipe_input):
-        wait_until(lambda: app.app is not None and app.app.is_running)
-        app.set_running("working")
-        pipe_input.send_text("queued draft")
-        wait_until(lambda: app.input_buffer.text == "queued draft")
-        pipe_input.send_text("\x03")
-        wait_until(lambda: app.input_buffer.text == "")
-        assert events == []
-        # With the draft gone the next press interrupts.
-        pipe_input.send_text("\x03")
-        wait_until(lambda: events == ["interrupt"])
-        app.set_idle()
-        pipe_input.send_text("\x04")
-
-    run_interactive_tui(monkeypatch, app, drive=drive)
-
-    assert events == ["interrupt"]
-
-
-def test_tui_ctrl_c_interrupts_immediately_with_an_empty_running_input(monkeypatch):
-    """The queue hint renders only on an empty buffer, so "Ctrl-C interrupts" is shown exactly
-    when a single press interrupts."""
-    events = []
-    app = TuiApp(on_interrupt=lambda: events.append("interrupt"))
-
-    def drive(pipe_input):
-        wait_until(lambda: app.app is not None and app.app.is_running)
-        app.set_running("working")
-        pipe_input.send_text("\x03")
-        wait_until(lambda: events == ["interrupt"])
-        app.set_idle()
-        pipe_input.send_text("\x04")
-
-    run_interactive_tui(monkeypatch, app, drive=drive)
-
-    assert events == ["interrupt"]
+    assert interrupts == expected_interrupts
+    assert output == []
 
 
 def test_tui_ctrl_u_clears_the_idle_draft_without_cancelling(monkeypatch):
     """Ctrl-U discards the line. Unlike Ctrl-C it carries no other meaning, so nothing is
     cancelled."""
-    cancelled = []
-    app = TuiApp(on_input_cancel=lambda: cancelled.append(True))
+    interrupted = []
+    app = TuiApp(on_interrupt=lambda: interrupted.append(True))
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -387,7 +366,7 @@ def test_tui_ctrl_u_clears_the_idle_draft_without_cancelling(monkeypatch):
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
-    assert cancelled == []
+    assert interrupted == []
 
 
 def test_tui_ctrl_u_clears_the_running_draft_without_interrupting(monkeypatch):
@@ -1056,6 +1035,28 @@ def test_tui_approval_restores_half_typed_draft():
     assert result == ["y"]
     assert app.input_mode == "running"
     assert app.input_buffer.text == "unfinished draft"
+
+
+def test_interactive_tui_ctrl_c_cancels_approval_without_interrupting_turn(monkeypatch):
+    interrupted = []
+    result = []
+    app = TuiApp(on_interrupt=lambda: interrupted.append(True))
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        approval = threading.Thread(target=lambda: result.append(app.request_input("Approve? ")), daemon=True)
+        approval.start()
+        wait_until(lambda: app.input_mode == "approval")
+        pipe_input.send_text("\x03")
+        approval.join(timeout=1)
+        assert not approval.is_alive()
+        wait_until(lambda: app.input_mode == "chat")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert result == [""]
+    assert interrupted == []
 
 
 def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatch):

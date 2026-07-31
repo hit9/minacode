@@ -709,6 +709,30 @@ def test_eof_exit_prints_resume_command(tmp_path):
     assert os.path.exists(SessionSnapshotStore.session_path(s.config.data_dir, s.cwd, s.uid))
 
 
+@pytest.mark.parametrize(("interrupt_phase", "expected_cancelled"), [("input", 0), ("request", 1)])
+def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypatch, interrupt_phase, expected_cancelled):
+    output = []
+    reads = iter([KeyboardInterrupt(), EOFError()] if interrupt_phase == "input" else ["question", EOFError()])
+
+    def read_input(_prompt=""):
+        value = next(reads)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    agent = Agent(session(tmp_path), output_fn=output.append)
+    if interrupt_phase == "request":
+        agent.run = lambda _input: (_ for _ in ()).throw(KeyboardInterrupt())
+    command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
+    monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+
+    assert command_loop.run() == 0
+
+    assert output.count("Cancelled") == expected_cancelled
+
+
 def test_select_choice_noninteractive_does_not_prompt(tmp_path):
     output = []
     loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "1", output_fn=output.append)

@@ -19,6 +19,8 @@
 - Show provider-reported cache-write tokens alongside cache reads in `/status`.
 
 ### Fixed
+- Keep Ctrl-C silent at an idle prompt: it clears a draft when present and otherwise does nothing,
+  while an actual in-flight request interruption still reports `Cancelled`.
 - Keep compaction, migrated-state, and resume lifecycle checkpoints out of resumed transcripts;
   they remain available to the model without exposing internal context bookkeeping in the CLI,
   and a checkpoint-only resume still confirms which session was restored.

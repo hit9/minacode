@@ -164,7 +164,6 @@ class TuiApp:
         on_exit_request: Callable[[], None] | None = None,
         on_force_exit: Callable[[], None] | None = None,
         on_interrupt: Callable[[], None] | None = None,
-        on_input_cancel: Callable[[], None] | None = None,
         on_retry: Callable[[], None] | None = None,
         on_recall: Callable[[], str | UserInput] | None = None,
         on_expand_output: Callable[[], None] | None = None,
@@ -183,7 +182,6 @@ class TuiApp:
         self.on_exit_request = on_exit_request or (lambda: None)
         self.on_force_exit = on_force_exit or (lambda: None)
         self.on_interrupt = on_interrupt or (lambda: None)
-        self.on_input_cancel = on_input_cancel or (lambda: None)
         self.on_retry = on_retry or (lambda: None)
         self.on_recall = on_recall or (lambda: "")
         self.on_expand_output = on_expand_output or (lambda: None)
@@ -762,7 +760,7 @@ class TuiApp:
         def ctrl_c(event):  # pragma: no cover — interactive path
             # Never quit on Ctrl-C. Instead:
             #   * approval mode → cancel this specific prompt (empty reply back to the agent).
-            #   * idle chat → cancel and clear the current input.
+            #   * idle chat → clear the current input silently.
             #   * agent running → discard a draft, or interrupt the turn when the input is empty.
             # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
             if self.modal is not None:
@@ -776,7 +774,6 @@ class TuiApp:
             if self.input_mode == "chat":
                 if self.input_buffer.text:
                     self.input_buffer.reset(Document(""))
-                self.on_input_cancel()
                 return
             if self.input_mode in {"dispatch", "running"}:
                 # A draft absorbs the first press, the way it already does at the idle prompt. The

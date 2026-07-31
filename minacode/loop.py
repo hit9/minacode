@@ -624,7 +624,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 self.save_and_emit_resume()
                 return 0
             except KeyboardInterrupt:
-                self.emit("Cancelled")
                 continue
             if not user_input.strip():
                 continue
@@ -1951,7 +1950,6 @@ class TuiRuntime:
             on_exit_request=self.request_exit,
             on_force_exit=self.force_exit,
             on_interrupt=self.interrupt,
-            on_input_cancel=lambda: self.loop.emit("Cancelled"),
             on_retry=self._request_model_retry,
             on_recall=self.recall,
             on_expand_output=self.expand_output,
