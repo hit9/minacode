@@ -890,6 +890,48 @@ def test_memory_tools_treat_strict_schema_nulls_as_omitted(tmp_path):
     assert list_result["segments"] == [{"key": "seg.1", "title": "cache"}]
 
 
+def test_note_short_args_treats_strict_schema_nulls_as_omitted(tmp_path):
+    payload = {
+        "action": None,
+        "fields": None,
+        "set_goal": None,
+        "replace_plan": None,
+        "append_known": None,
+        "replace_known": None,
+        "set_check": None,
+    }
+
+    assert NoteTool(session(tmp_path), [payload]).short_args() == ["view all"]
+
+
+def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
+    s = session(tmp_path)
+    s.history.append(HistorySegment(key="seg.1", title="cache", text="needle"))
+
+    listed = json.loads(
+        RecallContextTool(
+            s,
+            [{"action": "list", "keys": [], "query": "", "case_sensitive": False, "limit": 20}],
+        ).call()
+    )
+    searched = RecallContextTool(
+        s,
+        [{"action": "search", "keys": [], "query": "needle", "case_sensitive": False, "limit": 20}],
+    ).call()
+    retrieved = RecallContextTool(
+        s,
+        [{"action": "get", "keys": ["seg.1"], "query": "", "case_sensitive": False, "limit": 20}],
+    ).call()
+    updated = json.loads(NoteTool(s, [{"action": "update", "fields": [], "set_goal": "ship"}]).call())
+    viewed = json.loads(NoteTool(s, [{"action": "view", "fields": []}]).call())
+
+    assert listed["segments"] == [{"key": "seg.1", "title": "cache"}]
+    assert "needle" in searched
+    assert "needle" in retrieved
+    assert updated["changed"] == ["goal"]
+    assert viewed["goal"] == "ship"
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

@@ -152,11 +152,19 @@ class RecallContextTool(Tool):
         payload = {key: value for key, value in self.single_dict_arg("RecallContext requires an action, keys, or query").items() if value is not None}
         if unexpected := sorted(set(payload) - {"action", "keys", "query", "case_sensitive", "limit", "before"}):
             raise ToolError("RecallContext unexpected field: " + ", ".join(unexpected))
+        if payload.get("keys") == []:
+            payload.pop("keys")
+        if isinstance(payload.get("query"), str) and not payload["query"].strip():
+            payload.pop("query")
         action = payload.get("action")
         if action is None:
             action = "search" if payload.get("query") is not None else "get" if payload.get("keys") is not None else "list"
         if action not in {"list", "get", "search"}:
             raise ToolError("RecallContext action must be list, get, or search")
+        if action != "search" and payload.get("case_sensitive") is False:
+            payload.pop("case_sensitive")
+        if action == "get" and payload.get("limit") == self.DEFAULT_LIMIT:
+            payload.pop("limit")
         raw_keys = payload.get("keys")
         if raw_keys is not None and (not isinstance(raw_keys, list) or not raw_keys):
             raise ToolError("RecallContext keys must be a non-empty array")
@@ -276,7 +284,7 @@ class NoteTool(Tool):
         # fmt: on
 
     def call(self) -> str:
-        data = {key: value for key, value in self.single_dict_arg("Note requires named fields").items() if value is not None}
+        data = self.data()
         mutation_fields = {"set_goal", "replace_plan", "append_known", "replace_known", "set_check"}
         if unexpected := sorted(set(data) - {"action", "fields", *mutation_fields}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
@@ -348,8 +356,14 @@ class NoteTool(Tool):
         }
         return json.dumps({field: values[field] for field in fields}, ensure_ascii=False)
 
+    def data(self) -> Json:
+        data = {key: value for key, value in self.single_dict_arg("Note requires named fields").items() if value is not None}
+        if data.get("fields") == []:
+            data.pop("fields")
+        return data
+
     def short_args(self) -> list[str]:
-        data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
+        data = self.data()
         if data.get("action") == "view" or not any(key in data for key in ("set_goal", "replace_plan", "append_known", "replace_known", "set_check")):
             fields = data.get("fields")
             return ["view " + (", ".join(str(field) for field in fields) if isinstance(fields, list) else "all")]

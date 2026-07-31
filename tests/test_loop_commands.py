@@ -14,6 +14,7 @@ from prompt_toolkit.document import Document
 
 import minacode.loop as loop_module
 from minacode.base import (
+    SESSION_EVENT_KEY,
     SELECTION_FREE_TEXT,
     Config,
     LogBlock,
@@ -25,7 +26,7 @@ from minacode.base import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.loop import CommandLoop
-from minacode.prompts import SYSTEM_PROMPT
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore, ToolResultRecord
@@ -568,6 +569,35 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert "Read  a.py 0:1 → tr.1" in text
     assert "tool:" not in text
     assert "raw tool result" not in text
+
+
+def test_resumed_session_renders_compaction_checkpoint_but_hides_resume_event(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {
+                "role": "user",
+                "content": COMPACTION_SUMMARY_TITLE + "\nSummary:\nkept work\n\nWorking state:\nGoal: finish",
+                SESSION_EVENT_KEY: "compaction_checkpoint",
+            },
+            {
+                "role": "user",
+                "content": '<session_event type="resumed" at="2026-07-31T08:00:00+08:00" />',
+                SESSION_EVENT_KEY: "resumed",
+            },
+        ]
+    )
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    assert f"Restored session: {s.uid}" in text
+    assert COMPACTION_SUMMARY_TITLE in text
+    assert "Goal: finish" in text
+    assert "<session_event" not in text
 
 
 def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(tmp_path):

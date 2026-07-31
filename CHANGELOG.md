@@ -19,6 +19,10 @@
 - Show provider-reported cache-write tokens alongside cache reads in `/status`.
 
 ### Fixed
+- Keep compaction and migrated-state checkpoints visible when replaying a resumed transcript while
+  continuing to hide the resume lifecycle marker.
+- Treat strict-schema nulls, empty selector arrays, and irrelevant default arguments as omitted in
+  `Note` and `RecallContext`, including `Note`'s user-facing call summary.
 - Keep exactly one blank line between assistant progress and tool calls, and between consecutive
   tool calls, without splitting a tool's header from its result.
 - Keep large stale code indexes off the interactive startup path, so repository scanning and
