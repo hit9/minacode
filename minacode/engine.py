@@ -104,35 +104,29 @@ class Agent:
                         request = self.prepare_request(turn_messages)
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
                         self.raise_if_cancelled()
-                        while not tool_calls and (textual_tool := self.textual_tool_call(content, request.tools)):
-                            self.start_textual_tool_correction(malformed_tool_names, textual_tool)
-                            correction_messages = [
-                                *request.messages,
-                                {"role": "user", "content": self.tool_call_correction(textual_tool)},
-                            ]
-                            while True:
-                                try:
-                                    assistant, tool_calls, content = self.model.request(correction_messages, request.tools)
-                                    break
-                                except ModelRequestRetry:
-                                    continue
-                            self.raise_if_cancelled()
+                        assistant, tool_calls, content = self.correct_textual_tool_calls(
+                            assistant,
+                            tool_calls,
+                            content,
+                            base_messages=request.messages,
+                            known_tools=request.tools,
+                            retry_tools=request.tools,
+                            correction=self.tool_call_correction,
+                            names=malformed_tool_names,
+                        )
                         if request.pending and not content.strip():
                             assistant, followup_tool_calls, content = self.model.request(request.messages, [])
                             self.raise_if_cancelled()
-                            while not followup_tool_calls and (textual_tool := self.textual_tool_call(content, request.tools)):
-                                self.start_textual_tool_correction(malformed_tool_names, textual_tool)
-                                correction_messages = [
-                                    *request.messages,
-                                    {"role": "user", "content": self.followup_tool_call_correction(textual_tool)},
-                                ]
-                                while True:
-                                    try:
-                                        assistant, followup_tool_calls, content = self.model.request(correction_messages, [])
-                                        break
-                                    except ModelRequestRetry:
-                                        continue
-                                self.raise_if_cancelled()
+                            assistant, followup_tool_calls, content = self.correct_textual_tool_calls(
+                                assistant,
+                                followup_tool_calls,
+                                content,
+                                base_messages=request.messages,
+                                known_tools=request.tools,
+                                retry_tools=[],
+                                correction=self.followup_tool_call_correction,
+                                names=malformed_tool_names,
+                            )
                             if not content.strip():
                                 raise ModelError("empty live follow-up response")
                             followup_response = True
@@ -177,6 +171,31 @@ class Agent:
             self.session.state.turn_messages = 0
             self.session.save_snapshot()
             raise
+
+    def correct_textual_tool_calls(
+        self,
+        assistant: Json,
+        tool_calls: list[ToolCall],
+        content: str,
+        *,
+        base_messages: list[Json],
+        known_tools: list[Json],
+        retry_tools: list[Json],
+        correction: Callable[[str], str],
+        names: list[str],
+    ) -> tuple[Json, list[ToolCall], str]:
+        """Retry terminal textual tool markup with one request-local protocol correction."""
+        while not tool_calls and (textual_tool := self.textual_tool_call(content, known_tools)):
+            self.start_textual_tool_correction(names, textual_tool)
+            correction_messages = [*base_messages, {"role": "user", "content": correction(textual_tool)}]
+            while True:
+                try:
+                    assistant, tool_calls, content = self.model.request(correction_messages, retry_tools)
+                    break
+                except ModelRequestRetry:
+                    continue
+            self.raise_if_cancelled()
+        return assistant, tool_calls, content
 
     def checkpoint_turn(self, turn_messages: list[Json]) -> None:
         self.session._active_turn_messages = list(turn_messages)

@@ -1003,12 +1003,13 @@ class QueuedInput:
 
 @dataclass
 class Session:
-    """Everything that semantically happened, protocol-neutral, and sufficient to resume.
+    """Protocol-neutral semantic state plus resources scoped to one running session.
 
-    The source of truth everything else derives from: messages, retained tool output, diffs, usage,
-    and session-scoped resources such as jobs and images — but nothing about how any of it was sent
-    or displayed. Provider clients, timers, stream fragments, and terminal layout are absent by
-    design; they are reconstructed, and only what lives here is snapshotted.
+    The durable source of truth includes messages, retained tool output, diffs, and usage. The same
+    aggregate owns transient session resources such as jobs, provider/update state, capability
+    managers, and caches, but `SessionSnapshotCodec` explicitly selects the subset sufficient to
+    resume. Provider clients, stream fragments, and terminal layout are absent by design and are
+    reconstructed.
 
     A turn in progress is staged apart from committed history, so an interrupted or crashed turn can
     be settled or dropped without leaving half a turn in the record.

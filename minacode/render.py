@@ -46,6 +46,19 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     get_lexer_by_name = get_lexer_for_filename = get_style_by_name = None
 
 
+def markdown_table(headers: list[str], rows: list[tuple]) -> str:
+    def cell(value: object) -> str:
+        return Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
+
+    return "\n".join(
+        [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+            *("| " + " | ".join(cell(value) for value in row) + " |" for row in rows),
+        ]
+    )
+
+
 class Theme:
     DARK: ClassVar[dict[str, str]] = {
         "diff.added.bg": "bg:#003b00",

@@ -34,7 +34,9 @@ class BashTool(Tool):
 
     The process gets its own session, so cancelling kills the whole group instead of orphaning
     children of an already-exited shell. Output is decoded incrementally per stream, so a multibyte
-    character split across reads survives.
+    character split across reads survives. If it remains active past the foreground wait timeout,
+    the same process is registered as a background job and its bounded output tail remains available
+    through `Job`.
     """
 
     NAME = "Bash"

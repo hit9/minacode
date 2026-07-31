@@ -36,13 +36,15 @@ _IdentityT = TypeVar("_IdentityT", bound=Hashable)
 
 
 class ContextManager:
-    """Project session state into one request's messages, and keep it inside the budget.
+    """Project session state into one request's messages and compact it to fit the budget.
 
-    Derived at the send boundary and never stored: each request rebuilds it, so nothing here may
-    write back into history. Layer order exists for prompt-cache stability — version-stable system
-    and tools, then session-stable environment/capability context, then the append-only conversation
-    and active turn. Mutable working state is written as tool history or compaction checkpoints;
-    inserting a rebuilt block into the conversation prefix would invalidate later cache reuse.
+    Request projection is derived at the send boundary and never stored: replay transforms must not
+    write back into history. Compaction is the deliberate persisted exception. When the projected
+    request exceeds its budget, older messages are captured in retained history and replaced by one
+    summary checkpoint. Layer order exists for prompt-cache stability — version-stable system and
+    tools, then session-stable environment/capability context, then the append-only conversation and
+    active turn. Mutable working state is written as tool history or compaction checkpoints; inserting
+    a rebuilt block into the conversation prefix would invalidate later cache reuse.
 
     Request-local transforms belong here rather than in stored messages: repeated MCP schemas and
     skill loads collapse to a pointer at the first copy, re-promoted when compaction removes it.
@@ -214,19 +216,6 @@ class ContextManager:
             f"- shell_timeout: {self.session.settings.shell_timeout}s",
         ]
         return "\n".join(rows)
-
-    @staticmethod
-    def md_table(headers: list[str], rows: list[tuple]) -> str:
-        def cell(value: object) -> str:
-            return Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")
-
-        return "\n".join(
-            [
-                "| " + " | ".join(headers) + " |",
-                "| " + " | ".join("---" for _ in headers) + " |",
-                *("| " + " | ".join(cell(value) for value in row) + " |" for row in rows),
-            ]
-        )
 
     def compaction_input(self, messages: list[Json]) -> str:
         older, recent = self.compaction_parts_for(messages)

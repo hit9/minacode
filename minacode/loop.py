@@ -47,52 +47,50 @@ from minacode.base import (
     TurnBox,
     __version__,
 )
-from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.hints import Context as HintContext
 from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
-from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
+from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table
 from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 from minacode.update import UpdateChecker
 
+SetHandler = tuple[str, str, Callable[[str], int | float | None] | None]
+# fmt: off
+SET_HANDLERS: dict[str, SetHandler] = {
+    "provider.temperature": ("provider", "temperature", lambda v: None if v == "off" else float(v)),
+    "provider.max_tokens": ("provider", "max_tokens", lambda v: max(0, int(v))),
+    "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
+    "provider.response_timeout": ("provider", "response_timeout", lambda v: max(0, int(v))),
+    "provider.stream": ("provider", "stream", lambda v: v == "on"),
+    "provider.image_input": ("provider", "image_input", None),
+    "runtime.max_agent_steps": ("settings", "max_steps", lambda v: max(1, int(v))),
+    "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
+    "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
+    "runtime.shell_timeout": ("settings", "shell_timeout", lambda v: max(1, int(v))),
+    "runtime.bash_wait_timeout": ("settings", "bash_wait_timeout", lambda v: max(0, int(v))),
+}
+SET_KEYS = tuple(SET_HANDLERS)
+# Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
+SET_CHOICES: dict[str, tuple[str, ...]] = {
+    "provider.stream": ("on", "off"),
+    "provider.image_input": IMAGE_INPUT_CHOICES,
+}
+SET_VALUES: dict[str, tuple[str, ...]] = {
+    "provider.temperature": ("off",),
+    **SET_CHOICES,
+}
+# fmt: on
+
 
 class CommandCompleter(Completer):
     MCP_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"@([A-Za-z0-9_.-]*)$")
     SKILL_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$")
-    # fmt: on
-    # fmt: off
-    SET_HANDLERS: ClassVar[dict[str, tuple[str, str, Callable[[str], int | float | None] | None]]] = {
-        "provider.temperature": ("provider", "temperature", lambda v: None if v == "off" else float(v)),
-        "provider.max_tokens": ("provider", "max_tokens", lambda v: max(0, int(v))),
-        "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
-        "provider.response_timeout": ("provider", "response_timeout", lambda v: max(0, int(v))),
-        "provider.stream": ("provider", "stream", lambda v: v == "on"),
-        "provider.image_input": ("provider", "image_input", None),
-        "runtime.max_agent_steps": ("settings", "max_steps", lambda v: max(1, int(v))),
-        "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
-        "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
-        "runtime.shell_timeout": ("settings", "shell_timeout", lambda v: max(1, int(v))),
-        "runtime.bash_wait_timeout": ("settings", "bash_wait_timeout", lambda v: max(0, int(v))),
-    }
-    SET_KEYS: ClassVar[tuple[str, ...]] = tuple(SET_HANDLERS)
-    # fmt: on
-    # fmt: off
-    # Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
-    SET_CHOICES: ClassVar[dict[str, tuple[str, ...]]] = {
-        "provider.stream": ("on", "off"),
-        "provider.image_input": IMAGE_INPUT_CHOICES,
-    }
-    SET_VALUES: ClassVar[dict[str, tuple[str, ...]]] = {
-        "provider.temperature": ("off",),
-        **SET_CHOICES,
-    }
-    # fmt: on
 
     def __init__(
         self,
@@ -116,10 +114,10 @@ class CommandCompleter(Completer):
         if text.startswith("/set "):
             tail = text[len("/set ") :]
             if " " not in tail:
-                yield from self.matches(self.SET_KEYS, tail)
+                yield from self.matches(SET_KEYS, tail)
                 return
             key, _, value = tail.partition(" ")
-            yield from self.matches(self.SET_VALUES.get(key, ()), value)
+            yield from self.matches(SET_VALUES.get(key, ()), value)
             return
         for command, values in (
             ("/model ", self.models),
@@ -1377,7 +1375,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         skills = library.all() if library else []
         if not skills:
             return "No skills installed. Add `<name>/SKILL.md` under `.minacode/skills/` (project) or `~/.minacode/skills/` (user)."
-        table = ContextManager.md_table(
+        table = markdown_table(
             ["skill", "source", "description"],
             [(f"`{skill.name}`", skill.source, skill.description or "(no description)") for skill in skills],
         )
@@ -1391,7 +1389,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             total = len(self.session.jobs)
             return f"No active jobs ({total} total)."
         rows = [(job.id, job.status, f"{job.elapsed():.1f}s", job.command[:80]) for job in running]
-        table = ContextManager.md_table(["id", "status", "elapsed", "command"], rows)
+        table = markdown_table(["id", "status", "elapsed", "command"], rows)
         return f"### Active jobs · {len(running)}\n\n{table}"
 
     def bash_output_viewer(self) -> None:
@@ -1861,11 +1859,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         key, _, value = args.partition(" ")
         if not key or not value:
             return "Usage: /set KEY VALUE"
-        handler = CommandCompleter.SET_HANDLERS.get(key)
+        handler = SET_HANDLERS.get(key)
         if handler is None:
             return "Unknown config key: " + key
         target_name, attr, coerce = handler
-        choices = CommandCompleter.SET_CHOICES.get(key)
+        choices = SET_CHOICES.get(key)
         if choices is not None and value not in choices:
             return "Invalid value for " + key
         obj = self.session.config.provider if target_name == "provider" else self.session.settings

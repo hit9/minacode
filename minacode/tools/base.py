@@ -1,9 +1,8 @@
-"""Tool base class: schema generation, argument parsing, and shared file helpers."""
+"""Tool base class: schema generation, argument parsing, and result helpers."""
 
 from __future__ import annotations
 
 import copy
-import fnmatch
 import json
 import os
 import re
@@ -35,7 +34,6 @@ class Tool:
     DESCRIPTION: ClassVar[str] = ""
     EXAMPLE: ClassVar[tuple[str, ...]] = ()
     RANGE_SCHEMA: ClassVar[Json] = {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}
-    SKIP_DIRS: ClassVar[set[str]] = {".git", ".hg", ".svn", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
     MUTATES: ClassVar[bool] = False
     PRODUCES_MODEL_OBSERVATION: ClassVar[bool] = False
     STORES_RESULT: ClassVar[bool] = True
@@ -214,46 +212,3 @@ class Tool:
     def file_stat(path: str) -> str:
         stat = os.stat(path)
         return f'<file_stat mtime_ns="{stat.st_mtime_ns}" size="{stat.st_size}"/>'
-
-    def gitignore_patterns(self, root: str) -> list[str]:
-        patterns = []
-        cache = self.session._gitignore_cache
-        paths = [os.path.join(self.session.cwd, ".gitignore")]
-        if os.path.isdir(root):
-            paths.append(os.path.join(root, ".gitignore"))
-        for path in dict.fromkeys(paths):
-            try:
-                mtime = os.stat(path).st_mtime_ns
-                cached = cache.get(path)
-                if cached is not None and cached[0] == mtime:
-                    patterns.extend(cached[1])
-                    continue
-                with open(path, encoding="utf-8") as file:
-                    pats = [line.strip() for line in file if line.strip() and not line.lstrip().startswith("#") and not line.startswith("!")]
-                cache[path] = (mtime, pats)
-                patterns.extend(pats)
-            except OSError:
-                cache.pop(path, None)
-        return patterns
-
-    def ignored(self, path: str, patterns: list[str]) -> bool:
-        rel = self.session.relpath(path).replace(os.sep, "/")
-        name = os.path.basename(path)
-        parts = [part for part in rel.split("/") if part and part != "."]
-        for raw in patterns:
-            directory = raw.endswith("/")
-            pattern = raw.rstrip("/")
-            if not pattern:
-                continue
-            if "/" in pattern:
-                matched = fnmatch.fnmatch(rel, pattern) or (directory and (rel == pattern or rel.startswith(pattern + "/")))
-            else:
-                matched = any(fnmatch.fnmatch(part, pattern) for part in parts) or fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern)
-            if matched:
-                return True
-        return False
-
-    def default_ignored(self, path: str, patterns: list[str]) -> bool:
-        rel = self.session.relpath(path).replace(os.sep, "/")
-        hidden = rel not in {"", "."} and any(part.startswith(".") for part in rel.split("/") if part and part != ".")
-        return hidden or self.ignored(path, patterns)

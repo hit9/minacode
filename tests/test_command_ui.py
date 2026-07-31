@@ -18,7 +18,7 @@ from minacode.base import (
     ProviderConfig,
 )
 from minacode.engine import Agent
-from minacode.loop import CommandCompleter, CommandLoop
+from minacode.loop import SET_KEYS, CommandCompleter, CommandLoop
 from minacode.session import Session
 from minacode.tools import Tool
 from minacode.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
@@ -233,7 +233,7 @@ def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     texts = [c.text for c in CommandCompleter().get_completions(Document("/api "), None)]
     assert set(texts) == set(PROVIDER_API_CHOICES)
     # The wire is a command, not a /set key, so it must not be reachable both ways.
-    assert "provider.api" not in CommandCompleter.SET_KEYS
+    assert "provider.api" not in SET_KEYS
     assert command_loop.set_value("provider.api chat") == "Unknown config key: provider.api"
 
 

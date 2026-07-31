@@ -165,7 +165,7 @@ class MCPResourceInfo:
 
 
 class MCPManager:
-    """Discover and call tools and resources on the configured MCP servers.
+    """Manage configured MCP servers and expose bounded model- and user-facing views.
 
     Servers are external, so nothing here may be load-bearing. Discovery runs concurrently in the
     background, and a slow, broken, or unauthorized server records its reason and drops out of the
@@ -174,7 +174,9 @@ class MCPManager:
 
     Only a bounded summary of a catalog reaches the model: schemas and descriptions are capped per
     tool and overall, because a verbose server would otherwise spend the context budget every turn
-    merely by existing. Full schemas stay available on demand through describe.
+    merely by existing. Full schemas stay available on demand through describe. The same normalized
+    catalog produces command listings and connection status without making the command loop
+    understand MCP schemas or failure states.
 
     Each operation opens its own short-lived client, so no connection is durable state. That costs a
     process start per stdio call and is why the lifecycle rework is on the roadmap in DESIGN.md.
