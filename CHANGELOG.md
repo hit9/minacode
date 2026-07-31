@@ -1,13 +1,18 @@
 # Changelog
 
 
-## Unreleased
+## 0.18.0 - 2026-07-31
 
 ### Added
 - Add test-only OpenAI behavior emulation for Chat Completions and Responses, including implicit
   user/tool breakpoints, exact-prefix cache reads, and cache-write accounting.
 - Let `Note` view selected working-state fields, and let `RecallContext` list compacted history
   segments with pagination in addition to retrieving and searching them.
+- Gate idle input tips on feature availability (`$skill` only with skills installed, `@server.tool`
+  only with an MCP server connected), add `Paste an image path to attach it` and a `/ps lists
+  background jobs` tip that appears while a job runs, and re-roll the tip each turn instead of
+  pinning one for the whole session.
+- Let `Shift-Tab` reverse-cycle the offered next-step chips at the idle prompt, mirroring `Tab`.
 
 ### Changed
 - Make model context append-only between compactions: remove the rebuilt per-request Memory and
@@ -32,6 +37,8 @@
 - Keep large stale code indexes off the interactive startup path, so repository scanning and
   re-parsing cannot delay the first text a user types. Existing availability is read cheaply at
   startup; bounded freshness checks continue after turns, and large syncs remain explicit.
+- Keep a session's name once it is latched from a goal: revising the goal no longer overwrites the
+  name, matching how user-set names already behave.
 
 
 ## 0.17.0 - 2026-07-29
