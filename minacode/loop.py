@@ -667,7 +667,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             self.emit(f"update available: {__version__} -> {self.session.update.latest}. upgrade with `{' '.join(UpdateChecker.upgrade_command())}`.")
         self.clean_expired_sessions_async()
         self.render_resumed_session()
-        CodeIndex(self.session).refresh_existing_async()
+        # Publish existing availability without scanning the working tree while the user is
+        # starting to type. The bounded freshness check already runs after each completed turn.
+        CodeIndex(self.session).status()
         # Discover auto_connect servers in the background so an unreachable one cannot block the
         # prompt for the discovery timeout; the tools index picks them up as they connect.
         mcp = self.session.mcp

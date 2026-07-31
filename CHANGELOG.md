@@ -6,6 +6,9 @@
 ### Fixed
 - Keep exactly one blank line between assistant progress and tool calls, and between consecutive
   tool calls, without splitting a tool's header from its result.
+- Keep large stale code indexes off the interactive startup path, so repository scanning and
+  re-parsing cannot delay the first text a user types. Existing availability is read cheaply at
+  startup; bounded freshness checks continue after turns, and large syncs remain explicit.
 
 
 ## 0.17.0 - 2026-07-29

@@ -751,6 +751,25 @@ def test_background_output_is_closed_before_final_output(tmp_path):
     assert emitted == ["final"]
 
 
+def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    status_checks = []
+    monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(CommandLoop, "clean_expired_sessions_async", lambda _loop: None)
+    monkeypatch.setattr(CommandLoop, "render_resumed_session", lambda _loop: None)
+    monkeypatch.setattr(command_loop.session.mcp, "discover_auto", lambda: None)
+    monkeypatch.setattr(
+        CodeIndex,
+        "status",
+        lambda _index, *, check=False, max_pending_files=20: (status_checks.append(check) or ("ready", "")),
+    )
+    monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: pytest.fail("startup refreshed the code index"))
+
+    command_loop.start_session()
+
+    assert status_checks == [False]
+
+
 def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
     """start_session must dispatch auto_connect MCP discovery in the background: an unreachable
     server otherwise blocks the prompt for the whole discovery timeout. Regression guard for the
