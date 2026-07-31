@@ -21,6 +21,7 @@ from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interac
 import minacode.tui as tui_module
 from minacode import hints
 from minacode.base import (
+    SESSION_EVENT_KEY,
     Config,
     LogBlock,
     LogEdge,
@@ -120,7 +121,9 @@ def ctrl_c_queue_scenario(cwd, results):
                 "driver_errors": driver_errors,
                 "elapsed": elapsed,
                 "draft_after_ctrl_c": draft_after_ctrl_c,
-                "persisted_user_inputs": [message.get("content") for message in restored_session.messages if message.get("role") == "user"],
+                "persisted_user_inputs": [
+                    message.get("content") for message in restored_session.messages if message.get("role") == "user" and not message.get(SESSION_EVENT_KEY)
+                ],
                 "restored_queue": [item.text for item in restored_session.pending_user_inputs],
                 "requests": requests,
                 "return_code": return_code,

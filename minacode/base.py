@@ -67,6 +67,9 @@ CHAT_REASONING_CHOICES = (
 RESPONSES_OUTPUT_KEY = "_responses_output"
 ANTHROPIC_CONTENT_KEY = "_anthropic_content"
 PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY)
+# Protocol-neutral metadata for lifecycle/context checkpoint messages. Provider adapters remove
+# this key while preserving the canonical role/content pair in the conversation log.
+SESSION_EVENT_KEY = "_session_event"
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
 DEFAULT_OUTPUT_RESERVE_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS
 DEFAULT_MAX_TOKENS = 8_192
@@ -527,8 +530,10 @@ class ModelUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_prompt_tokens: int = 0
+    cache_write_prompt_tokens: int = 0
     last_prompt_tokens: int = 0
     last_cached_prompt_tokens: int = 0
+    last_cache_write_prompt_tokens: int = 0
 
     @staticmethod
     def field(usage: Any, *paths: str) -> int:
@@ -549,6 +554,12 @@ class ModelUsage:
         completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
         # fmt: off
         cached_tokens = self.field(usage, "prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens", "prompt_tokens_details.cached_tokens", "input_tokens_details.cached_tokens")
+        cache_write_tokens = self.field(
+            usage,
+            "cache_creation_input_tokens",
+            "prompt_tokens_details.cache_write_tokens",
+            "input_tokens_details.cache_write_tokens",
+        )
         # fmt: on
         # OpenAI-shaped usage counts cache hits inside `prompt_tokens`, but Anthropic's
         # `input_tokens` is only what was neither read from nor written to the cache. Fold the cache
@@ -561,8 +572,10 @@ class ModelUsage:
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
         self.cached_prompt_tokens += cached_tokens
+        self.cache_write_prompt_tokens += cache_write_tokens
         self.last_prompt_tokens = prompt_tokens
         self.last_cached_prompt_tokens = cached_tokens
+        self.last_cache_write_prompt_tokens = cache_write_tokens
 
 
 @dataclass

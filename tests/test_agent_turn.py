@@ -100,11 +100,11 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     agent.model = FakeModel()
     assert agent.run("read file") == "done"
     assert len(agent.model.messages) == 2
-    assert [len(messages) for messages in agent.model.messages] == [4, 6]
-    assert agent.model.messages[1][4]["role"] == "assistant"
-    assert agent.model.messages[1][4]["tool_calls"][0]["id"] == "Read-id"
-    assert agent.model.messages[1][5]["role"] == "tool"
-    assert agent.model.messages[1][5]["tool_call_id"] == "Read-id"
+    assert [len(messages) for messages in agent.model.messages] == [3, 5]
+    assert agent.model.messages[1][3]["role"] == "assistant"
+    assert agent.model.messages[1][3]["tool_calls"][0]["id"] == "Read-id"
+    assert agent.model.messages[1][4]["role"] == "tool"
+    assert agent.model.messages[1][4]["tool_call_id"] == "Read-id"
     assert any("tool tr.1 Read a.txt 0:1" in (message.get("content") or "") for message in agent.model.messages[1])
     assert any(message["role"] == "tool" and "<Read" in message["content"] for message in agent.model.messages[1])
     assert not any("FILE STATE" in (message.get("content") or "") for message in agent.model.messages[1])

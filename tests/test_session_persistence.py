@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from minacode.base import Config, MinacodeError, RuntimeSettings
+from minacode.base import SESSION_EVENT_KEY, Config, MinacodeError, RuntimeSettings
 from minacode.engine import Agent
 from minacode.loop import CommandLoop
 from minacode.model import ModelClient
@@ -31,6 +31,10 @@ def project_dir(s):
 def read_jsonl(path) -> list[dict]:
     """Snapshot and delta lines, with the header line dropped."""
     return read_lines(path)[1:]
+
+
+def visible_contents(messages):
+    return [message["content"] for message in messages if not SessionSnapshotCodec.is_internal_message(message)]
 
 
 def read_lines(path) -> list[dict]:
@@ -266,8 +270,10 @@ def test_load_merges_init_and_deltas(tmp_path):
     s2 = Session.load_snapshot(s.uid, config=s.config)
     # All messages across all lines
     assert [m["content"] for m in s2.messages[:3]] == ["q1", "a1", "q2"]
-    # Fourth message is resume marker
-    assert s2.messages[3]["content"].startswith("[Session resumed:")
+    # Fourth message is a durable user-role resume event.
+    assert s2.messages[3]["role"] == "user"
+    assert s2.messages[3][SESSION_EVENT_KEY] == "resumed"
+    assert s2.messages[3]["content"].startswith('<session_event type="resumed" at="')
     # All tool results
     assert s2.tool_results["tr.1"] == "# f"
     assert s2.tool_results["tr.2"] == "found"
@@ -409,6 +415,8 @@ def test_header_line_precedes_the_snapshot(tmp_path):
     header = read_lines(log_path(s))[0]
 
     assert header == {"v": SessionSnapshotStore.FORMAT_VERSION, "uid": s.uid, "cwd": s.cwd, "created_at": header["created_at"]}
+    assert header["created_at"] == s.created_at
+    assert header["created_at"][-6:-5] in {"+", "-"}
     assert "messages" not in header
 
 
@@ -425,15 +433,20 @@ def test_load_rejects_an_unknown_format_version(tmp_path):
         Session.load_snapshot(s.uid, config=s.config)
 
 
-def test_load_appends_resume_marker(tmp_path):
-    """After load, the session has a resume marker message at the end."""
+def test_load_appends_local_time_resume_event(tmp_path, monkeypatch):
+    """Resume is durable user-role context with a local wall time and explicit offset."""
     s = session_with_data_dir(tmp_path)
     s.messages.append({"role": "user", "content": "hello"})
     s.save_snapshot()
 
+    monkeypatch.setattr("minacode.session.local_timestamp", lambda value=None: "2026-07-30T15:04:05+08:00")
     s2 = Session.load_snapshot(s.uid, config=s.config)
     assert len(s2.messages) == 2  # hello + resume marker
-    assert s2.messages[-1]["content"].startswith(f"[Session resumed: uid={s.uid}]")
+    assert s2.messages[-1] == {
+        "role": "user",
+        "content": '<session_event type="resumed" at="2026-07-30T15:04:05+08:00" />',
+        SESSION_EVENT_KEY: "resumed",
+    }
 
 
 def test_save_after_load_produces_a_delta(tmp_path):
@@ -450,9 +463,9 @@ def test_save_after_load_produces_a_delta(tmp_path):
     lines = read_jsonl(log_path(s))
     assert len(lines) == 2
     delta = lines[1]
-    # The delta should contain the post-resume message, NOT the resume marker
-    # (resume marker was already in s2 when _snapshot_saved was set by load)
-    assert delta["messages"] == [{"role": "assistant", "content": "post-resume"}]
+    # Both the lifecycle event and subsequent assistant reply are new append-only history.
+    assert delta["messages"][0][SESSION_EVENT_KEY] == "resumed"
+    assert delta["messages"][1] == {"role": "assistant", "content": "post-resume"}
 
 
 def test_repeated_resume_preserves_history(tmp_path):
@@ -464,13 +477,14 @@ def test_repeated_resume_preserves_history(tmp_path):
     expected = ["m1"]
     for role, content in (("assistant", "a1"), ("user", "m2"), ("assistant", "a2")):
         s = Session.load_snapshot(s.uid, config=s.config)
-        assert [m["content"] for m in SessionSnapshotCodec.persistable_messages(s.messages)] == expected
+        assert visible_contents(s.messages) == expected
         s.messages.append({"role": role, "content": content})
         s.save_snapshot()
         expected.append(content)
 
     loaded = Session.load_snapshot(s.uid, config=s.config)
-    assert [m["content"] for m in SessionSnapshotCodec.persistable_messages(loaded.messages)] == expected
+    assert visible_contents(loaded.messages) == expected
+    assert sum(message.get(SESSION_EVENT_KEY) == "resumed" for message in loaded.messages) == 4
 
 
 def test_resume_marker_is_never_persisted(tmp_path):
@@ -510,8 +524,74 @@ def test_load_discards_persisted_resume_markers(tmp_path):
 
     loaded = Session.load_snapshot(s.uid, config=s.config)
 
-    assert [m["content"] for m in SessionSnapshotCodec.persistable_messages(loaded.messages)] == ["m1", "a1"]
+    assert visible_contents(loaded.messages) == ["m1", "a1"]
     assert sum(1 for m in loaded.messages if SessionSnapshotCodec.is_internal_message(m)) == 1
+
+
+def test_old_context_layout_migrates_with_one_full_state_checkpoint(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.context_layout_version = 1
+    s.state.goal = "ship cache layout"
+    s.state.plan = [{"status": "doing", "text": "migrate"}]
+    s.state.known = ["old snapshots have no layout field"]
+    s.state.check = "one checkpoint"
+    s.messages.append({"role": "user", "content": "original request"})
+    s.save_snapshot()
+
+    migrated = Session.load_snapshot(s.uid, config=s.config)
+    checkpoints = [message for message in migrated.messages if message.get(SESSION_EVENT_KEY) == "state_checkpoint"]
+    assert migrated.context_layout_version == 2
+    assert len(checkpoints) == 1
+    assert "Goal: ship cache layout" in checkpoints[0]["content"]
+    assert "- doing: migrate" in checkpoints[0]["content"]
+    assert "Check: one checkpoint" in checkpoints[0]["content"]
+
+    migrated.save_snapshot()
+    resumed_again = Session.load_snapshot(s.uid, config=s.config)
+    assert sum(message.get(SESSION_EVENT_KEY) == "state_checkpoint" for message in resumed_again.messages) == 1
+
+
+def test_real_legacy_snapshot_without_layout_field_converts_numeric_local_time(tmp_path, monkeypatch):
+    s = session_with_data_dir(tmp_path)
+    path = log_path(s)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    legacy_created_at = 1_700_000_000.0
+    SessionSnapshotStore.write_jsonl(
+        path,
+        {"v": SessionSnapshotStore.FORMAT_VERSION, "uid": s.uid, "cwd": s.cwd, "created_at": legacy_created_at},
+        mode="w",
+    )
+    SessionSnapshotStore.write_jsonl(
+        path,
+        {
+            "uid": s.uid,
+            "cwd": s.cwd,
+            "messages": [{"role": "user", "content": "legacy request"}],
+            "state": {
+                "goal": "migrate a real legacy record",
+                "plan": [{"status": "doing", "text": "load"}],
+                "known": ["context_layout_version is absent"],
+                "check": "local timestamp converted",
+            },
+        },
+        mode="a",
+    )
+    timestamp_calls = []
+
+    def timestamp(value=None):
+        timestamp_calls.append(value)
+        return "2023-11-14T17:13:20-05:00" if value is not None else "2026-07-30T15:04:05+08:00"
+
+    monkeypatch.setattr("minacode.session.local_timestamp", timestamp)
+
+    loaded = Session.load_snapshot(s.uid, config=s.config)
+
+    assert timestamp_calls == [legacy_created_at, None]
+    assert loaded.created_at == "2023-11-14T17:13:20-05:00"
+    assert loaded.context_layout_version == 2
+    checkpoint = next(message for message in loaded.messages if message.get(SESSION_EVENT_KEY) == "state_checkpoint")
+    assert "Goal: migrate a real legacy record" in checkpoint["content"]
+    assert checkpoint["content"].startswith("--- Working State Checkpoint ---")
 
 
 def test_empty_session_first_save_is_skipped(tmp_path):
@@ -571,7 +651,9 @@ def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     s.usage.completion_tokens = 50
     s.usage.total_tokens = 150
     s.usage.cached_prompt_tokens = 20
+    s.usage.cache_write_prompt_tokens = 12
     s.usage.last_cached_prompt_tokens = 5
+    s.usage.last_cache_write_prompt_tokens = 7
     s.save_snapshot()
 
     s2 = Session.load_snapshot(s.uid, config=s.config)
@@ -580,7 +662,9 @@ def test_usage_roundtrip_with_prompt_and_completion_tokens(tmp_path):
     assert s2.usage.completion_tokens == 50
     assert s2.usage.total_tokens == 150
     assert s2.usage.cached_prompt_tokens == 20
+    assert s2.usage.cache_write_prompt_tokens == 12
     assert s2.usage.last_cached_prompt_tokens == 5
+    assert s2.usage.last_cache_write_prompt_tokens == 7
 
 
 def test_agent_state_roundtrip(tmp_path):
@@ -616,8 +700,7 @@ def test_multiple_deltas_accumulate_correctly(tmp_path):
     s.save_snapshot()  # delta 3
 
     s2 = Session.load_snapshot(s.uid, config=s.config)
-    contents = [m["content"] for m in s2.messages if not m["content"].startswith("[Session resumed:")]
-    assert contents == ["m1", "a1", "m2", "a2"]
+    assert visible_contents(s2.messages) == ["m1", "a1", "m2", "a2"]
 
 
 def test_multiple_deltas_with_tool_calls(tmp_path):
@@ -754,8 +837,8 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
 
     # The compacted history is on disk, not just in memory.
     restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
-    persisted = SessionSnapshotCodec.persistable_messages(restored.messages)
-    assert len(persisted) == len(s.messages)
+    persisted = restored.messages[:-1]  # load appends one new resume event
+    assert persisted == s.messages
     assert any("a compacted summary" in str(m.get("content") or "") for m in persisted)
     # /compact also captures the evicted conversation as a recallable segment, and persists it.
     assert [segment.key for segment in s.history] == ["seg.1"]

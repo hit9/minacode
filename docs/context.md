@@ -1,13 +1,17 @@
 # Context and caching
 
-Each request contains more than the latest message. minacode arranges the model's context so
-the stable parts come first, the active conversation follows, and frequently changing task
-state comes last. This keeps the agent informed while giving supported providers a long,
-reusable prompt prefix.
+Each request contains more than the latest message. minacode puts stable session context first,
+then sends one append-only conversation log. This keeps the agent informed while giving supported
+providers exact earlier user and tool boundaries to reuse.
 
 ## What the model receives
 
-<div class="term-shot" role="img" aria-label="The message context from first to last: system instructions, project environment, skills, MCP servers, history index, and conversation history form the reused prefix; task memory follows the conversation, and the current turn is last."><span class="fs-goal">─ reused prefix ─────────────────────────────────────</span><span>  system instructions      <span class="fs-i fs-dim">how the agent should operate</span></span><span>  project environment      <span class="fs-i fs-dim">directory · OS · shell · commands</span></span><span>  skills index             <span class="fs-i fs-dim">only when skills are installed</span></span><span>  MCP servers              <span class="fs-i fs-dim">only when a server is connected</span></span><span>  history index            <span class="fs-i fs-dim">grows when compaction creates seg.N</span></span><span>  conversation history     <span class="fs-i fs-dim">reused until compaction</span></span><span class="fs-dim">─ dynamic tail ──────────────────────────────────────</span><span>  task memory              <span class="fs-i fs-dim">goal · plan · facts · checks</span></span><span>  current turn             <span class="fs-i fs-dim">the latest messages and results</span></span></div>
+<div class="term-shot" role="img" aria-label="The message context from first to last: system instructions, project environment with session start time, optional skills and MCP indexes, then an append-only conversation containing user messages, assistant replies, tool results, Note state changes, resume events, and occasional compaction checkpoints."><span class="fs-goal">─ stable session prefix ─────────────────────────────</span><span>  system instructions      <span class="fs-i fs-dim">how the agent should operate</span></span><span>  project environment      <span class="fs-i fs-dim">directory · local start time · OS · shell</span></span><span>  skills and MCP indexes   <span class="fs-i fs-dim">only when available</span></span><span class="fs-goal">─ append-only conversation ──────────────────────────</span><span>  user · assistant · tools <span class="fs-i fs-dim">normal turn history</span></span><span>  Note calls and results   <span class="fs-i fs-dim">goal · plan · facts · checks</span></span><span>  lifecycle events         <span class="fs-i fs-dim">resume time in the user's local zone</span></span><span>  current turn             <span class="fs-i fs-dim">always appended last</span></span></div>
+
+The environment records the session's start time once as a local ISO timestamp with its numeric
+offset, such as `2026-07-30T20:34:56+08:00`. Resuming appends a user-role lifecycle event with the
+new local time. These timestamps are directly readable by both the user and model; no UTC
+conversion is required, and there is no changing date block inserted into later requests.
 
 Tool definitions are sent beside this message stack: built-in tools, `Skill` when skills are
 installed, and MCP tools and resources from <span class="marker">currently connected servers</span>.
@@ -34,16 +38,16 @@ the provider will discard does not cause early compaction. The trigger reserves 
 provider output cap (16K when unspecified), tool schemas, and a safety margin of at least 4K. The
 session continues in the same turn, so a long task does not have to stop.
 
-The summary in the active context is lossy, but each compaction also captures a bounded verbatim
+The checkpoint summary in the active context is lossy, but each compaction also captures a bounded verbatim
 excerpt of the evicted messages as a **history segment**. Earlier snapshots in the append-only
 session log remain the cold source of truth, so compaction does not rewrite them.
 
-<div class="term-shot" role="img" aria-label="Compaction moves older conversation out of the active context. The active context keeps a short summary and bounded history index; RecallContext retrieves bounded verbatim excerpts, while the append-only session log retains earlier snapshots as the cold source of truth."><span class="fs-goal">─ active context (hot) ────────────────</span><span>  history index    <span class="fs-i fs-dim">bounded seg.N titles</span></span><span>  summary          <span class="fs-i fs-dim">short rewrite of older talk</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span class="fs-dim">─ recallable segments (warm) ──────────</span><span>  seg.1 · seg.2    <span class="fs-i fs-dim">bounded verbatim excerpts</span></span><span class="fs-dim">─ append-only session log (cold) ──────</span><span>  earlier snapshots<span class="fs-i fs-dim"> original messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(seg.N)</span> pulls an excerpt back</span></div>
+<div class="term-shot" role="img" aria-label="Compaction replaces older active conversation with one checkpoint containing the summary, full working state, and a segment pointer. RecallContext can list, search, and retrieve bounded verbatim excerpts, while the append-only session log retains earlier snapshots as the cold source of truth."><span class="fs-goal">─ active context (hot) ────────────────</span><span>  checkpoint       <span class="fs-i fs-dim">summary · goal · plan · facts · checks · seg.N</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span class="fs-dim">─ recallable segments (warm) ──────────</span><span>  seg.1 · seg.2    <span class="fs-i fs-dim">listed/searched only when needed</span></span><span class="fs-dim">─ append-only session log (cold) ──────</span><span>  earlier snapshots<span class="fs-i fs-dim"> original messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(list/search/get)</span> finds an excerpt</span></div>
 
-The bounded history index is a separate context section before conversation history. The agent
-uses `RecallContext` to retrieve a `seg.N` excerpt directly or regex-search stored segment titles
-and text for earlier detail. Task memory (goal, plan, facts, checks) follows conversation history
-and is carried across untouched, which is why decisions worth keeping belong there.
+Segment titles do not occupy every request. The agent uses `RecallContext` to list them newest
+first, regex-search stored titles and text, or retrieve selected `seg.N` excerpts. `Note` can view
+the current goal, plan, facts, and checks; updates remain visible in their original tool-call
+history until a compaction checkpoint consolidates the complete current state.
 
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.
@@ -51,11 +55,11 @@ starting a large refactor. `/status` reports how many compactions a session has 
 ## Prompt caching
 
 Prompt caching lets a provider reuse work for an unchanged beginning of a request. The next request
-usually begins with the same instructions, environment, tools, history index, and earlier
-conversation, so only the new tail needs to be processed. Task memory follows conversation history
-so updating it does not invalidate that larger prefix. Connecting an MCP server, changing installed
-skills, switching models, or otherwise changing an early section can reduce the next request's
-cache hit.
+usually begins with the same instructions, environment, tools, and earlier conversation, so only
+the new tail needs to be processed. Note updates and resume events append to the conversation and
+therefore do not move an earlier breakpoint. A compaction intentionally starts one new cache epoch.
+Connecting an MCP server, changing installed skills, switching models, or otherwise changing an
+early section can reduce the next request's cache hit.
 
 <div class="term-shot" role="img" aria-label="Two request bars. Both start with the same long shaded prefix, which the provider reuses; only the shorter tail of each request is processed again."><span>previous  <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░</span></span><span>next      <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░░░░░</span></span><span> </span><span class="fs-dim">          <span class="fs-i fs-goal">█</span> reused prefix    ░ processed again</span></div>
 
@@ -69,8 +73,8 @@ system instructions as an ephemeral cacheable prefix. Provider support and accou
 
 ### Checking the hit rate
 
-`/status` reports the cached prompt tokens the provider counted — once for the whole session, and
-again for the most recent request:
+`/status` reports cache-read tokens for the whole session and latest request, plus cache-write
+tokens when the provider exposes them:
 
 <div class="term-shot" role="img" aria-label="The usage row of /status, showing call count, total tokens, cached tokens for the whole session, and cached tokens for the latest request."><span><span class="fs-i fs-dim">usage</span>  calls 14; total 182304; cached <span class="fs-i fs-add">148992/162880</span> (<span class="fs-i fs-add">91.5%</span>); last <span class="fs-i fs-sel">21120/22016</span> (<span class="fs-i fs-sel">95.9%</span>)</span><span class="fs-dim">                                  └─ whole session ─┘        └─ latest request ─┘</span></div>
 

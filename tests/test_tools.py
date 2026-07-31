@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 
@@ -160,7 +161,7 @@ def test_read_target_validation_is_actionable(tmp_path, args, message):
         ({"unknown": True}, "unexpected field"),
         ({"append_known": "fact"}, "append_known must be an array"),
         ({"replace_known": "fact"}, "replace_known must be an array"),
-        ({}, "requires set_goal"),
+        ({"action": "update"}, "update requires"),
     ],
 )
 def test_note_validation_errors_are_actionable(tmp_path, payload, message):
@@ -858,6 +859,50 @@ def test_note_tool_validates_before_mutating_state(tmp_path):
         NoteTool(s, [{"replace_plan": [{"status": "started", "text": "inspect"}]}]).call()
 
 
+def test_note_tool_views_selected_state_without_mutating(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "ship"
+    s.state.plan = [{"status": "doing", "text": "verify"}]
+
+    result = json.loads(NoteTool(s, [{"action": "view", "fields": ["goal", "plan"]}]).call())
+
+    assert result == {"goal": "ship", "plan": [{"status": "doing", "text": "verify"}]}
+    assert NoteTool(s, [{"action": "view"}]).needs_confirmation() is False
+
+
+def test_memory_tools_treat_strict_schema_nulls_as_omitted(tmp_path):
+    s = session(tmp_path)
+    note_result = json.loads(
+        NoteTool(
+            s,
+            [{"action": "update", "fields": None, "set_goal": "ship", "replace_plan": None, "append_known": None, "replace_known": None, "set_check": None}],
+        ).call()
+    )
+    s.history.append(HistorySegment(key="seg.1", title="cache"))
+    list_result = json.loads(
+        RecallContextTool(
+            s,
+            [{"action": "list", "keys": None, "query": None, "case_sensitive": None, "limit": 1, "before": None}],
+        ).call()
+    )
+
+    assert note_result["changed"] == ["goal"]
+    assert list_result["segments"] == [{"key": "seg.1", "title": "cache"}]
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"action": "view", "set_goal": "bad"}, "view does not accept"),
+        ({"action": "view", "fields": ["goal", "summary"]}, "fields must contain only"),
+        ({"action": "update", "fields": ["goal"], "set_goal": "bad"}, "fields is only valid"),
+    ],
+)
+def test_note_actions_reject_conflicting_fields(tmp_path, payload, message):
+    with pytest.raises(ToolError, match=message):
+        NoteTool(session(tmp_path), [payload]).call()
+
+
 def test_suggest_tool_sets_transient_quick_hints(tmp_path):
     s = session(tmp_path)
     assert NextHintsTool(s, [{"inputs": ["run the tests", "show the diff"]}]).call() == "Offered 2 quick input(s)"
@@ -1008,9 +1053,42 @@ def test_recall_history_regex_supports_key_scope_case_and_limit(tmp_path):
 def test_recall_history_regex_validates_search_arguments(tmp_path):
     s = session(tmp_path)
 
-    for payload in ({}, {"query": "["}, {"query": "x", "limit": 0}, {"keys": ["seg.1"], "case_sensitive": True}):
+    for payload in ({"query": "["}, {"query": "x", "limit": 0}, {"keys": ["seg.1"], "case_sensitive": True}):
         with pytest.raises(ToolError):
             RecallContextTool(s, [payload]).call()
+
+
+def test_recall_history_lists_newest_segments_with_pagination(tmp_path):
+    s = session(tmp_path)
+    s.history.extend(HistorySegment(key=f"seg.{index}", title=f"task {index}") for index in range(1, 5))
+
+    first = json.loads(RecallContextTool(s, [{"action": "list", "limit": 2}]).call())
+    second = json.loads(RecallContextTool(s, [{"action": "list", "limit": 2, "before": first["next_before"]}]).call())
+
+    assert first == {
+        "segments": [{"key": "seg.4", "title": "task 4"}, {"key": "seg.3", "title": "task 3"}],
+        "total": 4,
+        "returned": 2,
+        "next_before": "seg.3",
+    }
+    assert second["segments"] == [{"key": "seg.2", "title": "task 2"}, {"key": "seg.1", "title": "task 1"}]
+    assert "next_before" not in second
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"action": "unknown"}, "action must be"),
+        ({"action": "list", "keys": ["seg.1"]}, "list accepts only"),
+        ({"action": "get", "keys": ["seg.1"], "limit": 1}, "get accepts only"),
+        ({"action": "search"}, "search requires query"),
+        ({"action": "search", "query": "x", "before": "seg.1"}, "before is only valid"),
+        ({"action": "list", "before": "bad"}, "before must look like"),
+    ],
+)
+def test_recall_history_actions_reject_conflicting_fields(tmp_path, payload, message):
+    with pytest.raises(ToolError, match=message):
+        RecallContextTool(session(tmp_path), [payload]).call()
 
 
 def test_recall_history_rejects_bad_key_format(tmp_path):

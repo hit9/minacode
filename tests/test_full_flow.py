@@ -11,9 +11,11 @@ ModelClient at a scripted in-process LLM (no sockets, no ports) and running `age
 import json
 
 import httpx
+import pytest
 from openai import OpenAI
+from openai_mock_server import OpenAIMockServer
 
-from minacode.base import MIN_CONTEXT_SAFETY_TOKENS, Config, ProviderConfig
+from minacode.base import MIN_CONTEXT_SAFETY_TOKENS, SESSION_EVENT_KEY, Config, ProviderConfig
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
@@ -73,14 +75,145 @@ def _answer_response(text: str) -> tuple[int, dict]:
     }
 
 
-def _session(tmp_path):
+def _session(tmp_path, *, api: str = "chat"):
     config = Config()
     config.data_dir = str(tmp_path / "data")
-    config.providers = {"default": ProviderConfig(url="http://test", key="sk-test", model="gpt-4")}
+    config.providers = {"default": ProviderConfig(url="http://test", key="sk-test", model="gpt-5.6", api=api, stream=False)}
     session = Session(cwd=str(tmp_path), config=config)
     session.settings.yolo = True  # auto-approve mutating tools so the flow runs unattended
     session.skills = SkillLibrary({})  # no skills: keep the system frame deterministic
     return session
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_append_only_turns_reuse_implicit_cache_for_both_openai_protocols(tmp_path, monkeypatch, api):
+    session = _session(tmp_path, api=api)
+    server = OpenAIMockServer(["first answer", "second answer"])
+    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    agent = Agent(session, output_fn=lambda _text: None)
+
+    assert agent.run("first request") == "first answer"
+    assert agent.run("second request") == "second answer"
+
+    assert len(server.requests) == 2
+    first_prompt, first_read, first_write = server.cache_events[0]
+    second_prompt, second_read, second_write = server.cache_events[1]
+    assert first_prompt > 0 and first_read == 0 and first_write > 0
+    assert second_prompt > first_prompt and second_read > 0 and second_write > 0
+    assert session.usage.last_cached_prompt_tokens == second_read
+    assert session.usage.last_cache_write_prompt_tokens == second_write
+
+    key = "input" if api == "responses" else "messages"
+    first_items = server.requests[0][key]
+    second_items = server.requests[1][key]
+    assert second_items[: len(first_items)] == first_items
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_note_tool_history_advances_the_longest_implicit_breakpoint(tmp_path, monkeypatch, api):
+    session = _session(tmp_path, api=api)
+    server = OpenAIMockServer(
+        [
+            {"tool": "Note", "arguments": {"set_goal": "preserve cache"}},
+            "noted",
+            "continued",
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    agent = Agent(session, output_fn=lambda _text: None)
+
+    assert agent.run("remember the cache goal") == "noted"
+    assert agent.run("continue") == "continued"
+
+    assert session.state.goal == "preserve cache"
+    assert len(server.cache_events) == 3
+    first_user_read = server.cache_events[1][1]
+    tool_boundary_read = server.cache_events[2][1]
+    assert first_user_read > 0
+    assert tool_boundary_read > first_user_read
+    if api == "responses":
+        assert any(item.get("type") == "function_call_output" for item in server.requests[1]["input"])
+    else:
+        assert any(message.get("role") == "tool" for message in server.requests[1]["messages"])
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, monkeypatch, api):
+    session = _session(tmp_path, api=api)
+    server = OpenAIMockServer(
+        [
+            "archived answer",
+            "warm answer",
+            json.dumps({"summary": "archived", "goal": "continue", "plan": [], "known": [], "check": "done"}),
+            "continued",
+            "after checkpoint",
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    agent = Agent(session, output_fn=lambda _text: None)
+
+    assert agent.run("archive request " + "x" * 8_000) == "archived answer"
+    assert agent.run("keep working") == "warm answer"
+    baseline = _session(tmp_path / "baseline", api=api)
+    baseline_context = ContextManager(baseline)
+    baseline_messages = baseline_context.model_messages(SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
+    baseline_tokens = baseline_context.request_tokens(baseline_messages, Tool.resolved_schemas(baseline))
+    original_limit = session.settings.max_context_tokens
+    session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
+
+    assert agent.run("continue") == "continued"
+    session.settings.max_context_tokens = original_limit
+    assert agent.run("after compaction") == "after checkpoint"
+
+    assert session.state.compaction_count == 1
+    assert len(server.cache_events) == 5
+    assert server.cache_events[0][2] > 0
+    assert server.cache_events[1][1] > 0
+    assert server.cache_events[3][1] == 0
+    assert server.cache_events[3][2] > 0
+    assert server.cache_events[4][1] > 0
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_resume_event_keeps_old_breakpoint_and_becomes_part_of_the_next_one(tmp_path, monkeypatch, api):
+    session = _session(tmp_path, api=api)
+    server = OpenAIMockServer(["before resume", "resumed answer", "next answer"])
+    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+
+    assert Agent(session, output_fn=lambda _text: None).run("first request") == "before resume"
+    session.save_snapshot()
+    resumed = Session.load_snapshot(session.uid, config=session.config, cwd=session.cwd)
+    resumed.skills = SkillLibrary({})
+    agent = Agent(resumed, output_fn=lambda _text: None)
+    assert agent.run("after resume") == "resumed answer"
+    assert agent.run("next request") == "next answer"
+
+    assert len(server.cache_events) == 3
+    assert server.cache_events[1][1] > 0
+    assert server.cache_events[2][1] > server.cache_events[1][1]
+    assert sum(message.get(SESSION_EVENT_KEY) == "resumed" for message in resumed.messages) == 1
+    key = "input" if api == "responses" else "messages"
+    wire_items = server.requests[1][key]
+    assert any(item.get("role") == "user" and str(item.get("content") or "").startswith("<session_event type=") for item in wire_items)
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_model_cache_scope_change_misses_once_then_warms(tmp_path, monkeypatch, api):
+    session = _session(tmp_path, api=api)
+    server = OpenAIMockServer(["first", "after switch", "warm again"])
+    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    agent = Agent(session, output_fn=lambda _text: None)
+
+    assert agent.run("first request") == "first"
+    session.config.provider.model = "gpt-5.6-new-scope"
+    assert agent.run("after model switch") == "after switch"
+    assert agent.run("same model again") == "warm again"
+
+    assert server.cache_events[0][1] == 0
+    assert server.cache_events[1][1] == 0
+    assert server.cache_events[2][1] > 0
+    assert server.requests[1]["prompt_cache_key"] != server.requests[0]["prompt_cache_key"]
+    assert server.requests[2]["prompt_cache_key"] == server.requests[1]["prompt_cache_key"]
 
 
 def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
@@ -113,8 +246,7 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
 
 
 def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
-    """An over-budget request first crosses the compactor wire, then the normal agent wire with
-    the rebuilt context: history index, compacted conversation, task memory, and current turn."""
+    """An over-budget request crosses the compactor wire, then resumes from one full checkpoint."""
     session = _session(tmp_path)
     old_request = "archive request " + "x" * 200 + " OLD_BODY_SENTINEL " + "x" * 8000
     session.messages = [
@@ -145,11 +277,12 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
 
     active_messages = agent_request["messages"]
     contents = [str(message.get("content") or "") for message in active_messages]
-    history_index = next(index for index, content in enumerate(contents) if content.startswith("--- History index ---"))
     conversation = next(index for index, content in enumerate(contents) if content.startswith(COMPACTION_SUMMARY_TITLE))
-    memory = next(index for index, content in enumerate(contents) if content.startswith("--- Memory ---"))
     current_turn = max(index for index, content in enumerate(contents) if content == "continue")
-    assert history_index < conversation < memory < current_turn
+    assert conversation < current_turn
+    assert "Working state:\nGoal: continue" in contents[conversation]
+    assert "Stored history segment: seg.1:" in contents[conversation]
+    assert not any(content.startswith(("--- History index ---", "--- Memory ---")) for content in contents)
     assert "OLD_BODY_SENTINEL" not in "\n".join(contents)
     assert agent_request["tools"]
 

@@ -974,8 +974,15 @@ def test_retry_reason_is_short_and_safe(tmp_path):
 def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     usage = ModelUsage()
 
-    usage.add(SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=20, prompt_tokens_details=SimpleNamespace(cached_tokens=4)))
-    usage.add({"input_tokens": 7, "output_tokens": 3, "input_tokens_details": {"cached_tokens": 2}})
+    usage.add(
+        SimpleNamespace(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=20,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=4, cache_write_tokens=6),
+        )
+    )
+    usage.add({"input_tokens": 7, "output_tokens": 3, "input_tokens_details": {"cached_tokens": 2, "cache_write_tokens": 5}})
 
     assert usage.calls == 2
     assert usage.prompt_tokens == 17
@@ -983,6 +990,8 @@ def test_model_usage_counts_cached_tokens_from_multiple_shapes():
     assert usage.total_tokens == 30
     assert usage.cached_prompt_tokens == 6
     assert usage.last_cached_prompt_tokens == 2
+    assert usage.cache_write_prompt_tokens == 11
+    assert usage.last_cache_write_prompt_tokens == 5
 
 
 def test_model_usage_folds_anthropic_cache_legs_into_prompt_tokens():
@@ -994,6 +1003,7 @@ def test_model_usage_folds_anthropic_cache_legs_into_prompt_tokens():
 
     assert usage.last_prompt_tokens == 31_020
     assert usage.last_cached_prompt_tokens == 30_000
+    assert usage.last_cache_write_prompt_tokens == 1_000
     assert usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens == 96
     assert usage.prompt_tokens == 31_020
     assert usage.total_tokens == 31_025

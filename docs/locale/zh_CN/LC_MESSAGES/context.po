@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-28 11:09-0700\n"
+"POT-Creation-Date: 2026-07-30 23:39-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -24,20 +24,32 @@ msgstr "Context 与缓存"
 
 #: ../../context.md:3
 msgid ""
-"Each request contains more than the latest message. minacode arranges the"
-" model's context so the stable parts come first, the active conversation "
-"follows, and frequently changing task state comes last. This keeps the "
-"agent informed while giving supported providers a long, reusable prompt "
-"prefix."
+"Each request contains more than the latest message. minacode puts stable "
+"session context first, then sends one append-only conversation log. This "
+"keeps the agent informed while giving supported providers exact earlier "
+"user and tool boundaries to reuse."
 msgstr ""
-"每次请求包含的不只是最新消息。minacode 将较稳定的内容放在前面，接着是当前对话，频繁变化的任务状态放在最后。这样既能让 agent "
-"掌握完整信息，也能为支持缓存的 provider 保留一段较长、可复用的 prompt 前缀。"
+"每次请求包含的不只是最新消息。minacode 先放置稳定的 session context，再发送一份 append-only 对话日志。"
+"这样既能让 agent 掌握完整信息，也让支持缓存的 provider 可以精确复用之前的 user 和 tool 边界。"
 
-#: ../../context.md:8
+#: ../../context.md:7
 msgid "What the model receives"
 msgstr "模型会收到什么"
 
-#: ../../context.md:12
+#: ../../context.md:11
+msgid ""
+"The environment records the session's start time once as a local ISO "
+"timestamp with its numeric offset, such as `2026-07-30T20:34:56+08:00`. "
+"Resuming appends a user-role lifecycle event with the new local time. "
+"These timestamps are directly readable by both the user and model; no UTC"
+" conversion is required, and there is no changing date block inserted "
+"into later requests."
+msgstr ""
+"环境只记录一次 session 开始时间，使用带数字时区偏移的本地 ISO 时间戳，例如 "
+"`2026-07-30T20:34:56+08:00`。恢复 session 时，会追加一条包含新本地时间的 user-role "
+"生命周期事件。用户和模型都能直接理解这些时间，无需转换 UTC，后续请求中也不会插入不断变化的日期块。"
+
+#: ../../context.md:16
 msgid ""
 "Tool definitions are sent beside this message stack: built-in tools, "
 "`Skill` when skills are installed, and MCP tools and resources from <span"
@@ -48,7 +60,7 @@ msgstr ""
 "class=\"marker\">当前已连接 server</span>的 MCP 工具和资源。已配置但未连接的 server 不占用 "
 "context。"
 
-#: ../../context.md:16
+#: ../../context.md:20
 msgid ""
 "When a model exposes reasoning, minacode keeps the returned protocol data"
 " in the session but only replays what the active provider expects. Some "
@@ -62,11 +74,11 @@ msgstr ""
 "API 要求跨轮保留 reasoning；另一些 API 除非启用 preserved-thinking 选项，否则会忽略旧 "
 "reasoning，但在多步工具调用期间仍需要它。协议要求时，不透明签名与加密 reasoning 会原样回传，但不会被当作模型可读文本显示。"
 
-#: ../../context.md:22
+#: ../../context.md:26
 msgid "Keeping context manageable"
 msgstr "控制 context 大小"
 
-#: ../../context.md:24
+#: ../../context.md:28
 msgid ""
 "Large tool results are shortened before they enter the conversation; the "
 "agent can retrieve the complete result later with `Recall`. Repeated "
@@ -76,11 +88,11 @@ msgstr ""
 "过大的工具结果进入对话前会被缩短；agent 之后可以通过 `Recall` 取回完整结果。重复的 skill 指令和 MCP "
 "描述不会再次完整发送，而是引用首次出现的完整内容。"
 
-#: ../../context.md:28
+#: ../../context.md:32
 msgid "Compaction"
 msgstr "Compaction"
 
-#: ../../context.md:30
+#: ../../context.md:34
 msgid ""
 "As the estimated request approaches `runtime.max_context_tokens`, "
 "minacode **compacts**: the older part of the conversation is replaced by "
@@ -96,31 +108,31 @@ msgstr ""
 "请求，因此 provider 会丢弃的 reasoning 不会导致过早 compaction。触发时会预留所配置的 provider "
 "输出上限（未指定时为 16K）、工具 schema 以及至少 4K 的安全余量。Session 会在同一轮中继续，因此长任务无需停止。"
 
-#: ../../context.md:37
+#: ../../context.md:41
 msgid ""
-"The summary in the active context is lossy, but each compaction also "
-"captures a bounded verbatim excerpt of the evicted messages as a "
-"**history segment**. Earlier snapshots in the append-only session log "
-"remain the cold source of truth, so compaction does not rewrite them."
+"The checkpoint summary in the active context is lossy, but each "
+"compaction also captures a bounded verbatim excerpt of the evicted "
+"messages as a **history segment**. Earlier snapshots in the append-only "
+"session log remain the cold source of truth, so compaction does not "
+"rewrite them."
 msgstr ""
-"active context 中的摘要是有损的，但每次 compaction 都会把被淘汰的消息逐字捕获为一个有界的 **history "
+"active context 中 checkpoint 的摘要是有损的，但每次 compaction 都会把被淘汰的消息逐字捕获为一个有界的 **history "
 "segment**。append-only session 日志中较早的快照仍是冷数据式的真实来源，因此 compaction 不会改写它们。"
 
-#: ../../context.md:43
+#: ../../context.md:47
 msgid ""
-"The bounded history index is a separate context section before "
-"conversation history. The agent uses `RecallContext` to retrieve a "
-"`seg.N` excerpt directly or regex-search stored segment titles and text "
-"for earlier detail. Task memory (goal, plan, facts, checks) follows "
-"conversation history and is carried across untouched, which is why "
-"decisions worth keeping belong there."
+"Segment titles do not occupy every request. The agent uses "
+"`RecallContext` to list them newest first, regex-search stored titles and"
+" text, or retrieve selected `seg.N` excerpts. `Note` can view the current"
+" goal, plan, facts, and checks; updates remain visible in their original "
+"tool-call history until a compaction checkpoint consolidates the complete"
+" current state."
 msgstr ""
-"有界的 history index 是 conversation history 之前的独立 context section。agent 会用 "
-"`RecallContext` 直接取回某个 `seg.N` 摘录，或用正则在已存 segment "
-"的标题和正文中搜索早期细节。任务记忆（goal、plan、facts、checks）位于 conversation history "
-"之后并会原样保留，因此值得保留的决定应写入那里。"
+"Segment 标题不会占据每次请求。Agent 使用 `RecallContext` 按从新到旧的顺序列出标题、通过正则搜索已存储的标题和"
+"文本，或取回指定的 `seg.N` 摘录。`Note` 可以查看当前 goal、plan、facts 和 checks；在 compaction "
+"checkpoint 汇总完整当前状态之前，更新会保留在原始 tool-call history 中。"
 
-#: ../../context.md:48
+#: ../../context.md:52
 msgid ""
 "Run `/compact` to compact immediately rather than waiting for the "
 "threshold, for example before starting a large refactor. `/status` "
@@ -129,26 +141,27 @@ msgstr ""
 "运行 `/compact` 可以立即压缩，而不必等待阈值；例如可在大型重构前使用。`/status` 会显示当前 session 已执行的 "
 "compaction 次数。"
 
-#: ../../context.md:51
+#: ../../context.md:55
 msgid "Prompt caching"
 msgstr "Prompt 缓存"
 
-#: ../../context.md:53
+#: ../../context.md:57
 msgid ""
 "Prompt caching lets a provider reuse work for an unchanged beginning of a"
 " request. The next request usually begins with the same instructions, "
-"environment, tools, history index, and earlier conversation, so only the "
-"new tail needs to be processed. Task memory follows conversation history "
-"so updating it does not invalidate that larger prefix. Connecting an MCP "
+"environment, tools, and earlier conversation, so only the new tail needs "
+"to be processed. Note updates and resume events append to the "
+"conversation and therefore do not move an earlier breakpoint. A "
+"compaction intentionally starts one new cache epoch. Connecting an MCP "
 "server, changing installed skills, switching models, or otherwise "
 "changing an early section can reduce the next request's cache hit."
 msgstr ""
-"Prompt 缓存允许 provider 复用请求开头未变化部分的计算。下一次请求通常以相同的指令、环境、工具、history index "
-"和早期对话开始，因此只需处理新增的尾部。任务记忆位于 conversation history "
-"之后，所以更新任务记忆不会使这个更大的前缀失效。连接 MCP server、改变已安装的 "
+"Prompt 缓存允许 provider 复用请求开头未变化部分的计算。下一次请求通常以相同的指令、环境、工具和早期对话开始，因此只需处理"
+"新增的尾部。Note 更新和 resume 事件会追加到对话中，因此不会移动更早的 breakpoint。一次 compaction 会有意开启新的 cache "
+"epoch。连接 MCP server、改变已安装的 "
 "skill、切换模型或修改前部内容，都会降低下一次请求的缓存命中。"
 
-#: ../../context.md:62
+#: ../../context.md:66
 msgid ""
 "A request is reused only up to its first difference, so a change near the"
 " beginning — connecting an MCP server, installing a skill, switching "
@@ -158,7 +171,7 @@ msgstr ""
 "请求只会复用到首次出现差异的位置。因此，靠前位置发生变化——例如连接 MCP server、安装 skill "
 "或切换模型——会缩短可复用前缀。这也是稳定内容放在前面的原因。"
 
-#: ../../context.md:66
+#: ../../context.md:70
 msgid ""
 "OpenAI-compatible providers may reuse matching prefixes automatically; "
 "minacode supplies a stable cache key where the provider supports one. For"
@@ -169,23 +182,25 @@ msgstr ""
 " key。对于 Anthropic，minacode 会显式将工具和 system 指令标记为临时可缓存前缀。不同 provider "
 "的支持方式和统计口径可能不同。"
 
-#: ../../context.md:70
+#: ../../context.md:74
 msgid "Checking the hit rate"
 msgstr "检查命中率"
 
-#: ../../context.md:72
+#: ../../context.md:76
 msgid ""
-"`/status` reports the cached prompt tokens the provider counted — once "
-"for the whole session, and again for the most recent request:"
-msgstr "`/status` 会显示 provider 统计的缓存 prompt token：一组是整个 session，另一组是最近一次请求："
+"`/status` reports cache-read tokens for the whole session and latest "
+"request, plus cache-write tokens when the provider exposes them:"
+msgstr ""
+"`/status` 会显示整个 session 和最近一次请求的 cache-read token；如果 provider 提供统计，还会显示 "
+"cache-write token："
 
-#: ../../context.md:77
+#: ../../context.md:81
 msgid ""
 "The latest-request ratio also shows live in the status bar, beside the "
 "context fill, updating with each response."
 msgstr "最近一次请求的命中率也会实时显示在状态栏中，紧跟上下文占用，随每次响应更新。"
 
-#: ../../context.md:80
+#: ../../context.md:84
 msgid ""
 "The ratio varies with the provider, model, prompt length, and "
 "conversation. When request prefixes line up, it <span "
@@ -206,3 +221,28 @@ msgstr ""
 #~ "Compaction "
 #~ "是有损的：被总结消息中的细节会消失。任务记忆（goal、plan、facts、checks）会原样保留，因此值得保留的决定应写入任务记忆。"
 
+#~ msgid ""
+#~ "The bounded history index is a "
+#~ "separate context section before conversation"
+#~ " history. The agent uses `RecallContext`"
+#~ " to retrieve a `seg.N` excerpt "
+#~ "directly or regex-search stored segment"
+#~ " titles and text for earlier detail."
+#~ " Task memory (goal, plan, facts, "
+#~ "checks) follows conversation history and "
+#~ "is carried across untouched, which is"
+#~ " why decisions worth keeping belong "
+#~ "there."
+#~ msgstr ""
+#~ "有界的 history index 是 conversation history"
+#~ " 之前的独立 context section。agent 会用 "
+#~ "`RecallContext` 直接取回某个 `seg.N` 摘录，或用正则在已存 "
+#~ "segment 的标题和正文中搜索早期细节。任务记忆（goal、plan、facts、checks）位于 "
+#~ "conversation history 之后并会原样保留，因此值得保留的决定应写入那里。"
+
+#~ msgid ""
+#~ "`/status` reports the cached prompt "
+#~ "tokens the provider counted — once "
+#~ "for the whole session, and again "
+#~ "for the most recent request:"
+#~ msgstr "`/status` 会显示 provider 统计的缓存 prompt token：一组是整个 session，另一组是最近一次请求："

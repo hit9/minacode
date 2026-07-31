@@ -90,13 +90,14 @@ class RecallTool(Tool):
 class RecallContextTool(Tool):
     NAME = "RecallContext"
     _KEY_RE: ClassVar[re.Pattern] = re.compile(r"seg\.\d+")
-    DESCRIPTION = "Recall stored compacted-conversation excerpts by seg.N key, or regex-search their titles and text; query alternation A|B|C is allowed."
+    DESCRIPTION = "List compacted history segments, retrieve them by seg.N key, or regex-search their titles and text; query alternation A|B|C is allowed."
     DEFAULT_LIMIT = 20
     MAX_LIMIT = 100
     MAX_QUERY_LENGTH = 500
     EXAMPLE = (
-        'Recall one segment. Example: {"keys":["seg.1"]}',
-        'Search all segments. Example: {"query":"cache prefix|task memory","limit":10}',
+        'List newest segments. Example: {"action":"list","limit":20}',
+        'Retrieve one segment. Example: {"action":"get","keys":["seg.1"]}',
+        'Search all segments. Example: {"action":"search","query":"cache prefix|task memory","limit":10}',
     )
     STORES_RESULT = False
 
@@ -104,10 +105,12 @@ class RecallContextTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         return cls.object_schema({
+            "action": {"type": "string", "enum": ["list", "get", "search"], "description": "Operation; omitted legacy calls infer get from keys or search from query"},
             "keys": {"type": "array", "items": {"type": "string", "pattern": "^seg\\.\\d+$"}, "minItems": 1, "description": "Segment keys to retrieve, or to restrict query search"},
             "query": {"type": "string", "maxLength": cls.MAX_QUERY_LENGTH, "description": "Case-insensitive regex over segment titles and text; A|B|C is allowed"},
             "case_sensitive": {"type": "boolean", "description": "Make query matching case-sensitive; default false"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Maximum matching lines to return; default {cls.DEFAULT_LIMIT}"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": cls.MAX_LIMIT, "description": f"Maximum list entries or matching lines; default {cls.DEFAULT_LIMIT}"},
+            "before": {"type": "string", "pattern": "^seg\\.\\d+$", "description": "For list pagination, return segments older than this key"},
         })
         # fmt: on
 
@@ -117,7 +120,9 @@ class RecallContextTool(Tool):
 
     def call(self) -> str:
         request = self.request()
-        if request["query"]:
+        if request["action"] == "list":
+            return self.list_segments(request)
+        if request["action"] == "search":
             return self.search(request)
         keys = request["keys"]
         segments = {segment.key: segment for segment in self.session.history}
@@ -135,15 +140,23 @@ class RecallContextTool(Tool):
 
     def short_args(self) -> list[str]:
         request = self.request()
-        if request["query"]:
+        if request["action"] == "list":
+            suffix = f" before {request['before']}" if request["before"] else ""
+            return [f"list {request['limit']}{suffix}"]
+        if request["action"] == "search":
             scope = " in " + ",".join(request["keys"]) if request["keys"] else ""
             return [json.dumps(request["query"], ensure_ascii=False) + scope]
         return ["; ".join(request["keys"])]
 
     def request(self) -> Json:
-        payload = self.single_dict_arg("RecallContext requires keys or query")
-        if unexpected := sorted(set(payload) - {"keys", "query", "case_sensitive", "limit"}):
+        payload = {key: value for key, value in self.single_dict_arg("RecallContext requires an action, keys, or query").items() if value is not None}
+        if unexpected := sorted(set(payload) - {"action", "keys", "query", "case_sensitive", "limit", "before"}):
             raise ToolError("RecallContext unexpected field: " + ", ".join(unexpected))
+        action = payload.get("action")
+        if action is None:
+            action = "search" if payload.get("query") is not None else "get" if payload.get("keys") is not None else "list"
+        if action not in {"list", "get", "search"}:
+            raise ToolError("RecallContext action must be list, get, or search")
         raw_keys = payload.get("keys")
         if raw_keys is not None and (not isinstance(raw_keys, list) or not raw_keys):
             raise ToolError("RecallContext keys must be a non-empty array")
@@ -165,11 +178,45 @@ class RecallContextTool(Tool):
         limit = payload.get("limit", self.DEFAULT_LIMIT)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > self.MAX_LIMIT:
             raise ToolError(f"RecallContext limit must be 1..{self.MAX_LIMIT}")
-        if not keys and not query:
-            raise ToolError("RecallContext requires keys or query")
-        if not query and ("case_sensitive" in payload or "limit" in payload):
-            raise ToolError("RecallContext case_sensitive and limit require query")
-        return {"keys": list(dict.fromkeys(keys)), "query": query, "case_sensitive": case_sensitive, "limit": limit}
+        before = str(payload.get("before") or "").strip()
+        if before and not self._KEY_RE.fullmatch(before):
+            raise ToolError("RecallContext before must look like seg.N")
+        if action == "list":
+            if keys or query or "case_sensitive" in payload:
+                raise ToolError("RecallContext list accepts only limit and before")
+        elif action == "get":
+            if not keys:
+                raise ToolError("RecallContext get requires keys")
+            if query or "case_sensitive" in payload or "limit" in payload or before:
+                raise ToolError("RecallContext get accepts only keys")
+        else:
+            if not query:
+                raise ToolError("RecallContext search requires query")
+            if before:
+                raise ToolError("RecallContext before is only valid for list")
+        return {
+            "action": action,
+            "keys": list(dict.fromkeys(keys)),
+            "query": query,
+            "case_sensitive": case_sensitive,
+            "limit": limit,
+            "before": before,
+        }
+
+    def list_segments(self, request: Json) -> str:
+        segments = list(reversed(self.session.history))
+        if request["before"]:
+            before_number = int(str(request["before"]).split(".", 1)[1])
+            segments = [segment for segment in segments if int(segment.key.split(".", 1)[1]) < before_number]
+        selected = segments[: request["limit"]]
+        result: Json = {
+            "segments": [{"key": segment.key, "title": segment.title} for segment in selected],
+            "total": len(self.session.history),
+            "returned": len(selected),
+        }
+        if len(segments) > len(selected) and selected:
+            result["next_before"] = selected[-1].key
+        return json.dumps(result, ensure_ascii=False)
 
     def search(self, request: Json) -> str:
         regex = self.compile_regex(request["query"], case_sensitive=request["case_sensitive"])
@@ -198,11 +245,17 @@ class RecallContextTool(Tool):
 class NoteTool(Tool):
     NAME = "Note"
     DESCRIPTION = (
-        "Maintain durable working notes; "
+        "View or update durable working notes; "
         "set_goal, replace_plan, and set_check replace current values, append_known appends, replace_known replaces all known facts. "
         "Plan items are objects with status todo|doing|done|blocked and text."
     )
     STORES_RESULT = False
+    MUTATES = True
+
+    def needs_confirmation(self) -> bool:
+        # MUTATES serializes Note with other state edits; working-note changes do not need user
+        # confirmation because they are reversible session metadata, not workspace writes.
+        return False
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -212,6 +265,8 @@ class NoteTool(Tool):
             "text": {"type": "string", "description": "Plan step description"},
         }, ["status", "text"])
         return cls.object_schema({
+            "action": {"type": "string", "enum": ["view", "update"], "description": "View or update notes; omitted mutation calls infer update"},
+            "fields": {"type": "array", "items": {"type": "string", "enum": ["goal", "plan", "known", "check"]}, "minItems": 1, "description": "For view, fields to return; defaults to all"},
             "set_goal": {"type": "string", "description": "Replace the current goal"},
             "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
             "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
@@ -221,20 +276,32 @@ class NoteTool(Tool):
         # fmt: on
 
     def call(self) -> str:
-        data = self.single_dict_arg("Note requires named fields")
-        if unexpected := sorted(set(data) - {"set_goal", "replace_plan", "append_known", "replace_known", "set_check"}):
+        data = {key: value for key, value in self.single_dict_arg("Note requires named fields").items() if value is not None}
+        mutation_fields = {"set_goal", "replace_plan", "append_known", "replace_known", "set_check"}
+        if unexpected := sorted(set(data) - {"action", "fields", *mutation_fields}):
             raise ToolError("Note unexpected field: " + ", ".join(unexpected))
-        changed = []
+        action = data.get("action")
+        if action is None:
+            action = "update" if mutation_fields.intersection(data) else "view"
+        if action not in {"view", "update"}:
+            raise ToolError("Note action must be view or update")
+        if action == "view":
+            if mutation_fields.intersection(data):
+                raise ToolError("Note view does not accept update fields")
+            return self.view(data)
+        if "fields" in data:
+            raise ToolError("Note fields is only valid for view")
+        if not mutation_fields.intersection(data):
+            raise ToolError("Note update requires set_goal, replace_plan, append_known, replace_known, or set_check")
+
         goal = self.session.state.goal
         plan = list(self.session.state.plan)
         known = list(self.session.state.known)
         check = self.session.state.check
         if "set_goal" in data:
             goal = str(data["set_goal"]).strip()
-            changed.append("set_goal")
         if "set_check" in data:
             check = str(data["set_check"]).strip()
-            changed.append("set_check")
         if "replace_plan" in data:
             if not isinstance(data["replace_plan"], list):
                 raise ToolError('Note replace_plan must be an array of plan items, e.g. {"replace_plan":[{"status":"doing","text":"inspect"}]}')
@@ -245,27 +312,47 @@ class NoteTool(Tool):
                     if not str(item.get("text") or "").strip():
                         raise ToolError("Note replace_plan text is required")
             plan = cast(list[PlanItem | Json | str], AgentState.plan_items(data["replace_plan"]))
-            changed.append("replace_plan")
         if "append_known" in data:
             if not isinstance(data["append_known"], list):
                 raise ToolError('Note append_known must be an array of strings, e.g. {"append_known":["tests use pytest"]}')
             known = list(dict.fromkeys([*known, *(str(item).strip() for item in data["append_known"] if str(item).strip())]))
-            changed.append("append_known")
         if "replace_known" in data:
             if not isinstance(data["replace_known"], list):
                 raise ToolError('Note replace_known must be an array of strings, e.g. {"replace_known":["fact"]}')
             known = [str(item).strip() for item in data["replace_known"] if str(item).strip()]
-            changed.append("replace_known")
-        if not changed:
-            raise ToolError("Note requires set_goal, replace_plan, append_known, replace_known, or set_check")
+
+        before = (self.session.state.goal, list(self.session.state.plan), list(self.session.state.known), self.session.state.check)
         self.session.state.goal = goal
         self.session.state.plan = plan
         self.session.state.known = known
         self.session.state.check = check
-        return "Updated memory: " + ", ".join(changed)
+        after = (goal, plan, known, check)
+        names = ("goal", "plan", "known", "check")
+        changed = [name for name, old, new in zip(names, before, after, strict=True) if old != new]
+        known_added = len(set(known) - set(before[2]))
+        return json.dumps({"ok": True, "changed": changed, "known_added": known_added}, ensure_ascii=False)
+
+    def view(self, data: Json) -> str:
+        raw_fields = data.get("fields", ["goal", "plan", "known", "check"])
+        if not isinstance(raw_fields, list) or not raw_fields:
+            raise ToolError("Note fields must be a non-empty array")
+        fields = list(dict.fromkeys(str(field) for field in raw_fields))
+        if invalid := [field for field in fields if field not in {"goal", "plan", "known", "check"}]:
+            raise ToolError("Note fields must contain only goal, plan, known, check: " + ", ".join(invalid))
+        state = self.session.state
+        values: Json = {
+            "goal": state.goal,
+            "plan": [{"status": item.status, "text": item.text} for item in AgentState.plan_items(state.plan)],
+            "known": list(state.known),
+            "check": state.check,
+        }
+        return json.dumps({field: values[field] for field in fields}, ensure_ascii=False)
 
     def short_args(self) -> list[str]:
         data = self.args[0] if self.args and isinstance(self.args[0], dict) else {}
+        if data.get("action") == "view" or not any(key in data for key in ("set_goal", "replace_plan", "append_known", "replace_known", "set_check")):
+            fields = data.get("fields")
+            return ["view " + (", ".join(str(field) for field in fields) if isinstance(fields, list) else "all")]
         lines = []
         if goal := str(data.get("set_goal") or "").strip():
             lines.append("goal: " + Tool.compact(goal, 120))

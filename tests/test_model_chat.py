@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
-from minacode.base import ModelError, ToolCall
+from minacode.base import SESSION_EVENT_KEY, ModelError, ToolCall
 from minacode.model import ModelClient
 
 
@@ -47,6 +47,31 @@ def test_chat_request_success(tmp_path, monkeypatch):
     assert body["stream"] is False
     assert "stream_options" not in body
     assert streamed == []
+
+
+def test_chat_request_strips_session_event_metadata(tmp_path, monkeypatch):
+    s = _session(tmp_path, stream=False)
+    model = ModelClient(s)
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {},
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(model, "client", factory)
+
+    model.chat_request([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
+
+    assert json.loads(factory.calls[0].content)["messages"] == [{"role": "user", "content": "<session_event />"}]
 
 
 def test_chat_request_with_tool_calls(tmp_path, monkeypatch):

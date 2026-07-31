@@ -225,6 +225,10 @@ unknown hosts stay on the generic standards path.
   commands, or rendering code.
 - `ModelClient` owns the Chat, Responses, and Anthropic wire formats. Session history remains one
   normalized model with namespaced opaque fields for protocol continuation data.
+- Lifecycle and checkpoint metadata is local bookkeeping, not a provider extension. Adapters strip
+  its namespaced key while preserving the canonical role and content: Chat sends ordinary messages;
+  Responses maps assistant calls and tool results to `function_call` and `function_call_output`
+  items. Provider-specific objects never become the durable state model.
 - Reasoning is continuation data, not one universal text field. Preserve what the provider returns,
   choose replay policy while projecting a request, and estimate the same effective wire payload.
 - Capability discovery must be conservative and session-local. A successful image request can
@@ -233,15 +237,28 @@ unknown hosts stay on the generic standards path.
 ## Context is a projection
 
 Session messages are the protocol-neutral source of truth. A model request is derived at the send
-boundary from the system prompt, environment, capability indexes, retained history, memory, the
-active turn, and tool schemas.
+boundary from the system prompt, environment, capability indexes, append-only conversation, active
+turn, and tool schemas.
 
+- The normal layout is:
+
+  ```
+  stable tools + system
+  session-stable Environment (including local session_started_at with numeric offset)
+  optional skill and MCP capability indexes
+  append-only conversation
+  active turn
+  ```
+
+  There is no rebuilt Memory, history-index, current-date, recent-error, or code-index-status block
+  inserted before the tail. Those values either already exist in matched tool history, are queried
+  on demand, or are runtime/UI state that does not belong in every model request.
 - Treat cache-prefix stability as the first review criterion for every system prompt, tool schema or
   ordering, and context-layout change. Order requests from version-stable system and tools, through
-  session-stable capability context and append-only conversation, to volatile task memory and the
-  active turn at the tail. Prefer trigger-local tail additions over conditionally rewriting an
-  earlier layer; saving a small number of tokens does not justify invalidating a larger reusable
-  prefix. Prefix stability never justifies putting stale state into durable history.
+  session-stable capability context and the append-only conversation. Mutable goal, plan, known
+  facts, and checks enter that log through `Note` calls and full compaction checkpoints; never
+  rebuild them as an inserted per-request block. Prefer trigger-local tail additions over
+  conditionally rewriting an earlier layer. Prefix stability never justifies stale state.
 - Apply replay rules, image expansion, request-local reminders, and repeated-schema reduction only
   while building the request. These transforms must not rewrite stored history or user text.
 - Estimate the payload that will actually cross the selected protocol boundary, including tool
@@ -251,7 +268,25 @@ active turn, and tool schemas.
   and compaction for the next request; reported prompt, completion, and cached tokens describe calls
   that already happened and are observability data.
 - Prompt-cache usage is an observed transport optimization, not free context. Cached tokens remain
-  part of the request and compaction pressure.
+  part of the request and compaction pressure. Read and write counts are separate observability
+  fields; absence of provider-reported write accounting does not mean no breakpoint was created.
+
+### Cache epochs and breakpoints
+
+Implicit prompt caching is exact-prefix reuse, including tool schemas. A normal turn only appends,
+so an earlier user or tool boundary remains matchable while the newest boundary becomes the next
+write candidate. `Note` updates and resume events obey the same rule; they are conversation, not
+context inserted ahead of conversation.
+
+- A stable cache key scopes related requests but does not replace exact-prefix matching or require
+  an explicit provider cache API.
+- Changing the model, tools, system prompt, skills, MCP capabilities, or another early layer may
+  shorten reuse or begin a new scope.
+- Compaction deliberately replaces an old prefix and therefore begins one new cache epoch. The
+  emitted checkpoint is then stable history, so the following turn can warm from it; compaction
+  must not cause every later turn to break again.
+- Anthropic's explicit system breakpoint remains a protocol policy in `ModelClient`; it does not
+  change the protocol-neutral append-only history model used by Chat and Responses.
 
 ## Tool-call lifecycle
 
@@ -280,11 +315,14 @@ Bounded active context and recoverable detail are separate concerns:
   addressed by `tr.N`. `Recall` can retrieve selected line ranges; a hard session ceiling prevents
   indefinite growth, and compaction prunes records no surviving message or summary references.
 - Compaction stores one bounded verbatim excerpt of each evicted span as `seg.N`. `RecallContext`
-  retrieves a segment or regex-searches all retained segments; it does not pretend the excerpt is a
+  gets a segment or regex-searches all retained segments; it does not pretend the excerpt is a
   lossless copy of arbitrarily large conversation history.
-- The active history index contains only bounded `seg.N` titles. Its truncation limits standing
-  context, while search still covers the warm segment store, so omitted middle titles remain
-  discoverable.
+- Segment titles are not standing context. `RecallContext(list)` pages through them newest first,
+  while search covers the warm segment store and `get` retrieves selected excerpts.
+- `AgentState` is the durable semantic view of goal, plan, known facts, and checks. `Note(update)`
+  changes it transactionally and its matched call/result makes the change visible in append-only
+  model history; `Note(view)` reads selected fields without mutation. Compaction materializes the
+  complete current state into one checkpoint before older Note history can leave active context.
 - Recall tools do not create new retained-result keys. Their output is ordinary, bounded turn
   context and should be requested selectively instead of recursively copying cold detail into hot
   context.
@@ -304,6 +342,14 @@ stored once as content-addressed blobs. Persist semantic checkpoints, not object
   only after the surviving snapshot no longer does.
 - Reconstruct transcript and UI state from semantic records on resume. Never persist live preview
   rows as conversation messages.
+- Store the session start once as a local ISO timestamp with a numeric timezone offset. Resume
+  appends another timestamped lifecycle event with canonical role `user`: it describes new user
+  context, remains a tail addition, and works identically through Chat and Responses. It is hidden
+  from transcript rendering, not filtered from persistence or model history.
+- `context_layout_version` versions model-visible layout independently of the JSONL format. Loading
+  an older layout converts a numeric legacy `created_at` to local time when necessary, emits at
+  most one complete state checkpoint, advances the layout version, then appends the resume event.
+  The next snapshot persists these as an append-only delta.
 
 ## Terminal boundary
 
@@ -331,13 +377,28 @@ budget.
 - Feed the previous summary and structured goal, plan, known facts, and checks to the compactor
   explicitly. Do not treat an old summary as ordinary conversation to summarize again; each newly
   evicted message span is captured once before it leaves the active history.
-- Store a bounded verbatim excerpt as a `seg.N` history segment for `RecallContext`, and use surviving
-  messages and summaries as the reachability set when compaction prunes `tr.N` records.
+- Store a bounded verbatim excerpt as a `seg.N` history segment for `RecallContext`. Replace the
+  evicted prefix with one append-only checkpoint containing the summary, complete working state,
+  and new segment pointer; use surviving messages and checkpoints as the reachability set when
+  compaction prunes `tr.N` records.
 - If model-generated compaction fails, fall back to deterministic trimming with an explicit marker.
   Compaction must remain a recovery path, and its output never enters the live answer preview.
 - Compaction cannot make an oversized fixed prefix, latest user boundary, tool schema set, or single
   retained object fit. Bound such sources at their owner or fail clearly; never claim that deleting
   protocol structure made a request valid.
+
+## Cache test boundary
+
+Cache behavior is tested through the real Agent and provider SDK request serialization against a
+test-only OpenAI HTTP behavior model. The mock implements both Chat Completions and Responses,
+implicit user/tool breakpoints, longest exact-prefix reads, stable-key scopes, and read/write usage.
+Black-box cases cover ordinary multi-turn growth, Note/tool-result boundaries, resume, one
+compaction epoch, and model-scope changes.
+
+The mock is a deterministic contract test, not evidence that a live provider retained a prefix for
+any particular duration or token threshold. Provider integration tests, when credentials are
+available, should verify reported usage and request acceptance without replacing the deterministic
+suite.
 
 ## Failure boundaries
 

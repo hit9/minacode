@@ -19,13 +19,34 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, cast
 
-from minacode.base import Config, ConfigFile, Json, MinacodeError, ModelUsage, RuntimeSettings, SystemInfo, Text, ToolArgs, UpdateStatus
+from minacode.base import (
+    SESSION_EVENT_KEY,
+    Config,
+    ConfigFile,
+    Json,
+    MinacodeError,
+    ModelUsage,
+    RuntimeSettings,
+    SystemInfo,
+    Text,
+    ToolArgs,
+    UpdateStatus,
+)
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, WORKING_STATE_CHECKPOINT_TITLE
 
 if TYPE_CHECKING:
     from minacode.mcp import MCPManager
     from minacode.skill import SkillLibrary
+
+
+CONTEXT_LAYOUT_VERSION = 2
+
+
+def local_timestamp(value: float | None = None) -> str:
+    """A user-readable local wall-clock timestamp with its numeric UTC offset."""
+    current = datetime.now().astimezone() if value is None else datetime.fromtimestamp(value).astimezone()
+    return current.isoformat(timespec="seconds")
 
 
 @dataclass
@@ -108,11 +129,19 @@ class AgentState:
                 items = list(filter(None, (str(item).strip() for item in value))) if attr == "known" else self.plan_items(value)
                 setattr(self, attr, items)
 
-    def format(self) -> str:
+    def format(self, *, include_summary: bool = False) -> str:
         known = ["- " + item for item in self.known] or ["- (empty)"]
-        return "\n".join(
-            ["Goal: " + (self.goal or "(empty)"), "Plan:", *self.plan_rows_for(self.plan), "Known:", *known, "Check: " + (self.check or "(empty)")]
-        )
+        rows = [
+            "Goal: " + (self.goal or "(empty)"),
+            "Plan:",
+            *self.plan_rows_for(self.plan, status=True),
+            "Known:",
+            *known,
+            "Check: " + (self.check or "(empty)"),
+        ]
+        if include_summary:
+            rows.extend(("Summary:", self.summary or "(empty)"))
+        return "\n".join(rows)
 
 
 @dataclass
@@ -157,8 +186,8 @@ class TurnDiff:
 class HistorySegment:
     """One compacted span of conversation, retained for later recall. The evicted messages are
     captured once at compaction time (never re-summarized), so repeated compaction cannot compound
-    loss; a bounded verbatim excerpt is stored as a content-addressed blob, the title stays in the
-    history index, and `RecallContext` pulls the excerpt back by key."""
+    loss; a bounded verbatim excerpt is stored as a content-addressed blob, and `RecallContext`
+    lists, searches, or retrieves it on demand."""
 
     key: str
     title: str
@@ -178,8 +207,8 @@ class SessionSnapshotCodec:
     once per unique content and referenced by hash, because the same content routinely appears as one
     edit's `before` and the previous edit's `after`.
 
-    The resume marker is a live-session artifact and is filtered out here, so repeated resumes do not
-    stack up markers.
+    Legacy system-role resume markers are filtered during migration. New lifecycle events are
+    append-only user messages: durable model context with protocol-neutral metadata hidden from UI.
     """
 
     @staticmethod
@@ -275,11 +304,15 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def is_internal_message(message: Json) -> bool:
+        return SessionSnapshotCodec.is_legacy_internal_message(message) or bool(message.get(SESSION_EVENT_KEY))
+
+    @staticmethod
+    def is_legacy_internal_message(message: Json) -> bool:
         return message.get("role") == "system" and str(message.get("content") or "").startswith("[Session resumed:")
 
     @classmethod
     def persistable_messages(cls, messages: list[Json]) -> list[Json]:
-        return [message for message in messages if not cls.is_internal_message(message)]
+        return [message for message in messages if not cls.is_legacy_internal_message(message)]
 
     @classmethod
     def snapshot_messages(cls, session: Session) -> list[Json]:
@@ -311,7 +344,8 @@ class SessionSnapshotCodec:
     def snapshot(cls, session: Session, blobs: dict[str, str]) -> Json:
         # fmt: off
         return {
-            "uid": session.uid, "cwd": session.cwd, "messages": cls.snapshot_messages(session),
+            "uid": session.uid, "cwd": session.cwd, "created_at": session.created_at,
+            "context_layout_version": session.context_layout_version, "messages": cls.snapshot_messages(session),
             "pending_user_inputs": [item.to_json() for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
@@ -326,6 +360,8 @@ class SessionSnapshotCodec:
             "tool_counter": session.tool_counter,
             "usage": cls.usage(session.usage),
             "state": cls.state(session.state),
+            "created_at": session.created_at,
+            "context_layout_version": session.context_layout_version,
         }
         cls.add_sequence_delta(delta, "messages", cls.snapshot_messages(session), saved, "messages_len", "messages_digest")
         pending_user_inputs = [item.to_json() for item in session.pending_user_inputs]
@@ -399,6 +435,9 @@ class SessionSnapshotCodec:
             data["state"] = delta["state"]
         if "pending_user_inputs" in delta:
             data["pending_user_inputs"] = delta["pending_user_inputs"]
+        for key in ("created_at", "context_layout_version"):
+            if key in delta:
+                data[key] = delta[key]
 
     @staticmethod
     def merge_sequence(data: Json, delta: Json, key: str) -> None:
@@ -416,7 +455,9 @@ class SessionSnapshotCodec:
         usage.completion_tokens = data.get("completion_tokens", 0)
         usage.total_tokens = data.get("total_tokens", 0)
         usage.cached_prompt_tokens = data.get("cached_prompt_tokens", 0)
+        usage.cache_write_prompt_tokens = data.get("cache_write_prompt_tokens", 0)
         usage.last_cached_prompt_tokens = data.get("last_cached_prompt_tokens", 0)
+        usage.last_cache_write_prompt_tokens = data.get("last_cache_write_prompt_tokens", 0)
         usage.last_prompt_tokens = data.get("last_prompt_tokens", 0)
         return usage
 
@@ -537,7 +578,7 @@ class SessionSnapshotStore:
 
     @classmethod
     def header(cls, session: Session) -> Json:
-        return {"v": cls.FORMAT_VERSION, "uid": session.uid, "cwd": session.cwd, "created_at": time.time()}
+        return {"v": cls.FORMAT_VERSION, "uid": session.uid, "cwd": session.cwd, "created_at": session.created_at}
 
     @staticmethod
     def write_jsonl(path: str, data: Json, *, mode: str) -> None:
@@ -736,8 +777,15 @@ class SessionSnapshotStore:
         path = cls.find_session_path(config.data_dir, uid)
         if not path:
             raise MinacodeError(f"Session snapshot not found: {uid} under {cls.path_for(config.data_dir, cls.PROJECTS_DIR)}")
-        data, blobs = cls.read_merged(path)
+        data, blobs, header = cls.read_merged(path)
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
+        raw_created_at = data.get("created_at", header.get("created_at"))
+        if isinstance(raw_created_at, (int, float)):
+            created_at = local_timestamp(float(raw_created_at))
+        elif isinstance(raw_created_at, str) and raw_created_at.strip():
+            created_at = raw_created_at.strip()
+        else:
+            created_at = local_timestamp()
         session = Session(
             cwd=data.get("cwd", cwd),
             config=config,
@@ -754,9 +802,24 @@ class SessionSnapshotStore:
             pending_user_inputs=[item for value in data.get("pending_user_inputs", []) if (item := QueuedInput.from_json(value)) is not None],
             uid=data.get("uid", uid),
             resumed=True,
+            created_at=created_at,
+            context_layout_version=int(data.get("context_layout_version", 1) or 1),
         )
-        session.messages.append({"role": "system", "content": f"[Session resumed: uid={session.uid}]"})
+        # Mark the loaded prefix before appending durable lifecycle/checkpoint events, so the next
+        # snapshot writes them as an append-only delta.
         session._snapshot_saved = SessionSnapshotCodec.marker(session)
+        if session.context_layout_version < CONTEXT_LAYOUT_VERSION:
+            if session.state.goal or session.state.plan or session.state.known or session.state.check or session.state.summary:
+                session.messages.append(session.state_checkpoint_event())
+            session.context_layout_version = CONTEXT_LAYOUT_VERSION
+        resumed_at = local_timestamp()
+        session.messages.append(
+            {
+                "role": "user",
+                "content": f'<session_event type="resumed" at="{resumed_at}" />',
+                SESSION_EVENT_KEY: "resumed",
+            }
+        )
         session._blobs_written = set(blobs)
         return session
 
@@ -784,9 +847,10 @@ class SessionSnapshotStore:
         return uid
 
     @classmethod
-    def read_merged(cls, path: str) -> tuple[Json, dict[str, str]]:
+    def read_merged(cls, path: str) -> tuple[Json, dict[str, str], Json]:
         merged: Json | None = None
         blobs: dict[str, str] = {}
+        header: Json = {}
         with open(path, encoding="utf-8") as file:
             for index, line in enumerate(file):
                 line = line.strip()
@@ -795,6 +859,7 @@ class SessionSnapshotStore:
                 parsed = json.loads(line)
                 if index == 0:
                     cls.check_header(parsed, path)
+                    header = parsed
                 elif "blob" in parsed:
                     blobs[parsed["blob"]] = parsed.get("text", "")
                 elif merged is None:
@@ -803,7 +868,7 @@ class SessionSnapshotStore:
                     SessionSnapshotCodec.merge(merged, parsed)
         if merged is None:
             raise MinacodeError(f"Empty session file: {path}")
-        return merged, blobs
+        return merged, blobs, header
 
     @classmethod
     def check_header(cls, header: Json, path: str) -> None:
@@ -976,6 +1041,8 @@ class Session:
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
     uid: str = ""
     resumed: bool = False
+    created_at: str = field(default_factory=local_timestamp)
+    context_layout_version: int = CONTEXT_LAYOUT_VERSION
     _snapshot_saved: dict = field(default_factory=dict)
     _blobs_written: set[str] = field(default_factory=set)
     _meta_written: dict = field(default_factory=dict)
@@ -1356,12 +1423,19 @@ class Session:
         """The first thing the user asked for, as one line. Compaction summaries are not it."""
         for message in self.messages:
             content = message.get("content")
-            if message.get("role") != "user" or not isinstance(content, str):
+            if message.get("role") != "user" or not isinstance(content, str) or message.get(SESSION_EVENT_KEY):
                 continue
             text = ImageInputs.label_text(message).strip()
             if text and not text.startswith(COMPACTION_SUMMARY_TITLE) and not text.startswith(LIVE_FOLLOWUP_PREFIX):
                 return text.splitlines()[0]
         return ""
+
+    def state_checkpoint_event(self) -> Json:
+        return {
+            "role": "user",
+            "content": WORKING_STATE_CHECKPOINT_TITLE + "\n" + self.state.format(include_summary=True),
+            SESSION_EVENT_KEY: "state_checkpoint",
+        }
 
     @classmethod
     def clip_name(cls, text: str) -> str:

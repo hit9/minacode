@@ -79,13 +79,13 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
   - Retrieves a <span class="marker">complete earlier tool result</span>, or selected line ranges,
     when only a shortened result was placed in the conversation.
 * - **`RecallContext`**
-  - Retrieves a stored <span class="marker">compacted conversation excerpt</span> by its seg.N key
-    when earlier detail was evicted by compaction. It can also search segment titles and text with
-    a case-insensitive regex such as `cache prefix|task memory`, optionally restricted to selected
-    keys. Search results are capped matching lines; segment keys are listed in the history index.
+  - Lists stored compacted segments newest first, retrieves an excerpt by its `seg.N` key, or
+    searches titles and text with a case-insensitive regex such as `cache prefix|task memory`.
+    Listing supports pagination; search results are capped matching lines. Segment titles are
+    loaded only on demand instead of occupying every request.
 * - **`Note`**
-  - Maintains the task's goal, plan, success check, and learned facts. It keeps long tasks
-    organized but does not edit project files.
+  - Views or updates the task's goal, plan, success check, and learned facts. Updates are durable
+    conversation history, so they preserve append-only prompt-cache prefixes and do not edit files.
 
     <div class="term-shot" role="img" aria-label="A Note update printed in the terminal: goal and check lines, a plan whose items are marked done, in progress, or waiting, and a list of learned facts."><span class="fs-goal">goal: ship the tokenizer fix</span><span class="fs-goal">check: pytest -q passes</span><span class="fs-sel">plan:</span><span class="fs-add">  - [x] reproduce the failing test</span><span class="fs-doing">  - [~] fix the tokenizer</span><span>  - [ ] update the changelog</span><span class="fs-sel">known:</span><span class="fs-add">  + tests run with pytest -q</span></div>
 

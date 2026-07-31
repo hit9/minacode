@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Hashable
-from datetime import datetime
 from typing import ClassVar, TypeVar
 
 from minacode.base import (
@@ -14,6 +13,7 @@ from minacode.base import (
     MIN_CONTEXT_SAFETY_TOKENS,
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
+    SESSION_EVENT_KEY,
     Json,
     Text,
 )
@@ -27,7 +27,7 @@ from minacode.prompts import (
 from minacode.prompts import (
     compaction_input as format_compaction_input,
 )
-from minacode.session import AgentState, HistorySegment, Session
+from minacode.session import HistorySegment, Session
 from minacode.tools import (
     Tool,
 )
@@ -40,9 +40,9 @@ class ContextManager:
 
     Derived at the send boundary and never stored: each request rebuilds it, so nothing here may
     write back into history. Layer order exists for prompt-cache stability — version-stable system
-    and tools, then session-stable indexes, then append-only conversation, then volatile memory and
-    the active turn. Inserting anything mid-prefix invalidates the cache for every later turn, which
-    no token saving repays.
+    and tools, then session-stable environment/capability context, then the append-only conversation
+    and active turn. Mutable working state is written as tool history or compaction checkpoints;
+    inserting a rebuilt block into the conversation prefix would invalidate later cache reuse.
 
     Request-local transforms belong here rather than in stored messages: repeated MCP schemas and
     skill loads collapse to a pointer at the first copy, re-promoted when compaction removes it.
@@ -73,16 +73,7 @@ class ContextManager:
         for context in (self.skills_context(), self.mcp_tools_context()):
             if context:
                 messages.append({"role": "user", "content": context})
-        if history_index := self.history_index_context():
-            messages.append({"role": "user", "content": "--- History index ---\n" + history_index})
-        conversation = [
-            *self.session.messages,
-            {
-                "role": "user",
-                "content": "--- Memory ---\n" + (self.memory_context(with_date=True) or "(empty)"),
-            },
-            *(turn_messages or []),
-        ]
+        conversation = [*self.session.messages, *(turn_messages or [])]
         messages.extend(self.dedup_skill_loads(self.dedup_mcp_describes(conversation)))
         return Text.value(messages)
 
@@ -210,37 +201,12 @@ class ContextManager:
                 on_compaction(False)
         return True
 
-    def memory_context(self, *, with_date: bool = False) -> str:
-        index_status = self.session.state.code_index_status or "missing"
-        index_usable = "yes" if index_status in {"synced", "ready", "stale"} else "no"
-        rows = [
-            "Goal: " + (self.session.state.goal or "(empty; use Note for multi-step work)"),
-            "Plan:\n" + "\n".join(AgentState.plan_rows_for(self.session.state.plan, status=True)),
-            "Known:\n" + "\n".join("- " + item for item in self.session.state.known or ["(empty)"]),
-            "Check: " + (self.session.state.check or "(empty)"),
-            f"Code index: {index_status} (InspectCode usable: {index_usable})",
-        ]
-        if errors := self.recent_tool_errors():
-            rows.append("Recent tool errors:\n" + "\n".join(errors))
-        if with_date:
-            rows.append("Date: " + datetime.now().astimezone().strftime("%Y-%m-%d"))
-        return "\n\n".join(rows)
-
-    def history_index_context(self) -> str:
-        index = "\n".join(f"- {seg.key}: {seg.title}" for seg in self.session.history)
-        return self.bound_output(index, stable_marker=True)
-
-    def recent_tool_errors(self) -> list[str]:
-        return [
-            f"- {' '.join(part for part in (record.key, record.name, ' '.join(Tool.compact(arg, 80) for arg in record.args)) if part)}: {Tool.compact(record.error, 160)}"
-            for record in self.session.tool_errors[-5:]
-        ]
-
     def environment(self) -> str:
         info = self.session.system_info
         assert info is not None
         rows = [
             f"- cwd: {info.cwd}",
+            f"- session_started_at: {self.session.created_at}",
             # Tell the model which executables it may drive through Bash.
             "- detected_commands (available via Bash): " + (", ".join(info.commands) or "(none)"),
             f"- os: {info.os}",
@@ -315,20 +281,33 @@ class ContextManager:
         for message in messages:
             if (
                 message.get("role") == "user"
+                and not message.get(SESSION_EVENT_KEY)
                 and not str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE)
                 and not ImageInputs.is_tool_observation(message)
             ):
                 return Tool.compact(str(message.get("content") or ""), 80)
         return Tool.compact(self.messages_text(messages[:1]), 80) or "compacted context"
 
-    def store_history_segment(self, compacted: list[Json]) -> None:
+    def store_history_segment(self, compacted: list[Json]) -> HistorySegment:
         key = f"seg.{len(self.session.history) + 1}"
         text = self.bound_output(self.messages_text(compacted))
-        self.session.history.append(HistorySegment(key=key, title=self.history_title(compacted), text=text))
+        segment = HistorySegment(key=key, title=self.history_title(compacted), text=text)
+        self.session.history.append(segment)
+        return segment
 
-    def _summary_block(self, summary: str) -> list[Json]:
-        """The single compaction-summary user message, or [] when there is no summary yet."""
-        return [{"role": "user", "content": COMPACTION_SUMMARY_TITLE + "\n" + summary}] if summary else []
+    def _summary_block(self, segment: HistorySegment | None) -> list[Json]:
+        """One durable checkpoint containing everything needed after the compacted prefix."""
+        rows = [
+            COMPACTION_SUMMARY_TITLE,
+            "Summary:",
+            self.session.state.summary or "(empty)",
+            "",
+            "Working state:",
+            self.session.state.format(),
+        ]
+        if segment is not None:
+            rows.extend(("", f"Stored history segment: {segment.key}: {segment.title}"))
+        return [{"role": "user", "content": "\n".join(rows), SESSION_EVENT_KEY: "compaction_checkpoint"}]
 
     def apply_compaction(
         self,
@@ -341,14 +320,12 @@ class ContextManager:
         compacted: list[Json] | None = None,
     ) -> None:
         self.session.state.compaction_count += 1
-        if compacted:
-            self.store_history_segment(compacted)
+        segment = self.store_history_segment(compacted) if compacted else None
         if data is not None:
             self.session.state.apply(data)
         if fallback_note:
             self.session.state.summary = (self.session.state.summary + "\n" + fallback_note).strip()
-        summary = self.session.state.summary
-        summary_block = self._summary_block(summary)
+        summary_block = self._summary_block(segment)
         if turn_messages is None:
             self.session.messages = summary_block + keep
             prune_context = (self.session.messages if data is not None else [*keep]) + (tool_messages or [])
@@ -369,6 +346,7 @@ class ContextManager:
         for index in range(len(messages) - 1, -1, -1):
             if (
                 messages[index].get("role") == "user"
+                and not messages[index].get(SESSION_EVENT_KEY)
                 and not self.is_compaction_summary(messages[index])
                 and not ImageInputs.is_tool_observation(messages[index])
             ):
@@ -428,7 +406,9 @@ class ContextManager:
 
         payload: list[Json] = []
         for message in messages:
-            estimated = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY)}
+            estimated = {
+                key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
+            }
             if readable := readable_provider_context(message):
                 estimated["_provider_context"] = readable
             payload.append(estimated)

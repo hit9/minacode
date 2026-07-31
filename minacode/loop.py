@@ -1342,7 +1342,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             ),
             (
                 "cache",
-                f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` last `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`; session `{token_count(usage.cached_prompt_tokens)} / {token_count(usage.prompt_tokens)} ({cache_ratio:.1f}%)`"
+                f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` last read `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`, write `{token_count(usage.last_cache_write_prompt_tokens)}`; "
+                f"session read `{token_count(usage.cached_prompt_tokens)} / {token_count(usage.prompt_tokens)} ({cache_ratio:.1f}%)`, write `{token_count(usage.cache_write_prompt_tokens)}`"
                 if usage.prompt_tokens
                 else "(no requests yet)",
             ),

@@ -34,14 +34,13 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     ]
     messages = ContextManager(s).model_messages(" system ", turn)
 
-    assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user", "user"]
+    assert [message["role"] for message in messages] == ["system", "user", "user", "assistant", "user", "user", "user"]
     assert messages[0]["content"] == "system"
     assert messages[1]["content"].startswith("--- Environment ---")
     assert "- cwd: " + str(tmp_path) in messages[1]["content"]
     assert [message["content"] for message in messages[2:4]] == ["old request", "old answer"]
-    assert messages[4]["content"].startswith("--- Memory ---")
-    assert "Date:" in messages[4]["content"]
-    assert [message["content"] for message in messages[5:]] == ["current request", "extra one", "extra two"]
+    assert f"- session_started_at: {s.created_at}" in messages[1]["content"]
+    assert [message["content"] for message in messages[4:]] == ["current request", "extra one", "extra two"]
     assert [message["content"] for message in turn] == ["current request", "extra one", "extra two"]
     assert not any("FILE STATE" in message["content"] for message in messages)
 
@@ -121,17 +120,15 @@ def test_tool_error_records_keep_recent_failures(tmp_path):
     assert [record.key for record in s.tool_errors] == ["tr.2", "tr.3", "tr.4", "tr.5", "tr.6"]
 
 
-def test_working_context_includes_recent_tool_errors(tmp_path):
+def test_working_context_does_not_repeat_durable_tool_errors(tmp_path):
     s = session(tmp_path)
     for index in range(6):
         s.record_tool_error(f"tr.{index}", "Bash", [f"cmd {index}"], f"error {index}")
 
-    context = ContextManager(s).model_messages("sys")[-1]["content"]
+    context = "\n".join(str(message.get("content") or "") for message in ContextManager(s).model_messages("sys"))
 
-    assert "Recent tool errors:" in context
-    assert "tr.0" not in context
-    assert "tr.5 Bash cmd 5" in context
-    assert "error 5" in context
+    assert "Recent tool errors:" not in context
+    assert "error 5" not in context
 
 
 def test_compaction_uses_configured_context_budget(tmp_path):
@@ -550,52 +547,17 @@ def test_history_title_skips_summary_blocks(tmp_path):
     assert context.history_title(messages) == "the real request"
 
 
-def test_history_index_precedes_conversation_and_memory_excludes_it(tmp_path):
+def test_history_index_and_memory_are_not_injected_into_each_request(tmp_path):
     s = session(tmp_path)
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
     s.history.append(HistorySegment(key="seg.1", title="find the bug", text="..."))
     context = ContextManager(s)
 
     messages = context.model_messages("system", [{"role": "user", "content": "current request"}])
-    memory = context.memory_context()
-
-    assert messages[2]["content"] == "--- History index ---\n- seg.1: find the bug"
-    assert [message["content"] for message in messages[3:5]] == ["old request", "old answer"]
-    assert messages[5]["content"].startswith("--- Memory ---")
-    assert messages[6]["content"] == "current request"
-    assert "History index" not in memory
-
-
-def test_history_index_is_bounded_while_retaining_its_ends(tmp_path, monkeypatch):
-    monkeypatch.setattr(context_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
-    s = session(tmp_path)
-    for index in range(1, 51):
-        s.history.append(HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
-
-    history_index = ContextManager(s).history_index_context()
-
-    assert "<bounded_output" in history_index
-    assert "seg.1" in history_index
-    assert "seg.50" in history_index
-    assert "recall=" not in history_index
-
-
-def test_bounded_history_index_marker_stays_stable_when_appended(tmp_path, monkeypatch):
-    monkeypatch.setattr(context_module, "MAX_TOOL_OUTPUT_TOKENS", 40)
-    s = session(tmp_path)
-    for index in range(1, 51):
-        s.history.append(HistorySegment(key=f"seg.{index}", title=f"task {index} " + "x" * 20))
-    context = ContextManager(s)
-
-    before = context.history_index_context()
-    s.history.append(HistorySegment(key="seg.51", title="task 51 " + "x" * 20))
-    after = context.history_index_context()
-
-    before_head, before_marker, _ = before.split("\n", 2)
-    after_head, after_marker, _ = after.split("\n", 2)
-    assert before_head == after_head
-    assert before_marker == after_marker == '<bounded_output omitted="middle" max_tokens="40"/>'
-    assert "seg.51" in after
+    contents = [str(message.get("content") or "") for message in messages]
+    assert contents[2:] == ["old request", "old answer", "current request"]
+    assert not any(content.startswith("--- History index ---") for content in contents)
+    assert not any(content.startswith("--- Memory ---") for content in contents)
 
 
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
@@ -657,17 +619,16 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     assert "prior summary inserted" in result
 
 
-def test_memory_context_includes_tool_errors_when_present(tmp_path):
+def test_agent_state_format_is_available_for_explicit_checkpoints(tmp_path):
     s = session(tmp_path)
     s.state.goal = "test goal"
     s.state.check = "all good"
     s.record_tool_error("tr.1", "Bash", ["bad"], "failed")
 
-    ctx = ContextManager(s).memory_context()
+    ctx = s.state.format()
 
     assert "Goal:" in ctx
     assert "test goal" in ctx
     assert "Check:" in ctx
     assert "all good" in ctx
-    assert "Recent tool errors:" in ctx
-    assert "tr.1 Bash bad: failed" in ctx
+    assert "Recent tool errors:" not in ctx

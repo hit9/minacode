@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
-from minacode.base import ModelError, ToolCall
+from minacode.base import SESSION_EVENT_KEY, ModelError, ToolCall
 from minacode.model import ModelClient
 from minacode.tools import BashTool
 
@@ -88,6 +88,14 @@ def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_p
     assert s.usage.last_cached_prompt_tokens == 7
     assert s.usage.completion_tokens == 5
     assert streamed == []
+
+
+def test_responses_input_strips_session_event_metadata(tmp_path):
+    s = _session(tmp_path, api="responses", model="gpt-5", stream=False)
+
+    converted = ModelClient(s).responses_input([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
+
+    assert converted == [{"role": "user", "content": "<session_event />"}]
 
 
 def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, monkeypatch):

@@ -3,6 +3,21 @@
 
 ## Unreleased
 
+### Added
+- Add test-only OpenAI behavior emulation for Chat Completions and Responses, including implicit
+  user/tool breakpoints, exact-prefix cache reads, and cache-write accounting.
+- Let `Note` view selected working-state fields, and let `RecallContext` list compacted history
+  segments with pagination in addition to retrieving and searching them.
+
+### Changed
+- Make model context append-only between compactions: remove the rebuilt per-request Memory and
+  history-index blocks, retain Note changes as tool history, and emit one complete working-state
+  checkpoint when compaction starts a new cache epoch.
+- Record session start and resume times in the user's local time with an explicit numeric timezone
+  offset. Resume is now a durable user-role lifecycle event shared by Chat Completions and
+  Responses; old snapshots migrate through one complete state checkpoint.
+- Show provider-reported cache-write tokens alongside cache reads in `/status`.
+
 ### Fixed
 - Keep exactly one blank line between assistant progress and tool calls, and between consecutive
   tool calls, without splitting a tool's header from its result.

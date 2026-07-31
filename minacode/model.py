@@ -23,6 +23,7 @@ from minacode.base import (
     MODEL_REQUEST_RETRIES,
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
+    SESSION_EVENT_KEY,
     ActiveResource,
     Json,
     ModelError,
@@ -117,7 +118,9 @@ class ModelClient:
             default=-1,
         )
         for index, message in enumerate(messages):
-            clean = {key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY)}
+            clean = {
+                key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
+            }
             keep_reasoning = history == "all" or (
                 bool(message.get("tool_calls")) and (history == "tool_calls" or (history == "current_turn" and index > latest_user))
             )
