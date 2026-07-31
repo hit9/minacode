@@ -275,11 +275,11 @@ class NoteTool(Tool):
         return cls.object_schema({
             "action": {"type": "string", "enum": ["view", "update"], "description": "View or update notes; omitted mutation calls infer update"},
             "fields": {"type": "array", "items": {"type": "string", "enum": ["goal", "plan", "known", "check"]}, "minItems": 1, "description": "For view, fields to return; defaults to all"},
-            "set_goal": {"type": "string", "description": "Replace the current goal"},
+            "set_goal": {"type": "string", "description": "Replace the current goal; an empty string clears it"},
             "replace_plan": {"type": "array", "items": plan_item, "description": "Replace the plan with these status/text items"},
             "append_known": {"type": "array", "items": {"type": "string"}, "description": "Append these facts to known"},
             "replace_known": {"type": "array", "items": {"type": "string"}, "description": "Replace all known facts with these"},
-            "set_check": {"type": "string", "description": "Replace the success/verification criteria"},
+            "set_check": {"type": "string", "description": "Replace the success/verification criteria; an empty string clears it"},
         })
         # fmt: on
 
@@ -368,10 +368,12 @@ class NoteTool(Tool):
             fields = data.get("fields")
             return ["view " + (", ".join(str(field) for field in fields) if isinstance(fields, list) else "all")]
         lines = []
-        if goal := str(data.get("set_goal") or "").strip():
-            lines.append("goal: " + Tool.compact(goal, 120))
-        if check := str(data.get("set_check") or "").strip():
-            lines.append("check: " + Tool.compact(check, 120))
+        if "set_goal" in data:
+            goal = str(data["set_goal"] or "").strip()
+            lines.append("goal: " + (Tool.compact(goal, 120) if goal else "(cleared)"))
+        if "set_check" in data:
+            check = str(data["set_check"] or "").strip()
+            lines.append("check: " + (Tool.compact(check, 120) if check else "(cleared)"))
         if isinstance(data.get("replace_plan"), list):
             lines.extend(["plan:", *(f"  {row}" for row in AgentState.plan_rows_for(data["replace_plan"], status=True, style="symbol") if row != "- (empty)")])
         if isinstance(data.get("append_known"), list):

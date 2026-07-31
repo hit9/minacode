@@ -718,9 +718,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
         self.agent.context.update_current_tokens(SYSTEM_PROMPT)
         messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
+        self.emit(f"Restored session: {self.session.uid}")
         if not messages:
             return
-        self.emit(f"Restored session: {self.session.uid}")
         diffs = {diff.key: diff.diff for diff in self.session.turn_diffs if diff.key and diff.diff}
         tool_record_index = 0
         for index, turn in enumerate(TurnBox.group(messages)):

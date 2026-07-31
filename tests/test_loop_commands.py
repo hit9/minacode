@@ -607,6 +607,23 @@ def test_resumed_session_hides_internal_checkpoint_and_resume_events(tmp_path):
     assert "<session_event" not in text
 
 
+def test_resumed_session_with_only_internal_events_still_confirms_restore(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.messages.extend(
+        [
+            {"role": "user", "content": "hidden checkpoint", SESSION_EVENT_KEY: "compaction_checkpoint"},
+            {"role": "user", "content": "hidden lifecycle event", SESSION_EVENT_KEY: "resumed"},
+        ]
+    )
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    assert output == [f"Restored session: {s.uid}"]
+
+
 def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(tmp_path):
     s = session(tmp_path)
     s.resumed = True

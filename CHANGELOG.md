@@ -20,9 +20,11 @@
 
 ### Fixed
 - Keep compaction, migrated-state, and resume lifecycle checkpoints out of resumed transcripts;
-  they remain available to the model without exposing internal context bookkeeping in the CLI.
+  they remain available to the model without exposing internal context bookkeeping in the CLI,
+  and a checkpoint-only resume still confirms which session was restored.
 - Treat strict-schema nulls, empty selector arrays, and irrelevant default arguments as omitted in
   `Note` and `RecallContext`, including `Note`'s user-facing call summary.
+- Show empty `Note` goal and check updates as explicit clears instead of rendering them as `{}`.
 - Keep exactly one blank line between assistant progress and tool calls, and between consecutive
   tool calls, without splitting a tool's header from its result.
 - Keep large stale code indexes off the interactive startup path, so repository scanning and

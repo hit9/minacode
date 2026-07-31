@@ -904,6 +904,18 @@ def test_note_short_args_treats_strict_schema_nulls_as_omitted(tmp_path):
     assert NoteTool(session(tmp_path), [payload]).short_args() == ["view all"]
 
 
+def test_note_empty_goal_and_check_explicitly_clear_state(tmp_path):
+    s = session(tmp_path)
+    s.state.goal = "ship"
+    s.state.check = "tests pass"
+    tool = NoteTool(s, [{"set_goal": "", "set_check": ""}])
+
+    assert tool.short_args() == ["goal: (cleared)\ncheck: (cleared)"]
+    assert json.loads(tool.call())["changed"] == ["goal", "check"]
+    assert s.state.goal == ""
+    assert s.state.check == ""
+
+
 def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
     s = session(tmp_path)
     s.history.append(HistorySegment(key="seg.1", title="cache", text="needle"))
