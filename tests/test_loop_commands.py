@@ -26,7 +26,7 @@ from minacode.base import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.loop import CommandLoop
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
+from minacode.prompts import SYSTEM_PROMPT
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore, ToolResultRecord
@@ -571,15 +571,21 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert "raw tool result" not in text
 
 
-def test_resumed_session_renders_compaction_checkpoint_but_hides_resume_event(tmp_path):
+def test_resumed_session_hides_internal_checkpoint_and_resume_events(tmp_path):
     s = session(tmp_path)
     s.resumed = True
     s.messages.extend(
         [
+            {"role": "user", "content": "visible request"},
             {
                 "role": "user",
-                "content": COMPACTION_SUMMARY_TITLE + "\nSummary:\nkept work\n\nWorking state:\nGoal: finish",
+                "content": "hidden compaction checkpoint",
                 SESSION_EVENT_KEY: "compaction_checkpoint",
+            },
+            {
+                "role": "user",
+                "content": "hidden working-state checkpoint",
+                SESSION_EVENT_KEY: "state_checkpoint",
             },
             {
                 "role": "user",
@@ -595,8 +601,9 @@ def test_resumed_session_renders_compaction_checkpoint_but_hides_resume_event(tm
 
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
-    assert COMPACTION_SUMMARY_TITLE in text
-    assert "Goal: finish" in text
+    assert "visible request" in text
+    assert "hidden compaction checkpoint" not in text
+    assert "hidden working-state checkpoint" not in text
     assert "<session_event" not in text
 
 

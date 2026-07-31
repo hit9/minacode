@@ -304,7 +304,7 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def is_internal_message(message: Json) -> bool:
-        return SessionSnapshotCodec.is_legacy_internal_message(message) or message.get(SESSION_EVENT_KEY) == "resumed"
+        return SessionSnapshotCodec.is_legacy_internal_message(message) or bool(message.get(SESSION_EVENT_KEY))
 
     @staticmethod
     def is_legacy_internal_message(message: Json) -> bool:

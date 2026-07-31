@@ -19,8 +19,8 @@
 - Show provider-reported cache-write tokens alongside cache reads in `/status`.
 
 ### Fixed
-- Keep compaction and migrated-state checkpoints visible when replaying a resumed transcript while
-  continuing to hide the resume lifecycle marker.
+- Keep compaction, migrated-state, and resume lifecycle checkpoints out of resumed transcripts;
+  they remain available to the model without exposing internal context bookkeeping in the CLI.
 - Treat strict-schema nulls, empty selector arrays, and irrelevant default arguments as omitted in
   `Note` and `RecallContext`, including `Note`'s user-facing call summary.
 - Keep exactly one blank line between assistant progress and tool calls, and between consecutive
