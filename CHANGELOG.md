@@ -4,14 +4,13 @@
 ## Unreleased
 
 ### Changed
-- Close each turn with a single short gray marker carrying its duration
-  (`─── done in 1m05s ───`) instead of the plain `[done in 1m5s]` line. The marker sits below
-  the answer and is the turn's only horizontal rule: the full-width rule that used to open the
-  answer is gone, so a turn no longer shows two rules. It is deliberately short and left-aligned
-  rather than a full-width line, which would bake the emitting terminal's width into scrollback
-  and wrap into a zigzag when the pane narrows (e.g. a resized tmux split). The duration reuses
-  the working divider's `elapsed_since` format, so the marker reads like the divider's final
-  frame (`5s`, `1m05s`) instead of `0m5s` / `1m5s`.
+- Close each turn with a single full-width gray rule carrying its duration
+  (`done in 1m05s ─────…`) instead of the plain `[done in 1m5s]` line. The label sits at the
+  left of the rule rather than centered, and a blank line lifts the rule off the answer. It is
+  the turn's only horizontal rule: the full-width rule that used to open the answer is gone, so
+  a turn no longer shows two rules. The duration reuses the working divider's `elapsed_since`
+  format, so the rule reads like the divider's final frame (`5s`, `1m05s`) instead of
+  `0m5s` / `1m5s`.
 
 
 ## 0.18.0 - 2026-07-31

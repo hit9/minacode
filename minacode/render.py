@@ -306,26 +306,36 @@ class UiPrinter:
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
-    # A short closing marker, not a full-width rule: a full-width `─` line is baked into scrollback
-    # at the emitting terminal's width and wraps into a zigzag when the pane is narrower (e.g. a
-    # resized tmux split). A few dashes either side of the duration stay short, left-aligned, and
-    # wrap-proof while still reading as a quiet end-of-turn rule.
-    TURN_END_PAD: ClassVar[int] = 3
+    # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
+    # pushes it to the very edge, which reads as a stray label, not text on a rule) and not
+    # centered: a long trail of dashes runs to the full width, so the rule still closes the turn
+    # edge to edge.
+    TURN_END_LEAD: ClassVar[int] = 2
 
     def emit_turn_end(self, started_at: float) -> None:
-        """Close the turn with a quiet short gray marker carrying its total duration.
+        """Close the turn with a quiet full-width gray rule carrying its total duration.
 
         The durable counterpart to the animated working divider: the divider counts up while the
         turn runs and is torn down when it ends, so the final elapsed value is frozen here. It
-        reuses `elapsed_since` so the marker reads like the divider's last frame (`5s`, `1m05s`)
-        instead of the old `0m5s` / `1m5s`.
+        reuses `elapsed_since` so the rule reads like the divider's last frame (`5s`, `1m05s`)
+        instead of the old `0m5s` / `1m5s`. The label is left-biased (a short lead of dashes, then
+        the label, then a long trail to the full width) and a blank line lifts the rule off the
+        answer above it.
         """
         label = f"done in {Text.elapsed_since(started_at)}"
         if not self.color:
             self.output_fn(label)
             return
-        dashes = "─" * self.TURN_END_PAD
-        print_formatted_text(FormattedText([("ansibrightblack", f"{dashes} {label} {dashes}\n")]), end="", flush=True)
+        self.emit()
+        width = shutil.get_terminal_size((80, 20)).columns
+        lead = "─" * self.TURN_END_LEAD + " "
+        trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)
+        fragments = [
+            ("ansibrightblack", lead),
+            ("fg:default", label),
+            ("ansibrightblack", " " + "─" * trail + "\n"),
+        ]
+        print_formatted_text(FormattedText(fragments), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
