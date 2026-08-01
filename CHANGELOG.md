@@ -1,6 +1,16 @@
 # Changelog
 
 
+## Unreleased
+
+### Changed
+- Replace the plain `[done in 1m5s]` line that closed each turn with a quiet gray rule
+  carrying the duration as its title (`──── done in 1m05s ────`), giving the transcript a
+  visible end-of-turn boundary symmetric with the rule above the answer. The duration now
+  reuses the working divider's `elapsed_since` format, so the footer reads like the divider's
+  final frame (`5s`, `1m05s`) instead of `0m5s` / `1m5s`.
+
+
 ## 0.18.0 - 2026-07-31
 
 ### Added

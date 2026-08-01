@@ -483,20 +483,20 @@ def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
     answers = []
-    emitted = []
+    turns_ended = []
 
     def fail(_user_input):
         raise MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed.")
 
     command_loop.agent.run = fail
     command_loop.ui.emit_answer = answers.append
-    command_loop.emit = emitted.append
+    command_loop.ui.emit_turn_end = turns_ended.append
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
     runtime.run_agent_turn("continue")
 
     assert answers == ["Model emitted Bash as text 6 times; none of the textual calls were executed."]
-    assert not any("[done in " in text for text in emitted)
+    assert turns_ended == []
 
 
 def test_resumed_tui_auto_dispatches_persisted_queue_as_one_request(tmp_path, monkeypatch):

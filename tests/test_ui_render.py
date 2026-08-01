@@ -199,6 +199,32 @@ def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypat
     assert "• sent message" in desert_text
 
 
+def test_emit_turn_end_non_color_uses_elapsed_since_format():
+    emitted = []
+    ui = UiPrinter(output_fn=emitted.append)
+    assert not ui.color
+
+    ui.emit_turn_end(time.monotonic() - 5)
+    ui.emit_turn_end(time.monotonic() - 65)
+
+    # The footer reuses the divider's `elapsed_since` format: no leading `0m`, seconds zero-padded.
+    assert emitted == ["done in 5s", "done in 1m05s"]
+
+
+def test_emit_turn_end_renders_a_gray_rule_around_the_duration(monkeypatch):
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    emitted = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
+
+    ui = UiPrinter()
+    assert ui.color
+    ui.emit_turn_end(time.monotonic() - 65)
+
+    text = "".join(fragment for _style, fragment in emitted)
+    assert "done in 1m05s" in text
+    assert "─" in text
+
+
 def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
     monkeypatch.setattr(Theme, "_mode", "dark")
     expected = UiPrinter.user_log_style()

@@ -650,10 +650,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             finally:
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
-            elapsed = time.monotonic() - started
             self.ui.emit_answer(answer)
             if not malformed_tool_call:
-                self.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+                self.ui.emit_turn_end(started)
             self.session.save_snapshot()
 
     def start_session(self) -> None:
@@ -2038,11 +2037,10 @@ class TuiRuntime:
         if cancelled:
             self.loop.emit("Cancelled")
             return
-        elapsed = time.monotonic() - started
         if answer.strip() != promoted_answer:
             self.loop.ui.emit_answer(answer)
         if not malformed_tool_call:
-            self.loop.emit(f"[done in {int(elapsed // 60)}m{elapsed % 60:.0f}s]")
+            self.loop.ui.emit_turn_end(started)
         self.loop.session.save_snapshot()
         self.submit_next(self.loop.take_pending_inputs())
 

@@ -306,6 +306,24 @@ class UiPrinter:
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
+    def emit_turn_end(self, started_at: float) -> None:
+        """Close the turn with a quiet gray rule carrying its total duration.
+
+        The durable counterpart to the animated working divider: the divider counts up while the
+        turn runs and is torn down when it ends, so the final elapsed value is frozen here into a
+        static rule that stays in scrollback. It reuses `elapsed_since` so the footer reads exactly
+        like the divider's last frame (`5s`, `1m05s`) instead of the old `0m5s` / `1m5s`.
+        """
+        label = f"done in {Text.elapsed_since(started_at)}"
+        if not self.color:
+            self.output_fn(label)
+            return
+        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
+        with console.capture() as capture:
+            console.print(Rule(label, style="bright_black", characters="─"))
+        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        print_formatted_text(ANSI(cleaned), end="", flush=True)
+
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
         body = "\n".join(LogBlock.margin(indent) + line for line in text.splitlines() or [""])
@@ -364,7 +382,7 @@ class UiPrinter:
             return [(self.user_log_style(), prefix + content + "\n")]
         if text.startswith("+ "):
             return [("ansibrightblack", "+ "), ("fg:default", text[2:] + "\n")]
-        if text.startswith("[done in "):
+        if text.startswith("done in "):
             return [("ansibrightblack", text + "\n")]
         if text.startswith("minacode "):
             return [("ansicyan", text + "\n")]
