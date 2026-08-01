@@ -489,7 +489,7 @@ def test_tui_runtime_reports_repeated_textual_tool_call_without_done_marker(tmp_
         raise MalformedToolCallError("Model emitted Bash as text 6 times; none of the textual calls were executed.")
 
     command_loop.agent.run = fail
-    command_loop.ui.emit_answer = answers.append
+    command_loop.ui.emit_answer = lambda text, **_kwargs: answers.append(text)
     command_loop.ui.emit_turn_end = turns_ended.append
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 

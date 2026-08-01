@@ -211,7 +211,7 @@ def test_emit_turn_end_non_color_uses_elapsed_since_format():
     assert emitted == ["done in 5s", "done in 1m05s"]
 
 
-def test_emit_turn_end_renders_a_gray_rule_around_the_duration(monkeypatch):
+def test_emit_turn_end_renders_a_short_gray_marker_around_the_duration(monkeypatch):
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     emitted = []
     monkeypatch.setattr(render_module, "print_formatted_text", lambda value, **_kwargs: emitted.extend(to_formatted_text(value)))
@@ -220,9 +220,9 @@ def test_emit_turn_end_renders_a_gray_rule_around_the_duration(monkeypatch):
     assert ui.color
     ui.emit_turn_end(time.monotonic() - 65)
 
-    text = "".join(fragment for _style, fragment in emitted)
-    assert "done in 1m05s" in text
-    assert "─" in text
+    # A short, self-contained marker (dashes either side), not a full-width rule that would wrap
+    # when the terminal narrows; the whole line keeps the subdued bright-black of the old [done in].
+    assert emitted == [("ansibrightblack", "─── done in 1m05s ───\n")]
 
 
 def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):

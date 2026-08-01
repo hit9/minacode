@@ -306,23 +306,26 @@ class UiPrinter:
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
+    # A short closing marker, not a full-width rule: a full-width `─` line is baked into scrollback
+    # at the emitting terminal's width and wraps into a zigzag when the pane is narrower (e.g. a
+    # resized tmux split). A few dashes either side of the duration stay short, left-aligned, and
+    # wrap-proof while still reading as a quiet end-of-turn rule.
+    TURN_END_PAD: ClassVar[int] = 3
+
     def emit_turn_end(self, started_at: float) -> None:
-        """Close the turn with a quiet gray rule carrying its total duration.
+        """Close the turn with a quiet short gray marker carrying its total duration.
 
         The durable counterpart to the animated working divider: the divider counts up while the
-        turn runs and is torn down when it ends, so the final elapsed value is frozen here into a
-        static rule that stays in scrollback. It reuses `elapsed_since` so the footer reads exactly
-        like the divider's last frame (`5s`, `1m05s`) instead of the old `0m5s` / `1m5s`.
+        turn runs and is torn down when it ends, so the final elapsed value is frozen here. It
+        reuses `elapsed_since` so the marker reads like the divider's last frame (`5s`, `1m05s`)
+        instead of the old `0m5s` / `1m5s`.
         """
         label = f"done in {Text.elapsed_since(started_at)}"
         if not self.color:
             self.output_fn(label)
             return
-        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
-        with console.capture() as capture:
-            console.print(Rule(label, style="bright_black", characters="─"))
-        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        dashes = "─" * self.TURN_END_PAD
+        print_formatted_text(FormattedText([("ansibrightblack", f"{dashes} {label} {dashes}\n")]), end="", flush=True)
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:

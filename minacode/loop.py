@@ -650,7 +650,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             finally:
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
-            self.ui.emit_answer(answer)
+            if self.ui.color and answer.strip():
+                self.emit()
+            self.ui.emit_answer(answer, rule=False)
             if not malformed_tool_call:
                 self.ui.emit_turn_end(started)
             self.session.save_snapshot()
@@ -2038,7 +2040,9 @@ class TuiRuntime:
             self.loop.emit("Cancelled")
             return
         if answer.strip() != promoted_answer:
-            self.loop.ui.emit_answer(answer)
+            if self.loop.ui.color and answer.strip():
+                self.loop.emit()
+            self.loop.ui.emit_answer(answer, rule=False)
         if not malformed_tool_call:
             self.loop.ui.emit_turn_end(started)
         self.loop.session.save_snapshot()
