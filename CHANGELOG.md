@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.18.1 - 2026-07-31
 
 ### Changed
 - Close each turn with a single full-width gray rule carrying its duration
