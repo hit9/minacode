@@ -198,6 +198,80 @@ def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
     assert streamed == [("output", "hello"), ("output_done", "hello"), ("", "")]
 
 
+def test_anthropic_stream_promotes_completed_text_before_server_tool(tmp_path):
+    """A completed text block followed by a provider-side server_tool_use must hand off the answer
+    exactly once, before the durable builtin report and the stream teardown."""
+    model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "the answer"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "q"}}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"query": "q"}'}},
+        {"type": "content_block_stop", "index": 1},
+    ]
+
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __iter__(self):
+            return iter(events)
+
+        def get_final_message(self):
+            return {"content": []}
+
+    timeline = []
+    model.on_stream = lambda kind, delta: timeline.append((kind, delta))
+    model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
+
+    model._anthropic_stream(client, {})
+
+    promoted = ("output_done", "the answer")
+    builtin = ("builtin", "Web Search", "q")
+    assert timeline.count(promoted) == 1
+    assert timeline.index(promoted) < timeline.index(("Web Search", "")) < timeline.index(builtin) < timeline.index(("", ""))
+
+
+def test_anthropic_stream_promotes_server_tool_first_text_at_block_completion(tmp_path):
+    """A server_tool_use before the text block must still promote exactly once, at text block
+    completion, with no duplicate at message completion."""
+    model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "q"}}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "hello"}},
+        {"type": "content_block_stop", "index": 1},
+    ]
+
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __iter__(self):
+            return iter(events)
+
+        def get_final_message(self):
+            return {"content": []}
+
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
+
+    model._anthropic_stream(client, {})
+
+    assert streamed == [("Web Search", ""), ("output", "hello"), ("output_done", "hello"), ("", "")]
+    assert streamed.count(("output_done", "hello")) == 1
+
+
 def test_anthropic_no_tools_result_strips_tool_use_preserves_thinking_and_server_tool(tmp_path, monkeypatch):
     search = {"type": "web_search_20250305", "name": "web_search"}
     s = _session(tmp_path, model="claude-3", api="anthropic", stream=False, builtin_tools=(search,))

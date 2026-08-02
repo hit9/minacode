@@ -217,6 +217,89 @@ def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(t
     assert content == "I am editing the files."
 
 
+@pytest.mark.parametrize("order", ["text-first", "tool-first"])
+def test_responses_stream_promotes_completed_text_across_provider_call(tmp_path, monkeypatch, order):
+    """A provider-side `*_call` item is the same promotion boundary as a local function call.
+
+    Text completing before or after the call must both produce exactly one `output_done` before the
+    final empty stream callback clears the preview."""
+    model = ModelClient(_session(tmp_path, api="responses", model="gpt-5"))
+    text_delta = {"type": "response.output_text.delta", "delta": "The answer is sunny."}
+    text_done = {"type": "response.output_text.done"}
+    call_added = {"type": "response.output_item.added", "item": {"id": "ws_1", "type": "web_search_call", "status": "in_progress"}}
+    call_done = {
+        "type": "response.output_item.done",
+        "item": {"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "weather"}},
+    }
+    prefix = [text_delta, text_done, call_added, call_done] if order == "text-first" else [call_added, call_done, text_delta, text_done]
+    terminal = {
+        "status": "completed",
+        "output": [
+            {"id": "m", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "The answer is sunny."}]},
+            {"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "weather"}},
+        ],
+    }
+    timeline = []
+
+    def events():
+        yield from prefix
+        yield {"type": "response.completed", "response": terminal}
+
+    responses = SimpleNamespace(create=lambda **_params: events())
+    monkeypatch.setattr(model, "client", lambda: SimpleNamespace(responses=responses))
+    model.on_stream = lambda kind, delta: timeline.append((kind, delta))
+    model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
+
+    _assistant, calls, content = model.request([{"role": "user", "content": "weather?"}], None)
+
+    promoted = ("output_done", "The answer is sunny.")
+    clear = ("", "")
+    assert timeline.count(promoted) == 1
+    assert timeline.index(promoted) < timeline.index(clear)
+    if order == "text-first":
+        builtin = ("builtin", "Web Search", "weather")
+        assert timeline.index(promoted) < timeline.index(("Web Search", "")) < timeline.index(builtin) < timeline.index(clear)
+    else:
+        # The durable builtin report may precede the answer; the handoff happens at text completion.
+        assert timeline.index(("Web Search", "")) < timeline.index(promoted) < timeline.index(clear)
+    assert calls == []
+    assert content == "The answer is sunny."
+
+
+def test_responses_stream_promotes_when_output_item_added_is_missing(tmp_path, monkeypatch):
+    """Some compatible providers emit output_item.done without the matching added event; the
+    defensive boundary on the durable report must still permit promotion."""
+    model = ModelClient(_session(tmp_path, api="responses", model="gpt-5"))
+    terminal = {
+        "status": "completed",
+        "output": [
+            {"id": "m", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "searched"}]},
+            {"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "q"}},
+        ],
+    }
+    events = [
+        {"type": "response.output_text.delta", "delta": "searched"},
+        {"type": "response.output_text.done"},
+        {
+            "type": "response.output_item.done",
+            "item": {"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "q"}},
+        },
+        {"type": "response.completed", "response": terminal},
+    ]
+    timeline = []
+    responses = SimpleNamespace(create=lambda **_params: iter(events))
+    monkeypatch.setattr(model, "client", lambda: SimpleNamespace(responses=responses))
+    model.on_stream = lambda kind, delta: timeline.append((kind, delta))
+
+    _assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
+
+    promoted = ("output_done", "searched")
+    assert timeline.count(promoted) == 1
+    assert timeline.index(promoted) < timeline.index(("", ""))
+    assert calls == []
+    assert content == "searched"
+
+
 def test_responses_stream_returns_incomplete_terminal_response_and_clears_preview(tmp_path, monkeypatch):
     s = _session(tmp_path, api="responses", model="gpt-5")
     model = ModelClient(s)

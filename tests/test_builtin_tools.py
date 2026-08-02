@@ -387,7 +387,8 @@ def test_responses_stream_reports_a_search_the_terminal_output_drops(tmp_path, m
     s = _session(tmp_path, api="responses", model="qwen3-max", builtin_tools=(WEB_SEARCH,))
     model = ModelClient(s)
     reported = []
-    model.on_stream = lambda kind, delta: None
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     model.on_builtin_call = lambda label, detail: reported.append((label, detail))
     events = [
         {"type": "response.output_item.added", "item": {"id": "ws_1", "type": "web_search_call", "status": "in_progress"}},
@@ -408,6 +409,11 @@ def test_responses_stream_reports_a_search_the_terminal_output_drops(tmp_path, m
     model.request([{"role": "user", "content": "hi"}], [])
 
     assert reported == [("Web Search", "qwen release date")]
+    # Qwen omits response.output_text.done, so response.completed is the terminal fallback that
+    # hands the completed answer off before the preview is cleared.
+    promoted = ("output_done", "sunny")
+    assert streamed.count(promoted) == 1
+    assert streamed.index(promoted) < streamed.index(("", ""))
 
 
 def test_responses_stream_reports_a_search_once_when_the_terminal_output_keeps_it(tmp_path, monkeypatch):

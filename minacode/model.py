@@ -610,11 +610,11 @@ class ModelClient:
 
         terminal: Any = None
         output: list[str] = []
-        text_done = tool_seen = output_promoted = False
+        text_done = handoff_seen = output_promoted = False
 
         def promote_output() -> None:
             nonlocal output_promoted
-            if text_done and tool_seen and output and not output_promoted:
+            if text_done and handoff_seen and output and not output_promoted:
                 self._emit_stream("output_done", "".join(output))
                 output_promoted = True
 
@@ -634,11 +634,16 @@ class ModelClient:
                     item = self.message_field(event, "item")
                     item_type = str(self.message_field(item, "type") or "")
                     if item_type == "function_call":
-                        tool_seen = True
+                        handoff_seen = True
                         promote_output()
                     elif item_type.endswith("_call"):
-                        # A provider-side tool runs inside the request with no local tool line to show
-                        # for it, so the status label is the only sign the turn is still moving.
+                        # A provider-side tool is the same durable tool boundary as a local function
+                        # call: completed text before it must be handed off now, so the live status
+                        # below never covers a finished answer. A provider-side tool also runs inside
+                        # the request with no local tool line to show for it, so the status label is
+                        # the only sign the turn is still moving.
+                        handoff_seen = True
+                        promote_output()
                         self._emit_stream(builtin_tool_label(item_type), "")
                 elif event_type == "response.output_item.done":
                     item = self.message_field(event, "item")
@@ -648,13 +653,24 @@ class ModelClient:
                     # terminal output carry the same calls, so the parsed-result scan stays silent on
                     # streaming requests; reporting here is the one and only record for them.
                     if item_type.endswith("_call") and item_type != "function_call":
+                        # Some compatible providers omit the matching output_item.added event, so the
+                        # durable report below must also establish the promotion boundary itself.
+                        handoff_seen = True
+                        promote_output()
                         action = self.message_field(item, "action")
                         query = self.message_field(action, "query") if action is not None else ""
                         self.report_builtin_call(item_type, str(query or ""))
                 elif event_type == "response.function_call_arguments.delta":
-                    tool_seen = True
+                    handoff_seen = True
                     promote_output()
-                elif event_type in ("response.completed", "response.failed", "response.incomplete"):
+                elif event_type in ("response.completed", "response.incomplete"):
+                    # Compatible providers may omit response.output_text.done; the accepted terminal
+                    # response proves the streamed text is final, so it is the terminal fallback for
+                    # text completion. The tool boundary guard keeps plain responses unpromoted.
+                    text_done = True
+                    promote_output()
+                    terminal = self.message_field(event, "response")
+                elif event_type == "response.failed":
                     terminal = self.message_field(event, "response")
         finally:
             self._emit_stream("", "")
@@ -983,11 +999,11 @@ class ModelClient:
         output: list[str] = []
         text_blocks: set[int] = set()
         server_tools: dict[int, dict[str, str]] = {}
-        text_done = tool_seen = output_promoted = False
+        text_done = handoff_seen = output_promoted = False
 
         def promote_output() -> None:
             nonlocal output_promoted
-            if text_done and tool_seen and output and not output_promoted:
+            if text_done and handoff_seen and output and not output_promoted:
                 self._emit_stream("output_done", "".join(output))
                 output_promoted = True
 
@@ -1001,9 +1017,14 @@ class ModelClient:
                         if block_type == "text":
                             text_blocks.add(int(self.message_field(event, "index") or 0))
                         elif block_type == "tool_use":
-                            tool_seen = True
+                            handoff_seen = True
                             promote_output()
                         elif block_type == "server_tool_use":
+                            # A provider-side tool is the same durable tool boundary as a local
+                            # tool_use: completed text before it is final and must be handed off now,
+                            # before the live status below covers the preview.
+                            handoff_seen = True
+                            promote_output()
                             self._emit_stream(builtin_tool_label(str(self.message_field(block, "name") or "")), "")
                             # The query streams in via input_json_delta and is only whole at content_block_stop,
                             # so register the block now and report it there, showing the search in the transcript live.
@@ -1025,6 +1046,10 @@ class ModelClient:
                             promote_output()
                         elif index in server_tools:
                             info = server_tools.pop(index)
+                            # Defensively establish the boundary here too; the durable report below
+                            # must not be the first durable tool signal after a finished text block.
+                            handoff_seen = True
+                            promote_output()
                             query = info["query"]
                             if info["json"]:
                                 with contextlib.suppress(json.JSONDecodeError):
