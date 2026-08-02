@@ -4,8 +4,7 @@ import json
 
 import pytest
 from agent_harness import session as agent_session
-from model_harness import _MockClientFactory, _session, _StreamClientFactory
-from test_model_anthropic import _AnthropicMockClientFactory, _AnthropicStreamClientFactory
+from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _MockClientFactory, _session, _StreamClientFactory
 
 from minacode.base import PAUSED_TURN_KEY, SEARCH_SOURCES_KEY, ConfigError, ConfigFile, ProviderConfig, ToolCall, builtin_tool_label
 from minacode.context import ContextManager

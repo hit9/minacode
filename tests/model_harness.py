@@ -6,6 +6,7 @@ the wire formats can be exercised without hitting real providers."""
 import json
 
 import httpx
+from anthropic import Anthropic
 from openai import OpenAI
 
 from minacode.base import Config, ProviderConfig
@@ -28,10 +29,15 @@ class _MockClientFactory:
         status, body = response
         return httpx.Response(status, json=body)
 
-    def __call__(self) -> OpenAI:
+    def __call__(self, **kwargs) -> OpenAI:
         transport = httpx.MockTransport(self._next_response)
         http_client = httpx.Client(transport=transport)
-        return OpenAI(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
+        return OpenAI(
+            api_key="sk-test",
+            base_url=kwargs.get("base_url", self.base_url),
+            http_client=http_client,
+            max_retries=0,
+        )
 
 
 class _StreamClientFactory:
@@ -52,6 +58,36 @@ class _StreamClientFactory:
 
         http_client = httpx.Client(transport=httpx.MockTransport(respond))
         return OpenAI(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
+
+
+class _AnthropicMockClientFactory(_MockClientFactory):
+    """Factory that returns fresh Anthropic clients over the shared mocked response queue."""
+
+    def __call__(self, **kwargs) -> Anthropic:
+        transport = httpx.MockTransport(self._next_response)
+        http_client = httpx.Client(transport=transport)
+        return Anthropic(
+            api_key="sk-test",
+            base_url=kwargs.get("base_url", self.base_url),
+            http_client=http_client,
+            max_retries=0,
+        )
+
+
+class _AnthropicStreamClientFactory:
+    def __init__(self, events: list[tuple[str, dict]], base_url: str = "http://test"):
+        self.events = events
+        self.calls: list[httpx.Request] = []
+        self.base_url = base_url
+
+    def __call__(self) -> Anthropic:
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.calls.append(request)
+            body = "".join(f"event: {name}\ndata: {json.dumps(event)}\n\n" for name, event in self.events)
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+        http_client = httpx.Client(transport=httpx.MockTransport(respond))
+        return Anthropic(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
 
 
 def _session(tmp_path, **provider_kwargs):

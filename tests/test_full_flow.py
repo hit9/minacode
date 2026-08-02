@@ -10,9 +10,8 @@ ModelClient at a scripted in-process LLM (no sockets, no ports) and running `age
 
 import json
 
-import httpx
 import pytest
-from openai import OpenAI
+from model_harness import _AnthropicMockClientFactory, _MockClientFactory
 from openai_mock_server import OpenAIMockServer
 
 from minacode.base import MIN_CONTEXT_SAFETY_TOKENS, SESSION_EVENT_KEY, Config, ProviderConfig
@@ -23,24 +22,6 @@ from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
 from minacode.session import Session
 from minacode.skill import SkillLibrary
 from minacode.tools import Tool
-
-
-class ScriptedLLM:
-    """A stand-in provider: each call to the client pops the next scripted chat-completion response,
-    and every request body the SDK serializes is recorded so tests can assert on the wire format."""
-
-    def __init__(self, responses: list[tuple[int, dict]]):
-        self.responses = list(responses)
-        self.requests: list[dict] = []
-
-    def _handle(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(json.loads(request.content.decode("utf-8")))
-        status, body = self.responses.pop(0)
-        return httpx.Response(status, json=body)
-
-    def client(self) -> OpenAI:
-        transport = httpx.MockTransport(self._handle)
-        return OpenAI(api_key="sk-test", base_url="http://test", http_client=httpx.Client(transport=transport), max_retries=0)
 
 
 def _tool_call_response(call_id: str, name: str, arguments: dict) -> tuple[int, dict]:
@@ -75,10 +56,10 @@ def _answer_response(text: str) -> tuple[int, dict]:
     }
 
 
-def _session(tmp_path, *, api: str = "chat"):
+def _session(tmp_path, *, api: str = "chat", model: str = "gpt-5.6", reasoning: str = "medium"):
     config = Config()
     config.data_dir = str(tmp_path / "data")
-    config.providers = {"default": ProviderConfig(url="http://test", key="sk-test", model="gpt-5.6", api=api, stream=False)}
+    config.providers = {"default": ProviderConfig(url="http://test", key="sk-test", model=model, api=api, reasoning=reasoning, stream=False)}
     session = Session(cwd=str(tmp_path), config=config)
     session.settings.yolo = True  # auto-approve mutating tools so the flow runs unattended
     session.skills = SkillLibrary({})  # no skills: keep the system frame deterministic
@@ -221,8 +202,8 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
     back to the model on the next request before the final answer — the whole loop over the wire."""
     session = _session(tmp_path)
     edit_args = {"path": "hello.txt", "edits": [{"op": "create", "content": "hi\n"}]}
-    llm = ScriptedLLM([_tool_call_response("call_1", "Edit", edit_args), _answer_response("Created hello.txt.")])
-    monkeypatch.setattr(ModelClient, "client", lambda self: llm.client())
+    factory = _MockClientFactory([_tool_call_response("call_1", "Edit", edit_args), _answer_response("Created hello.txt.")])
+    monkeypatch.setattr(ModelClient, "client", lambda self: factory())
 
     answer = Agent(session, output_fn=lambda text: None).run("create hello.txt containing hi")
 
@@ -233,16 +214,69 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
 
     # The wire round-trip: two model calls. The first carries the tool schemas; the second carries
     # the assistant's tool_calls and the tool result serialized back as a `tool` message.
-    assert len(llm.requests) == 2
-    assert llm.requests[0]["tools"]
-    assert any(tool["function"]["name"] == "Edit" for tool in llm.requests[0]["tools"])
+    requests = [json.loads(call.content) for call in factory.calls]
+    assert len(requests) == 2
+    assert requests[0]["tools"]
+    assert any(tool["function"]["name"] == "Edit" for tool in requests[0]["tools"])
 
-    second = llm.requests[1]["messages"]
+    second = requests[1]["messages"]
     assistant_calls = [m for m in second if m["role"] == "assistant" and m.get("tool_calls")]
     assert assistant_calls and assistant_calls[0]["tool_calls"][0]["function"]["name"] == "Edit"
     tool_messages = [m for m in second if m["role"] == "tool"]
     assert tool_messages and tool_messages[0]["tool_call_id"] == "call_1"
     assert "<Edit" in tool_messages[0]["content"]
+
+
+def test_full_flow_anthropic_tool_then_answer(tmp_path, monkeypatch):
+    """Anthropic tool_use crosses the SDK boundary, runs, and returns as tool_result."""
+
+    session = _session(tmp_path, api="anthropic", model="claude-3", reasoning="off")
+    edit_args = {"path": "claude.txt", "edits": [{"op": "create", "content": "done\n"}]}
+    factory = _AnthropicMockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "msg_tool",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": [{"type": "tool_use", "id": "call_1", "name": "Edit", "input": edit_args}],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            ),
+            (
+                200,
+                {
+                    "id": "msg_answer",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": [{"type": "text", "text": "Created claude.txt."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 20, "output_tokens": 8},
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "anthropic_client", lambda self: factory())
+
+    answer = Agent(session, output_fn=lambda _text: None).run("create claude.txt")
+
+    assert answer == "Created claude.txt."
+    assert (tmp_path / "claude.txt").read_text(encoding="utf-8") == "done\n"
+    assert len(factory.calls) == 2
+    second = json.loads(factory.calls[1].content)
+    assert any(message["role"] == "assistant" and message["content"][0]["type"] == "tool_use" for message in second["messages"])
+    tool_results = [
+        block
+        for message in second["messages"]
+        if message["role"] == "user" and isinstance(message["content"], list)
+        for block in message["content"]
+        if block["type"] == "tool_result"
+    ]
+    assert tool_results and tool_results[0]["tool_use_id"] == "call_1"
 
 
 def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
@@ -262,15 +296,16 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
 
     compacted_state = json.dumps({"summary": "Archived work was completed.", "goal": "continue", "plan": [], "known": ["durable fact"], "check": "tests"})
-    llm = ScriptedLLM([_answer_response(compacted_state), _answer_response("Continued successfully.")])
-    monkeypatch.setattr(ModelClient, "client", lambda self: llm.client())
+    factory = _MockClientFactory([_answer_response(compacted_state), _answer_response("Continued successfully.")])
+    monkeypatch.setattr(ModelClient, "client", lambda self: factory())
 
     answer = Agent(session, output_fn=lambda text: None).run("continue")
 
     assert answer == "Continued successfully."
-    assert len(llm.requests) == 2
+    requests = [json.loads(call.content) for call in factory.calls]
+    assert len(requests) == 2
 
-    compactor_request, agent_request = llm.requests
+    compactor_request, agent_request = requests
     assert "Compact the minacode working context." in compactor_request["messages"][0]["content"]
     assert "tools" not in compactor_request
     assert "OLD_BODY_SENTINEL" in compactor_request["messages"][1]["content"]

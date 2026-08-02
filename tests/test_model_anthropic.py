@@ -3,37 +3,10 @@
 import json
 from types import SimpleNamespace
 
-import httpx
-from anthropic import Anthropic
-from model_harness import _MockClientFactory, _session
+from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _session
 
 from minacode.base import ToolCall
 from minacode.model import ModelClient
-
-
-class _AnthropicStreamClientFactory:
-    def __init__(self, events: list[tuple[str, dict]], base_url: str = "http://test"):
-        self.events = events
-        self.calls: list[httpx.Request] = []
-        self.base_url = base_url
-
-    def __call__(self) -> Anthropic:
-        def respond(request: httpx.Request) -> httpx.Response:
-            self.calls.append(request)
-            body = "".join(f"event: {name}\ndata: {json.dumps(event)}\n\n" for name, event in self.events)
-            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
-
-        http_client = httpx.Client(transport=httpx.MockTransport(respond))
-        return Anthropic(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
-
-
-class _AnthropicMockClientFactory(_MockClientFactory):
-    """Factory that returns a fresh Anthropic client on each call."""
-
-    def __call__(self) -> Anthropic:
-        transport = httpx.MockTransport(self._next_response)
-        http_client = httpx.Client(transport=transport)
-        return Anthropic(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
 
 
 def test_anthropic_request_success(tmp_path, monkeypatch):
