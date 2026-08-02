@@ -403,6 +403,33 @@ def test_responses_stream_reports_a_search_once_when_the_terminal_output_keeps_i
     assert reported == [("Web Search", "httpx timeout")]
 
 
+def test_responses_stream_does_not_double_an_id_less_call_the_terminal_output_keeps(tmp_path, monkeypatch):
+    """An id-less call cannot be matched by id, so the scan must stay silent on a streamed request.
+
+    Otherwise the live report and the parsed-result scan each emit the same id-less call."""
+    s = _session(tmp_path, api="responses", model="gpt-5", builtin_tools=(WEB_SEARCH,))
+    model = ModelClient(s)
+    reported = []
+    model.on_stream = lambda kind, delta: None
+    model.on_builtin_call = lambda label, detail: reported.append((label, detail))
+    call = {"type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "missing id"}}
+    events = [
+        {"type": "response.output_item.added", "item": {**call, "status": "in_progress"}},
+        {"type": "response.output_item.done", "item": call},
+        {
+            "type": "response.completed",
+            "response": _responses_body(
+                output=[call, {"id": "m", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}]
+            ),
+        },
+    ]
+    monkeypatch.setattr(model, "client", _StreamClientFactory(events))
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert reported == [("Web Search", "missing id")]
+
+
 def test_anthropic_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic")
     model = ModelClient(s)
@@ -484,6 +511,48 @@ def test_anthropic_stream_reports_a_search_live_before_the_stream_ends(tmp_path,
     assert timeline.index(report) < timeline.index(("stream", "", ""))
     # De-duplicated: the parsed-result scan must not add a second line for the same call.
     assert sum(1 for entry in timeline if entry[0] == "builtin") == 1
+
+
+def test_anthropic_stream_reads_the_query_carried_on_the_start_block(tmp_path, monkeypatch):
+    """Some hosts put the whole input on content_block_start with no input_json_delta.
+
+    The live report must use that query, not an empty string."""
+    s = _session(tmp_path, model="claude-3", api="anthropic", builtin_tools=({"type": "web_search_20250305", "name": "web_search"},))
+    model = ModelClient(s)
+    reported = []
+    model.on_stream = lambda kind, delta: None
+    model.on_builtin_call = lambda label, detail: reported.append((label, detail))
+    message = {
+        "id": "m",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-3",
+        "content": [],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    events = [
+        ("message_start", {"type": "message_start", "message": message}),
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "already present"}},
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("content_block_start", {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "ok"}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}}),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert reported == [("Web Search", "already present")]
 
 
 def test_responses_result_reports_each_search_for_the_transcript(tmp_path, monkeypatch):
