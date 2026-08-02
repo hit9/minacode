@@ -927,14 +927,30 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         knowledge it went and looked up."""
         self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.BRANCH)]))
 
+    @staticmethod
+    def unpromoted_text(text: str, promoted: str) -> str:
+        """What is left to publish after an early promotion already wrote `promoted` to scrollback.
+
+        A local tool call ends the response, so its promoted text is the whole of it. A provider-side
+        tool runs inside the response and the model keeps writing afterwards, so there the promotion
+        is only a prefix: re-emitting the whole text would repeat it, and skipping it would drop
+        everything the model wrote after the search."""
+        answer = text.strip()
+        if promoted and answer.startswith(promoted):
+            return answer[len(promoted) :].strip()
+        return answer
+
     def agent_output(self, text: str = "") -> None:
         # An early promotion is presentation-only: Agent still publishes the same semantic text
         # after ModelClient returns. Consume the one-shot marker instead of printing it twice.
         with self.model_stream_lock:
             promoted = self.model_stream_promoted_text
             self.model_stream_promoted_text = ""
-        if promoted and text.strip() == promoted:
-            return
+        if promoted:
+            remaining = self.unpromoted_text(text, promoted)
+            if not remaining:
+                return
+            text = remaining
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def model_stream_output(self, kind: str, text: str) -> None:
@@ -2072,10 +2088,10 @@ class TuiRuntime:
         if cancelled:
             self.loop.emit("Cancelled")
             return
-        if answer.strip() != promoted_answer:
-            if self.loop.ui.color and answer.strip():
+        if remaining := self.loop.unpromoted_text(answer, promoted_answer):
+            if self.loop.ui.color:
                 self.loop.emit()
-            self.loop.ui.emit_answer(answer, rule=False)
+            self.loop.ui.emit_answer(remaining, rule=False)
         # Emitted outside the promotion check: a promoted answer is already in scrollback without
         # its sources, so skipping the footer there would drop them exactly when a search ran.
         if footer := search_sources_footer(self.loop.agent.turn_sources):

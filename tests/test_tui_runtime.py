@@ -470,6 +470,67 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
     assert command_loop.model_stream_fragments() == []
 
 
+def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(tmp_path, monkeypatch):
+    """A provider-side tool sits inside one response, so the promotion is a prefix of the answer."""
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.api = "responses"
+    provider.model = "gpt-5"
+    provider.url = "http://test"
+    provider.key = "sk-test"
+    command_loop.tui = TuiApp()  # no running application: scrollback writes run inline
+    lead, rest = "Let me look that up.", "The searched answer."
+    call = {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "query": "minacode"}}
+    terminal = {
+        "status": "completed",
+        "output": [
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": lead}]},
+            call,
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": rest}]},
+        ],
+    }
+    events = [
+        {"type": "response.output_text.delta", "delta": lead},
+        {"type": "response.output_text.done"},
+        {"type": "response.output_item.added", "item": {"type": "web_search_call", "id": "ws_1", "status": "in_progress"}},
+        {"type": "response.output_item.done", "item": call},
+        {"type": "response.output_text.delta", "delta": rest},
+        {"type": "response.output_text.done"},
+        {"type": "response.completed", "response": terminal},
+    ]
+    responses = SimpleNamespace(create=lambda **_params: iter(events))
+    monkeypatch.setattr(command_loop.agent.model, "client", lambda: SimpleNamespace(responses=responses))
+    emitted = []
+    monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
+
+    _assistant, _calls, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
+    command_loop.agent_output(content)
+
+    assert emitted == [lead, rest]
+    assert command_loop.model_stream_promoted_text == ""
+
+
+def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_path, monkeypatch):
+    """The final answer is published once even when a mid-response promotion wrote its opening."""
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    runtime = TuiRuntime(command_loop)
+    emitted = []
+    command_loop.ui.emit_answer = lambda text, **_kwargs: emitted.append(text)
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+
+    def answer(_user_input):
+        with command_loop.model_stream_lock:
+            command_loop.model_stream_promoted_text = "Let me look that up."
+        return "Let me look that up.\n\nThe searched answer."
+
+    command_loop.agent.run = answer
+
+    runtime.run_agent_turn("question")
+
+    assert emitted == ["The searched answer."]
+
+
 def test_non_tui_stream_completion_keeps_normal_agent_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     emitted = []
