@@ -4,6 +4,10 @@
 ## Unreleased
 
 ### Added
+- Ship a builtin `minacode-help` skill with an offline manual, troubleshooting guidance, a
+  matching-version source inspection fallback, and an idle hint inviting minacode questions.
+  Builtin skills use the same discovery and loading path as ordinary skills; user and project
+  skills can override them by name.
 - Add `max` reasoning effort and map normalized effort levels to each documented provider/model
   family, including OpenAI GPT-5 and o-series generations, Anthropic, DeepSeek, Qwen, Kimi, Z.AI,
   OpenRouter, and OpenCode Zen. Unknown providers and future model names retain generic

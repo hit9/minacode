@@ -55,24 +55,41 @@ msgid "Where skills come from"
 msgstr "Skill 的来源"
 
 #: ../../skills.md:37
-msgid "minacode discovers skills from two places:"
-msgstr "minacode 从两个位置发现 skill："
+msgid "minacode discovers skills from three sources:"
+msgstr "minacode 从三类来源发现 skill："
 
 #: ../../skills.md:39
+msgid "Builtin skills shipped with minacode"
+msgstr "随 minacode 分发的内置 skill"
+
+#: ../../skills.md:40
 msgid "`.minacode/skills/` — project-local, checked in with the repo"
 msgstr "`.minacode/skills/` — 项目级 skill，可随仓库提交"
 
-#: ../../skills.md:40
+#: ../../skills.md:41
 msgid ""
 "`~/.minacode/skills/` — your personal skills, available everywhere (under `<data_dir>/skills/` "
 "when `paths.data_dir` is customized)"
 msgstr "`~/.minacode/skills/` — 个人 skill，在所有项目中可用；自定义 `paths.data_dir` 后位于 `<data_dir>/skills/`"
 
-#: ../../skills.md:43
-msgid "If both define the same name, the **project** skill wins. List what's installed with `/skills`."
-msgstr "如果两处存在同名 skill，**项目级**版本优先。使用 `/skills` 查看已安装列表。"
+#: ../../skills.md:44
+msgid ""
+"When names collide, project skills override user skills, and user skills override builtins. List "
+"what's available and which source won with `/skills`."
+msgstr "名称冲突时，项目 skill 会覆盖用户 skill，用户 skill 会覆盖内置 skill。使用 `/skills` 查看可用项以及最终生效的来源。"
 
-#: ../../skills.md:46
+#: ../../skills.md:47
+msgid ""
+"Every installation includes **`minacode-help`**, a compact manual for installation, configuration, "
+"providers, commands, sessions, tools, safety, and troubleshooting. The agent can load it when a "
+"question concerns minacode, or you can request it explicitly with `$minacode-help`. If the manual "
+"does not settle the question, it directs the agent to inspect the matching version's source code "
+"and tests."
+msgstr ""
+"每个 minacode 安装都包含 **`minacode-help`**，这是一份涵盖安装、配置、provider、命令、会话、工具、安全和故障排查的精简手册。"
+"遇到 minacode 相关问题时，agent 可以自行加载它；你也可以用 `$minacode-help` 显式请求。如果手册仍无法解答，它会引导 agent 检查对应版本的源代码和测试。"
+
+#: ../../skills.md:53
 msgid "Using skills"
 msgstr "使用 skill"
 
@@ -107,4 +124,3 @@ msgid ""
 msgstr ""
 "Skill 可以在 `SKILL.md` 旁附带辅助脚本。正文中的 `{skill_dir}`（或 `${SKILL_DIR}`）会展开为 skill 的绝对目录，因此可以让 agent 通过 "
 "Bash 运行脚本："
-

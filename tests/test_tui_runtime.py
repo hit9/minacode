@@ -737,7 +737,7 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     text = "".join(printed)
     assert "/provider" in text
     assert "status marker" in text
-    assert "No skills installed" in text
+    assert "minacode-help" in text
 
 
 def test_background_output_is_closed_before_final_output(tmp_path):

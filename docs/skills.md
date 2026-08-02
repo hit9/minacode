@@ -34,14 +34,21 @@ on demand.
 
 ### Where skills come from
 
-minacode discovers skills from two places:
+minacode discovers skills from three sources:
 
+- Builtin skills shipped with minacode
 - `.minacode/skills/` — project-local, checked in with the repo
 - `~/.minacode/skills/` — your personal skills, available everywhere (under
   `<data_dir>/skills/` when `paths.data_dir` is customized)
 
-If both define the same name, the **project** skill wins. List what's installed with
-`/skills`.
+When names collide, project skills override user skills, and user skills override builtins.
+List what's available and which source won with `/skills`.
+
+Every installation includes **`minacode-help`**, a compact manual for installation,
+configuration, providers, commands, sessions, tools, safety, and troubleshooting. The agent can
+load it when a question concerns minacode, or you can request it explicitly with
+`$minacode-help`. If the manual does not settle the question, it directs the agent to inspect the
+matching version's source code and tests.
 
 ## Using skills
 

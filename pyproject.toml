@@ -60,7 +60,10 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["minacode", "minacode.tools"]
+packages = ["minacode", "minacode.builtin_skills", "minacode.tools"]
+
+[tool.setuptools.package-data]
+minacode = ["builtin_skills/*/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

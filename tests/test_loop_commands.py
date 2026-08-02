@@ -874,16 +874,32 @@ def test_skill_library_index_and_lookup(tmp_path):
     assert s.skills.get("missing") is None
 
 
-def test_skill_project_overrides_user(tmp_path, monkeypatch):
-    user_home = tmp_path / "home"
-    user_skill = user_home / ".minacode" / "skills" / "shared"
-    user_skill.mkdir(parents=True)
-    (user_skill / "SKILL.md").write_text("---\nname: shared\ndescription: user version\n---\nuser body\n", encoding="utf-8")
-    _write_skill(tmp_path, "shared", "project version", "project body")
-    monkeypatch.setattr(os.path, "expanduser", lambda path: path.replace("~", str(user_home)))
-
+def test_builtin_minacode_help_uses_normal_skill_paths(tmp_path):
     s = session(tmp_path)
-    skill = s.skills.get("shared")
+
+    skill = s.skills.get("minacode-help")
+    assert skill is not None
+    assert skill.source == "builtin"
+    assert "troubleshoot minacode" in skill.description
+    assert "- minacode-help:" in s.skills.index()
+    assert "## Inspect the implementation" in SkillTool(s, ["minacode-help"]).call()
+    assert "## Configure providers" in s.skills.resolve_mentions("help with $minacode-help")
+
+
+def test_skill_project_overrides_user_and_user_overrides_builtin(tmp_path):
+    user_skill = tmp_path / "data" / "skills" / "minacode-help"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("---\nname: minacode-help\ndescription: user version\n---\nuser body\n", encoding="utf-8")
+
+    user_session = session(tmp_path)
+    skill = user_session.skills.get("minacode-help")
+    assert skill.source == "user"
+    assert skill.description == "user version"
+
+    _write_skill(tmp_path, "minacode-help", "project version", "project body")
+
+    project_session = session(tmp_path)
+    skill = project_session.skills.get("minacode-help")
     assert skill.source == "project"
     assert skill.description == "project version"
 
@@ -939,7 +955,8 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
 
 def test_skills_command_lists_installed(tmp_path):
     base = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
-    assert "No skills installed" in base.skills_command("")
+    assert "### Skills · 1" in base.skills_command("")
+    assert "| `minacode-help` | builtin |" in base.skills_command("")
 
     _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
@@ -974,7 +991,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda t: None), output_fn=lambda t: None)
 
     count = len(s.skills.skills)
-    assert count == 2
+    assert count == 3
     status = loop.status("")
     assert "mcp `1`" in status
     assert f"skills `{count}`" in status

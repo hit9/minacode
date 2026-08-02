@@ -67,6 +67,7 @@ HINTS: tuple[Hint, ...] = (
     Hint("Ctrl-X Ctrl-E opens $EDITOR"),
     Hint("Ctrl-U clears the line"),
     Hint("Paste an image path to attach it"),
+    Hint("Questions about minacode? Just ask"),
     Hint("Type / for commands"),
     Hint("/sessions resumes a past session", when=_when_early),
     # Right after editing, /diff is the most useful tip: weight it high, but keep it a random

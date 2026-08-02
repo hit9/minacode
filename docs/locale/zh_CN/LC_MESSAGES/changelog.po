@@ -50,6 +50,16 @@ msgstr "新增"
 
 #: ../../../CHANGELOG.md:8
 msgid ""
+"Ship a builtin `minacode-help` skill with an offline manual, troubleshooting guidance, a matching-"
+"version source inspection fallback, and an idle hint inviting minacode questions. Builtin skills "
+"use the same discovery and loading path as ordinary skills; user and project skills can override "
+"them by name."
+msgstr ""
+"内置 `minacode-help` skill，提供离线手册、故障排查指引、按匹配版本检查源码的后备流程，并通过 idle hint 提醒用户可以直接询问 minacode 问题。"
+"内置 skill 与普通 skill 使用相同的发现和加载路径；用户和项目 skill 可以按名称覆盖它们。"
+
+#: ../../../CHANGELOG.md:12
+msgid ""
 "Add `max` reasoning effort and map normalized effort levels to each "
 "documented provider/model family, including OpenAI GPT-5 and o-series "
 "generations, Anthropic, DeepSeek, Qwen, Kimi, Z.AI, OpenRouter, and "

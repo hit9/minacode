@@ -17,11 +17,11 @@ class Skill:
     description: str
     body: str
     dir: str
-    source: str  # "project" or "user"
+    source: str  # "builtin", "user", or "project"
 
 
 class SkillLibrary:
-    """Skills discovered from `.minacode/skills/<name>/SKILL.md` (project) and the user data dir.
+    """Skills discovered from builtin, user, and project skill directories.
 
     Each skill is a Markdown file with `name`/`description` frontmatter; the index (name + description)
     rides the cache-stable prefix so the model knows what exists, and the full body is pulled into the
@@ -37,13 +37,19 @@ class SkillLibrary:
     @classmethod
     def load(cls, session: Session) -> SkillLibrary:
         skills: dict[str, Skill] = {}
-        # User skills load before project skills so a project skill of the same name overrides them.
+        # Later roots override earlier ones: projects can customize user skills, and users can
+        # customize the read-only skills shipped with minacode.
+        builtin_skills = os.path.join(os.path.dirname(__file__), "builtin_skills")
         project_skills = os.path.join(session.cwd, ".minacode", "skills")
         if not os.path.isdir(project_skills):
             legacy_skills = os.path.join(session.cwd, ".nanocode", "skills")
             if os.path.isdir(legacy_skills):
                 project_skills = legacy_skills
-        for root, source in ((session.data_path("skills"), "user"), (project_skills, "project")):
+        for root, source in (
+            (builtin_skills, "builtin"),
+            (session.data_path("skills"), "user"),
+            (project_skills, "project"),
+        ):
             if not os.path.isdir(root):
                 continue
             for entry in sorted(os.listdir(root)):

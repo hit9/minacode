@@ -549,6 +549,7 @@ def test_history_title_skips_summary_blocks(tmp_path):
 
 def test_history_index_and_memory_are_not_injected_into_each_request(tmp_path):
     s = session(tmp_path)
+    s.skills = SkillLibrary({})  # this test isolates history projection from optional context
     s.messages.extend([{"role": "user", "content": "old request"}, {"role": "assistant", "content": "old answer"}])
     s.history.append(HistorySegment(key="seg.1", title="find the bug", text="..."))
     context = ContextManager(s)
