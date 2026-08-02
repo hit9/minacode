@@ -95,7 +95,7 @@ builtin_tools = [{ type = "web_search" }, { type = "web_extractor" }]
 ```
 
 | Provider | Entry |
-|---|---|---|
+|---|---|
 | OpenAI (Responses) | `{ type = "web_search" }`, optionally with `search_context_size` or `filters` |
 | Qwen (Responses) | `{ type = "web_search" }`; also `web_extractor` |
 | Anthropic | `{ type = "web_search_20250305", name = "web_search", max_uses = 5 }` |
@@ -106,10 +106,11 @@ builtin_tools = [{ type = "web_search" }, { type = "web_extractor" }]
 One provider configures search elsewhere, through [`extra_body`](#optional-provider-settings):
 Qwen's Chat Completions endpoint takes `enable_search`. DeepSeek has no web search.
 
-Entries are protocol-specific: they match the provider's documented API wire, and known providers
-only accept the tool types minacode supports. An unsupported entry or a wire mismatch is refused
-locally with an explanation before the request is sent. Switching `/api` may therefore require
-updating `builtin_tools` (or `extra_body`) to match. `/config` lists what is active.
+Entries are protocol-specific: they match the provider's documented API wire and required shape,
+and known providers only accept entries whose lifecycle minacode supports. An unsupported entry or
+a wire mismatch is refused locally with an explanation before the request is sent. Switching
+`/api` may therefore require updating `builtin_tools` (or `extra_body`) to match. `/config` lists
+what is active.
 
 With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
 successful image request is remembered for that provider and model during the session; only an

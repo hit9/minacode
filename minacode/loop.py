@@ -53,6 +53,7 @@ from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
+from minacode.provider_compat import builtin_tools_issue
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table, search_sources_footer
 from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
@@ -1848,12 +1849,15 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # "auto" is the usual choice, so name the wire it resolved to rather than echoing the setting back.
         resolved = provider.resolve()
         result = f"Set provider.api = {value} (wire: {resolved.api})"
-        policy = resolved.builtin_tools_by_wire
-        if provider.builtin_tools and policy is not None and resolved.api not in policy:
-            if policy:
-                result += "; configured builtin_tools require " + ", ".join(sorted(policy))
+        issue = builtin_tools_issue(resolved, provider.builtin_tools)
+        if issue is not None:
+            if issue.reason == "wire":
+                if issue.supported_wires:
+                    result += "; configured builtin_tools require " + ", ".join(issue.supported_wires)
+                else:
+                    result += "; configured builtin_tools are not valid for this provider"
             else:
-                result += "; configured builtin_tools are not valid for this provider"
+                result += "; unsupported builtin_tools: " + ", ".join(issue.configured)
         return result
 
     def yolo(self, args: str) -> str:

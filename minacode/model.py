@@ -48,6 +48,7 @@ from minacode.provider_compat import (
     anthropic_keeps_prior_thinking,
     anthropic_thinking_always_on,
     anthropic_thinking_params,
+    builtin_tools_issue,
 )
 
 if TYPE_CHECKING:
@@ -852,17 +853,15 @@ class ModelClient:
     def builtin_tools(self, resolved: ResolvedProvider | None = None) -> list[Json]:
         """Provider-side tool entries, copied so a request cannot mutate the loaded config.
 
-        These reach every protocol's `tools` array unchanged. Each host happens to express its
-        builtin tools in the shape of the protocol it speaks — Chat for Z.AI and Kimi, Messages for
-        Anthropic, Responses for OpenAI, Qwen, and OpenRouter — so one pass-through serves all of
-        them, and a host that configures search through the request body instead (Qwen Chat's
-        `enable_search`) is already served by `extra_body`.
+        These reach every protocol's `tools` array unchanged. Each host expresses its builtin
+        tools in the shape of the active protocol — including OpenRouter on both Chat and Responses
+        — so one pass-through serves all of them. Qwen Chat configures search through
+        `extra_body.enable_search` instead.
 
-        Documented providers restrict which resolved wire may carry which provider-native tool
-        types. A wire mismatch or an unsupported tool type fails locally before the SDK is called,
-        because the provider would reject the same JSON with a schema error or because minacode
-        cannot cover the tool's approval/file/container lifecycle yet. Unknown hosts keep the
-        generic pass-through.
+        Documented providers restrict which resolved wire may carry each provider-native entry and
+        its required shape. A mismatch fails locally before the SDK is called, because the provider
+        would reject the same JSON with a schema error or because minacode cannot cover the tool's
+        approval/file/container lifecycle yet. Unknown hosts keep the generic pass-through.
         """
 
         provider = self.session.config.provider
@@ -870,19 +869,14 @@ class ModelClient:
         if not entries:
             return []
         resolved = resolved or provider.resolve()
-        policy = resolved.builtin_tools_by_wire
-        if policy is None:
-            return [dict(entry) for entry in entries]
-        types = [str(entry.get("type") or "?") for entry in entries]
-        allowed = policy.get(resolved.api)
-        if allowed is None:
-            raise ModelError(self._builtin_tools_mismatch(resolved, ", ".join(types)))
-        unsupported = [tool_type for tool_type in types if tool_type not in allowed]
-        if unsupported:
+        issue = builtin_tools_issue(resolved, entries)
+        if issue is not None:
+            if issue.reason == "wire":
+                raise ModelError(self._builtin_tools_mismatch(resolved, ", ".join(issue.configured)))
             raise ModelError(
-                f"provider.builtin_tools {', '.join(unsupported)} are not supported on the {resolved.api} wire "
+                f"provider.builtin_tools {', '.join(issue.configured)} are not supported on the {resolved.api} wire "
                 f"for {provider.model or '(no model)'} ({resolved.host or 'this provider'}) yet; "
-                f"supported provider tools: {', '.join(allowed) or '(none)'}"
+                f"supported provider tools: {', '.join(issue.supported_entries) or '(none)'}"
             )
         return [dict(entry) for entry in entries]
 

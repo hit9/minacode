@@ -25,12 +25,13 @@
   the provider SDK is called, with an actionable `ModelError`. On documented hosts, Responses-only
   entries (OpenAI, Qwen) no longer travel over the Chat or Anthropic wire, Anthropic server tools
   only travel over Messages, and Z.AI/Kimi Chat entries only over Chat. Known providers also reject
-  provider-side tool types minacode does not support yet (for example Qwen `code_interpreter` or
+  provider-side tool entries minacode does not support yet (for example Qwen `code_interpreter` or
   Anthropic `web_fetch_*`), so approval, file, container, and client-callback lifecycles cannot
   leak through. OpenRouter server tools (`openrouter:web_search`, `openrouter:web_fetch`,
   `openrouter:datetime`) are supported; DeepSeek, Kimi Code, and OpenCode accept none. Unknown hosts
-  and future tool shapes keep the generic pass-through, nothing is silently dropped or rewritten,
-  and `/api` now reports the mismatch in its result instead of touching the provider configuration.
+  and future tool shapes on unknown hosts keep the generic pass-through, nothing is silently
+  dropped or rewritten, and `/api` now reports the mismatch in its result instead of touching the
+  provider configuration.
 - Log each provider-side tool call the provider reports
   line, and show it as a running status phase while it happens. The line is written from the parsed
   response, so it appears with streaming on or off.

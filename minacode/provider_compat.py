@@ -16,6 +16,7 @@ from minacode.model_catalog import (
     MODEL_CAPABILITIES,
     PROVIDER_CATALOG,
     REASONING_LEVELS,
+    BuiltinToolRuleData,
     ModelEffortRuleData,
     ModelRuleData,
     ProviderData,
@@ -65,11 +66,10 @@ class CompatibilityProfile:
     strict_beta: bool = False
     suppress_temperature: bool = False
     suppress_temperature_models: tuple[str, ...] = ()
-    # Provider-side tool policy: which resolved wires may carry which provider-native tool
-    # types, plus optional user guidance naming an alternative configuration channel. ``None``
-    # keeps generic pass-through for unknown hosts; an empty mapping means no wire accepts
-    # provider-side tools on this known provider.
-    builtin_tools_by_wire: dict[str, tuple[str, ...]] | None = None
+    # Provider-side tool policy: which resolved wires may carry which provider-native JSON
+    # subsets, plus optional user guidance naming an alternative configuration channel. ``None``
+    # keeps generic pass-through for unknown hosts; an empty mapping means no wire accepts tools.
+    builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
     builtin_tools_hint: str | None = None
 
     @staticmethod
@@ -95,8 +95,66 @@ class ResolvedProvider:
     suppress_temperature: bool
     prompt_cache_key: bool
     strict_tools_active: bool
-    builtin_tools_by_wire: dict[str, tuple[str, ...]] | None = None
+    builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
     builtin_tools_hint: str | None = None
+
+
+@dataclass(frozen=True)
+class BuiltinToolsIssue:
+    """One known-provider incompatibility, ready for request and command feedback."""
+
+    reason: Literal["wire", "entry"]
+    configured: tuple[str, ...]
+    supported_wires: tuple[str, ...] = ()
+    supported_entries: tuple[str, ...] = ()
+
+
+def _builtin_tool_label(entry: Mapping[str, object]) -> str:
+    tool_type = str(entry.get("type") or "?")
+    function = entry.get("function")
+    if tool_type == "builtin_function" and isinstance(function, Mapping):
+        name = str(function.get("name") or "")
+        if name:
+            return f"{tool_type}/{name}"
+    requirements = []
+    for key, value in entry.items():
+        if key == "type":
+            continue
+        requirements.append(f"{key} object" if isinstance(value, Mapping) else f"{key}={value}")
+    if requirements:
+        return f"{tool_type} ({', '.join(requirements)})"
+    return tool_type
+
+
+def _matches_builtin_tool_rule(entry: Mapping[str, object], rule: Mapping[str, object]) -> bool:
+    """Whether entry contains every literal or nested field required by a catalog rule."""
+
+    for key, expected in rule.items():
+        if key not in entry:
+            return False
+        actual = entry[key]
+        if isinstance(expected, Mapping):
+            if not isinstance(actual, Mapping) or not _matches_builtin_tool_rule(actual, expected):
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+def builtin_tools_issue(resolved: ResolvedProvider, entries: tuple[Mapping[str, object], ...]) -> BuiltinToolsIssue | None:
+    """Return the known compatibility problem, while leaving unknown hosts on pass-through."""
+
+    policy = resolved.builtin_tools_by_wire
+    if policy is None or not entries:
+        return None
+    configured = tuple(_builtin_tool_label(entry) for entry in entries)
+    rules = policy.get(resolved.api)
+    if rules is None:
+        return BuiltinToolsIssue("wire", configured, supported_wires=tuple(sorted(policy)))
+    unsupported = tuple(_builtin_tool_label(entry) for entry in entries if not any(_matches_builtin_tool_rule(entry, rule) for rule in rules))
+    if unsupported:
+        return BuiltinToolsIssue("entry", unsupported, supported_entries=tuple(_builtin_tool_label(rule) for rule in rules))
+    return None
 
 
 def nearest_reasoning_effort(effort: str, supported: tuple[str, ...]) -> str:

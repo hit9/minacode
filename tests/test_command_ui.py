@@ -611,3 +611,17 @@ def test_api_command_reports_when_no_wire_accepts_the_configured_builtin_tools(t
 
     assert command_loop.api("chat") == "Set provider.api = chat (wire: chat); configured builtin_tools are not valid for this provider"
     assert provider.builtin_tools == ({"type": "web_search"},)
+
+
+def test_api_command_uses_the_same_entry_policy_as_the_request_boundary(tmp_path):
+    """A valid wire with an unsupported entry is reported immediately, not only on send."""
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    provider.model = "qwen3.8-max-preview"
+    provider.key = "sk-test"
+    provider.builtin_tools = ({"type": "code_interpreter"},)
+
+    assert command_loop.api("responses") == "Set provider.api = responses (wire: responses); unsupported builtin_tools: code_interpreter"
+    with pytest.raises(ModelError):
+        ModelClient(command_loop.session).builtin_tools()

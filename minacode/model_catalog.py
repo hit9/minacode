@@ -26,6 +26,9 @@ class ModelEffortRuleData(TypedDict):
     pattern: NotRequired[str]
 
 
+BuiltinToolRuleData = dict[str, object]
+
+
 class CompatibilityData(TypedDict, total=False):
     """Data compiled into one provider compatibility profile."""
 
@@ -45,11 +48,12 @@ class CompatibilityData(TypedDict, total=False):
     strict_beta: bool
     suppress_temperature: bool
     suppress_temperature_models: tuple[str, ...]
-    # Provider-side (builtin) tools are provider-native JSON passed through unchanged. The
-    # catalog records, per resolved wire, the tool types a known provider documents as executed
-    # on its side. ``None`` keeps generic pass-through for unknown hosts; an empty mapping means
-    # this known provider has no supported provider-side tools through the ``tools`` array.
-    builtin_tools_by_wire: dict[str, tuple[str, ...]] | None
+    # Provider-side (builtin) tools are provider-native JSON passed through unchanged. Each rule
+    # is a required JSON subset, so the catalog can distinguish entries that share a type but have
+    # different lifecycles (for example Kimi's builtin_function/$web_search). ``None`` keeps
+    # generic pass-through for unknown hosts; an empty mapping means this known provider has no
+    # supported provider-side tools through the ``tools`` array.
+    builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None
     builtin_tools_hint: str | None
 
 
@@ -204,7 +208,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         # rejects non-function tool entries. Only web_search is supported so far; the other
         # server tools need file/container/media approval lifecycles.
         # Evidence: https://developers.openai.com/api/docs/guides/tools-web-search
-        "builtin_tools_by_wire": {"responses": ("web_search",)},
+        "builtin_tools_by_wire": {"responses": ({"type": "web_search"},)},
     },
     # Why: OpenRouter normalizes providers behind its own top-level reasoning object.
     # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
@@ -215,8 +219,16 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         # Responses tools array. The legacy `plugins`/`:online` search config is deprecated.
         # Evidence: https://openrouter.ai/docs/guides/features/server-tools/overview
         "builtin_tools_by_wire": {
-            "chat": ("openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime"),
-            "responses": ("openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime"),
+            "chat": (
+                {"type": "openrouter:web_search"},
+                {"type": "openrouter:web_fetch"},
+                {"type": "openrouter:datetime"},
+            ),
+            "responses": (
+                {"type": "openrouter:web_search"},
+                {"type": "openrouter:web_fetch"},
+                {"type": "openrouter:datetime"},
+            ),
         },
     },
     # Why: one OpenCode base URL multiplexes wire protocols by model, so api=auto cannot infer
@@ -267,9 +279,9 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         # Why: Qwen Responses documents web_search/web_extractor as provider-side tools, while
         # Qwen Chat Completions configures search in the request body. The remaining Responses
         # tools need output/resource lifecycle coverage first.
-        # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat
-        #           https://www.alibabacloud.com/help/en/model-studio/developer-reference/web-search
-        "builtin_tools_by_wire": {"responses": ("web_search", "web_extractor")},
+        # Evidence: https://help.aliyun.com/en/model-studio/web-search
+        #           https://help.aliyun.com/en/model-studio/web-extractor
+        "builtin_tools_by_wire": {"responses": ({"type": "web_search"}, {"type": "web_extractor"})},
         "builtin_tools_hint": "configure Qwen Chat search through provider.extra_body.enable_search",
     },
     # Why: the international and China Kimi open platforms expose the same model controls
@@ -288,7 +300,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "suppress_temperature": True,
         # Why: Kimi's builtin functions ($web_search) are Chat tool entries the model calls back.
         # Evidence: https://platform.kimi.ai/docs/guide/use-web-search
-        "builtin_tools_by_wire": {"chat": ("builtin_function",)},
+        "builtin_tools_by_wire": {"chat": ({"type": "builtin_function", "function": {"name": "$web_search"}},)},
     },
     # Why: Kimi Code is a separate subscription API whose official client tools (WebSearch,
     # FetchURL) run on the client; no coding-endpoint server-tool contract exists.
@@ -310,7 +322,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         # Why: Z.AI's web_search entry lives in the Chat tools array; retrieval and server MCP
         # need their own lifecycle handling before they can be offered.
         # Evidence: https://docs.z.ai/guides/tools/web-search
-        "builtin_tools_by_wire": {"chat": ("web_search",)},
+        "builtin_tools_by_wire": {"chat": ({"type": "web_search", "web_search": {}},)},
     },
     # Why: China's BigModel endpoint documents the same thinking and automatic-cache contract.
     # Evidence: https://docs.bigmodel.cn/cn/guide/capabilities/thinking
@@ -320,7 +332,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "model_capabilities": ("zai_standard",),
         "chat_reasoning_history": "current_turn",
         "prompt_cache_key": False,
-        "builtin_tools_by_wire": {"chat": ("web_search",)},
+        "builtin_tools_by_wire": {"chat": ({"type": "web_search", "web_search": {}},)},
     },
     # Why: Anthropic server tools (web_search_20250305) are Messages tool definitions; only the
     # tested web search version is offered so far. OpenCode Zen documents endpoint routing only,
@@ -328,6 +340,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     # Evidence: https://platform.claude.com/docs/en/build-with-claude/tool-use
     "anthropic": {
         "hosts": ("api.anthropic.com",),
-        "builtin_tools_by_wire": {"anthropic": ("web_search_20250305",)},
+        "builtin_tools_by_wire": {"anthropic": ({"type": "web_search_20250305", "name": "web_search"},)},
     },
 }

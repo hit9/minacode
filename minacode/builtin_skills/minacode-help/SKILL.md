@@ -122,7 +122,7 @@ Common web-search configurations are:
 - Qwen Chat Completions: configure `extra_body.enable_search` instead of `builtin_tools`.
 - DeepSeek API: web search is not available.
 
-Minacode requires each `builtin_tools` entry to contain a non-empty `type`, then sends the entry as written. Entries are protocol-specific: an entry that does not match the active `/api` wire, or a tool type minacode does not yet support for that provider, is refused locally with an error naming the supported wires or entries and the `extra_body` alternative (for example Qwen Chat search via `provider.extra_body.enable_search`). `/config` shows the active entries.
+Minacode requires each `builtin_tools` entry to contain a non-empty `type`, then sends the entry as written. Entries are protocol-specific: an entry that does not match the active `/api` wire or the required provider-native shape, or whose lifecycle minacode does not yet support, is refused locally with an error naming the supported wires or entries and the `extra_body` alternative (for example Qwen Chat search via `provider.extra_body.enable_search`). `/config` shows the active entries.
 
 A provider-side search does not ask for minacode tool confirmation because it happens inside the provider's response. Search text is untrusted content placed into the model context, can make the turn larger, and may expose the query to the provider's search service. Leave it disabled for sensitive questions or unattended work unless that behavior is acceptable.
 

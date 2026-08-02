@@ -76,7 +76,7 @@ def test_builtin_tools_are_not_shared_with_the_loaded_config(tmp_path):
 
 
 def test_responses_request_appends_builtin_tools_after_function_schemas(tmp_path, monkeypatch):
-    s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
+    s = _session(tmp_path, url="https://api.openai.com/v1", api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
     model = ModelClient(s)
     factory = _MockClientFactory([(200, _responses_body())])
     monkeypatch.setattr(model, "client", factory)
@@ -276,8 +276,14 @@ def test_anthropic_search_error_reports_no_sources(tmp_path, monkeypatch):
 
 
 def test_chat_result_collects_message_annotations(tmp_path, monkeypatch):
-    """OpenRouter's web plugin cites through message annotations."""
-    s = _session(tmp_path, model="openai/gpt-5", stream=False)
+    """OpenRouter's web-search server tool cites through message annotations."""
+    s = _session(
+        tmp_path,
+        url="https://openrouter.ai/api/v1",
+        model="openai/gpt-5",
+        stream=False,
+        builtin_tools=({"type": "openrouter:web_search"},),
+    )
     model = ModelClient(s)
     message = {
         "role": "assistant",
@@ -904,10 +910,11 @@ def test_unknown_provider_keeps_generic_builtin_tools_pass_through(tmp_path, mon
     assert json.loads(factory.calls[0].content)["tools"] == [FUNCTION_TOOL, entry]
 
 
-def test_zai_chat_accepts_its_documented_builtin_tool(tmp_path, monkeypatch):
-    """Z.AI places provider-native web_search inside the Chat tools array."""
+@pytest.mark.parametrize("url", ["https://api.z.ai/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"])
+def test_zai_and_bigmodel_chat_accept_their_documented_builtin_tool(tmp_path, monkeypatch, url):
+    """Both GLM hosts place provider-native web_search inside the Chat tools array."""
     zai_search = {"type": "web_search", "web_search": {"enable": "True"}}
-    s = _session(tmp_path, url="https://api.z.ai/api/paas/v4", model="glm-5", api="chat", stream=False, builtin_tools=(zai_search,))
+    s = _session(tmp_path, url=url, model="glm-5", api="chat", stream=False, builtin_tools=(zai_search,))
     model = ModelClient(s)
     factory = _MockClientFactory([(200, _chat_body("glm-5"))])
     monkeypatch.setattr(model, "client", factory)
@@ -964,20 +971,52 @@ def test_anthropic_builtin_tools_are_protocol_scoped(tmp_path, monkeypatch):
     assert "anthropic" in message and "chat" in message
 
 
-def test_openrouter_chat_sends_its_server_tools_unchanged(tmp_path, monkeypatch):
-    """OpenRouter documents `openrouter:*` server tools in the Chat tools array."""
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_openrouter_sends_supported_server_tools_unchanged_on_both_wires(tmp_path, monkeypatch, api):
+    """OpenRouter documents these server tools on both Chat and Responses."""
     server_tools = (
-        {"type": "openrouter:web_search", "max_results": 5},
+        {"type": "openrouter:web_search", "parameters": {"max_results": 5}},
         {"type": "openrouter:web_fetch"},
+        {"type": "openrouter:datetime", "parameters": {"timezone": "Asia/Shanghai"}},
     )
-    s = _session(tmp_path, url="https://openrouter.ai/api/v1", model="vendor/model", api="chat", stream=False, builtin_tools=server_tools)
+    s = _session(tmp_path, url="https://openrouter.ai/api/v1", model="vendor/model", api=api, stream=False, builtin_tools=server_tools)
     model = ModelClient(s)
-    factory = _MockClientFactory([(200, _chat_body("vendor/model"))])
+    response = _chat_body("vendor/model") if api == "chat" else _responses_body()
+    factory = _MockClientFactory([(200, response)])
     monkeypatch.setattr(model, "client", factory)
 
     model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
-    assert json.loads(factory.calls[0].content)["tools"] == [FUNCTION_TOOL, *server_tools]
+    body = json.loads(factory.calls[0].content)
+    expected_local = FUNCTION_TOOL if api == "chat" else ModelClient.responses_tool_schemas([FUNCTION_TOOL])[0]
+    assert body["tools"] == [expected_local, *server_tools]
+
+
+@pytest.mark.parametrize(
+    ("url", "model", "api", "entry", "supported"),
+    [
+        ("https://api.moonshot.ai/v1", "kimi-k3", "chat", {"type": "builtin_function"}, "builtin_function/$web_search"),
+        (
+            "https://api.moonshot.ai/v1",
+            "kimi-k3",
+            "chat",
+            {"type": "builtin_function", "function": {"name": "$other"}},
+            "builtin_function/$web_search",
+        ),
+        ("https://api.z.ai/api/paas/v4", "glm-5", "chat", {"type": "web_search"}, "web_search object"),
+        ("https://api.anthropic.com/v1", "claude-3", "anthropic", {"type": "web_search_20250305"}, "name=web_search"),
+    ],
+)
+def test_known_provider_rejects_incomplete_or_different_supported_type_shapes(tmp_path, url, model, api, entry, supported):
+    """A matching type alone must not claim support for a different provider lifecycle."""
+    s = _session(tmp_path, url=url, model=model, api=api, builtin_tools=(entry,))
+
+    with pytest.raises(ModelError) as excinfo:
+        ModelClient(s).builtin_tools()
+
+    message = str(excinfo.value)
+    assert "not supported" in message
+    assert supported in message
 
 
 def test_known_provider_rejects_unsupported_builtin_tool_types(tmp_path):
