@@ -921,7 +921,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def builtin_call_output(self, label: str, detail: str) -> None:
         """Log a tool the provider ran for itself, so the transcript shows it like any other call.
 
-        A host-side search leaves no local tool call to log, and the running status label is gone
+        A provider-side search leaves no local tool call to log, and the running status label is gone
         the moment the turn ends. Without this line the transcript would credit the model with
         knowledge it went and looked up."""
         self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.BRANCH)]))

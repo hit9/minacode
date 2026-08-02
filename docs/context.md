@@ -23,12 +23,10 @@ others ignore old reasoning unless a preserved-thinking option is enabled, while
 inside a multi-step tool call. Opaque signatures and encrypted reasoning are returned unchanged
 when their protocol requires them, but are not shown as model-readable text.
 
-[Provider-side tools](tools.md#provider-side-tools) are sent beside them when configured, and what
-they return is different in kind: a web search's results are placed in the model's context by the
-provider, not by minacode. They are not shortened, they do not pass through `Recall`, and the
-context fill cannot anticipate them — a searching turn can arrive noticeably larger than the same
-turn without one. Some providers also replay their own search results on later turns, where they
-count as input tokens again, and bill each search separately from tokens.
+When [provider-side search](tools.md#provider-side-tools) is enabled, the pages it reads are added
+to the context by the provider rather than by minacode, so they are not shortened and the context
+fill cannot predict them: a turn that searches arrives larger than one that does not, and most
+providers charge for the search on top of the tokens.
 
 ## Keeping context manageable
 

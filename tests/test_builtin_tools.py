@@ -1,14 +1,19 @@
-"""Host-side builtin tools: config parsing, pass-through on every protocol, and reported sources."""
+"""Provider-side builtin tools: config parsing, pass-through on every protocol, results, and echoes."""
 
 import json
 
 import pytest
+from agent_harness import session as agent_session
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 from test_model_anthropic import _AnthropicMockClientFactory, _AnthropicStreamClientFactory
 
-from minacode.base import SEARCH_SOURCES_KEY, ConfigError, ConfigFile, ProviderConfig
+from minacode.base import PAUSED_TURN_KEY, SEARCH_SOURCES_KEY, ConfigError, ConfigFile, ProviderConfig, ToolCall, builtin_tool_label
+from minacode.context import ContextManager
+from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.render import search_sources_footer
+from minacode.runner import ToolRunner
+from minacode.skill import SkillLibrary
 
 WEB_SEARCH = {"type": "web_search"}
 FUNCTION_TOOL = {
@@ -48,7 +53,7 @@ def test_builtin_tools_default_to_empty():
         ["web_search"],
     ],
 )
-def test_builtin_tools_reject_shapes_no_host_accepts(value):
+def test_builtin_tools_reject_shapes_no_provider_accepts(value):
     with pytest.raises(ConfigError):
         ProviderConfig.from_dict({"builtin_tools": value})
 
@@ -80,7 +85,20 @@ def test_chat_request_appends_builtin_tools(tmp_path, monkeypatch):
     zai_search = {"type": "web_search", "web_search": {"enable": "True"}}
     s = _session(tmp_path, model="glm-5", stream=False, builtin_tools=(zai_search,))
     model = ModelClient(s)
-    factory = _MockClientFactory([(200, {"id": "c", "object": "chat.completion", "created": 1, "model": "glm-5", "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]})])
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "c",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "glm-5",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+                },
+            )
+        ]
+    )
     monkeypatch.setattr(model, "client", factory)
 
     model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
@@ -94,7 +112,20 @@ def test_anthropic_request_appends_builtin_tools(tmp_path, monkeypatch):
     s = _session(tmp_path, model="claude-3", api="anthropic", stream=False, builtin_tools=(search,))
     model = ModelClient(s)
     factory = _AnthropicMockClientFactory(
-        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+        [
+            (
+                200,
+                {
+                    "id": "m",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+        ]
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
@@ -118,7 +149,7 @@ def test_builtin_tools_are_sent_without_any_function_tools(tmp_path, monkeypatch
 
 
 def test_builtin_tools_change_the_prompt_cache_key(tmp_path):
-    """Enabling search changes the host-rendered tool prefix, so the cached prefix differs."""
+    """Enabling search changes the provider-rendered tool prefix, so the cached prefix differs."""
     plain = _session(tmp_path, api="responses", model="gpt-5")
     searching = _session(tmp_path, api="responses", model="gpt-5", builtin_tools=(WEB_SEARCH,))
 
@@ -182,7 +213,20 @@ def test_anthropic_result_collects_cited_and_raw_search_results(tmp_path, monkey
         },
     ]
     factory = _AnthropicMockClientFactory(
-        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": content_blocks, "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+        [
+            (
+                200,
+                {
+                    "id": "m",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": content_blocks,
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+        ]
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
@@ -201,7 +245,20 @@ def test_anthropic_search_error_reports_no_sources(tmp_path, monkeypatch):
         {"type": "text", "text": "could not search"},
     ]
     factory = _AnthropicMockClientFactory(
-        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": blocks, "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+        [
+            (
+                200,
+                {
+                    "id": "m",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": blocks,
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+        ]
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
@@ -219,7 +276,20 @@ def test_chat_result_collects_message_annotations(tmp_path, monkeypatch):
         "content": "hi",
         "annotations": [{"type": "url_citation", "url_citation": {"url": "https://router.example/c", "title": "C"}}],
     }
-    factory = _MockClientFactory([(200, {"id": "c", "object": "chat.completion", "created": 1, "model": "openai/gpt-5", "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]})])
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "c",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "openai/gpt-5",
+                    "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+                },
+            )
+        ]
+    )
     monkeypatch.setattr(model, "client", factory)
 
     assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
@@ -232,7 +302,20 @@ def test_stored_sources_never_replay_to_the_provider(tmp_path, monkeypatch):
     s = _session(tmp_path, model="gpt-4", stream=False)
     model = ModelClient(s)
     history = [{"role": "assistant", "content": "hi", SEARCH_SOURCES_KEY: [{"url": "https://example.com", "title": "T"}]}]
-    factory = _MockClientFactory([(200, {"id": "c", "object": "chat.completion", "created": 1, "model": "gpt-4", "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]})])
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "c",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                },
+            )
+        ]
+    )
     monkeypatch.setattr(model, "client", factory)
 
     model.request(history, [])
@@ -243,7 +326,7 @@ def test_stored_sources_never_replay_to_the_provider(tmp_path, monkeypatch):
 
 
 def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
-    """A host-side search has no tool line of its own; the status label is the only signal."""
+    """A provider-side search has no tool line of its own; the status label is the only signal."""
     s = _session(tmp_path, api="responses", model="gpt-5")
     model = ModelClient(s)
     streamed = []
@@ -251,7 +334,12 @@ def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     events = [
         {"type": "response.output_item.added", "item": {"id": "ws_1", "type": "web_search_call", "status": "in_progress"}},
         {"type": "response.output_text.delta", "delta": "sunny"},
-        {"type": "response.completed", "response": _responses_body(output=[{"id": "m", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "sunny"}]}])},
+        {
+            "type": "response.completed",
+            "response": _responses_body(
+                output=[{"id": "m", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "sunny"}]}]
+            ),
+        },
     ]
     monkeypatch.setattr(model, "client", _StreamClientFactory(events))
 
@@ -265,10 +353,21 @@ def test_anthropic_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     model = ModelClient(s)
     streamed = []
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
-    message = {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": [], "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}}
+    message = {
+        "id": "m",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-3",
+        "content": [],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
     events = [
         ("message_start", {"type": "message_start", "message": message}),
-        ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {}}}),
+        (
+            "content_block_start",
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {}}},
+        ),
         ("content_block_stop", {"type": "content_block_stop", "index": 0}),
         ("content_block_start", {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
         ("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "sunny"}}),
@@ -298,7 +397,7 @@ def test_responses_result_reports_each_search_for_the_transcript(tmp_path, monke
 
     model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
-    # The local function call has its own tool line already; only the host-side call is reported.
+    # The local function call has its own tool line already; only the provider-side call is reported.
     assert reported == [("web search", "httpx timeout configuration")]
 
 
@@ -313,7 +412,20 @@ def test_anthropic_result_reports_each_search_for_the_transcript(tmp_path, monke
         {"type": "text", "text": "1916"},
     ]
     factory = _AnthropicMockClientFactory(
-        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": blocks, "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+        [
+            (
+                200,
+                {
+                    "id": "m",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": blocks,
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+        ]
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
@@ -351,11 +463,13 @@ def test_a_search_without_a_query_still_reports(tmp_path, monkeypatch):
     assert reported == [("web search", "")]
 
 
-def test_builtin_status_labels_read_as_a_phase():
-    assert ModelClient.builtin_status("web_search_call") == "web search"
-    assert ModelClient.builtin_status("web_search") == "web search"
-    assert ModelClient.builtin_status("code_interpreter_call") == "code interpreter"
-    assert ModelClient.builtin_status("") == "host tool"
+def test_builtin_labels_read_as_one_phase_across_protocols():
+    """The same tool is named differently by each protocol and must still read alike."""
+    assert builtin_tool_label("web_search_call") == "web search"  # Responses output item
+    assert builtin_tool_label("web_search") == "web search"  # Messages server tool
+    assert builtin_tool_label("$web_search") == "web search"  # Kimi builtin function
+    assert builtin_tool_label("code_interpreter_call") == "code interpreter"
+    assert builtin_tool_label("") == "provider tool"
 
 
 def test_sources_footer_dedupes_by_url_and_keeps_first_title():
@@ -384,3 +498,152 @@ def test_no_sources_render_nothing():
 
 def test_default_config_template_documents_builtin_tools():
     assert "builtin_tools" in ConfigFile.DEFAULT_TEXT
+
+
+def test_paused_turn_is_reported_and_replays_unchanged(tmp_path, monkeypatch):
+    """A paused search must be resumed by sending the assistant message back exactly as received."""
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False, builtin_tools=({"type": "web_search_20250305", "name": "web_search"},))
+    model = ModelClient(s)
+    blocks = [
+        {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "httpx timeout"}},
+        {
+            "type": "web_search_tool_result",
+            "tool_use_id": "srv_1",
+            "content": [{"type": "web_search_result", "url": "https://e.example", "title": "E", "encrypted_content": "keep-me"}],
+        },
+    ]
+    paused = {
+        "id": "m1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-3",
+        "content": blocks,
+        "stop_reason": "pause_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    factory = _AnthropicMockClientFactory([(200, paused)])
+    monkeypatch.setattr(model, "anthropic_client", factory)
+
+    assistant, calls, _ = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert assistant[PAUSED_TURN_KEY] is True
+    assert calls == []
+    # Replaying the paused message must preserve encrypted_content; the API rejects it otherwise.
+    replayed = model.anthropic_messages([{"role": "user", "content": "hi"}, assistant])
+    assert replayed[-1]["content"] == blocks
+
+
+def test_an_unpaused_response_carries_no_pause_marker(tmp_path, monkeypatch):
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
+    model = ModelClient(s)
+    factory = _AnthropicMockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "m",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-3",
+                    "content": [{"type": "text", "text": "done"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(model, "anthropic_client", factory)
+
+    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert PAUSED_TURN_KEY not in assistant
+
+
+def test_agent_continues_a_paused_turn_instead_of_answering(tmp_path):
+    """A pause carries no tool call of ours, so without this the turn would end early."""
+    s = agent_session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class PausingModel:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                return {"role": "assistant", "content": None, PAUSED_TURN_KEY: True}, [], ""
+            return {"role": "assistant", "content": "found it"}, [], "found it"
+
+    agent.model = PausingModel()
+
+    assert agent.run("look it up") == "found it"
+    assert len(agent.model.requests) == 2
+    # The paused message is part of the conversation the second request sends back.
+    assert agent.model.requests[1][-1].get(PAUSED_TURN_KEY) is True
+    assert s.messages[-1]["content"] == "found it"
+
+
+def test_a_paused_turn_is_bounded_by_max_steps(tmp_path):
+    """A provider that never stops pausing must still end the turn."""
+    s = agent_session(tmp_path)
+    s.skills = SkillLibrary({})
+    s.settings.max_steps = 3
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class AlwaysPausing:
+        def __init__(self):
+            self.count = 0
+
+        def request(self, messages, tools=None):
+            self.count += 1
+            return {"role": "assistant", "content": None, PAUSED_TURN_KEY: True}, [], ""
+
+    agent.model = AlwaysPausing()
+
+    assert "Stopped after max_agent_steps=3" in agent.run("look it up")
+    assert agent.model.count == 3
+
+
+def test_builtin_function_names_are_collected_from_config():
+    provider = ProviderConfig.from_dict({"builtin_tools": [{"type": "web_search"}, {"type": "builtin_function", "function": {"name": "$web_search"}}]})
+
+    assert provider.builtin_function_names() == ("$web_search",)
+
+
+def test_a_declared_builtin_function_call_is_answered_with_its_arguments(tmp_path):
+    """Kimi runs the search itself; the documented client side is to echo the arguments back."""
+    s = agent_session(tmp_path)
+    s.config.providers["default"].builtin_tools = ({"type": "builtin_function", "function": {"name": "$web_search"}},)
+    logged = []
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=logged.append)
+
+    messages = runner.run([ToolCall("c1", "$web_search", [{"search_query": "httpx timeout"}])])
+
+    assert messages == [{"role": "tool", "tool_call_id": "c1", "name": "$web_search", "content": '{"search_query": "httpx timeout"}'}]
+    # No confirmation was asked for, and nothing was stored as a recallable result.
+    assert s.tool_records == []
+    assert logged and "web search" in str(logged[0])
+
+
+def test_an_undeclared_builtin_function_call_is_still_an_unknown_tool(tmp_path):
+    """The echo path is opened by config alone; it must not swallow arbitrary unknown names."""
+    s = agent_session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
+
+    messages = runner.run([ToolCall("c1", "$web_search", [{"search_query": "x"}])])
+
+    assert "unknown tool $web_search" in messages[0]["content"]
+
+
+def test_a_batch_mixing_an_echo_and_a_real_tool_runs_both(tmp_path):
+    s = agent_session(tmp_path)
+    s.config.providers["default"].builtin_tools = ({"type": "builtin_function", "function": {"name": "$web_search"}},)
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
+
+    messages = runner.run([ToolCall("c1", "$web_search", [{"search_query": "q"}]), ToolCall("c2", "Read", [{"path": "a.txt", "ranges": [[0, 1]]}])])
+
+    assert [message["tool_call_id"] for message in messages] == ["c1", "c2"]
+    assert messages[0]["content"] == '{"search_query": "q"}'
+    assert "<Read" in messages[1]["content"]

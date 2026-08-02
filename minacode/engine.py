@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 
 from minacode.base import (
+    PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
     Json,
     MalformedToolCallError,
@@ -62,7 +63,7 @@ class Agent:
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         self.cancel_requested = threading.Event()
-        # Sources the host's own search reported during the last turn, in the order they appeared.
+        # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
         # Called with the queued messages when they are flushed into the turn, so the UI can move
@@ -147,6 +148,16 @@ class Agent:
                     self.output_fn(response)
                     self.checkpoint_turn(turn_messages)
                     continue
+                if assistant.get(PAUSED_TURN_KEY) and not tool_calls:
+                    # The provider paused a long server-side tool run rather than ending the turn.
+                    # Resuming means sending this message back unchanged and asking again, so it
+                    # joins the turn like any other step: bounded by max_steps, checkpointed, and
+                    # never mistaken for the answer even though it carries no tool call of ours.
+                    turn_messages.append(self.assistant_turn_message(assistant, [], content))
+                    if content.strip():
+                        self.output_fn(content.strip())
+                    self.checkpoint_turn(turn_messages)
+                    continue
                 if not tool_calls:
                     if not content.strip():
                         raise ModelError("empty final response")
@@ -206,7 +217,7 @@ class Agent:
         return assistant, tool_calls, content
 
     def record_sources(self, assistant: Json) -> None:
-        """Accumulate host-side search sources across every request the turn makes.
+        """Accumulate provider-side search sources across every request the turn makes.
 
         A search can happen in any step, not only the one that answers, so collecting per request
         is what lets the footer describe the whole turn. Duplicates are resolved by URL at render

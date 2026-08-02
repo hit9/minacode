@@ -21,6 +21,7 @@ from minacode.base import (
     LogRole,
     ToolCall,
     ToolError,
+    builtin_tool_label,
 )
 from minacode.context import ContextManager
 from minacode.session import Session, TurnDiff
@@ -261,10 +262,15 @@ class ToolRunner:
         # Shared, mutated across segments: `first` controls which display carries batch_suffix;
         # `refused` short-circuits the rest of the batch once a confirmation is declined.
         state = {"first": True, "refused": False}
+        echoed = self.session.config.provider.builtin_function_names()
         index = 0
         while index < len(calls):
             if state["refused"]:
                 messages.append(self.skip_message(calls[index]))
+                index += 1
+                continue
+            if calls[index].name in echoed:
+                messages.append(self.builtin_echo_message(calls[index]))
                 index += 1
                 continue
             end = self.parallel_segment_end(calls, index)
@@ -276,6 +282,23 @@ class ToolRunner:
             messages.extend(self.run_serial(calls[index:end], batch_suffix, state, observations))
             index = end
         return [*messages, *observations]
+
+    def builtin_echo_message(self, call: ToolCall) -> Json:
+        """Answer a provider's own builtin function by returning its arguments unchanged.
+
+        The provider runs the tool; the call it emits is a handshake, and the documented client
+        side of it is to send the arguments straight back. The result therefore skips confirmation,
+        the registry, and the usual `tool ... output:` framing — anything added here would reach the
+        provider as part of its own protocol. It is logged like a tool call so the transcript still
+        shows that the work happened. Evidence:
+        https://platform.kimi.ai/docs/guide/use-web-search
+        """
+        # An unrecognized name is parsed as a single raw payload, which is exactly what to echo.
+        payload = call.args[0] if len(call.args) == 1 else call.args
+        content = json.dumps(payload, ensure_ascii=False)
+        label = builtin_tool_label(call.name)
+        self.output_fn(LogBlock([LogLine(label, self.oneline(content, 120), LogRole.TOOL, LogEdge.BRANCH)]))
+        return {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
 
     def skip_message(self, call: ToolCall) -> Json:
         content = self.tool_message(call, "", "Skipped: previous tool call was refused", failed=True)

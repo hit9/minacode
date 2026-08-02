@@ -21,6 +21,7 @@ from minacode.base import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     HTTP_USER_AGENT,
     MODEL_REQUEST_RETRIES,
+    PAUSED_TURN_KEY,
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
     SEARCH_SOURCES_KEY,
@@ -35,6 +36,7 @@ from minacode.base import (
     ToolArgs,
     ToolCall,
     ToolError,
+    builtin_tool_label,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.prompts import (
@@ -95,7 +97,7 @@ class ModelClient:
         self.cancel_requested = threading.Event()
         self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
         self.on_stream: Callable[[str, str], None] | None = None
-        # Called with (label, detail) for each host-side tool call a response reports. Reported
+        # Called with (label, detail) for each provider-side tool call a response reports. Reported
         # from the parsed result rather than the stream, so a search is logged the same way when
         # streaming is off and on a frontend that shows no live status at all.
         self.on_builtin_call: Callable[[str, str], None] | None = None
@@ -581,9 +583,9 @@ class ModelClient:
                         tool_seen = True
                         promote_output()
                     elif item_type.endswith("_call"):
-                        # A host-side tool runs inside the request with no local tool line to show
+                        # A provider-side tool runs inside the request with no local tool line to show
                         # for it, so the status label is the only sign the turn is still moving.
-                        self._emit_stream(self.builtin_status(item_type), "")
+                        self._emit_stream(builtin_tool_label(item_type), "")
                 elif event_type == "response.function_call_arguments.delta":
                     tool_seen = True
                     promote_output()
@@ -805,19 +807,11 @@ class ModelClient:
 
     def report_builtin_call(self, name: str, detail: object) -> None:
         if self.on_builtin_call is not None:
-            self.on_builtin_call(self.builtin_status(name), str(detail or "").strip())
-
-    @staticmethod
-    def builtin_status(name: str) -> str:
-        """A status label for a host-side tool, derived from whatever the protocol calls it.
-
-        Responses names the output item (`web_search_call`), Messages names the tool
-        (`web_search`); both read as a phase once the suffix and underscores are gone."""
-        return (name.removesuffix("_call").replace("_", " ") or "host tool").strip()
+            self.on_builtin_call(builtin_tool_label(name), str(detail or "").strip())
 
     @staticmethod
     def collect_sources(*groups: Any) -> list[Json]:
-        """Flatten host-side search sources into `{"url", "title"}` records, first mention wins.
+        """Flatten provider-side search sources into `{"url", "title"}` records, first mention wins.
 
         Every host reports the same two facts under a different name, so the shapes are normalized
         here rather than at each call site. A record without a URL is dropped: it cannot be shown
@@ -838,7 +832,7 @@ class ModelClient:
         return list(sources.values())
 
     def builtin_tools(self) -> list[Json]:
-        """Host-side tool entries, copied so a request cannot mutate the loaded config.
+        """Provider-side tool entries, copied so a request cannot mutate the loaded config.
 
         These reach every protocol's `tools` array unchanged. Each host happens to express its
         builtin tools in the shape of the protocol it speaks — Chat for Z.AI and Kimi, Messages for
@@ -919,7 +913,7 @@ class ModelClient:
                             tool_seen = True
                             promote_output()
                         elif block_type == "server_tool_use":
-                            self._emit_stream(self.builtin_status(str(self.message_field(block, "name") or "")), "")
+                            self._emit_stream(builtin_tool_label(str(self.message_field(block, "name") or "")), "")
                         continue
                     if event_type == "content_block_stop":
                         if int(self.message_field(event, "index") or 0) in text_blocks:
@@ -1077,6 +1071,11 @@ class ModelClient:
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts)
         assistant: Json = {"role": "assistant", "content": text or None, ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
+        # A long server-side tool run can be paused and handed back mid-turn. The turn continues by
+        # sending this message back unchanged, which the saved content blocks above already do.
+        # Evidence: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+        if self.message_field(result, "stop_reason") == "pause_turn":
+            assistant[PAUSED_TURN_KEY] = True
         if sources := self.anthropic_sources(saved_content):
             assistant[SEARCH_SOURCES_KEY] = sources
         if tool_calls:

@@ -64,7 +64,7 @@ MAX_RENDERED_SOURCES = 10
 
 
 def search_sources_footer(sources: list[Json]) -> str:
-    """A markdown source list for the host-side searches a turn performed, or "" for none.
+    """A markdown source list for the provider-side searches a turn performed, or "" for none.
 
     This is presentation only. The sources stay on the messages that carry them, so the answer
     reaching history is exactly what the model wrote, and nothing new replays to the provider on

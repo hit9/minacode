@@ -82,10 +82,9 @@ model and cache usage reported by the provider.
 
 ## Provider-side tools
 
-Some providers run tools themselves — web search above all — instead of asking minacode to run
-them; see [Provider-side tools](tools.md#provider-side-tools) for how they behave in a session.
-`builtin_tools` is a list of tool entries appended verbatim to the `tools` array of whichever
-protocol the provider speaks, so the wire shape is the provider's own:
+Some providers can run web search themselves; see
+[Provider-side tools](tools.md#provider-side-tools) for what that looks like in a session. List
+the ones you want in `builtin_tools`, written the way your provider documents them:
 
 ```toml
 [provider]
@@ -101,20 +100,14 @@ builtin_tools = [{ type = "web_search" }, { type = "web_extractor" }]
 | Qwen (Responses) | `{ type = "web_search" }`; also `web_extractor` and `code_interpreter` |
 | Anthropic | `{ type = "web_search_20250305", name = "web_search", max_uses = 5 }` |
 | Z.AI / BigModel | `{ type = "web_search", web_search = { enable = "True" } }` |
+| Kimi / Moonshot | `{ type = "builtin_function", function = { name = "$web_search" } }` |
 
-Two providers configure search through the request body rather than the tools array, so they use
-[`extra_body`](#optional-provider-settings) instead: OpenRouter takes `plugins = [{ id = "web" }]` (or an `:online`
-model suffix), and Qwen's Chat Completions endpoint takes `enable_search` with `search_options`.
-The DeepSeek API has no web search.
+Two providers configure search elsewhere, through [`extra_body`](#optional-provider-settings):
+OpenRouter takes `plugins = [{ id = "web" }]` (or an `:online` model suffix), and Qwen's Chat
+Completions endpoint takes `enable_search`. DeepSeek has no web search.
 
-minacode does not validate entries beyond requiring a `type`, since the catalog belongs to each
-provider; an unsupported entry surfaces as that provider's own error. Enabling a builtin tool
-changes the cached prompt prefix, and the prompt cache key changes with it. `/config` lists what
-is active.
-
-When a provider reports its sources, minacode lists them under the answer. Those sources are
-display only: the stored answer stays exactly what the model wrote, and nothing extra replays to
-the provider on later turns.
+Entries are sent as written, so an unsupported one comes back as that provider's own error.
+`/config` lists what is active.
 
 With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
 successful image request is remembered for that provider and model during the session; only an

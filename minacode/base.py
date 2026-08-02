@@ -66,10 +66,24 @@ CHAT_REASONING_CHOICES = (
 # requires back unmodified. They are minacode's bookkeeping and never reach a request body.
 RESPONSES_OUTPUT_KEY = "_responses_output"
 ANTHROPIC_CONTENT_KEY = "_anthropic_content"
-# Sources a host-side search attached to one assistant message. Stored for rendering and resume,
+# Sources a provider-side search attached to one assistant message. Stored for rendering and resume,
 # never replayed: the provider already carries its own search state in the echo keys above.
 SEARCH_SOURCES_KEY = "_search_sources"
-PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY, SEARCH_SOURCES_KEY)
+# Set when the provider ended a response without ending the turn, having paused a long server-side
+# tool run. The message must be sent back unchanged to resume, so this travels with it as metadata.
+PAUSED_TURN_KEY = "_paused_turn"
+PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY, SEARCH_SOURCES_KEY, PAUSED_TURN_KEY)
+
+
+def builtin_tool_label(name: str) -> str:
+    """A display label for a tool the provider runs for itself.
+
+    One tool carries a different name in each protocol — `web_search_call` as a Responses output
+    item, `web_search` as a Messages server tool, `$web_search` as a Kimi builtin function — and
+    all of them should read as the same phase in the transcript."""
+    return name.lstrip("$").removesuffix("_call").replace("_", " ").strip() or "provider tool"
+
+
 # Protocol-neutral metadata for lifecycle/context checkpoint messages. Provider adapters remove
 # this key while preserving the canonical role/content pair in the conversation log.
 SESSION_EVENT_KEY = "_session_event"
@@ -267,6 +281,24 @@ class ProviderConfig:
             extra_body=Config.table(data, "extra_body"),
             builtin_tools=Config.table_tuple(data, "builtin_tools"),
         )
+
+    def builtin_function_names(self) -> tuple[str, ...]:
+        """Builtin tools the provider calls back for instead of running entirely on its own.
+
+        Kimi's builtin functions are declared like any other builtin tool, but the model emits a
+        real tool call for them and expects the client to answer it. Collecting the declared names
+        is what lets the runner recognize such a call as the provider's rather than an unknown
+        tool. Evidence: https://platform.kimi.ai/docs/guide/use-web-search
+        """
+        names: list[str] = []
+        for entry in self.builtin_tools:
+            if entry.get("type") != "builtin_function":
+                continue
+            function = entry.get("function")
+            name = function.get("name") if isinstance(function, dict) else ""
+            if isinstance(name, str) and name:
+                names.append(name)
+        return tuple(names)
 
     def resolve(self) -> ResolvedProvider:
         """Fold explicit configuration and documented compatibility into one request policy."""
@@ -504,7 +536,7 @@ model = ""
 # response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
 
-# builtin_tools = [{ type = "web_search" }]   # host-side tools, passed to the provider verbatim
+# builtin_tools = [{ type = "web_search" }]   # provider-side tools, passed through verbatim
                                               # OpenAI/Qwen: { type = "web_search" }
                                               # Anthropic:   { type = "web_search_20250305", name = "web_search" }
                                               # Z.AI:        { type = "web_search", web_search = { enable = "True" } }

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-02 00:58-0700\n"
+"POT-Creation-Date: 2026-08-02 01:18-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -324,17 +324,14 @@ msgstr "Provider 侧工具"
 
 #: ../../configuration.md:79
 msgid ""
-"Some providers run tools themselves — web search above all — instead of "
-"asking minacode to run them; see [Provider-side tools](tools.md#provider-"
-"side-tools) for how they behave in a session. `builtin_tools` is a list "
-"of tool entries appended verbatim to the `tools` array of whichever "
-"protocol the provider speaks, so the wire shape is the provider's own:"
+"Some providers can run web search themselves; see [Provider-side "
+"tools](tools.md#provider-side-tools) for what that looks like in a "
+"session. List the ones you want in `builtin_tools`, written the way your "
+"provider documents them:"
 msgstr ""
-"部分 Provider 会自己执行工具——最典型的就是联网搜索——而不是交给 minacode 执行；它们在 "
-"session 中的表现见 [Provider "
-"侧工具](tools.md#provider-side-tools)。`builtin_tools` "
-"是一组工具配置，会原样追加到 Provider 所用协议的 `tools` 数组中，因此其格式就是该 Provider "
-"自己的格式："
+"部分 Provider 可以自己执行联网搜索；在 session 中的实际表现见 [Provider "
+"侧工具](tools.md#provider-side-tools)。把需要的工具按 Provider 文档中的写法列在 "
+"`builtin_tools` 中："
 
 #: ../../configuration.md
 msgid "Provider"
@@ -381,45 +378,34 @@ msgstr "Z.AI / BigModel"
 msgid "`{ type = \"web_search\", web_search = { enable = \"True\" } }`"
 msgstr "`{ type = \"web_search\", web_search = { enable = \"True\" } }`"
 
+#: ../../configuration.md
+msgid "Kimi / Moonshot"
+msgstr "Kimi / Moonshot"
+
+#: ../../configuration.md
+msgid "`{ type = \"builtin_function\", function = { name = \"$web_search\" } }`"
+msgstr "`{ type = \"builtin_function\", function = { name = \"$web_search\" } }`"
+
 #: ../../configuration.md:99
 #, python-brace-format
 msgid ""
-"Two providers configure search through the request body rather than the "
-"tools array, so they use [`extra_body`](#optional-provider-settings) "
-"instead: OpenRouter takes `plugins = [{ id = \"web\" }]` (or an `:online`"
-" model suffix), and Qwen's Chat Completions endpoint takes "
-"`enable_search` with `search_options`. The DeepSeek API has no web "
-"search."
+"Two providers configure search elsewhere, through [`extra_body"
+"`](#optional-provider-settings): OpenRouter takes `plugins = [{ id = "
+"\"web\" }]` (or an `:online` model suffix), and Qwen's Chat Completions "
+"endpoint takes `enable_search`. DeepSeek has no web search."
 msgstr ""
-"有两个 Provider 通过 request body 而非 tools 数组配置搜索，因此改用 [`extra_body"
-"`](#optional-provider-settings)：OpenRouter 使用 `plugins = [{ id = \"web\" "
-"}]`（或在模型名后加 `:online` 后缀），Qwen 的 Chat Completions endpoint 使用 "
-"`enable_search` 与 `search_options`。DeepSeek API 没有联网搜索。"
+"有两个 Provider 在别处配置搜索，通过 "
+"[`extra_body`](#optional-provider-settings)：OpenRouter 使用 "
+"`plugins = [{ id = \"web\" }]`（或在模型名后加 `:online` 后缀），Qwen 的 "
+"Chat Completions endpoint 使用 `enable_search`。DeepSeek 没有联网搜索。"
 
-#: ../../configuration.md:104
+#: ../../configuration.md:103
 msgid ""
-"minacode does not validate entries beyond requiring a `type`, since the "
-"catalog belongs to each provider; an unsupported entry surfaces as that "
-"provider's own error. Enabling a builtin tool changes the cached prompt "
-"prefix, and the prompt cache key changes with it. `/config` lists what is"
-" active."
-msgstr ""
-"除要求必须有 `type` 外，minacode 不校验条目内容，因为工具清单属于各个 "
-"Provider；不支持的条目会以该 Provider 自己的报错形式呈现。启用 builtin 工具会改变被缓存的 "
-"prompt 前缀，prompt cache key 也随之改变。`/config` 会列出当前生效的配置。"
+"Entries are sent as written, so an unsupported one comes back as that "
+"provider's own error. `/config` lists what is active."
+msgstr "条目会按写法原样发送，因此不受支持的条目会以该 Provider 自己的报错返回。`/config` 会列出当前生效的配置。"
 
-#: ../../configuration.md:109
-msgid ""
-"When a provider reports its sources, minacode lists them under the "
-"answer. Those sources are display only: the stored answer stays exactly "
-"what the model wrote, and nothing extra replays to the provider on later "
-"turns."
-msgstr ""
-"当 Provider 返回来源时，minacode "
-"会在回答下方列出这些来源。来源仅用于展示：存入历史的回答仍然与模型所写的完全一致，后续轮次也不会因此向 Provider "
-"多发送任何内容。"
-
-#: ../../configuration.md:113
+#: ../../configuration.md:106
 msgid ""
 "Unknown OpenAI-compatible endpoints stay on the generic path. If "
 "automatic protocol selection is wrong for an endpoint, set `api` "
@@ -429,7 +415,7 @@ msgstr ""
 "未知的 OpenAI-compatible endpoint 会使用通用路径。如果自动选择的协议不正确，请显式设置 `api`。`/status`"
 " 会显示当前模型以及 provider 报告的缓存用量。"
 
-#: ../../configuration.md:117
+#: ../../configuration.md:110
 msgid ""
 "With `image_input = \"auto\"`, minacode sends attached images using the "
 "selected standard API. A successful image request is remembered for that "
@@ -443,11 +429,11 @@ msgstr ""
 "session 中为该 provider 和模型记住其支持识图；只有明确表示不支持图片的响应才会禁用后续图片提交。如果已经知道 endpoint "
 "的能力，可设为 `on` 或 `off`。切换到禁用图片输入的 provider 或模型后，历史图片仍会以可读文本标签保留。"
 
-#: ../../configuration.md:123
+#: ../../configuration.md:116
 msgid "Runtime"
 msgstr "Runtime"
 
-#: ../../configuration.md:125
+#: ../../configuration.md:118
 msgid "Optional; the defaults shown are used when omitted."
 msgstr "以下设置均可省略，表中列出其默认值。"
 
@@ -553,17 +539,17 @@ msgstr "`theme`"
 msgid "Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme`"
 msgstr "终端主题：`auto`、`light` 或 `dark`；`--theme` 可覆盖"
 
-#: ../../configuration.md:139
+#: ../../configuration.md:132
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:142
+#: ../../configuration.md:135
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:149
+#: ../../configuration.md:142
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -574,7 +560,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:153
+#: ../../configuration.md:146
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -584,7 +570,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:157
+#: ../../configuration.md:150
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "
@@ -723,4 +709,51 @@ msgstr ""
 
 #~ msgid "Host-side tools offered to the model, passed to the provider verbatim"
 #~ msgstr "提供给模型的 Provider 侧工具，原样传给 Provider"
+
+#~ msgid ""
+#~ "Some providers run tools themselves —"
+#~ " web search above all — instead "
+#~ "of asking minacode to run them; "
+#~ "see [Provider-side tools](tools.md#provider-"
+#~ "side-tools) for how they behave in"
+#~ " a session. `builtin_tools` is a list"
+#~ " of tool entries appended verbatim to"
+#~ " the `tools` array of whichever "
+#~ "protocol the provider speaks, so the "
+#~ "wire shape is the provider's own:"
+#~ msgstr ""
+#~ "部分 Provider 会自己执行工具——最典型的就是联网搜索——而不是交给 minacode "
+#~ "执行；它们在 session 中的表现见 [Provider 侧工具](tools.md"
+#~ "#provider-side-tools)。`builtin_tools` 是一组工具配置，会原样追加到"
+#~ " Provider 所用协议的 `tools` 数组中，因此其格式就是该 "
+#~ "Provider 自己的格式："
+
+#~ msgid ""
+#~ "minacode does not validate entries "
+#~ "beyond requiring a `type`, since the "
+#~ "catalog belongs to each provider; an "
+#~ "unsupported entry surfaces as that "
+#~ "provider's own error. Enabling a builtin"
+#~ " tool changes the cached prompt "
+#~ "prefix, and the prompt cache key "
+#~ "changes with it. `/config` lists what"
+#~ " is active."
+#~ msgstr ""
+#~ "除要求必须有 `type` 外，minacode 不校验条目内容，因为工具清单属于各个 "
+#~ "Provider；不支持的条目会以该 Provider 自己的报错形式呈现。启用 builtin "
+#~ "工具会改变被缓存的 prompt 前缀，prompt cache key "
+#~ "也随之改变。`/config` 会列出当前生效的配置。"
+
+#~ msgid ""
+#~ "When a provider reports its sources, "
+#~ "minacode lists them under the answer."
+#~ " Those sources are display only: the"
+#~ " stored answer stays exactly what the"
+#~ " model wrote, and nothing extra "
+#~ "replays to the provider on later "
+#~ "turns."
+#~ msgstr ""
+#~ "当 Provider 返回来源时，minacode "
+#~ "会在回答下方列出这些来源。来源仅用于展示：存入历史的回答仍然与模型所写的完全一致，后续轮次也不会因此向 Provider "
+#~ "多发送任何内容。"
 
