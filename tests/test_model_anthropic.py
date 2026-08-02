@@ -196,3 +196,46 @@ def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
     model._anthropic_stream(client, {})
 
     assert streamed == [("output", "hello"), ("output_done", "hello"), ("", "")]
+
+
+def test_anthropic_no_tools_result_strips_tool_use_preserves_thinking_and_server_tool(tmp_path):
+    """An explicit tools=[] request that returns tool_use blocks: the sanitizer removes them from
+    the effective calls and _anthropic_content, while preserving thinking and server_tool_use."""
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
+    model = ModelClient(s)
+    result = SimpleNamespace(
+        content=[
+            {"type": "thinking", "thinking": "let me check", "signature": "sig"},
+            {"type": "text", "text": "here is the answer"},
+            {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}},
+            {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "test"}},
+        ],
+        usage={},
+    )
+    assistant, calls, text = model.anthropic_result(result)
+
+    # Before sanitization: calls exist
+    assert len(calls) == 1
+    assert calls[0].name == "Bash"
+    assert "tool_calls" in assistant
+
+    # Apply the sanitizer (as request() would for tools=[])
+    sanitized_assistant, sanitized_calls, sanitized_text = ModelClient.sanitize_no_tools_result((assistant, calls, text))
+
+    # Returned effective local calls are empty
+    assert sanitized_calls == []
+    # top-level tool_calls is absent
+    assert "tool_calls" not in sanitized_assistant
+    # _anthropic_content contains no tool_use block
+    saved = sanitized_assistant["_anthropic_content"]
+    assert all(block.get("type") != "tool_use" for block in saved)
+    # thinking and server_tool_use are preserved
+    assert any(block.get("type") == "thinking" for block in saved)
+    assert any(block.get("type") == "server_tool_use" for block in saved)
+    # text is preserved
+    assert sanitized_text == "here is the answer"
+    assert sanitized_assistant["content"] == "here is the answer"
+
+    # anthropic_messages()/anthropic_assistant_blocks() cannot replay the discarded local call
+    blocks = model.anthropic_assistant_blocks(sanitized_assistant)
+    assert all(block.get("type") != "tool_use" for block in blocks)

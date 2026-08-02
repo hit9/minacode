@@ -1066,3 +1066,209 @@ def test_silent_tool_failure_still_emits_a_log_line(tmp_path):
     assert outputs and "rejected" in outputs[0]  # argument error is surfaced, not swallowed
     assert len(messages) == 1
     assert "at least one non-empty" in messages[0]["content"]
+
+
+def test_agent_sanitizes_unoffered_tool_calls_from_forced_followup_response(tmp_path, monkeypatch):
+    """Provider ignores tools=[] during forced follow-up: the returned tool calls must be stripped
+    from durable history and never executed or replayed."""
+    s = session(tmp_path)
+    s.config.provider.url = "http://test"
+    s.config.provider.key = "k"
+    s.config.provider.model = "m"
+    queue(s, "live follow-up")
+    output = []
+    agent = Agent(s, output_fn=output.append)
+
+    responses = [
+        # Request 1: normal tools, returns tool call with empty content -> triggers forced retry
+        (
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "Bash-id", "type": "function", "function": {"name": "Bash", "arguments": '{"args": ["should-not-run"]}'}}],
+            },
+            [call("Bash", ["should-not-run"])],
+            "",
+        ),
+        # Request 2: tools=[] but provider ignores it and returns calls anyway
+        (
+            {
+                "role": "assistant",
+                "content": "I hear the follow-up; checking now.",
+                "tool_calls": [
+                    {"id": "fc_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
+                    {"id": "fc_2", "type": "function", "function": {"name": "Search", "arguments": '{"pattern":"x"}'}},
+                ],
+                "_responses_output": [
+                    {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque", "summary": []},
+                    {
+                        "id": "msg_1",
+                        "type": "message",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "I hear the follow-up; checking now."}],
+                    },
+                    {"id": "fc_1", "type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": '{"command":"ls"}'},
+                    {"id": "fc_2", "type": "function_call", "call_id": "fc_2", "name": "Search", "arguments": '{"pattern":"x"}'},
+                ],
+            },
+            [call("Bash", ["ls"]), call("Search", [{"pattern": "x"}])],
+            "I hear the follow-up; checking now.",
+        ),
+        # Request 3: final answer for the original task
+        ({"role": "assistant", "content": "done"}, [], "done"),
+    ]
+    request_log: list[tuple] = []
+
+    def fake_api_request(messages, tools, *, allow_stream=True):
+        request_log.append((messages, tools))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent.model, "api_request", fake_api_request)
+
+    assert agent.run("initial request") == "done"
+
+    # Request 2 was made with tools=[]
+    assert request_log[1][1] == []
+
+    # The live follow-up exists exactly once in session.messages
+    followup_messages = [m for m in s.messages if "live follow-up" in (m.get("content") or "")]
+    assert len(followup_messages) == 1
+
+    # No tool was executed
+    assert s.tool_records == []
+
+    # The persisted forced acknowledgement has no top-level tool_calls
+    ack = s.messages[2]  # user, followup-user, assistant-ack, assistant-final
+    assert ack["role"] == "assistant"
+    assert ack["content"] == "I hear the follow-up; checking now."
+    assert "tool_calls" not in ack
+
+    # Its _responses_output contains no function_call item
+    saved_output = ack.get("_responses_output", [])
+    assert all(item.get("type") != "function_call" for item in saved_output)
+
+    # Replayable reasoning/message items are preserved
+    assert any(item.get("type") == "reasoning" for item in saved_output)
+    assert any(item.get("type") == "message" for item in saved_output)
+
+    # Request 3 contains no dangling function_call from Request 2
+    third_messages = request_log[2][0]
+    for msg in third_messages:
+        if msg.get("role") == "assistant":
+            for item in msg.get("_responses_output", []):
+                assert item.get("type") != "function_call"
+            assert "tool_calls" not in msg or not msg["tool_calls"]
+
+    # pending_user_inputs is empty after acknowledgement
+    assert s.pending_user_inputs == []
+
+    # The visible acknowledgement and final result follow the existing intended output order
+    assert output == ["I hear the follow-up; checking now."]
+    assert s.messages[-1]["content"] == "done"
+
+
+def test_agent_rejects_empty_no_tools_followup_response(tmp_path):
+    """For the forced follow-up request with tools=[], if the provider returns only native local
+    tool calls and no text, the turn takes the empty-live-follow-up error path."""
+    s = session(tmp_path)
+    queue(s, "live follow-up")
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                return {}, [call("Bash", ["should-not-run"])], ""
+            # tools=[] response with only tool calls and no text
+            return (
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "fc_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}}],
+                    "_responses_output": [
+                        {"id": "fc_1", "type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": '{"command":"ls"}'},
+                    ],
+                },
+                [call("Bash", ["ls"])],
+                "",
+            )
+
+    agent.model = FakeModel()
+
+    with pytest.raises(ModelError, match="empty live follow-up response"):
+        agent.run("initial request")
+
+    # No tool was executed
+    assert s.tool_records == []
+    # The follow-up was not acknowledged
+    assert [item.text for item in s.pending_user_inputs] == ["live follow-up"]
+
+
+def test_agent_no_tools_followup_snapshot_resume_invariant(tmp_path, monkeypatch):
+    """Save and reload the regression session: the live follow-up appears once, pending is empty,
+    and no assistant local-tool calls exist without matching tool results."""
+    s = session(tmp_path)
+    s.config.provider.url = "http://test"
+    s.config.provider.key = "k"
+    s.config.provider.model = "m"
+    queue(s, "live follow-up")
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    responses = [
+        (
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "Bash-id", "type": "function", "function": {"name": "Bash", "arguments": '{"args": ["should-not-run"]}'}}],
+            },
+            [call("Bash", ["should-not-run"])],
+            "",
+        ),
+        (
+            {
+                "role": "assistant",
+                "content": "acknowledged",
+                "tool_calls": [{"id": "fc_1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}],
+                "_responses_output": [
+                    {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
+                    {"id": "fc_1", "type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": "{}"},
+                ],
+            },
+            [call("Bash", ["ls"])],
+            "acknowledged",
+        ),
+        ({"role": "assistant", "content": "done"}, [], "done"),
+    ]
+
+    def fake_api_request(messages, tools, *, allow_stream=True):
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent.model, "api_request", fake_api_request)
+    assert agent.run("initial request") == "done"
+
+    s.save_snapshot()
+    restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+
+    # The live follow-up appears once as a durable user message
+    followup_messages = [m for m in restored.messages if "live follow-up" in (m.get("content") or "")]
+    assert len(followup_messages) == 1
+
+    # pending_user_inputs is empty
+    assert restored.pending_user_inputs == []
+
+    # There are no assistant local-tool calls without matching tool results
+    tool_result_ids = {m.get("tool_call_id") for m in restored.messages if m.get("role") == "tool"}
+    for msg in restored.messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            assert tc.get("id") in tool_result_ids, f"dangling tool call {tc.get('id')}"
+
+    # Preparing the next Responses request does not resurrect a discarded call
+    client = ModelClient(restored)
+    replayed = client.responses_input(restored.messages)
+    assert all(item.get("type") != "function_call" for item in replayed)

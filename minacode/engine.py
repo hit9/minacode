@@ -375,7 +375,9 @@ class Agent:
         message = dict(assistant or {})
         message["role"] = "assistant"
         message["content"] = message.get("content") if message.get("content") is not None else (content.strip() or None)
-        if tool_calls and not message.get("tool_calls"):
+        if not tool_calls:
+            message.pop("tool_calls", None)
+        elif not message.get("tool_calls"):
             message["tool_calls"] = [
                 {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps({"args": call.args}, ensure_ascii=False)}}
                 for call in tool_calls

@@ -261,6 +261,8 @@ class ModelClient:
                 try:
                     result = self.api_request(messages, tools)
                     self.session.images.note_success(messages)
+                    if tools == []:
+                        result = self.sanitize_no_tools_result(result)
                     return result
                 except KeyboardInterrupt:
                     if state.manual_model_retry_requested:
@@ -289,6 +291,28 @@ class ModelClient:
         finally:
             state.current_model_attempt = 0
             state.model_retry_reason = ""
+
+    @staticmethod
+    def sanitize_no_tools_result(result: tuple[Json, list[ToolCall], str]) -> tuple[Json, list[ToolCall], str]:
+        """Enforce the no-tools invariant: strip local tool calls from a tools=[] response.
+
+        Some providers ignore an empty tool list and return function calls anyway. Accepting them
+        would leave dangling calls in durable history (no matching tool results), breaking the next
+        request. This removes them from the effective list, the top-level tool_calls field, and the
+        provider-native echo fields, while preserving text, reasoning, citations, and provider-side
+        tool items (web_search_call, server_tool_use) that are not local tool calls."""
+        assistant, _calls, content = result
+        assistant = dict(assistant)
+        assistant.pop("tool_calls", None)
+        if RESPONSES_OUTPUT_KEY in assistant:
+            saved = assistant[RESPONSES_OUTPUT_KEY]
+            if isinstance(saved, list):
+                assistant[RESPONSES_OUTPUT_KEY] = [item for item in saved if not (isinstance(item, dict) and item.get("type") == "function_call")]
+        if ANTHROPIC_CONTENT_KEY in assistant:
+            saved = assistant[ANTHROPIC_CONTENT_KEY]
+            if isinstance(saved, list):
+                assistant[ANTHROPIC_CONTENT_KEY] = [item for item in saved if not (isinstance(item, dict) and item.get("type") == "tool_use")]
+        return assistant, [], content
 
     @staticmethod
     def retryable_error(error: Exception) -> bool:
