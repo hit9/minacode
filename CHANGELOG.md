@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.19.0 - 2026-08-02
 
 ### Added
 - Ship a builtin `minacode-help` skill with an offline manual, troubleshooting guidance, a

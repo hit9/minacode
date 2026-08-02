@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-__version__ = "0.18.1"
+__version__ = "0.19.0"
 
 _ResourceT = TypeVar("_ResourceT")
 
