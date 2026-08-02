@@ -421,6 +421,55 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
     assert timeline.count("white response") == 1
 
 
+def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.api = "responses"
+    provider.model = "gpt-5"
+    provider.url = "http://test"
+    provider.key = "sk-test"
+    command_loop.tui = TuiApp()  # no running application: scrollback writes run inline
+    answer = "The searched answer."
+    terminal = {
+        "status": "completed",
+        "output": [
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": answer}]},
+            {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": {"type": "search", "query": "minacode"},
+            },
+        ],
+    }
+    events = [
+        {"type": "response.output_text.delta", "delta": answer},
+        {"type": "response.output_text.done"},
+        {"type": "response.output_item.added", "item": {"type": "web_search_call", "id": "ws_1", "status": "in_progress"}},
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": {"type": "search", "query": "minacode"},
+            },
+        },
+        {"type": "response.completed", "response": terminal},
+    ]
+    responses = SimpleNamespace(create=lambda **_params: iter(events))
+    monkeypatch.setattr(command_loop.agent.model, "client", lambda: SimpleNamespace(responses=responses))
+    emitted = []
+    monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
+
+    _assistant, _calls, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
+    command_loop.agent_output(content)
+
+    assert emitted == [answer]
+    assert command_loop.model_stream_promoted_text == ""
+    assert command_loop.model_stream_fragments() == []
+
+
 def test_non_tui_stream_completion_keeps_normal_agent_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     emitted = []

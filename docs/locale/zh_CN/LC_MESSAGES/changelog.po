@@ -167,6 +167,14 @@ msgstr ""
 "修复强制 live follow-up 确认在禁用本地工具时仍保留 Provider 返回的本地工具调用，导致历史无效、下一条回答看似重复的问题。"
 "请求中仍有提供的 Provider builtin function 不受影响。"
 
+#: ../../../CHANGELOG.md:53
+msgid ""
+"Promote completed streamed text before provider-side tool output, so "
+"Responses web search and Anthropic server-tool activity no longer make "
+"the answer preview disappear before final output."
+msgstr ""
+"在 Provider 端工具输出前提升已经完成的流式文本，避免 Responses 联网搜索和 Anthropic 服务端工具活动使回答预览在最终输出前消失。"
+
 #: ../../../CHANGELOG.md:50
 msgid "0.18.1 - 2026-07-31"
 msgstr ""

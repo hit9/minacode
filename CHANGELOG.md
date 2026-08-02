@@ -49,6 +49,8 @@
 - Prevent a forced live-follow-up acknowledgement from retaining local tool calls returned despite
   tools being disabled, which could leave invalid history and make the next answer look duplicated.
   Provider builtin functions that were still offered remain available.
+- Promote completed streamed text before provider-side tool output, so Responses web search and
+  Anthropic server-tool activity no longer make the answer preview disappear before final output.
 
 
 ## 0.18.1 - 2026-07-31
