@@ -53,7 +53,7 @@ from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
-from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table
+from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table, search_sources_footer
 from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
@@ -339,6 +339,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         )
         self.agent.output_fn = self.agent_output
         self.agent.model.on_stream = self.model_stream_output
+        self.agent.model.on_builtin_call = self.builtin_call_output
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
         self.agent.tools.output_fn = self.tool_output
@@ -653,6 +654,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             if self.ui.color and answer.strip():
                 self.emit()
             self.ui.emit_answer(answer, rule=False)
+            if footer := search_sources_footer(self.agent.turn_sources):
+                self.ui.emit_answer(footer, rule=False)
             if not malformed_tool_call:
                 self.ui.emit_turn_end(started)
             self.session.save_snapshot()
@@ -914,6 +917,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             self.emit(text)
 
         self.with_status_paused(output)
+
+    def builtin_call_output(self, label: str, detail: str) -> None:
+        """Log a tool the provider ran for itself, so the transcript shows it like any other call.
+
+        A host-side search leaves no local tool call to log, and the running status label is gone
+        the moment the turn ends. Without this line the transcript would credit the model with
+        knowledge it went and looked up."""
+        self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.BRANCH)]))
 
     def agent_output(self, text: str = "") -> None:
         # An early promotion is presentation-only: Agent still publishes the same semantic text
@@ -1593,6 +1604,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"provider.max_tokens: {provider.max_tokens or '(server default)'}",
                 f"provider.strict_tools: {provider.strict_tools} (active {resolved.strict_tools_active})",
                 f"provider.extra_body: {json.dumps(provider.extra_body, ensure_ascii=False, sort_keys=True) if provider.extra_body else '(off)'}",
+                f"provider.builtin_tools: {', '.join(str(entry.get('type') or '?') for entry in provider.builtin_tools) or '(off)'}",
                 f"provider.timeout: {provider.timeout}",
                 f"provider.response_timeout: {provider.response_timeout or '(off)'}",
                 f"paths.data_dir: {self.session.data_path()}",
@@ -2044,6 +2056,10 @@ class TuiRuntime:
             if self.loop.ui.color and answer.strip():
                 self.loop.emit()
             self.loop.ui.emit_answer(answer, rule=False)
+        # Emitted outside the promotion check: a promoted answer is already in scrollback without
+        # its sources, so skipping the footer there would drop them exactly when a search ran.
+        if footer := search_sources_footer(self.loop.agent.turn_sources):
+            self.loop.ui.emit_answer(footer, rule=False)
         if not malformed_tool_call:
             self.loop.ui.emit_turn_end(started)
         self.loop.session.save_snapshot()

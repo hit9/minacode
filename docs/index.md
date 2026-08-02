@@ -49,7 +49,7 @@ Working through a repository task in an interactive session.
 |---|---|
 | **[Interaction](usage.md)** | Follow-ups, streaming, keys — how you drive the agent. |
 | **[Commands](commands.md)** | The `/` command reference: status, models, sessions, MCP. |
-| **[Tools](tools.md)** | Read, search, navigate code; edit files; run commands; background jobs. |
+| **[Tools](tools.md)** | Read, search, navigate code; edit files; run commands; background jobs; optional provider-side web search. |
 | **[Sessions](usage.md#sessions)** | Your work is saved, named, and resumable with `/sessions`, `-c`, or `--resume`. |
 | **[MCP](mcp.md)** | Connect external Model Context Protocol servers and use their tools. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |

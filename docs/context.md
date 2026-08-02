@@ -23,6 +23,13 @@ others ignore old reasoning unless a preserved-thinking option is enabled, while
 inside a multi-step tool call. Opaque signatures and encrypted reasoning are returned unchanged
 when their protocol requires them, but are not shown as model-readable text.
 
+[Provider-side tools](tools.md#provider-side-tools) are sent beside them when configured, and what
+they return is different in kind: a web search's results are placed in the model's context by the
+provider, not by minacode. They are not shortened, they do not pass through `Recall`, and the
+context fill cannot anticipate them — a searching turn can arrive noticeably larger than the same
+turn without one. Some providers also replay their own search results on later turns, where they
+count as input tokens again, and bill each search separately from tokens.
+
 ## Keeping context manageable
 
 Large tool results are shortened before they enter the conversation; the agent can retrieve the
@@ -64,7 +71,8 @@ early section can reduce the next request's cache hit.
 <div class="term-shot" role="img" aria-label="Two request bars. Both start with the same long shaded prefix, which the provider reuses; only the shorter tail of each request is processed again."><span>previous  <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░</span></span><span>next      <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░░░░░</span></span><span> </span><span class="fs-dim">          <span class="fs-i fs-goal">█</span> reused prefix    ░ processed again</span></div>
 
 A request is reused only up to its first difference, so a change near the beginning — connecting
-an MCP server, installing a skill, switching models — shortens the reusable prefix. That is why
+an MCP server, installing a skill, switching models, enabling a provider-side tool — shortens the
+reusable prefix. That is why
 the stable sections are placed first.
 
 OpenAI-compatible providers may reuse matching prefixes automatically; minacode supplies a stable

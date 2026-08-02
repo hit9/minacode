@@ -12,6 +12,20 @@
   family, including OpenAI GPT-5 and o-series generations, Anthropic, DeepSeek, Qwen, Kimi, Z.AI,
   OpenRouter, and OpenCode Zen. Unknown providers and future model names retain generic
   pass-through behavior, and `/config` now shows the resolved effort sent to the active model.
+- Add a `provider.builtin_tools` option (a list of tables, default empty) appended verbatim to the
+  `tools` array of whichever protocol the provider speaks, so a host's own server-side tools can be
+  offered to the model. This is how provider web search is enabled: `{ type = "web_search" }` for
+  OpenAI and Qwen on the Responses API, `{ type = "web_search_20250305", name = "web_search" }` for
+  Anthropic, and `{ type = "web_search", web_search = { enable = "True" } }` for Z.AI. Entries are
+  passed through unchanged and are only checked for a non-empty `type`. Enabling one changes the
+  prompt cache key, and `/config` lists what is active. Providers that configure search through the
+  request body instead — OpenRouter's `plugins`, Qwen Chat's `enable_search` — continue to use
+  `provider.extra_body`.
+- Log each host-side tool call the provider reports (`web search  <query>`) as its own transcript
+  line, and show it as a running status phase while it happens. The line is written from the parsed
+  response, so it appears with streaming on or off.
+- List the sources a host-side search reported under the answer. Sources are display only: the
+  stored answer stays exactly what the model wrote, and nothing extra replays to the provider.
 
 
 ## 0.18.1 - 2026-07-31

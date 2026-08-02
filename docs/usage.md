@@ -73,6 +73,9 @@ across the line, and the live counters join it: a retry or attempt notice, and t
 `step N/M` counter once the turn reaches the final fifth of `max_agent_steps`, signaling
 that the turn is about to be cut off.
 
+The working divider above the prompt names the current phase — `thinking`, `responding`, or
+`web search` while a [provider-side tool](tools.md#provider-side-tools) runs inside the request.
+
 <div class="term-shot" role="img" aria-label="The status bar in two states. At rest: provider and model, reasoning, context fill with the cache ratio, and index, each in its role color. While working: the same line rendered as a blue-to-purple sweep with a bright band, plus a step counter near the cap."><span><span class="fs-i fs-dim">idle    </span><span class="fs-i sb-base">dashscope/qwen3.7-plus</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">high</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 23% · cache 98%</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-index">index ✓</span></span><span><span class="fs-i fs-dim">working </span><span class="fs-i sb-sweep-a">dashscope/qwen3.7-plus | high | </span><span class="fs-i sb-sweep-hi">ctx 41% · cache 95%</span><span class="fs-i sb-sweep-b"> | index ✓ | step 160/200</span></span></div>
 
 ## Commands

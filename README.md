@@ -36,6 +36,7 @@ minacode is the former nanocode. It started as a single-file agent small enough 
 - **Resumable sessions:** conversation, tool calls, diffs, and working memory survive `-c` or `--resume`.
 - **Built-in diff viewer:** `/diff` shows the latest round and the net session result.
 - **MCP and skills:** connect Model Context Protocol servers and load Markdown instruction packs on demand.
+- **Provider-side web search:** opt in to a provider's own search tool (OpenAI, Qwen, Anthropic, Z.AI) and see each search and its sources in the transcript.
 - **Provider compatibility:** OpenAI-compatible APIs and Anthropic.
 
 ## Install

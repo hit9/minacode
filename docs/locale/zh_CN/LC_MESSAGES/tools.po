@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-30 23:39-0700\n"
+"POT-Creation-Date: 2026-08-02 01:00-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -34,7 +34,7 @@ msgstr ""
 "minacode 使用工具检查项目并执行操作。你描述目标，由 agent 选择工具。工具调用会在运行时显示在终端中，它们与你输入的 `/` "
 "命令不同。只读工具可以并发运行；可能改变系统的操作会请求确认，除非已启用 `--yolo` 或 `/yolo`。"
 
-#: ../../tools.md:8
+#: ../../tools.md:8 ../../tools.md:68
 msgid "Built-in tools"
 msgstr "内置工具"
 
@@ -188,9 +188,9 @@ msgid ""
 "results are capped matching lines. Segment titles are loaded only on "
 "demand instead of occupying every request."
 msgstr ""
-"按从新到旧的顺序列出已存储的 compacted segment，通过 `seg.N` key 取回摘录，或使用不区分大小写的正则表达式"
-"（例如 `cache prefix|task memory`）搜索标题和文本。列表支持分页，搜索结果会限制匹配行数。Segment 标题仅在需要时"
-"加载，不会占据每次请求。"
+"按从新到旧的顺序列出已存储的 compacted segment，通过 `seg.N` key 取回摘录，或使用不区分大小写的正则表达式（例如 "
+"`cache prefix|task memory`）搜索标题和文本。列表支持分页，搜索结果会限制匹配行数。Segment "
+"标题仅在需要时加载，不会占据每次请求。"
 
 #: ../../tools.md:86
 msgid "**`Note`**"
@@ -267,11 +267,113 @@ msgid ""
 " It appears only after a server is connected; see [MCP](mcp.md)."
 msgstr "描述或调用已连接 MCP server 的工具，并读取其资源。仅在 server 连接后出现；见 [MCP](mcp.md)。"
 
-#: ../../tools.md:116
+#: ../../tools.md:68 ../../tools.md:117
+msgid "Provider-side tools"
+msgstr "Provider 侧工具"
+
+#: ../../tools.md:119
+msgid ""
+"Some providers can run tools <span class=\"marker\">inside the model "
+"request itself</span>, without minacode executing anything. Web search is"
+" the main one: the model searches, reads the results, and answers with "
+"sources, all before the response comes back. This is off by default and "
+"enabled per provider with [`builtin_tools`](configuration.md#provider-"
+"side-tools)."
+msgstr ""
+"部分 Provider 可以<span "
+"class=\"marker\">在模型请求内部</span>执行工具，minacode "
+"不参与执行。最主要的就是联网搜索：模型自己搜索、阅读结果并给出带来源的回答，这一切都在响应返回之前完成。该能力默认关闭，通过 "
+"[`builtin_tools`](configuration.md#provider-side-tools) 按 "
+"Provider 启用。"
+
+#: ../../tools.md:124
+msgid ""
+"They behave differently from the built-in tools above, and the "
+"differences matter:"
+msgstr "它们与上面的内置工具行为不同，而这些差异很重要："
+
+#: ../../tools.md:68
+msgid "Runs where"
+msgstr "执行位置"
+
+#: ../../tools.md:68
+msgid "Your machine"
+msgstr "你的机器"
+
+#: ../../tools.md:68
+msgid "The provider's servers"
+msgstr "Provider 的服务器"
+
+#: ../../tools.md:68
+msgid "Confirmation"
+msgstr "确认"
+
+#: ../../tools.md:68
+msgid "File-changing calls ask first"
+msgstr "涉及改动文件的调用会先询问"
+
+#: ../../tools.md:68
+msgid "Never — the call happens inside one model request"
+msgstr "没有——调用发生在一次模型请求内部"
+
+#: ../../tools.md:68
+msgid "Result size"
+msgstr "结果大小"
+
+#: ../../tools.md:68
+msgid "Shortened, with `Recall` for the rest"
+msgstr "会被截断，其余部分通过 `Recall` 获取"
+
+#: ../../tools.md:68
+msgid "Whatever the provider injects, uncapped"
+msgstr "由 Provider 注入多少就是多少，没有上限"
+
+#: ../../tools.md:68
+msgid "Availability"
+msgstr "可用性"
+
+#: ../../tools.md:68
+msgid "Always"
+msgstr "始终可用"
+
+#: ../../tools.md:68
+msgid "Only if the provider offers it, and you enabled it"
+msgstr "仅当 Provider 提供且你已启用"
+
+#: ../../tools.md:133
+msgid ""
+"A search is visible in three places: a transcript line as it is reported,"
+" a `web search` phase in the working status while it runs, and the "
+"sources listed under the answer."
+msgstr ""
+"一次搜索会在三个地方可见：结果返回时的一行对话记录、执行期间工作状态中的 `web search` "
+"阶段，以及回答下方列出的来源。"
+
+#: ../../tools.md:145
+msgid ""
+"The transcript line is written from the model's response rather than from"
+" the stream, so it appears whether or not streaming is enabled. Sources "
+"are shown only when the provider reports them; some report full "
+"citations, others only the pages they visited, and a few report neither."
+msgstr ""
+"对话记录中的这一行来自解析后的模型响应而非流式事件，因此无论是否启用流式都会出现。只有 Provider "
+"返回来源时才会展示来源；有的 Provider 返回完整引用，有的只返回访问过的页面，也有的两者都不返回。"
+
+#: ../../tools.md:149
+msgid ""
+"Search results are untrusted text placed directly in the model's context,"
+" and nothing pauses to ask before a search runs — the only control is "
+"whether the tool is offered at all. Leave it off when the agent runs "
+"unattended, or when the questions themselves are sensitive."
+msgstr ""
+"搜索结果是直接进入模型 context "
+"的不可信文本，并且搜索执行前不会有任何询问——唯一的控制手段就是是否提供该工具。在无人值守运行、或问题本身涉及敏感信息时，请保持关闭。"
+
+#: ../../tools.md:153
 msgid "Code symbol index"
 msgstr "代码符号索引"
 
-#: ../../tools.md:118
+#: ../../tools.md:155
 msgid ""
 "minacode includes a **code symbol index** for <span "
 "class=\"marker\">structured navigation</span> — finding definitions, "
@@ -282,11 +384,11 @@ msgstr ""
 "minacode 内置**代码符号索引**，用于<span class=\"marker\">结构化导航</span>：无需外部 language"
 " server 即可查找定义、调用者、引用和实现。索引会<span class=\"marker\">按项目分别构建</span>。"
 
-#: ../../tools.md:122
+#: ../../tools.md:159
 msgid "What it is"
 msgstr "它是什么"
 
-#: ../../tools.md:124
+#: ../../tools.md:161
 msgid ""
 "The index is a static database of symbols (functions, classes, methods, "
 "variables, etc.) extracted from your project's source files. It is built "
@@ -296,56 +398,56 @@ msgstr ""
 "索引是从项目源文件中提取的符号（function、class、method、variable 等）静态数据库。它由 [code-symbol-"
 "index](https://github.com/hit9/code-symbol-index) 构建，支持多种语言。"
 
-#: ../../tools.md:129
+#: ../../tools.md:166
 msgid "When the index is available, the `InspectCode` tool can:"
 msgstr "索引可用时，`InspectCode` 可以："
 
-#: ../../tools.md:131
+#: ../../tools.md:168
 msgid "**Find symbols** by name with fuzzy matching"
 msgstr "按名称进行模糊匹配，**查找符号**"
 
-#: ../../tools.md:132
+#: ../../tools.md:169
 msgid "**Inspect a symbol** — show its definition and members"
 msgstr "**检查符号** — 显示其定义和成员"
 
-#: ../../tools.md:133
+#: ../../tools.md:170
 msgid ""
 "**List references** — call, read, write, and type references across the "
 "project"
 msgstr "**列出引用** — 项目中的 call、read、write 和 type 引用"
 
-#: ../../tools.md:134
+#: ../../tools.md:171
 msgid "**Walk call chains** — transitive callers and callees"
 msgstr "**遍历调用链** — 递归查找调用者和被调用者"
 
-#: ../../tools.md:135
+#: ../../tools.md:172
 msgid "**File outlines** — symbol tree of a single file"
 msgstr "**文件 outline** — 显示单个文件的符号树"
 
-#: ../../tools.md:137
+#: ../../tools.md:174
 msgid ""
 "Asking where `MCPManager` is defined returns the symbol itself, not every"
 " line that mentions the word:"
 msgstr "询问 `MCPManager` 在哪里定义时，返回的是符号本身，而不是所有提到该单词的行："
 
-#: ../../tools.md:142
+#: ../../tools.md:179
 msgid ""
 "Each hit carries its file and line range, so the agent can open exactly "
 "the right lines. The same index answers \"who calls this\" and \"what "
 "implements this\" the same way."
 msgstr "每个结果都包含文件和行范围，因此 agent 可以只打开准确位置。同一索引也可以回答“谁调用它”和“谁实现它”。"
 
-#: ../../tools.md:146
+#: ../../tools.md:183
 msgid ""
 "Without an index, `InspectCode` reports that the index is unavailable. "
 "Run `/index` once in a project to build it."
 msgstr "没有索引时，`InspectCode` 会报告索引不可用。在项目中运行一次 `/index` 即可构建。"
 
-#: ../../tools.md:150
+#: ../../tools.md:187
 msgid "Building and syncing"
 msgstr "构建与同步"
 
-#: ../../tools.md:152
+#: ../../tools.md:189
 msgid ""
 "<span class=\"marker\">Run `/index` to build or rebuild the index.</span>"
 " The first build walks every source file; subsequent builds sync from the"
@@ -355,7 +457,7 @@ msgstr ""
 "<span class=\"marker\">运行 `/index` "
 "构建或重建索引。</span>首次构建会扫描所有源文件；后续构建会基于之前的快照同步，因此快得多。加上 `force` 可从头重建。"
 
-#: ../../tools.md:156
+#: ../../tools.md:193
 msgid ""
 "When an index already exists, minacode refreshes it in the background at "
 "startup. After an agent turn, it <span class=\"marker\">automatically "
@@ -366,55 +468,55 @@ msgstr ""
 "class=\"marker\">自动更新少量已修改的源文件</span>；如果大量改动导致索引过期，请运行 `/index`。`/status`"
 " 会显示当前状态："
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "State"
 msgstr "状态"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "Meaning"
 msgstr "含义"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "**synced**"
 msgstr "**synced**"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "Index is current and ready"
 msgstr "索引已同步，可以使用"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "**stale**"
 msgstr "**stale**"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "Out of date; wait for background refresh or run `/index`"
 msgstr "索引已过期；等待后台刷新或运行 `/index`"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "**syncing**"
 msgstr "**syncing**"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "A background refresh is in progress"
 msgstr "正在后台刷新"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "**missing**"
 msgstr "**missing**"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "No index exists yet; run `/index`"
 msgstr "索引尚未创建；运行 `/index`"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "**error**"
 msgstr "**error**"
 
-#: ../../tools.md:145
+#: ../../tools.md:182
 msgid "The index failed to build or sync; `/status` shows the details"
 msgstr "索引构建或同步失败；`/status` 会显示详情"
 
-#: ../../tools.md:169
+#: ../../tools.md:206
 msgid ""
 "The project index is stored in `.code-symbol-index/index.sqlite`. It "
 "covers Python, JavaScript, TypeScript, Go, Rust, C, C++, Java, and more."
@@ -447,3 +549,17 @@ msgstr ""
 #~ " long tasks organized but does not"
 #~ " edit project files."
 #~ msgstr "维护任务 goal、plan、成功检查和已知事实。它帮助组织长任务，但不会编辑项目文件。"
+
+#~ msgid ""
+#~ "Some providers can run tools <span "
+#~ "class=\"marker\">inside the model request "
+#~ "itself</span>, without minacode executing "
+#~ "anything. Web search is the main "
+#~ "one: the model searches, reads the "
+#~ "results, and answers with sources, all"
+#~ " before the response comes back. This"
+#~ " is off by default and enabled "
+#~ "per provider with [`builtin_tools`](configuration.md"
+#~ "#host-side-tools)."
+#~ msgstr ""
+

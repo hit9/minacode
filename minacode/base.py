@@ -66,7 +66,10 @@ CHAT_REASONING_CHOICES = (
 # requires back unmodified. They are minacode's bookkeeping and never reach a request body.
 RESPONSES_OUTPUT_KEY = "_responses_output"
 ANTHROPIC_CONTENT_KEY = "_anthropic_content"
-PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY)
+# Sources a host-side search attached to one assistant message. Stored for rendering and resume,
+# never replayed: the provider already carries its own search state in the echo keys above.
+SEARCH_SOURCES_KEY = "_search_sources"
+PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY, SEARCH_SOURCES_KEY)
 # Protocol-neutral metadata for lifecycle/context checkpoint messages. Provider adapters remove
 # this key while preserving the canonical role/content pair in the conversation log.
 SESSION_EVENT_KEY = "_session_event"
@@ -228,6 +231,7 @@ class ProviderConfig:
     timeout: int = 120
     response_timeout: int = 600
     extra_body: Json = field(default_factory=dict)
+    builtin_tools: tuple[Json, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Json) -> ProviderConfig:
@@ -261,6 +265,7 @@ class ProviderConfig:
             timeout=Config.int(data, "timeout", 120),
             response_timeout=max(0, Config.int(data, "response_timeout", 600)),
             extra_body=Config.table(data, "extra_body"),
+            builtin_tools=Config.table_tuple(data, "builtin_tools"),
         )
 
     def resolve(self) -> ResolvedProvider:
@@ -408,6 +413,27 @@ class Config:
         return value if isinstance((value := data.get(key)), dict) else {}
 
     @staticmethod
+    def table_tuple(data: Json, key: str) -> tuple[Json, ...]:
+        """A list of tables passed through verbatim, checked only for the shape every host shares.
+
+        Entries reach the wire unmodified, so validating their contents would mean tracking each
+        host's tool catalog. `type` is the one field every documented builtin tool carries, and
+        requiring it turns a typo into a config error instead of a provider 400."""
+        value = data.get(key)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ConfigError(f"config value `{key}` must be a list of tables")
+        entries: list[Json] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ConfigError(f"config value `{key}` must be a list of tables")
+            if not (isinstance(item.get("type"), str) and item["type"]):
+                raise ConfigError(f"config value `{key}` entries must each set a non-empty `type`")
+            entries.append(dict(item))
+        return tuple(entries)
+
+    @staticmethod
     def str(data: Json, key: str, default: str = "") -> str:
         return default if (value := data.get(key)) is None else str(value)
 
@@ -477,6 +503,11 @@ model = ""
 # timeout = 120                # transport inactivity
 # response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
+
+# builtin_tools = [{ type = "web_search" }]   # host-side tools, passed to the provider verbatim
+                                              # OpenAI/Qwen: { type = "web_search" }
+                                              # Anthropic:   { type = "web_search_20250305", name = "web_search" }
+                                              # Z.AI:        { type = "web_search", web_search = { enable = "True" } }
 
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-29 07:33-0700\n"
+"POT-Creation-Date: 2026-08-02 00:58-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -124,8 +124,10 @@ msgid "**[Tools](tools.md)**"
 msgstr "**[工具](tools.md)**"
 
 #: ../../index.md:40
-msgid "Read, search, navigate code; edit files; run commands; background jobs."
-msgstr "读取、搜索和导航代码；编辑文件；运行命令与后台任务。"
+msgid ""
+"Read, search, navigate code; edit files; run commands; background jobs; "
+"optional provider-side web search."
+msgstr "读取、搜索、导航代码；编辑文件；执行命令；后台任务；可选的 Provider 侧联网搜索。"
 
 #: ../../index.md:40
 msgid "**[Sessions](usage.md#sessions)**"

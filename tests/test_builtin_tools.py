@@ -1,0 +1,386 @@
+"""Host-side builtin tools: config parsing, pass-through on every protocol, and reported sources."""
+
+import json
+
+import pytest
+from model_harness import _MockClientFactory, _session, _StreamClientFactory
+from test_model_anthropic import _AnthropicMockClientFactory, _AnthropicStreamClientFactory
+
+from minacode.base import SEARCH_SOURCES_KEY, ConfigError, ConfigFile, ProviderConfig
+from minacode.model import ModelClient
+from minacode.render import search_sources_footer
+
+WEB_SEARCH = {"type": "web_search"}
+FUNCTION_TOOL = {
+    "type": "function",
+    "function": {"name": "Bash", "description": "Run a command", "parameters": {"type": "object", "properties": {}}},
+}
+
+
+def _responses_body(status="completed", output=None):
+    return {
+        "id": "resp_test",
+        "object": "response",
+        "created_at": 1,
+        "status": status,
+        "model": "gpt-5",
+        "output": output or [],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    }
+
+
+def test_builtin_tools_parse_as_tables_with_a_type():
+    provider = ProviderConfig.from_dict({"builtin_tools": [{"type": "web_search", "search_context_size": "high"}]})
+
+    assert provider.builtin_tools == ({"type": "web_search", "search_context_size": "high"},)
+
+
+def test_builtin_tools_default_to_empty():
+    assert ProviderConfig.from_dict({}).builtin_tools == ()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"type": "web_search"},  # a bare table, not a list of them
+        [{"name": "web_search"}],  # every documented builtin tool carries a type
+        [{"type": ""}],
+        ["web_search"],
+    ],
+)
+def test_builtin_tools_reject_shapes_no_host_accepts(value):
+    with pytest.raises(ConfigError):
+        ProviderConfig.from_dict({"builtin_tools": value})
+
+
+def test_builtin_tools_are_not_shared_with_the_loaded_config(tmp_path):
+    """A request must not be able to mutate config that outlives it."""
+    s = _session(tmp_path, api="responses", model="gpt-5", builtin_tools=(dict(WEB_SEARCH),))
+
+    ModelClient(s).builtin_tools()[0]["type"] = "mutated"
+
+    assert s.config.provider.builtin_tools == ({"type": "web_search"},)
+
+
+def test_responses_request_appends_builtin_tools_after_function_schemas(tmp_path, monkeypatch):
+    s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
+    model = ModelClient(s)
+    factory = _MockClientFactory([(200, _responses_body())])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+
+    body = json.loads(factory.calls[0].content)
+    assert [tool.get("name") or tool["type"] for tool in body["tools"]] == ["Bash", "web_search"]
+    assert body["tools"][1] == {"type": "web_search"}
+
+
+def test_chat_request_appends_builtin_tools(tmp_path, monkeypatch):
+    """Z.AI and Kimi express builtin tools in the Chat tools array, not the request body."""
+    zai_search = {"type": "web_search", "web_search": {"enable": "True"}}
+    s = _session(tmp_path, model="glm-5", stream=False, builtin_tools=(zai_search,))
+    model = ModelClient(s)
+    factory = _MockClientFactory([(200, {"id": "c", "object": "chat.completion", "created": 1, "model": "glm-5", "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]})])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+
+    body = json.loads(factory.calls[0].content)
+    assert body["tools"] == [FUNCTION_TOOL, zai_search]
+
+
+def test_anthropic_request_appends_builtin_tools(tmp_path, monkeypatch):
+    search = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False, builtin_tools=(search,))
+    model = ModelClient(s)
+    factory = _AnthropicMockClientFactory(
+        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+    )
+    monkeypatch.setattr(model, "anthropic_client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+
+    body = json.loads(factory.calls[0].content)
+    assert [tool["name"] for tool in body["tools"]] == ["Bash", "web_search"]
+    assert body["tools"][1] == search
+
+
+def test_builtin_tools_are_sent_without_any_function_tools(tmp_path, monkeypatch):
+    """Compaction and live follow-ups request with no function tools; search must still be offered."""
+    s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
+    model = ModelClient(s)
+    factory = _MockClientFactory([(200, _responses_body())])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert json.loads(factory.calls[0].content)["tools"] == [{"type": "web_search"}]
+
+
+def test_builtin_tools_change_the_prompt_cache_key(tmp_path):
+    """Enabling search changes the host-rendered tool prefix, so the cached prefix differs."""
+    plain = _session(tmp_path, api="responses", model="gpt-5")
+    searching = _session(tmp_path, api="responses", model="gpt-5", builtin_tools=(WEB_SEARCH,))
+
+    plain_key = ModelClient(plain).prompt_cache_key(plain.config.provider, [FUNCTION_TOOL])
+    searching_key = ModelClient(searching).prompt_cache_key(searching.config.provider, [FUNCTION_TOOL])
+
+    assert plain_key and searching_key and plain_key != searching_key
+
+
+def test_responses_result_collects_openai_citations_and_qwen_sources(tmp_path, monkeypatch):
+    """OpenAI cites inline; Qwen reports sources only on the search call. Both must be read."""
+    s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
+    model = ModelClient(s)
+    output = [
+        {
+            "id": "ws_1",
+            "type": "web_search_call",
+            "status": "completed",
+            "action": {"type": "search", "query": "httpx timeout", "sources": [{"url": "https://qwen.example/a", "title": "A"}]},
+        },
+        {
+            "id": "msg_1",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "sunny",
+                    "annotations": [{"type": "url_citation", "url": "https://openai.example/b", "title": "B"}],
+                }
+            ],
+        },
+    ]
+    factory = _MockClientFactory([(200, _responses_body(output=output))])
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, _, content = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert content == "sunny"
+    assert assistant[SEARCH_SOURCES_KEY] == [
+        {"url": "https://qwen.example/a", "title": "A"},
+        {"url": "https://openai.example/b", "title": "B"},
+    ]
+
+
+def test_anthropic_result_collects_cited_and_raw_search_results(tmp_path, monkeypatch):
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
+    model = ModelClient(s)
+    content_blocks = [
+        {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "shannon"}},
+        {
+            "type": "web_search_tool_result",
+            "tool_use_id": "srv_1",
+            "content": [{"type": "web_search_result", "url": "https://wiki.example/s", "title": "Shannon", "encrypted_content": "x"}],
+        },
+        {
+            "type": "text",
+            "text": "born 1916",
+            "citations": [{"type": "web_search_result_location", "url": "https://wiki.example/s", "title": "Shannon", "cited_text": "…"}],
+        },
+    ]
+    factory = _AnthropicMockClientFactory(
+        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": content_blocks, "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+    )
+    monkeypatch.setattr(model, "anthropic_client", factory)
+
+    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+
+    # The same URL is both a raw result and a citation; it is reported once.
+    assert assistant[SEARCH_SOURCES_KEY] == [{"url": "https://wiki.example/s", "title": "Shannon"}]
+
+
+def test_anthropic_search_error_reports_no_sources(tmp_path, monkeypatch):
+    """A failed search returns an error object where results normally are, and cites nothing."""
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
+    model = ModelClient(s)
+    blocks = [
+        {"type": "web_search_tool_result", "tool_use_id": "srv_1", "content": {"type": "web_search_tool_result_error", "error_code": "max_uses_exceeded"}},
+        {"type": "text", "text": "could not search"},
+    ]
+    factory = _AnthropicMockClientFactory(
+        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": blocks, "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+    )
+    monkeypatch.setattr(model, "anthropic_client", factory)
+
+    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert SEARCH_SOURCES_KEY not in assistant
+
+
+def test_chat_result_collects_message_annotations(tmp_path, monkeypatch):
+    """OpenRouter's web plugin cites through message annotations."""
+    s = _session(tmp_path, model="openai/gpt-5", stream=False)
+    model = ModelClient(s)
+    message = {
+        "role": "assistant",
+        "content": "hi",
+        "annotations": [{"type": "url_citation", "url_citation": {"url": "https://router.example/c", "title": "C"}}],
+    }
+    factory = _MockClientFactory([(200, {"id": "c", "object": "chat.completion", "created": 1, "model": "openai/gpt-5", "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]})])
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, _, _ = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert assistant[SEARCH_SOURCES_KEY] == [{"url": "https://router.example/c", "title": "C"}]
+
+
+def test_stored_sources_never_replay_to_the_provider(tmp_path, monkeypatch):
+    """Sources are presentation state: they persist, but no protocol sends them back."""
+    s = _session(tmp_path, model="gpt-4", stream=False)
+    model = ModelClient(s)
+    history = [{"role": "assistant", "content": "hi", SEARCH_SOURCES_KEY: [{"url": "https://example.com", "title": "T"}]}]
+    factory = _MockClientFactory([(200, {"id": "c", "object": "chat.completion", "created": 1, "model": "gpt-4", "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]})])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request(history, [])
+
+    sent = json.loads(factory.calls[0].content)["messages"]
+    assert sent == [{"role": "assistant", "content": "hi"}]
+    assert ModelClient(s).responses_input(history) == [{"role": "assistant", "content": "hi"}]
+
+
+def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
+    """A host-side search has no tool line of its own; the status label is the only signal."""
+    s = _session(tmp_path, api="responses", model="gpt-5")
+    model = ModelClient(s)
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    events = [
+        {"type": "response.output_item.added", "item": {"id": "ws_1", "type": "web_search_call", "status": "in_progress"}},
+        {"type": "response.output_text.delta", "delta": "sunny"},
+        {"type": "response.completed", "response": _responses_body(output=[{"id": "m", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "sunny"}]}])},
+    ]
+    monkeypatch.setattr(model, "client", _StreamClientFactory(events))
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert ("web search", "") in streamed
+
+
+def test_anthropic_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
+    s = _session(tmp_path, model="claude-3", api="anthropic")
+    model = ModelClient(s)
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    message = {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": [], "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}}
+    events = [
+        ("message_start", {"type": "message_start", "message": message}),
+        ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {}}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("content_block_start", {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "sunny"}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}}),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    monkeypatch.setattr(model, "anthropic_client", _AnthropicStreamClientFactory(events))
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert ("web search", "") in streamed
+
+
+def test_responses_result_reports_each_search_for_the_transcript(tmp_path, monkeypatch):
+    """The log line is the only lasting record: the status label vanishes when the turn ends."""
+    s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
+    model = ModelClient(s)
+    reported = []
+    model.on_builtin_call = lambda label, detail: reported.append((label, detail))
+    output = [
+        {"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "httpx timeout configuration"}},
+        {"id": "fc_1", "type": "function_call", "call_id": "c1", "name": "Bash", "arguments": "{}"},
+        {"id": "m", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "sunny"}]},
+    ]
+    monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
+
+    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+
+    # The local function call has its own tool line already; only the host-side call is reported.
+    assert reported == [("web search", "httpx timeout configuration")]
+
+
+def test_anthropic_result_reports_each_search_for_the_transcript(tmp_path, monkeypatch):
+    s = _session(tmp_path, model="claude-3", api="anthropic", stream=False)
+    model = ModelClient(s)
+    reported = []
+    model.on_builtin_call = lambda label, detail: reported.append((label, detail))
+    blocks = [
+        {"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "shannon birth date"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srv_1", "content": []},
+        {"type": "text", "text": "1916"},
+    ]
+    factory = _AnthropicMockClientFactory(
+        [(200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-3", "content": blocks, "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})]
+    )
+    monkeypatch.setattr(model, "anthropic_client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert reported == [("web search", "shannon birth date")]
+
+
+def test_searches_are_reported_with_streaming_disabled(tmp_path, monkeypatch):
+    """Reporting comes from the parsed result, so it does not depend on stream events."""
+    s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
+    model = ModelClient(s)
+    reported = []
+    model.on_builtin_call = lambda label, detail: reported.append((label, detail))
+    model.on_stream = None
+    output = [{"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "q"}}]
+    monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert reported == [("web search", "q")]
+
+
+def test_a_search_without_a_query_still_reports(tmp_path, monkeypatch):
+    """Qwen omits the action query; the call is still worth a line."""
+    s = _session(tmp_path, api="responses", model="qwen3-max", stream=False, builtin_tools=(WEB_SEARCH,))
+    model = ModelClient(s)
+    reported = []
+    model.on_builtin_call = lambda label, detail: reported.append((label, detail))
+    output = [{"id": "ws_1", "type": "web_search_call", "status": "completed"}]
+    monkeypatch.setattr(model, "client", _MockClientFactory([(200, _responses_body(output=output))]))
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert reported == [("web search", "")]
+
+
+def test_builtin_status_labels_read_as_a_phase():
+    assert ModelClient.builtin_status("web_search_call") == "web search"
+    assert ModelClient.builtin_status("web_search") == "web search"
+    assert ModelClient.builtin_status("code_interpreter_call") == "code interpreter"
+    assert ModelClient.builtin_status("") == "host tool"
+
+
+def test_sources_footer_dedupes_by_url_and_keeps_first_title():
+    sources = [
+        {"url": "https://a.example", "title": "First"},
+        {"url": "https://a.example", "title": "Second"},
+        {"url": "https://b.example", "title": ""},
+    ]
+
+    footer = search_sources_footer(sources)
+
+    assert footer.splitlines() == ["", "**Sources**", "", "1. [First](https://a.example)", "2. [https://b.example](https://b.example)"]
+
+
+def test_sources_footer_caps_a_long_list():
+    footer = search_sources_footer([{"url": f"https://e.example/{index}", "title": f"T{index}"} for index in range(14)])
+
+    assert footer.splitlines()[-1] == "…and 4 more"
+    assert footer.count("https://e.example") == 10
+
+
+def test_no_sources_render_nothing():
+    assert search_sources_footer([]) == ""
+    assert search_sources_footer([{"title": "no url"}]) == ""
+
+
+def test_default_config_template_documents_builtin_tools():
+    assert "builtin_tools" in ConfigFile.DEFAULT_TEXT

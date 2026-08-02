@@ -36,6 +36,7 @@ minacode 即原来的 nanocode。它最初是一个小到可以称作 *nano* 的
 - **可恢复 session：** 对话、工具调用、diff 和工作记忆可通过 `-c` 或 `--resume` 恢复。
 - **内置 diff viewer：** `/diff` 展示最新一轮改动以及整个 session 的累计变更。
 - **MCP 与 skills：** 按需连接 Model Context Protocol server，加载 Markdown 指令包。
+- **Provider 侧联网搜索：** 可选启用 Provider 自带的搜索工具（OpenAI、Qwen、Anthropic、Z.AI），每次搜索及其来源都会显示在对话记录中。
 - **Provider 兼容：** 支持 OpenAI-compatible API 与 Anthropic。
 
 ## 安装

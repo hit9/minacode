@@ -23,6 +23,7 @@ from minacode.base import (
     MODEL_REQUEST_RETRIES,
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
+    SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
     ActiveResource,
     Json,
@@ -94,6 +95,10 @@ class ModelClient:
         self.cancel_requested = threading.Event()
         self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
         self.on_stream: Callable[[str, str], None] | None = None
+        # Called with (label, detail) for each host-side tool call a response reports. Reported
+        # from the parsed result rather than the stream, so a search is logged the same way when
+        # streaming is off and on a frontend that shows no live status at all.
+        self.on_builtin_call: Callable[[str, str], None] | None = None
 
     def cancel(self) -> None:
         self.cancel_requested.set()
@@ -141,8 +146,8 @@ class ModelClient:
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
         if api == "responses":
             payload: Json = {"input": self.responses_input(Text.value(projected))}
-            if tools:
-                payload["tools"] = self.responses_tool_schemas(tools)
+            if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools()]:
+                payload["tools"] = request_tools
         elif api == "anthropic":
             system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
             estimated_messages = projected
@@ -167,12 +172,12 @@ class ModelClient:
                         ]
                     estimated_messages.append(estimated)
             payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
-            if tools:
-                payload["tools"] = self.anthropic_tool_schemas(tools)
+            if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools()]:
+                payload["tools"] = request_tools
         else:
             payload = {"messages": self.chat_messages(projected)}
-            if tools:
-                payload["tools"] = tools
+            if request_tools := [*(tools or []), *self.builtin_tools()]:
+                payload["tools"] = request_tools
 
         def prompt_value(value: object) -> object:
             if isinstance(value, list):
@@ -346,8 +351,8 @@ class ModelClient:
         params: Json = {"model": provider.model, "messages": messages, "stream": stream}
         if provider.max_tokens > 0:
             params["max_tokens"] = provider.max_tokens
-        if tools:
-            params["tools"] = tools
+        if request_tools := [*(tools or []), *self.builtin_tools()]:
+            params["tools"] = request_tools
             params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
         prompt_cache_key = self.prompt_cache_key(provider, tools)
@@ -512,8 +517,8 @@ class ModelClient:
         }
         if provider.max_tokens > 0:
             params["max_output_tokens"] = provider.max_tokens
-        if tools:
-            params["tools"] = self.responses_tool_schemas(tools)
+        if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools()]:
+            params["tools"] = request_tools
             params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
         if prompt_cache_key := self.prompt_cache_key(provider, tools):
@@ -571,9 +576,14 @@ class ModelClient:
                     promote_output()
                 elif event_type == "response.output_item.added":
                     item = self.message_field(event, "item")
-                    if self.message_field(item, "type") == "function_call":
+                    item_type = str(self.message_field(item, "type") or "")
+                    if item_type == "function_call":
                         tool_seen = True
                         promote_output()
+                    elif item_type.endswith("_call"):
+                        # A host-side tool runs inside the request with no local tool line to show
+                        # for it, so the status label is the only sign the turn is still moving.
+                        self._emit_stream(self.builtin_status(item_type), "")
                 elif event_type == "response.function_call_arguments.delta":
                     tool_seen = True
                     promote_output()
@@ -698,10 +708,36 @@ class ModelClient:
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts) or str(self.message_field(result, "output_text") or "")
+        for item in saved_output:
+            item_type = str(item.get("type") or "")
+            if item_type.endswith("_call") and item_type != "function_call":
+                action = item.get("action")
+                self.report_builtin_call(item_type, action.get("query") if isinstance(action, dict) else "")
         assistant: Json = {"role": "assistant", "content": text or None, RESPONSES_OUTPUT_KEY: saved_output}
+        if sources := self.responses_sources(saved_output):
+            assistant[SEARCH_SOURCES_KEY] = sources
         if tool_calls:
             assistant["tool_calls"] = tool_calls
         return assistant, calls, text
+
+    @classmethod
+    def responses_sources(cls, saved_output: list[Json]) -> list[Json]:
+        """Sources a Responses host attached to one response.
+
+        Two hosts, two places: OpenAI cites inline through `url_citation` annotations on the
+        message, while Qwen returns no citations at all and reports sources only on the search
+        call. Reading both keeps one renderer honest across them."""
+        groups: list[Any] = []
+        for item in saved_output:
+            if item.get("type") == "message":
+                for part in item.get("content") or []:
+                    if isinstance(part, dict):
+                        groups.append(part.get("annotations"))
+                continue
+            action = item.get("action")
+            groups.append(action.get("sources") if isinstance(action, dict) else None)
+            groups.append(item.get("results"))
+        return cls.collect_sources(*groups)
 
     @staticmethod
     def dump_message_item(item: Any) -> Json:
@@ -767,6 +803,51 @@ class ModelClient:
             default_headers={"User-Agent": HTTP_USER_AGENT},
         )
 
+    def report_builtin_call(self, name: str, detail: object) -> None:
+        if self.on_builtin_call is not None:
+            self.on_builtin_call(self.builtin_status(name), str(detail or "").strip())
+
+    @staticmethod
+    def builtin_status(name: str) -> str:
+        """A status label for a host-side tool, derived from whatever the protocol calls it.
+
+        Responses names the output item (`web_search_call`), Messages names the tool
+        (`web_search`); both read as a phase once the suffix and underscores are gone."""
+        return (name.removesuffix("_call").replace("_", " ") or "host tool").strip()
+
+    @staticmethod
+    def collect_sources(*groups: Any) -> list[Json]:
+        """Flatten host-side search sources into `{"url", "title"}` records, first mention wins.
+
+        Every host reports the same two facts under a different name, so the shapes are normalized
+        here rather than at each call site. A record without a URL is dropped: it cannot be shown
+        as a source, and a title alone would suggest attribution that isn't there."""
+        sources: dict[str, Json] = {}
+        for group in groups:
+            for raw in group or []:
+                item = raw if isinstance(raw, dict) else ModelClient.dump_message_item(raw)
+                if not isinstance(item, dict):
+                    continue
+                # OpenAI and OpenRouter nest the fields one level down under `url_citation`.
+                nested = item.get("url_citation")
+                if isinstance(nested, dict):
+                    item = nested
+                url = str(item.get("url") or "")
+                if url and url not in sources:
+                    sources[url] = {"url": url, "title": str(item.get("title") or "")}
+        return list(sources.values())
+
+    def builtin_tools(self) -> list[Json]:
+        """Host-side tool entries, copied so a request cannot mutate the loaded config.
+
+        These reach every protocol's `tools` array unchanged. Each host happens to express its
+        builtin tools in the shape of the protocol it speaks — Chat for Z.AI and Kimi, Messages for
+        Anthropic, Responses for OpenAI and Qwen — so one pass-through serves all of them, and a
+        host that configures search through the request body instead (OpenRouter's `plugins`,
+        Qwen Chat's `enable_search`) is already served by `extra_body`.
+        """
+        return [dict(entry) for entry in self.session.config.provider.builtin_tools]
+
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
         configured = provider.prompt_cache_key
         if configured == "off":
@@ -781,6 +862,9 @@ class ModelClient:
             raw_function = schema.get("function")
             function = raw_function if isinstance(raw_function, dict) else {}
             tool_names.append(str(function.get("name") or schema.get("name") or "(unknown)"))
+        # Builtin tools are part of the cached prefix too: enabling search changes the tool block
+        # the host renders ahead of the system prompt, so it must change the cache key with it.
+        tool_names.extend(str(entry.get("type") or "(unknown)") for entry in provider.builtin_tools)
         payload = {
             "api": resolved.api,
             "cwd": self.session.cwd,
@@ -834,6 +918,8 @@ class ModelClient:
                         elif block_type == "tool_use":
                             tool_seen = True
                             promote_output()
+                        elif block_type == "server_tool_use":
+                            self._emit_stream(self.builtin_status(str(self.message_field(block, "name") or "")), "")
                         continue
                     if event_type == "content_block_stop":
                         if int(self.message_field(event, "index") or 0) in text_blocks:
@@ -869,8 +955,8 @@ class ModelClient:
             "max_tokens": provider.output_token_budget(),
         }
         # Thinking pins temperature to its default; sending any other value is rejected.
-        if tools:
-            params["tools"] = self.anthropic_tool_schemas(tools)
+        if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools()]:
+            params["tools"] = request_tools
             params["tool_choice"] = {"type": "auto"}
         effort = provider.reasoning_effort()
         budget = int(CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(effort, 4096))
@@ -975,6 +1061,10 @@ class ModelClient:
         saved_content = [self.dump_message_item(block) for block in content_blocks]
         for block in content_blocks:
             block_type = self.message_field(block, "type")
+            if block_type == "server_tool_use":
+                raw_input = self.message_field(block, "input")
+                query = raw_input.get("query") if isinstance(raw_input, dict) else ""
+                self.report_builtin_call(str(self.message_field(block, "name") or ""), query)
             if block_type == "text":
                 text_parts.append(str(self.message_field(block, "text") or ""))
             elif block_type == "tool_use":
@@ -987,9 +1077,27 @@ class ModelClient:
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts)
         assistant: Json = {"role": "assistant", "content": text or None, ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
+        if sources := self.anthropic_sources(saved_content):
+            assistant[SEARCH_SOURCES_KEY] = sources
         if tool_calls:
             assistant["tool_calls"] = tool_calls
         return assistant, calls, text
+
+    @classmethod
+    def anthropic_sources(cls, saved_content: list[Json]) -> list[Json]:
+        """Sources from a Messages response: cited text first, then the raw search results.
+
+        A `web_search_tool_result` carries an error object rather than a result list when the
+        search itself failed, which `collect_sources` skips as having no URL."""
+        groups: list[Any] = []
+        for block in saved_content:
+            if not isinstance(block, dict):
+                continue
+            groups.append(block.get("citations"))
+            if block.get("type") == "web_search_tool_result":
+                content = block.get("content")
+                groups.append(content if isinstance(content, list) else None)
+        return cls.collect_sources(*groups)
 
     def apply_provider_params(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider | None = None) -> None:
         resolved = resolved or provider.resolve()
@@ -1038,6 +1146,11 @@ class ModelClient:
         details = [item for item in (self.dump_message_item(raw) for raw in raw_details) if item]
         if details:
             data["reasoning_details"] = details
+        # Chat hosts that cite (OpenAI's search models, OpenRouter's web plugin) hang annotations
+        # off the message. Hosts that report search on the response instead of the message are not
+        # covered here; their sources stay where the provider put them.
+        if sources := self.collect_sources(self.message_field(message, "annotations")):
+            data[SEARCH_SOURCES_KEY] = sources
         tool_calls: list[Json] = []
         for call in self.message_field(message, "tool_calls") or []:
             function = self.message_field(call, "function")

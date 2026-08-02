@@ -113,6 +113,43 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     after a server is connected; see [MCP](mcp.md).
 ::::
 
+(provider-side-tools)=
+## Provider-side tools
+
+Some providers can run tools <span class="marker">inside the model request itself</span>, without
+minacode executing anything. Web search is the main one: the model searches, reads the results,
+and answers with sources, all before the response comes back. This is off by default and enabled
+per provider with [`builtin_tools`](configuration.md#provider-side-tools).
+
+They behave differently from the built-in tools above, and the differences matter:
+
+| | Built-in tools | Provider-side tools |
+|---|---|---|
+| Runs where | Your machine | The provider's servers |
+| Confirmation | File-changing calls ask first | Never — the call happens inside one model request |
+| Result size | Shortened, with `Recall` for the rest | Whatever the provider injects, uncapped |
+| Availability | Always | Only if the provider offers it, and you enabled it |
+
+A search is visible in three places: a transcript line as it is reported, a `web search` phase in
+the working status while it runs, and the sources listed under the answer.
+
+```text
+  ├ web search httpx timeout configuration
+The client accepts a `timeout` argument taking either a float or a `Timeout` object.
+
+**Sources**
+
+1. [Timeouts — HTTPX](https://example.com/httpx/timeouts)
+```
+
+The transcript line is written from the model's response rather than from the stream, so it
+appears whether or not streaming is enabled. Sources are shown only when the provider reports
+them; some report full citations, others only the pages they visited, and a few report neither.
+
+Search results are untrusted text placed directly in the model's context, and nothing pauses to
+ask before a search runs — the only control is whether the tool is offered at all. Leave it off
+when the agent runs unattended, or when the questions themselves are sensitive.
+
 ## Code symbol index
 
 minacode includes a **code symbol index** for <span class="marker">structured navigation</span> —

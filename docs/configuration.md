@@ -62,6 +62,7 @@ Most users can leave these unset.
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
 | `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
 | `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body |
+| `builtin_tools` | `[]` | Tools the provider runs itself, passed through verbatim; see below |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
 
 Streaming is enabled by default for all three protocols. If a compatible endpoint does not
@@ -78,6 +79,42 @@ effort to the nearest accepted value. Unknown OpenAI-compatible endpoints and mo
 the generic path rather than an allowlist; set `api` and `chat_reasoning` explicitly if automatic
 selection is wrong. `/config` shows the resolved reasoning effort, while `/status` shows the active
 model and cache usage reported by the provider.
+
+## Provider-side tools
+
+Some providers run tools themselves — web search above all — instead of asking minacode to run
+them; see [Provider-side tools](tools.md#provider-side-tools) for how they behave in a session.
+`builtin_tools` is a list of tool entries appended verbatim to the `tools` array of whichever
+protocol the provider speaks, so the wire shape is the provider's own:
+
+```toml
+[provider]
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "qwen3-max"
+api = "responses"
+builtin_tools = [{ type = "web_search" }, { type = "web_extractor" }]
+```
+
+| Provider | Entry |
+|---|---|
+| OpenAI (Responses) | `{ type = "web_search" }`, optionally with `search_context_size` or `filters` |
+| Qwen (Responses) | `{ type = "web_search" }`; also `web_extractor` and `code_interpreter` |
+| Anthropic | `{ type = "web_search_20250305", name = "web_search", max_uses = 5 }` |
+| Z.AI / BigModel | `{ type = "web_search", web_search = { enable = "True" } }` |
+
+Two providers configure search through the request body rather than the tools array, so they use
+[`extra_body`](#optional-provider-settings) instead: OpenRouter takes `plugins = [{ id = "web" }]` (or an `:online`
+model suffix), and Qwen's Chat Completions endpoint takes `enable_search` with `search_options`.
+The DeepSeek API has no web search.
+
+minacode does not validate entries beyond requiring a `type`, since the catalog belongs to each
+provider; an unsupported entry surfaces as that provider's own error. Enabling a builtin tool
+changes the cached prompt prefix, and the prompt cache key changes with it. `/config` lists what
+is active.
+
+When a provider reports its sources, minacode lists them under the answer. Those sources are
+display only: the stored answer stays exactly what the model wrote, and nothing extra replays to
+the provider on later turns.
 
 With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
 successful image request is remembered for that provider and model during the session; only an

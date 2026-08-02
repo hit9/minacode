@@ -23,6 +23,7 @@ from rich.text import Text as RichText
 
 from minacode.base import (
     MODEL_REQUEST_RETRIES,
+    Json,
     LogBlock,
     LogEdge,
     LogLine,
@@ -57,6 +58,28 @@ def markdown_table(headers: list[str], rows: list[tuple]) -> str:
             *("| " + " | ".join(cell(value) for value in row) + " |" for row in rows),
         ]
     )
+
+
+MAX_RENDERED_SOURCES = 10
+
+
+def search_sources_footer(sources: list[Json]) -> str:
+    """A markdown source list for the host-side searches a turn performed, or "" for none.
+
+    This is presentation only. The sources stay on the messages that carry them, so the answer
+    reaching history is exactly what the model wrote, and nothing new replays to the provider on
+    the next turn."""
+    seen: dict[str, str] = {}
+    for source in sources:
+        if isinstance(source, dict) and (url := str(source.get("url") or "")) and url not in seen:
+            seen[url] = str(source.get("title") or "").strip() or url
+    if not seen:
+        return ""
+    shown = list(seen.items())[:MAX_RENDERED_SOURCES]
+    lines = [f"{index}. [{title}]({url})" for index, (url, title) in enumerate(shown, start=1)]
+    if len(seen) > len(shown):
+        lines.append(f"…and {len(seen) - len(shown)} more")
+    return "\n".join(["", "**Sources**", "", *lines])
 
 
 class Theme:

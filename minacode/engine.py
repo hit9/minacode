@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 
 from minacode.base import (
+    SEARCH_SOURCES_KEY,
     Json,
     MalformedToolCallError,
     ModelError,
@@ -61,6 +62,9 @@ class Agent:
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         self.cancel_requested = threading.Event()
+        # Sources the host's own search reported during the last turn, in the order they appeared.
+        # The UI renders them under the answer; the turn's stored messages are left untouched.
+        self.turn_sources: list[Json] = []
         # Called with the queued messages when they are flushed into the turn, so the UI can move
         # them from the live queue region up into the scrollback log. Set by CommandLoop.
         self.on_queue_flush: Callable[[list[str]], None] | None = None
@@ -76,6 +80,7 @@ class Agent:
 
     def run(self, user_input: str | UserInput) -> str:
         self.cancel_requested.clear()
+        self.turn_sources = []
         self.session.clear_quick_hints()  # a new turn invalidates whatever the previous turn offered
         self.session.state.round_count += 1
         self.session.state.turn_step = 0
@@ -103,6 +108,7 @@ class Agent:
                         self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                        self.record_sources(assistant)
                         self.raise_if_cancelled()
                         assistant, tool_calls, content = self.correct_textual_tool_calls(
                             assistant,
@@ -116,6 +122,7 @@ class Agent:
                         )
                         if request.pending and not content.strip():
                             assistant, followup_tool_calls, content = self.model.request(request.messages, [])
+                            self.record_sources(assistant)
                             self.raise_if_cancelled()
                             assistant, followup_tool_calls, content = self.correct_textual_tool_calls(
                                 assistant,
@@ -191,11 +198,22 @@ class Agent:
             while True:
                 try:
                     assistant, tool_calls, content = self.model.request(correction_messages, retry_tools)
+                    self.record_sources(assistant)
                     break
                 except ModelRequestRetry:
                     continue
             self.raise_if_cancelled()
         return assistant, tool_calls, content
+
+    def record_sources(self, assistant: Json) -> None:
+        """Accumulate host-side search sources across every request the turn makes.
+
+        A search can happen in any step, not only the one that answers, so collecting per request
+        is what lets the footer describe the whole turn. Duplicates are resolved by URL at render
+        time, which also covers a request that was retried or corrected."""
+        for source in assistant.get(SEARCH_SOURCES_KEY) or []:
+            if isinstance(source, dict):
+                self.turn_sources.append(source)
 
     def checkpoint_turn(self, turn_messages: list[Json]) -> None:
         self.session._active_turn_messages = list(turn_messages)

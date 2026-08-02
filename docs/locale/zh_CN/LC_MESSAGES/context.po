@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-30 23:39-0700\n"
+"POT-Creation-Date: 2026-08-02 00:58-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -29,8 +29,8 @@ msgid ""
 "keeps the agent informed while giving supported providers exact earlier "
 "user and tool boundaries to reuse."
 msgstr ""
-"每次请求包含的不只是最新消息。minacode 先放置稳定的 session context，再发送一份 append-only 对话日志。"
-"这样既能让 agent 掌握完整信息，也让支持缓存的 provider 可以精确复用之前的 user 和 tool 边界。"
+"每次请求包含的不只是最新消息。minacode 先放置稳定的 session context，再发送一份 append-only "
+"对话日志。这样既能让 agent 掌握完整信息，也让支持缓存的 provider 可以精确复用之前的 user 和 tool 边界。"
 
 #: ../../context.md:7
 msgid "What the model receives"
@@ -75,10 +75,27 @@ msgstr ""
 "reasoning，但在多步工具调用期间仍需要它。协议要求时，不透明签名与加密 reasoning 会原样回传，但不会被当作模型可读文本显示。"
 
 #: ../../context.md:26
+msgid ""
+"[Provider-side tools](tools.md#provider-side-tools) are sent beside them "
+"when configured, and what they return is different in kind: a web "
+"search's results are placed in the model's context by the provider, not "
+"by minacode. They are not shortened, they do not pass through `Recall`, "
+"and the context fill cannot anticipate them — a searching turn can arrive"
+" noticeably larger than the same turn without one. Some providers also "
+"replay their own search results on later turns, where they count as input"
+" tokens again, and bill each search separately from tokens."
+msgstr ""
+"配置后，[Provider "
+"侧工具](tools.md#provider-side-tools)也会一并发送，而它们返回的内容性质不同：联网搜索的结果由 "
+"Provider 而非 minacode 放入模型 context。这些内容不会被截断，也不经过 "
+"`Recall`，context 占用无法提前预估——包含搜索的一轮可能明显比不含搜索的同一轮更大。部分 Provider "
+"还会在后续轮次重放自己的搜索结果，届时会再次计入输入 token，并且每次搜索会在 token 之外单独计费。"
+
+#: ../../context.md:33
 msgid "Keeping context manageable"
 msgstr "控制 context 大小"
 
-#: ../../context.md:28
+#: ../../context.md:35
 msgid ""
 "Large tool results are shortened before they enter the conversation; the "
 "agent can retrieve the complete result later with `Recall`. Repeated "
@@ -88,11 +105,11 @@ msgstr ""
 "过大的工具结果进入对话前会被缩短；agent 之后可以通过 `Recall` 取回完整结果。重复的 skill 指令和 MCP "
 "描述不会再次完整发送，而是引用首次出现的完整内容。"
 
-#: ../../context.md:32
+#: ../../context.md:39
 msgid "Compaction"
 msgstr "Compaction"
 
-#: ../../context.md:34
+#: ../../context.md:41
 msgid ""
 "As the estimated request approaches `runtime.max_context_tokens`, "
 "minacode **compacts**: the older part of the conversation is replaced by "
@@ -108,7 +125,7 @@ msgstr ""
 "请求，因此 provider 会丢弃的 reasoning 不会导致过早 compaction。触发时会预留所配置的 provider "
 "输出上限（未指定时为 16K）、工具 schema 以及至少 4K 的安全余量。Session 会在同一轮中继续，因此长任务无需停止。"
 
-#: ../../context.md:41
+#: ../../context.md:48
 msgid ""
 "The checkpoint summary in the active context is lossy, but each "
 "compaction also captures a bounded verbatim excerpt of the evicted "
@@ -116,10 +133,11 @@ msgid ""
 "session log remain the cold source of truth, so compaction does not "
 "rewrite them."
 msgstr ""
-"active context 中 checkpoint 的摘要是有损的，但每次 compaction 都会把被淘汰的消息逐字捕获为一个有界的 **history "
-"segment**。append-only session 日志中较早的快照仍是冷数据式的真实来源，因此 compaction 不会改写它们。"
+"active context 中 checkpoint 的摘要是有损的，但每次 compaction 都会把被淘汰的消息逐字捕获为一个有界的 "
+"**history segment**。append-only session 日志中较早的快照仍是冷数据式的真实来源，因此 compaction"
+" 不会改写它们。"
 
-#: ../../context.md:47
+#: ../../context.md:54
 msgid ""
 "Segment titles do not occupy every request. The agent uses "
 "`RecallContext` to list them newest first, regex-search stored titles and"
@@ -128,11 +146,12 @@ msgid ""
 "tool-call history until a compaction checkpoint consolidates the complete"
 " current state."
 msgstr ""
-"Segment 标题不会占据每次请求。Agent 使用 `RecallContext` 按从新到旧的顺序列出标题、通过正则搜索已存储的标题和"
-"文本，或取回指定的 `seg.N` 摘录。`Note` 可以查看当前 goal、plan、facts 和 checks；在 compaction "
-"checkpoint 汇总完整当前状态之前，更新会保留在原始 tool-call history 中。"
+"Segment 标题不会占据每次请求。Agent 使用 `RecallContext` "
+"按从新到旧的顺序列出标题、通过正则搜索已存储的标题和文本，或取回指定的 `seg.N` 摘录。`Note` 可以查看当前 "
+"goal、plan、facts 和 checks；在 compaction checkpoint 汇总完整当前状态之前，更新会保留在原始 "
+"tool-call history 中。"
 
-#: ../../context.md:52
+#: ../../context.md:59
 msgid ""
 "Run `/compact` to compact immediately rather than waiting for the "
 "threshold, for example before starting a large refactor. `/status` "
@@ -141,11 +160,11 @@ msgstr ""
 "运行 `/compact` 可以立即压缩，而不必等待阈值；例如可在大型重构前使用。`/status` 会显示当前 session 已执行的 "
 "compaction 次数。"
 
-#: ../../context.md:55
+#: ../../context.md:62
 msgid "Prompt caching"
 msgstr "Prompt 缓存"
 
-#: ../../context.md:57
+#: ../../context.md:64
 msgid ""
 "Prompt caching lets a provider reuse work for an unchanged beginning of a"
 " request. The next request usually begins with the same instructions, "
@@ -156,22 +175,22 @@ msgid ""
 "server, changing installed skills, switching models, or otherwise "
 "changing an early section can reduce the next request's cache hit."
 msgstr ""
-"Prompt 缓存允许 provider 复用请求开头未变化部分的计算。下一次请求通常以相同的指令、环境、工具和早期对话开始，因此只需处理"
-"新增的尾部。Note 更新和 resume 事件会追加到对话中，因此不会移动更早的 breakpoint。一次 compaction 会有意开启新的 cache "
-"epoch。连接 MCP server、改变已安装的 "
-"skill、切换模型或修改前部内容，都会降低下一次请求的缓存命中。"
+"Prompt 缓存允许 provider "
+"复用请求开头未变化部分的计算。下一次请求通常以相同的指令、环境、工具和早期对话开始，因此只需处理新增的尾部。Note 更新和 resume "
+"事件会追加到对话中，因此不会移动更早的 breakpoint。一次 compaction 会有意开启新的 cache epoch。连接 MCP "
+"server、改变已安装的 skill、切换模型或修改前部内容，都会降低下一次请求的缓存命中。"
 
-#: ../../context.md:66
+#: ../../context.md:73
 msgid ""
 "A request is reused only up to its first difference, so a change near the"
 " beginning — connecting an MCP server, installing a skill, switching "
-"models — shortens the reusable prefix. That is why the stable sections "
-"are placed first."
+"models, enabling a provider-side tool — shortens the reusable prefix. "
+"That is why the stable sections are placed first."
 msgstr ""
-"请求只会复用到首次出现差异的位置。因此，靠前位置发生变化——例如连接 MCP server、安装 skill "
-"或切换模型——会缩短可复用前缀。这也是稳定内容放在前面的原因。"
+"请求只会复用到第一处差异为止，因此靠前的改动——连接 MCP server、安装 skill、切换模型、启用 "
+"Provider 侧工具——都会缩短可复用前缀。这也是把稳定内容放在最前面的原因。"
 
-#: ../../context.md:70
+#: ../../context.md:78
 msgid ""
 "OpenAI-compatible providers may reuse matching prefixes automatically; "
 "minacode supplies a stable cache key where the provider supports one. For"
@@ -182,11 +201,11 @@ msgstr ""
 " key。对于 Anthropic，minacode 会显式将工具和 system 指令标记为临时可缓存前缀。不同 provider "
 "的支持方式和统计口径可能不同。"
 
-#: ../../context.md:74
+#: ../../context.md:82
 msgid "Checking the hit rate"
 msgstr "检查命中率"
 
-#: ../../context.md:76
+#: ../../context.md:84
 msgid ""
 "`/status` reports cache-read tokens for the whole session and latest "
 "request, plus cache-write tokens when the provider exposes them:"
@@ -194,13 +213,13 @@ msgstr ""
 "`/status` 会显示整个 session 和最近一次请求的 cache-read token；如果 provider 提供统计，还会显示 "
 "cache-write token："
 
-#: ../../context.md:81
+#: ../../context.md:89
 msgid ""
 "The latest-request ratio also shows live in the status bar, beside the "
 "context fill, updating with each response."
 msgstr "最近一次请求的命中率也会实时显示在状态栏中，紧跟上下文占用，随每次响应更新。"
 
-#: ../../context.md:84
+#: ../../context.md:92
 msgid ""
 "The ratio varies with the provider, model, prompt length, and "
 "conversation. When request prefixes line up, it <span "
@@ -246,3 +265,4 @@ msgstr ""
 #~ "for the whole session, and again "
 #~ "for the most recent request:"
 #~ msgstr "`/status` 会显示 provider 统计的缓存 prompt token：一组是整个 session，另一组是最近一次请求："
+
