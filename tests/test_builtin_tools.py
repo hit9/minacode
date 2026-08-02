@@ -683,7 +683,7 @@ def test_builtin_labels_read_as_one_phase_across_protocols():
     assert builtin_tool_label("") == "Provider Tool"
 
 
-def test_sources_footer_dedupes_by_url_and_keeps_first_title():
+def test_sources_footer_dedupes_by_url_in_first_mention_order():
     sources = [
         {"url": "https://a.example", "title": "First"},
         {"url": "https://a.example", "title": "Second"},
@@ -1066,6 +1066,20 @@ def test_known_providers_without_server_tools_keep_builtin_tools_inactive(tmp_pa
         s = _session(tmp_path, url=url, model=model, api=api, builtin_tools=(WEB_SEARCH,))
         assert ModelClient(s).builtin_tools() == []
         assert s.config.provider.builtin_tools == (WEB_SEARCH,)
+
+
+def test_an_unsupported_entry_fails_the_request_without_breaking_read_only_paths(tmp_path):
+    """Refusing an entry belongs to the request that would send it, not to measuring the payload.
+
+    `/status`, the status bar, and session resume all estimate the request, and raising there took
+    down the whole frontend over config a request has not tried to use yet."""
+    s = _session(tmp_path, url="https://api.openai.com/v1", model="gpt-5", api="responses", builtin_tools=({"type": "file_search"},))
+    model = ModelClient(s)
+
+    assert model.estimated_request_tokens([{"role": "user", "content": "hi"}], [FUNCTION_TOOL]) > 0
+    assert ContextManager(s, model).update_current_tokens("system") > 0
+    with pytest.raises(ModelError):
+        model.builtin_tools()
 
 
 def test_estimation_and_send_share_the_builtin_tools_policy(tmp_path, monkeypatch):

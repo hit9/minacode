@@ -18,7 +18,6 @@ from json_repair import repair_json
 
 from minacode.base import (
     ANTHROPIC_CONTENT_KEY,
-    ANTHROPIC_DEFAULT_MAX_TOKENS,
     HTTP_USER_AGENT,
     MODEL_REQUEST_RETRIES,
     PAUSED_TURN_KEY,
@@ -36,6 +35,7 @@ from minacode.base import (
     ToolArgs,
     ToolCall,
     ToolError,
+    builtin_function_names,
     builtin_tool_label,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
@@ -145,12 +145,15 @@ class ModelClient:
 
         resolved = self.session.config.provider.resolve()
         api = resolved.api
+        # Measuring a payload must never fail on it: an entry this wire rejects is the request's
+        # error to raise, not something that should break the status bar, /status, or resume.
+        builtin = self.builtin_tools(resolved, strict=False)
         # Payload builders would otherwise expand every local image to base64 merely to throw the
         # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
         if api == "responses":
             payload: Json = {"input": self.responses_input(Text.value(projected))}
-            if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
+            if request_tools := [*self.responses_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         elif api == "anthropic":
             system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
@@ -176,11 +179,11 @@ class ModelClient:
                         ]
                     estimated_messages.append(estimated)
             payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
-            if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
+            if request_tools := [*self.anthropic_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         else:
             payload = {"messages": self.chat_messages(projected)}
-            if request_tools := [*(tools or []), *self.builtin_tools(resolved)]:
+            if request_tools := [*(tools or []), *builtin]:
                 payload["tools"] = request_tools
 
         def prompt_value(value: object) -> object:
@@ -300,13 +303,7 @@ class ModelClient:
         request. This removes them from the effective list, the top-level tool_calls field, and the
         provider-native echo fields, while preserving text, reasoning, citations, and provider-side
         tool items and declared builtin functions that are not local tool calls."""
-        builtin_names: set[str] = set()
-        for entry in self.builtin_tools():
-            if entry.get("type") != "builtin_function":
-                continue
-            function = entry.get("function")
-            if isinstance(function, dict) and isinstance(function.get("name"), str):
-                builtin_names.add(function["name"])
+        builtin_names = set(builtin_function_names(self.builtin_tools()))
 
         def call_name(item: object) -> str:
             if not isinstance(item, dict):
@@ -917,7 +914,7 @@ class ModelClient:
                     sources[url] = {"url": url, "title": str(item.get("title") or "")}
         return list(sources.values())
 
-    def builtin_tools(self, resolved: ResolvedProvider | None = None) -> list[Json]:
+    def builtin_tools(self, resolved: ResolvedProvider | None = None, *, strict: bool = True) -> list[Json]:
         """Provider-side tool entries, copied so a request cannot mutate the loaded config.
 
         These reach every protocol's `tools` array unchanged. Each host expresses its builtin
@@ -929,6 +926,10 @@ class ModelClient:
         outside that wire stay configured but inactive, so switching models never requires
         destructive config edits. A malformed or unsupported entry on the active wire still fails
         locally. Unknown hosts keep the generic pass-through.
+
+        ``strict=False`` reports the same entries without raising, for read-only accounting such as
+        token estimation: refusing an unsupported entry belongs to the request that would send it,
+        not to the status bar, `/status`, or the resume that merely measures the payload.
         """
 
         provider = self.session.config.provider
@@ -940,6 +941,8 @@ class ModelClient:
         if issue is not None:
             if issue.reason == "wire":
                 return []
+            if not strict:
+                return [dict(entry) for entry in entries]
             raise ModelError(
                 f"provider.builtin_tools {', '.join(issue.configured)} are not supported on the {resolved.api} wire "
                 f"for {provider.model or '(no model)'} ({resolved.host or 'this provider'}) yet; "
@@ -1096,12 +1099,11 @@ class ModelClient:
             params["tools"] = request_tools
             params["tool_choice"] = {"type": "auto"}
         effort = provider.reasoning_effort()
-        budget = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
         thinking_params = anthropic_thinking_params(
             provider.model,
             provider.reasoning,
             effort,
-            min(ANTHROPIC_DEFAULT_MAX_TOKENS - 1024, budget),
+            self.anthropic_thinking_budget(effort, provider.output_token_budget()),
         )
         params.update(thinking_params)
         thinking = thinking_params.get("thinking")
@@ -1109,6 +1111,18 @@ class ModelClient:
         if provider.temperature is not None and not thinking_active:
             params["temperature"] = provider.temperature
         return params
+
+    @staticmethod
+    def anthropic_thinking_budget(effort: str, max_tokens: int) -> int:
+        """The manual thinking budget for one effort, kept inside the request's own output budget.
+
+        The API rejects a budget that is not strictly below max_tokens, so a smaller configured
+        `provider.max_tokens` has to lower the budget with it rather than fail the request. The
+        1,024-token floor is the documented minimum; below that the budget cannot be satisfied at
+        all and the provider's own error is the honest answer.
+        Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking"""
+        budget = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
+        return max(1024, min(max_tokens - 1024, budget))
 
     def anthropic_messages(self, messages: list[Json]) -> list[Json]:
         converted: list[Json] = []
@@ -1252,7 +1266,9 @@ class ModelClient:
             params["temperature"] = provider.temperature
         extra: Json = {}
         if reasoning_enabled and chat_reasoning == "reasoning":
-            extra["reasoning"] = {"effort": effort}
+            # The resolved effort, like every other control below: a host that documents a reduced
+            # scale must fold this one too, instead of the fold silently applying to its siblings.
+            extra["reasoning"] = {"effort": resolved.reasoning_effort or effort}
         elif chat_reasoning == "reasoning_effort":
             if value := resolved.reasoning_effort:
                 params["reasoning_effort"] = value

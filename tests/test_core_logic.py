@@ -297,14 +297,15 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
 @pytest.mark.parametrize(
     ("model", "expected"),
     (
-        # Extended thinking is the only mode at 4.5 and earlier.
-        ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        # Extended thinking is the only mode at 4.5 and earlier. The high budget (8,192) does not
+        # fit under the default max_tokens (8,192), so it is lowered to stay a valid request.
+        ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
         (
             "claude-opus-4-5-20251101",
-            {"thinking": {"type": "enabled", "budget_tokens": 8192}, "output_config": {"effort": "high"}},
+            {"thinking": {"type": "enabled", "budget_tokens": 7168}, "output_config": {"effort": "high"}},
         ),
-        ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
-        ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
+        ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
         # The 4.6 generation accepts both; adaptive is the documented recommendation.
         ("claude-sonnet-4-6", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
         # 4.7 and later reject "enabled" outright.
@@ -375,6 +376,40 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
     params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
     assert params["thinking"] == {"type": "enabled", "budget_tokens": 4096}
     assert params["output_config"] == {"effort": "medium"}
+
+
+def test_anthropic_thinking_budget_stays_under_the_requested_output_budget(tmp_path):
+    """The API rejects a budget that is not strictly below max_tokens, so max_tokens has to lower it.
+
+    The default max_tokens (8,192) already collides with the `high` budget, so this is the ordinary
+    configuration rather than an exotic one."""
+    client = ModelClient(session(tmp_path))
+    provider = client.session.config.provider
+    provider.url, provider.api, provider.model = "https://api.anthropic.com", "anthropic", "claude-3-7-sonnet-20250219"
+
+    for max_tokens, reasoning in ((8_192, "high"), (4_096, "max"), (2_048, "xhigh"), (0, "max")):
+        provider.max_tokens, provider.reasoning = max_tokens, reasoning
+        params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+        budget = params["thinking"]["budget_tokens"]
+        assert 1_024 <= budget < params["max_tokens"], (max_tokens, reasoning, budget)
+
+    # A budget that already fits is left alone.
+    provider.max_tokens, provider.reasoning = 32_000, "medium"
+    assert client.anthropic_params([{"role": "user", "content": "hi"}], None)["thinking"]["budget_tokens"] == 4_096
+
+
+def test_openrouter_reasoning_effort_uses_the_resolved_level(tmp_path):
+    """Every other control sends the resolved effort; the top-level reasoning object must too, or a
+    documented per-model fold would silently apply to some hosts and not others."""
+    client = ModelClient(session(tmp_path))
+    params: dict = {}
+
+    # Kimi documents low/high/max, so "medium" folds up on any host whose profile carries that scale.
+    client.apply_provider_params(
+        params, ProviderConfig(url="https://api.moonshot.ai/v1", model="kimi-k3", chat_reasoning="reasoning", reasoning="medium")
+    )
+
+    assert params["extra_body"] == {"reasoning": {"effort": "high"}}
 
 
 def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
