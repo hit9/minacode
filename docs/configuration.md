@@ -106,11 +106,10 @@ builtin_tools = [{ type = "web_search" }, { type = "web_extractor" }]
 One provider configures search elsewhere, through [`extra_body`](#optional-provider-settings):
 Qwen's Chat Completions endpoint takes `enable_search`. DeepSeek has no web search.
 
-Entries are protocol-specific: they match the provider's documented API wire and required shape,
-and known providers only accept entries whose lifecycle minacode supports. An unsupported entry or
-a wire mismatch is refused locally with an explanation before the request is sent. Switching
-`/api` may therefore require updating `builtin_tools` (or `extra_body`) to match. `/config` lists
-what is active.
+Builtin tools only work with the APIs shown in the table. If you switch to another API, minacode
+keeps the setting but does not send those tools; switching back enables them again. Use `/config`
+to check whether they are active. If minacode reports an unsupported entry, compare it with the
+example for your provider.
 
 With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
 successful image request is remembered for that provider and model during the session; only an

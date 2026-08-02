@@ -167,6 +167,23 @@ def test_builtin_tools_change_the_prompt_cache_key(tmp_path):
     assert plain_key and searching_key and plain_key != searching_key
 
 
+def test_inactive_builtin_tools_do_not_change_the_prompt_cache_key(tmp_path):
+    """The cache key describes the projected request, not inactive configuration."""
+    plain = _session(tmp_path, url="https://dashscope.aliyuncs.com/compatible-mode/v1", api="chat", model="glm-5.2")
+    searching = _session(
+        tmp_path,
+        url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api="chat",
+        model="glm-5.2",
+        builtin_tools=(WEB_SEARCH,),
+    )
+
+    plain_key = ModelClient(plain).prompt_cache_key(plain.config.provider, [FUNCTION_TOOL])
+    searching_key = ModelClient(searching).prompt_cache_key(searching.config.provider, [FUNCTION_TOOL])
+
+    assert plain_key == searching_key
+
+
 def test_responses_result_collects_openai_citations_and_qwen_sources(tmp_path, monkeypatch):
     """OpenAI cites inline; Qwen reports sources only on the search call. Both must be read."""
     s = _session(tmp_path, api="responses", model="gpt-5", stream=False, builtin_tools=(WEB_SEARCH,))
@@ -847,31 +864,24 @@ def _chat_body(model="qwen3.8-max-preview"):
     }
 
 
-def test_qwen_chat_rejects_responses_builtin_tools_before_the_transport(tmp_path, monkeypatch):
-    """The reported failure: Responses-only entries must fail locally on the Chat wire."""
+def test_aliyun_chat_keeps_responses_builtin_tools_inactive(tmp_path, monkeypatch):
+    """A model on the same gateway may use Chat while configured Responses tools stay dormant."""
     s = _session(
         tmp_path,
-        url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model="qwen3.8-max-preview",
+        url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        model="glm-5.2",
         api="chat",
         stream=False,
         builtin_tools=({"type": "web_search"}, {"type": "web_extractor"}),
     )
     model = ModelClient(s)
-    factory = _MockClientFactory([(200, _chat_body())])
+    factory = _MockClientFactory([(200, _chat_body("glm-5.2"))])
     monkeypatch.setattr(model, "client", factory)
 
-    with pytest.raises(ModelError) as excinfo:
-        model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
-    # Deterministic configuration error: refused before any SDK/network I/O, no retry.
-    assert factory.calls == []
-    message = str(excinfo.value)
-    assert "chat" in message
-    assert "web_search" in message
-    assert "web_extractor" in message
-    assert "api=responses" in message
-    assert "extra_body.enable_search" in message
+    assert json.loads(factory.calls[0].content)["tools"] == [FUNCTION_TOOL]
+    assert s.config.provider.builtin_tools == ({"type": "web_search"}, {"type": "web_extractor"})
 
 
 def test_qwen_responses_keeps_builtin_tools_unchanged(tmp_path, monkeypatch):
@@ -938,7 +948,7 @@ def test_kimi_chat_accepts_builtin_function_unchanged(tmp_path, monkeypatch):
 
 
 def test_anthropic_builtin_tools_are_protocol_scoped(tmp_path, monkeypatch):
-    """Anthropic server tools travel over Messages; forcing them onto Chat fails locally."""
+    """Anthropic server tools travel over Messages and stay inactive on Chat."""
     search = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
     s = _session(tmp_path, url="https://api.anthropic.com/v1", model="claude-3", api="anthropic", stream=False, builtin_tools=(search,))
     model = ModelClient(s)
@@ -963,12 +973,13 @@ def test_anthropic_builtin_tools_are_protocol_scoped(tmp_path, monkeypatch):
     model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
     assert [tool["name"] for tool in json.loads(factory.calls[0].content)["tools"]] == ["Bash", "web_search"]
 
-    # The same known-provider configuration forced onto Chat is rejected locally.
+    # The same known-provider configuration forced onto Chat is retained but not projected.
     s.config.provider.api = "chat"
-    with pytest.raises(ModelError) as excinfo:
-        model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
-    message = str(excinfo.value)
-    assert "anthropic" in message and "chat" in message
+    chat_factory = _MockClientFactory([(200, _chat_body("claude-3"))])
+    monkeypatch.setattr(model, "client", chat_factory)
+    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    assert json.loads(chat_factory.calls[0].content)["tools"] == [FUNCTION_TOOL]
+    assert s.config.provider.builtin_tools == (search,)
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
@@ -1038,8 +1049,8 @@ def test_known_provider_rejects_unsupported_builtin_tool_types(tmp_path):
         assert supported in message
 
 
-def test_known_providers_without_server_tools_reject_builtin_tools(tmp_path):
-    """DeepSeek, Kimi Code, and OpenCode have no provider-side tools contract."""
+def test_known_providers_without_server_tools_keep_builtin_tools_inactive(tmp_path):
+    """A shared config remains usable when the selected provider has no builtin-tool wire."""
     cases = [
         ("https://api.deepseek.com/v1", "deepseek-chat", "chat"),
         ("https://api.kimi.com/coding/v1", "k3", "chat"),
@@ -1047,23 +1058,27 @@ def test_known_providers_without_server_tools_reject_builtin_tools(tmp_path):
     ]
     for url, model, api in cases:
         s = _session(tmp_path, url=url, model=model, api=api, builtin_tools=(WEB_SEARCH,))
-        with pytest.raises(ModelError) as excinfo:
-            ModelClient(s).builtin_tools()
-        assert "no documented provider-side tools" in str(excinfo.value)
+        assert ModelClient(s).builtin_tools() == []
+        assert s.config.provider.builtin_tools == (WEB_SEARCH,)
 
 
 def test_estimation_and_send_share_the_builtin_tools_policy(tmp_path, monkeypatch):
-    """The estimator must not estimate a payload the send path would reject, and vice versa."""
+    """The estimator and sender project the same active subset on each wire."""
     s = _session(
         tmp_path, url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3.8-max-preview", api="chat", stream=False, builtin_tools=(WEB_SEARCH,)
     )
     model = ModelClient(s)
 
-    # Both paths reject the same mismatch through the same policy.
-    with pytest.raises(ModelError):
-        model.estimated_request_tokens([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
-    with pytest.raises(ModelError):
-        model.chat_request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL], allow_stream=False)
+    # Chat ignores the configured Responses entry in both paths.
+    inactive = model.estimated_request_tokens([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    s.config.provider.builtin_tools = ()
+    without_builtin = model.estimated_request_tokens([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    assert inactive == without_builtin
+    s.config.provider.builtin_tools = (WEB_SEARCH,)
+    chat_factory = _MockClientFactory([(200, _chat_body())])
+    monkeypatch.setattr(model, "client", chat_factory)
+    model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
+    assert json.loads(chat_factory.calls[0].content)["tools"] == [FUNCTION_TOOL]
 
     # On the valid wire, the estimator consumes the same builtin entry the request sends.
     s.config.provider.api = "responses"

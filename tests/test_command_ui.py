@@ -577,7 +577,7 @@ def test_diff_view_h_l_and_tab_switch_tabs_from_file_preview(key, expected_tab):
 
 
 def test_api_command_reports_an_incompatible_builtin_tools_configuration_without_clearing_it(tmp_path):
-    """Switching /api warns about a builtin/wire mismatch and never rewrites provider config."""
+    """Switching /api reports inactive builtin tools and never rewrites provider config."""
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -586,14 +586,13 @@ def test_api_command_reports_an_incompatible_builtin_tools_configuration_without
     provider.api = "responses"
     provider.builtin_tools = ({"type": "web_search"}, {"type": "web_extractor"})
 
-    assert command_loop.api("chat") == "Set provider.api = chat (wire: chat); configured builtin_tools require responses"
+    assert command_loop.api("chat") == "Set provider.api = chat (wire: chat); builtin_tools inactive on chat"
     # The requested API value is applied and the provider configuration is left intact.
     assert provider.api == "chat"
     assert provider.builtin_tools == ({"type": "web_search"}, {"type": "web_extractor"})
 
-    # The next request fails locally on the mismatched wire.
-    with pytest.raises(ModelError):
-        ModelClient(command_loop.session).chat_request([{"role": "user", "content": "hi"}], [], allow_stream=False)
+    # The next request projects no provider-native tools on the mismatched wire.
+    assert ModelClient(command_loop.session).builtin_tools() == []
 
     # Switching back restores the working Responses configuration without erasing it.
     assert command_loop.api("responses") == "Set provider.api = responses (wire: responses)"
@@ -601,7 +600,7 @@ def test_api_command_reports_an_incompatible_builtin_tools_configuration_without
 
 
 def test_api_command_reports_when_no_wire_accepts_the_configured_builtin_tools(tmp_path):
-    """DeepSeek has no provider-side tools channel, so /api reports the empty supported set."""
+    """DeepSeek has no provider-side tools channel, so the shared config stays inactive."""
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.url = "https://api.deepseek.com/v1"
@@ -609,8 +608,25 @@ def test_api_command_reports_when_no_wire_accepts_the_configured_builtin_tools(t
     provider.key = "sk-test"
     provider.builtin_tools = ({"type": "web_search"},)
 
-    assert command_loop.api("chat") == "Set provider.api = chat (wire: chat); configured builtin_tools are not valid for this provider"
+    assert command_loop.api("chat") == "Set provider.api = chat (wire: chat); builtin_tools inactive on chat"
     assert provider.builtin_tools == ({"type": "web_search"},)
+
+
+def test_config_distinguishes_configured_and_active_builtin_tools(tmp_path):
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    provider.model = "qwen3.8-max-preview"
+    provider.api = "chat"
+    provider.builtin_tools = ({"type": "web_search"}, {"type": "web_extractor"})
+
+    inactive = command_loop.config("")
+    assert "provider.builtin_tools: web_search, web_extractor" in inactive
+    assert "provider.resolved_builtin_tools: inactive on chat: web_search, web_extractor" in inactive
+
+    provider.api = "responses"
+    active = command_loop.config("")
+    assert "provider.resolved_builtin_tools: active: web_search, web_extractor" in active
 
 
 def test_api_command_uses_the_same_entry_policy_as_the_request_boundary(tmp_path):

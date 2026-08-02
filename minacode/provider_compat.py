@@ -67,10 +67,9 @@ class CompatibilityProfile:
     suppress_temperature: bool = False
     suppress_temperature_models: tuple[str, ...] = ()
     # Provider-side tool policy: which resolved wires may carry which provider-native JSON
-    # subsets, plus optional user guidance naming an alternative configuration channel. ``None``
-    # keeps generic pass-through for unknown hosts; an empty mapping means no wire accepts tools.
+    # subsets. ``None`` keeps generic pass-through for unknown hosts; an empty mapping means no
+    # wire accepts tools.
     builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
-    builtin_tools_hint: str | None = None
 
     @staticmethod
     def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
@@ -96,7 +95,6 @@ class ResolvedProvider:
     prompt_cache_key: bool
     strict_tools_active: bool
     builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
-    builtin_tools_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -222,7 +220,6 @@ def _compatibility_profile(data: ProviderData) -> CompatibilityProfile:
         suppress_temperature=data.get("suppress_temperature", False),
         suppress_temperature_models=data.get("suppress_temperature_models", ()),
         builtin_tools_by_wire=data.get("builtin_tools_by_wire"),
-        builtin_tools_hint=data.get("builtin_tools_hint"),
     )
 
 

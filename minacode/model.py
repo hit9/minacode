@@ -858,10 +858,10 @@ class ModelClient:
         — so one pass-through serves all of them. Qwen Chat configures search through
         `extra_body.enable_search` instead.
 
-        Documented providers restrict which resolved wire may carry each provider-native entry and
-        its required shape. A mismatch fails locally before the SDK is called, because the provider
-        would reject the same JSON with a schema error or because minacode cannot cover the tool's
-        approval/file/container lifecycle yet. Unknown hosts keep the generic pass-through.
+        Documented providers restrict which wire may carry each provider-native entry. Entries
+        outside that wire stay configured but inactive, so switching models never requires
+        destructive config edits. A malformed or unsupported entry on the active wire still fails
+        locally. Unknown hosts keep the generic pass-through.
         """
 
         provider = self.session.config.provider
@@ -872,31 +872,13 @@ class ModelClient:
         issue = builtin_tools_issue(resolved, entries)
         if issue is not None:
             if issue.reason == "wire":
-                raise ModelError(self._builtin_tools_mismatch(resolved, ", ".join(issue.configured)))
+                return []
             raise ModelError(
                 f"provider.builtin_tools {', '.join(issue.configured)} are not supported on the {resolved.api} wire "
                 f"for {provider.model or '(no model)'} ({resolved.host or 'this provider'}) yet; "
                 f"supported provider tools: {', '.join(issue.supported_entries) or '(none)'}"
             )
         return [dict(entry) for entry in entries]
-
-    def _builtin_tools_mismatch(self, resolved: ResolvedProvider, types: str) -> str:
-        """An actionable local error for provider tools configured on an incompatible wire."""
-
-        provider = self.session.config.provider
-        wires = sorted(resolved.builtin_tools_by_wire or {})
-        if wires:
-            remedy = "use api=" + ", ".join(wires)
-            if resolved.builtin_tools_hint:
-                remedy += ", or remove builtin_tools and " + resolved.builtin_tools_hint
-        else:
-            remedy = "this provider has no documented provider-side tools through the tools array"
-            if resolved.builtin_tools_hint:
-                remedy += "; " + resolved.builtin_tools_hint
-        return (
-            f"provider.builtin_tools {types} are not valid on the {resolved.api} wire "
-            f"for {provider.model or '(no model)'} ({resolved.host or 'this provider'}); {remedy}"
-        )
 
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
         configured = provider.prompt_cache_key
@@ -914,7 +896,7 @@ class ModelClient:
             tool_names.append(str(function.get("name") or schema.get("name") or "(unknown)"))
         # Builtin tools are part of the cached prefix too: enabling search changes the tool block
         # the host renders ahead of the system prompt, so it must change the cache key with it.
-        tool_names.extend(str(entry.get("type") or "(unknown)") for entry in provider.builtin_tools)
+        tool_names.extend(str(entry.get("type") or "(unknown)") for entry in self.builtin_tools(resolved))
         payload = {
             "api": resolved.api,
             "cwd": self.session.cwd,

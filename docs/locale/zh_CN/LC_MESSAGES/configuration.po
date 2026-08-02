@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-02 03:43-0700\n"
+"POT-Creation-Date: 2026-08-02 04:00-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -428,18 +428,16 @@ msgstr ""
 
 #: ../../configuration.md:109
 msgid ""
-"Entries are protocol-specific: they match the provider's documented API "
-"wire and required shape, and known providers only accept entries whose "
-"lifecycle minacode supports. An unsupported entry or a wire mismatch is "
-"refused locally with an explanation before the request is sent. Switching"
-" `/api` may therefore require updating `builtin_tools` (or `extra_body`) "
-"to match. `/config` lists what is active."
+"Builtin tools only work with the APIs shown in the table. If you switch "
+"to another API, minacode keeps the setting but does not send those tools;"
+" switching back enables them again. Use `/config` to check whether they "
+"are active. If minacode reports an unsupported entry, compare it with the"
+" example for your provider."
 msgstr ""
-"条目是协议相关的：它们必须匹配 Provider 文档规定的 API wire 和必要结构，且已知 Provider "
-"只接受 minacode 已覆盖其生命周期的条目。不支持的条目或 wire 不匹配会在请求发送前本地拒绝并给出说明。"
-"切换 `/api` 时可能需要同步更新 `builtin_tools`（或 `extra_body`）。`/config` 会列出当前生效的配置。"
+"Builtin tools 只适用于表中标明的 API。切换到其他 API 后，minacode 会保留配置，但不会发送这些工具；"
+"切换回来后会重新启用。使用 `/config` 检查工具是否生效。如果 minacode 报告条目不受支持，请对照对应 Provider 的示例检查。"
 
-#: ../../configuration.md:115
+#: ../../configuration.md:114
 msgid ""
 "With `image_input = \"auto\"`, minacode sends attached images using the "
 "selected standard API. A successful image request is remembered for that "
@@ -453,11 +451,11 @@ msgstr ""
 "session 中为该 provider 和模型记住其支持识图；只有明确表示不支持图片的响应才会禁用后续图片提交。如果已经知道 endpoint "
 "的能力，可设为 `on` 或 `off`。切换到禁用图片输入的 provider 或模型后，历史图片仍会以可读文本标签保留。"
 
-#: ../../configuration.md:121
+#: ../../configuration.md:120
 msgid "Runtime"
 msgstr "Runtime"
 
-#: ../../configuration.md:123
+#: ../../configuration.md:122
 msgid "Optional; the defaults shown are used when omitted."
 msgstr "以下设置均可省略，表中列出其默认值。"
 
@@ -563,17 +561,17 @@ msgstr "`theme`"
 msgid "Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme`"
 msgstr "终端主题：`auto`、`light` 或 `dark`；`--theme` 可覆盖"
 
-#: ../../configuration.md:137
+#: ../../configuration.md:136
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:140
+#: ../../configuration.md:139
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:147
+#: ../../configuration.md:146
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -584,7 +582,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:151
+#: ../../configuration.md:150
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -594,7 +592,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:155
+#: ../../configuration.md:154
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "
@@ -792,3 +790,48 @@ msgstr ""
 #~ "未知的 OpenAI-compatible endpoint "
 #~ "会使用通用路径。如果自动选择的协议不正确，请显式设置 `api`。`/status` 会显示当前模型以及 "
 #~ "provider 报告的缓存用量。"
+
+#~ msgid ""
+#~ "Entries are protocol-specific: they "
+#~ "match the provider's documented API wire"
+#~ " and required shape, and known "
+#~ "providers only accept entries whose "
+#~ "lifecycle minacode supports. An unsupported"
+#~ " entry or a wire mismatch is "
+#~ "refused locally with an explanation "
+#~ "before the request is sent. Switching"
+#~ " `/api` may therefore require updating "
+#~ "`builtin_tools` (or `extra_body`) to match."
+#~ " `/config` lists what is active."
+#~ msgstr ""
+#~ "条目是协议相关的：它们必须匹配 Provider 文档规定的 API wire "
+#~ "和必要结构，且已知 Provider 只接受 minacode "
+#~ "已覆盖其生命周期的条目。不支持的条目或 wire 不匹配会在请求发送前本地拒绝并给出说明。切换 "
+#~ "`/api` 时可能需要同步更新 `builtin_tools`（或 "
+#~ "`extra_body`）。`/config` 会列出当前生效的配置。"
+
+#~ msgid ""
+#~ "Entries are protocol-specific: they "
+#~ "match the provider's documented API wire"
+#~ " and required shape. For a known "
+#~ "provider, entries configured for another "
+#~ "wire stay in the configuration but "
+#~ "are omitted from the request; switching"
+#~ " `/api` back activates them again. "
+#~ "This lets one provider configuration "
+#~ "serve models on different wires without"
+#~ " removing settings. `/api` reports inactive"
+#~ " entries, and `/config` shows both "
+#~ "the configured list and its active "
+#~ "projection. An entry on its intended "
+#~ "wire is still refused locally when "
+#~ "its shape or lifecycle is unsupported."
+#~ " Unknown providers retain generic pass-"
+#~ "through behavior."
+#~ msgstr ""
+#~ "条目与协议相关：必须匹配 Provider 文档规定的 API wire "
+#~ "和结构。对于已知 Provider，配置给其他 wire 的条目会保留在配置中，但不会加入当前请求；切换"
+#~ " `/api` 回去后会再次生效。这样，同一 Provider 配置便可服务使用不同 "
+#~ "wire 的模型，无须删除设置。`/api` 会报告 inactive "
+#~ "条目，`/config` 会同时显示已配置列表和当前生效的投影。条目位于其适用 wire "
+#~ "时，若结构或生命周期不受支持，仍会在本地拒绝。未知 Provider 保持通用透传行为。"

@@ -350,7 +350,6 @@ class ProviderConfig:
             prompt_cache_key=profile.prompt_cache_key,
             strict_tools_active=strict_tools_active,
             builtin_tools_by_wire=profile.builtin_tools_by_wire,
-            builtin_tools_hint=profile.builtin_tools_hint,
         )
 
     def reasoning_effort(self) -> str:

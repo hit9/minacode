@@ -54,7 +54,6 @@ class CompatibilityData(TypedDict, total=False):
     # generic pass-through for unknown hosts; an empty mapping means this known provider has no
     # supported provider-side tools through the ``tools`` array.
     builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None
-    builtin_tools_hint: str | None
 
 
 class ProviderData(CompatibilityData):
@@ -267,7 +266,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         # Why: DeepSeek's Chat schema only accepts function tools; it has no provider-side tools.
         # Evidence: https://api-docs.deepseek.com/api/create-chat-completion/
         "builtin_tools_by_wire": {},
-        "builtin_tools_hint": "DeepSeek offers no provider-side web search",
     },
     # Why: Qwen ignores prior-turn reasoning by default, while tool loops should replay it.
     # Explicit preserve_thinking=true is folded at request time.
@@ -282,7 +280,6 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         # Evidence: https://help.aliyun.com/en/model-studio/web-search
         #           https://help.aliyun.com/en/model-studio/web-extractor
         "builtin_tools_by_wire": {"responses": ({"type": "web_search"}, {"type": "web_extractor"})},
-        "builtin_tools_hint": "configure Qwen Chat search through provider.extra_body.enable_search",
     },
     # Why: the international and China Kimi open platforms expose the same model controls
     # on different regional domains. Their temperature values are fixed; explicit

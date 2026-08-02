@@ -1584,6 +1584,16 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def config(self, args: str) -> str:
         provider = self.session.config.provider
         resolved = provider.resolve()
+        configured_builtin_tools = ", ".join(str(entry.get("type") or "?") for entry in provider.builtin_tools) or "(off)"
+        builtin_issue = builtin_tools_issue(resolved, provider.builtin_tools)
+        if not provider.builtin_tools:
+            resolved_builtin_tools = "(off)"
+        elif builtin_issue is None:
+            resolved_builtin_tools = "active: " + configured_builtin_tools
+        elif builtin_issue.reason == "wire":
+            resolved_builtin_tools = f"inactive on {resolved.api}: {configured_builtin_tools}"
+        else:
+            resolved_builtin_tools = "invalid: " + ", ".join(builtin_issue.configured)
         return "\n".join(
             [
                 f"provider.active: {self.session.config.active_provider}",
@@ -1605,7 +1615,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"provider.max_tokens: {provider.max_tokens or '(server default)'}",
                 f"provider.strict_tools: {provider.strict_tools} (active {resolved.strict_tools_active})",
                 f"provider.extra_body: {json.dumps(provider.extra_body, ensure_ascii=False, sort_keys=True) if provider.extra_body else '(off)'}",
-                f"provider.builtin_tools: {', '.join(str(entry.get('type') or '?') for entry in provider.builtin_tools) or '(off)'}",
+                f"provider.builtin_tools: {configured_builtin_tools}",
+                f"provider.resolved_builtin_tools: {resolved_builtin_tools}",
                 f"provider.timeout: {provider.timeout}",
                 f"provider.response_timeout: {provider.response_timeout or '(off)'}",
                 f"paths.data_dir: {self.session.data_path()}",
@@ -1852,10 +1863,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         issue = builtin_tools_issue(resolved, provider.builtin_tools)
         if issue is not None:
             if issue.reason == "wire":
-                if issue.supported_wires:
-                    result += "; configured builtin_tools require " + ", ".join(issue.supported_wires)
-                else:
-                    result += "; configured builtin_tools are not valid for this provider"
+                result += f"; builtin_tools inactive on {resolved.api}"
             else:
                 result += "; unsupported builtin_tools: " + ", ".join(issue.configured)
         return result

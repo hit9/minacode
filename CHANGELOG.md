@@ -18,20 +18,20 @@
   OpenAI and Qwen on the Responses API, `{ type = "web_search_20250305", name = "web_search" }` for
   Anthropic, `{ type = "web_search", web_search = { enable = "True" } }` for Z.AI, and
   `{ type = "openrouter:web_search" }` for OpenRouter. Entries are passed through unchanged after a
-  check for a non-empty `type` and against the provider's documented wire. Enabling one changes the
-  prompt cache key, and `/config` lists what is active. One provider configures search through the
-  request body instead — Qwen Chat's `enable_search` — and continues to use `provider.extra_body`.
-- Reject known incompatible `provider.builtin_tools` / resolved-wire combinations locally, before
-  the provider SDK is called, with an actionable `ModelError`. On documented hosts, Responses-only
-  entries (OpenAI, Qwen) no longer travel over the Chat or Anthropic wire, Anthropic server tools
-  only travel over Messages, and Z.AI/Kimi Chat entries only over Chat. Known providers also reject
-  provider-side tool entries minacode does not support yet (for example Qwen `code_interpreter` or
-  Anthropic `web_fetch_*`), so approval, file, container, and client-callback lifecycles cannot
-  leak through. OpenRouter server tools (`openrouter:web_search`, `openrouter:web_fetch`,
-  `openrouter:datetime`) are supported; DeepSeek, Kimi Code, and OpenCode accept none. Unknown hosts
-  and future tool shapes on unknown hosts keep the generic pass-through, nothing is silently
-  dropped or rewritten, and `/api` now reports the mismatch in its result instead of touching the
-  provider configuration.
+  check for a non-empty `type` and against the provider's documented wire. Enabling an active entry
+  changes the prompt cache key, and `/config` distinguishes configured entries from the active
+  projection. One provider configures search through the request body instead — Qwen Chat's
+  `enable_search` — and continues to use `provider.extra_body`.
+- Scope known `provider.builtin_tools` entries to their documented request wire. Responses-only
+  entries (OpenAI, Qwen) are omitted on Chat or Anthropic, Anthropic server tools only travel over
+  Messages, and Z.AI/Kimi Chat entries only over Chat. Incompatible entries remain configured and
+  become active again after switching back, so a shared provider configuration works across models
+  without destructive edits; `/api` and `/config` report when they are inactive. On an active wire,
+  known providers still reject unsupported entries (for example Qwen `code_interpreter` or
+  Anthropic `web_fetch_*`) before SDK I/O, so approval, file, container, and client-callback
+  lifecycles cannot leak through. OpenRouter server tools (`openrouter:web_search`,
+  `openrouter:web_fetch`, `openrouter:datetime`) are supported; DeepSeek, Kimi Code, and OpenCode
+  activate none. Unknown hosts and future tool shapes on unknown hosts keep generic pass-through.
 - Log each provider-side tool call the provider reports
   line, and show it as a running status phase while it happens. The line is written from the parsed
   response, so it appears with streaming on or off.
