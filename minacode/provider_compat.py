@@ -24,10 +24,9 @@ from minacode.model_catalog import (
 
 
 @dataclass(frozen=True)
-class ModelRule:
-    """A value selected by model-family prefixes or a documented version pattern."""
+class ModelMatch:
+    """The model selector every catalog rule shares: family prefixes or a documented pattern."""
 
-    value: str
     prefixes: tuple[str, ...] = ()
     pattern: str = ""
 
@@ -36,15 +35,17 @@ class ModelRule:
 
 
 @dataclass(frozen=True)
-class ModelEffortRule:
+class ModelRule(ModelMatch):
+    """A value selected by model-family prefixes or a documented version pattern."""
+
+    value: str = ""
+
+
+@dataclass(frozen=True)
+class ModelEffortRule(ModelMatch):
     """Supported normalized efforts selected by model family."""
 
-    levels: tuple[str, ...]
-    prefixes: tuple[str, ...] = ()
-    pattern: str = ""
-
-    def matches(self, model: str) -> bool:
-        return any(model.startswith(prefix) for prefix in self.prefixes) or bool(self.pattern and re.match(self.pattern, model))
+    levels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -169,11 +170,11 @@ def nearest_reasoning_effort(effort: str, supported: tuple[str, ...]) -> str:
 
 
 def _model_rules(*groups: tuple[ModelRuleData, ...]) -> tuple[ModelRule, ...]:
-    return tuple(ModelRule(rule["value"], rule.get("prefixes", ()), rule.get("pattern", "")) for group in groups for rule in group)
+    return tuple(ModelRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["value"]) for group in groups for rule in group)
 
 
 def _effort_rules(*groups: tuple[ModelEffortRuleData, ...]) -> tuple[ModelEffortRule, ...]:
-    return tuple(ModelEffortRule(rule["levels"], rule.get("prefixes", ()), rule.get("pattern", "")) for group in groups for rule in group)
+    return tuple(ModelEffortRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["levels"]) for group in groups for rule in group)
 
 
 ModelRuleField = Literal[

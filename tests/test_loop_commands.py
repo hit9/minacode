@@ -4,6 +4,7 @@ rendering, and status output."""
 import json
 import os
 import time
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -14,8 +15,8 @@ from prompt_toolkit.document import Document
 
 import minacode.loop as loop_module
 from minacode.base import (
-    SESSION_EVENT_KEY,
     SELECTION_FREE_TEXT,
+    SESSION_EVENT_KEY,
     Config,
     LogBlock,
     LogLine,
@@ -887,6 +888,24 @@ def test_builtin_minacode_help_uses_normal_skill_paths(tmp_path):
     assert "### Provider-side tools and web search" in body
     assert all(term in body for term in ("builtin_tools", "$web_search", 'pause_turn', "OpenRouter"))
     assert "## Configure providers" in s.skills.resolve_mentions("help with $minacode-help")
+
+
+def test_every_builtin_skill_is_declared_as_package_data(tmp_path):
+    """A builtin skill only exists for installed users if the wheel carries its SKILL.md.
+
+    Running from a checkout hides an omission completely, so the packaging declaration is checked
+    here rather than discovered as a missing skill after release."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    builtin_root = os.path.join(repo_root, "minacode", "builtin_skills")
+    with open(os.path.join(repo_root, "pyproject.toml"), "rb") as handle:
+        packaging = tomllib.load(handle)["tool"]["setuptools"]
+    patterns = packaging["package-data"]["minacode"]
+
+    assert "minacode.builtin_skills" in packaging["packages"]
+    assert "builtin_skills/*/SKILL.md" in patterns
+    for entry in sorted(os.listdir(builtin_root)):
+        if os.path.isdir(os.path.join(builtin_root, entry)) and entry != "__pycache__":
+            assert os.path.isfile(os.path.join(builtin_root, entry, "SKILL.md")), entry
 
 
 def test_skill_project_overrides_user_and_user_overrides_builtin(tmp_path):

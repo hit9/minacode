@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, ClassVar, Generic, TypeVar
@@ -73,6 +73,23 @@ SEARCH_SOURCES_KEY = "_search_sources"
 # tool run. The message must be sent back unchanged to resume, so this travels with it as metadata.
 PAUSED_TURN_KEY = "_paused_turn"
 PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY, SEARCH_SOURCES_KEY, PAUSED_TURN_KEY)
+
+
+def builtin_function_names(entries: Iterable[Json]) -> tuple[str, ...]:
+    """Names of the builtin tools the provider calls back for instead of running entirely alone.
+
+    Kimi's builtin functions are declared like any other builtin tool, but the model emits a real
+    tool call for them and expects the client to answer it, so both the runner (to recognize the
+    call) and the no-tools guard (to keep it) need the declared names."""
+    names: list[str] = []
+    for entry in entries:
+        if entry.get("type") != "builtin_function":
+            continue
+        function = entry.get("function")
+        name = function.get("name") if isinstance(function, dict) else ""
+        if isinstance(name, str) and name:
+            names.append(name)
+    return tuple(names)
 
 
 def builtin_tool_label(name: str) -> str:
@@ -283,22 +300,9 @@ class ProviderConfig:
         )
 
     def builtin_function_names(self) -> tuple[str, ...]:
-        """Builtin tools the provider calls back for instead of running entirely on its own.
-
-        Kimi's builtin functions are declared like any other builtin tool, but the model emits a
-        real tool call for them and expects the client to answer it. Collecting the declared names
-        is what lets the runner recognize such a call as the provider's rather than an unknown
-        tool. Evidence: https://platform.kimi.ai/docs/guide/use-web-search
-        """
-        names: list[str] = []
-        for entry in self.builtin_tools:
-            if entry.get("type") != "builtin_function":
-                continue
-            function = entry.get("function")
-            name = function.get("name") if isinstance(function, dict) else ""
-            if isinstance(name, str) and name:
-                names.append(name)
-        return tuple(names)
+        """Declared builtin functions, which the runner answers instead of rejecting as unknown.
+        Evidence: https://platform.kimi.ai/docs/guide/use-web-search"""
+        return builtin_function_names(self.builtin_tools)
 
     def resolve(self) -> ResolvedProvider:
         """Fold explicit configuration and documented compatibility into one request policy."""

@@ -69,18 +69,12 @@ def search_sources_footer(sources: list[Json]) -> str:
     This is presentation only. The sources stay on the messages that carry them, so the answer
     reaching history is exactly what the model wrote, and nothing new replays to the provider on
     the next turn."""
-    seen: dict[str, str] = {}
-    for source in sources:
-        if isinstance(source, dict) and (url := str(source.get("url") or "")) and url not in seen:
-            seen[url] = str(source.get("title") or "").strip() or url
+    seen = dict.fromkeys(url for source in sources if isinstance(source, dict) and (url := str(source.get("url") or "")))
     if not seen:
         return ""
-    shown = list(seen.items())[:MAX_RENDERED_SOURCES]
-    lines = []
-    for index, (url, title) in enumerate(shown, start=1):
-        # Strip scheme and trailing slash for a compact one-line display.
-        compact = url.split("://", 1)[-1].rstrip("/")
-        lines.append(f"{index}. {compact}")
+    shown = list(seen)[:MAX_RENDERED_SOURCES]
+    # Strip scheme and trailing slash for a compact one-line display.
+    lines = [f"{index}. {url.split('://', 1)[-1].rstrip('/')}" for index, url in enumerate(shown, start=1)]
     if len(seen) > len(shown):
         lines.append(f"…and {len(seen) - len(shown)} more")
     return "\n".join(["", "**Sources**", "", *lines])
