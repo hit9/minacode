@@ -45,6 +45,11 @@
 - List the sources a provider-side search reported under the answer. Sources are display only: the
   stored answer stays exactly what the model wrote, and nothing extra replays to the provider.
 
+### Fixed
+- Prevent a forced live-follow-up acknowledgement from retaining local tool calls returned despite
+  tools being disabled, which could leave invalid history and make the next answer look duplicated.
+  Provider builtin functions that were still offered remain available.
+
 
 ## 0.18.1 - 2026-07-31
 

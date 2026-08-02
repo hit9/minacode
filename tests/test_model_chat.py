@@ -121,6 +121,97 @@ def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
     assert calls[0].args == ["echo hi"]
 
 
+def test_chat_no_tools_result_strips_unoffered_function_call(tmp_path, monkeypatch):
+    s = _session(tmp_path, stream=False)
+    model = ModelClient(s)
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "acknowledged",
+                                "tool_calls": [
+                                    {"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert content == "acknowledged"
+    assert calls == []
+    assert "tool_calls" not in assistant
+    assert "tools" not in json.loads(factory.calls[0].content)
+
+
+def test_chat_no_local_tools_preserves_a_declared_builtin_function(tmp_path, monkeypatch):
+    builtin = {"type": "builtin_function", "function": {"name": "$web_search"}}
+    s = _session(
+        tmp_path,
+        url="https://api.moonshot.ai/v1",
+        api="chat",
+        model="kimi-k3",
+        stream=False,
+        builtin_tools=(builtin,),
+    )
+    model = ModelClient(s)
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "kimi-k3",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {"name": "$web_search", "arguments": '{"search_query":"minacode"}'},
+                                    },
+                                    {"id": "call_2", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, calls, content = model.request([{"role": "user", "content": "search"}], [])
+
+    assert content == ""
+    assert calls == [ToolCall("call_1", "$web_search", [{"search_query": "minacode"}])]
+    assert [call["function"]["name"] for call in assistant["tool_calls"]] == ["$web_search"]
+    assert json.loads(factory.calls[0].content)["tools"] == [builtin]
+
+
 def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, monkeypatch):
     s = _session(tmp_path)
     model = ModelClient(s)

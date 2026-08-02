@@ -158,6 +158,16 @@ msgid ""
 msgstr ""
 
 #: ../../../CHANGELOG.md:50
+msgid ""
+"Prevent a forced live-follow-up acknowledgement from retaining local tool"
+" calls returned despite tools being disabled, which could leave invalid "
+"history and make the next answer look duplicated. Provider builtin "
+"functions that were still offered remain available."
+msgstr ""
+"修复强制 live follow-up 确认在禁用本地工具时仍保留 Provider 返回的本地工具调用，导致历史无效、下一条回答看似重复的问题。"
+"请求中仍有提供的 Provider builtin function 不受影响。"
+
+#: ../../../CHANGELOG.md:50
 msgid "0.18.1 - 2026-07-31"
 msgstr ""
 

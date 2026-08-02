@@ -292,27 +292,54 @@ class ModelClient:
             state.current_model_attempt = 0
             state.model_retry_reason = ""
 
-    @staticmethod
-    def sanitize_no_tools_result(result: tuple[Json, list[ToolCall], str]) -> tuple[Json, list[ToolCall], str]:
+    def sanitize_no_tools_result(self, result: tuple[Json, list[ToolCall], str]) -> tuple[Json, list[ToolCall], str]:
         """Enforce the no-tools invariant: strip local tool calls from a tools=[] response.
 
         Some providers ignore an empty tool list and return function calls anyway. Accepting them
         would leave dangling calls in durable history (no matching tool results), breaking the next
         request. This removes them from the effective list, the top-level tool_calls field, and the
         provider-native echo fields, while preserving text, reasoning, citations, and provider-side
-        tool items (web_search_call, server_tool_use) that are not local tool calls."""
-        assistant, _calls, content = result
+        tool items and declared builtin functions that are not local tool calls."""
+        builtin_names: set[str] = set()
+        for entry in self.builtin_tools():
+            if entry.get("type") != "builtin_function":
+                continue
+            function = entry.get("function")
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                builtin_names.add(function["name"])
+
+        def call_name(item: object) -> str:
+            if not isinstance(item, dict):
+                return ""
+            function = item.get("function")
+            if isinstance(function, dict):
+                return str(function.get("name") or "")
+            return str(item.get("name") or "")
+
+        assistant, calls, content = result
         assistant = dict(assistant)
-        assistant.pop("tool_calls", None)
+        saved_calls = assistant.get("tool_calls")
+        if isinstance(saved_calls, list):
+            kept_calls = [item for item in saved_calls if call_name(item) in builtin_names]
+            if kept_calls:
+                assistant["tool_calls"] = kept_calls
+            else:
+                assistant.pop("tool_calls", None)
+        else:
+            assistant.pop("tool_calls", None)
         if RESPONSES_OUTPUT_KEY in assistant:
             saved = assistant[RESPONSES_OUTPUT_KEY]
             if isinstance(saved, list):
-                assistant[RESPONSES_OUTPUT_KEY] = [item for item in saved if not (isinstance(item, dict) and item.get("type") == "function_call")]
+                assistant[RESPONSES_OUTPUT_KEY] = [
+                    item for item in saved if not (isinstance(item, dict) and item.get("type") == "function_call" and call_name(item) not in builtin_names)
+                ]
         if ANTHROPIC_CONTENT_KEY in assistant:
             saved = assistant[ANTHROPIC_CONTENT_KEY]
             if isinstance(saved, list):
-                assistant[ANTHROPIC_CONTENT_KEY] = [item for item in saved if not (isinstance(item, dict) and item.get("type") == "tool_use")]
-        return assistant, [], content
+                assistant[ANTHROPIC_CONTENT_KEY] = [
+                    item for item in saved if not (isinstance(item, dict) and item.get("type") == "tool_use" and call_name(item) not in builtin_names)
+                ]
+        return assistant, [call for call in calls if call.name in builtin_names], content
 
     @staticmethod
     def retryable_error(error: Exception) -> bool:

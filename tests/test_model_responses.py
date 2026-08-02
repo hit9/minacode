@@ -679,8 +679,7 @@ def test_responses_no_tools_result_strips_function_call_preserves_message_reason
 
 def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkeypatch):
     """When non-empty schemas were offered and the provider returns a valid local tool call:
-    preserve top-level tool_calls and provider echo, execute the tool once, persist exactly one
-    matching tool result, and replay the call/result pair on the next request."""
+    preserve the normalized call and provider echo, then replay a matching result."""
     s = _session(tmp_path, api="responses", model="gpt-5", stream=False)
     model = ModelClient(s)
     factory = _MockClientFactory(
