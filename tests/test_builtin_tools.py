@@ -654,14 +654,14 @@ def test_sources_footer_dedupes_by_url_and_keeps_first_title():
 
     footer = search_sources_footer(sources)
 
-    assert footer.splitlines() == ["", "**Sources**", "", "1. [First](https://a.example)", "2. [https://b.example](https://b.example)"]
+    assert footer.splitlines() == ["", "**Sources**", "", "1. a.example", "2. b.example"]
 
 
 def test_sources_footer_caps_a_long_list():
     footer = search_sources_footer([{"url": f"https://e.example/{index}", "title": f"T{index}"} for index in range(14)])
 
     assert footer.splitlines()[-1] == "…and 4 more"
-    assert footer.count("https://e.example") == 10
+    assert footer.count("e.example") == 10
 
 
 def test_no_sources_render_nothing():

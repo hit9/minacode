@@ -76,7 +76,11 @@ def search_sources_footer(sources: list[Json]) -> str:
     if not seen:
         return ""
     shown = list(seen.items())[:MAX_RENDERED_SOURCES]
-    lines = [f"{index}. [{title}]({url})" for index, (url, title) in enumerate(shown, start=1)]
+    lines = []
+    for index, (url, title) in enumerate(shown, start=1):
+        # Strip scheme and trailing slash for a compact one-line display.
+        compact = url.split("://", 1)[-1].rstrip("/")
+        lines.append(f"{index}. {compact}")
     if len(seen) > len(shown):
         lines.append(f"…and {len(seen) - len(shown)} more")
     return "\n".join(["", "**Sources**", "", *lines])
