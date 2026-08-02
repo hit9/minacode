@@ -538,13 +538,13 @@ class ModelClient:
         if provider.extra_body:
             params["extra_body"] = provider.extra_body
         client = self.client()
-        result = (
-            self.call_client(client, lambda: self._responses_stream(client, params))
-            if stream
-            else self.call_client(client, lambda: client.responses.create(**params))
-        )
+        if stream:
+            result, reported_ids = self.call_client(client, lambda: self._responses_stream(client, params))
+        else:
+            result = self.call_client(client, lambda: client.responses.create(**params))
+            reported_ids = set()
         self.session.usage.add(self.message_field(result, "usage"))
-        return self.responses_result(result)
+        return self.responses_result(result, reported_ids)
 
     def _responses_stream(self, client: OpenAI, params: Json) -> Any:
         """Consume a Responses stream, promoting completed text before tool arguments finish.
@@ -555,6 +555,7 @@ class ModelClient:
         """
 
         terminal: Any = None
+        reported_ids: set[str] = set()
         output: list[str] = []
         text_done = tool_seen = output_promoted = False
 
@@ -586,6 +587,20 @@ class ModelClient:
                         # A provider-side tool runs inside the request with no local tool line to show
                         # for it, so the status label is the only sign the turn is still moving.
                         self._emit_stream(builtin_tool_label(item_type), "")
+                elif event_type == "response.output_item.done":
+                    item = self.message_field(event, "item")
+                    item_type = str(self.message_field(item, "type") or "")
+                    # A provider-side call has no local tool line of its own, so report it the moment
+                    # the stream completes it and the transcript shows it live. Hosts differ in whether
+                    # the terminal output retains the call, so this live report is also the durable
+                    # record; the parsed-result scan skips whatever was already reported here.
+                    if item_type.endswith("_call") and item_type != "function_call":
+                        action = self.message_field(item, "action")
+                        query = self.message_field(action, "query") if action is not None else ""
+                        self.report_builtin_call(item_type, str(query or ""))
+                        call_id = str(self.message_field(item, "id") or "")
+                        if call_id:
+                            reported_ids.add(call_id)
                 elif event_type == "response.function_call_arguments.delta":
                     tool_seen = True
                     promote_output()
@@ -595,7 +610,7 @@ class ModelClient:
             self._emit_stream("", "")
         if terminal is None:
             raise ModelError("Responses stream ended without a terminal response")
-        return terminal
+        return terminal, reported_ids
 
     def _emit_stream(self, kind: str, delta: str) -> None:
         if self.on_stream is not None:
@@ -681,7 +696,7 @@ class ModelClient:
             )
         return converted
 
-    def responses_result(self, result: Any) -> tuple[Json, list[ToolCall], str]:
+    def responses_result(self, result: Any, reported_ids: set[str] | None = None) -> tuple[Json, list[ToolCall], str]:
         if self.message_field(result, "status") == "failed":
             error = self.message_field(result, "error") or "unknown error"
             raise ModelError(f"Responses request failed: {error}")
@@ -710,11 +725,17 @@ class ModelClient:
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts) or str(self.message_field(result, "output_text") or "")
+        skipped = reported_ids or set()
         for item in saved_output:
             item_type = str(item.get("type") or "")
-            if item_type.endswith("_call") and item_type != "function_call":
-                action = item.get("action")
-                self.report_builtin_call(item_type, action.get("query") if isinstance(action, dict) else "")
+            if not (item_type.endswith("_call") and item_type != "function_call"):
+                continue
+            item_id = str(item.get("id") or "")
+            if item_id and item_id in skipped:
+                continue
+            action = item.get("action")
+            query = action.get("query") if isinstance(action, dict) else ""
+            self.report_builtin_call(item_type, query if isinstance(query, str) else "")
         assistant: Json = {"role": "assistant", "content": text or None, RESPONSES_OUTPUT_KEY: saved_output}
         if sources := self.responses_sources(saved_output):
             assistant[SEARCH_SOURCES_KEY] = sources
@@ -874,13 +895,13 @@ class ModelClient:
         params = self.anthropic_params(messages, tools)
         client = self.anthropic_client()
         stream = allow_stream and self.session.config.provider.stream and self.on_stream is not None
-        result = (
-            self.call_client(client, lambda: self._anthropic_stream(client, params))
-            if stream
-            else self.call_client(client, lambda: client.messages.create(**params))
-        )
+        if stream:
+            result, reported_ids = self.call_client(client, lambda: self._anthropic_stream(client, params))
+        else:
+            result = self.call_client(client, lambda: client.messages.create(**params))
+            reported_ids = set()
         self.session.usage.add(self.message_field(result, "usage"))
-        assistant, calls, content = self.anthropic_result(result)
+        assistant, calls, content = self.anthropic_result(result, reported_ids)
         return assistant, calls, content
 
     def _anthropic_stream(self, client: Anthropic, params: Json) -> Any:
@@ -892,6 +913,8 @@ class ModelClient:
         """
         output: list[str] = []
         text_blocks: set[int] = set()
+        server_tools: dict[int, dict[str, str]] = {}
+        reported_ids: set[str] = set()
         text_done = tool_seen = output_promoted = False
 
         def promote_output() -> None:
@@ -914,11 +937,28 @@ class ModelClient:
                             promote_output()
                         elif block_type == "server_tool_use":
                             self._emit_stream(builtin_tool_label(str(self.message_field(block, "name") or "")), "")
+                            # The query streams in via input_json_delta and is only whole at content_block_stop,
+                            # so register the block now and report it there, showing the search in the transcript live.
+                            server_tools[int(self.message_field(event, "index") or 0)] = {
+                                "id": str(self.message_field(block, "id") or ""),
+                                "name": str(self.message_field(block, "name") or ""),
+                                "json": "",
+                            }
                         continue
                     if event_type == "content_block_stop":
-                        if int(self.message_field(event, "index") or 0) in text_blocks:
+                        index = int(self.message_field(event, "index") or 0)
+                        if index in text_blocks:
                             text_done = True
                             promote_output()
+                        elif index in server_tools:
+                            info = server_tools.pop(index)
+                            query = ""
+                            with contextlib.suppress(json.JSONDecodeError):
+                                parsed = json.loads(info["json"] or "{}")
+                                query = str(parsed.get("query") or "") if isinstance(parsed, dict) else ""
+                            self.report_builtin_call(info["name"], query)
+                            if info["id"]:
+                                reported_ids.add(info["id"])
                         continue
                     if event_type != "content_block_delta":
                         continue
@@ -930,7 +970,11 @@ class ModelClient:
                         text = str(self.message_field(delta, "text") or "")
                         output.append(text)
                         self._emit_stream("output", text)
-                return stream.get_final_message()
+                    elif delta_type == "input_json_delta":
+                        index = int(self.message_field(event, "index") or 0)
+                        if index in server_tools:
+                            server_tools[index]["json"] += str(self.message_field(delta, "partial_json") or "")
+                return stream.get_final_message(), reported_ids
         finally:
             self._emit_stream("", "")
 
@@ -1047,18 +1091,21 @@ class ModelClient:
 
         return [convert(schema) for schema in tools]
 
-    def anthropic_result(self, result: Any) -> tuple[Json, list[ToolCall], str]:
+    def anthropic_result(self, result: Any, reported_ids: set[str] | None = None) -> tuple[Json, list[ToolCall], str]:
         text_parts: list[str] = []
         tool_calls: list[Json] = []
         calls: list[ToolCall] = []
         content_blocks = self.message_field(result, "content") or []
         saved_content = [self.dump_message_item(block) for block in content_blocks]
+        skipped = reported_ids or set()
         for block in content_blocks:
             block_type = self.message_field(block, "type")
             if block_type == "server_tool_use":
-                raw_input = self.message_field(block, "input")
-                query = raw_input.get("query") if isinstance(raw_input, dict) else ""
-                self.report_builtin_call(str(self.message_field(block, "name") or ""), query)
+                block_id = str(self.message_field(block, "id") or "")
+                if not (block_id and block_id in skipped):
+                    raw_input = self.message_field(block, "input")
+                    query = raw_input.get("query") if isinstance(raw_input, dict) else ""
+                    self.report_builtin_call(str(self.message_field(block, "name") or ""), query)
             if block_type == "text":
                 text_parts.append(str(self.message_field(block, "text") or ""))
             elif block_type == "tool_use":

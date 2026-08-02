@@ -81,7 +81,7 @@ def builtin_tool_label(name: str) -> str:
     One tool carries a different name in each protocol — `web_search_call` as a Responses output
     item, `web_search` as a Messages server tool, `$web_search` as a Kimi builtin function — and
     all of them should read as the same phase in the transcript."""
-    return name.lstrip("$").removesuffix("_call").replace("_", " ").strip() or "provider tool"
+    return (name.lstrip("$").removesuffix("_call").replace("_", " ").strip() or "provider tool").title()
 
 
 # Protocol-neutral metadata for lifecycle/context checkpoint messages. Provider adapters remove
