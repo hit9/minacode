@@ -183,8 +183,10 @@ msgid "`medium`"
 msgstr "`medium`"
 
 #: ../../configuration.md
-msgid "Reasoning effort; change it during a session with `/reason`"
-msgstr "Reasoning effort；在 session 中通过 `/reason` 修改"
+msgid ""
+"Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or "
+"`max`; change it during a session with `/reason`"
+msgstr "Reasoning effort：`off`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；在 session 中通过 `/reason` 修改"
 
 #: ../../configuration.md
 msgid "`available_models`"
@@ -319,6 +321,20 @@ msgstr ""
 "会单独限制完整模型响应，默认十分钟。达到总时限后会取消请求且不自动重试；只有在明确需要允许无限时长生成时，才将其设为 `0`。"
 
 #: ../../configuration.md:77
+msgid ""
+"For provider/model combinations with documented reasoning constraints, "
+"minacode maps the selected effort to the nearest accepted value. Unknown "
+"OpenAI-compatible endpoints and model names stay on the generic path "
+"rather than an allowlist; set `api` and `chat_reasoning` explicitly if "
+"automatic selection is wrong. `/config` shows the resolved reasoning "
+"effort, while `/status` shows the active model and cache usage reported "
+"by the provider."
+msgstr ""
+"对于有明确 reasoning 约束文档的 provider/model 组合，minacode 会把所选 effort 映射到最接近的可接受值。"
+"未知的 OpenAI-compatible endpoint 和模型名继续走通用路径而不是 allowlist；如果自动选择不正确，请显式设置 `api` "
+"和 `chat_reasoning`。`/config` 会显示解析后的 reasoning effort，`/status` 会显示当前模型以及 provider 报告的缓存使用情况。"
+
+#: ../../configuration.md:83
 msgid "Provider-side tools"
 msgstr "Provider 侧工具"
 
@@ -756,4 +772,3 @@ msgstr ""
 #~ "当 Provider 返回来源时，minacode "
 #~ "会在回答下方列出这些来源。来源仅用于展示：存入历史的回答仍然与模型所写的完全一致，后续轮次也不会因此向 Provider "
 #~ "多发送任何内容。"
-

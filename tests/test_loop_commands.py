@@ -882,7 +882,10 @@ def test_builtin_minacode_help_uses_normal_skill_paths(tmp_path):
     assert skill.source == "builtin"
     assert "troubleshoot minacode" in skill.description
     assert "- minacode-help:" in s.skills.index()
-    assert "## Inspect the implementation" in SkillTool(s, ["minacode-help"]).call()
+    body = SkillTool(s, ["minacode-help"]).call()
+    assert "## Inspect the implementation" in body
+    assert "### Provider-side tools and web search" in body
+    assert all(term in body for term in ("builtin_tools", "$web_search", 'pause_turn', "OpenRouter"))
     assert "## Configure providers" in s.skills.resolve_mentions("help with $minacode-help")
 
 

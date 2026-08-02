@@ -97,9 +97,41 @@ Common optional provider settings:
 - `prompt_cache_key = "auto"`: use `"off"` to omit the cache key.
 - `strict_tools = false`: request strict tool schemas where supported.
 - `extra_body = {}`: add provider-specific OpenAI-compatible request fields.
+- `builtin_tools = [...]`: offer tools that the provider runs on its own servers; entries use the provider's documented wire shape.
 - `chat_reasoning = "auto"`: select the Chat reasoning wire format. Override only when the endpoint documents a different format.
 
 For known provider/model combinations, minacode maps the selected reasoning effort to a supported value. Unknown compatible providers and model names remain supported on the generic path and keep the selected value. When a request is rejected, inspect `/config`, confirm the API protocol, and set `chat_reasoning` only when the endpoint's documentation requires it.
+
+### Provider-side tools and web search
+
+Provider-side tools run inside the model request on the provider's servers. They are different from minacode's local tools and are disabled by default. Enable only entries documented by the active provider:
+
+```toml
+[provider.default]
+builtin_tools = [{ type = "web_search" }]
+```
+
+Common web-search configurations are:
+
+- OpenAI Responses: `{ type = "web_search" }`, optionally with `search_context_size` or `filters`.
+- Qwen Responses: `{ type = "web_search" }`; Qwen also documents `web_extractor` and `code_interpreter`.
+- Anthropic: `{ type = "web_search_20250305", name = "web_search", max_uses = 5 }`.
+- Z.AI / BigModel: `{ type = "web_search", web_search = { enable = "True" } }`.
+- Kimi / Moonshot: `{ type = "builtin_function", function = { name = "$web_search" } }`.
+- OpenRouter: configure `extra_body.plugins = [{ id = "web" }]` or use a documented `:online` model suffix instead of `builtin_tools`.
+- Qwen Chat Completions: configure `extra_body.enable_search` instead of `builtin_tools`.
+- DeepSeek API: web search is not available.
+
+Minacode requires each `builtin_tools` entry to contain a non-empty `type`, then sends the entry as written. An unsupported tool or field therefore surfaces as a provider error. `/config` shows the active entries.
+
+A provider-side search does not ask for minacode tool confirmation because it happens inside the provider's response. Search text is untrusted content placed into the model context, can make the turn larger, and may expose the query to the provider's search service. Leave it disabled for sensitive questions or unattended work unless that behavior is acceptable.
+
+When available, minacode shows each search in the transcript and lists provider-reported sources under the answer. Sources are display-only and do not replay to the provider. Not every provider reports sources.
+
+Two longer-lived flows are automatic:
+
+- Kimi may return `$web_search` as a normal-looking function call. When that name was declared by a `builtin_function` entry, minacode returns its arguments unchanged as the provider requires; it does not run a local tool or request confirmation.
+- Anthropic may return `stop_reason: "pause_turn"` while a server tool is still running. Minacode sends the paused message back unchanged and continues. Each continuation consumes an agent step, so `runtime.max_agent_steps` remains the upper bound.
 
 Common runtime settings live under `[runtime]`:
 
@@ -155,6 +187,8 @@ Core tools include:
 
 Read-only tools can run concurrently. Edit, Bash, Job, and MCP actions that can change state ask for confirmation unless yolo mode is active. Anchored edits reject stale file locations. Recommend working in Git and reviewing `/diff`.
 
+Provider-side tools are not part of this local registry. They run at the provider without a confirmation prompt when enabled through `builtin_tools` or `extra_body`; apply the privacy and trust guidance above.
+
 ## Sessions and context
 
 Sessions are append-only logs stored below `<data_dir>/projects/`, grouped by working directory. They are saved automatically. `/sessions` stays in the current project; `/sessions all` widens the picker. A specific session identifier or name can be resumed from another directory.
@@ -182,6 +216,9 @@ Use the smallest relevant check:
 - Model not found or unavailable: verify the model name and account access with the provider; `available_models` affects the picker, not server entitlement.
 - Unsupported endpoint or request shape: compare `provider.url` and resolved `api`; try an explicit standard protocol only when the endpoint supports it.
 - Rejected reasoning value or field: check resolved reasoning in `/config`, identify the provider/model family, and consult its API documentation before overriding `chat_reasoning`.
+- Provider-side tool rejected: compare `api` and `builtin_tools` with the provider's exact documented wire shape. Use `extra_body` for OpenRouter and Qwen Chat search. A picker entry or a compatible model name does not prove that the account can use the tool.
+- Web search did not run: confirm that it is enabled in the active provider block shown by `/config`, that the selected model supports it, and that the request uses the required protocol. Do not expect a sources footer when the provider reports no sources.
+- Provider-side search appears stuck: preserve the exact error or stop reason. Anthropic `pause_turn` and configured Kimi `builtin_function` handshakes are continued automatically but remain bounded by `max_agent_steps` and `response_timeout`.
 - Streaming failure: set `provider.stream = false` temporarily and retry.
 - Stalled generation: distinguish `timeout` inactivity from total `response_timeout`; inspect the exact error before increasing either.
 - Image rejected: confirm the model accepts images and inspect `image_input`; forcing `on` cannot add provider capability.
