@@ -45,6 +45,12 @@ class CompatibilityData(TypedDict, total=False):
     strict_beta: bool
     suppress_temperature: bool
     suppress_temperature_models: tuple[str, ...]
+    # Provider-side (builtin) tools are provider-native JSON passed through unchanged. The
+    # catalog records, per resolved wire, the tool types a known provider documents as executed
+    # on its side. ``None`` keeps generic pass-through for unknown hosts; an empty mapping means
+    # this known provider has no supported provider-side tools through the ``tools`` array.
+    builtin_tools_by_wire: dict[str, tuple[str, ...]] | None
+    builtin_tools_hint: str | None
 
 
 class ProviderData(CompatibilityData):
@@ -194,12 +200,24 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "responses_reasoning_models": ("o", "gpt-5"),
         "strict_tools": True,
         "suppress_temperature_models": ("o", "gpt-5"),
+        # Why: OpenAI documents provider-side web_search on the Responses API; Chat Completions
+        # rejects non-function tool entries. Only web_search is supported so far; the other
+        # server tools need file/container/media approval lifecycles.
+        # Evidence: https://developers.openai.com/api/docs/guides/tools-web-search
+        "builtin_tools_by_wire": {"responses": ("web_search",)},
     },
     # Why: OpenRouter normalizes providers behind its own top-level reasoning object.
     # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
     "openrouter": {
         "hosts": ("openrouter.ai",),
         "chat_reasoning": "reasoning",
+        # Why: OpenRouter documents server tools as `openrouter:*` entries in the Chat or
+        # Responses tools array. The legacy `plugins`/`:online` search config is deprecated.
+        # Evidence: https://openrouter.ai/docs/guides/features/server-tools/overview
+        "builtin_tools_by_wire": {
+            "chat": ("openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime"),
+            "responses": ("openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime"),
+        },
     },
     # Why: one OpenCode base URL multiplexes wire protocols by model, so api=auto cannot infer
     # the protocol from the URL: Claude and Qwen are served by Messages, GPT and Grok by
@@ -213,6 +231,10 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
             {"value": "anthropic", "prefixes": ("claude-", "qwen")},
             {"value": "responses", "prefixes": ("gpt-", "grok-")},
         ),
+        # Why: Zen only documents endpoint routing; its websearch/webfetch client tools are not
+        # Zen API server tools, so no provider-side tools are assumed.
+        # Evidence: https://opencode.ai/docs/zen
+        "builtin_tools_by_wire": {},
     },
     # Why: DeepSeek uses thinking.type plus a reduced effort scale, does not define OpenAI's
     # prompt_cache_key, and requires the /beta endpoint for strict function schemas. Ordinary
@@ -230,6 +252,10 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "prompt_cache_key": False,
         "strict_tools": True,
         "strict_beta": True,
+        # Why: DeepSeek's Chat schema only accepts function tools; it has no provider-side tools.
+        # Evidence: https://api-docs.deepseek.com/api/create-chat-completion/
+        "builtin_tools_by_wire": {},
+        "builtin_tools_hint": "DeepSeek offers no provider-side web search",
     },
     # Why: Qwen ignores prior-turn reasoning by default, while tool loops should replay it.
     # Explicit preserve_thinking=true is folded at request time.
@@ -238,6 +264,13 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "hosts": ("aliyuncs.com",),
         "model_capabilities": ("qwen3_8",),
         "chat_reasoning_history": "current_turn",
+        # Why: Qwen Responses documents web_search/web_extractor as provider-side tools, while
+        # Qwen Chat Completions configures search in the request body. The remaining Responses
+        # tools need output/resource lifecycle coverage first.
+        # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat
+        #           https://www.alibabacloud.com/help/en/model-studio/developer-reference/web-search
+        "builtin_tools_by_wire": {"responses": ("web_search", "web_extractor")},
+        "builtin_tools_hint": "configure Qwen Chat search through provider.extra_body.enable_search",
     },
     # Why: the international and China Kimi open platforms expose the same model controls
     # on different regional domains. Their temperature values are fixed; explicit
@@ -253,14 +286,18 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "reasoning_effort_levels": ("low", "high", "max"),
         "strict_tools": True,
         "suppress_temperature": True,
+        # Why: Kimi's builtin functions ($web_search) are Chat tool entries the model calls back.
+        # Evidence: https://platform.kimi.ai/docs/guide/use-web-search
+        "builtin_tools_by_wire": {"chat": ("builtin_function",)},
     },
-    # Why: Kimi Code is a separate subscription API. Its official client exposes request
-    # temperature, so it does not inherit the open platform's fixed-temperature rule.
-    # Evidence: https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/env-vars.html
+    # Why: Kimi Code is a separate subscription API whose official client tools (WebSearch,
+    # FetchURL) run on the client; no coding-endpoint server-tool contract exists.
+    # Evidence: https://platform.kimi.ai/docs/api/chat
     "kimi_code": {
         "hosts": ("kimi.com",),
         "model_capabilities": ("kimi_code",),
         "reasoning_effort_levels": ("low", "high", "max"),
+        "builtin_tools_by_wire": {},
     },
     # Why: both Z.AI regions share thinking controls and automatic context caching.
     # Evidence: https://docs.z.ai/guides/capabilities/thinking
@@ -270,6 +307,10 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "model_capabilities": ("zai_standard",),
         "chat_reasoning_history": "current_turn",
         "prompt_cache_key": False,
+        # Why: Z.AI's web_search entry lives in the Chat tools array; retrieval and server MCP
+        # need their own lifecycle handling before they can be offered.
+        # Evidence: https://docs.z.ai/guides/tools/web-search
+        "builtin_tools_by_wire": {"chat": ("web_search",)},
     },
     # Why: China's BigModel endpoint documents the same thinking and automatic-cache contract.
     # Evidence: https://docs.bigmodel.cn/cn/guide/capabilities/thinking
@@ -279,5 +320,14 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         "model_capabilities": ("zai_standard",),
         "chat_reasoning_history": "current_turn",
         "prompt_cache_key": False,
+        "builtin_tools_by_wire": {"chat": ("web_search",)},
+    },
+    # Why: Anthropic server tools (web_search_20250305) are Messages tool definitions; only the
+    # tested web search version is offered so far. OpenCode Zen documents endpoint routing only,
+    # with no gateway server-tool contract, so no provider-side tools are assumed for it.
+    # Evidence: https://platform.claude.com/docs/en/build-with-claude/tool-use
+    "anthropic": {
+        "hosts": ("api.anthropic.com",),
+        "builtin_tools_by_wire": {"anthropic": ("web_search_20250305",)},
     },
 }

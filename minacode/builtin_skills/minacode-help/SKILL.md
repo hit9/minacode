@@ -114,15 +114,15 @@ builtin_tools = [{ type = "web_search" }]
 Common web-search configurations are:
 
 - OpenAI Responses: `{ type = "web_search" }`, optionally with `search_context_size` or `filters`.
-- Qwen Responses: `{ type = "web_search" }`; Qwen also documents `web_extractor` and `code_interpreter`.
+- Qwen Responses: `{ type = "web_search" }`; also `web_extractor`.
 - Anthropic: `{ type = "web_search_20250305", name = "web_search", max_uses = 5 }`.
 - Z.AI / BigModel: `{ type = "web_search", web_search = { enable = "True" } }`.
 - Kimi / Moonshot: `{ type = "builtin_function", function = { name = "$web_search" } }`.
-- OpenRouter: configure `extra_body.plugins = [{ id = "web" }]` or use a documented `:online` model suffix instead of `builtin_tools`.
+- OpenRouter: `{ type = "openrouter:web_search" }`; also `openrouter:web_fetch` and `openrouter:datetime`. The legacy `plugins` / `:online` search config is deprecated.
 - Qwen Chat Completions: configure `extra_body.enable_search` instead of `builtin_tools`.
 - DeepSeek API: web search is not available.
 
-Minacode requires each `builtin_tools` entry to contain a non-empty `type`, then sends the entry as written. An unsupported tool or field therefore surfaces as a provider error. `/config` shows the active entries.
+Minacode requires each `builtin_tools` entry to contain a non-empty `type`, then sends the entry as written. Entries are protocol-specific: an entry that does not match the active `/api` wire, or a tool type minacode does not yet support for that provider, is refused locally with an error naming the supported wires or entries and the `extra_body` alternative (for example Qwen Chat search via `provider.extra_body.enable_search`). `/config` shows the active entries.
 
 A provider-side search does not ask for minacode tool confirmation because it happens inside the provider's response. Search text is untrusted content placed into the model context, can make the turn larger, and may expose the query to the provider's search service. Leave it disabled for sensitive questions or unattended work unless that behavior is acceptable.
 
@@ -216,7 +216,7 @@ Use the smallest relevant check:
 - Model not found or unavailable: verify the model name and account access with the provider; `available_models` affects the picker, not server entitlement.
 - Unsupported endpoint or request shape: compare `provider.url` and resolved `api`; try an explicit standard protocol only when the endpoint supports it.
 - Rejected reasoning value or field: check resolved reasoning in `/config`, identify the provider/model family, and consult its API documentation before overriding `chat_reasoning`.
-- Provider-side tool rejected: compare `api` and `builtin_tools` with the provider's exact documented wire shape. Use `extra_body` for OpenRouter and Qwen Chat search. A picker entry or a compatible model name does not prove that the account can use the tool.
+- Provider-side tool rejected: compare `api` and `builtin_tools` with the provider's documented wire shape. A refusal before the request means the entries do not fit the active wire or are not yet supported for that provider: switch back with `/api` or use the supported entry types; Qwen Chat search uses `provider.extra_body.enable_search`. A picker entry or compatible model name does not prove the account can use the tool.
 - Web search did not run: confirm that it is enabled in the active provider block shown by `/config`, that the selected model supports it, and that the request uses the required protocol. Do not expect a sources footer when the provider reports no sources.
 - Provider-side search appears stuck: preserve the exact error or stop reason. Anthropic `pause_turn` and configured Kimi `builtin_function` handshakes are continued automatically but remain bounded by `max_agent_steps` and `response_timeout`.
 - Streaming failure: set `provider.stream = false` temporarily and retry.

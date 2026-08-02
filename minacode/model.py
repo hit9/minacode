@@ -142,13 +142,14 @@ class ModelClient:
     def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
 
-        api = self.session.config.provider.resolve().api
+        resolved = self.session.config.provider.resolve()
+        api = resolved.api
         # Payload builders would otherwise expand every local image to base64 merely to throw the
         # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
         if api == "responses":
             payload: Json = {"input": self.responses_input(Text.value(projected))}
-            if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools()]:
+            if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
                 payload["tools"] = request_tools
         elif api == "anthropic":
             system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
@@ -174,11 +175,11 @@ class ModelClient:
                         ]
                     estimated_messages.append(estimated)
             payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
-            if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools()]:
+            if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
                 payload["tools"] = request_tools
         else:
             payload = {"messages": self.chat_messages(projected)}
-            if request_tools := [*(tools or []), *self.builtin_tools()]:
+            if request_tools := [*(tools or []), *self.builtin_tools(resolved)]:
                 payload["tools"] = request_tools
 
         def prompt_value(value: object) -> object:
@@ -353,7 +354,7 @@ class ModelClient:
         params: Json = {"model": provider.model, "messages": messages, "stream": stream}
         if provider.max_tokens > 0:
             params["max_tokens"] = provider.max_tokens
-        if request_tools := [*(tools or []), *self.builtin_tools()]:
+        if request_tools := [*(tools or []), *self.builtin_tools(resolved)]:
             params["tools"] = request_tools
             params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
@@ -519,7 +520,7 @@ class ModelClient:
         }
         if provider.max_tokens > 0:
             params["max_output_tokens"] = provider.max_tokens
-        if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools()]:
+        if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
             params["tools"] = request_tools
             params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
@@ -848,16 +849,60 @@ class ModelClient:
                     sources[url] = {"url": url, "title": str(item.get("title") or "")}
         return list(sources.values())
 
-    def builtin_tools(self) -> list[Json]:
+    def builtin_tools(self, resolved: ResolvedProvider | None = None) -> list[Json]:
         """Provider-side tool entries, copied so a request cannot mutate the loaded config.
 
         These reach every protocol's `tools` array unchanged. Each host happens to express its
         builtin tools in the shape of the protocol it speaks — Chat for Z.AI and Kimi, Messages for
-        Anthropic, Responses for OpenAI and Qwen — so one pass-through serves all of them, and a
-        host that configures search through the request body instead (OpenRouter's `plugins`,
-        Qwen Chat's `enable_search`) is already served by `extra_body`.
+        Anthropic, Responses for OpenAI, Qwen, and OpenRouter — so one pass-through serves all of
+        them, and a host that configures search through the request body instead (Qwen Chat's
+        `enable_search`) is already served by `extra_body`.
+
+        Documented providers restrict which resolved wire may carry which provider-native tool
+        types. A wire mismatch or an unsupported tool type fails locally before the SDK is called,
+        because the provider would reject the same JSON with a schema error or because minacode
+        cannot cover the tool's approval/file/container lifecycle yet. Unknown hosts keep the
+        generic pass-through.
         """
-        return [dict(entry) for entry in self.session.config.provider.builtin_tools]
+
+        provider = self.session.config.provider
+        entries = provider.builtin_tools
+        if not entries:
+            return []
+        resolved = resolved or provider.resolve()
+        policy = resolved.builtin_tools_by_wire
+        if policy is None:
+            return [dict(entry) for entry in entries]
+        types = [str(entry.get("type") or "?") for entry in entries]
+        allowed = policy.get(resolved.api)
+        if allowed is None:
+            raise ModelError(self._builtin_tools_mismatch(resolved, ", ".join(types)))
+        unsupported = [tool_type for tool_type in types if tool_type not in allowed]
+        if unsupported:
+            raise ModelError(
+                f"provider.builtin_tools {', '.join(unsupported)} are not supported on the {resolved.api} wire "
+                f"for {provider.model or '(no model)'} ({resolved.host or 'this provider'}) yet; "
+                f"supported provider tools: {', '.join(allowed) or '(none)'}"
+            )
+        return [dict(entry) for entry in entries]
+
+    def _builtin_tools_mismatch(self, resolved: ResolvedProvider, types: str) -> str:
+        """An actionable local error for provider tools configured on an incompatible wire."""
+
+        provider = self.session.config.provider
+        wires = sorted(resolved.builtin_tools_by_wire or {})
+        if wires:
+            remedy = "use api=" + ", ".join(wires)
+            if resolved.builtin_tools_hint:
+                remedy += ", or remove builtin_tools and " + resolved.builtin_tools_hint
+        else:
+            remedy = "this provider has no documented provider-side tools through the tools array"
+            if resolved.builtin_tools_hint:
+                remedy += "; " + resolved.builtin_tools_hint
+        return (
+            f"provider.builtin_tools {types} are not valid on the {resolved.api} wire "
+            f"for {provider.model or '(no model)'} ({resolved.host or 'this provider'}); {remedy}"
+        )
 
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
         configured = provider.prompt_cache_key
@@ -981,6 +1026,7 @@ class ModelClient:
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
         provider = self.session.config.provider
+        resolved = provider.resolve()
         system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
         # Anthropic prompt caching is a prefix match that only takes effect at explicit
         # cache_control breakpoints; without one, every turn reprocesses the whole prompt from
@@ -994,7 +1040,7 @@ class ModelClient:
             "max_tokens": provider.output_token_budget(),
         }
         # Thinking pins temperature to its default; sending any other value is rejected.
-        if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools()]:
+        if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
             params["tools"] = request_tools
             params["tool_choice"] = {"type": "auto"}
         effort = provider.reasoning_effort()

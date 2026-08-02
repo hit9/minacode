@@ -65,6 +65,12 @@ class CompatibilityProfile:
     strict_beta: bool = False
     suppress_temperature: bool = False
     suppress_temperature_models: tuple[str, ...] = ()
+    # Provider-side tool policy: which resolved wires may carry which provider-native tool
+    # types, plus optional user guidance naming an alternative configuration channel. ``None``
+    # keeps generic pass-through for unknown hosts; an empty mapping means no wire accepts
+    # provider-side tools on this known provider.
+    builtin_tools_by_wire: dict[str, tuple[str, ...]] | None = None
+    builtin_tools_hint: str | None = None
 
     @staticmethod
     def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
@@ -89,6 +95,8 @@ class ResolvedProvider:
     suppress_temperature: bool
     prompt_cache_key: bool
     strict_tools_active: bool
+    builtin_tools_by_wire: dict[str, tuple[str, ...]] | None = None
+    builtin_tools_hint: str | None = None
 
 
 def nearest_reasoning_effort(effort: str, supported: tuple[str, ...]) -> str:
@@ -155,6 +163,8 @@ def _compatibility_profile(data: ProviderData) -> CompatibilityProfile:
         strict_beta=data.get("strict_beta", False),
         suppress_temperature=data.get("suppress_temperature", False),
         suppress_temperature_models=data.get("suppress_temperature_models", ()),
+        builtin_tools_by_wire=data.get("builtin_tools_by_wire"),
+        builtin_tools_hint=data.get("builtin_tools_hint"),
     )
 
 

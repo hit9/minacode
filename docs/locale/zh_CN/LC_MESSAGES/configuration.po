@@ -374,8 +374,8 @@ msgstr "Qwen（Responses）"
 
 #: ../../configuration.md
 #, python-brace-format
-msgid "`{ type = \"web_search\" }`; also `web_extractor` and `code_interpreter`"
-msgstr "`{ type = \"web_search\" }`；另有 `web_extractor` 和 `code_interpreter`"
+msgid "`{ type = \"web_search\" }`; also `web_extractor`"
+msgstr "`{ type = \"web_search\" }`；另有 `web_extractor`"
 
 #: ../../configuration.md
 msgid "Anthropic"
@@ -402,24 +402,36 @@ msgstr "Kimi / Moonshot"
 msgid "`{ type = \"builtin_function\", function = { name = \"$web_search\" } }`"
 msgstr "`{ type = \"builtin_function\", function = { name = \"$web_search\" } }`"
 
-#: ../../configuration.md:99
+#: ../../configuration.md
+msgid "OpenRouter"
+msgstr "OpenRouter"
+
+#: ../../configuration.md
+msgid "`{ type = \"openrouter:web_search\" }`; also `openrouter:web_fetch`, `openrouter:datetime`"
+msgstr "`{ type = \"openrouter:web_search\" }`；还有 `openrouter:web_fetch`、`openrouter:datetime`"
+
+#: ../../configuration.md:105
 #, python-brace-format
 msgid ""
-"Two providers configure search elsewhere, through [`extra_body"
-"`](#optional-provider-settings): OpenRouter takes `plugins = [{ id = "
-"\"web\" }]` (or an `:online` model suffix), and Qwen's Chat Completions "
-"endpoint takes `enable_search`. DeepSeek has no web search."
+"One provider configures search elsewhere, through [`extra_body"
+"`](#optional-provider-settings): Qwen's Chat Completions endpoint takes "
+"`enable_search`. DeepSeek has no web search."
 msgstr ""
-"有两个 Provider 在别处配置搜索，通过 "
-"[`extra_body`](#optional-provider-settings)：OpenRouter 使用 "
-"`plugins = [{ id = \"web\" }]`（或在模型名后加 `:online` 后缀），Qwen 的 "
-"Chat Completions endpoint 使用 `enable_search`。DeepSeek 没有联网搜索。"
+"有一个 Provider 在别处配置搜索，通过 "
+"[`extra_body`](#optional-provider-settings)：Qwen 的 Chat Completions "
+"endpoint 使用 `enable_search`。DeepSeek 没有联网搜索。"
 
-#: ../../configuration.md:103
+#: ../../configuration.md:108
 msgid ""
-"Entries are sent as written, so an unsupported one comes back as that "
-"provider's own error. `/config` lists what is active."
-msgstr "条目会按写法原样发送，因此不受支持的条目会以该 Provider 自己的报错返回。`/config` 会列出当前生效的配置。"
+"Entries are protocol-specific: they match the provider's documented API "
+"wire, and known providers only accept the tool types minacode supports. An "
+"unsupported entry or a wire mismatch is refused locally with an explanation "
+"before the request is sent. Switching `/api` may therefore require updating "
+"`builtin_tools` (or `extra_body`) to match. `/config` lists what is active."
+msgstr ""
+"条目是协议相关的：它们必须匹配 Provider 文档规定的 API wire，且已知 Provider "
+"只接受 minacode 支持的工具类型。不支持的条目或 wire 不匹配会在请求发送前本地拒绝并给出说明。"
+"切换 `/api` 时可能需要同步更新 `builtin_tools`（或 `extra_body`）。`/config` 会列出当前生效的配置。"
 
 #: ../../configuration.md:106
 msgid ""

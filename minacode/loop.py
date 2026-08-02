@@ -1846,7 +1846,15 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         provider = self.session.config.provider
         provider.api = value
         # "auto" is the usual choice, so name the wire it resolved to rather than echoing the setting back.
-        return f"Set provider.api = {value} (wire: {provider.resolve().api})"
+        resolved = provider.resolve()
+        result = f"Set provider.api = {value} (wire: {resolved.api})"
+        policy = resolved.builtin_tools_by_wire
+        if provider.builtin_tools and policy is not None and resolved.api not in policy:
+            if policy:
+                result += "; configured builtin_tools require " + ", ".join(sorted(policy))
+            else:
+                result += "; configured builtin_tools are not valid for this provider"
+        return result
 
     def yolo(self, args: str) -> str:
         self.session.settings.yolo = not self.session.settings.yolo

@@ -16,12 +16,22 @@
   `tools` array of whichever protocol the provider speaks, so a provider's own server-side tools can
   be offered to the model. This is how provider web search is enabled: `{ type = "web_search" }` for
   OpenAI and Qwen on the Responses API, `{ type = "web_search_20250305", name = "web_search" }` for
-  Anthropic, and `{ type = "web_search", web_search = { enable = "True" } }` for Z.AI. Entries are
-  passed through unchanged and are only checked for a non-empty `type`. Enabling one changes the
-  prompt cache key, and `/config` lists what is active. Providers that configure search through the
-  request body instead — OpenRouter's `plugins`, Qwen Chat's `enable_search` — continue to use
-  `provider.extra_body`.
-- Log each provider-side tool call the provider reports (`web search  <query>`) as its own transcript
+  Anthropic, `{ type = "web_search", web_search = { enable = "True" } }` for Z.AI, and
+  `{ type = "openrouter:web_search" }` for OpenRouter. Entries are passed through unchanged after a
+  check for a non-empty `type` and against the provider's documented wire. Enabling one changes the
+  prompt cache key, and `/config` lists what is active. One provider configures search through the
+  request body instead — Qwen Chat's `enable_search` — and continues to use `provider.extra_body`.
+- Reject known incompatible `provider.builtin_tools` / resolved-wire combinations locally, before
+  the provider SDK is called, with an actionable `ModelError`. On documented hosts, Responses-only
+  entries (OpenAI, Qwen) no longer travel over the Chat or Anthropic wire, Anthropic server tools
+  only travel over Messages, and Z.AI/Kimi Chat entries only over Chat. Known providers also reject
+  provider-side tool types minacode does not support yet (for example Qwen `code_interpreter` or
+  Anthropic `web_fetch_*`), so approval, file, container, and client-callback lifecycles cannot
+  leak through. OpenRouter server tools (`openrouter:web_search`, `openrouter:web_fetch`,
+  `openrouter:datetime`) are supported; DeepSeek, Kimi Code, and OpenCode accept none. Unknown hosts
+  and future tool shapes keep the generic pass-through, nothing is silently dropped or rewritten,
+  and `/api` now reports the mismatch in its result instead of touching the provider configuration.
+- Log each provider-side tool call the provider reports
   line, and show it as a running status phase while it happens. The line is written from the parsed
   response, so it appears with streaming on or off.
 - Answer a provider's own builtin function calls, so Kimi's `$web_search` (declared as
