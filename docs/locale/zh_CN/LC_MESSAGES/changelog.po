@@ -175,6 +175,49 @@ msgid ""
 msgstr ""
 "在 Provider 端工具输出前提升已经完成的流式文本，避免 Responses 联网搜索和 Anthropic 服务端工具活动使回答预览在最终输出前消失。"
 
+#: ../../../CHANGELOG.md:55
+msgid ""
+"Publish only the text written after a provider-side tool instead of "
+"repeating the promoted opening: a search runs inside one response, so the "
+"model keeps writing after it and the answer previously appeared twice in "
+"the transcript."
+msgstr ""
+"Provider 端工具之后只输出新写出的文本，不再重复已提升的开头：搜索发生在同一次响应内部，"
+"模型在其后继续书写，此前会导致回答在记录中出现两次。"
+
+#: ../../../CHANGELOG.md:58
+msgid ""
+"Keep token estimation working when a configured `provider.builtin_tools` "
+"entry is unsupported on the active wire. `/status`, the status bar, and "
+"resuming a session only measure the payload, and raising there took down "
+"the frontend over config no request had tried to send; the request that "
+"would send it still fails with the same error."
+msgstr ""
+"当配置的 `provider.builtin_tools` 条目在当前协议上不受支持时，token 估算仍可工作。"
+"`/status`、状态栏与会话恢复只是测量请求体，在那里抛错会因尚未真正发送的配置而使前端崩溃；"
+"真正发送该条目的请求仍然以同样的错误失败。"
+
+#: ../../../CHANGELOG.md:63
+msgid ""
+"Keep the Anthropic extended-thinking budget under the request's own "
+"`max_tokens`, which the API requires. With the default `max_tokens = "
+"8192`, `/reason high` and above sent a budget the model could not accept, "
+"so every request to a pre-4.6 Claude model failed until `max_tokens` was "
+"raised."
+msgstr ""
+"将 Anthropic 扩展思考预算限制在该请求自身的 `max_tokens` 之内（API 的硬性要求）。"
+"在默认 `max_tokens = 8192` 下，`/reason high` 及以上会发送模型无法接受的预算，"
+"导致对 4.6 之前的 Claude 模型的每次请求都失败，除非手动调大 `max_tokens`。"
+
+#: ../../../CHANGELOG.md:66
+msgid ""
+"Send the resolved reasoning effort on OpenRouter's top-level `reasoning` "
+"object, like every other reasoning control, so a documented per-model "
+"effort scale applies there too."
+msgstr ""
+"OpenRouter 顶层 `reasoning` 对象也发送解析后的 reasoning effort，与其他推理控制保持一致，"
+"使按模型记录的 effort 档位在该路径同样生效。"
+
 #: ../../../CHANGELOG.md:50
 msgid "0.18.1 - 2026-07-31"
 msgstr ""

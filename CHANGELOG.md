@@ -51,6 +51,18 @@
   Provider builtin functions that were still offered remain available.
 - Promote completed streamed text before provider-side tool output, so Responses web search and
   Anthropic server-tool activity no longer make the answer preview disappear before final output.
+- Publish only the text written after a provider-side tool instead of repeating the promoted
+  opening: a search runs inside one response, so the model keeps writing after it and the answer
+  previously appeared twice in the transcript.
+- Keep token estimation working when a configured `provider.builtin_tools` entry is unsupported on
+  the active wire. `/status`, the status bar, and resuming a session only measure the payload, and
+  raising there took down the frontend over config no request had tried to send; the request that
+  would send it still fails with the same error.
+- Keep the Anthropic extended-thinking budget under the request's own `max_tokens`, which the API
+  requires. With the default `max_tokens = 8192`, `/reason high` and above sent a budget the model
+  could not accept, so every request to a pre-4.6 Claude model failed until `max_tokens` was raised.
+- Send the resolved reasoning effort on OpenRouter's top-level `reasoning` object, like every other
+  reasoning control, so a documented per-model effort scale applies there too.
 
 
 ## 0.18.1 - 2026-07-31
