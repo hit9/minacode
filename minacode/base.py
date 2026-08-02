@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from prompt_toolkit.utils import get_cwidth
 
+from minacode.model_catalog import REASONING_LEVELS
 from minacode.provider_compat import COMPATIBILITY_PROFILES, CompatibilityProfile, ResolvedProvider, compatibility_for_host
 
 try:
@@ -48,7 +49,6 @@ MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 5
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
 IMAGE_INPUT_CHOICES = ("auto", "on", "off")
-REASONING_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = (
     "auto",
@@ -327,7 +327,7 @@ class ProviderConfig:
                 reasoning_effort = profile.rule_value(profile.responses_reasoning_effort_off_rules, model) or reasoning_effort
         else:
             effort = self.reasoning_effort()
-            reasoning_effort = str(profile.reasoning_effort_value(model, effort))
+            reasoning_effort = profile.reasoning_effort_value(model, effort)
 
         suppress_temperature = profile.suppress_temperature or any(model.startswith(prefix) for prefix in profile.suppress_temperature_models)
         if not suppress_temperature:

@@ -39,11 +39,11 @@ from minacode.base import (
     builtin_tool_label,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
+from minacode.model_catalog import THINKING_BUDGETS
 from minacode.prompts import (
     COMPACTION_PROMPT,
 )
 from minacode.provider_compat import (
-    CHAT_REASONING_EFFORT_VALUES,
     ResolvedProvider,
     anthropic_keeps_prior_thinking,
     anthropic_thinking_always_on,
@@ -953,7 +953,7 @@ class ModelClient:
             params["tools"] = request_tools
             params["tool_choice"] = {"type": "auto"}
         effort = provider.reasoning_effort()
-        budget = int(CHAT_REASONING_EFFORT_VALUES["enable_thinking"].get(effort, 4096))
+        budget = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
         thinking_params = anthropic_thinking_params(
             provider.model,
             provider.reasoning,
@@ -1123,8 +1123,7 @@ class ModelClient:
         elif chat_reasoning == "enable_thinking":
             extra["enable_thinking"] = reasoning_enabled
             if reasoning_enabled:
-                values = CHAT_REASONING_EFFORT_VALUES["enable_thinking"]
-                extra["thinking_budget"] = values.get(effort, values["medium"])
+                extra["thinking_budget"] = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
         # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; minacode's
         # own reasoning fields are layered on top so they stay authoritative on key conflicts.
         extra_body = {**provider.extra_body, **extra}

@@ -35,6 +35,8 @@ Modules, with dependencies pointing downward only:
               image.py                     image storage and model projection
                   |
    base.py   provider_compat.py            value types, config, policy
+                  |
+            model_catalog.py               evidence-backed compatibility data
 ```
 
 `session.py` reaches `tools/`, `mcp.py`, and `skill.py` through deferred imports, commented at
@@ -138,7 +140,8 @@ One local process with explicit owners for each kind of behavior. The layers are
 
 - `base.py` defines configuration, shared value types, and error categories, including the log-line
   vocabulary every presentation layer renders and the resource handles they cancel through;
-  `provider_compat.py` folds documented compatibility into resolved request policy.
+  `provider_compat.py` folds the evidence-backed model and provider data in `model_catalog.py` into
+  resolved request policy.
 - `Session` owns protocol-neutral semantic state: messages, active-turn checkpoints, queued input,
   retained output, diffs, usage, and session-scoped resources such as jobs and images. Its snapshot
   codec decides which of that state is persistable.
@@ -220,9 +223,9 @@ Configuration expresses user intent. `ProviderConfig.resolve()` is the single fo
 settings and evidence-backed compatibility become a `ResolvedProvider`; explicit settings win and
 unknown hosts stay on the generic standards path.
 
-- Compatibility profiles describe policy differences, not provider SDK wrappers. Keep host and
-  model checks there, with primary evidence beside the rule; do not scatter them through tools,
-  commands, or rendering code.
+- `model_catalog.py` declares provider overlays and reusable model capabilities, with primary
+  evidence beside each exception. `provider_compat.py` owns generic matching and fallback; neither
+  module wraps provider SDKs or lets the catalog become an allowlist for otherwise valid models.
 - `ModelClient` owns the Chat, Responses, and Anthropic wire formats. Session history remains one
   normalized model with namespaced opaque fields for protocol continuation data.
 - Lifecycle and checkpoint metadata is local bookkeeping, not a provider extension. Adapters strip

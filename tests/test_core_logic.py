@@ -628,6 +628,23 @@ def test_opencode_routes_grok_through_responses_without_allowlisting_effort():
     assert resolved.reasoning_effort == "max"
 
 
+@pytest.mark.parametrize(
+    ("model", "reasoning", "chat_reasoning", "effort"),
+    (
+        ("deepseek-v4-flash", "medium", "thinking", "high"),
+        ("glm-5.2", "xhigh", "thinking_effort", "xhigh"),
+        ("kimi-k3", "medium", "reasoning_effort", "high"),
+    ),
+)
+def test_opencode_reuses_model_family_reasoning_capabilities(model, reasoning, chat_reasoning, effort):
+    provider = ProviderConfig(url="https://opencode.ai/zen/v1", model=model, reasoning=reasoning)
+
+    resolved = provider.resolve()
+
+    assert resolved.chat_reasoning == chat_reasoning
+    assert resolved.reasoning_effort == effort
+
+
 @pytest.mark.parametrize("url", ("https://api.deepseek.com", "https://opencode.ai/zen/v1"))
 @pytest.mark.parametrize(("reasoning", "expected"), (("minimal", "low"), ("medium", "high"), ("high", "high"), ("max", "max")))
 def test_deepseek_effort_is_resolved_before_request_construction(url, reasoning, expected, tmp_path):
