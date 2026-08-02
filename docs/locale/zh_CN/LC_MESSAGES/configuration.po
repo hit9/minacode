@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-29 10:34-0700\n"
+"POT-Creation-Date: 2026-08-02 00:35-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -183,8 +183,10 @@ msgid "`medium`"
 msgstr "`medium`"
 
 #: ../../configuration.md
-msgid "Reasoning effort; change it during a session with `/reason`"
-msgstr "Reasoning effort；在 session 中通过 `/reason` 修改"
+msgid ""
+"Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or "
+"`max`; change it during a session with `/reason`"
+msgstr "Reasoning effort：`off`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；在 session 中通过 `/reason` 修改"
 
 #: ../../configuration.md
 msgid "`available_models`"
@@ -308,15 +310,20 @@ msgstr ""
 
 #: ../../configuration.md:76
 msgid ""
-"Unknown OpenAI-compatible endpoints stay on the generic path. If "
-"automatic protocol selection is wrong for an endpoint, set `api` "
-"explicitly. `/status` shows the active model and cache usage reported by "
-"the provider."
+"For provider/model combinations with documented reasoning constraints, "
+"minacode maps the selected effort to the nearest accepted value. Unknown "
+"OpenAI-compatible endpoints and model names stay on the generic path "
+"rather than an allowlist; set `api` and `chat_reasoning` explicitly if "
+"automatic selection is wrong. `/config` shows the resolved reasoning "
+"effort, while `/status` shows the active model and cache usage reported "
+"by the provider."
 msgstr ""
-"未知的 OpenAI-compatible endpoint 会使用通用路径。如果自动选择的协议不正确，请显式设置 `api`。`/status`"
-" 会显示当前模型以及 provider 报告的缓存用量。"
+"对于文档明确限制 reasoning 的 provider/model 组合，minacode 会将所选 effort 映射到最接近的可接受值。"
+"未知的 OpenAI-compatible endpoint 和模型名会继续走通用路径，而不是受 allowlist 限制；如果自动选择不正确，请显式设置 "
+"`api` 和 `chat_reasoning`。`/config` 会显示解析后的 reasoning effort，`/status` 则显示当前模型及 provider "
+"报告的 cache 用量。"
 
-#: ../../configuration.md:80
+#: ../../configuration.md:82
 msgid ""
 "With `image_input = \"auto\"`, minacode sends attached images using the "
 "selected standard API. A successful image request is remembered for that "
@@ -330,11 +337,11 @@ msgstr ""
 "session 中为该 provider 和模型记住其支持识图；只有明确表示不支持图片的响应才会禁用后续图片提交。如果已经知道 endpoint "
 "的能力，可设为 `on` 或 `off`。切换到禁用图片输入的 provider 或模型后，历史图片仍会以可读文本标签保留。"
 
-#: ../../configuration.md:86
+#: ../../configuration.md:88
 msgid "Runtime"
 msgstr "Runtime"
 
-#: ../../configuration.md:88
+#: ../../configuration.md:90
 msgid "Optional; the defaults shown are used when omitted."
 msgstr "以下设置均可省略，表中列出其默认值。"
 
@@ -440,17 +447,17 @@ msgstr "`theme`"
 msgid "Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme`"
 msgstr "终端主题：`auto`、`light` 或 `dark`；`--theme` 可覆盖"
 
-#: ../../configuration.md:102
+#: ../../configuration.md:104
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:105
+#: ../../configuration.md:107
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:112
+#: ../../configuration.md:114
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -461,18 +468,17 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:116
+#: ../../configuration.md:118
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
 "of truth; deleting a sidecar only costs that session its label in the "
 "list."
 msgstr ""
-"每份日志旁还有一个很小的 `<uid>.meta.json`，保存 se"
-"ssion 选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源"
-"；删掉这个文件只会让该 session 在列表中失去标签。"
+"每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
+"选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:120
+#: ../../configuration.md:122
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "
@@ -608,3 +614,15 @@ msgstr ""
 #~ "`model`</span>。显式设置的值始终优先。已测试 DeepSeek、OpenCode、阿里云和 "
 #~ "ZenMux；其他 OpenAI-compatible 与 Anthropic "
 #~ "endpoint 也可以使用。"
+
+#~ msgid ""
+#~ "Unknown OpenAI-compatible endpoints stay "
+#~ "on the generic path. If automatic "
+#~ "protocol selection is wrong for an "
+#~ "endpoint, set `api` explicitly. `/status` "
+#~ "shows the active model and cache "
+#~ "usage reported by the provider."
+#~ msgstr ""
+#~ "未知的 OpenAI-compatible endpoint "
+#~ "会使用通用路径。如果自动选择的协议不正确，请显式设置 `api`。`/status` 会显示当前模型以及 "
+#~ "provider 报告的缓存用量。"

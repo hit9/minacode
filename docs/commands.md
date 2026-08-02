@@ -53,9 +53,10 @@ and lets you pick one interactively. With a name it switches immediately.
 an argument it opens an interactive picker with configured and discovered models.
 Changing the model also prompts you to pick a reasoning effort.
 
-**`/reason [EFFORT]`** — Show or set reasoning effort (OpenAI o-series and DeepSeek
-R1). Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Without an
-argument it opens a picker.
+**`/reason [EFFORT]`** — Show or set reasoning effort. Values: `off`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, `max`. Minacode maps known model families to
+their nearest supported level; unrecognized providers and models keep the selected
+value. Without an argument it opens a picker.
 
 ```{figure} ../snapshots/minacode-demo-switching-providers-models.gif
 :alt: Switching providers and models interactively during a session

@@ -842,7 +842,7 @@ def test_provider_compatibility_and_prompt_cache_key(tmp_path):
     opencode_deepseek = ProviderConfig(url="https://opencode.ai/zen/go/v1", key="k", model="deepseek-v4-flash", api="auto")
     resolved = opencode_deepseek.resolve()
     assert resolved.api == "chat"
-    assert resolved.chat_reasoning == "off"
+    assert resolved.chat_reasoning == "thinking"
 
     provider = ProviderConfig(url="https://api.openai.com/v1", key="k", model="gpt-5-mini", prompt_cache_key="auto")
     s = Session(cwd=str(tmp_path), config=Config(active_provider="p", providers={"p": provider}))

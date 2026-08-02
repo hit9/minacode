@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.16\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-29 10:35-0700\n"
+"POT-Creation-Date: 2026-08-02 00:35-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -129,33 +129,35 @@ msgstr ""
 
 #: ../../commands.md:56
 msgid ""
-"**`/reason [EFFORT]`** — Show or set reasoning effort (OpenAI o-series "
-"and DeepSeek R1). Values: `off`, `minimal`, `low`, `medium`, `high`, "
-"`xhigh`. Without an argument it opens a picker."
+"**`/reason [EFFORT]`** — Show or set reasoning effort. Values: `off`, "
+"`minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Minacode maps known "
+"model families to their nearest supported level; unrecognized providers "
+"and models keep the selected value. Without an argument it opens a "
+"picker."
 msgstr ""
-"**`/reason [EFFORT]`** — 显示或设置 reasoning effort（OpenAI o-series 与 "
-"DeepSeek "
-"R1）。可选值：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`。不带参数时打开选择器。"
+"**`/reason [EFFORT]`** — 显示或设置 reasoning effort。可选值：`off`、"
+"`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。Minacode 会将已知 model "
+"family 映射到其最接近的受支持级别；未识别的 provider 和模型会保留所选值。不带参数时打开选择器。"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "Switching providers and models interactively during a session"
 msgstr "在 session 中交互式切换 provider 和模型"
 
-#: ../../commands.md:65
+#: ../../commands.md:66
 msgid "Switching providers and models mid-session."
 msgstr "在 session 中切换 provider 和模型。"
 
-#: ../../commands.md:68
+#: ../../commands.md:69
 msgid "Managing the session"
 msgstr "管理 session"
 
-#: ../../commands.md:70
+#: ../../commands.md:71
 msgid ""
 "**`/name [TEXT]`** — Show or set this session's name. See "
 "[Names](usage.md#names)."
 msgstr "**`/name [TEXT]`** — 查看或设置当前 session 的名称。参见[名称](usage.md#names)。"
 
-#: ../../commands.md:72
+#: ../../commands.md:73
 msgid ""
 "**`/sessions [all]`** — Browse saved sessions and re-enter one; `/resume`"
 " is the same command. See [Switching sessions](usage.md#switching-"
@@ -164,31 +166,32 @@ msgstr ""
 "**`/sessions [all]`** — 浏览已保存的 session 并进入其中一个；`/resume` 是同一条命令。参见[切换 "
 "session](usage.md#switching-sessions)。"
 
-#: ../../commands.md:75
+#: ../../commands.md:76
 msgid ""
 "**`/compact`** — Summarize and shrink the conversation immediately. "
 "minacode keeps long sessions within budget on its own, but `/compact` "
 "trims on demand."
 msgstr "**`/compact`** — 立即总结并缩短对话。minacode 会自动控制长 session 的预算；`/compact` 用于按需压缩。"
 
-#: ../../commands.md:78
+#: ../../commands.md:79
 msgid ""
 "**`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before"
 " turning this off permanently."
 msgstr "**`/yolo`** — 切换操作确认。永久关闭前请阅读[安全](safety.md)。"
 
-#: ../../commands.md:81
+#: ../../commands.md:82
 msgid ""
 "**`/hints`** — Toggle the model's suggested next-step chips at the idle "
 "prompt (the `NextHints` tool). See [Tools](tools.md)."
 msgstr ""
-"**`/hints`** — 切换 idle 提示符处由模型建议的下一步 chip（`NextHints` 工具）。参见[工具](tools.md)。"
+"**`/hints`** — 切换 idle 提示符处由模型建议的下一步 chip（`NextHints` "
+"工具）。参见[工具](tools.md)。"
 
-#: ../../commands.md:84
+#: ../../commands.md:85
 msgid "**`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek)."
 msgstr "**`/strict`** — 切换严格 tool-call schema（OpenAI / DeepSeek）。"
 
-#: ../../commands.md:86
+#: ../../commands.md:87
 msgid ""
 "**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, "
 "`responses`, `anthropic`) used to reach the model. `/provider` and "
@@ -199,7 +202,7 @@ msgstr ""
 "选择或设置访问模型所用的请求协议（`auto`、`chat`、`responses`、`anthropic`）。`/provider` 和 "
 "`/model` 也会在各自的选择流程中确认该项，因为合适的协议取决于刚选定的模型。"
 
-#: ../../commands.md:90
+#: ../../commands.md:91
 msgid ""
 "An endpoint that serves several model families often exposes them on "
 "different protocols, and an OpenAI-compatible `/models` listing says "
@@ -213,7 +216,7 @@ msgstr ""
 "`/model` 列出的模型仍可能被拒绝为不受支持。出现这种情况时，用 `/api` 换一种协议（或用 `auto` 依据 URL "
 "和模型重新推断）。回复会指明实际生效的协议，并且历史记录与协议无关，所以中途切换是安全的。"
 
-#: ../../commands.md:96
+#: ../../commands.md:97
 msgid ""
 "**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; "
 "tab-completes both keys and, where the values are a fixed set, the "
@@ -222,7 +225,7 @@ msgstr ""
 "**`/set KEY VALUE`** — 为当前 session 设置 `provider.*` 或 `runtime.*`；key "
 "以及有固定选项的 value 均支持 Tab 补全。例如：`/set provider.response_timeout 900`。"
 
-#: ../../commands.md:99
+#: ../../commands.md:100
 msgid ""
 "**`/resend`** — Cancel and re-send the in-flight model request without "
 "restarting the turn. Type it while a model request is waiting; it has no "
@@ -238,63 +241,63 @@ msgstr ""
 "`working`。自动重试还会显示当前尝试次数和简短原因，例如 `retrying 2/6 · timeout`；随后在该请求继续时显示 "
 "`working · attempt 2/6`："
 
-#: ../../commands.md:108
+#: ../../commands.md:109
 msgid "MCP"
 msgstr "MCP"
 
-#: ../../commands.md:110
+#: ../../commands.md:111
 msgid "**`/mcp`** — Manage [MCP](mcp.md) server connections. Sub-commands:"
 msgstr "**`/mcp`** — 管理 [MCP](mcp.md) server 连接。子命令如下："
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "Usage"
 msgstr "用法"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "Effect"
 msgstr "作用"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "`/mcp`"
 msgstr "`/mcp`"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "List servers and connection status"
 msgstr "列出 server 及连接状态"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "`/mcp connect <server> [server ...]`"
 msgstr "`/mcp connect <server> [server ...]`"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "Connect servers now"
 msgstr "立即连接 server"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "`/mcp disconnect <server>`"
 msgstr "`/mcp disconnect <server>`"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "Disconnect a server"
 msgstr "断开一个 server"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "`/mcp tools [server]`"
 msgstr "`/mcp tools [server]`"
 
-#: ../../commands.md:60
+#: ../../commands.md:61
 msgid "List tools from a connected server"
 msgstr "列出已连接 server 的工具"
 
-#: ../../commands.md:119
+#: ../../commands.md:120
 msgid "Help and exit"
 msgstr "帮助与退出"
 
-#: ../../commands.md:121
+#: ../../commands.md:122
 msgid "**`/help`** — Show the built-in command and tool reference."
 msgstr "**`/help`** — 显示内置命令和工具参考。"
 
-#: ../../commands.md:123
+#: ../../commands.md:124
 msgid ""
 "**`/exit`, `/quit`** — Leave minacode. Your session is saved "
 "automatically and can be resumed with `-c` or `--resume`."

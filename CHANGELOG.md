@@ -1,6 +1,15 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+- Add `max` reasoning effort and map normalized effort levels to each documented provider/model
+  family, including OpenAI GPT-5 and o-series generations, Anthropic, DeepSeek, Qwen, Kimi, Z.AI,
+  OpenRouter, and OpenCode Zen. Unknown providers and future model names retain generic
+  pass-through behavior, and `/config` now shows the resolved effort sent to the active model.
+
+
 ## 0.18.1 - 2026-07-31
 
 ### Changed

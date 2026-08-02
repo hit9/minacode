@@ -53,7 +53,7 @@ Most users can leave these unset.
 | `api` | `auto` | API protocol shown above |
 | `stream` | `true` | Stream model output; disable for endpoints that reject streaming or Chat `stream_options` |
 | `image_input` | `auto` | Image capability: learn automatically, force `on`, or disable with `off` |
-| `reasoning` | `medium` | Reasoning effort; change it during a session with `/reason` |
+| `reasoning` | `medium` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; change it during a session with `/reason` |
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
 | `max_tokens` | `8192` | Output-token cap per model request and reserved compaction space; `0` uses the provider default |
@@ -73,9 +73,11 @@ timer active indefinitely, so `response_timeout` separately limits the complete 
 ten minutes by default. Reaching the total limit cancels the request without automatic retries;
 set it to `0` only when deliberately allowing unbounded generations.
 
-Unknown OpenAI-compatible endpoints stay on the generic path. If automatic protocol selection is
-wrong for an endpoint, set `api` explicitly. `/status` shows the active model and cache usage
-reported by the provider.
+For provider/model combinations with documented reasoning constraints, minacode maps the selected
+effort to the nearest accepted value. Unknown OpenAI-compatible endpoints and model names stay on
+the generic path rather than an allowlist; set `api` and `chat_reasoning` explicitly if automatic
+selection is wrong. `/config` shows the resolved reasoning effort, while `/status` shows the active
+model and cache usage reported by the provider.
 
 With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
 successful image request is remembered for that provider and model during the session; only an

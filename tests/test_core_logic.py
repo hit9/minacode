@@ -206,13 +206,15 @@ def test_config_validates_provider_selection_and_provider_fields():
     with pytest.raises(ConfigError):
         ProviderConfig.from_dict({"prompt_cache_key": "not stable"})
 
+    assert ProviderConfig.from_dict({"reasoning": "max"}).reasoning == "max"
+
 
 def test_chat_provider_params_cover_reasoning_variants(tmp_path):
     client = ModelClient(session(tmp_path))
 
     params = {}
-    client.apply_provider_params(params, ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="high"))
-    assert params["extra_body"] == {"reasoning": {"effort": "high"}}
+    client.apply_provider_params(params, ProviderConfig(url="https://openrouter.ai/api/v1", model="x", reasoning="max"))
+    assert params["extra_body"] == {"reasoning": {"effort": "max"}}
 
     params = {}
     client.apply_provider_params(params, ProviderConfig(url="https://api.openai.com/v1", model="gpt-5-mini", reasoning="low"))
@@ -358,6 +360,11 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
     assert effort("claude-sonnet-4-6") == "max"
     assert effort("claude-opus-4-7") == "xhigh"
     assert effort("claude-opus-5") == "xhigh"
+
+    provider.reasoning = "max"
+    assert effort("claude-sonnet-4-6") == "max"
+    assert effort("claude-opus-4-7") == "max"
+    assert effort("claude-opus-5") == "max"
 
     provider.reasoning = "minimal"
     assert effort("claude-opus-5") == "low"
@@ -572,6 +579,77 @@ def test_openai_compatibility_limits_responses_reasoning_to_reasoning_models():
     assert non_reasoning.resolve().responses_reasoning is False
 
 
+@pytest.mark.parametrize(
+    ("url", "model", "reasoning", "expected"),
+    (
+        ("https://api.openai.com/v1", "gpt-5.6-sol", "max", "max"),
+        ("https://api.openai.com/v1", "gpt-5.6-terra", "minimal", "low"),
+        ("https://api.openai.com/v1", "gpt-5.5", "minimal", "low"),
+        ("https://api.openai.com/v1", "gpt-5.5", "max", "xhigh"),
+        ("https://api.openai.com/v1", "gpt-5.5-pro", "low", "medium"),
+        ("https://api.openai.com/v1", "gpt-5.4-pro", "max", "xhigh"),
+        ("https://api.openai.com/v1", "gpt-5.2-pro", "minimal", "medium"),
+        ("https://api.openai.com/v1", "gpt-5.3-codex", "max", "xhigh"),
+        ("https://api.openai.com/v1", "gpt-5.2-codex", "minimal", "low"),
+        ("https://api.openai.com/v1", "gpt-5.4-mini", "max", "xhigh"),
+        ("https://api.openai.com/v1", "gpt-5.2", "minimal", "low"),
+        ("https://api.openai.com/v1", "gpt-5.1", "xhigh", "high"),
+        ("https://api.openai.com/v1", "gpt-5-pro", "minimal", "high"),
+        ("https://api.openai.com/v1", "gpt-5", "max", "high"),
+        ("https://api.openai.com/v1", "o3", "minimal", "low"),
+        ("https://api.openai.com/v1", "o4-mini", "max", "high"),
+        ("https://opencode.ai/zen/v1", "gpt-5.5", "max", "xhigh"),
+        # Unknown future models stay on the generic pass-through path.
+        ("https://api.openai.com/v1", "gpt-5.7", "max", "max"),
+    ),
+)
+def test_openai_effort_uses_each_models_nearest_supported_level(url, model, reasoning, expected):
+    provider = ProviderConfig(url=url, model=model, api="responses", reasoning=reasoning)
+
+    assert provider.resolve().reasoning_effort == expected
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    (("gpt-5.6-sol", "none"), ("gpt-5.5-pro", "medium"), ("gpt-5.3-codex", "low")),
+)
+def test_openai_reasoning_off_uses_the_models_lowest_supported_level(model, expected):
+    provider = ProviderConfig(url="https://api.openai.com/v1", model=model, api="responses", reasoning="off")
+
+    assert provider.resolve().reasoning_effort == expected
+
+
+def test_opencode_routes_grok_through_responses_without_allowlisting_effort():
+    provider = ProviderConfig(url="https://opencode.ai/zen/v1", model="grok-4.5", reasoning="max")
+
+    resolved = provider.resolve()
+
+    assert resolved.api == "responses"
+    assert resolved.reasoning_effort == "max"
+
+
+@pytest.mark.parametrize("url", ("https://api.deepseek.com", "https://opencode.ai/zen/v1"))
+@pytest.mark.parametrize(("reasoning", "expected"), (("minimal", "low"), ("medium", "high"), ("high", "high"), ("max", "max")))
+def test_deepseek_effort_is_resolved_before_request_construction(url, reasoning, expected, tmp_path):
+    provider = ProviderConfig(url=url, model="deepseek-v4-flash", reasoning=reasoning)
+
+    assert provider.resolve().reasoning_effort == expected
+
+    params = {}
+    ModelClient(session(tmp_path)).apply_provider_params(params, provider)
+    assert params == {"reasoning_effort": expected, "extra_body": {"thinking": {"type": "enabled"}}}
+
+
+def test_unknown_provider_can_explicitly_pass_through_max_effort(tmp_path):
+    client = ModelClient(session(tmp_path))
+    provider = ProviderConfig(url="https://models.example/v1", model="future-reasoner", reasoning="max", chat_reasoning="reasoning_effort")
+    params = {}
+
+    client.apply_provider_params(params, provider)
+
+    assert params == {"reasoning_effort": "max"}
+
+
 def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     client = ModelClient(session(tmp_path))
     provider = ProviderConfig.from_dict(
@@ -584,7 +662,7 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     assert provider.resolve().chat_reasoning == "reasoning_effort"
     assert provider.resolve().chat_reasoning_history == "current_turn"
 
-    for reasoning in ("minimal", "low", "medium", "high", "xhigh"):
+    for reasoning in ("minimal", "low", "medium", "high", "xhigh", "max"):
         provider.reasoning = reasoning
         params = {}
         client.apply_provider_params(params, provider)
@@ -617,6 +695,11 @@ def test_kimi_compatibility_uses_model_native_reasoning_controls(tmp_path):
     params = {}
     client.apply_provider_params(params, provider)
     assert params == {"reasoning_effort": "high"}
+
+    provider.reasoning = "max"
+    params = {}
+    client.apply_provider_params(params, provider)
+    assert params == {"reasoning_effort": "max"}
 
     provider.reasoning = "off"
     params = {}
@@ -670,9 +753,10 @@ def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
 
 
 @pytest.mark.parametrize("url", ("https://api.z.ai/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"))
-def test_zai_regional_endpoints_share_documented_reasoning_effort(url, tmp_path):
+@pytest.mark.parametrize("reasoning", ("xhigh", "max"))
+def test_zai_regional_endpoints_share_documented_reasoning_effort(url, reasoning, tmp_path):
     client = ModelClient(session(tmp_path))
-    provider = ProviderConfig(url=url, model="glm-5.2", reasoning="xhigh", temperature=0.6)
+    provider = ProviderConfig(url=url, model="glm-5.2", reasoning=reasoning, temperature=0.6)
     resolved = provider.resolve()
     assert resolved.chat_reasoning == "thinking_effort"
     assert resolved.prompt_cache_key is False
@@ -683,7 +767,7 @@ def test_zai_regional_endpoints_share_documented_reasoning_effort(url, tmp_path)
     client.apply_provider_params(params, provider)
     assert params == {
         "temperature": 0.6,
-        "reasoning_effort": "xhigh",
+        "reasoning_effort": reasoning,
         "extra_body": {"thinking": {"type": "enabled"}},
     }
 
@@ -745,6 +829,15 @@ def test_unknown_provider_resolution_stays_generic_and_explicit_values_win():
     assert resolved.suppress_temperature is True
     assert resolved.prompt_cache_key is True
     assert resolved.strict_tools_active is False
+
+
+def test_explicit_manual_thinking_maps_max_to_the_largest_budget(tmp_path):
+    provider = ProviderConfig(url="https://gateway.example/v1", model="custom-model", chat_reasoning="enable_thinking", reasoning="max")
+    params = {}
+
+    ModelClient(session(tmp_path)).apply_provider_params(params, provider)
+
+    assert params == {"extra_body": {"enable_thinking": True, "thinking_budget": 32768}}
 
 
 def test_chat_provider_extra_body_passthrough(tmp_path):

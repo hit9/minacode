@@ -162,6 +162,8 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     command_loop = loop(tmp_path)
 
     assert command_loop.reason("invalid").startswith("Usage: /reason ")
+    assert command_loop.reason("max") == "Set provider.reasoning = max"
+    assert command_loop.session.config.provider.reasoning == "max"
     assert command_loop.strict("on") == "Usage: /strict"
     assert command_loop.set_value("") == "Usage: /set KEY VALUE"
     assert command_loop.set_value("unknown value") == "Unknown config key: unknown"
@@ -178,6 +180,16 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.set_value("provider.image_input maybe") == "Invalid value for provider.image_input"
     assert command_loop.set_value("provider.image_input off") == "Set provider.image_input"
     assert command_loop.session.config.provider.image_input == "off"
+
+
+def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.url = "https://api.openai.com/v1"
+    provider.model = "gpt-5.5"
+    provider.reasoning = "max"
+
+    assert "provider.resolved_reasoning_effort: xhigh" in command_loop.config("")
 
 
 def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_path):

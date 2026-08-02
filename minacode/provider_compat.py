@@ -27,6 +27,18 @@ class ModelRule:
 
 
 @dataclass(frozen=True)
+class ModelEffortRule:
+    """Effort aliases selected by model-family prefixes or a documented version pattern."""
+
+    values: Mapping[str, str | int]
+    prefixes: tuple[str, ...] = ()
+    pattern: str = ""
+
+    def matches(self, model: str) -> bool:
+        return any(model.startswith(prefix) for prefix in self.prefixes) or bool(self.pattern and re.match(self.pattern, model))
+
+
+@dataclass(frozen=True)
 class CompatibilityProfile:
     """Only the documented ways a host differs from generic protocol behavior."""
 
@@ -36,6 +48,7 @@ class CompatibilityProfile:
     chat_reasoning_history: str = "all"
     chat_reasoning_history_rules: tuple[ModelRule, ...] = ()
     reasoning_effort_values: Mapping[str, str | int] = field(default_factory=dict)
+    reasoning_effort_value_rules: tuple[ModelEffortRule, ...] = ()
     reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
     responses_reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
     responses_reasoning_models: tuple[str, ...] | None = None
@@ -48,6 +61,10 @@ class CompatibilityProfile:
     @staticmethod
     def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
         return next((rule.value for rule in rules if rule.matches(model)), None)
+
+    def reasoning_effort_value(self, model: str, effort: str) -> str | int:
+        values = next((rule.values for rule in self.reasoning_effort_value_rules if rule.matches(model)), self.reasoning_effort_values)
+        return values.get(effort, effort)
 
 
 @dataclass(frozen=True)
@@ -69,19 +86,19 @@ class ResolvedProvider:
 ANTHROPIC_ADAPTIVE_MIN_VERSION = (4, 6)
 ANTHROPIC_XHIGH_MIN_VERSION = (4, 7)
 ANTHROPIC_ALWAYS_THINKING_FAMILIES = ("fable", "mythos")
-ANTHROPIC_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh"}
-# Why: manual thinking APIs use integer token budgets, while DeepSeek's thinking mode accepts
-# only high/max. These tables map minacode's normalized effort without encoding a host profile.
+ANTHROPIC_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}
+# Why: manual thinking APIs use integer token budgets, while DeepSeek V4 exposes a reduced effort
+# scale. These tables map minacode's normalized effort without encoding a host profile.
 # Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
 #           https://api-docs.deepseek.com/guides/thinking_mode/
 #           https://docs.qwencloud.com/api-reference/chat/openai-chat
 _FAMILY_SPLIT_RE = re.compile(r"[^0-9a-z]+")
 
 CHAT_REASONING_EFFORT_VALUES: dict[str, dict[str, str | int]] = {
-    # DeepSeek accepts only high/max and documents these compatibility folds.
-    "thinking": {"minimal": "high", "low": "high", "medium": "high", "high": "max", "xhigh": "max"},
+    # DeepSeek V4 accepts low/high/max plus xhigh as a model-specific compatibility level.
+    "thinking": {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "xhigh", "max": "max"},
     # Manual thinking APIs use integer token budgets, with Anthropic's 1,024-token minimum.
-    "enable_thinking": {"minimal": 1024, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384},
+    "enable_thinking": {"minimal": 1024, "low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384, "max": 32768},
 }
 
 
@@ -147,7 +164,33 @@ def anthropic_keeps_prior_thinking(model: str) -> bool:
     return version >= ANTHROPIC_ADAPTIVE_MIN_VERSION or (version == (4, 5) and "opus" in families)
 
 
-KIMI_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"}
+KIMI_EFFORT_VALUES = {"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max"}
+
+# OpenAI effort support varies by model generation. Unknown future models stay on the generic
+# pass-through path; only documented families are folded to their nearest accepted level.
+# Evidence: https://developers.openai.com/api/docs/guides/latest-model
+#           https://developers.openai.com/api/docs/models/gpt-5.5
+#           https://developers.openai.com/api/docs/models/gpt-5.4-pro
+#           https://developers.openai.com/api/docs/models/gpt-5.3-codex
+#           https://developers.openai.com/api/docs/models/gpt-5.1
+#           https://developers.openai.com/api/docs/models/gpt-5
+OPENAI_EFFORT_VALUE_RULES = (
+    ModelEffortRule({"minimal": "low"}, pattern=r"gpt-5\.6(?:-|$)"),
+    ModelEffortRule({"minimal": "medium", "low": "medium", "max": "xhigh"}, pattern=r"gpt-5\.(?:2|4|5)-pro(?:-|$)"),
+    ModelEffortRule({"minimal": "low", "max": "xhigh"}, pattern=r"gpt-5\.(?:2|3)-codex(?:-|$)"),
+    ModelEffortRule({"minimal": "low", "max": "xhigh"}, pattern=r"gpt-5\.(?:2|4|5)(?:-|$)"),
+    ModelEffortRule({"minimal": "low", "xhigh": "high", "max": "high"}, pattern=r"gpt-5\.1(?:-|$)"),
+    ModelEffortRule({"minimal": "high", "low": "high", "medium": "high", "xhigh": "high", "max": "high"}, pattern=r"gpt-5-pro(?:-|$)"),
+    ModelEffortRule({"xhigh": "high", "max": "high"}, pattern=r"gpt-5(?:-|$)"),
+    ModelEffortRule({"minimal": "low", "xhigh": "high", "max": "high"}, pattern=r"o[1-4](?:-|$)"),
+)
+
+OPENAI_EFFORT_OFF_RULES = (
+    ModelRule("medium", pattern=r"gpt-5\.(?:2|4|5)-pro(?:-|$)"),
+    ModelRule("low", pattern=r"gpt-5\.(?:2|3)-codex(?:-|$)"),
+    ModelRule("high", pattern=r"gpt-5-pro(?:-|$)"),
+    ModelRule("none", pattern=r"gpt-5\.(?:[1-9]\d*)(?:-|$)"),
+)
 
 KIMI_PLATFORM_COMPATIBILITY = CompatibilityProfile(
     chat_reasoning_rules=(
@@ -195,7 +238,9 @@ COMPATIBILITY_PROFILES: dict[str, CompatibilityProfile] = {
     #           https://developers.openai.com/api/docs/guides/function-calling#strict-mode
     "api.openai.com": CompatibilityProfile(
         chat_reasoning_rules=(ModelRule("reasoning_effort", OPENAI_REASONING_MODEL_FAMILIES),),
-        responses_reasoning_effort_off_rules=(ModelRule("none", pattern=r"gpt-5\.(?:[1-9]\d*)(?:-|$)"),),
+        reasoning_effort_value_rules=OPENAI_EFFORT_VALUE_RULES,
+        reasoning_effort_off_rules=OPENAI_EFFORT_OFF_RULES,
+        responses_reasoning_effort_off_rules=OPENAI_EFFORT_OFF_RULES,
         responses_reasoning_models=OPENAI_REASONING_MODEL_FAMILIES,
         strict_tools=True,
         suppress_temperature_models=OPENAI_REASONING_MODEL_FAMILIES,
@@ -204,14 +249,29 @@ COMPATIBILITY_PROFILES: dict[str, CompatibilityProfile] = {
     # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
     "openrouter.ai": CompatibilityProfile(chat_reasoning="reasoning"),
     # Why: one OpenCode base URL multiplexes wire protocols by model, so api=auto cannot infer
-    # the protocol from the URL: Claude and Qwen are served by Messages, GPT by Responses, and
-    # the rest by Chat Completions.
+    # the protocol from the URL: Claude and Qwen are served by Messages, GPT and Grok by
+    # Responses, and the rest by Chat Completions.
     # Evidence: https://opencode.ai/docs/zen
     "opencode.ai": CompatibilityProfile(
         api_rules=(
             ModelRule("anthropic", ("claude-", "qwen")),
-            ModelRule("responses", ("gpt-",)),
-        )
+            ModelRule("responses", ("gpt-", "grok-")),
+        ),
+        chat_reasoning_rules=(
+            ModelRule("thinking", ("deepseek-v4-",)),
+            ModelRule("thinking_effort", ("glm-5.2",)),
+            ModelRule("thinking_toggle", ("glm-5",)),
+            ModelRule("reasoning_effort", ("kimi-k3",)),
+            ModelRule("thinking_toggle", ("kimi-k2.5", "kimi-k2.6")),
+            ModelRule("mandatory_thinking", ("kimi-k2.7-code",)),
+        ),
+        reasoning_effort_value_rules=(
+            *OPENAI_EFFORT_VALUE_RULES,
+            ModelEffortRule(CHAT_REASONING_EFFORT_VALUES["thinking"], ("deepseek-v4-",)),
+            ModelEffortRule(KIMI_EFFORT_VALUES, ("kimi-k3",)),
+        ),
+        reasoning_effort_off_rules=(*OPENAI_EFFORT_OFF_RULES, ModelRule("low", ("kimi-k3",))),
+        responses_reasoning_effort_off_rules=OPENAI_EFFORT_OFF_RULES,
     ),
     # Why: DeepSeek uses thinking.type plus a reduced effort scale, does not define OpenAI's
     # prompt_cache_key, and requires the /beta endpoint for strict function schemas.
@@ -220,6 +280,7 @@ COMPATIBILITY_PROFILES: dict[str, CompatibilityProfile] = {
     #           https://api-docs.deepseek.com/guides/tool_calls
     "api.deepseek.com": CompatibilityProfile(
         chat_reasoning="thinking",
+        reasoning_effort_values=CHAT_REASONING_EFFORT_VALUES["thinking"],
         # Ordinary turns may omit reasoning, but every assistant tool-call message must retain it.
         # Evidence: https://api-docs.deepseek.com/guides/thinking_mode
         chat_reasoning_history="tool_calls",

@@ -1586,6 +1586,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"provider.prompt_cache_key: {provider.prompt_cache_key}",
                 f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
                 f"provider.reasoning: {provider.reasoning}",
+                f"provider.resolved_reasoning_effort: {resolved.reasoning_effort or '(off)'}",
                 f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
                 f"provider.chat_reasoning: {provider.chat_reasoning}",
                 f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",

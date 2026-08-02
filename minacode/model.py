@@ -1008,7 +1008,7 @@ class ModelClient:
         elif chat_reasoning == "thinking":
             extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
             if reasoning_enabled:
-                params["reasoning_effort"] = CHAT_REASONING_EFFORT_VALUES["thinking"].get(effort, "high")
+                params["reasoning_effort"] = resolved.reasoning_effort
         elif chat_reasoning in ("thinking_toggle", "thinking_effort"):
             extra["thinking"] = {"type": "enabled" if reasoning_enabled else "disabled"}
             if reasoning_enabled and chat_reasoning == "thinking_effort":

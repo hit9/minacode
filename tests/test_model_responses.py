@@ -498,6 +498,29 @@ def test_openai_responses_reasoning_off_is_not_silently_replaced_by_the_model_de
     assert json.loads(factory.calls[0].content)["reasoning"] == {"effort": "none"}
 
 
+@pytest.mark.parametrize(
+    ("url", "model_name", "reasoning", "expected"),
+    (
+        ("https://api.openai.com/v1", "gpt-5.6-sol", "max", "max"),
+        ("https://api.openai.com/v1", "gpt-5.5", "max", "xhigh"),
+        ("https://api.openai.com/v1", "gpt-5.5-pro", "low", "medium"),
+        ("https://api.openai.com/v1", "gpt-5.7", "max", "max"),
+        ("https://opencode.ai/zen/v1", "grok-4.5", "max", "max"),
+        ("https://models.example/v1", "future-reasoner", "max", "max"),
+    ),
+)
+def test_responses_sends_the_resolved_reasoning_effort(tmp_path, monkeypatch, url, model_name, reasoning, expected):
+    s = _session(tmp_path, url=url, api="responses", model=model_name, reasoning=reasoning, stream=False)
+    model = ModelClient(s)
+    empty = {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": model_name, "output": []}
+    factory = _MockClientFactory([(200, empty)])
+    monkeypatch.setattr(model, "client", factory)
+
+    model.request([{"role": "user", "content": "hi"}], None)
+
+    assert json.loads(factory.calls[0].content)["reasoning"] == {"effort": expected}
+
+
 @pytest.mark.parametrize("reasoning", ("medium", "off"))
 def test_openai_responses_non_reasoning_model_omits_reasoning(tmp_path, monkeypatch, reasoning):
     """GPT-4.1 supports Responses but is not a reasoning model, so the optional reasoning object
