@@ -45,8 +45,10 @@ class BashTool(Tool):
     _CONTROL_OPERATOR_RE: ClassVar[re.Pattern] = re.compile(r"&&|\|\||[|;\n]")
     LOG_LEXER = "bash"
     DESCRIPTION = (
-        "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Avoid unbounded output; "
-        "limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks."
+        "Run one bash shell invocation starting in the workspace; returns exit_code/stdout/stderr and shows live output. Compose several steps into one "
+        "invocation with `&&`, `||`, `|`, and `;` rather than issuing separate calls. Avoid unbounded output; "
+        "limit noisy commands with head/tail/sed/rg filters or command-specific limits, and inspect large outputs in chunks. "
+        "Never use it to read or print secrets (private keys, credentials, tokens, `.env`)."
     )
     MUTATES = True
     live_output: Callable[[str, str], None] | None = None
