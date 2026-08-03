@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.19.1 - 2026-08-03
 
 ### Fixed
 - Never empty the tool list to force a live-follow-up acknowledgement. The extra request that
