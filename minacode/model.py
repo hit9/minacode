@@ -206,7 +206,7 @@ class ModelClient:
                     clean[key] = prompt_value(item)
             return clean
 
-        chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")))
+        chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
         return (chars + 3) // 4 + images
 

@@ -3,6 +3,16 @@
 
 ## Unreleased
 
+### Fixed
+- Estimate request tokens from UTF-8 bytes instead of characters (4 bytes/token), so CJK-heavy
+  sessions are no longer undercounted about 3x: the status bar could show 100% while the next request
+  was still estimated under budget and auto-compaction never fired. ASCII payloads estimate exactly
+  as before. The tool-output trimmer keeps its chars/4 measure, and a last line of defense forces
+  compaction when the previous request filled >=99% of its budget even if the estimate still fits.
+  Compaction clears the recorded last-* usage (the compaction request's own fill would otherwise be
+  mistaken for a full ordinary context and double-compact the just-shrunk history); the status bar
+  falls back to the local estimate until the next ordinary request reports real usage.
+
 
 ## 0.20.0 - 2026-08-03
 

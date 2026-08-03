@@ -644,3 +644,127 @@ def test_agent_state_format_is_available_for_explicit_checkpoints(tmp_path):
     assert "Check:" in ctx
     assert "all good" in ctx
     assert "Recent tool errors:" not in ctx
+
+
+def test_estimated_text_tokens_stays_on_characters_for_output_trimming(tmp_path):
+    """estimated_text_tokens drives tool-output trimming (head/tail excerpts and the omitted marker),
+    so it stays chars/4: UTF-8 bytes there would shrink the head/tail slice for CJK, overlapping the
+    head and tail or inflating the bounded output marker. The request-level estimate is what counts
+    bytes (test_cjk_payload_compacts_where_character_estimate_would_not)."""
+    context = ContextManager(session(tmp_path))
+    assert context.estimated_text_tokens("hello world") == (len("hello world") + 3) // 4
+    # CJK stays at chars/4 too: 4 chars -> 1 estimated token, not 3.
+    assert context.estimated_text_tokens("你好世界") == 1
+
+
+def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
+    """A CJK-heavy session that the chars/4 estimate kept under budget now compacts: the bytes/4
+    estimate clears the same budget, closing the gap between the status-bar fill and the trigger."""
+    import json
+
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 23_000  # budget 2520: chars/4 estimate ~2017, bytes/4 5406
+    s.messages = [
+        {"role": "user", "content": "你好" * 300},
+        {"role": "assistant", "content": "收到" * 300},
+        *({"role": "assistant", "content": "继续" * 100} for _ in range(8)),
+        {"role": "user", "content": "中文" * 2000},
+    ]
+    context = ContextManager(s)
+    compaction_phases = []
+    context.on_compaction = compaction_phases.append
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
+
+    turn = [{"role": "user", "content": "请用中文回复"}]
+    messages = context.model_messages("system", turn)
+    raw = context.request_tokens(messages)
+    budget = context.request_token_budget()
+    # The chars/4 figure sits under the budget; the UTF-8 bytes/4 estimate clears it.
+    assert len(json.dumps(messages, ensure_ascii=False)) // 4 < budget < raw
+
+    context.prepare_messages(FakeModel(), "system", turn)
+    assert compaction_phases == [True, False]
+    assert s.state.compaction_count == 1
+
+
+def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
+    """The last completed request filled >=99% of its budget, so the next one compacts even though the
+    bytes/4 estimate still fits: a last line of defense when the estimate is off. Below 99% the
+    estimate alone decides, so a small follow-up after an 80% request is not compacted."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 21_000  # budget 520; the ASCII payload estimates ~326
+    s.messages = [
+        {"role": "user", "content": "old user"},
+        {"role": "assistant", "content": "old answer"},
+        *({"role": "assistant", "content": f"recent {index}"} for index in range(8)),
+        {"role": "user", "content": "latest"},
+    ]
+    context = ContextManager(s)
+    compaction_phases = []
+    context.on_compaction = compaction_phases.append
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
+
+    turn = [{"role": "user", "content": "request"}]
+    assert context.request_tokens(context.model_messages("system", turn)) < context.request_token_budget()
+
+    # 98%: estimate fits and nothing compacts.
+    s.usage.last_prompt_budget = 520
+    s.usage.last_prompt_tokens = 510
+    context.prepare_messages(FakeModel(), "system", turn)
+    assert compaction_phases == []
+    assert s.state.compaction_count == 0
+
+    # 100%: the overdue flag forces compaction despite the fitting estimate.
+    s.usage.last_prompt_tokens = 520
+    context.prepare_messages(FakeModel(), "system", turn)
+    assert compaction_phases == [True, False]
+    assert s.state.compaction_count == 1
+    # Compaction cleared the last-* signals, so the next request is not double-compacted by the
+    # guard (the compaction request's own usage was just wiped instead of being mistaken for an
+    # ordinary 100%-full context).
+    assert s.usage.last_prompt_tokens == 0
+    assert s.usage.last_prompt_budget == 0
+    context.prepare_messages(FakeModel(), "system", turn)
+    assert compaction_phases == [True, False]
+    assert s.state.compaction_count == 1
+
+    # A fresh session with no recorded usage never trips the flag.
+    s2 = session(tmp_path)
+    context2 = ContextManager(s2)
+    assert context2._overdue_by_usage() is False
+
+
+def test_apply_compaction_clears_last_usage_but_keeps_cumulative(tmp_path):
+    """Compaction rewrites history, so the recorded last-* usage no longer describes the next
+    request. Clearing them (not the cumulative totals) makes the overdue guard and the status bar
+    fall back to the local estimate until the next ordinary request reports real usage."""
+    s = session(tmp_path)
+    s.usage.last_prompt_tokens = 1234
+    s.usage.last_prompt_budget = 1200
+    s.usage.last_cached_prompt_tokens = 300
+    s.usage.last_cache_write_prompt_tokens = 50
+    s.usage.prompt_tokens = 9999
+    s.usage.calls = 7
+    s.messages = [
+        {"role": "user", "content": "old user"},
+        {"role": "assistant", "content": "old answer"},
+        *({"role": "assistant", "content": f"recent {index}"} for index in range(8)),
+        {"role": "user", "content": "latest"},
+    ]
+    context = ContextManager(s)
+    compacted, keep = context.compaction_parts()
+    context.apply_compaction({"summary": "compact summary", "plan": ["next"], "known": ["fact"]}, keep, compacted=compacted)
+
+    assert s.usage.last_prompt_tokens == 0
+    assert s.usage.last_prompt_budget == 0
+    assert s.usage.last_cached_prompt_tokens == 0
+    assert s.usage.last_cache_write_prompt_tokens == 0
+    assert s.usage.prompt_tokens == 9999
+    assert s.usage.calls == 7
+    assert context._overdue_by_usage() is False

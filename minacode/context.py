@@ -160,7 +160,8 @@ class ContextManager:
     def prepare_messages(self, model: ModelClient, base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
         budget = self.request_token_budget()
-        if self.request_tokens(messages, tools) < budget:
+        raw = self.request_tokens(messages, tools)
+        if raw < budget and not self._overdue_by_usage():
             return messages
         compacted, keep = self.compaction_parts()
         if self._compact_messages(model, compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages):
@@ -170,6 +171,13 @@ class ContextManager:
             if self._compact_messages(model, compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages):
                 messages = self.model_messages(base_system, turn_messages)
         return messages
+
+    def _overdue_by_usage(self) -> bool:
+        """The last completed request filled ~99% of its budget, so the next one compacts even if the
+        estimate still fits. The estimate is the primary trigger; this is the last line of defense
+        when it is off, at the cost of possibly compacting a smaller follow-up."""
+        usage = self.session.usage
+        return usage.last_prompt_budget > 0 and usage.last_prompt_tokens * 100 >= usage.last_prompt_budget * 99
 
     def _compact_messages(
         self,
@@ -325,6 +333,16 @@ class ContextManager:
             turn_messages[:] = keep[:insert] + summary_block + keep[insert:]
             prune_context = [*self.session.messages, *turn_messages]
         self.prune_tool_records(prune_context)
+        # The recorded usage described the pre-compaction payload and no longer reflects what the
+        # next request will carry (and a manual /compact ran a compaction request whose own usage
+        # just overwrote the last-* fields). Clear them so the overdue guard and the status bar fall
+        # back to the local estimate until the next ordinary request reports real usage again.
+        # Cumulative totals stay: the compaction request was still billed.
+        usage = self.session.usage
+        usage.last_prompt_tokens = 0
+        usage.last_prompt_budget = 0
+        usage.last_cached_prompt_tokens = 0
+        usage.last_cache_write_prompt_tokens = 0
 
     def prune_tool_records(self, keep_messages: list[Json]) -> None:
         records = self.session.tool_records
@@ -402,7 +420,7 @@ class ContextManager:
             if readable := readable_provider_context(message):
                 estimated["_provider_context"] = readable
             payload.append(estimated)
-        chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
         return (chars + 3) // 4 + images
 
