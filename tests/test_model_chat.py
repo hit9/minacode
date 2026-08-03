@@ -31,6 +31,7 @@ def test_chat_output_cap_reached_with_nothing_generated_names_the_cap(tmp_path, 
     Without this the turn dies as "empty final response", naming neither the cause nor the setting
     to change."""
     s = _session(tmp_path, stream=False)
+    s.config.provider.max_tokens = 16_384  # a configured cap makes the reached-cap case verifiable
     model = ModelClient(s)
     factory = _MockClientFactory([_chat_completion("", "length")])
     monkeypatch.setattr(model, "client", factory)
@@ -46,6 +47,38 @@ def test_chat_output_cap_reached_with_nothing_generated_names_the_cap(tmp_path, 
     assert s.usage.completion_tokens == 16384
 
 
+def test_chat_length_with_output_below_the_cap_names_both_settings(tmp_path, monkeypatch):
+    """Some OpenAI-compatible providers report `finish_reason=length` when the input exceeds the
+    model's context window, not only when the output cap was hit. Only the cap case is provable from
+    usage, so anything else must name both settings instead of pushing max_tokens blindly."""
+    s = _session(tmp_path, stream=False)
+    s.config.provider.max_tokens = 16_384
+    model = ModelClient(s)
+    monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("", "length", completion_tokens=4_096)]))
+
+    with pytest.raises(ModelError) as error:
+        model.chat_request([{"role": "user", "content": "hi"}], None)
+
+    assert "provider.max_tokens" in str(error.value)
+    assert "runtime.max_context_tokens" in str(error.value)
+    assert not isinstance(error.value, ModelOutputTruncated)
+    # Deterministic: the same request stops the same way, so it must not consume a retry.
+    assert ModelClient.retryable_error(error.value) is False
+
+
+def test_chat_length_without_a_configured_cap_names_both_settings(tmp_path, monkeypatch):
+    """With max_tokens unset the provider's default cap is unknown, so `length` stays ambiguous
+    even when the output is large."""
+    s = _session(tmp_path, stream=False)
+    model = ModelClient(s)
+    monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("", "length", completion_tokens=16_384)]))
+
+    with pytest.raises(ModelError, match="context window"):
+        model.chat_request([{"role": "user", "content": "hi"}], None)
+
+    assert s.usage.completion_tokens == 16_384
+
+
 def test_chat_output_cap_reached_after_text_keeps_the_partial_answer(tmp_path, monkeypatch):
     """A visible partial answer is its own evidence of the cut; only an empty one needs explaining."""
     model = ModelClient(_session(tmp_path, stream=False))
@@ -59,6 +92,7 @@ def test_chat_output_cap_reached_after_text_keeps_the_partial_answer(tmp_path, m
 
 def test_chat_stream_reports_the_cap_when_the_stream_produced_nothing(tmp_path, monkeypatch):
     s = _session(tmp_path)
+    s.config.provider.max_tokens = 16_384
     model = ModelClient(s)
     model.on_stream = lambda _kind, _delta: None
     chunks = [

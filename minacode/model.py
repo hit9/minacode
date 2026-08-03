@@ -38,6 +38,7 @@ from minacode.base import (
     ToolCall,
     ToolError,
     builtin_tool_label,
+    request_budget_for,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model_catalog import THINKING_BUDGETS
@@ -368,6 +369,30 @@ class ModelClient:
         spent += f" ({reasoning} of them reasoning)" if reasoning else ""
         return ModelOutputTruncated(f"Model output was truncated at {cap}{spent}. Raise provider.max_tokens, or lower provider.reasoning.")
 
+    def empty_length_error(self, usage: Any) -> ModelError:
+        """`finish_reason=length` with nothing generated on the Chat wire is ambiguous: the output may
+        have hit the cap, or the input may have exceeded the model's context window (some
+        OpenAI-compatible providers report the latter as `length` too). Only the cap case is verifiable
+        from usage; anything else names both settings instead of pushing max_tokens blindly."""
+        provider = self.session.config.provider
+        completion = ModelUsage.field(usage, "completion_tokens", "output_tokens")
+        if provider.max_tokens > 0 and completion >= provider.max_tokens:
+            return self.truncated_output_error(usage)
+        cap = f"provider.max_tokens={provider.max_tokens}" if provider.max_tokens > 0 else "the provider's default output cap"
+        spent = f" after {completion} output tokens" if completion else ""
+        return ModelError(
+            f"Generation stopped empty with `finish_reason=length`{spent}: either the output hit {cap} or "
+            f"the input exceeded the model's context window. Check provider.max_tokens and runtime.max_context_tokens."
+        )
+
+    def _record_usage(self, usage: Any) -> None:
+        """Add a completed request to session usage, keeping the budget it was prepared against so the
+        status fill uses the request-time denominator instead of today's configuration."""
+        self.session.usage.add(
+            usage,
+            request_budget_for(self.session.settings.max_context_tokens, self.session.config.provider.output_token_budget()),
+        )
+
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
         messages = self.chat_messages(messages)
         provider = self.session.config.provider
@@ -394,13 +419,13 @@ class ModelClient:
             usage = getattr(response, "usage", None)
             message = response.choices[0].message
             finish_reason = str(self.message_field(response.choices[0], "finish_reason") or "")
-        self.session.usage.add(usage)
+        self._record_usage(usage)
         assistant = self.assistant_message(message)
         calls = self.tool_calls(message)
         content = str(self.message_field(message, "content") or "")
         # Raised outside call_client, which flattens every exception into a plain ModelError.
         if finish_reason == "length" and not calls and not content.strip():
-            raise self.truncated_output_error(usage)
+            raise self.empty_length_error(usage)
         return assistant, calls, content
 
     def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any, str]:
@@ -574,7 +599,7 @@ class ModelClient:
         else:
             result = self.call_client(client, lambda: client.responses.create(**params))
             streamed = False
-        self.session.usage.add(self.message_field(result, "usage"))
+        self._record_usage(self.message_field(result, "usage"))
         return self.responses_result(result, streamed)
 
     def _responses_stream(self, client: OpenAI, params: Json) -> Any:
@@ -977,7 +1002,7 @@ class ModelClient:
         else:
             result = self.call_client(client, lambda: client.messages.create(**params))
             streamed = False
-        self.session.usage.add(self.message_field(result, "usage"))
+        self._record_usage(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result, streamed)
         return assistant, calls, content
 
@@ -1081,7 +1106,7 @@ class ModelClient:
             "model": provider.model,
             "system": system,
             "messages": self.anthropic_messages(messages),
-            "max_tokens": provider.output_token_budget(),
+            "max_tokens": provider.anthropic_output_cap(),
         }
         # Thinking pins temperature to its default; sending any other value is rejected.
         if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
@@ -1092,7 +1117,7 @@ class ModelClient:
             provider.model,
             provider.reasoning,
             effort,
-            self.anthropic_thinking_budget(effort, provider.output_token_budget()),
+            self.anthropic_thinking_budget(effort, provider.anthropic_output_cap()),
         )
         params.update(thinking_params)
         thinking = thinking_params.get("thinking")

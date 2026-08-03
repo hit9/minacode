@@ -1049,15 +1049,19 @@ def test_status_context_row_uses_last_real_tokens_when_available(tmp_path):
     estimate_percent = 61  # what the estimate would claim before the call recomputes it
     s.state.context_percent = estimate_percent
     s.usage.last_prompt_tokens = 20_000  # provider reported 20K for the last request
+    s.usage.last_prompt_budget = 80_000  # the budget that request was prepared against
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
-    context_row = next(line for line in loop.status("").splitlines() if line.startswith("| context |"))
+    def context_row() -> str:
+        return next(line for line in loop.status("").splitlines() if line.startswith("| context |"))
 
-    budget = ContextManager(s).request_token_budget()
-    real_percent = min(100, s.usage.last_prompt_tokens * 100 // budget)
-    assert "`~20.0K /" in context_row
-    assert f"`{real_percent}%`" in context_row
-    assert f"`{estimate_percent}%`" not in context_row
+    assert "`~20.0K / 80.0K`" in context_row()
+    assert "`25%`" in context_row()
+    assert f"`{estimate_percent}%`" not in context_row()
+
+    # The recorded budget, not today's configuration, stays the denominator.
+    s.config.provider.max_tokens = 60_000
+    assert "`~20.0K / 80.0K`" in context_row()
 
 
 def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):

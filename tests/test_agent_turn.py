@@ -11,7 +11,7 @@ from agent_harness import call, queue, session
 
 import minacode.engine as engine_module
 from minacode.base import (
-    DEFAULT_MAX_TOKENS,
+    ANTHROPIC_DEFAULT_MAX_TOKENS,
     Config,
     LogBlock,
     MalformedToolCallError,
@@ -951,7 +951,7 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     # system is a cache_control-marked block so the tools+system prefix is cached across turns.
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert params["temperature"] == 0.2
-    assert params["max_tokens"] == DEFAULT_MAX_TOKENS
+    assert params["max_tokens"] == ANTHROPIC_DEFAULT_MAX_TOKENS
     # An unversioned gateway alias remains generic rather than guessing a thinking generation.
     assert "thinking" not in params
     assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}

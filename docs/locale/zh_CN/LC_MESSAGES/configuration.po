@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-03 08:08-0700\n"
+"POT-Creation-Date: 2026-08-03 10:00-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -215,19 +215,18 @@ msgid "`max_tokens`"
 msgstr "`max_tokens`"
 
 #: ../../configuration.md
-msgid "`16384`"
-msgstr "`16384`"
+msgid "`0`"
+msgstr "`0`"
 
 #: ../../configuration.md
 msgid ""
-"Output-token cap per model request, reasoning included, and the space "
-"reserved from the input budget; `0` uses the provider default. Raise it "
-"if a high reasoning effort gets truncated; it trades against "
+"Output-token cap per model request, reasoning included; `0` leaves it to "
+"the provider (Anthropic sends a conservative 8K). 16K is still reserved "
+"from the input budget for the answer, trading against "
 "`max_context_tokens` one for one"
 msgstr ""
-"每次模型请求的输出 token 上限（包含推理），同时也是从输入预算中预留的空间；`0` "
-"表示使用 provider 默认值。高推理强度被截断时应调高它；它与 "
-"`max_context_tokens` 是一比一此消彼长的关系"
+"每次模型请求的输出 token 上限（包含推理）；`0` 时交给 provider（Anthropic 线发送保守的 8K）。输入预算中仍预留 16K 给输出，与 "
+"`max_context_tokens` 一比一此消彼长"
 
 #: ../../configuration.md
 msgid "`timeout`"
@@ -494,9 +493,7 @@ msgid ""
 "How much of the model's context window to use, which sets the automatic-"
 "compaction budget. It is a budget, not the window's size: raise it for a "
 "1M-window model, lower it for a smaller one"
-msgstr ""
-"打算使用模型上下文窗口的多少，它决定自动压缩的预算。这是一个预算，而不是窗口本"
-"身的大小：1M 窗口的模型应调高它，窗口更小的模型应调低它"
+msgstr "打算使用模型上下文窗口的多少，它决定自动压缩的预算。这是一个预算，而不是窗口本身的大小：1M 窗口的模型应调高它，窗口更小的模型应调低它"
 
 #: ../../configuration.md
 msgid "`max_agent_steps`"
@@ -858,4 +855,7 @@ msgstr ""
 
 #~ msgid "Total context ceiling used to calculate the automatic-compaction budget"
 #~ msgstr "用于计算自动 compaction 预算的 context 总上限"
+
+#~ msgid "`16384`"
+#~ msgstr "`16384`"
 

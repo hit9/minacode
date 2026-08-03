@@ -9,7 +9,7 @@ from agent_harness import call, session
 
 import minacode.context as context_module
 from minacode.base import (
-    DEFAULT_MAX_TOKENS,
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
     MIN_CONTEXT_SAFETY_TOKENS,
     ModelError,
 )
@@ -181,7 +181,7 @@ def test_default_budget_leaves_more_input_room_than_the_previous_240k_ceiling(tm
     context = ContextManager(s)
 
     assert s.settings.max_context_tokens == 256 * 1024
-    assert s.config.provider.output_token_budget() == DEFAULT_MAX_TOKENS
+    assert s.config.provider.output_token_budget() == DEFAULT_OUTPUT_RESERVE_TOKENS
     assert context.request_token_budget() > 240 * 1024 - 8_192 - MIN_CONTEXT_SAFETY_TOKENS
 
 
@@ -190,7 +190,7 @@ def test_compaction_budget_reserves_output_and_safety(tmp_path):
     s.settings.max_context_tokens = 100_000
     context = ContextManager(s)
 
-    assert context.request_token_budget() == 100_000 - DEFAULT_MAX_TOKENS - MIN_CONTEXT_SAFETY_TOKENS
+    assert context.request_token_budget() == 100_000 - DEFAULT_OUTPUT_RESERVE_TOKENS - MIN_CONTEXT_SAFETY_TOKENS
 
     s.config.provider.max_tokens = 10_000
     assert context.request_token_budget() == 100_000 - 10_000 - MIN_CONTEXT_SAFETY_TOKENS

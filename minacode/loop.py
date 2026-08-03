@@ -1331,10 +1331,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         resolved = provider.resolve()
         context_tokens = self.agent.context.update_current_tokens(SYSTEM_PROMPT)
         context_budget = self.agent.context.request_token_budget()
-        if usage.last_prompt_tokens:
-            # Display the provider-reported tokens of the last request; state.context_percent stays
-            # the estimate fallback before any request exists (compaction still triggers on it).
+        if usage.last_prompt_tokens and usage.last_prompt_budget:
+            # Display the provider-reported tokens and the budget of the last request; the estimate
+            # (state.context_percent) stays the fallback before any request exists.
             context_tokens = usage.last_prompt_tokens
+            context_budget = usage.last_prompt_budget
             context_percent = min(100, context_tokens * 100 // context_budget)
         else:
             context_percent = self.session.state.context_percent

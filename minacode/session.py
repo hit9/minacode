@@ -459,6 +459,7 @@ class SessionSnapshotCodec:
         usage.last_cached_prompt_tokens = data.get("last_cached_prompt_tokens", 0)
         usage.last_cache_write_prompt_tokens = data.get("last_cache_write_prompt_tokens", 0)
         usage.last_prompt_tokens = data.get("last_prompt_tokens", 0)
+        usage.last_prompt_budget = data.get("last_prompt_budget", 0)
         return usage
 
     @staticmethod

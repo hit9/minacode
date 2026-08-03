@@ -10,6 +10,7 @@ import minacode.__main__ as cli
 import minacode.update as update_module
 from minacode.__main__ import main
 from minacode.base import (
+    ANTHROPIC_DEFAULT_MAX_TOKENS,
     CHAT_REASONING_CHOICES,
     DEFAULT_MAX_TOKENS,
     DEFAULT_OUTPUT_RESERVE_TOKENS,
@@ -142,14 +143,18 @@ def test_provider_timeout_defaults_distinguish_inactivity_from_total_generation(
     assert "# response_timeout = 600" in ConfigFile.DEFAULT_TEXT
 
 
-def test_provider_max_tokens_defaults_to_bounded_output_and_allows_opt_out():
-    assert ProviderConfig().max_tokens == DEFAULT_MAX_TOKENS
+def test_provider_max_tokens_defaults_to_zero_and_reserve_stays_bounded():
+    assert ProviderConfig().max_tokens == DEFAULT_MAX_TOKENS == 0
     assert Config.from_dict({}).provider.max_tokens == DEFAULT_MAX_TOKENS
     assert ProviderConfig.from_dict({"max_tokens": 0}).max_tokens == 0
-    assert "# max_tokens = 16384" in ConfigFile.DEFAULT_TEXT
-    # The configured cap and the reserve taken out of the input budget describe the same output.
-    assert DEFAULT_MAX_TOKENS == DEFAULT_OUTPUT_RESERVE_TOKENS
-    assert ProviderConfig().output_token_budget() == ProviderConfig.from_dict({"max_tokens": 0}).output_token_budget()
+    assert "# max_tokens = 0" in ConfigFile.DEFAULT_TEXT
+    # Unset leaves the wire cap to the provider, but the output reserve kept out of the input budget
+    # stays fixed, so compaction planning does not depend on how the provider treats an absent cap.
+    assert DEFAULT_MAX_TOKENS != DEFAULT_OUTPUT_RESERVE_TOKENS
+    assert ProviderConfig().output_token_budget() == ProviderConfig.from_dict({"max_tokens": 0}).output_token_budget() == DEFAULT_OUTPUT_RESERVE_TOKENS
+    # Anthropic requires max_tokens, so unset falls back to a conservative cap that fits 8K models.
+    assert ProviderConfig().anthropic_output_cap() == ANTHROPIC_DEFAULT_MAX_TOKENS
+    assert ProviderConfig.from_dict({"max_tokens": 2_048}).anthropic_output_cap() == 2_048
 
 
 def test_provider_stream_defaults_on_and_can_be_disabled():
@@ -301,16 +306,16 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
 @pytest.mark.parametrize(
     ("model", "expected"),
     (
-        # Extended thinking is the only mode at 4.5 and earlier. The high budget (8,192) fits under
-        # the default max_tokens (16,384), so it is requested in full; a smaller configured
-        # max_tokens still lowers it (see the clamp test below).
-        ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        # Extended thinking is the only mode at 4.5 and earlier. The high budget (8,192) no longer
+        # fits under the conservative unset cap (8,192), so it is clamped to cap - 1,024 (7,168); a
+        # configured max_tokens still scales it (see the clamp test below).
+        ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
         (
             "claude-opus-4-5-20251101",
-            {"thinking": {"type": "enabled", "budget_tokens": 8192}, "output_config": {"effort": "high"}},
+            {"thinking": {"type": "enabled", "budget_tokens": 7168}, "output_config": {"effort": "high"}},
         ),
-        ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
-        ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
+        ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
         # The 4.6 generation accepts both; adaptive is the documented recommendation.
         ("claude-sonnet-4-6", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
         # 4.7 and later reject "enabled" outright.
@@ -386,8 +391,8 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
 def test_anthropic_thinking_budget_stays_under_the_requested_output_budget(tmp_path):
     """The API rejects a budget that is not strictly below max_tokens, so max_tokens has to lower it.
 
-    The default max_tokens (16,384) clears the `high` budget, but a configured smaller cap or a
-    larger effort still collides, which is what the cases below cover."""
+    The conservative unset cap (8,192) no longer clears the `high` budget, and a configured smaller
+    cap or a larger effort still collides, which is what the cases below cover."""
     client = ModelClient(session(tmp_path))
     provider = client.session.config.provider
     provider.url, provider.api, provider.model = "https://api.anthropic.com", "anthropic", "claude-3-7-sonnet-20250219"
@@ -1157,6 +1162,18 @@ def test_model_usage_folds_anthropic_cache_legs_into_prompt_tokens():
     assert usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens == 96
     assert usage.prompt_tokens == 31_020
     assert usage.total_tokens == 31_025
+
+
+def test_model_usage_records_the_request_budget_beside_the_last_tokens():
+    usage = ModelUsage()
+    usage.add({"prompt_tokens": 10, "completion_tokens": 5}, budget=85_904)
+    assert usage.last_prompt_tokens == 10
+    assert usage.last_prompt_budget == 85_904
+
+    # A later request without a budget keeps the previous one rather than zeroing it.
+    usage.add({"prompt_tokens": 20, "completion_tokens": 5})
+    assert usage.last_prompt_tokens == 20
+    assert usage.last_prompt_budget == 85_904
 
 
 def test_context_cleans_surrogate_text(tmp_path):

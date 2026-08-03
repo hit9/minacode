@@ -15,18 +15,26 @@
   tool call; the error now names the cap, the tokens spent, and how much of that was reasoning. A
   truncation that still produced text keeps its partial answer. The failure is deterministic and no
   longer consumes a retry.
+- Treat `finish_reason=length` on the Chat wire as output truncation only when the reported output
+  tokens actually reached the configured cap. OpenAI-compatible providers also return `length` when
+  the input exceeds the model's context window; the error now names both `provider.max_tokens` and
+  `runtime.max_context_tokens` instead of pushing the output cap blindly.
 
 ### Changed
-- Raise the default output budget `provider.max_tokens` from 8,192 to 16,384, matching the reserve
-  already subtracted from the input budget when `max_tokens = 0`. The two now describe the same
-  output, and Anthropic's `high` thinking budget no longer has to be lowered to fit under the
-  default.
+- Default `provider.max_tokens` back to `0`, so Chat and Responses omit the cap and let the provider
+  apply its own default instead of sending a hard-coded 16K that some models reject (Claude 3.5
+  Haiku on Bedrock, for one, caps at 8K). The Anthropic wire still requires the parameter and sends
+  a conservative 8K when unset. The 16K output reserve taken out of the input budget is unchanged.
 - Raise the default `runtime.max_context_tokens` from 240K to 256K. Both defaults appear in the
   generated config with a note that they trade against each other and that the context budget is how
   much of a model's window to use, not the window's size.
 - Show the context fill in the status bar and `/status` from the provider-reported prompt tokens of
   the last request instead of the local estimate. The estimate still triggers compaction, which
   decides for a request that has not been sent yet; the reported usage describes the one that was.
+- Show that fill against the budget the last request was prepared against
+  (`session.usage.last_prompt_budget`) instead of recomputing the denominator from the current
+  configuration, so `/set provider.max_tokens`, `/set runtime.max_context_tokens`, or a provider
+  switch no longer moves the recorded percentage before the next request.
 
 
 ## 0.19.1 - 2026-08-03

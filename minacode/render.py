@@ -31,7 +31,6 @@ from minacode.base import (
     Text,
     __version__,
 )
-from minacode.context import ContextManager
 from minacode.session import Session
 from minacode.tools import CodeIndex
 
@@ -957,11 +956,11 @@ class StatusBar:
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
         usage = self.session.usage
-        if usage.last_prompt_tokens:
-            # The provider-reported tokens of the last request are the display truth; the estimate
-            # (state.context_percent) stays as the fallback before any request exists. This only
-            # renders; compaction keeps triggering on the estimate (see DESIGN.md, context.py).
-            ctx_percent = min(100, usage.last_prompt_tokens * 100 // ContextManager(self.session).request_token_budget())
+        if usage.last_prompt_tokens and usage.last_prompt_budget:
+            # The provider-reported tokens and the budget of the last request are the display truth;
+            # the estimate (state.context_percent) stays as the fallback before any request exists.
+            # This only renders; compaction keeps triggering on the estimate (see DESIGN.md, context.py).
+            ctx_percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget)
         else:
             ctx_percent = self.session.state.context_percent
         ctx_text = "ctx " + str(ctx_percent) + "%"

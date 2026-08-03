@@ -104,13 +104,26 @@ def builtin_tool_label(name: str) -> str:
 # Protocol-neutral metadata for lifecycle/context checkpoint messages. Provider adapters remove
 # this key while preserving the canonical role/content pair in the conversation log.
 SESSION_EVENT_KEY = "_session_event"
-ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
-DEFAULT_OUTPUT_RESERVE_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS
-# The configured cap and the reserve subtracted from the input budget describe the same output, so
-# they are one number. Reasoning counts against this cap on the Responses and Anthropic wires, where
-# a smaller value truncates a high-effort step before it emits any text or tool call.
-DEFAULT_MAX_TOKENS = DEFAULT_OUTPUT_RESERVE_TOKENS
+# Output room kept out of the input budget for one request's answer. It is a planning reserve, not a
+# wire parameter, so it stays fixed whether or not the user configured a cap (see output_token_budget).
+DEFAULT_OUTPUT_RESERVE_TOKENS = 16_384
+# Conservative `max_tokens` sent on the Anthropic wire when the user left it unset: Anthropic requires
+# the parameter, and 8K covers every current model (Claude 3.5 Haiku's ceiling is 8K). Legacy Claude 3
+# models that cap lower are retired from the API.
+ANTHROPIC_DEFAULT_MAX_TOKENS = 8_192
+# Unset: Chat and Responses omit the cap and let the provider apply its own default; the Anthropic
+# wire substitutes ANTHROPIC_DEFAULT_MAX_TOKENS because the parameter is mandatory there.
+DEFAULT_MAX_TOKENS = 0
 MIN_CONTEXT_SAFETY_TOKENS = 4_096
+
+
+def request_budget_for(max_context_tokens: int, output_budget: int) -> int:
+    """The input budget one request is measured against: the context limit less the output reserve and
+    a safety margin. Pure, so ContextManager and the usage recorder share the same denominator."""
+    safety = max(MIN_CONTEXT_SAFETY_TOKENS, (max_context_tokens + 49) // 50)
+    return max(1, max_context_tokens - output_budget - safety)
+
+
 SELECTION_BACK = object()
 SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"
@@ -368,6 +381,11 @@ class ProviderConfig:
     def output_token_budget(self) -> int:
         return self.max_tokens or DEFAULT_OUTPUT_RESERVE_TOKENS
 
+    def anthropic_output_cap(self) -> int:
+        """The `max_tokens` sent on the Anthropic wire: the configured cap, or a conservative default
+        (Anthropic requires the parameter, unlike Chat and Responses)."""
+        return self.max_tokens or ANTHROPIC_DEFAULT_MAX_TOKENS
+
     @staticmethod
     def clean_prompt_cache_key(value: str) -> str:
         value = value.strip()
@@ -542,9 +560,9 @@ model = ""
 # stream = true
 # image_input = "auto"         # auto | on | off
 # reasoning = "medium"
-# max_tokens = 16384           # output cap per request, reasoning included; 0 uses provider default
-                               # also reserved from the input budget, so it trades against
-                               # runtime.max_context_tokens one for one
+# max_tokens = 0               # output cap per request, reasoning included; 0 leaves it to the provider
+                               # (Anthropic sends a conservative 8K). 16K is still reserved from the
+                               # input budget, trading against runtime.max_context_tokens one for one
 # timeout = 120                # transport inactivity
 # response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
@@ -609,6 +627,7 @@ class ModelUsage:
     cached_prompt_tokens: int = 0
     cache_write_prompt_tokens: int = 0
     last_prompt_tokens: int = 0
+    last_prompt_budget: int = 0
     last_cached_prompt_tokens: int = 0
     last_cache_write_prompt_tokens: int = 0
 
@@ -625,7 +644,7 @@ class ModelUsage:
                 return int(raw or 0)
         return 0
 
-    def add(self, usage: Any) -> None:
+    def add(self, usage: Any, budget: int | None = None) -> None:
         self.calls += 1
         prompt_tokens = self.field(usage, "prompt_tokens", "input_tokens")
         completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
@@ -651,6 +670,8 @@ class ModelUsage:
         self.cached_prompt_tokens += cached_tokens
         self.cache_write_prompt_tokens += cache_write_tokens
         self.last_prompt_tokens = prompt_tokens
+        if budget is not None:
+            self.last_prompt_budget = budget
         self.last_cached_prompt_tokens = cached_tokens
         self.last_cache_write_prompt_tokens = cache_write_tokens
 

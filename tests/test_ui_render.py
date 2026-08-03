@@ -20,8 +20,8 @@ from minacode.base import (
     LogLine,
     LogRole,
     Text,
+    request_budget_for,
 )
-from minacode.context import ContextManager
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, TuiApp
 
@@ -438,17 +438,35 @@ def test_status_bar_shows_last_request_cache_hit_ratio(tmp_path):
 
 def test_status_bar_ctx_percent_uses_last_real_tokens_when_available(tmp_path):
     s = session(tmp_path)
-    s.settings.max_context_tokens = 100_000
     s.state.context_percent = 7  # estimate would claim 7%
     s.usage.last_prompt_tokens = 20_000  # provider reported 20K for the last request
+    s.usage.last_prompt_budget = 80_000  # the budget that request was prepared against
     bar = StatusBar(s)
 
     ctx_text = next(text for text, role in bar.entries(show_elapsed=False) if role == "ctx")
 
-    budget = ContextManager(s).request_token_budget()
-    real_percent = min(100, s.usage.last_prompt_tokens * 100 // budget)
-    assert f"ctx {real_percent}%" in ctx_text
-    assert f"ctx {s.state.context_percent}%" not in ctx_text
+    assert "ctx 25%" in ctx_text
+    assert "ctx 7%" not in ctx_text
+
+
+def test_status_bar_ctx_percent_keeps_the_request_time_budget(tmp_path):
+    """Changing max_tokens or max_context_tokens after the request must not move the recorded fill:
+    the denominator is the budget the last request was prepared against, not today's configuration."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 100_000
+    s.usage.last_prompt_tokens = 40_000
+    s.usage.last_prompt_budget = request_budget_for(100_000, 10_000)  # 40K of an 85.9K budget
+    bar = StatusBar(s)
+
+    def ctx_percent() -> int:
+        text = next(t for t, role in bar.entries(show_elapsed=False) if role == "ctx")
+        return int(text.split("%")[0].split(" ")[1])
+
+    recorded = 40_000 * 100 // request_budget_for(100_000, 10_000)
+    assert ctx_percent() == recorded
+
+    s.config.provider.max_tokens = 60_000  # today's budget would read as ~111% -> 100%
+    assert ctx_percent() == recorded
 
 
 def test_status_bar_ctx_percent_falls_back_to_estimate_without_requests(tmp_path):
@@ -460,6 +478,20 @@ def test_status_bar_ctx_percent_falls_back_to_estimate_without_requests(tmp_path
 
     assert f"ctx {s.state.context_percent}%" in ctx_text
     assert "cache" not in ctx_text
+
+
+def test_status_bar_ctx_percent_falls_back_when_the_recorded_budget_is_missing(tmp_path):
+    """A session resumed from a snapshot taken before last_prompt_budget existed has tokens but no
+    budget; the estimate is the honest fallback rather than a division by zero."""
+    s = session(tmp_path)
+    s.state.context_percent = 31
+    s.usage.last_prompt_tokens = 20_000
+    s.usage.last_prompt_budget = 0
+    bar = StatusBar(s)
+
+    ctx_text = next(text for text, role in bar.entries(show_elapsed=False) if role == "ctx")
+
+    assert f"ctx {s.state.context_percent}%" in ctx_text
 
 
 def test_status_bar_shows_step_only_near_max_steps(tmp_path):

@@ -10,12 +10,12 @@ from typing import ClassVar, TypeVar
 from minacode.base import (
     ANTHROPIC_CONTENT_KEY,
     MAX_TOOL_OUTPUT_TOKENS,
-    MIN_CONTEXT_SAFETY_TOKENS,
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
     SESSION_EVENT_KEY,
     Json,
     Text,
+    request_budget_for,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model import ModelClient
@@ -136,9 +136,10 @@ class ContextManager:
         return self.session.skills.index() if self.session.skills else ""
 
     def request_token_budget(self) -> int:
-        limit = self.session.settings.max_context_tokens
-        safety = max(MIN_CONTEXT_SAFETY_TOKENS, (limit + 49) // 50)
-        return max(1, limit - self.session.config.provider.output_token_budget() - safety)
+        return request_budget_for(
+            self.session.settings.max_context_tokens,
+            self.session.config.provider.output_token_budget(),
+        )
 
     def request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         if self.model is not None:
