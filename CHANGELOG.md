@@ -4,6 +4,11 @@
 ## Unreleased
 
 ### Fixed
+- Show the thinking preview on Responses hosts that stream the raw reasoning chain rather than a
+  summary. Only `response.reasoning_summary_text.delta` was recognized, so a provider that emits
+  `response.reasoning_text.delta` — DeepSeek documents that it generates no summary at all — ran a
+  high-effort step with nothing on screen until the answer arrived. Stored history was already
+  complete; only the live preview was missing.
 - Report a generation the provider cut off at the output cap instead of failing the turn with
   `empty final response`. Reasoning counts against `provider.max_tokens` on the Responses and
   Anthropic wires, so a high-effort step could spend the whole budget and return neither text nor a

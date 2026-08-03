@@ -173,6 +173,28 @@ def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, mo
     assert s.usage.cached_prompt_tokens == 7
 
 
+@pytest.mark.parametrize("event_type", ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"])
+def test_responses_stream_previews_reasoning_in_either_spelling(tmp_path, monkeypatch, event_type):
+    """Hosts that summarize reasoning stream the summary; hosts that expose the raw chain stream the
+    text. DeepSeek only sends the text spelling and generates no summary, so accepting one spelling
+    left a thinking model with no preview at all. Both must keep working."""
+    model = ModelClient(_session(tmp_path, api="responses", model="gpt-5"))
+    terminal = {"id": "resp", "object": "response", "created_at": 1, "status": "completed", "output": []}
+    events = [
+        {"type": event_type, "delta": "weigh", "sequence_number": 1},
+        {"type": event_type, "delta": "ing", "sequence_number": 2},
+        {"type": "response.output_text.delta", "delta": "done", "sequence_number": 3},
+        {"type": "response.completed", "response": terminal, "sequence_number": 4},
+    ]
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", _StreamClientFactory(events))
+
+    model.request([{"role": "user", "content": "hi"}], [])
+
+    assert streamed == [("reasoning", "weigh"), ("reasoning", "ing"), ("output", "done"), ("", "")]
+
+
 @pytest.mark.parametrize("order", ["text-first", "tool-first"])
 def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(tmp_path, monkeypatch, order):
     model = ModelClient(_session(tmp_path, api="responses", model="gpt-5"))

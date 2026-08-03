@@ -598,7 +598,12 @@ class ModelClient:
         try:
             for event in client.responses.create(**params):
                 event_type = str(self.message_field(event, "type") or "")
-                if event_type == "response.reasoning_summary_text.delta":
+                # Two spellings of the same event: hosts that summarize reasoning stream the summary,
+                # hosts that expose the raw chain stream the text. DeepSeek only ever sends the
+                # latter and documents that it generates no summary at all, so listening for one
+                # spelling leaves a thinking model with no preview.
+                # Evidence: https://api-docs.deepseek.com/guides/responses_api
+                if event_type in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
                     self._emit_stream("reasoning", str(self.message_field(event, "delta") or ""))
                 elif event_type in ("response.output_text.delta", "response.refusal.delta"):
                     delta = str(self.message_field(event, "delta") or "")
