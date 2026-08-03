@@ -524,7 +524,9 @@ class SessionSnapshotStore:
         self.write_blobs(path, blobs)
         self.write_jsonl(path, record, mode="a")
         self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
-        self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
+        if self.session.listed:
+            # Workers never claim the latest pointer: `-c` must keep landing on the parent session.
+            self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
         self.write_meta()
         self.garbage_collect_assets()
         return self.session.uid
@@ -633,6 +635,9 @@ class SessionSnapshotStore:
                 if not entry.name.endswith(".jsonl") or not entry.is_file():
                     continue
                 uid = entry.name[:-6]
+                if uid.endswith(".w"):
+                    # Worker sessions are subordinates, not resumable sessions: hidden from listings.
+                    continue
                 meta = cls.read_meta(directory, uid)
                 try:
                     rounds = int(meta.get("rounds") or 0)
@@ -704,7 +709,10 @@ class SessionSnapshotStore:
                 if uid == session.uid:
                     continue
                 try:
-                    if entry.stat().st_mtime >= cutoff:
+                    # A worker outlives its parent only by accident: once the parent log is gone the
+                    # worker is an orphan and expires even if its own mtime is fresh.
+                    orphan_worker = uid.endswith(".w") and not os.path.isfile(os.path.join(directory, uid[:-2] + ".jsonl"))
+                    if entry.stat().st_mtime >= cutoff and not orphan_worker:
                         continue
                     os.unlink(entry.path)
                     shutil.rmtree(os.path.join(directory, uid + ".assets"), ignore_errors=True)
@@ -756,7 +764,7 @@ class SessionSnapshotStore:
     def newest_uid(cls, directory: str) -> str:
         """Fallback for a missing or stale pointer: newest log in the project by mtime."""
         try:
-            entries = [entry for entry in os.scandir(directory) if entry.name.endswith(".jsonl") and entry.is_file()]
+            entries = [entry for entry in os.scandir(directory) if entry.name.endswith(".jsonl") and entry.is_file() and not entry.name.endswith(".w.jsonl")]
         except OSError:
             return ""
         newest = max(entries, key=lambda entry: entry.stat().st_mtime, default=None)
