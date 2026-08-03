@@ -304,7 +304,8 @@ response that the transcript, the snapshot, and the user can no longer account f
 
 - Runtime nudges (live follow-up markers, protocol corrections, resume events) are ordinary
   conversation. Append them, checkpoint them, and let them age out through compaction like any
-  other message.
+  other message. A marker added for the model is committed with the message it marked; hide it at
+  render time instead, so the scrollback still shows what the user typed.
 - Corrections stack rather than replace. Retrying with the previous correction swapped out rewrites
   an already-sent prefix, which both loses the record and breaks the cache.
 - An aborted turn keeps what it already sent. Failure settles history; it does not rewind it.

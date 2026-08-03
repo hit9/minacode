@@ -10,6 +10,10 @@
   as unavailable, pasted patches instead of editing files, and asked the user to restore them. The
   follow-up marker now just asks for a text acknowledgement in the same message as the next tool
   calls, and a tools-only response continues the turn as usual.
+- Commit a live follow-up with the marker it was sent with. History stored the bare text while the
+  request carried `[Live follow-up received while you were working]`, so the next request replayed
+  different bytes at that position and ended the shared cache prefix there. The restored transcript
+  hides the marker, so the scrollback still shows what the user typed.
 - Commit textual tool-call corrections to history instead of sending them request-locally. What
   reached the provider is now what the next request replays, corrections stack rather than replace
   each other, and an aborted turn keeps the ones it already sent.

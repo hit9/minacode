@@ -52,7 +52,7 @@ from minacode.hints import Context as HintContext
 from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
-from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
+from minacode.prompts import LIVE_FOLLOWUP_PREFIX, PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.provider_compat import builtin_tools_issue
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table, search_sources_footer
 from minacode.runner import ToolDisplay
@@ -742,7 +742,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if role == "assistant":
             return self.render_transcript_tool_calls(message, tool_record_index, diffs or {})
         if role == "user" and content and not ImageInputs.is_tool_observation(message):
-            self.ui.emit_answer(content, role=role, rule=False)
+            # The follow-up marker is model-facing context, part of history because it was sent.
+            # The scrollback shows what the user typed, exactly as it looked when they typed it.
+            self.ui.emit_answer(content.removeprefix(LIVE_FOLLOWUP_PREFIX.strip()).lstrip(), role=role, rule=False)
         return tool_record_index
 
     def render_transcript_tool_calls(self, message: Json, tool_record_index: int, diffs: dict[str, str]) -> int:

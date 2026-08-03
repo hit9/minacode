@@ -7,6 +7,7 @@ import pytest
 from minacode.base import SESSION_EVENT_KEY, Config, MinacodeError, RuntimeSettings
 from minacode.engine import Agent
 from minacode.loop import CommandLoop
+from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.model import ModelClient
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
 
@@ -953,6 +954,22 @@ def test_resumed_transcript_without_a_stored_diff_shows_the_call_only(tmp_path):
 
 def _bash_raw_call(arguments: str) -> dict:
     return {"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": arguments}}
+
+
+def test_resumed_transcript_hides_the_live_followup_marker(tmp_path):
+    """The marker stays in history because it was sent, but the scrollback shows the user's own
+    words: a resumed session must not read back runtime instructions the user never typed."""
+    s = session_with_data_dir(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+    command_loop = CommandLoop(agent, output_fn=lambda _text: None)
+    rendered = []
+    command_loop.ui.emit_answer = lambda text, **kwargs: rendered.append(text)
+
+    marked = {"role": "user", "content": LIVE_FOLLOWUP_PREFIX + "also update the tests"}
+    command_loop.render_transcript_message(marked)
+    command_loop.render_transcript_message({"role": "user", "content": "plain request"})
+
+    assert rendered == ["also update the tests", "plain request"]
 
 
 def test_transcript_tool_call_parses_multiline_arguments():

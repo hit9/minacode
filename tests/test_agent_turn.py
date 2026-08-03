@@ -555,11 +555,13 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert "checking" in second
     assert "second instruction" in second
     assert s.messages[0]["content"] == "initial request"
-    assert s.messages[1]["content"] == "extra instruction"
+    # Committed exactly as sent, marker included: the second request replays the same bytes.
+    assert s.messages[1]["content"] == LIVE_FOLLOWUP_PREFIX + "extra instruction"
+    assert s.messages[1] in agent.model.messages[1]  # byte-identical in the next request's prefix
     assert s.messages[2]["content"] == "checking"
     assert s.messages[3]["role"] == "tool"
     assert s.messages[3]["content"].startswith("tool tr.1 Bash wc -l missing.txt")
-    assert s.messages[4]["content"] == "second instruction"
+    assert s.messages[4]["content"] == LIVE_FOLLOWUP_PREFIX + "second instruction"
     assert "checking" in output
     assert s.messages[5]["role"] == "assistant"
     assert s.pending_user_inputs == []
@@ -596,6 +598,35 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
     assert len(s.tool_records) == 1
     assert s.pending_user_inputs == []
     assert all(isinstance(item, LogBlock) for item in output)  # only the tool log; no forced acknowledgement text
+
+
+def test_agent_never_rewrites_a_sent_followup_message(tmp_path):
+    """The follow-up marker travels with the message it marked. Committing the bare text instead
+    would change bytes the provider already cached, ending the shared prefix at that message."""
+    s = session(tmp_path)
+    queue(s, "an early follow-up")
+    agent = Agent(s, output_fn=lambda _text: None)
+    read = call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+
+    class FakeModel:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append([dict(message) for message in messages])
+            if len(self.requests) == 1:
+                return {}, [read], "on it"
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+
+    assert agent.run("initial request") == "done"
+    sent = next(message for message in agent.model.requests[0] if "an early follow-up" in str(message.get("content") or ""))
+    assert sent["content"] == LIVE_FOLLOWUP_PREFIX + "an early follow-up"
+    replayed = [message for message in agent.model.requests[1] if "an early follow-up" in str(message.get("content") or "")]
+    assert replayed == [sent]  # same bytes, once
+    assert [message for message in s.messages if "an early follow-up" in str(message.get("content") or "")] == [sent]
 
 
 def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):

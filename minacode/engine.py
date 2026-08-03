@@ -341,7 +341,9 @@ class Agent:
         if not pending:
             return
         texts = [item.text for item in pending]
-        turn_messages.extend(item.message() for item in pending)
+        # Committed with the marker the provider was sent, not the bare text: dropping it here would
+        # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.
+        turn_messages.extend(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)
         self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:
             self.on_queue_flush(texts)
