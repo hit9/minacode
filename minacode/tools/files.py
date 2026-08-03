@@ -257,8 +257,20 @@ class EditTool(Tool):
         # fmt: off
         edit = cls.object_schema({
             "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
-            "start": {"type": "string", "description": "Start anchor line:hash (inclusive) for replace/delete/insert"},
-            "end": {"type": "string", "description": "End anchor line:hash (inclusive) for replace/delete"},
+            "start": {
+                "type": "string",
+                "description": (
+                    "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
+                    "never invent or calculate it; re-read after any file change or stale-anchor error"
+                ),
+            },
+            "end": {
+                "type": "string",
+                "description": (
+                    "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
+                    "never invent or calculate it; re-read after any file change or stale-anchor error"
+                ),
+            },
             "content": {"type": "string", "description": "New text for create/replace/insert"},
             "old": {"type": "string", "description": "Text to find for replace_all"},
             "new": {"type": "string", "description": "Replacement text for replace_all"},

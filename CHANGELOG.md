@@ -3,6 +3,12 @@
 
 ## Unreleased
 
+### Changed
+- Reword the Edit `start`/`end` anchor parameter descriptions: the anchor must be the exact current
+  `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
+  and re-read after any file change or stale-anchor error. The old wording only named the format and
+  the inclusive range, giving the model no instruction against deriving anchors itself.
+
 ### Fixed
 - Estimate request tokens from UTF-8 bytes instead of characters (4 bytes/token), so CJK-heavy
   sessions are no longer undercounted about 3x: the status bar could show 100% while the next request
