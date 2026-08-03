@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.16\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-02 00:35-0700\n"
+"POT-Creation-Date: 2026-08-03 10:59-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -135,9 +135,9 @@ msgid ""
 "and models keep the selected value. Without an argument it opens a "
 "picker."
 msgstr ""
-"**`/reason [EFFORT]`** — 显示或设置 reasoning effort。可选值：`off`、"
-"`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。Minacode 会将已知 model "
-"family 映射到其最接近的受支持级别；未识别的 provider 和模型会保留所选值。不带参数时打开选择器。"
+"**`/reason [EFFORT]`** — 显示或设置 reasoning "
+"effort。可选值：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。Minacode "
+"会将已知 model family 映射到其最接近的受支持级别；未识别的 provider 和模型会保留所选值。不带参数时打开选择器。"
 
 #: ../../commands.md:61
 msgid "Switching providers and models interactively during a session"
@@ -193,6 +193,20 @@ msgstr "**`/strict`** — 切换严格 tool-call schema（OpenAI / DeepSeek）�
 
 #: ../../commands.md:87
 msgid ""
+"**`/worker [status|reset|on|off]`** — Inspect or control the worker "
+"session: `status` (default) shows whether worker delegation is on and "
+"whether a worker exists, `on`/`off` toggle the `runtime.worker` setting, "
+"and `reset` clears the worker's context (file changes and merged diffs "
+"survive). See [Worker delegation](configuration.md#worker-delegation)."
+msgstr ""
+"**`/worker [status|reset|on|off]`** — "
+"检查或控制 worker 会话：`status`（默认）显示 worker 委派是否开启以及是否存在 worker，"
+"`on`/`off` 切换 `runtime.worker` 设置，"
+"`reset` 清除 worker 的上下文（文件改动与已合并的 diff 会保留）。"
+"参见 [Worker delegation](configuration.md#worker-delegation)。"
+
+#: ../../commands.md:92
+msgid ""
 "**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, "
 "`responses`, `anthropic`) used to reach the model. `/provider` and "
 "`/model` also confirm it as a step in their selection chain, since the "
@@ -202,7 +216,7 @@ msgstr ""
 "选择或设置访问模型所用的请求协议（`auto`、`chat`、`responses`、`anthropic`）。`/provider` 和 "
 "`/model` 也会在各自的选择流程中确认该项，因为合适的协议取决于刚选定的模型。"
 
-#: ../../commands.md:91
+#: ../../commands.md:96
 msgid ""
 "An endpoint that serves several model families often exposes them on "
 "different protocols, and an OpenAI-compatible `/models` listing says "
@@ -216,7 +230,7 @@ msgstr ""
 "`/model` 列出的模型仍可能被拒绝为不受支持。出现这种情况时，用 `/api` 换一种协议（或用 `auto` 依据 URL "
 "和模型重新推断）。回复会指明实际生效的协议，并且历史记录与协议无关，所以中途切换是安全的。"
 
-#: ../../commands.md:97
+#: ../../commands.md:102
 msgid ""
 "**`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; "
 "tab-completes both keys and, where the values are a fixed set, the "
@@ -225,7 +239,7 @@ msgstr ""
 "**`/set KEY VALUE`** — 为当前 session 设置 `provider.*` 或 `runtime.*`；key "
 "以及有固定选项的 value 均支持 Tab 补全。例如：`/set provider.response_timeout 900`。"
 
-#: ../../commands.md:100
+#: ../../commands.md:105
 msgid ""
 "**`/resend`** — Cancel and re-send the in-flight model request without "
 "restarting the turn. Type it while a model request is waiting; it has no "
@@ -241,11 +255,11 @@ msgstr ""
 "`working`。自动重试还会显示当前尝试次数和简短原因，例如 `retrying 2/6 · timeout`；随后在该请求继续时显示 "
 "`working · attempt 2/6`："
 
-#: ../../commands.md:109
+#: ../../commands.md:114
 msgid "MCP"
 msgstr "MCP"
 
-#: ../../commands.md:111
+#: ../../commands.md:116
 msgid "**`/mcp`** — Manage [MCP](mcp.md) server connections. Sub-commands:"
 msgstr "**`/mcp`** — 管理 [MCP](mcp.md) server 连接。子命令如下："
 
@@ -289,16 +303,17 @@ msgstr "`/mcp tools [server]`"
 msgid "List tools from a connected server"
 msgstr "列出已连接 server 的工具"
 
-#: ../../commands.md:120
+#: ../../commands.md:125
 msgid "Help and exit"
 msgstr "帮助与退出"
 
-#: ../../commands.md:122
+#: ../../commands.md:127
 msgid "**`/help`** — Show the built-in command and tool reference."
 msgstr "**`/help`** — 显示内置命令和工具参考。"
 
-#: ../../commands.md:124
+#: ../../commands.md:129
 msgid ""
 "**`/exit`, `/quit`** — Leave minacode. Your session is saved "
 "automatically and can be resumed with `-c` or `--resume`."
 msgstr "**`/exit`, `/quit`** — 退出 minacode。Session 会自动保存，可使用 `-c` 或 `--resume` 恢复。"
+

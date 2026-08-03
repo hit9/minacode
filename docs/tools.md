@@ -111,6 +111,11 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 * - **`MCP`**
   - Describes or calls tools and reads resources from a connected MCP server. It appears only
     after a server is connected; see [MCP](mcp.md).
+* - **`Delegate`**
+  - Hands a bounded task to a second in-process session (the worker) that runs on its own
+    configured provider with a reduced tool set, keeping its context across delegations until
+    reset. It appears only when [worker delegation](configuration.md#worker-delegation) is
+    enabled.
 ::::
 
 (provider-side-tools)=

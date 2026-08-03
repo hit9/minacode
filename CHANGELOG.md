@@ -9,6 +9,17 @@
   and re-read after any file change or stale-anchor error. The old wording only named the format and
   the inclusive range, giving the model no instruction against deriving anchors itself.
 
+### Added
+- New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a
+  second in-process minacode session (the worker) that runs on its own configured provider, with its
+  own system prompt and a reduced tool set, keeping context across delegations until reset. Enable
+  with `[worker] provider = "..."` plus `runtime.worker = true` (or `/worker on`); `[worker]
+  provider` defaults to disabled, and the spec suggests a different vendor than `provider.active` so
+  the worker's reviews cross-validate the parent's. `Delegate` actions: `send` (with a free-text
+  order and optional `max_steps`), `reset`, `status`. `runtime.worker` gates the tool block and thus
+  the prompt-cache scope; turning it off does not clear the worker's context. `/worker` shows status
+  and `/worker reset` clears the worker and tells the parent model via a session event.
+
 ### Fixed
 - Estimate request tokens from UTF-8 bytes instead of characters (4 bytes/token), so CJK-heavy
   sessions are no longer undercounted about 3x: the status bar could show 100% while the next request

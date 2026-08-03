@@ -84,6 +84,11 @@ this off permanently.
 
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
+**`/worker [status|reset|on|off]`** — Inspect or control the worker session: `status` (default)
+shows whether worker delegation is on and whether a worker exists, `on`/`off` toggle the
+`runtime.worker` setting, and `reset` clears the worker's context (file changes and merged diffs
+survive). See [Worker delegation](configuration.md#worker-delegation).
+
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
 used to reach the model. `/provider` and `/model` also confirm it as a step in their selection
 chain, since the right protocol depends on the model you just picked.

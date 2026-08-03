@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-03 10:00-0700\n"
+"POT-Creation-Date: 2026-08-03 10:59-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -225,8 +225,8 @@ msgid ""
 "from the input budget for the answer, trading against "
 "`max_context_tokens` one for one"
 msgstr ""
-"每次模型请求的输出 token 上限（包含推理）；`0` 时交给 provider（Anthropic 线发送保守的 8K）。输入预算中仍预留 16K 给输出，与 "
-"`max_context_tokens` 一比一此消彼长"
+"每次模型请求的输出 token 上限（包含推理）；`0` 时交给 provider（Anthropic 线发送保守的 8K）。输入预算中仍预留 "
+"16K 给输出，与 `max_context_tokens` 一比一此消彼长"
 
 #: ../../configuration.md
 msgid "`timeout`"
@@ -569,17 +569,73 @@ msgstr "`theme`"
 msgid "Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme`"
 msgstr "终端主题：`auto`、`light` 或 `dark`；`--theme` 可覆盖"
 
-#: ../../configuration.md:136
+#: ../../configuration.md
+msgid "`worker`"
+msgstr "`worker`"
+
+#: ../../configuration.md
+msgid "Let the model delegate to a second in-process session; see below"
+msgstr "让模型委派给同一进程内的第二个会话；见下文"
+
+#: ../../configuration.md:137
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:139
+#: ../../configuration.md:141
+msgid "Worker delegation"
+msgstr "Worker 委派"
+
+#: ../../configuration.md:143
+msgid ""
+"With `[worker] provider` set and `runtime.worker` on, the model gains a "
+"`Delegate` tool that hands a bounded task to a second session **in the "
+"same process** (the worker). The worker runs on its own configured "
+"provider — usually a different vendor than `provider.active`, so its "
+"reviews cross-validate the parent's — with its own system prompt and a "
+"reduced tool set, and it keeps its context across delegations until you "
+"reset it."
+msgstr ""
+"设置 `[worker] provider` 且启用 `runtime.worker` 后，模型获得一个 `Delegate` 工具，"
+"可将有限的任务交给**同一进程内**的第二个会话（worker）。worker 使用自己配置的 provider——"
+"通常是与 `provider.active` 不同的厂商，以便它的审查与父会话互相验证——"
+"使用自己的系统提示和精简的工具集，并在各次委派之间保留上下文，直到你重置它。"
+
+#: ../../configuration.md:157
+msgid ""
+"A `Delegate` call runs to completion before the parent's turn continues: "
+"you see the worker's progress in the status bar, and the worker's final "
+"text is returned to the parent model, which decides what to do next. A "
+"worker is a full minacode session — compaction, Recall, tools, skills, "
+"confirmation — projected from the parent's state: it shares the parent's "
+"cwd, environment, Note tool, skill library, and MCP servers, but only "
+"files and the repo really belong to both."
+msgstr ""
+"`Delegate` 调用会完整执行完毕后父会话才继续：你可以在状态栏看到 worker 的进度，"
+"worker 的最终文本会返回给父模型，由它决定下一步。"
+"worker 是一个完整的 minacode 会话——压缩、Recall、工具、技能、确认——"
+"从父会话的状态投影而来：它共享父会话的 cwd、环境、Note 工具、技能库和 MCP server，"
+"但真正同时属于双方的只有文件和仓库。"
+
+#: ../../configuration.md:163
+msgid ""
+"`/worker` shows status, `/worker on`/`/worker off` toggle "
+"`runtime.worker` for the session, and `/worker reset` clears the worker's"
+" context. Turning delegation off or resetting the worker never removes "
+"file changes or merged diffs — the worker owns only its conversation, and"
+" reset drops that conversation (and the wrong beliefs it may have "
+"accumulated) on purpose."
+msgstr ""
+"`/worker` 显示状态，`/worker on`/`/worker off` 切换当前 session 的 `runtime.worker`，"
+"`/worker reset` 清除 worker 的上下文。关闭委派或重置 worker 都不会删除文件改动或已合并的 "
+"diff——worker 只拥有自己的对话，而重置正是有意丢弃这段对话（以及它可能积累的错误认知）。"
+
+#: ../../configuration.md:168
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:146
+#: ../../configuration.md:175
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -590,7 +646,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:150
+#: ../../configuration.md:179
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -600,7 +656,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:154
+#: ../../configuration.md:183
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "

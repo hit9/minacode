@@ -132,9 +132,38 @@ Optional; the defaults shown are used when omitted.
 | `max_parallel_tools` | `4` | Maximum read-only tool calls executed concurrently; `1` disables parallelism |
 | `session_retention_days` | `7` | Delete saved sessions untouched for this many days, swept in the background at startup; `0` keeps them indefinitely |
 | `theme` | `auto` | Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme` |
+| `worker` | `false` | Let the model delegate to a second in-process session; see below |
 
 Selected tuning values can be changed for the current session with `/set` (Tab completion
 lists the supported keys). `/yolo` toggles `yolo`.
+
+(worker-delegation)=
+## Worker delegation
+
+With `[worker] provider` set and `runtime.worker` on, the model gains a `Delegate` tool that hands a
+bounded task to a second session **in the same process** (the worker). The worker runs on its own
+configured provider — usually a different vendor than `provider.active`, so its reviews
+cross-validate the parent's — with its own system prompt and a reduced tool set, and it keeps its
+context across delegations until you reset it.
+
+```toml
+[worker]
+provider = "anthropic"   # worker provider key; unset disables delegation
+
+[runtime]
+worker = true            # or /worker on
+```
+
+A `Delegate` call runs to completion before the parent's turn continues: you see the worker's
+progress in the status bar, and the worker's final text is returned to the parent model, which
+decides what to do next. A worker is a full minacode session — compaction, Recall, tools, skills,
+confirmation — projected from the parent's state: it shares the parent's cwd, environment, Note
+tool, skill library, and MCP servers, but only files and the repo really belong to both.
+
+`/worker` shows status, `/worker on`/`/worker off` toggle `runtime.worker` for the session, and
+`/worker reset` clears the worker's context. Turning delegation off or resetting the worker never
+removes file changes or merged diffs — the worker owns only its conversation, and reset drops that
+conversation (and the wrong beliefs it may have accumulated) on purpose.
 
 ## Data location
 
