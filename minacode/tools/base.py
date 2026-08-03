@@ -75,7 +75,10 @@ class Tool:
         return [
             tool.schema(strict)
             for tool in TOOL_REGISTRY.values()
-            if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp) and (tool is not NextHintsTool or session.settings.quick_hints)
+            if (not session.tool_names or tool.NAME in session.tool_names)
+            and (tool is not SkillTool or has_skills)
+            and (tool is not MCPTool or has_mcp)
+            and (tool is not NextHintsTool or session.settings.quick_hints)
         ]
 
     @staticmethod

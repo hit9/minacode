@@ -33,7 +33,7 @@ from minacode.base import (
     UpdateStatus,
 )
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, WORKING_STATE_CHECKPOINT_TITLE
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
 
 if TYPE_CHECKING:
     from minacode.mcp import MCPManager
@@ -1030,6 +1030,13 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[QueuedInput] = field(default_factory=list)
     quick_hints: tuple[str, ...] = field(default_factory=tuple)  # transient offered next-step inputs; never serialized, cleared each turn
+    # Worker handoff (see DESIGN.md): the second session this one delegates to, and its per-session
+    # projection knobs. None of these are persisted — SessionSnapshotCodec.snapshot is an explicit
+    # whitelist, so they return to their defaults on load and must be re-set by the delegate caller.
+    system_prompt: str = SYSTEM_PROMPT  # role definition; the parent's default is unchanged
+    tool_names: tuple[str, ...] = ()  # empty tuple = no filtering (parent behavior)
+    listed: bool = True  # False -> no latest pointer, hidden from /sessions
+    worker: Session | None = None  # runtime handle of the delegated session
     tool_counter: int = 0
     turn_diffs: list[TurnDiff] = field(default_factory=list)
     history: list[HistorySegment] = field(default_factory=list)

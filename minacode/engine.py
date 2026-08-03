@@ -23,7 +23,6 @@ from minacode.model import ModelClient, PreparedRequest
 from minacode.prompts import (
     INTERRUPT_MARKER,
     LIVE_FOLLOWUP_PREFIX,
-    SYSTEM_PROMPT,
 )
 from minacode.runner import ToolRunner
 from minacode.session import QueuedInput, Session
@@ -273,7 +272,7 @@ class Agent:
         request_turn = [*turn_messages, *(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)]
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
-        messages = self.context.prepare_messages(self.model, SYSTEM_PROMPT, request_turn, tools)
+        messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending)
 

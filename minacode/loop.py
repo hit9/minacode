@@ -52,7 +52,7 @@ from minacode.hints import Context as HintContext
 from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX, PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
+from minacode.prompts import LIVE_FOLLOWUP_PREFIX, PREVIOUS_CONTEXT_TRIMMED
 from minacode.provider_compat import builtin_tools_issue
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table, search_sources_footer
 from minacode.runner import ToolDisplay
@@ -718,7 +718,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.session.resumed = False
         # The percent is derived, not persisted, so a resumed session carries a full history with a
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
-        self.agent.context.update_current_tokens(SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         self.emit(f"Restored session: {self.session.uid}")
         if not messages:
@@ -1329,7 +1329,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         usage = self.session.usage
         provider = self.session.config.provider
         resolved = provider.resolve()
-        context_tokens = self.agent.context.update_current_tokens(SYSTEM_PROMPT)
+        context_tokens = self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         context_budget = self.agent.context.request_token_budget()
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # Display the provider-reported tokens and the budget of the last request; the estimate
@@ -1732,7 +1732,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 self.status_bar.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep, compacted=compacted)
-        self.agent.context.update_current_tokens(SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         # Compaction rewrites the history in place. Persist it now: leaving the session without
         # running another turn would otherwise resume from the log's pre-compaction state.
         self.session.save_snapshot()
