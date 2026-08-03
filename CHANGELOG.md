@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.20.0 - 2026-08-03
+
 ### Fixed
 - Show the thinking preview on Responses hosts that stream the raw reasoning chain rather than a
   summary. Only `response.reasoning_summary_text.delta` was recognized, so a provider that emits
