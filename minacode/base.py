@@ -44,7 +44,7 @@ logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # actionable "authentication required" message; suppress this logger's ERROR-level
 # traceback spam (incl. the RuntimeError minacode raises as control flow).
 logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
-DEFAULT_MAX_CONTEXT_TOKENS = 240 * 1024
+DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 5
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
@@ -106,7 +106,10 @@ def builtin_tool_label(name: str) -> str:
 SESSION_EVENT_KEY = "_session_event"
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16_384
 DEFAULT_OUTPUT_RESERVE_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS
-DEFAULT_MAX_TOKENS = 8_192
+# The configured cap and the reserve subtracted from the input budget describe the same output, so
+# they are one number. Reasoning counts against this cap on the Responses and Anthropic wires, where
+# a smaller value truncates a high-effort step before it emits any text or tool call.
+DEFAULT_MAX_TOKENS = DEFAULT_OUTPUT_RESERVE_TOKENS
 MIN_CONTEXT_SAFETY_TOKENS = 4_096
 SELECTION_BACK = object()
 SELECTION_FREE_TEXT = object()
@@ -123,6 +126,9 @@ class ModelError(MinacodeError): ...
 
 
 class ModelResponseTimeout(ModelError): ...
+
+
+class ModelOutputTruncated(ModelError): ...
 
 
 class MalformedToolCallError(ModelError): ...
@@ -536,7 +542,9 @@ model = ""
 # stream = true
 # image_input = "auto"         # auto | on | off
 # reasoning = "medium"
-# max_tokens = 8192            # output tokens per model request; 0 uses provider default
+# max_tokens = 16384           # output cap per request, reasoning included; 0 uses provider default
+                               # also reserved from the input budget, so it trades against
+                               # runtime.max_context_tokens one for one
 # timeout = 120                # transport inactivity
 # response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
@@ -549,7 +557,8 @@ model = ""
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false
 # quick_hints = true           # model-suggested next-step chips; toggle with /hints
-# max_context_tokens = 245760      # 240K
+# max_context_tokens = 262144      # 256K; how much of the model's window to use, not its size.
+                               # Raise it for a 1M-window model; lower it for a smaller one.
 # max_agent_steps = 200
 # shell_timeout = 60
 

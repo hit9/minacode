@@ -12,6 +12,7 @@ from minacode.__main__ import main
 from minacode.base import (
     CHAT_REASONING_CHOICES,
     DEFAULT_MAX_TOKENS,
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
     HTTP_USER_AGENT,
     RESPONSES_OUTPUT_KEY,
     Config,
@@ -127,9 +128,9 @@ def test_runtime_settings_reads_limits_and_yolo_override():
     assert settings.yolo is True
 
 
-def test_runtime_settings_default_context_budget_is_240k():
-    assert RuntimeSettings().max_context_tokens == 240 * 1024
-    assert RuntimeSettings.from_dict({}).max_context_tokens == 240 * 1024
+def test_runtime_settings_default_context_budget_is_256k():
+    assert RuntimeSettings().max_context_tokens == 256 * 1024
+    assert RuntimeSettings.from_dict({}).max_context_tokens == 256 * 1024
 
 
 def test_provider_timeout_defaults_distinguish_inactivity_from_total_generation():
@@ -145,7 +146,10 @@ def test_provider_max_tokens_defaults_to_bounded_output_and_allows_opt_out():
     assert ProviderConfig().max_tokens == DEFAULT_MAX_TOKENS
     assert Config.from_dict({}).provider.max_tokens == DEFAULT_MAX_TOKENS
     assert ProviderConfig.from_dict({"max_tokens": 0}).max_tokens == 0
-    assert "# max_tokens = 8192" in ConfigFile.DEFAULT_TEXT
+    assert "# max_tokens = 16384" in ConfigFile.DEFAULT_TEXT
+    # The configured cap and the reserve taken out of the input budget describe the same output.
+    assert DEFAULT_MAX_TOKENS == DEFAULT_OUTPUT_RESERVE_TOKENS
+    assert ProviderConfig().output_token_budget() == ProviderConfig.from_dict({"max_tokens": 0}).output_token_budget()
 
 
 def test_provider_stream_defaults_on_and_can_be_disabled():
@@ -297,15 +301,16 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
 @pytest.mark.parametrize(
     ("model", "expected"),
     (
-        # Extended thinking is the only mode at 4.5 and earlier. The high budget (8,192) does not
-        # fit under the default max_tokens (8,192), so it is lowered to stay a valid request.
-        ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
+        # Extended thinking is the only mode at 4.5 and earlier. The high budget (8,192) fits under
+        # the default max_tokens (16,384), so it is requested in full; a smaller configured
+        # max_tokens still lowers it (see the clamp test below).
+        ("claude-sonnet-4-5", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
         (
             "claude-opus-4-5-20251101",
-            {"thinking": {"type": "enabled", "budget_tokens": 7168}, "output_config": {"effort": "high"}},
+            {"thinking": {"type": "enabled", "budget_tokens": 8192}, "output_config": {"effort": "high"}},
         ),
-        ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
-        ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 7168}}),
+        ("anthropic.claude-haiku-4-5-20251001-v1:0", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
+        ("claude-3-7-sonnet-20250219", {"thinking": {"type": "enabled", "budget_tokens": 8192}}),
         # The 4.6 generation accepts both; adaptive is the documented recommendation.
         ("claude-sonnet-4-6", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
         # 4.7 and later reject "enabled" outright.
@@ -381,8 +386,8 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
 def test_anthropic_thinking_budget_stays_under_the_requested_output_budget(tmp_path):
     """The API rejects a budget that is not strictly below max_tokens, so max_tokens has to lower it.
 
-    The default max_tokens (8,192) already collides with the `high` budget, so this is the ordinary
-    configuration rather than an exotic one."""
+    The default max_tokens (16,384) clears the `high` budget, but a configured smaller cap or a
+    larger effort still collides, which is what the cases below cover."""
     client = ModelClient(session(tmp_path))
     provider = client.session.config.provider
     provider.url, provider.api, provider.model = "https://api.anthropic.com", "anthropic", "claude-3-7-sonnet-20250219"

@@ -3,9 +3,10 @@
 import json
 from types import SimpleNamespace
 
+import pytest
 from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _session
 
-from minacode.base import ToolCall
+from minacode.base import ModelOutputTruncated, ToolCall
 from minacode.model import ModelClient
 
 
@@ -270,3 +271,21 @@ def test_anthropic_stream_promotes_server_tool_first_text_at_block_completion(tm
 
     assert streamed == [("Web Search", ""), ("output", "hello"), ("output_done", "hello"), ("", "")]
     assert streamed.count(("output_done", "hello")) == 1
+
+
+def test_anthropic_max_tokens_stop_reason_names_the_cap_only_when_nothing_was_generated(tmp_path):
+    """Thinking spends the same budget as text, so a capped step can end with no content at all."""
+    model = ModelClient(_session(tmp_path, api="anthropic", model="claude-sonnet-4-5"))
+    empty = {"stop_reason": "max_tokens", "content": [], "usage": {"output_tokens": 16384}}
+
+    with pytest.raises(ModelOutputTruncated) as error:
+        model.anthropic_result(empty)
+
+    assert "provider.max_tokens" in str(error.value)
+    assert ModelClient.retryable_error(error.value) is False
+
+    partial = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "half a sen"}]}
+    _assistant, calls, content = model.anthropic_result(partial)
+
+    assert content == "half a sen"
+    assert calls == []

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-02 04:00-0700\n"
+"POT-Creation-Date: 2026-08-03 08:08-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -215,14 +215,19 @@ msgid "`max_tokens`"
 msgstr "`max_tokens`"
 
 #: ../../configuration.md
-msgid "`8192`"
-msgstr "`8192`"
+msgid "`16384`"
+msgstr "`16384`"
 
 #: ../../configuration.md
 msgid ""
-"Output-token cap per model request and reserved compaction space; `0` "
-"uses the provider default"
-msgstr "每次模型请求的输出 token 上限及 compaction 预留空间；`0` 使用 provider 默认值"
+"Output-token cap per model request, reasoning included, and the space "
+"reserved from the input budget; `0` uses the provider default. Raise it "
+"if a high reasoning effort gets truncated; it trades against "
+"`max_context_tokens` one for one"
+msgstr ""
+"每次模型请求的输出 token 上限（包含推理），同时也是从输入预算中预留的空间；`0` "
+"表示使用 provider 默认值。高推理强度被截断时应调高它；它与 "
+"`max_context_tokens` 是一比一此消彼长的关系"
 
 #: ../../configuration.md
 msgid "`timeout`"
@@ -434,8 +439,9 @@ msgid ""
 "are active. If minacode reports an unsupported entry, compare it with the"
 " example for your provider."
 msgstr ""
-"Builtin tools 只适用于表中标明的 API。切换到其他 API 后，minacode 会保留配置，但不会发送这些工具；"
-"切换回来后会重新启用。使用 `/config` 检查工具是否生效。如果 minacode 报告条目不受支持，请对照对应 Provider 的示例检查。"
+"Builtin tools 只适用于表中标明的 API。切换到其他 API 后，minacode "
+"会保留配置，但不会发送这些工具；切换回来后会重新启用。使用 `/config` 检查工具是否生效。如果 minacode "
+"报告条目不受支持，请对照对应 Provider 的示例检查。"
 
 #: ../../configuration.md:114
 msgid ""
@@ -480,12 +486,17 @@ msgid "`max_context_tokens`"
 msgstr "`max_context_tokens`"
 
 #: ../../configuration.md
-msgid "`245760` (240K)"
-msgstr "`245760`（240K）"
+msgid "`262144` (256K)"
+msgstr "`262144`（256K）"
 
 #: ../../configuration.md
-msgid "Total context ceiling used to calculate the automatic-compaction budget"
-msgstr "用于计算自动 compaction 预算的 context 总上限"
+msgid ""
+"How much of the model's context window to use, which sets the automatic-"
+"compaction budget. It is a budget, not the window's size: raise it for a "
+"1M-window model, lower it for a smaller one"
+msgstr ""
+"打算使用模型上下文窗口的多少，它决定自动压缩的预算。这是一个预算，而不是窗口本"
+"身的大小：1M 窗口的模型应调高它，窗口更小的模型应调低它"
 
 #: ../../configuration.md
 msgid "`max_agent_steps`"
@@ -835,3 +846,16 @@ msgstr ""
 #~ "wire 的模型，无须删除设置。`/api` 会报告 inactive "
 #~ "条目，`/config` 会同时显示已配置列表和当前生效的投影。条目位于其适用 wire "
 #~ "时，若结构或生命周期不受支持，仍会在本地拒绝。未知 Provider 保持通用透传行为。"
+
+#~ msgid "`8192`"
+#~ msgstr "`8192`"
+
+#~ msgid ""
+#~ "Output-token cap per model request "
+#~ "and reserved compaction space; `0` uses"
+#~ " the provider default"
+#~ msgstr "每次模型请求的输出 token 上限及 compaction 预留空间；`0` 使用 provider 默认值"
+
+#~ msgid "Total context ceiling used to calculate the automatic-compaction budget"
+#~ msgstr "用于计算自动 compaction 预算的 context 总上限"
+

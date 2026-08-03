@@ -56,7 +56,7 @@ Most users can leave these unset.
 | `reasoning` | `medium` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; change it during a session with `/reason` |
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
-| `max_tokens` | `8192` | Output-token cap per model request and reserved compaction space; `0` uses the provider default |
+| `max_tokens` | `16384` | Output-token cap per model request, reasoning included, and the space reserved from the input budget; `0` uses the provider default. Raise it if a high reasoning effort gets truncated; it trades against `max_context_tokens` one for one |
 | `timeout` | `120` | Transport inactivity timeout in seconds |
 | `response_timeout` | `600` | Total generation limit in seconds; `0` disables it |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
@@ -125,7 +125,7 @@ Optional; the defaults shown are used when omitted.
 |---|---|---|
 | `yolo` | `false` | Start without confirmation prompts |
 | `quick_hints` | `true` | Let the model offer selectable next-step chips; toggle with `/hints` |
-| `max_context_tokens` | `245760` (240K) | Total context ceiling used to calculate the automatic-compaction budget |
+| `max_context_tokens` | `262144` (256K) | How much of the model's context window to use, which sets the automatic-compaction budget. It is a budget, not the window's size: raise it for a 1M-window model, lower it for a smaller one |
 | `max_agent_steps` | `200` | Maximum tool steps in one turn |
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |
 | `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |

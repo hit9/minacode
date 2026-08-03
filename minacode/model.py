@@ -28,8 +28,10 @@ from minacode.base import (
     ActiveResource,
     Json,
     ModelError,
+    ModelOutputTruncated,
     ModelRequestRetry,
     ModelResponseTimeout,
+    ModelUsage,
     ProviderConfig,
     Text,
     ToolArgs,
@@ -298,7 +300,8 @@ class ModelClient:
         import anthropic
         import openai
 
-        if isinstance(error, ModelResponseTimeout):
+        # A truncated generation is deterministic: the same request hits the same output cap again.
+        if isinstance(error, (ModelResponseTimeout, ModelOutputTruncated)):
             return False
         cause = getattr(error, "__cause__", None)
 
@@ -349,6 +352,22 @@ class ModelClient:
             return "server error"
         return "transient error"
 
+    def truncated_output_error(self, usage: Any) -> ModelOutputTruncated:
+        """Report a generation the provider cut off at the output cap before it produced anything.
+
+        Reasoning counts against that cap on the Responses and Anthropic wires, so a high effort can
+        consume the whole budget and return neither text nor a tool call. The turn then fails with
+        nothing to show, which is indistinguishable from an empty answer unless the cap is named.
+        A truncation that still carried text is left alone: the partial answer is visible, and the
+        cut is its own evidence."""
+        provider = self.session.config.provider
+        cap = f"provider.max_tokens={provider.max_tokens}" if provider.max_tokens > 0 else "the provider's own default output limit"
+        completion = ModelUsage.field(usage, "completion_tokens", "output_tokens")
+        reasoning = ModelUsage.field(usage, "completion_tokens_details.reasoning_tokens", "output_tokens_details.reasoning_tokens")
+        spent = f" after {completion} output tokens" if completion else ""
+        spent += f" ({reasoning} of them reasoning)" if reasoning else ""
+        return ModelOutputTruncated(f"Model output was truncated at {cap}{spent}. Raise provider.max_tokens, or lower provider.reasoning.")
+
     def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
         messages = self.chat_messages(messages)
         provider = self.session.config.provider
@@ -369,19 +388,23 @@ class ModelClient:
             params["stream_options"] = {"include_usage": True}
         client = self.client()
         if stream:
-            message, usage = self.call_client(client, lambda: self._chat_stream(client, params))
+            message, usage, finish_reason = self.call_client(client, lambda: self._chat_stream(client, params))
         else:
             response = self.call_client(client, lambda: client.chat.completions.create(**params))
             usage = getattr(response, "usage", None)
             message = response.choices[0].message
+            finish_reason = str(self.message_field(response.choices[0], "finish_reason") or "")
         self.session.usage.add(usage)
         assistant = self.assistant_message(message)
         calls = self.tool_calls(message)
         content = str(self.message_field(message, "content") or "")
+        # Raised outside call_client, which flattens every exception into a plain ModelError.
+        if finish_reason == "length" and not calls and not content.strip():
+            raise self.truncated_output_error(usage)
         return assistant, calls, content
 
-    def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any]:
-        """Reassemble a streamed chat completion into one assistant message.
+    def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any, str]:
+        """Reassemble a streamed chat completion into one assistant message and its finish reason.
 
         Tool calls are the hard part. The spec streams them as deltas keyed by `index`, but providers
         variously omit it, restart it, or send only `id`. `resolve_tool_call_index` recovers the
@@ -405,6 +428,7 @@ class ModelClient:
         next_index = 0
         usage: Any = None
         output_promoted = False
+        finish_reason = ""
 
         def allocate_tool_call() -> int:
             nonlocal next_index
@@ -482,7 +506,9 @@ class ModelClient:
                         target["name"] = str(name)
                     if arguments := self.message_field(function, "arguments"):
                         target["arguments"] = str(target["arguments"]) + str(arguments)
-                if self.message_field(choice, "finish_reason") == "tool_calls" and content and tool_calls and not output_promoted:
+                if chunk_finish_reason := str(self.message_field(choice, "finish_reason") or ""):
+                    finish_reason = chunk_finish_reason
+                if finish_reason == "tool_calls" and content and tool_calls and not output_promoted:
                     self._emit_stream("output_done", "".join(content))
                     output_promoted = True
         finally:
@@ -499,7 +525,7 @@ class ModelClient:
             message["reasoning_details"] = reasoning_details
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
-        return message, usage
+        return message, usage, finish_reason
 
     def api_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
         api = self.session.config.provider.resolve().api
@@ -752,6 +778,10 @@ class ModelClient:
                     action = item.get("action")
                     query = action.get("query") if isinstance(action, dict) else ""
                     self.report_builtin_call(item_type, query if isinstance(query, str) else "")
+        if not calls and not text.strip() and self.message_field(result, "status") == "incomplete":
+            details = self.message_field(result, "incomplete_details")
+            if self.message_field(details, "reason") == "max_output_tokens":
+                raise self.truncated_output_error(self.message_field(result, "usage"))
         assistant: Json = {"role": "assistant", "content": text or None, RESPONSES_OUTPUT_KEY: saved_output}
         if sources := self.responses_sources(saved_output):
             assistant[SEARCH_SOURCES_KEY] = sources
@@ -1182,6 +1212,8 @@ class ModelClient:
                 tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
                 calls.append(self.tool_call(call_id, name, payload))
         text = "".join(text_parts)
+        if not calls and not text.strip() and self.message_field(result, "stop_reason") == "max_tokens":
+            raise self.truncated_output_error(self.message_field(result, "usage"))
         assistant: Json = {"role": "assistant", "content": text or None, ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
         # A long server-side tool run can be paused and handed back mid-turn. The turn continues by
         # sending this message back unchanged, which the saved content blocks above already do.

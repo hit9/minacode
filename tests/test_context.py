@@ -174,6 +174,17 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert all("recent 7" not in str(message.get("content") or "") for message in s.messages)
 
 
+def test_default_budget_leaves_more_input_room_than_the_previous_240k_ceiling(tmp_path):
+    """The output reserve trades against the input budget one for one, so the two defaults are one
+    decision: doubling the output cap only pays off because the ceiling rose further."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+
+    assert s.settings.max_context_tokens == 256 * 1024
+    assert s.config.provider.output_token_budget() == DEFAULT_MAX_TOKENS
+    assert context.request_token_budget() > 240 * 1024 - 8_192 - MIN_CONTEXT_SAFETY_TOKENS
+
+
 def test_compaction_budget_reserves_output_and_safety(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 100_000

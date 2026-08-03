@@ -1,6 +1,26 @@
 # Changelog
 
 
+## Unreleased
+
+### Fixed
+- Report a generation the provider cut off at the output cap instead of failing the turn with
+  `empty final response`. Reasoning counts against `provider.max_tokens` on the Responses and
+  Anthropic wires, so a high-effort step could spend the whole budget and return neither text nor a
+  tool call; the error now names the cap, the tokens spent, and how much of that was reasoning. A
+  truncation that still produced text keeps its partial answer. The failure is deterministic and no
+  longer consumes a retry.
+
+### Changed
+- Raise the default output budget `provider.max_tokens` from 8,192 to 16,384, matching the reserve
+  already subtracted from the input budget when `max_tokens = 0`. The two now describe the same
+  output, and Anthropic's `high` thinking budget no longer has to be lowered to fit under the
+  default.
+- Raise the default `runtime.max_context_tokens` from 240K to 256K. Both defaults appear in the
+  generated config with a note that they trade against each other and that the context budget is how
+  much of a model's window to use, not the window's size.
+
+
 ## 0.19.1 - 2026-08-03
 
 ### Fixed

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
-from minacode.base import SESSION_EVENT_KEY, ModelError, ToolCall
+from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
 from minacode.model import ModelClient
 from minacode.tools import BashTool
 
@@ -357,6 +357,43 @@ def test_responses_failed_result_raises_for_streaming_and_non_streaming_paths(tm
 
     with pytest.raises(ModelError, match="Responses request failed"):
         model.responses_result({"status": "failed", "error": {"message": "bad request"}, "output": []})
+
+
+def test_responses_incomplete_output_reports_the_cap_instead_of_an_empty_answer(tmp_path):
+    """A high-effort step can spend the whole output cap on reasoning and return nothing else.
+
+    Without this the turn fails as "empty final response", which names neither the cause nor the
+    setting to change."""
+    model = ModelClient(_session(tmp_path, api="responses"))
+    truncated = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{"type": "reasoning", "summary": []}],
+        "usage": {"output_tokens": 16384, "output_tokens_details": {"reasoning_tokens": 16384}},
+    }
+
+    with pytest.raises(ModelOutputTruncated) as error:
+        model.responses_result(truncated)
+
+    assert "provider.max_tokens" in str(error.value)
+    assert "16384" in str(error.value)
+    assert "reasoning" in str(error.value)
+    # Deterministic: the same request hits the same cap again, so it must not consume a retry.
+    assert ModelClient.retryable_error(error.value) is False
+
+
+def test_responses_incomplete_for_another_reason_still_returns_its_output(tmp_path):
+    model = ModelClient(_session(tmp_path, api="responses"))
+    result = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "content_filter"},
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "partial"}]}],
+    }
+
+    _assistant, calls, content = model.responses_result(result)
+
+    assert content == "partial"
+    assert calls == []
 
 
 def test_responses_failed_mock_servers_match_across_stream_modes(tmp_path, monkeypatch):

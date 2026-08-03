@@ -7,8 +7,70 @@ from types import SimpleNamespace
 import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
-from minacode.base import SESSION_EVENT_KEY, ModelError, ToolCall
+from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
 from minacode.model import ModelClient
+
+
+def _chat_completion(content, finish_reason, completion_tokens=16384):
+    return (
+        200,
+        {
+            "id": "chatcmpl-truncated",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": finish_reason}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": completion_tokens, "total_tokens": 10 + completion_tokens},
+        },
+    )
+
+
+def test_chat_output_cap_reached_with_nothing_generated_names_the_cap(tmp_path, monkeypatch):
+    """Reasoning spends the same budget as text, so a capped step can return nothing at all.
+
+    Without this the turn dies as "empty final response", naming neither the cause nor the setting
+    to change."""
+    s = _session(tmp_path, stream=False)
+    model = ModelClient(s)
+    factory = _MockClientFactory([_chat_completion("", "length")])
+    monkeypatch.setattr(model, "client", factory)
+
+    with pytest.raises(ModelOutputTruncated) as error:
+        model.chat_request([{"role": "user", "content": "hi"}], None)
+
+    assert "provider.max_tokens" in str(error.value)
+    assert "16384" in str(error.value)
+    # Deterministic: the same request hits the same cap again, so it must not consume a retry.
+    assert ModelClient.retryable_error(error.value) is False
+    # The call reached the provider and was billed, so it belongs in usage regardless of the failure.
+    assert s.usage.completion_tokens == 16384
+
+
+def test_chat_output_cap_reached_after_text_keeps_the_partial_answer(tmp_path, monkeypatch):
+    """A visible partial answer is its own evidence of the cut; only an empty one needs explaining."""
+    model = ModelClient(_session(tmp_path, stream=False))
+    monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("half a sen", "length")]))
+
+    _assistant, calls, content = model.chat_request([{"role": "user", "content": "hi"}], None)
+
+    assert content == "half a sen"
+    assert calls == []
+
+
+def test_chat_stream_reports_the_cap_when_the_stream_produced_nothing(tmp_path, monkeypatch):
+    s = _session(tmp_path)
+    model = ModelClient(s)
+    model.on_stream = lambda _kind, _delta: None
+    chunks = [
+        {"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "length"}], "usage": {"prompt_tokens": 10, "completion_tokens": 16384}},
+    ]
+    monkeypatch.setattr(model, "client", _StreamClientFactory(chunks))
+
+    with pytest.raises(ModelOutputTruncated, match="provider.max_tokens"):
+        model.chat_request([{"role": "user", "content": "hi"}], None)
+
+    assert s.usage.completion_tokens == 16384
 
 
 def test_chat_request_success(tmp_path, monkeypatch):
@@ -275,7 +337,7 @@ def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    message, _usage = model._chat_stream(client, {})
+    message, _usage, _finish_reason = model._chat_stream(client, {})
 
     assert timeline == [
         ("output", "hello"),
