@@ -9,6 +9,7 @@ import os
 import pytest
 from agent_harness import call, session
 
+from minacode.base import SESSION_EVENT_KEY
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.prompts import SYSTEM_PROMPT
@@ -342,3 +343,42 @@ def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
     parent.settings.yolo = True
     _delegate_call(parent, runner, action="send", order="o")
     assert parent.worker.settings.yolo is True  # fresh copy sees the runtime change
+
+
+# 11. user reset: /worker reset appends a SESSION_EVENT_KEY message to the parent's history tail, and
+#     the message reaches the next request (render-hidden, never filtered from the model history).
+def test_worker_reset_appends_event_message(tmp_path):
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+    from minacode.session import Session
+
+    parent = _delegate_session(tmp_path)
+    parent.messages.append({"role": "user", "content": "parent request"})
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.messages.append({"role": "user", "content": "worker request"})
+    worker.save_snapshot()
+    parent.worker = worker
+    parent.save_snapshot()
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    loop.command("/worker reset")
+
+    assert parent.worker is None
+    assert parent.messages[-1].get(SESSION_EVENT_KEY) == "worker_reset"
+    assert parent.messages[-1].get("role") == "user"
+    request = agent.prepare_request([{"role": "user", "content": "continue"}])
+    assert any(message.get("role") == "user" and "starts from scratch" in str(message.get("content")) for message in request.messages)
+
+
+def test_status_bar_shows_worker_segment(tmp_path):
+    from minacode.render import StatusBar
+    from minacode.session import Session
+
+    parent = _delegate_session(tmp_path)
+    bar = StatusBar(parent)
+    texts = [text for text, _ in bar.entries(show_elapsed=False)]
+    assert not any(text.startswith("worker:") for text in texts)
+    parent.worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    texts = [text for text, _ in bar.entries(show_elapsed=False)]
+    assert any(text.startswith("worker:") for text in texts)

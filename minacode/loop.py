@@ -32,6 +32,7 @@ from minacode.base import (
     REASONING_CHOICES,
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
+    SESSION_EVENT_KEY,
     ConfigError,
     Json,
     LogBlock,
@@ -205,6 +206,7 @@ class CommandLoop:
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict", "/hints": "hints",
         "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command", "/resume": "sessions_command",
+        "/worker": "worker_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
@@ -1905,6 +1907,36 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def hints(self, args: str) -> str:
         self.session.settings.quick_hints = not self.session.settings.quick_hints
         return "quick hints: " + ("on" if self.session.settings.quick_hints else "off")
+
+    def worker_command(self, args: str) -> str:
+        from minacode.tools.delegate import DelegateTool
+
+        arg = args.strip().lower()
+        if arg == "reset":
+            result = DelegateTool(self.session, [{"action": "reset"}]).call()
+            if 'action="reset"' not in result:
+                return result
+            # The parent model does not know the user reset the worker; without this event the next
+            # delegation would write "continue where you left off" against a clean context. Tail
+            # append, ages with compaction, render-hidden, never filtered from the model history.
+            self.session.messages.append(
+                {
+                    "role": "user",
+                    "content": "[Worker context was reset by the user. The next delegation starts from scratch.]",
+                    SESSION_EVENT_KEY: "worker_reset",
+                }
+            )
+            self.session.save_snapshot()
+            return result + "\nWorker context was reset; the next delegation starts from scratch."
+        if arg == "on":
+            self.session.settings.worker = True
+            return "worker: on (the tool block changes, so the prompt-cache scope is recompiled once)"
+        if arg == "off":
+            self.session.settings.worker = False
+            return "worker: off (the worker's context stays on disk; /worker on resumes it)"
+        if arg in {"", "status"}:
+            return DelegateTool(self.session, [{"action": "status"}]).call()
+        return "Usage: /worker [status|reset|on|off]"
 
     def strict(self, args: str) -> str:
         if args:

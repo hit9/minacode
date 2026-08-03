@@ -112,6 +112,9 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             from minacode.engine import Agent
 
             agent = Agent(worker, input_fn=runner.input_fn, output_fn=lambda block: runner.output_fn(LogBlock([block])))
+            # Reuse the parent's live region: serial delegation means only one stream at a time.
+            agent.tools.live_start = runner.live_start
+            agent.tools.live_output = runner.live_output
             _AGENTS[worker.uid] = agent
         started = time.monotonic()
         before_diffs = len(worker.turn_diffs)

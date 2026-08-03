@@ -955,6 +955,13 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
+        worker = self.session.worker
+        if worker is not None:
+            # The segment tells the user the next delegation continues the same worker; reset has a
+            # reference point. warn while a delegation is in flight, plain otherwise.
+            worker_model = worker.config.provider.model.rsplit("/", 1)[-1] or "(no model)"
+            worker_role = "warn" if worker._active_turn_messages else "provider"
+            parts.append((f"worker:{worker.config.active_provider}/{worker_model}", worker_role))
         usage = self.session.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;
