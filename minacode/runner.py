@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from minacode.base import (
     ActiveResource,
@@ -31,12 +31,16 @@ from minacode.tools import (
     AskTool,
     BashTool,
     CodeIndex,
+    DelegateTool,
     Edit,
     EditTool,
     JobTool,
     ReadTool,
     Tool,
 )
+
+if TYPE_CHECKING:
+    from minacode.engine import Agent
 
 
 class EditBatchPlan:
@@ -246,11 +250,17 @@ class ToolRunner:
         self.live_start: Callable[[], None] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
         self._active_bash: ActiveResource[BashTool] = ActiveResource()
+        # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
+        self._active_worker: ActiveResource[Agent] = ActiveResource()
 
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
+        self._active_worker.apply(lambda agent: agent.cancel())
 
     def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
+        if isinstance(tool, DelegateTool):
+            tool.runner = self
+            return tool.call()
         if not isinstance(tool, BashTool):
             return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         with self._active_bash.track(tool):
@@ -351,7 +361,12 @@ class ToolRunner:
         # read-only MCP). Edit is coordinated serially by EditBatchPlan;
         # Bash streams live output and mutates; Ask blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or call.name in ("Edit", "NextHints") or tool_class in (BashTool, JobTool, AskTool) or tool_class.PRODUCES_MODEL_OBSERVATION:
+        if (
+            tool_class is None
+            or call.name in ("Delegate", "Edit", "NextHints")
+            or tool_class in (BashTool, JobTool, AskTool)
+            or tool_class.PRODUCES_MODEL_OBSERVATION
+        ):
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()
