@@ -27,7 +27,7 @@ WORK:
 - Never read, print, or copy user secrets: private keys, certificates, credentials, tokens, passwords, `.env` files, and credential or keystore files. Do not open them to satisfy curiosity or context.
 - When asked to edit a file that holds secrets, edit only the requested lines; do not read, echo, diff, or move secret-bearing lines. If a secret must be inspected, ask the user instead.
 - Keep changes small, local, and reversible. Confirm irreversible or outward-facing actions unless authorized. Report failed or skipped checks; do not overclaim. Decline malicious code; help with legitimate defensive work.
-- `[Live follow-up received while you were working]` is runtime input. The next response must acknowledge every marker in natural language; never respond with tool calls only. Newest wins on conflict; otherwise honor all. Stop old work if paused, narrowed, revoked, or replaced; otherwise respond and continue. Recheck the active request after resume, interruption, or compaction.
+- `[Live follow-up received while you were working]` is runtime input. Your next message must acknowledge every marker in natural language, in the same message as its tool calls. Newest wins on conflict; otherwise honor all. Stop old work if paused, narrowed, revoked, or replaced; otherwise respond and continue. Recheck the active request after resume, interruption, or compaction.
 - Give brief updates before edits, after meaningful exploration, and at phase changes; avoid filler. Update Note plans as work changes.
 
 REVIEW:
@@ -55,7 +55,7 @@ Keep only durable facts needed to continue; preserve file paths, symbols, constr
 """.strip()
 
 LIVE_FOLLOWUP_PREFIX = """[Live follow-up received while you were working]
-REQUIRED: Your next assistant message must include a brief visible text response to this follow-up, not only tool calls. Then continue the active task; this response is a progress update, not the final answer.
+REQUIRED: Answer this in visible text in your next assistant message. Keep the text in the same message as whatever tool calls you make next; a tool-calling message may carry text, so acknowledging costs you no extra step. The text is a brief progress update, not the final answer.
 """
 
 INTERRUPT_MARKER = "[The user interrupted this turn (Ctrl-C) before it completed.]"

@@ -293,7 +293,7 @@ def test_agent_rejects_empty_final_response(tmp_path):
         agent.run("answer me")
 
 
-def test_agent_corrects_textual_tool_call_with_request_local_message(tmp_path):
+def test_agent_corrects_textual_tool_call_with_a_committed_message(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
     pseudo = 'course\n<invoke name="Bash">\n<parameter name="command">secret command</parameter>\n</invoke>'
@@ -320,13 +320,15 @@ def test_agent_corrects_textual_tool_call_with_request_local_message(tmp_path):
     assert correction["role"] == "user"
     assert correction["content"] == Agent.tool_call_correction("Bash")
     assert "secret command" not in correction["content"]
-    assert [message["role"] for message in s.messages] == ["user", "assistant"]
+    # Sent means durable: the correction is a real turn message, not a request-local one.
+    assert [message["role"] for message in s.messages] == ["user", "user", "assistant"]
+    assert s.messages[1] == correction
     assert s.messages[-1]["content"] == "done"
-    assert all("<invoke" not in str(message.get("content") or "") for message in s.messages)
+    assert all(pseudo not in str(message.get("content") or "") for message in s.messages)  # the markup itself is never replayed
     assert s.tool_records == []
 
 
-def test_agent_executes_native_call_after_textual_tool_correction_without_replaying_message(tmp_path):
+def test_agent_executes_native_call_after_textual_tool_correction_and_replays_the_correction(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
@@ -351,12 +353,13 @@ def test_agent_executes_native_call_after_textual_tool_correction_without_replay
     assert len(agent.model.requests) == 3
     assert agent.model.requests[1][:-1] == agent.model.requests[0]
     assert "[Runtime protocol correction]" in agent.model.requests[1][-1]["content"]
-    assert all("[Runtime protocol correction]" not in str(message.get("content") or "") for message in agent.model.requests[2])
+    replayed = [message for message in agent.model.requests[2] if "[Runtime protocol correction]" in str(message.get("content") or "")]
+    assert replayed == [agent.model.requests[1][-1]]  # carried forward once, from history
     assert [record.name for record in s.tool_records] == ["Read"]
-    assert all("<invoke" not in str(message.get("content") or "") for message in s.messages)
+    assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
 
 
-def test_agent_recovers_after_five_textual_tool_corrections_with_only_latest_message(tmp_path):
+def test_agent_recovers_after_five_textual_tool_corrections_that_stack_in_history(tmp_path):
     s = session(tmp_path)
     agent = Agent(s, output_fn=lambda _text: None)
     names = ["Edit", "Job", "Bash", "Note", "Read"]
@@ -380,15 +383,17 @@ def test_agent_recovers_after_five_textual_tool_corrections_with_only_latest_mes
     assert agent.run("continue") == "done"
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     base_messages = agent.model.requests[0]
+    corrections = [{"role": "user", "content": Agent.tool_call_correction(name)} for name in names]
     for index, name in enumerate(names, start=1):
         correction_request = agent.model.requests[index]
-        assert correction_request[:-1] == base_messages
-        assert correction_request[-1] == {"role": "user", "content": Agent.tool_call_correction(name)}
+        # Corrections stack instead of replacing each other: nothing already sent is withdrawn.
+        assert correction_request == [*base_messages, *corrections[:index]]
         assert "untrusted" not in correction_request[-1]["content"]
     assert statuses == [
         (f"correcting malformed tool call {index}/{engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS} · {name}", "") for index, name in enumerate(names, start=1)
     ]
-    assert [message["role"] for message in s.messages] == ["user", "assistant"]
+    assert [message["role"] for message in s.messages] == ["user", *["user"] * len(names), "assistant"]
+    assert s.messages[1 : 1 + len(names)] == corrections
     assert s.messages[-1]["content"] == "done"
 
 
@@ -416,7 +421,11 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
 
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     assert s.tool_records == []
-    assert s.messages == [{"role": "user", "content": "continue"}]
+    # The turn aborts, but the corrections it already sent survive: history is append-only.
+    assert s.messages == [
+        {"role": "user", "content": "continue"},
+        *[{"role": "user", "content": Agent.tool_call_correction("Bash")}] * engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS,
+    ]
     assert s._active_turn_messages == []
     restored = Session.load_snapshot(s.uid, config=s.config)
     restored_messages = [message for message in restored.messages if not SessionSnapshotCodec.is_internal_message(message)]
@@ -537,8 +546,8 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     second_followup = next(message["content"] for message in agent.model.messages[1] if "second instruction" in (message.get("content") or ""))
     assert "[Live follow-up received while you were working]" in LIVE_FOLLOWUP_PREFIX
     assert "[Live follow-up received while you were working]" in SYSTEM_PROMPT
-    assert "must include a brief visible text response" in LIVE_FOLLOWUP_PREFIX
-    assert "never respond with tool calls only" in SYSTEM_PROMPT
+    assert "Answer this in visible text in your next assistant message" in LIVE_FOLLOWUP_PREFIX
+    assert "in the same message as its tool calls" in SYSTEM_PROMPT
     assert first_followup == LIVE_FOLLOWUP_PREFIX + "extra instruction"
     assert second_followup == LIVE_FOLLOWUP_PREFIX + "second instruction"
     assert "extra instruction" in first
@@ -556,7 +565,10 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.pending_user_inputs == []
 
 
-def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_path):
+def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
+    """A live follow-up may not change the shape of a request. The tool list is part of the cached
+    prefix, so a tools-only response is accepted as-is: the batch runs, the turn continues, and no
+    extra request is made to extract an acknowledgement first."""
     s = session(tmp_path)
     queue(s, "first follow-up", "second follow-up")
     output = []
@@ -569,40 +581,32 @@ def test_agent_forces_visible_batched_followup_response_before_more_tools(tmp_pa
         def request(self, messages, tools=None):
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
-                return {}, [call("Bash", ["should-not-run"])], ""
-            if len(self.requests) == 2:
-                return (
-                    {
-                        "role": "assistant",
-                        "content": "I hear both follow-ups; checking now.",
-                        "_responses_output": [{"id": "rs_followup", "type": "reasoning", "encrypted_content": "opaque", "summary": []}],
-                    },
-                    [],
-                    "I hear both follow-ups; checking now.",
-                )
+                return {}, [call("Bash", ["echo hi"])], ""
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
 
     assert agent.run("initial request") == "done"
-    assert agent.model.requests[0][1]
-    assert agent.model.requests[1][1] == []
-    assert "first follow-up" in "\n".join(message.get("content") or "" for message in agent.model.requests[1][0])
-    assert "second follow-up" in "\n".join(message.get("content") or "" for message in agent.model.requests[1][0])
-    assert output == ["I hear both follow-ups; checking now."]
-    assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant", "assistant"]
-    assert s.messages[3]["content"] == "I hear both follow-ups; checking now."
-    assert s.messages[3]["_responses_output"][0]["id"] == "rs_followup"
-    assert s.tool_records == []
+    assert len(agent.model.requests) == 2  # one request per step, none inserted for the follow-ups
+    assert all(tools for _messages, tools in agent.model.requests)
+    assert agent.model.requests[0][1] == agent.model.requests[1][1]
+    first_request = "\n".join(message.get("content") or "" for message in agent.model.requests[0][0])
+    assert "first follow-up" in first_request and "second follow-up" in first_request
+    assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant", "tool", "assistant"]
+    assert len(s.tool_records) == 1
     assert s.pending_user_inputs == []
+    assert all(isinstance(item, LogBlock) for item in output)  # only the tool log; no forced acknowledgement text
 
 
-def test_agent_corrects_textual_tool_call_in_forced_followup_response(tmp_path):
+def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
+    """The cached prefix must survive a turn that mixes tool batches, live follow-ups, and a
+    protocol correction: every request carries the same non-empty tool block."""
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
-    queue(s, "live follow-up")
-    output = []
-    agent = Agent(s, output_fn=output.append)
-    pseudo = '<invoke name="Bash"><parameter name="command">should-not-run</parameter></invoke>'
+    queue(s, "an early follow-up")
+    agent = Agent(s, output_fn=lambda _text: None)
+    pseudo = '<invoke name="Read"><parameter name="path">ignored.txt</parameter></invoke>'
+    read = call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])
 
     class FakeModel:
         def __init__(self):
@@ -612,31 +616,75 @@ def test_agent_corrects_textual_tool_call_in_forced_followup_response(tmp_path):
         def request(self, messages, tools=None):
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
-                return {}, [call("Bash", ["should-not-run"])], ""
+                s.enqueue_user_input("a later follow-up")
+                return {}, [read], "on it"
             if len(self.requests) == 2:
-                return {"role": "assistant", "content": pseudo}, [], pseudo
+                return {"role": "assistant", "content": pseudo}, [], pseudo  # triggers a correction
             if len(self.requests) == 3:
-                return {"role": "assistant", "content": "I hear the follow-up; checking now."}, [], "I hear the follow-up; checking now."
+                return {}, [read], "still going"
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
 
     assert agent.run("initial request") == "done"
     assert len(agent.model.requests) == 4
-    assert agent.model.requests[1][1] == []
-    correction_messages, correction_tools = agent.model.requests[2]
-    assert correction_tools == []
-    assert correction_messages[:-1] == agent.model.requests[1][0]
-    assert correction_messages[-1] == {"role": "user", "content": Agent.followup_tool_call_correction("Bash")}
-    assert output == ["I hear the follow-up; checking now."]
-    assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
-    assert s.tool_records == []
+    tool_blocks = [tools for _messages, tools in agent.model.requests]
+    assert all(tools and tools == tool_blocks[0] for tools in tool_blocks)
+
+    # Messages only ever grow: each request is a prefix of the next, once the one-shot follow-up
+    # marker (dropped when the queued input is committed) is normalized away.
+    def normalized(messages):
+        return [str(message.get("content") or "").replace(LIVE_FOLLOWUP_PREFIX, "") for message in messages]
+
+    lengths = [len(messages) for messages, _tools in agent.model.requests]
+    assert lengths == sorted(lengths) and len(set(lengths)) == len(lengths)
+    for earlier, later in zip(agent.model.requests, agent.model.requests[1:]):
+        assert normalized(later[0])[: len(earlier[0])] == normalized(earlier[0])
     assert s.pending_user_inputs == []
 
 
-def test_agent_shares_textual_tool_call_limit_with_forced_followup_response(tmp_path):
+def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
+    """The correction is a real message, not a request-local one: what reached the provider must
+    reach durable history, and the retry keeps the same tool list."""
     s = session(tmp_path)
     queue(s, "live follow-up")
+    agent = Agent(s, output_fn=lambda text: None)
+    pseudo = '<invoke name="Bash"><parameter name="command">should-not-run</parameter></invoke>'
+    correction = {"role": "user", "content": Agent.tool_call_correction("Bash")}
+
+    class FakeModel:
+        def __init__(self):
+            self.requests = []
+            self.on_stream = None
+
+        def request(self, messages, tools=None):
+            self.requests.append(([dict(message) for message in messages], tools))
+            if len(self.requests) == 1:
+                return {"role": "assistant", "content": pseudo}, [], pseudo
+            if len(self.requests) == 2:
+                return {}, [call("Bash", ["echo hi"])], "on it"
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+
+    assert agent.run("initial request") == "done"
+    assert len(agent.model.requests) == 3
+    assert all(tools == agent.model.requests[0][1] for _messages, tools in agent.model.requests)
+    retry_messages = agent.model.requests[1][0]
+    assert retry_messages[-1] == correction
+    assert retry_messages[:-1] == agent.model.requests[0][0]
+
+    # Committed to history, after the follow-up it followed on the wire, and replayed on the next step.
+    assert correction in s.messages
+    followup = next(message for message in s.messages if "live follow-up" in (message.get("content") or ""))
+    assert s.messages.index(followup) < s.messages.index(correction)
+    assert correction in agent.model.requests[2][0]
+    assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
+    assert s.pending_user_inputs == []
+
+
+def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
+    s = session(tmp_path)
     output = []
     agent = Agent(s, output_fn=output.append)
     pseudo = '<invoke name="Bash"><parameter name="command">never-run</parameter></invoke>'
@@ -648,10 +696,6 @@ def test_agent_shares_textual_tool_call_limit_with_forced_followup_response(tmp_
 
         def request(self, messages, tools=None):
             self.requests.append((messages, tools))
-            if len(self.requests) == 1:
-                return {"role": "assistant", "content": pseudo}, [], pseudo
-            if len(self.requests) == 2:
-                return {}, [call("Bash", ["never-run"])], ""
             return {"role": "assistant", "content": pseudo}, [], pseudo
 
     agent.model = FakeModel()
@@ -662,13 +706,14 @@ def test_agent_shares_textual_tool_call_limit_with_forced_followup_response(tmp_
     ):
         agent.run("initial request")
 
-    assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 2
-    assert agent.model.requests[1][1]
-    assert all(tools == [] for _messages, tools in agent.model.requests[2:])
+    assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
+    assert all(tools == agent.model.requests[0][1] and tools for _messages, tools in agent.model.requests)
+    # Each correction stacks onto the previous one, so the retries grow by exactly one message.
+    lengths = [len(messages) for messages, _tools in agent.model.requests]
+    assert lengths == [lengths[0] + index for index in range(len(lengths))]
     assert output == []
     assert all(pseudo not in str(message.get("content") or "") for message in s.messages)
     assert s.tool_records == []
-    assert [item.text for item in s.pending_user_inputs] == ["live follow-up"]
 
 
 def test_agent_shares_resolved_tools_with_model_request(tmp_path, monkeypatch):
@@ -1068,183 +1113,38 @@ def test_silent_tool_failure_still_emits_a_log_line(tmp_path):
     assert "at least one non-empty" in messages[0]["content"]
 
 
-def test_agent_sanitizes_unoffered_tool_calls_from_forced_followup_response(tmp_path, monkeypatch):
-    """Provider ignores tools=[] during forced follow-up: the returned tool calls must be stripped
-    from durable history and never executed or replayed."""
-    s = session(tmp_path)
-    s.config.provider.url = "http://test"
-    s.config.provider.key = "k"
-    s.config.provider.model = "m"
-    queue(s, "live follow-up")
-    output = []
-    agent = Agent(s, output_fn=output.append)
-
-    responses = [
-        # Request 1: normal tools, returns tool call with empty content -> triggers forced retry
-        (
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{"id": "Bash-id", "type": "function", "function": {"name": "Bash", "arguments": '{"args": ["should-not-run"]}'}}],
-            },
-            [call("Bash", ["should-not-run"])],
-            "",
-        ),
-        # Request 2: tools=[] but provider ignores it and returns calls anyway
-        (
-            {
-                "role": "assistant",
-                "content": "I hear the follow-up; checking now.",
-                "tool_calls": [
-                    {"id": "fc_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
-                    {"id": "fc_2", "type": "function", "function": {"name": "Search", "arguments": '{"pattern":"x"}'}},
-                ],
-                "_responses_output": [
-                    {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque", "summary": []},
-                    {
-                        "id": "msg_1",
-                        "type": "message",
-                        "status": "completed",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "I hear the follow-up; checking now."}],
-                    },
-                    {"id": "fc_1", "type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": '{"command":"ls"}'},
-                    {"id": "fc_2", "type": "function_call", "call_id": "fc_2", "name": "Search", "arguments": '{"pattern":"x"}'},
-                ],
-            },
-            [call("Bash", ["ls"]), call("Search", [{"pattern": "x"}])],
-            "I hear the follow-up; checking now.",
-        ),
-        # Request 3: final answer for the original task
-        ({"role": "assistant", "content": "done"}, [], "done"),
-    ]
-    request_log: list[tuple] = []
-
-    def fake_api_request(messages, tools, *, allow_stream=True):
-        request_log.append((messages, tools))
-        return responses.pop(0)
-
-    monkeypatch.setattr(agent.model, "api_request", fake_api_request)
-
-    assert agent.run("initial request") == "done"
-
-    # Request 2 was made with tools=[]
-    assert request_log[1][1] == []
-
-    # The live follow-up exists exactly once in session.messages
-    followup_messages = [m for m in s.messages if "live follow-up" in (m.get("content") or "")]
-    assert len(followup_messages) == 1
-
-    # No tool was executed
-    assert s.tool_records == []
-
-    # The persisted forced acknowledgement has no top-level tool_calls
-    ack = s.messages[2]  # user, followup-user, assistant-ack, assistant-final
-    assert ack["role"] == "assistant"
-    assert ack["content"] == "I hear the follow-up; checking now."
-    assert "tool_calls" not in ack
-
-    # Its _responses_output contains no function_call item
-    saved_output = ack.get("_responses_output", [])
-    assert all(item.get("type") != "function_call" for item in saved_output)
-
-    # Replayable reasoning/message items are preserved
-    assert any(item.get("type") == "reasoning" for item in saved_output)
-    assert any(item.get("type") == "message" for item in saved_output)
-
-    # Request 3 contains no dangling function_call from Request 2
-    third_messages = request_log[2][0]
-    for msg in third_messages:
-        if msg.get("role") == "assistant":
-            for item in msg.get("_responses_output", []):
-                assert item.get("type") != "function_call"
-            assert "tool_calls" not in msg or not msg["tool_calls"]
-
-    # pending_user_inputs is empty after acknowledgement
-    assert s.pending_user_inputs == []
-
-    # The visible acknowledgement and final result follow the existing intended output order
-    assert output == ["I hear the follow-up; checking now."]
-    assert s.messages[-1]["content"] == "done"
-
-
-def test_agent_rejects_empty_no_tools_followup_response(tmp_path):
-    """For the forced follow-up request with tools=[], if the provider returns only native local
-    tool calls and no text, the turn takes the empty-live-follow-up error path."""
-    s = session(tmp_path)
-    queue(s, "live follow-up")
-    agent = Agent(s, output_fn=lambda _text: None)
-
-    class FakeModel:
-        def __init__(self):
-            self.requests = []
-
-        def request(self, messages, tools=None):
-            self.requests.append((messages, tools))
-            if len(self.requests) == 1:
-                return {}, [call("Bash", ["should-not-run"])], ""
-            # tools=[] response with only tool calls and no text
-            return (
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{"id": "fc_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}}],
-                    "_responses_output": [
-                        {"id": "fc_1", "type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": '{"command":"ls"}'},
-                    ],
-                },
-                [call("Bash", ["ls"])],
-                "",
-            )
-
-    agent.model = FakeModel()
-
-    with pytest.raises(ModelError, match="empty live follow-up response"):
-        agent.run("initial request")
-
-    # No tool was executed
-    assert s.tool_records == []
-    # The follow-up was not acknowledged
-    assert [item.text for item in s.pending_user_inputs] == ["live follow-up"]
-
-
-def test_agent_no_tools_followup_snapshot_resume_invariant(tmp_path, monkeypatch):
-    """Save and reload the regression session: the live follow-up appears once, pending is empty,
-    and no assistant local-tool calls exist without matching tool results."""
+def test_agent_followup_turn_snapshot_resume_invariant(tmp_path, monkeypatch):
+    """Save and reload a turn that took a live follow-up and a protocol correction: both appear once
+    as durable user messages, pending is empty, and no assistant tool call lacks its result."""
     s = session(tmp_path)
     s.config.provider.url = "http://test"
     s.config.provider.key = "k"
     s.config.provider.model = "m"
     queue(s, "live follow-up")
     agent = Agent(s, output_fn=lambda _text: None)
+    pseudo = '<invoke name="Bash"><parameter name="command">never-run</parameter></invoke>'
 
     responses = [
-        (
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{"id": "Bash-id", "type": "function", "function": {"name": "Bash", "arguments": '{"args": ["should-not-run"]}'}}],
-            },
-            [call("Bash", ["should-not-run"])],
-            "",
-        ),
+        ({"role": "assistant", "content": pseudo}, [], pseudo),
         (
             {
                 "role": "assistant",
                 "content": "acknowledged",
-                "tool_calls": [{"id": "fc_1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}],
+                "tool_calls": [{"id": "Read-id", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
                 "_responses_output": [
                     {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
-                    {"id": "fc_1", "type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": "{}"},
+                    {"id": "fc_1", "type": "function_call", "call_id": "Read-id", "name": "Read", "arguments": "{}"},
                 ],
             },
-            [call("Bash", ["ls"])],
+            [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])],
             "acknowledged",
         ),
         ({"role": "assistant", "content": "done"}, [], "done"),
     ]
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
 
     def fake_api_request(messages, tools, *, allow_stream=True):
+        assert tools, "the tool list must never be emptied for a request"
         return responses.pop(0)
 
     monkeypatch.setattr(agent.model, "api_request", fake_api_request)
@@ -1253,9 +1153,12 @@ def test_agent_no_tools_followup_snapshot_resume_invariant(tmp_path, monkeypatch
     s.save_snapshot()
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
 
-    # The live follow-up appears once as a durable user message
+    # The live follow-up and the correction each appear once as durable user messages
     followup_messages = [m for m in restored.messages if "live follow-up" in (m.get("content") or "")]
+    corrections = [m for m in restored.messages if "[Runtime protocol correction]" in (m.get("content") or "")]
     assert len(followup_messages) == 1
+    assert len(corrections) == 1
+    assert all(pseudo not in (m.get("content") or "") for m in restored.messages)
 
     # pending_user_inputs is empty
     assert restored.pending_user_inputs == []
@@ -1268,7 +1171,9 @@ def test_agent_no_tools_followup_snapshot_resume_invariant(tmp_path, monkeypatch
         for tc in msg.get("tool_calls") or []:
             assert tc.get("id") in tool_result_ids, f"dangling tool call {tc.get('id')}"
 
-    # Preparing the next Responses request does not resurrect a discarded call
+    # Every function_call replayed into the next Responses request has its output beside it
     client = ModelClient(restored)
     replayed = client.responses_input(restored.messages)
-    assert all(item.get("type") != "function_call" for item in replayed)
+    outputs = {item.get("call_id") for item in replayed if item.get("type") == "function_call_output"}
+    assert [item.get("call_id") for item in replayed if item.get("type") == "function_call"] == ["Read-id"]
+    assert outputs == {"Read-id"}

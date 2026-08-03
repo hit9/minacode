@@ -700,66 +700,6 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
     assert "_anthropic_content" not in body
 
 
-def test_responses_no_tools_result_strips_function_call_preserves_message_reasoning_web_search(tmp_path, monkeypatch):
-    """Using httpx.MockTransport and the real OpenAI SDK serializer, return a Responses result
-    containing message, reasoning, function_call, and web_search_call items while the request uses
-    tools=[]. Assert function_call is removed; message/reasoning/web_search_call remain."""
-    s = _session(tmp_path, api="responses", model="gpt-5", stream=False)
-    model = ModelClient(s)
-    factory = _MockClientFactory(
-        [
-            (
-                200,
-                {
-                    "id": "resp_test",
-                    "object": "response",
-                    "created_at": 1,
-                    "status": "completed",
-                    "model": "gpt-5",
-                    "output": [
-                        {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque", "summary": []},
-                        {
-                            "id": "msg_1",
-                            "type": "message",
-                            "status": "completed",
-                            "role": "assistant",
-                            "content": [{"type": "output_text", "text": "the answer", "annotations": []}],
-                        },
-                        {"id": "fc_1", "type": "function_call", "status": "completed", "call_id": "call_1", "name": "Bash", "arguments": '{"command":"ls"}'},
-                        {"id": "ws_1", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "test query"}},
-                    ],
-                    "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
-                },
-            )
-        ]
-    )
-    monkeypatch.setattr(model, "client", factory)
-
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
-
-    # function_call is removed from normalized history
-    assert calls == []
-    assert "tool_calls" not in assistant
-    saved = assistant["_responses_output"]
-    assert all(item.get("type") != "function_call" for item in saved)
-
-    # message/reasoning remain replayable
-    assert any(item.get("type") == "reasoning" for item in saved)
-    assert any(item.get("type") == "message" for item in saved)
-
-    # web_search_call remains available for builtin transcript/source handling
-    assert any(item.get("type") == "web_search_call" for item in saved)
-
-    # text is preserved
-    assert content == "the answer"
-    assert assistant["content"] == "the answer"
-
-    # The next serialized request has no function_call and no function_call_output required
-    replayed = model.responses_input([assistant])
-    assert all(item.get("type") != "function_call" for item in replayed)
-    assert all(item.get("type") != "function_call_output" for item in replayed)
-
-
 def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkeypatch):
     """When non-empty schemas were offered and the provider returns a valid local tool call:
     preserve the normalized call and provider echo, then replay a matching result."""

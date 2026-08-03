@@ -1,6 +1,25 @@
 # Changelog
 
 
+## Unreleased
+
+### Fixed
+- Never empty the tool list to force a live-follow-up acknowledgement. The extra request that
+  carried `tools=[]` discarded the cached prefix and moved the request into another cache scope, and
+  the model read the missing schemas as a broken tool set: it reported Bash, Edit, Search, and MCP
+  as unavailable, pasted patches instead of editing files, and asked the user to restore them. The
+  follow-up marker now just asks for a text acknowledgement in the same message as the next tool
+  calls, and a tools-only response continues the turn as usual.
+- Commit textual tool-call corrections to history instead of sending them request-locally. What
+  reached the provider is now what the next request replays, corrections stack rather than replace
+  each other, and an aborted turn keeps the ones it already sent.
+
+### Changed
+- Write output for the terminal instead of a markdown renderer: reference local files as bare
+  `path:line` rather than as markdown links, and drop banner headings, tables for short answers, and
+  paste-back of file contents or command output the user already saw.
+
+
 ## 0.19.0 - 2026-08-02
 
 ### Added
