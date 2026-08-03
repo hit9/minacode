@@ -75,12 +75,14 @@ SET_HANDLERS: dict[str, SetHandler] = {
     "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
     "runtime.shell_timeout": ("settings", "shell_timeout", lambda v: max(1, int(v))),
     "runtime.bash_wait_timeout": ("settings", "bash_wait_timeout", lambda v: max(0, int(v))),
+    "runtime.worker": ("settings", "worker", lambda v: v == "on"),
 }
 SET_KEYS = tuple(SET_HANDLERS)
 # Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
 SET_CHOICES: dict[str, tuple[str, ...]] = {
     "provider.stream": ("on", "off"),
     "provider.image_input": IMAGE_INPUT_CHOICES,
+    "runtime.worker": ("on", "off"),
 }
 SET_VALUES: dict[str, tuple[str, ...]] = {
     "provider.temperature": ("off",),
@@ -1652,6 +1654,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"runtime.max_parallel_tools: {self.session.settings.max_parallel_tools}",
                 f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
+                f"runtime.worker: {'on' if self.session.settings.worker else 'off'}",
+                f"worker.provider: {self.session.config.worker_provider or '(off)'}",
             ]
         )
 

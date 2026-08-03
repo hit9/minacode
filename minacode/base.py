@@ -414,6 +414,7 @@ class RuntimeSettings:
     max_parallel_tools: int = 4
     yolo: bool = False
     quick_hints: bool = True
+    worker: bool = False  # register the Delegate tool (see [worker] in ConfigFile.DEFAULT_TEXT)
     theme: str = "auto"
 
     @classmethod
@@ -428,6 +429,7 @@ class RuntimeSettings:
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
             quick_hints=Config.bool(runtime, "quick_hints", True),
+            worker=Config.bool(runtime, "worker", False),
             theme=theme or Config.str(runtime, "theme", "auto"),
         )
 
@@ -438,6 +440,10 @@ class Config:
     providers: dict[str, ProviderConfig] = field(default_factory=lambda: {"default": ProviderConfig()})
     data_dir: str = "~/.minacode"
     mcp: Json = field(default_factory=dict)
+    # The provider entry a Delegate sends its worker to; empty disables the tool entirely. The gate
+    # reads only this (a session-stable value), never a comparison against active_provider, which
+    # /provider can change at runtime.
+    worker_provider: str = ""
 
     # Backward compatibility: the data dir moved from ~/.nanocode to ~/.minacode.
     LEGACY_DATA_DIR: ClassVar[str] = "~/.nanocode"
@@ -467,7 +473,17 @@ class Config:
         if active not in providers:
             raise ConfigError(f"provider.active `{active}` does not exist")
         paths = cls.table(data, "paths")
-        return cls(active_provider=active, providers=providers, data_dir=cls.str(paths, "data_dir", "~/.minacode"), mcp=cls.table(data, "mcp"))
+        worker_root = cls.table(data, "worker")
+        worker_provider = cls.str(worker_root, "provider", "")
+        if worker_provider and worker_provider not in providers:
+            raise ConfigError(f"worker.provider `{worker_provider}` does not exist")
+        return cls(
+            active_provider=active,
+            providers=providers,
+            data_dir=cls.str(paths, "data_dir", "~/.minacode"),
+            mcp=cls.table(data, "mcp"),
+            worker_provider=worker_provider,
+        )
 
     @staticmethod
     def table(data: Json, key: str) -> Json:
@@ -579,7 +595,13 @@ model = ""
                                # Raise it for a 1M-window model; lower it for a smaller one.
 # max_agent_steps = 200
 # shell_timeout = 60
+# worker = false               # register the Delegate tool; toggle with /worker on|off
+                               # (flipping it changes the tool block and thus the prompt-cache scope)
 
+# [worker]                     # optional: hand tasks to a second minacode session (Delegate tool)
+# provider = "fast"           # a provider entry; pick one from a DIFFERENT vendor than
+                               # provider.active, so the worker's reviews cross-validate the
+                               # parent's -- same-family models share blind spots
 # [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
 # auto_connect = false
