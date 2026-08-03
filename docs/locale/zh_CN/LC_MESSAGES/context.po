@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-02 01:18-0700\n"
+"POT-Creation-Date: 2026-08-03 09:35-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -82,9 +82,9 @@ msgid ""
 "them: a turn that searches arrives larger than one that does not, and "
 "most providers charge for the search on top of the tokens."
 msgstr ""
-"启用 [Provider 侧搜索](tools.md#provider-side-tools)后，它读取的网页由 "
-"Provider 而非 minacode 加入 context，因此不会被截断，context "
-"占用也无法提前预估：包含搜索的一轮会比不含搜索的更大，而且多数 Provider 会在 token 之外对搜索单独计费。"
+"启用 [Provider 侧搜索](tools.md#provider-side-tools)后，它读取的网页由 Provider 而非 "
+"minacode 加入 context，因此不会被截断，context 占用也无法提前预估：包含搜索的一轮会比不含搜索的更大，而且多数 "
+"Provider 会在 token 之外对搜索单独计费。"
 
 #: ../../context.md:31
 msgid "Keeping context manageable"
@@ -122,6 +122,13 @@ msgstr ""
 
 #: ../../context.md:46
 msgid ""
+"The context fill shown in the status bar and `/status` is the provider-"
+"reported token count of the last request; compaction still triggers on "
+"the estimate, which projects the next request."
+msgstr "状态栏与 `/status` 显示的上下文占用是最近一次请求的 provider 上报 token 数；压缩仍按估算触发，因为估算描述的是下一个请求。"
+
+#: ../../context.md:49
+msgid ""
 "The checkpoint summary in the active context is lossy, but each "
 "compaction also captures a bounded verbatim excerpt of the evicted "
 "messages as a **history segment**. Earlier snapshots in the append-only "
@@ -132,7 +139,7 @@ msgstr ""
 "**history segment**。append-only session 日志中较早的快照仍是冷数据式的真实来源，因此 compaction"
 " 不会改写它们。"
 
-#: ../../context.md:52
+#: ../../context.md:55
 msgid ""
 "Segment titles do not occupy every request. The agent uses "
 "`RecallContext` to list them newest first, regex-search stored titles and"
@@ -146,7 +153,7 @@ msgstr ""
 "goal、plan、facts 和 checks；在 compaction checkpoint 汇总完整当前状态之前，更新会保留在原始 "
 "tool-call history 中。"
 
-#: ../../context.md:57
+#: ../../context.md:60
 msgid ""
 "Run `/compact` to compact immediately rather than waiting for the "
 "threshold, for example before starting a large refactor. `/status` "
@@ -155,11 +162,11 @@ msgstr ""
 "运行 `/compact` 可以立即压缩，而不必等待阈值；例如可在大型重构前使用。`/status` 会显示当前 session 已执行的 "
 "compaction 次数。"
 
-#: ../../context.md:60
+#: ../../context.md:63
 msgid "Prompt caching"
 msgstr "Prompt 缓存"
 
-#: ../../context.md:62
+#: ../../context.md:65
 msgid ""
 "Prompt caching lets a provider reuse work for an unchanged beginning of a"
 " request. The next request usually begins with the same instructions, "
@@ -175,7 +182,7 @@ msgstr ""
 "事件会追加到对话中，因此不会移动更早的 breakpoint。一次 compaction 会有意开启新的 cache epoch。连接 MCP "
 "server、改变已安装的 skill、切换模型或修改前部内容，都会降低下一次请求的缓存命中。"
 
-#: ../../context.md:71
+#: ../../context.md:74
 msgid ""
 "A request is reused only up to its first difference, so a change near the"
 " beginning — connecting an MCP server, installing a skill, switching "
@@ -185,7 +192,7 @@ msgstr ""
 "请求只会复用到第一处差异为止，因此靠前的改动——连接 MCP server、安装 skill、切换模型、启用 Provider "
 "侧工具——都会缩短可复用前缀。这也是把稳定内容放在最前面的原因。"
 
-#: ../../context.md:76
+#: ../../context.md:79
 msgid ""
 "OpenAI-compatible providers may reuse matching prefixes automatically; "
 "minacode supplies a stable cache key where the provider supports one. For"
@@ -196,11 +203,11 @@ msgstr ""
 " key。对于 Anthropic，minacode 会显式将工具和 system 指令标记为临时可缓存前缀。不同 provider "
 "的支持方式和统计口径可能不同。"
 
-#: ../../context.md:80
+#: ../../context.md:83
 msgid "Checking the hit rate"
 msgstr "检查命中率"
 
-#: ../../context.md:82
+#: ../../context.md:85
 msgid ""
 "`/status` reports cache-read tokens for the whole session and latest "
 "request, plus cache-write tokens when the provider exposes them:"
@@ -208,13 +215,13 @@ msgstr ""
 "`/status` 会显示整个 session 和最近一次请求的 cache-read token；如果 provider 提供统计，还会显示 "
 "cache-write token："
 
-#: ../../context.md:87
+#: ../../context.md:90
 msgid ""
 "The latest-request ratio also shows live in the status bar, beside the "
 "context fill, updating with each response."
 msgstr "最近一次请求的命中率也会实时显示在状态栏中，紧跟上下文占用，随每次响应更新。"
 
-#: ../../context.md:90
+#: ../../context.md:93
 msgid ""
 "The ratio varies with the provider, model, prompt length, and "
 "conversation. When request prefixes line up, it <span "

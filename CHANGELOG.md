@@ -24,6 +24,9 @@
 - Raise the default `runtime.max_context_tokens` from 240K to 256K. Both defaults appear in the
   generated config with a note that they trade against each other and that the context budget is how
   much of a model's window to use, not the window's size.
+- Show the context fill in the status bar and `/status` from the provider-reported prompt tokens of
+  the last request instead of the local estimate. The estimate still triggers compaction, which
+  decides for a request that has not been sent yet; the reported usage describes the one that was.
 
 
 ## 0.19.1 - 2026-08-03

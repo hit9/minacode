@@ -43,6 +43,9 @@ the provider will discard does not cause early compaction. The trigger reserves 
 provider output cap (16K when unspecified), tool schemas, and a safety margin of at least 4K. The
 session continues in the same turn, so a long task does not have to stop.
 
+The context fill shown in the status bar and `/status` is the provider-reported token count of the
+last request; compaction still triggers on the estimate, which projects the next request.
+
 The checkpoint summary in the active context is lossy, but each compaction also captures a bounded verbatim
 excerpt of the evicted messages as a **history segment**. Earlier snapshots in the append-only
 session log remain the cold source of truth, so compaction does not rewrite them.

@@ -21,6 +21,7 @@ from minacode.base import (
     LogRole,
     Text,
 )
+from minacode.context import ContextManager
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, TuiApp
 
@@ -433,6 +434,32 @@ def test_status_bar_shows_last_request_cache_hit_ratio(tmp_path):
 
     s.usage.last_cached_prompt_tokens = 0
     assert ctx_text().endswith("· cache 0%")
+
+
+def test_status_bar_ctx_percent_uses_last_real_tokens_when_available(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 100_000
+    s.state.context_percent = 7  # estimate would claim 7%
+    s.usage.last_prompt_tokens = 20_000  # provider reported 20K for the last request
+    bar = StatusBar(s)
+
+    ctx_text = next(text for text, role in bar.entries(show_elapsed=False) if role == "ctx")
+
+    budget = ContextManager(s).request_token_budget()
+    real_percent = min(100, s.usage.last_prompt_tokens * 100 // budget)
+    assert f"ctx {real_percent}%" in ctx_text
+    assert f"ctx {s.state.context_percent}%" not in ctx_text
+
+
+def test_status_bar_ctx_percent_falls_back_to_estimate_without_requests(tmp_path):
+    s = session(tmp_path)
+    s.state.context_percent = 23
+    bar = StatusBar(s)
+
+    ctx_text = next(text for text, role in bar.entries(show_elapsed=False) if role == "ctx")
+
+    assert f"ctx {s.state.context_percent}%" in ctx_text
+    assert "cache" not in ctx_text
 
 
 def test_status_bar_shows_step_only_near_max_steps(tmp_path):
