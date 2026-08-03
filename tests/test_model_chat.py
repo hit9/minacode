@@ -121,46 +121,7 @@ def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
     assert calls[0].args == ["echo hi"]
 
 
-def test_chat_no_tools_result_strips_unoffered_function_call(tmp_path, monkeypatch):
-    s = _session(tmp_path, stream=False)
-    model = ModelClient(s)
-    factory = _MockClientFactory(
-        [
-            (
-                200,
-                {
-                    "id": "chatcmpl-test",
-                    "object": "chat.completion",
-                    "created": 1,
-                    "model": "gpt-4",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": "acknowledged",
-                                "tool_calls": [
-                                    {"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"ls"}'}},
-                                ],
-                            },
-                            "finish_reason": "tool_calls",
-                        }
-                    ],
-                },
-            )
-        ]
-    )
-    monkeypatch.setattr(model, "client", factory)
-
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
-
-    assert content == "acknowledged"
-    assert calls == []
-    assert "tool_calls" not in assistant
-    assert "tools" not in json.loads(factory.calls[0].content)
-
-
-def test_chat_no_local_tools_preserves_a_declared_builtin_function(tmp_path, monkeypatch):
+def test_chat_appends_declared_builtin_function_to_the_local_tools(tmp_path, monkeypatch):
     builtin = {"type": "builtin_function", "function": {"name": "$web_search"}}
     s = _session(
         tmp_path,
@@ -204,12 +165,14 @@ def test_chat_no_local_tools_preserves_a_declared_builtin_function(tmp_path, mon
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "search"}], [])
+    local = {"type": "function", "function": {"name": "Bash", "parameters": {}}}
+    assistant, calls, content = model.request([{"role": "user", "content": "search"}], [local])
 
     assert content == ""
-    assert calls == [ToolCall("call_1", "$web_search", [{"search_query": "minacode"}])]
-    assert [call["function"]["name"] for call in assistant["tool_calls"]] == ["$web_search"]
-    assert json.loads(factory.calls[0].content)["tools"] == [builtin]
+    assert calls == [ToolCall("call_1", "$web_search", [{"search_query": "minacode"}]), ToolCall("call_2", "Bash", ["ls"])]
+    assert [call["function"]["name"] for call in assistant["tool_calls"]] == ["$web_search", "Bash"]
+    # The builtin is appended to the local tools rather than replacing them: one stable tool block.
+    assert json.loads(factory.calls[0].content)["tools"] == [local, builtin]
 
 
 def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, monkeypatch):

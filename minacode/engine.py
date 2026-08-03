@@ -103,7 +103,6 @@ class Agent:
             for step in range(self.session.settings.max_steps):
                 self.session.state.turn_step = step + 1
                 self.session.clear_quick_hints()  # a later step supersedes hints from a non-terminal batch; only the terminal batch keeps its hints
-                followup_response = False
                 while True:
                     try:
                         self.raise_if_cancelled()
@@ -111,43 +110,22 @@ class Agent:
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
                         self.record_sources(assistant)
                         self.raise_if_cancelled()
+                        # The request reached the provider, so its follow-ups belong to history from
+                        # here on, and any correction sent next lands after them — history keeps the
+                        # order the provider saw, because a sent message can never be taken back.
+                        self.accept_pending_inputs(turn_messages, request.pending)
                         assistant, tool_calls, content = self.correct_textual_tool_calls(
                             assistant,
                             tool_calls,
                             content,
                             base_messages=request.messages,
-                            known_tools=request.tools,
-                            retry_tools=request.tools,
-                            correction=self.tool_call_correction,
+                            tools=request.tools,
                             names=malformed_tool_names,
+                            turn_messages=turn_messages,
                         )
-                        if request.pending and not content.strip():
-                            assistant, followup_tool_calls, content = self.model.request(request.messages, [])
-                            self.record_sources(assistant)
-                            self.raise_if_cancelled()
-                            assistant, followup_tool_calls, content = self.correct_textual_tool_calls(
-                                assistant,
-                                followup_tool_calls,
-                                content,
-                                base_messages=request.messages,
-                                known_tools=request.tools,
-                                retry_tools=[],
-                                correction=self.followup_tool_call_correction,
-                                names=malformed_tool_names,
-                            )
-                            if not content.strip():
-                                raise ModelError("empty live follow-up response")
-                            followup_response = True
-                        self.accept_pending_inputs(turn_messages, request.pending)
                         break
                     except ModelRequestRetry:
                         continue
-                if followup_response:
-                    response = content.strip()
-                    turn_messages.append(self.assistant_turn_message(assistant, [], response))
-                    self.output_fn(response)
-                    self.checkpoint_turn(turn_messages)
-                    continue
                 if assistant.get(PAUSED_TURN_KEY) and not tool_calls:
                     # The provider paused a long server-side tool run rather than ending the turn.
                     # Resuming means sending this message back unchanged and asking again, so it
@@ -197,18 +175,26 @@ class Agent:
         content: str,
         *,
         base_messages: list[Json],
-        known_tools: list[Json],
-        retry_tools: list[Json],
-        correction: Callable[[str], str],
+        tools: list[Json],
         names: list[str],
+        turn_messages: list[Json],
     ) -> tuple[Json, list[ToolCall], str]:
-        """Retry terminal textual tool markup with one request-local protocol correction."""
-        while not tool_calls and (textual_tool := self.textual_tool_call(content, known_tools)):
+        """Retry terminal textual tool markup with a protocol correction sent as a real message.
+
+        Each correction joins the turn before it is sent and the retry keeps the same tool list:
+        what reached the provider must reach history, and the tool block is part of the cached
+        prefix, so neither may be reshaped for a single request."""
+        corrections: list[Json] = []
+        while not tool_calls and (textual_tool := self.textual_tool_call(content, tools)):
             self.start_textual_tool_correction(names, textual_tool)
-            correction_messages = [*base_messages, {"role": "user", "content": correction(textual_tool)}]
+            correction: Json = {"role": "user", "content": self.tool_call_correction(textual_tool)}
+            corrections.append(correction)
+            turn_messages.append(correction)
+            self.checkpoint_turn(turn_messages)
+            correction_messages = [*base_messages, *corrections]
             while True:
                 try:
-                    assistant, tool_calls, content = self.model.request(correction_messages, retry_tools)
+                    assistant, tool_calls, content = self.model.request(correction_messages, tools)
                     self.record_sources(assistant)
                     break
                 except ModelRequestRetry:
@@ -344,16 +330,6 @@ class Agent:
         )
 
     @staticmethod
-    def followup_tool_call_correction(name: str) -> str:
-        return "\n".join(
-            [
-                "[Runtime protocol correction]",
-                f"The previous generation printed a textual <invoke> for {name}. Nothing was executed.",
-                "Respond briefly in natural language to the live follow-up. Do not call a tool or output tool markup in this response.",
-            ]
-        )
-
-    @staticmethod
     def malformed_tool_call_error(names: list[str]) -> MalformedToolCallError:
         count = len(names)
         if len(set(names)) == 1:
@@ -365,7 +341,9 @@ class Agent:
         if not pending:
             return
         texts = [item.text for item in pending]
-        turn_messages.extend(item.message() for item in pending)
+        # Committed with the marker the provider was sent, not the bare text: dropping it here would
+        # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.
+        turn_messages.extend(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)
         self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:
             self.on_queue_flush(texts)

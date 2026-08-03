@@ -290,6 +290,28 @@ context inserted ahead of conversation.
   must not cause every later turn to break again.
 - Anthropic's explicit system breakpoint remains a protocol policy in `ModelClient`; it does not
   change the protocol-neutral append-only history model used by Chat and Responses.
+- The tool block is part of that prefix, so it is a per-session constant, never a per-request lever.
+  Emptying or reshaping it to steer one response discards the whole cached prefix, moves the request
+  into another cache scope, and reads to the model as a broken tool set: it then reports its tools
+  as unavailable and asks the user to restore them. Steer with a message, never with the schema.
+
+### A sent message is irrevocable
+
+Every message that reaches the provider is committed to history in the order it was sent. There is
+no request-local message: nothing may be constructed for one request and then withheld from the
+next one. A message the model answered but can no longer see is ghost context — it explains a
+response that the transcript, the snapshot, and the user can no longer account for.
+
+- Runtime nudges (live follow-up markers, protocol corrections, resume events) are ordinary
+  conversation. Append them, checkpoint them, and let them age out through compaction like any
+  other message. A marker added for the model is committed with the message it marked; hide it at
+  render time instead, so the scrollback still shows what the user typed.
+- Corrections stack rather than replace. Retrying with the previous correction swapped out rewrites
+  an already-sent prefix, which both loses the record and breaks the cache.
+- An aborted turn keeps what it already sent. Failure settles history; it does not rewind it.
+- The runtime instructs, it does not enforce. When the model ignores an instruction, the loop
+  continues and the next message can say so again; it never reshapes the request to compel an
+  answer.
 
 ## Tool-call lifecycle
 
@@ -298,8 +320,8 @@ dispatching its complete call set, then return results before the model may judg
 
 - Text that resembles tool markup never has execution authority. When a response has no native
   calls but ends with a complete `<invoke>` for a known tool, the agent may discard it and retry
-  up to five times with request-local corrections. Never parse its arguments or synthesize a call
-  id or result.
+  up to five times, each correction a committed turn message sent with the unchanged tool list.
+  Never parse its arguments or synthesize a call id or result.
 - Every emitted call receives a matching result, including malformed, refused, failed, skipped,
   and interrupted calls. This keeps replay valid across protocols.
 - Independent read-only calls may run concurrently. Mutating or interactive calls remain ordered;
