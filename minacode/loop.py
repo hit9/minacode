@@ -59,6 +59,7 @@ from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdo
 from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
+from minacode.tools.delegate import DelegateTool, worker_provider_config
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 from minacode.update import UpdateChecker
 
@@ -91,6 +92,8 @@ SET_VALUES: dict[str, tuple[str, ...]] = {
 }
 # fmt: on
 
+WORKER_SUBCOMMANDS = ("status", "reset", "on", "off", "provider", "model", "reason")
+
 
 class CommandCompleter(Completer):
     MCP_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"@([A-Za-z0-9_.-]*)$")
@@ -100,6 +103,7 @@ class CommandCompleter(Completer):
         self,
         providers: Callable[[], tuple[str, ...]] = tuple,
         models: Callable[[], tuple[str, ...]] = tuple,
+        worker_models: Callable[[], tuple[str, ...]] = tuple,
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_connected_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
@@ -107,6 +111,7 @@ class CommandCompleter(Completer):
     ):
         self.providers = providers
         self.models = models
+        self.worker_models = worker_models
         self.mcp_servers = mcp_servers
         self.mcp_connected_servers = mcp_connected_servers
         self.mcp_tools = mcp_tools
@@ -123,6 +128,21 @@ class CommandCompleter(Completer):
             key, _, value = tail.partition(" ")
             yield from self.matches(SET_VALUES.get(key, ()), value)
             return
+        if text.startswith("/worker "):
+            tail = text[len("/worker ") :]
+            if " " not in tail:
+                yield from self.matches(WORKER_SUBCOMMANDS, tail)
+                return
+            sub, _, value = tail.partition(" ")
+            if sub == "provider":
+                yield from self.matches(tuple(dict.fromkeys((*self.providers(), "off"))), value)
+                return
+            if sub == "model":
+                yield from self.matches(self.worker_models(), value)
+                return
+            if sub == "reason":
+                yield from self.matches((*REASONING_CHOICES, "default"), value)
+                return
         for command, values in (
             ("/model ", self.models),
             ("/provider ", self.providers),
@@ -335,6 +355,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.input_completer = CommandCompleter(
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
+            worker_models=lambda: tuple(
+                dict.fromkeys(
+                    (*self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider].available_models, "default")
+                )
+            ),
             mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs()) if self.session.mcp else (),
             mcp_connected_servers=lambda: (
                 tuple(config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)) if self.session.mcp else ()
@@ -1989,8 +2014,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return "quick hints: " + ("on" if self.session.settings.quick_hints else "off")
 
     def worker_command(self, args: str) -> str:
-        from minacode.tools.delegate import DelegateTool, worker_provider_config
-
         parts = args.split()
         subcommand = parts[0].lower() if parts else ""
         rest = parts[1:]
@@ -2017,78 +2040,143 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             self.session.settings.worker = False
             return "worker: off (the worker's context stays on disk; /worker on resumes it)"
         if subcommand in {"", "status"} and not rest:
-            return DelegateTool(self.session, [{"action": "status"}]).call()
+            return self._worker_status()
         if subcommand == "provider":
             if len(rest) > 1:
                 return "Usage: /worker provider [NAME]"
             if not rest:
-                choices = ", ".join(sorted(self.session.config.providers))
-                return "worker provider: " + (self.session.config.worker_provider or "(off)") + "\nproviders: " + choices
-            name = rest[0]
-            if name == "off" and "off" not in self.session.config.providers:
-                # "off" names the clearing action unless a provider entry is literally named "off"
-                # (existence in config.providers wins). The Delegate gate is frozen per session, so
-                # this only clears the next spawn's provider; the live worker keeps running on its
-                # current provider and the tool block never flips mid-session.
-                self.session.config.worker_provider = ""
-                return "worker provider: off"
-            if name not in self.session.config.providers:
-                return "Unknown provider: " + name
-            self.session.config.worker_provider = name
-            worker = self.session.worker
-            if worker is not None:
-                if worker.config.providers is self.session.config.providers:
-                    worker.config.providers = dict(worker.config.providers)
-                worker.config.providers[name] = worker_provider_config(self.session.config, name)
-                worker.config.active_provider = name
-            result = "Set worker provider = " + name
-            if not self.session.worker_tool_enabled:
-                # Delegation was off at session start: the frozen gate keeps the tool block off no
-                # matter what the live config says, so the change only counts after a restart.
-                result += " (delegation is off this session; takes effect after a restart)"
-            return result
+                return self._worker_provider_picker()
+            return self._worker_set_provider(rest[0])
         if subcommand == "model":
             if len(rest) > 1:
                 return "Usage: /worker model [MODEL]"
             if not rest:
-                return "worker model: " + (self.session.config.worker_model or "(inherit)")
-            value = rest[0]
-            if value != "default":
-                self.session.config.worker_model = value
-            else:
-                self.session.config.worker_model = ""
-            worker = self.session.worker
-            if worker is not None:
-                # Copy-on-write: replace the live worker's active entry with a fresh detached copy
-                # carrying the current overrides (or the entry's own values once cleared).
-                if worker.config.providers is self.session.config.providers:
-                    worker.config.providers = dict(worker.config.providers)
-                worker.config.providers[worker.config.active_provider] = worker_provider_config(self.session.config, worker.config.active_provider)
-            if value == "default":
-                return "worker model: (inherit)"
-            return "Set worker.model = " + value
+                return self._worker_model_picker()
+            return self._worker_set_model(rest[0])
         if subcommand == "reason":
             if len(rest) > 1:
                 return "Usage: /worker reason [EFFORT]"
             if not rest:
-                return "worker reasoning: " + (self.session.config.worker_reasoning or "(inherit)")
-            value = rest[0]
-            if value != "default":
-                # "off" is a valid effort, never the clearing word; only "default" clears.
-                if value not in REASONING_CHOICES:
-                    return "Usage: /worker reason " + "|".join(REASONING_CHOICES)
-                self.session.config.worker_reasoning = value
-            else:
-                self.session.config.worker_reasoning = ""
-            worker = self.session.worker
-            if worker is not None:
-                if worker.config.providers is self.session.config.providers:
-                    worker.config.providers = dict(worker.config.providers)
-                worker.config.providers[worker.config.active_provider] = worker_provider_config(self.session.config, worker.config.active_provider)
-            if value == "default":
-                return "worker reasoning: (inherit)"
-            return "Set worker.reasoning = " + value
-        return "Usage: /worker [status|reset|on|off|provider|model|reason]"
+                return self._worker_reason_picker()
+            return self._worker_set_reasoning(rest[0])
+        return "Usage: /worker [" + "|".join(WORKER_SUBCOMMANDS) + "]"
+
+    def _worker_status(self) -> str:
+        """Readable /worker status for the human; the model-facing envelope stays in DelegateTool."""
+        worker = self.session.worker
+        if worker is None:
+            return "worker: no active session\nworker provider: " + (self.session.config.worker_provider or "(off)")
+        usage = worker.usage
+        percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget) if usage.last_prompt_budget else worker.state.context_percent
+        provider = worker.config.provider
+        state = "delegating" if worker._active_turn_messages else "idle"
+        return "\n".join(
+            [
+                f"worker: {worker.config.active_provider}/{provider.model or '(no model)'}",
+                "worker reasoning: " + provider.reasoning,
+                "worker state: " + state,
+                "worker rounds: " + str(worker.state.round_count),
+                "worker context: " + str(percent) + "%",
+            ]
+        )
+
+    def _worker_provider_picker(self) -> str:
+        summary = (
+            "worker provider: " + (self.session.config.worker_provider or "(off)") + "\nproviders: " + ", ".join(sorted(self.session.config.providers))
+        )
+        choices = tuple(sorted(self.session.config.providers))
+        if "off" not in choices:
+            choices = (*choices, "off")
+        current = self.session.config.worker_provider
+        choice = self.select_choice("Worker provider", choices, labels={current: current + " (current)"} if current else {}, current=current)
+        if not isinstance(choice, str):
+            return "No change" if choice is SELECTION_BACK else summary
+        return self._worker_set_provider(choice)
+
+    def _worker_set_provider(self, name: str) -> str:
+        if name == "off" and "off" not in self.session.config.providers:
+            # "off" names the clearing action unless a provider entry is literally named "off"
+            # (existence in config.providers wins). The Delegate gate is frozen per session, so
+            # this only clears the next spawn's provider; the live worker keeps running on its
+            # current provider and the tool block never flips mid-session.
+            self.session.config.worker_provider = ""
+            return "worker provider: off"
+        if name not in self.session.config.providers:
+            return "Unknown provider: " + name
+        self.session.config.worker_provider = name
+        worker = self.session.worker
+        if worker is not None:
+            if worker.config.providers is self.session.config.providers:
+                worker.config.providers = dict(worker.config.providers)
+            worker.config.providers[name] = worker_provider_config(self.session.config, name)
+            worker.config.active_provider = name
+        result = "Set worker provider = " + name
+        if not self.session.worker_tool_enabled:
+            # Delegation was off at session start: the frozen gate keeps the tool block off no
+            # matter what the live config says, so the change only counts after a restart.
+            result += " (delegation is off this session; takes effect after a restart)"
+        return result
+
+    def _worker_model_picker(self) -> str:
+        entry = self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider]
+        configured = tuple(dict.fromkeys(entry.available_models))
+        remote = tuple(model for model in self.remote_models(entry) if model not in configured)
+        override = self.session.config.worker_model
+        choices = [*configured, *remote]
+        if override and override not in choices:
+            choices.append(override)
+        choices.append("default")
+        choice_values = tuple(dict.fromkeys(choices))
+        labels = {override: override + " (current)"} if override in choice_values else {}
+        labels["default"] = "default - inherit the provider entry's model"
+        choice = self.select_choice("Worker model", choice_values, labels=labels, current=override)
+        if not isinstance(choice, str):
+            return "No change" if choice is SELECTION_BACK else ("worker model: " + (override or "(inherit)"))
+        return self._worker_set_model(choice)
+
+    def _worker_set_model(self, value: str) -> str:
+        if value != "default":
+            self.session.config.worker_model = value
+        else:
+            self.session.config.worker_model = ""
+        worker = self.session.worker
+        if worker is not None:
+            # Copy-on-write: replace the live worker's active entry with a fresh detached copy
+            # carrying the current overrides (or the entry's own values once cleared).
+            if worker.config.providers is self.session.config.providers:
+                worker.config.providers = dict(worker.config.providers)
+            worker.config.providers[worker.config.active_provider] = worker_provider_config(self.session.config, worker.config.active_provider)
+        if value == "default":
+            return "worker model: (inherit)"
+        return "Set worker.model = " + value
+
+    def _worker_reason_picker(self) -> str:
+        current = self.session.config.worker_reasoning
+        choices = (*REASONING_CHOICES, "default")
+        labels = {"default": "default - inherit the provider entry's reasoning"}
+        if current:
+            labels[current] = current + " (current)"
+        choice = self.select_choice("Worker reasoning", choices, labels=labels, current=current)
+        if not isinstance(choice, str):
+            return "No change" if choice is SELECTION_BACK else ("worker reasoning: " + (current or "(inherit)"))
+        return self._worker_set_reasoning(choice)
+
+    def _worker_set_reasoning(self, value: str) -> str:
+        if value != "default":
+            # "off" is a valid effort, never the clearing word; only "default" clears.
+            if value not in REASONING_CHOICES:
+                return "Usage: /worker reason " + "|".join(REASONING_CHOICES)
+            self.session.config.worker_reasoning = value
+        else:
+            self.session.config.worker_reasoning = ""
+        worker = self.session.worker
+        if worker is not None:
+            if worker.config.providers is self.session.config.providers:
+                worker.config.providers = dict(worker.config.providers)
+            worker.config.providers[worker.config.active_provider] = worker_provider_config(self.session.config, worker.config.active_provider)
+        if value == "default":
+            return "worker reasoning: (inherit)"
+        return "Set worker.reasoning = " + value
 
     def strict(self, args: str) -> str:
         if args:

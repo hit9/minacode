@@ -85,15 +85,17 @@ this off permanently.
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
 **`/worker [status|reset|on|off|provider|model|reason]`** — Inspect or control the worker session:
-`status` (default) shows whether worker delegation is on and whether a worker exists, `on`/`off`
-toggle the `runtime.worker` setting, and `reset` clears the worker's context (file changes and
-merged diffs survive). `provider` lists the worker's provider entry — or `(off)` when delegation is
-disabled — and the available entries; `provider NAME` re-targets the worker immediately (and for
-future spawns), and `provider off` clears the entry. The `Delegate` tool block itself is fixed when
-the session starts from the configured `[worker] provider`: switching the provider mid-session
-tunes an already-enabled delegation, but enabling delegation from scratch takes effect after a
-restart. `model` and `reason` show or set temporary overrides for the worker's model and reasoning
-effort, and `default` clears an override back to inheriting the provider entry's value. See [Worker
+`status` (default) reports readable lines — provider/model, reasoning, state, rounds, and context
+percent — or `worker: no active session` plus the configured `[worker] provider` when no worker
+exists; `on`/`off` toggle the `runtime.worker` setting, and `reset` clears the worker's context
+(file changes and merged diffs survive). `provider` opens a picker over the provider entries —
+with `off` at the end to clear — and `provider NAME` re-targets the worker immediately (and for
+future spawns), while `provider off` clears the entry. `model` and `reason` pick from the worker's
+entry models and reasoning efforts, with `default` clearing an override back to inheriting the
+provider entry's value; tab completion offers the subcommands and their values. The `Delegate`
+tool block itself is fixed when the session starts from the configured `[worker] provider`:
+switching the provider mid-session tunes an already-enabled delegation, but enabling delegation
+from scratch takes effect after a restart. See [Worker
 delegation](configuration.md#worker-delegation).
 
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)

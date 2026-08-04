@@ -785,6 +785,7 @@ class LogRole(Enum):
     ERROR = auto()
     MUTED = auto()
     DIFF = auto()
+    WORKER = auto()
 
 
 @dataclass(frozen=True)

@@ -431,6 +431,7 @@ class UiPrinter:
         LogRole.TOOL: ("ansigreen", "fg:default"),
         LogRole.AUTO: ("ansiblue", "fg:default"),
         LogRole.META: ("ansibrightblack", "ansibrightblack"),
+        LogRole.WORKER: ("ansiyellow", "fg:default"),
         LogRole.OUTPUT: ("ansibrightblack", "ansibrightblack"),
         LogRole.ERROR: ("ansired", "fg:default"),
         LogRole.MUTED: ("ansibrightblack", "ansibrightblack"),

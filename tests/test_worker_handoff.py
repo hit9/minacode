@@ -621,6 +621,44 @@ def test_status_reports_worker_delegation_state(tmp_path):
     assert "state `delegating`; rounds `0`" in text
 
 
+# /worker's own status branch returns readable text for the human (the model-facing envelope stays
+# in DelegateTool): no-live-worker, one line per fact, and the usage/state-context-percent values
+def test_worker_status_command_is_human_readable(tmp_path):
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+    from minacode.session import Session
+
+    parent = _delegate_session(tmp_path)
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    assert loop.worker_command("") == "worker: no active session\nworker provider: default"
+    assert loop.worker_command("status") == loop.worker_command("")
+
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    parent.worker = worker
+    worker.config.provider.model = "worker-model-x"
+    worker.config.provider.reasoning = "high"
+    worker.state.round_count = 3
+    worker.usage.last_prompt_tokens = 50
+    worker.usage.last_prompt_budget = 100
+    text = loop.worker_command("status")
+    assert "worker: default/worker-model-x" in text
+    assert "worker reasoning: high" in text
+    assert "worker state: idle" in text
+    assert "worker rounds: 3" in text
+    assert "worker context: 50%" in text
+    assert "<Delegate" not in text
+
+    worker._active_turn_messages.append({"role": "user", "content": "order"})
+    assert "worker state: delegating" in loop.worker_command("status")
+
+    # Without provider-reported usage the state estimate is the fallback, like the envelope.
+    worker.usage.last_prompt_budget = 0
+    worker.state.context_percent = 42
+    assert "worker context: 42%" in loop.worker_command("status")
+
+
 # The engine publishes the model's own text as bare strings (content beside tool calls), so the
 # worker output wrapper must wrap them into LogLine items: LogBlock.walk crashes on a str item.
 def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
@@ -645,6 +683,30 @@ def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch
     rendered = [str(block) for block in outputs if isinstance(block, LogBlock)]  # str items raised before the fix
     assert any("thinking out loud" in text for text in rendered)
 
+
+# 11b. a send opens with a visible start marker: one yellow [worker] line naming the worker's live
+# provider/model and the one-line order summary, so the scrollback has a boundary before the
+# finish block.
+def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, LogRole
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["default"].model = "worker-model-x"
+    order = "Rewrite the worker handoff plan to cover the start marker, then check it. " * 8
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    _delegate_call(parent, runner, action="send", order=order)
+
+    blocks = [block for block in outputs if isinstance(block, LogBlock)]
+    marker = next(block for block in blocks if any(item.role is LogRole.WORKER for item, _ in block.walk()))
+    rendered = str(marker)
+    assert "[worker]" in rendered
+    assert "default/worker-model-x" in rendered
+    assert ToolRunner.oneline(order, 200) in rendered
 
 # 12. the Agent lives on the worker Session, not in a module-level dict: a fresh worker object
 #     (after /resume re-enters the same parent) always gets a fresh Agent bound to itself.

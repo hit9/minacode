@@ -60,6 +60,17 @@
   send` (no argument blob), a summary line reports steps, elapsed, files, and a stopped-at-max-steps
   flag, and the worker's answer is previewed below like a Bash transcript — the raw envelope tags
   stay out of the log.
+- The log now marks where a delegation starts: a yellow `[worker] ▶ provider/model · order` line
+  is emitted just before the worker runs (the order collapsed to one line, 200 chars), so the
+  scrollback has a boundary until the finish block closes it.
+- `/worker` (no arguments) now answers in readable lines instead of the raw `Delegate` status
+  envelope the model sees: one line per fact (provider/model, reasoning, state, rounds, context
+  percent), or `worker: no active session` plus the configured `[worker] provider` when no worker
+  exists. The model-facing `Delegate status` envelope is unchanged.
+- `/worker provider`, `/worker model`, and `/worker reason` without an argument now open the same
+  pickers as `/provider` `/model` `/reason` (provider entries plus `off`, the worker entry's
+  models plus `default`, reasoning efforts plus `default`), and `/worker` tab-completes its
+  subcommands and their values.
 
 ### Fixed
 - Fix a worker crash when the worker model emitted text beside a tool call: the worker's output

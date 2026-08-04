@@ -176,6 +176,15 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             worker._agent = agent
         started = time.monotonic()
         before_diffs = len(worker.turn_diffs)
+        # A visible boundary where the delegation starts: until the finish block there is nothing in
+        # the scrollback that says who is talking, and the worker's own streamed lines do not. One
+        # yellow [worker] line, reading the worker's live config and a one-line order summary.
+        from minacode.runner import ToolRunner  # local: runner imports minacode.tools at module level, same cycle as Agent above
+
+        config = worker.config
+        runner.output_fn(
+            LogBlock([LogLine("[worker]", f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {ToolRunner.oneline(order, 200)}", LogRole.WORKER)])
+        )
         try:
             with runner._active_worker.track(agent):
                 answer = agent.run(order)
