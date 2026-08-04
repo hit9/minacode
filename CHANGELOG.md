@@ -137,6 +137,10 @@
   Compaction clears the recorded last-* usage (the compaction request's own fill would otherwise be
   mistaken for a full ordinary context and double-compact the just-shrunk history); the status bar
   falls back to the local estimate until the next ordinary request reports real usage.
+- The delegation bracket is now recognizable at a glance on both ends: the finish block's root
+  line of a successful `Delegate` send or reset leads with `◀` (`◀ Delegate send` / `◀ Delegate
+  reset`), mirroring the yellow `[worker] ▶` start marker, so the close of a delegation reads as
+  the counterpart of its open.
 
 
 ## 0.20.0 - 2026-08-03
