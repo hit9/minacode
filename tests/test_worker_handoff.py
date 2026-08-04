@@ -539,11 +539,15 @@ def test_worker_prompt_shares_language_and_secret_rules_with_parent():
 def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
     from minacode.prompts import (
         OUTPUT_RULES,
-        PARENT_TOOL_ENUM,
+        PARENT_TOOL_ENUM_INSPECT,
+        PARENT_TOOL_ENUM_RECALL,
         PARENT_TURN_NEXTHINTS_RULE,
         REVIEW_RULES,
         SYSTEM_PROMPT,
+        TOOLS_MECHANICS_BASH_RULE,
+        TOOLS_MECHANICS_CLOSING_RULES,
         TOOLS_MECHANICS_RULES,
+        TURN_MECHANICS_CLOSING_RULE,
         TURN_MECHANICS_RULES,
         WORK_RULES,
         WORKER_OUTPUT_RULES,
@@ -552,10 +556,15 @@ def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
     )
 
     assert TOOLS_MECHANICS_RULES in SYSTEM_PROMPT and TOOLS_MECHANICS_RULES in WORKER_PROMPT
+    assert TOOLS_MECHANICS_BASH_RULE in SYSTEM_PROMPT and TOOLS_MECHANICS_BASH_RULE in WORKER_PROMPT
+    assert TOOLS_MECHANICS_CLOSING_RULES in SYSTEM_PROMPT and TOOLS_MECHANICS_CLOSING_RULES in WORKER_PROMPT
     assert TURN_MECHANICS_RULES in SYSTEM_PROMPT and TURN_MECHANICS_RULES in WORKER_PROMPT
+    assert TURN_MECHANICS_CLOSING_RULE in SYSTEM_PROMPT and TURN_MECHANICS_CLOSING_RULE in WORKER_PROMPT
     assert WORK_RULES in SYSTEM_PROMPT and WORK_RULES in WORKER_PROMPT
-    assert PARENT_TOOL_ENUM in SYSTEM_PROMPT
-    assert PARENT_TOOL_ENUM not in WORKER_PROMPT
+    assert PARENT_TOOL_ENUM_INSPECT in SYSTEM_PROMPT
+    assert PARENT_TOOL_ENUM_INSPECT not in WORKER_PROMPT
+    assert PARENT_TOOL_ENUM_RECALL in SYSTEM_PROMPT
+    assert PARENT_TOOL_ENUM_RECALL not in WORKER_PROMPT
     assert PARENT_TURN_NEXTHINTS_RULE in SYSTEM_PROMPT
     assert PARENT_TURN_NEXTHINTS_RULE not in WORKER_PROMPT
     assert REVIEW_RULES in SYSTEM_PROMPT
@@ -586,3 +595,15 @@ def test_prompts_never_name_tools_outside_their_toolset():
     assert parent_mentioned <= set(TOOL_REGISTRY)
     worker_mentioned = mentioned(WORKER_PROMPT)
     assert worker_mentioned <= set(WORKER_TOOLS), worker_mentioned - set(WORKER_TOOLS)
+
+
+# 19. refactor-stability sentinel for the parent prompt: pure refactors of the prompt composition
+#     must not change SYSTEM_PROMPT's text (its cache-prefix stability and this contract depend on
+#     it). A deliberate, release-level edit to the parent prompt updates this hash in the same
+#     commit and records the change in the changelog.
+def test_system_prompt_stable_across_refactors():
+    import hashlib
+
+    from minacode.prompts import SYSTEM_PROMPT
+
+    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "6cbb412a08515bfa24ec8da873af3a62d33493042c0419ba55bb386e20cc0154"
