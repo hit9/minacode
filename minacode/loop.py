@@ -33,6 +33,7 @@ from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
     SESSION_EVENT_KEY,
+    Config,
     ConfigError,
     Json,
     LogBlock,
@@ -41,6 +42,7 @@ from minacode.base import (
     LogRole,
     MalformedToolCallError,
     MinacodeError,
+    ModelUsage,
     ProviderConfig,
     Text,
     ToolCall,
@@ -1403,8 +1405,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             index_message = (index_message + "; " if index_message else "") + "run /index"
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
-        cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
-        last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
         connected_mcp = sum(self.session.mcp.connected(config.name) for config in self.session.mcp.parse_configs()) if self.session.mcp else 0
         activity: list[tuple[str, int | str]] = [
             ("history", len(self.session.messages)),
@@ -1422,21 +1422,45 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         def render_table(rows: list[tuple[str, str]]) -> str:
             return "\n".join(
                 [
-                    "| status | value |",
+                    "| field | value |",
                     "| --- | --- |",
                     *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
                 ]
             )
 
-        # Common facts first (workspace, session, goal, runtime), then the parent's rows, then the
-        # worker's — /status is an explicit query, so the worker section appears whenever a worker
-        # session exists, in flight or not.
-        common_rows = [
+        def model_line(config: Config) -> str:
+            active = config.provider
+            return f"`{config.active_provider}/{active.model or '(empty)'}`; `{active.resolve().api}`; `{active.reasoning}`"
+
+        def context_line(tokens: int, budget: int, percent: int) -> str:
+            return f"`{progress_bar(tokens, budget)}` `~{token_count(tokens)} / {token_count(budget)}` (`{percent}%`)"
+
+        def cache_line(counts: ModelUsage) -> str:
+            # The read ratios carry the useful signal; the raw token pairs made this the one row that
+            # wrapped on a normal terminal. Writes stay, but only when there were any.
+            def part(label: str, cached: int, prompt: int, written: int) -> str:
+                write = f" (w {token_count(written)})" if written else ""
+                return f"{label} `{cached * 100 / prompt:.1f}%`{write}"
+
+            return " ".join(
+                [
+                    f"`{progress_bar(counts.last_cached_prompt_tokens, counts.last_prompt_tokens)}`",
+                    part("last", counts.last_cached_prompt_tokens, counts.last_prompt_tokens, counts.last_cache_write_prompt_tokens) + ";"
+                    if counts.last_prompt_tokens
+                    else "last `n/a`;",
+                    part("session", counts.cached_prompt_tokens, counts.prompt_tokens, counts.cache_write_prompt_tokens),
+                ]
+            )
+
+        # One flat table: the session's own facts, then the parent's, then the worker's under
+        # `worker*` labels. /status is an explicit query, so the worker rows appear whenever a
+        # worker session exists, in flight or not.
+        rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
         ]
         if self.session.state.goal:
-            common_rows.append(("goal", self.session.state.goal))
+            rows.append(("goal", self.session.state.goal))
         runtime = [
             f"yolo {'on' if self.session.settings.yolo else 'off'}",
             f"steps {self.session.settings.max_steps}",
@@ -1445,74 +1469,34 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         update = UpdateChecker(self.session).status_line().removeprefix("update: ")
         if update not in {"current", "unknown"}:
             runtime.append("update " + update)
-        common_rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
+        rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
 
-        parent_rows = [
-            (
-                "model",
-                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{resolved.api}`; reasoning `{provider.reasoning}`",
-            ),
-            (
-                "context",
-                f"`{progress_bar(context_tokens, context_budget)}` `~{token_count(context_tokens)} / {token_count(context_budget)}` (`{context_percent}%`)",
-            ),
-            (
-                "cache",
-                f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` last read `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`, write `{token_count(usage.last_cache_write_prompt_tokens)}`; "
-                f"session read `{token_count(usage.cached_prompt_tokens)} / {token_count(usage.prompt_tokens)} ({cache_ratio:.1f}%)`, write `{token_count(usage.cache_write_prompt_tokens)}`"
-                if usage.prompt_tokens
-                else "(no requests yet)",
-            ),
-        ]
+        rows.append(("model", model_line(self.session.config)))
+        rows.append(("context", context_line(context_tokens, context_budget, context_percent)))
+        rows.append(("cache", cache_line(usage) if usage.prompt_tokens else "(no requests yet)"))
         visible_activity = [(name, value) for name, value in activity if value]
         if visible_activity:
-            parent_rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
+            rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
         if usage.calls:
-            parent_rows.append(("usage", f"calls `{usage.calls}`; total `{token_count(usage.total_tokens)}`"))
+            rows.append(("usage", f"calls `{usage.calls}`; total `{token_count(usage.total_tokens)}`"))
 
         worker = self.session.worker
-        worker_rows: list[tuple[str, str]] = []
-        if worker is not None:
-            worker_provider = worker.config.provider
-            worker_rows.append(
-                (
-                    "model",
-                    f"`{worker.config.active_provider}/{worker_provider.model or '(empty)'}`; api `{worker_provider.resolve().api}`; reasoning `{worker_provider.reasoning}`",
-                )
-            )
-            worker_usage = worker.usage
-            if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
-                worker_rows.append(
-                    (
-                        "context",
-                        (
-                            f"`{progress_bar(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget)}` "
-                            f"`~{token_count(worker_usage.last_prompt_tokens)} / {token_count(worker_usage.last_prompt_budget)}` "
-                            f"(`{min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)}%`)"
-                        ),
-                    )
-                )
-            else:
-                worker_rows.append(("context", "(no requests yet)"))
-            if worker_usage.prompt_tokens:
-                worker_cache_ratio = worker_usage.cached_prompt_tokens * 100 / worker_usage.prompt_tokens
-                worker_last_cache_ratio = (worker_usage.last_cached_prompt_tokens * 100 / worker_usage.last_prompt_tokens) if worker_usage.last_prompt_tokens else 0
-                worker_rows.append(
-                    (
-                        "cache",
-                        (
-                            f"`{progress_bar(worker_usage.last_cached_prompt_tokens, worker_usage.last_prompt_tokens)}` last read `{token_count(worker_usage.last_cached_prompt_tokens)} / {token_count(worker_usage.last_prompt_tokens)} ({worker_last_cache_ratio:.1f}%)`, write `{token_count(worker_usage.last_cache_write_prompt_tokens)}`; "
-                            f"session read `{token_count(worker_usage.cached_prompt_tokens)} / {token_count(worker_usage.prompt_tokens)} ({worker_cache_ratio:.1f}%)`, write `{token_count(worker_usage.cache_write_prompt_tokens)}`"
-                        ),
-                    )
-                )
-            else:
-                worker_rows.append(("cache", "(no requests yet)"))
-            worker_state = "delegating" if worker._active_turn_messages else "idle"
-            worker_rows.append(("state", f"state `{worker_state}`; rounds `{worker.state.round_count}`"))
+        if worker is None:
+            configured = self.session.config.worker_provider
+            rows.append(("worker", "`off` — `[worker] provider` " + (f"= `{configured}`" if configured else "unset")))
+            return render_table(rows)
+        worker_usage = worker.usage
+        state = f"`{'delegating' if worker._active_turn_messages else 'idle'}`, rounds `{worker.state.round_count}`"
+        rows.append(("worker", model_line(worker.config)))
+        if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
+            percent = min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)
+            context = context_line(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget, percent)
         else:
-            worker_rows.append(("worker", f"(none; `[worker] provider` = `{self.session.config.worker_provider or '(off)'}`)"))
-        return "\n".join([render_table(common_rows), "### Parent", render_table(parent_rows), "### Worker", render_table(worker_rows)])
+            context = "(no requests yet)"
+        rows.append(("worker ctx", f"{context}; {state}"))
+        if worker_usage.prompt_tokens:
+            rows.append(("worker cache", cache_line(worker_usage)))
+        return render_table(rows)
 
     def skills_command(self, args: str) -> str:
         library = self.session.skills

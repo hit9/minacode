@@ -135,6 +135,13 @@
   everything the worker outputs, not just the final answer. The tool description tells the parent
   to pass the user's language unless the user works in English.
 
+- `/status` is now one flat table instead of three stacked ones. The `### Parent` / `### Worker`
+  headings and the two repeated header rows are gone; the worker's facts join the same table under
+  `worker`, `worker ctx`, and `worker cache` labels, collapsing to a single `worker` row naming the
+  configured `[worker] provider` when no worker session exists. The header column is `field` rather
+  than `status`, and the `cache` row reports read ratios (`last 99.9% (w 1.2K); session 83.4%`)
+  instead of the raw token pairs that made it the one row long enough to wrap.
+
 ### Fixed
 - Fix `chat_reasoning = "enable_thinking"` sending a `thinking_budget` that a configured
   `provider.max_tokens` cannot cover: these hosts fold `max_tokens` into `max_completion_tokens`

@@ -1019,7 +1019,7 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"skills `{count}`" in status
     assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in status
     assert "| cache | (no requests yet) |" in status
-    assert "| status | value |" in status
+    assert "| field | value |" in status
     bar_text = " | ".join(text for text, _ in StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
@@ -1076,8 +1076,9 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
 
     cache_row = next(line for line in loop.status("").splitlines() if line.startswith("| cache |"))
 
-    assert "last read `76.0K / 76.1K (99.9%)`, write `1.2K`" in cache_row
-    assert "session read `83.4K / 100.0K (83.4%)`, write `4.5K`" in cache_row
+    # Ratios, not the raw pairs: this was the one row long enough to wrap on a normal terminal.
+    assert "last `99.9%` (w 1.2K); session `83.4%` (w 4.5K)" in cache_row
+    assert "76.1K" not in cache_row
 
 
 def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
@@ -1090,9 +1091,9 @@ def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     assert loop.command("/status") == (True, False)
     assert plain == []
     assert len(rich) == 1
-    assert rich[0][0].startswith("| status | value |")  # the common rows lead without a heading
-    assert "### Parent" in rich[0][0] and "### Worker" in rich[0][0]
-    assert "### Common" not in rich[0][0]
+    assert rich[0][0].startswith("| field | value |")  # one flat table, no section headings
+    assert "###" not in rich[0][0]
+    assert rich[0][0].count("| --- | --- |") == 1
     assert rich[0][1] == {"rule": False, "compact": True}
 
 

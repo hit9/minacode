@@ -596,13 +596,11 @@ def test_status_reports_worker_delegation_state(tmp_path):
         loop.command("/status")
         return "\n".join(str(text) for text in outputs)
 
-    # No worker session: the worker section keeps the single configured-[worker]-provider line.
-    # The common rows lead without a `Common` heading, then the `### Parent` and `### Worker`
-    # headings separate the groups.
+    # No worker session: one `worker` row naming the configured [worker] provider. Everything is
+    # one flat table — the session's own rows, the parent's, then the worker's under `worker*`.
     text = status_text()
-    assert text.startswith("| status | value |")
-    assert "### Parent" in text and "### Worker" in text
-    assert "### Common" not in text
+    assert text.startswith("| field | value |")
+    assert "###" not in text
     assert "[worker] provider" in text and "default" in text
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -611,9 +609,8 @@ def test_status_reports_worker_delegation_state(tmp_path):
     # A fresh worker has no requests yet: the worker context row says so instead of inventing
     # tokens, and the model row mirrors the parent's (provider/model, api, reasoning).
     text = status_text()
-    assert "reasoning" in text
-    assert "(no requests yet)" in text
-    assert "state `idle`; rounds `0`" in text
+    assert "| worker | `default/" in text
+    assert "| worker ctx | (no requests yet); `idle`, rounds `0` |" in text
 
     worker.usage.last_prompt_tokens = 50
     worker.usage.last_prompt_budget = 100
@@ -621,14 +618,14 @@ def test_status_reports_worker_delegation_state(tmp_path):
     worker.usage.prompt_tokens = 50
     worker.usage.cached_prompt_tokens = 25
     text = status_text()
-    # Scope to the worker section: the parent's own cache row also says "(no requests yet)".
-    worker_section = text.split("### Worker", 1)[1]
+    # Scope to the worker rows: the parent's own cache row also says "(no requests yet)".
+    worker_section = text.split("| worker |", 1)[1]
     assert "~50 / 100" in worker_section and "(no requests yet)" not in worker_section
-    assert "last read `25 / 50 (50.0%)`" in worker_section
+    assert "| worker cache | " in worker_section and "last `50.0%`; session `50.0%`" in worker_section
 
     worker._active_turn_messages.append({"role": "user", "content": "order"})
     text = status_text()
-    assert "state `delegating`; rounds `0`" in text
+    assert "`delegating`, rounds `0`" in text
 
 
 # /worker's own status branch returns readable text for the human (the model-facing envelope stays
