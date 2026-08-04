@@ -82,6 +82,10 @@
   keeps the stages already set and the returned message says what landed. The typed
   `provider NAME` still sets only the provider, and the worker keeps the provider entry's `api`
   — there is no `/worker api`.
+- `Delegate` send accepts an optional `language`: the user watches the worker's live stream and
+  reads its report, so the tool appends an explicit reply-language directive to the order covering
+  everything the worker outputs, not just the final answer. The tool description tells the parent
+  to pass the user's language unless the user works in English.
 
 ### Fixed
 - Fix a worker crash when the worker model emitted text beside a tool call: the worker's output

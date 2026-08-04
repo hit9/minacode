@@ -86,7 +86,7 @@ class DelegateTool(Tool):
     MUTATES = True  # the delegation itself needs confirmation; the worker's own tools still confirm per call
     DESCRIPTION = """Hand a bounded task to the worker: a second in-process minacode session on its own provider, with its own system prompt and tool set. The worker cannot see this session's history -- only the order text and its own prior history -- so the order must stand alone.
 
-Write the order to state: the goal, the files it touches, the constraints, how to verify, and the boundaries (what not to touch). Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again.
+Write the order to state: the goal, the files it touches, the constraints, how to verify, and the boundaries (what not to touch). Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again. Set `language` to the user's reply language (e.g. \"Chinese\"): they watch the worker's live output and read its report, so the worker must speak their language; omit `language` only when the user works in English.
 
 Reset the worker when switching tasks, when the spec changed, or after it failed twice in a row (its context has accumulated wrong beliefs). Reset discards the worker's process, not its products: file changes and merged diffs stay."""
 
@@ -103,6 +103,10 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                     "type": "integer",
                     "minimum": 1,
                     "description": "Optional step cap for this single delegation; defaults to the parent's runtime.max_agent_steps",
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Reply language for all of the worker's visible output, live stream included (e.g. \"Chinese\"). Pass the user's language unless they work in English",
                 },
             },
             ["action"],
@@ -147,6 +151,17 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             raise ToolError("Delegate max_steps must be an integer >= 1")
         else:
             max_steps = raw_max_steps
+        raw_language = payload.get("language")
+        language = raw_language.strip() if isinstance(raw_language, str) else ""
+        if raw_language is not None and not language:
+            raise ToolError("Delegate language must be a non-empty string")
+        if language:
+            # The user watches the worker live and reads its report; the worker prompt lets an
+            # explicit language request override its defaults, so one directive in the order covers
+            # the stream, the interim messages, and the final answer alike.
+            order += (
+                f"\n\nReply language: {language}. The human user reads this terminal and sees everything you output -- the live stream while you work, your interim messages, and your final report -- so think and write in {language} for all of it; keep code, identifiers, paths, and commands verbatim."
+            )
         runner = getattr(self, "runner", None)
         if runner is None:
             raise ToolError("Delegate requires a tool runner")

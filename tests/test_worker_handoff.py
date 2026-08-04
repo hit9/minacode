@@ -709,6 +709,29 @@ def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     assert "default/worker-model-x" in rendered
     assert ToolRunner.oneline(order, 200) in rendered
 
+
+# 11c. language is a send parameter, not a setting: it lands in the order the worker receives as
+#      an explicit language request covering the live stream and interim messages, not just the end.
+def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, monkeypatch):
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="fix the parser", language="Chinese")
+
+    worker_order = model.requests[0][-1]["content"]
+    assert worker_order.startswith("fix the parser")
+    assert "Reply language: Chinese" in worker_order and "live stream" in worker_order
+
+
+def test_delegate_send_rejects_a_blank_language(tmp_path):
+    from minacode.base import ToolError
+
+    parent = _delegate_session(tmp_path)
+    runner = _delegate_runner(parent)
+    with pytest.raises(ToolError, match="language"):
+        _delegate_call(parent, runner, action="send", order="o", language="   ")
+
 # 12. the Agent lives on the worker Session, not in a module-level dict: a fresh worker object
 #     (after /resume re-enters the same parent) always gets a fresh Agent bound to itself.
 def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
