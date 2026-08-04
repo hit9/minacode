@@ -1014,14 +1014,12 @@ def test_status_and_bar_show_skill_count(tmp_path):
 
     count = len(s.skills.skills)
     assert count == 3
-    captured: list = []
-    loop.ui.emit_status = lambda sections: captured.append(sections)
-    loop.status("")
-    rows = {label: value for section in captured[0] for label, value in section[1]}
-    assert "mcp `1`" in rows.get("activity", "")
-    assert f"skills `{count}`" in rows.get("activity", "")
-    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in rows.get("context", "")
-    assert "(no requests yet)" in rows.get("cache", "")
+    status = loop.status("")
+    assert "mcp `1`" in status
+    assert f"skills `{count}`" in status
+    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in status
+    assert "| cache | (no requests yet) |" in status
+    assert "| status | value |" in status
     bar_text = " | ".join(text for text, _ in StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
@@ -1038,12 +1036,10 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     assert active_percent > persisted_percent
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
-    captured: list = []
-    loop.ui.emit_status = lambda sections: captured.append(sections)
-    loop.status("")
+    status = loop.status("")
 
     assert s.state.context_percent == active_percent
-    context_row = dict(captured[0][1][1])["context"]
+    context_row = next(line for line in status.splitlines() if line.startswith("| context |"))
     assert f"`{active_percent}%`" in context_row
 
 
@@ -1057,10 +1053,7 @@ def test_status_context_row_uses_last_real_tokens_when_available(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
     def context_row() -> str:
-        captured: list = []
-        loop.ui.emit_status = lambda sections: captured.append(sections)
-        loop.status("")
-        return dict(captured[0][1][1])["context"]
+        return next(line for line in loop.status("").splitlines() if line.startswith("| context |"))
 
     assert "`~20.0K / 80.0K`" in context_row()
     assert "`25%`" in context_row()
@@ -1081,28 +1074,26 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
     s.usage.prompt_tokens = 100_000
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
-    captured: list = []
-    loop.ui.emit_status = lambda sections: captured.append(sections)
-    loop.status("")
-    cache = dict(captured[0][1][1])["cache"]
+    cache_row = next(line for line in loop.status("").splitlines() if line.startswith("| cache |"))
 
-    assert "last read `76.0K / 76.1K (99.9%)`, write `1.2K`" in cache
-    assert "session read `83.4K / 100.0K (83.4%)`, write `4.5K`" in cache
+    assert "last read `76.0K / 76.1K (99.9%)`, write `1.2K`" in cache_row
+    assert "session read `83.4K / 100.0K (83.4%)`, write `4.5K`" in cache_row
 
 
-def test_status_command_emits_dense_sections_without_common_heading(tmp_path):
+def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     plain = []
-    seen = []
+    rich = []
     loop.emit = plain.append
-    loop.ui.emit_status = lambda sections: seen.append(sections)
+    loop.ui.emit_answer = lambda text, **kwargs: rich.append((text, kwargs))
 
     assert loop.command("/status") == (True, False)
     assert plain == []
-    assert len(seen) == 1
-    sections = seen[0]
-    assert [title for title, _ in sections] == [None, "parent", "worker"]  # no "Common" heading
-    assert sections[0][1][0][0] == "workspace"  # the common rows lead
+    assert len(rich) == 1
+    assert rich[0][0].startswith("| status | value |")  # the common rows lead without a heading
+    assert "### Parent" in rich[0][0] and "### Worker" in rich[0][0]
+    assert "### Common" not in rich[0][0]
+    assert rich[0][1] == {"rule": False}
 
 
 def test_session_from_config_file_theme_param(tmp_path):

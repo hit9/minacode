@@ -597,13 +597,12 @@ def test_status_reports_worker_delegation_state(tmp_path):
         return "\n".join(str(text) for text in outputs)
 
     # No worker session: the worker section keeps the single configured-[worker]-provider line.
-    # The dense rendering has no headings or markdown: the common rows lead, then dim `parent` /
-    # `worker` section labels separate the groups (the heading itself is the separator, no blank
-    # lines anywhere).
+    # The common rows lead without a `Common` heading, then the `### Parent` and `### Worker`
+    # headings separate the groups.
     text = status_text()
-    assert text.startswith("workspace")
-    assert "parent" in text and "worker" in text
-    assert "### " not in text and "Common" not in text
+    assert text.startswith("| status | value |")
+    assert "### Parent" in text and "### Worker" in text
+    assert "### Common" not in text
     assert "[worker] provider" in text and "default" in text
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -614,7 +613,7 @@ def test_status_reports_worker_delegation_state(tmp_path):
     text = status_text()
     assert "reasoning" in text
     assert "(no requests yet)" in text
-    assert "state idle; rounds 0" in text
+    assert "state `idle`; rounds `0`" in text
 
     worker.usage.last_prompt_tokens = 50
     worker.usage.last_prompt_budget = 100
@@ -623,13 +622,13 @@ def test_status_reports_worker_delegation_state(tmp_path):
     worker.usage.cached_prompt_tokens = 25
     text = status_text()
     # Scope to the worker section: the parent's own cache row also says "(no requests yet)".
-    worker_section = text.split("\nworker\n", 1)[1]
+    worker_section = text.split("### Worker", 1)[1]
     assert "~50 / 100" in worker_section and "(no requests yet)" not in worker_section
-    assert "last read 25 / 50 (50.0%)" in worker_section
+    assert "last read `25 / 50 (50.0%)`" in worker_section
 
     worker._active_turn_messages.append({"role": "user", "content": "order"})
     text = status_text()
-    assert "state delegating; rounds 0" in text
+    assert "state `delegating`; rounds `0`" in text
 
 
 # /worker's own status branch returns readable text for the human (the model-facing envelope stays
