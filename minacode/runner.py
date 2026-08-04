@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 from minacode.base import (
-    PROVIDER_API_CHOICES,
-    REASONING_CHOICES,
     ActiveResource,
     Json,
     LogBlock,
@@ -40,7 +38,6 @@ from minacode.tools import (
     ReadTool,
     Tool,
 )
-from minacode.tools.delegate import refresh_worker_entry
 
 if TYPE_CHECKING:
     from minacode.engine import Agent
@@ -259,6 +256,10 @@ class ToolRunner:
         self.live_start: Callable[[], None] | None = None
         self.worker_rule: Callable | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
+        # Injected by CommandLoop: drives the Delegate confirm-time `c` config loop through the
+        # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to
+        # printing the current worker config only (headless / non-CommandLoop runners).
+        self.worker_config_picker: Callable[[], None] | None = None
         # Injected by CommandLoop for the Delegate worker: ModelClient only streams when on_stream
         # is set, so an unwired worker would run unstreamed and its thinking would stay invisible.
         self.model_stream: Callable[[str, str], None] | None = None
@@ -575,64 +576,44 @@ class ToolRunner:
             if always_option and lower in {"c", "config"}:
                 # The whole-line `c`/`config` opens the worker configuration loop; anything else
                 # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
-                self.delegate_config_cycle(tool)
+                self.delegate_config_cycle()
                 continue  # redraw the approval brief and re-ask
             if lower in {"", "y", "yes"}:
                 return True, ""
             return False, "" if lower in {"n", "no"} else answer
 
-    def delegate_config_cycle(self, tool: DelegateTool) -> None:
-        """The `c` loop of a Delegate send prompt: show the worker's provider/model/effort/api and
-        let the user adjust them before confirming. Each successful change refreshes the live
-        worker's entry (see refresh_worker_entry); Enter returns to the confirmation prompt."""
+    def delegate_config_cycle(self) -> None:
+        """The `c` action of a Delegate send prompt: show the worker's provider/model/effort/api,
+        then hand the interactive editing to the injected picker loop (CommandLoop.run_worker_config),
+        which reuses the shared choice selector and writes back through the /worker pickers. Without
+        an injected picker (headless, or a runner outside CommandLoop) this only prints the current
+        values; the confirmation prompt re-asks either way."""
+        self.output_fn(self.worker_config_block())
+        if self.worker_config_picker is not None:
+            self.worker_config_picker()
+
+    def worker_config_block(self) -> LogBlock:
+        """The current effective worker config as a log block: one row per knob, inherited values
+        marked `(inherit)`, matching the approval brief's four worker rows."""
+        return LogBlock(
+            [
+                LogLine("worker config", "", LogRole.WORKER, LogEdge.BRANCH),
+                *(LogLine(label, value, LogRole.WORKER, LogEdge.CONTINUE) for label, value in self.worker_config_rows()),
+            ]
+        )
+
+    def worker_config_rows(self) -> list[tuple[str, str]]:
+        """The effective worker provider/model/effort/api as (label, value) rows; a field that
+        inherits the provider entry's own value is shown as `(inherit) <value>`."""
         config = self.session.config
-        while True:
-            provider_name = config.worker_provider or config.active_provider
-            entry = config.providers[provider_name]
-            self.output_fn(
-                LogBlock(
-                    [
-                        LogLine("worker config", "", LogRole.META, LogEdge.BRANCH),
-                        LogLine("provider", config.worker_provider or f"(inherit) {provider_name}", LogRole.META, LogEdge.CONTINUE),
-                        LogLine("model", config.worker_model or entry.model or "(no model)", LogRole.META, LogEdge.CONTINUE),
-                        LogLine("effort", config.worker_reasoning or entry.reasoning, LogRole.META, LogEdge.CONTINUE),
-                        LogLine("api", config.worker_api or entry.api, LogRole.META, LogEdge.CONTINUE),
-                    ]
-                )
-            )
-            choice = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "[p/m/e/w to change, Enter to return] ").strip().lower()
-            if not choice:
-                return
-            if choice == "p":
-                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "provider name (or 'off' to clear) > ").strip()
-                if value == "off" and "off" not in config.providers:
-                    # "off" names the clearing action unless a provider entry is literally named
-                    # "off" (existence wins), mirroring /worker provider.
-                    config.worker_provider = ""
-                elif value in config.providers:
-                    config.worker_provider = value
-                else:
-                    self.output_fn("Unknown provider: " + value)
-                    continue
-            elif choice == "m":
-                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "model (or 'default' to inherit) > ").strip()
-                config.worker_model = "" if value == "default" else value
-            elif choice == "e":
-                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "effort (" + "|".join(REASONING_CHOICES) + ", or 'default' to inherit) > ").strip()
-                if value != "default" and value not in REASONING_CHOICES:
-                    self.output_fn("Unknown effort: " + value)
-                    continue
-                config.worker_reasoning = "" if value == "default" else value
-            elif choice == "w":
-                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "api (" + "|".join(PROVIDER_API_CHOICES) + ", or 'default' to inherit) > ").strip()
-                if value != "default" and value not in PROVIDER_API_CHOICES:
-                    self.output_fn("Unknown api: " + value)
-                    continue
-                config.worker_api = "" if value == "default" else value
-            else:
-                self.output_fn("Invalid choice: " + choice)
-                continue
-            refresh_worker_entry(config, self.session.worker, config.worker_provider if choice == "p" and config.worker_provider else None)
+        provider_name = config.worker_provider or config.active_provider
+        entry = config.providers[provider_name]
+        return [
+            ("provider", config.worker_provider or f"(inherit) {provider_name}"),
+            ("model", config.worker_model or f"(inherit) {entry.model or '(no model)'}"),
+            ("effort", config.worker_reasoning or f"(inherit) {entry.reasoning}"),
+            ("api", config.worker_api or f"(inherit) {entry.api}"),
+        ]
 
     def approval_display(
         self,
@@ -657,32 +638,28 @@ class ToolRunner:
 
     def delegate_approval_children(self, tool: DelegateTool) -> list[LogLine]:
         """Approval brief for a Delegate send: title, an order excerpt, explicit send parameters,
-        and the worker configuration the send will run under. Everything is derived from the call
-        and the session config, never from mutable worker state."""
+        and the worker configuration the send will run under. WORKER-role rows render yellow
+        labels with default-foreground values (never the gray META tone), so the brief scans at a
+        glance; everything is derived from the call and the session config, never from mutable
+        worker state."""
         payload = tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
         children: list[LogLine] = []
         title = payload.get("title")
         if isinstance(title, str) and title.strip():
-            children.append(LogLine("title", self.oneline(title.strip(), 120), LogRole.META, LogEdge.BRANCH))
+            children.append(LogLine("title", self.oneline(title.strip(), 120), LogRole.WORKER, LogEdge.BRANCH))
         order = payload.get("order")
         if isinstance(order, str) and order.strip():
             lines = order.strip().splitlines()
-            children.append(LogLine("order", "", LogRole.META, LogEdge.BRANCH))
-            children.extend(LogLine("", line, LogRole.META, LogEdge.CONTINUE) for line in lines[:12])
+            children.append(LogLine("order", "", LogRole.WORKER, LogEdge.BRANCH))
+            children.extend(LogLine("", line, LogRole.WORKER, LogEdge.CONTINUE) for line in lines[:12])
             if len(lines) > 12:
-                children.append(LogLine("", f"… {len(lines) - 12} more lines", LogRole.META, LogEdge.CONTINUE))
+                children.append(LogLine("", f"… {len(lines) - 12} more lines", LogRole.WORKER, LogEdge.CONTINUE))
         language = payload.get("language")
         if isinstance(language, str) and language.strip():
-            children.append(LogLine("language", self.oneline(language.strip(), 60), LogRole.META, LogEdge.BRANCH))
+            children.append(LogLine("language", self.oneline(language.strip(), 60), LogRole.WORKER, LogEdge.BRANCH))
         if payload.get("max_steps") is not None:
-            children.append(LogLine("max_steps", str(payload["max_steps"]), LogRole.META, LogEdge.BRANCH))
-        config = self.session.config
-        provider_name = config.worker_provider or config.active_provider
-        entry = config.providers[provider_name]
-        model = config.worker_model or entry.model or "(no model)"
-        effort = config.worker_reasoning or entry.reasoning
-        api = config.worker_api or entry.api
-        children.append(LogLine("worker", f"{provider_name}/{model} · {effort} · {api}", LogRole.META, LogEdge.BRANCH))
+            children.append(LogLine("max_steps", str(payload["max_steps"]), LogRole.WORKER, LogEdge.BRANCH))
+        children.extend(LogLine(label, value, LogRole.WORKER, LogEdge.CONTINUE) for label, value in self.worker_config_rows())
         return children
 
     def finish_display(

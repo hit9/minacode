@@ -752,6 +752,41 @@ def test_worker_status_line_reports_worker_config(tmp_path):
     assert "worker: no active session" in command_loop.worker_command("")
 
 
+# The confirm-time `c` loop reuses the shared choice selector: pick a knob, drive the matching
+# /worker picker, and loop until done/Esc (or a non-interactive select yields nothing).
+def test_run_worker_config_drives_pickers_until_done(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    picks = iter(["provider", "api", "done"])
+    calls = []
+    driven = []
+
+    def select(title, choices, **kwargs):
+        calls.append((title, choices, kwargs))
+        return next(picks)
+
+    command_loop.select_choice = select
+    command_loop._worker_provider_picker = lambda: driven.append("provider")
+    command_loop._worker_model_picker = lambda: driven.append("model")
+    command_loop._worker_reason_picker = lambda: driven.append("effort")
+    command_loop._worker_api_picker = lambda: driven.append("api")
+
+    command_loop.run_worker_config()
+
+    assert driven == ["provider", "api"]
+    assert calls[0][0] == "Worker config"
+    assert calls[0][1] == ("provider", "model", "effort", "api", "done")
+    assert calls[0][2]["current"] == "done"  # Enter with nothing selected exits
+    assert calls[0][2]["labels"]["provider"].startswith("provider:")
+    assert calls[0][2]["labels"]["model"].startswith("model:")
+
+    # Esc (SELECTION_BACK) and a non-interactive select (None) both exit without driving pickers.
+    for value in (SELECTION_BACK, None):
+        command_loop.select_choice = lambda *a, value=value, **k: value
+        command_loop.run_worker_config()
+    assert driven == ["provider", "api"]
+
+
 # The no-arg pickers follow the /provider picker pattern: select_choice is stubbed, and the
 # selection runs the exact same set path as the typed form (live-apply, frozen-gate note).
 def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path):

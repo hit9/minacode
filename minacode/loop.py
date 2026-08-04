@@ -387,6 +387,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.model_stream = self.model_stream_output
         self.agent.tools.question_fn = self.question_interaction
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
+        self.agent.tools.worker_config_picker = self.run_worker_config
 
     def automatic_compaction_status(self, active: bool) -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""
@@ -2217,6 +2218,39 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if value == "default":
             return "worker api: (inherit)"
         return "Set worker.api = " + value
+
+    def run_worker_config(self) -> None:
+        """The Delegate confirm-time `c` loop: pick which worker knob to adjust with the shared
+        choice selector (each field labeled with its current value, done preselected), then drive
+        the corresponding /worker picker -- which writes the config and refreshes a live worker
+        itself. done or Esc returns to the confirmation prompt; non-interactive runs return at
+        once (select_choice yields nothing)."""
+        while True:
+            config = self.session.config
+            provider_name = config.worker_provider or config.active_provider
+            entry = config.providers[provider_name]
+            provider_value = config.worker_provider or f"(inherit) {provider_name}"
+            model_value = config.worker_model or f"(inherit) {entry.model or '(no model)'}"
+            effort_value = config.worker_reasoning or f"(inherit) {entry.reasoning}"
+            api_value = config.worker_api or f"(inherit) {entry.api}"
+            labels = {
+                "provider": f"provider: {provider_value}",
+                "model": f"model: {model_value}",
+                "effort": f"effort: {effort_value}",
+                "api": f"api: {api_value}",
+                "done": "done - return to the confirmation prompt",
+            }
+            choice = self.select_choice("Worker config", ("provider", "model", "effort", "api", "done"), labels=labels, current="done")
+            if choice == "provider":
+                self._worker_provider_picker()
+            elif choice == "model":
+                self._worker_model_picker()
+            elif choice == "effort":
+                self._worker_reason_picker()
+            elif choice == "api":
+                self._worker_api_picker()
+            else:
+                return
 
     def strict(self, args: str) -> str:
         if args:

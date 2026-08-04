@@ -1098,7 +1098,7 @@ def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
 
 
 def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
-    from minacode.base import ProviderConfig, ToolCall
+    from minacode.base import LogRole, ProviderConfig, ToolCall
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.tools import EditTool
@@ -1125,16 +1125,23 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     assert any("3 more lines" in text for text in texts)  # 15 - 12 = 3 overflow
     assert "language" in labels and "Chinese" in texts
     assert "max_steps" in labels and "7" in texts
-    worker_line = next(text for label, text in rows if label == "worker")
-    assert "fast/override-model" in worker_line and "high" in worker_line
-    assert "responses" in worker_line  # api inherited from the entry while worker_api is empty
+    # The worker config is four rows, one per knob, with inherited values marked explicitly.
+    assert "provider" in labels and "model" in labels and "effort" in labels and "api" in labels
+    assert "worker" not in labels  # no combined single-line row anymore
+    assert next(text for label, text in rows if label == "provider") == "fast"  # explicit override
+    assert next(text for label, text in rows if label == "model") == "override-model"
+    assert next(text for label, text in rows if label == "effort") == "(inherit) high"
+    assert next(text for label, text in rows if label == "api") == "(inherit) responses"  # worker_api empty
+    # Every brief row is WORKER-role: yellow label, default-foreground value, never the gray META.
+    assert all(item.role is LogRole.WORKER for item, _ in list(block.walk())[1:])
 
     # An explicit worker_api override wins over the entry's api.
     parent.config.worker_api = "chat"
     block = runner.approval_display(ToolCall("delegate-2", "Delegate", [args]), tool, "confirm")
     rows = [(item.label, item.text) for item, _ in block.walk()]
-    worker_line = next(text for label, text in rows if label == "worker")
-    assert "chat" in worker_line and "responses" not in worker_line
+    api_row = next(text for label, text in rows if label == "api")
+    assert api_row == "chat"
+    assert "(inherit)" not in api_row
 
     # Non-send Delegate calls keep the plain display; Edit keeps its preview children.
     status_tool = DelegateTool(parent, [{"action": "status"}])
@@ -1153,13 +1160,24 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.session import Session
-    from minacode.tools.delegate import DelegateTool
+    from minacode.tools.delegate import DelegateTool, refresh_worker_entry
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["alt"] = ProviderConfig(model="alt-model", reasoning="low", api="anthropic")
     worker = Session(cwd=str(tmp_path), config=replace(parent.config), settings=parent.settings, uid=parent.uid + ".w", listed=False)
     parent.worker = worker
-    answers = iter(["c", "p", "alt", "m", "worker-m", "e", "off", "w", "responses", "", "y"])
+
+    # The injected picker loop (CommandLoop.run_worker_config in production) drives the changes and
+    # writes the config / refreshes the live worker itself; the runner only triggers it on `c`.
+    def picker():
+        parent.config.worker_provider = "alt"
+        parent.config.worker_model = "worker-m"
+        parent.config.worker_reasoning = "off"
+        parent.config.worker_api = "responses"
+        refresh_worker_entry(parent.config, worker, "alt")
+
+    calls = []
+    answers = iter(["c", "y"])
     prompts = []
     outputs = []
 
@@ -1168,8 +1186,10 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
         return next(answers)
 
     runner = ToolRunner(parent, ContextManager(parent), input_fn=input_fn, output_fn=outputs.append)
+    runner.worker_config_picker = lambda: calls.append(1) or picker()
     confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}]))
     assert (confirmed, reason) == (True, "")
+    assert calls == [1]  # the `c` key drove the picker loop exactly once
     assert parent.config.worker_provider == "alt"
     assert parent.config.worker_model == "worker-m"
     assert parent.config.worker_reasoning == "off"
@@ -1179,24 +1199,22 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     entry = worker.config.providers["alt"]
     assert (entry.model, entry.reasoning, entry.api) == ("worker-m", "off", "responses")
     assert worker.config.providers is not parent.config.providers
+    # The config block printed, and the approval brief was redrawn after the picker returned.
     assert any("worker config" in str(out) for out in outputs if isinstance(out, LogBlock))
-    assert any("[Y/n/c or reason] " in prompt for prompt in prompts)
-    assert any("[p/m/e/w to change, Enter to return] " in prompt for prompt in prompts)
+    assert sum(1 for prompt in prompts if "[Y/n/c or reason] " in prompt) == 2
+    assert len([out for out in outputs if isinstance(out, LogBlock) and any(item.label == "order" for item, _ in out.walk())]) == 2
 
-    # Invalid values are rejected in-loop without touching the config; Enter returns and "n" refuses.
-    answers = iter(["c", "p", "nope", "e", "turbo", "w", "weird", "", "n"])
+    # Without an injected picker (headless / non-CommandLoop) the `c` key prints the config block
+    # and re-asks without crashing.
     prompts = []
     outputs = []
+    answers = iter(["c", "y"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
     confirmed, reason = runner.confirm(ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}]))
-    assert (confirmed, reason) == (False, "")
-    text = "\n".join(str(out) for out in outputs)
-    assert "Unknown provider: nope" in text
-    assert "Unknown effort: turbo" in text
-    assert "Unknown api: weird" in text
-    assert parent.config.worker_provider == "alt"  # unchanged
-    assert parent.config.worker_reasoning == "off"  # unchanged
-    assert parent.config.worker_api == "responses"  # unchanged
+    assert (confirmed, reason) == (True, "")
+    assert any("worker config" in str(out) for out in outputs if isinstance(out, LogBlock))
+    assert parent.config.worker_provider == "alt"  # untouched without a picker
+    assert parent.config.worker_api == "responses"  # untouched without a picker
 
 
 def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
