@@ -3,6 +3,7 @@ blocks, calling, result normalization, and resources."""
 
 import asyncio
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -108,7 +109,7 @@ class TestToolIndexRendering:
         class FakeTool:
             name = "echo"
             description = "Echo"
-            inputSchema = {"type": "object", "properties": {"t": {"type": "string"}}, "required": ["t"]}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {"t": {"type": "string"}}, "required": ["t"]}
             annotations = None
 
         async def fake_list(url, headers):
@@ -279,7 +280,7 @@ class TestToolIndexTruncation:
         class FakeTool:
             name = "tool"
             description = "Desc"
-            inputSchema = {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}
             annotations = None
 
         many_tools = []
@@ -442,7 +443,7 @@ class TestMCPContextBlocks:
         class FakeTool:
             name = "echo"
             description = "Echo"
-            inputSchema = {"type": "object", "properties": {"t": {"type": "string"}}, "required": ["t"]}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {"t": {"type": "string"}}, "required": ["t"]}
             annotations = None
 
         async def fake_list(url, headers):
@@ -763,7 +764,7 @@ class TestMCPResources:
         class FakeTool:
             name = "query"
             description = "Run a program."
-            inputSchema = {"type": "object", "properties": {"operations": {"type": "array"}}, "required": ["operations"]}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {"operations": {"type": "array"}}, "required": ["operations"]}
             annotations = None
 
         async def fake_tools(url, headers):
@@ -799,7 +800,7 @@ class TestMCPResources:
         class FakeTool:
             name = "t"
             description = "d"
-            inputSchema = {"type": "object", "properties": {}}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {}}
             annotations = None
 
         async def fake_tools(url, headers):
@@ -877,7 +878,7 @@ class TestMCPResources:
         class FakeTool:
             name = "query"
             description = "Run a program. " + "x" * 200 + " See metabase://docs/construct-query.md for syntax."
-            inputSchema = {"type": "object", "properties": {}}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {}}
             annotations = None
 
         async def fake_tools(url, headers):
@@ -932,7 +933,7 @@ class TestMCPResources:
 
         class FakeTool:
             name = "query"
-            inputSchema = {"type": "object", "properties": {}}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {}}
             annotations = None
 
         FakeTool.description = description

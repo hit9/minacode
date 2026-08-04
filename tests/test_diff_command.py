@@ -276,7 +276,7 @@ def test_tool_runner_captures_edit_turn_diff(tmp_path):
 
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "", output_fn=lambda text: None)
     call = ToolCall("edit-1", "Edit", ["a.py", [{"op": "replace_all", "old": "old\n", "new": "new\n"}]])
-    status, message, observation = runner.run_one(call)
+    status, _message, observation = runner.run_one(call)
 
     assert status == "ok"
     assert observation is None

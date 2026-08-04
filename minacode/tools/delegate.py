@@ -62,6 +62,7 @@ def _worker_output(runner: ToolRunner):
 
     return emit
 
+
 def _worker_stream(runner: ToolRunner):
     """Wrap the worker Agent's model stream for the parent's live preview.
 
@@ -81,6 +82,7 @@ def _worker_stream(runner: ToolRunner):
         runner.model_stream(kind, text)
 
     return stream
+
 
 def worker_provider_config(config: Config, provider_name: str) -> ProviderConfig:
     """The detached provider entry a worker should run on, with [worker] overrides applied.
@@ -184,9 +186,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # The user watches the worker live and reads its report; the worker prompt lets an
             # explicit language request override its defaults, so one directive in the order covers
             # the stream, the interim messages, and the final answer alike.
-            order += (
-                f"\n\nReply language: {language}. The human user reads this terminal and sees everything you output -- the live stream while you work, your interim messages, and your final report -- so think and write in {language} for all of it; keep code, identifiers, paths, and commands verbatim."
-            )
+            order += f"\n\nReply language: {language}. The human user reads this terminal and sees everything you output -- the live stream while you work, your interim messages, and your final report -- so think and write in {language} for all of it; keep code, identifiers, paths, and commands verbatim."
         raw_title = payload.get("title")
         title = raw_title.strip() if isinstance(raw_title, str) else ""
         if raw_title is not None and not title:
@@ -236,7 +236,15 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             runner.worker_rule(f"worker start · {config.active_provider}/{config.provider.model or '(no model)'} · {title or ToolRunner.oneline(order, 60)}")
         else:
             runner.output_fn(
-                LogBlock([LogLine("[worker]", f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {title or ToolRunner.oneline(order, 200)}", LogRole.WORKER)])
+                LogBlock(
+                    [
+                        LogLine(
+                            "[worker]",
+                            f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {title or ToolRunner.oneline(order, 200)}",
+                            LogRole.WORKER,
+                        )
+                    ]
+                )
             )
         try:
             with runner._active_worker.track(agent):

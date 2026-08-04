@@ -422,6 +422,7 @@ class RuntimeSettings:
     quick_hints: bool = True
     worker: bool = False  # register the Delegate tool (see [worker] in ConfigFile.DEFAULT_TEXT)
     theme: str = "auto"
+    language: str = "auto"  # forced reply language; "auto" injects nothing (see /language)
 
     @classmethod
     def from_dict(cls, data: Json, *, yolo: bool = False, theme: str = "") -> RuntimeSettings:
@@ -437,7 +438,17 @@ class RuntimeSettings:
             quick_hints=Config.bool(runtime, "quick_hints", True),
             worker=Config.bool(runtime, "worker", False),
             theme=theme or Config.str(runtime, "theme", "auto"),
+            language=RuntimeSettings.clean_language(Config.str(runtime, "language", "auto")),
         )
+
+    @staticmethod
+    def clean_language(value: str) -> str:
+        value = value.strip()
+        if not value or value.lower() == "auto":
+            return "auto"
+        if len(value) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ConfigError("runtime.language must be a single-line language name up to 64 chars, or auto")
+        return value
 
 
 @dataclass
@@ -615,6 +626,8 @@ model = ""
 # shell_timeout = 60
 # worker = false               # register the Delegate tool; toggle with /worker on|off
                                # (flipping it changes the tool block and thus the prompt-cache scope)
+# language = "auto"           # auto follows your messages and injects nothing; set a language
+                               # name (e.g. "Chinese") to force the reply language
 
 # [worker]                     # optional: hand tasks to a second minacode session (Delegate tool)
 # provider = "fast"           # a provider entry; pick one from a DIFFERENT vendor than

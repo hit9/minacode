@@ -3,8 +3,16 @@
 
 ## Unreleased
 
+### Added
+- A `[runtime] language` key and a `/language [NAME]` command force the reply language for the
+  session. `auto` (the default) injects nothing, keeping requests byte-identical to before; a
+  language name (e.g. `Chinese` or `简体中文`) appends one fixed `LANGUAGE OVERRIDE` block to the
+  tail of the system prompt. The block is a pure function of the value — no timestamps or session
+  state — so the cacheable system prefix is unchanged, and workers inherit the setting from the
+  parent on every `Delegate` send.
+
 ### Changed
-- Confirm a `Delegate` send even under `yolo`. That flag means "edit files and run commands
+- Confirm a `Delegate` send even under `yolo`.
   without asking", and those mistakes are visible in the diff or the command output at once; a
   delegation's mistake is the order text, which only surfaces a whole worker round later. The
   prompt shows the order, so it stays the one cheap check on a spec the model wrote for itself.

@@ -133,6 +133,7 @@ Optional; the defaults shown are used when omitted.
 | `session_retention_days` | `7` | Delete saved sessions untouched for this many days, swept in the background at startup; `0` keeps them indefinitely |
 | `theme` | `auto` | Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme` |
 | `worker` | `false` | Let the model delegate to a second in-process session; see below |
+| `language` | `auto` | Force the reply language (`auto` follows your messages and injects nothing); set a name like `Chinese` to append a fixed `LANGUAGE OVERRIDE` block to the system prompt. Change for the current session with `/language` |
 
 Selected tuning values can be changed for the current session with `/set` (Tab completion
 lists the supported keys). `/yolo` toggles `yolo`.

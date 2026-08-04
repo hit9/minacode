@@ -1,14 +1,16 @@
+import itertools
 import json
 import os
 import time
+from typing import ClassVar
 
 import pytest
 
 from minacode.base import SESSION_EVENT_KEY, Config, MinacodeError, RuntimeSettings
 from minacode.engine import Agent
 from minacode.loop import CommandLoop
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.model import ModelClient
+from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
 
 
@@ -181,7 +183,7 @@ def test_file_snapshots_are_stored_once_by_content_hash(tmp_path):
     edit's `before`. The log stores each version once and references it by hash."""
     s = session_with_data_dir(tmp_path)
     versions = [f"v{i}\n" for i in range(4)]
-    for turn, (before, after) in enumerate(zip(versions, versions[1:]), start=1):
+    for turn, (before, after) in enumerate(itertools.pairwise(versions), start=1):
         s.store_turn_diff(f"tr.{turn}", turn, "x.py", f"-{before}+{after}", before=before, after=after, round=turn)
         s.save_snapshot()
 
@@ -1001,7 +1003,7 @@ def test_chat_tool_calls_parse_multiline_commit_message():
         function = _Fn()
 
     class _Msg:
-        tool_calls = [_Raw()]
+        tool_calls: ClassVar[list] = [_Raw()]
 
     s = Session(cwd="/tmp")
     calls = ModelClient(s).tool_calls(_Msg())

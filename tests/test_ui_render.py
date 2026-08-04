@@ -1,6 +1,7 @@
 """Rendering: themes, the external editor, the status bar, the Bash live preview, width
 clipping, and choice-view state."""
 
+import itertools
 import os
 import shutil
 import sys
@@ -368,7 +369,7 @@ def test_status_bar_sweep_shares_styles_between_neighbouring_cells(tmp_path, mon
         styles = [style for style, _text in bar.sweep_fragments(text)]
         assert len(styles) == len(text)
         seen.update(styles)
-        runs.append(1 + sum(1 for left, right in zip(styles, styles[1:], strict=False) if left != right))
+        runs.append(1 + sum(1 for left, right in itertools.pairwise(styles) if left != right))
 
     # A colour per cell costs an escape sequence per column on every frame, and mints a style string
     # that prompt-toolkit's renderer caches for the life of the process. Quantized, neighbours share

@@ -958,17 +958,20 @@ def test_input_history_trim_cuts_only_at_an_entry_boundary(tmp_path):
     # A cut inside an entry would leave a partial first line; the survivor must start with a header.
     with open(path, "rb") as file:
         assert file.read(2) == b"# "
-    text = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as file:
+        text = file.read()
     assert all(line.startswith(("#", "+")) for line in text.splitlines() if line)
 
 
 def test_input_history_under_the_cap_is_left_alone(tmp_path):
     path = history_file(tmp_path / "history.txt", 10)
-    before = open(path, "rb").read()
+    with open(path, "rb") as file:
+        before = file.read()
 
     CommandLoop.trim_input_history(str(path))
 
-    assert open(path, "rb").read() == before
+    with open(path, "rb") as file:
+        assert file.read() == before
 
 
 def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):

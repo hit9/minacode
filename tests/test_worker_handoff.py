@@ -13,7 +13,7 @@ from agent_harness import call, session
 from minacode.base import SESSION_EVENT_KEY
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.prompts import SYSTEM_PROMPT
+from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
 from minacode.tools import TOOL_REGISTRY, Tool
 
 
@@ -832,6 +832,29 @@ def test_delegate_send_rejects_a_blank_language(tmp_path):
     runner = _delegate_runner(parent)
     with pytest.raises(ToolError, match="language"):
         _delegate_call(parent, runner, action="send", order="o", language="   ")
+
+
+# 11d. a forced runtime language is inherited: the worker rebuilds its settings from the parent on
+#      every send, so the parent's /language value lands in the worker's system prompt too, while
+#      the per-send `language` parameter stays an order-text directive (see test above).
+def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch):
+    from minacode.context import ContextManager
+
+    parent = _delegate_session(tmp_path)
+    parent.settings.language = "Chinese"
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="fix the parser")
+
+    worker = parent.worker
+    assert worker.settings.language == "Chinese"
+    system = model.requests[0][0]["content"]
+    assert system.startswith(WORKER_PROMPT.strip())
+    assert "LANGUAGE OVERRIDE:" in system and "Chinese" in system
+    # the projection the worker uses matches the request the fake model received
+    assert ContextManager(worker).model_messages(worker.system_prompt)[0]["content"] == system
+
 
 # 12. the Agent lives on the worker Session, not in a module-level dict: a fresh worker object
 #     (after /resume re-enters the same parent) always gets a fresh Agent bound to itself.

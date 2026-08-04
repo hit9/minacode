@@ -80,7 +80,7 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     _patch_fast_clock(monkeypatch)
 
-    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(factory.calls) == 2

@@ -195,6 +195,35 @@ def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_pat
     assert "provider.resolved_reasoning_effort: xhigh" in command_loop.config("")
 
 
+def test_language_command_shows_sets_and_resets(tmp_path):
+    command_loop = loop(tmp_path)
+
+    assert command_loop.language_command("") == "Reply language: auto (follows your messages)"
+
+    assert command_loop.language_command("Chinese") == "Reply language set: Chinese"
+    assert command_loop.language_command("") == "Reply language: Chinese"
+    assert command_loop.session.settings.language == "Chinese"
+
+    # the value is normalized (stripped), and free text like CJK names is allowed
+    assert command_loop.language_command("  简体中文  ") == "Reply language set: 简体中文"
+
+    assert command_loop.language_command("  AUTO  ") == "Reply language reset to auto"
+    assert command_loop.language_command("") == "Reply language: auto (follows your messages)"
+
+    # invalid values return the validation message instead of raising
+    assert command_loop.language_command("Chinese\nJapanese").startswith("runtime.language")
+    assert command_loop.language_command("x" * 65).startswith("runtime.language")
+    assert command_loop.session.settings.language == "auto"  # unchanged after the rejected set
+
+
+def test_config_shows_runtime_language(tmp_path):
+    command_loop = loop(tmp_path)
+    assert "runtime.language: auto" in command_loop.config("")
+
+    command_loop.session.settings.language = "Chinese"
+    assert "runtime.language: Chinese" in command_loop.config("")
+
+
 def test_api_command_switches_the_request_wire_and_names_what_took_effect(tmp_path):
     # A model chosen with /model may not be served over the provider's configured protocol, so the
     # wire has to be switchable in-session rather than only in the config file.

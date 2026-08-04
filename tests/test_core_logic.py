@@ -129,6 +129,27 @@ def test_runtime_settings_reads_limits_and_yolo_override():
     assert settings.yolo is True
 
 
+def test_runtime_language_defaults_normalizes_and_validates():
+    assert RuntimeSettings().language == "auto"
+    assert RuntimeSettings.from_dict({}).language == "auto"
+    assert RuntimeSettings.from_dict({"runtime": {"language": "Chinese"}}).language == "Chinese"
+    assert RuntimeSettings.from_dict({"runtime": {"language": "简体中文"}}).language == "简体中文"
+
+    # empty and case-insensitive "auto" (with surrounding whitespace) normalize to "auto"
+    assert RuntimeSettings.clean_language("") == "auto"
+    assert RuntimeSettings.clean_language("  AUTO  ") == "auto"
+    assert RuntimeSettings.clean_language("auto") == "auto"
+    # valid values pass through unchanged, spaces included
+    assert RuntimeSettings.clean_language("Chinese (Simplified)") == "Chinese (Simplified)"
+    assert RuntimeSettings.clean_language("简体中文") == "简体中文"
+
+    # multiline and over-long values are rejected on the config-parsing path
+    with pytest.raises(ConfigError, match="runtime.language"):
+        RuntimeSettings.from_dict({"runtime": {"language": "Chinese\nJapanese"}})
+    with pytest.raises(ConfigError, match="runtime.language"):
+        RuntimeSettings.clean_language("x" * 65)
+
+
 def test_runtime_settings_default_context_budget_is_256k():
     assert RuntimeSettings().max_context_tokens == 256 * 1024
     assert RuntimeSettings.from_dict({}).max_context_tokens == 256 * 1024

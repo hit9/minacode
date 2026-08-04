@@ -144,6 +144,9 @@ Common runtime settings live under `[runtime]`:
 - `max_parallel_tools = 4`: maximum concurrent read-only tool calls.
 - `session_retention_days = 7`: remove untouched sessions after this many days; `0` keeps them.
 - `theme = "auto"`: terminal theme; `light` and `dark` are also accepted.
+- `language = "auto"`: reply language for the session; `auto` follows your messages and injects
+  nothing, a name like `Chinese` appends a fixed `LANGUAGE OVERRIDE` block to the system prompt.
+  Set it with `/language [NAME]`.
 
 Set `[paths] data_dir = "~/.minacode"` to change where sessions, history, OAuth tokens, user skills, and update metadata are stored. Selected provider and runtime values can be changed for the current session with `/set`.
 

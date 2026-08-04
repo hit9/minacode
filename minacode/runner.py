@@ -243,7 +243,9 @@ class ToolRunner:
     # The envelope DelegateTool._send returns for a finished delegation: attributes in fixed order,
     # the worker's answer wrapped in <worker> tags. Parsed with a couple of string scans — the
     # format is ours, so no XML parser is needed.
-    DELEGATE_META_RE: ClassVar[re.Pattern] = re.compile(r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)"(?: tokens="([^"]*)")?>')
+    DELEGATE_META_RE: ClassVar[re.Pattern] = re.compile(
+        r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)"(?: tokens="([^"]*)")?>'
+    )
 
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
@@ -805,7 +807,7 @@ class ToolRunner:
         end = output.find("</worker>")
         if start < 0 or end <= start:
             return ""
-        answer = output[start + len("<worker>"):end].strip()
+        answer = output[start + len("<worker>") : end].strip()
         if not answer:
             return ""
         return "\n".join(self.preview_lines(answer, self.BASH_TRANSCRIPT_PREVIEW_LINES))

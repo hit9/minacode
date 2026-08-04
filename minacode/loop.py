@@ -44,6 +44,7 @@ from minacode.base import (
     MinacodeError,
     ModelUsage,
     ProviderConfig,
+    RuntimeSettings,
     Text,
     ToolCall,
     ToolError,
@@ -231,7 +232,7 @@ class CommandLoop:
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict", "/hints": "hints",
         "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command", "/resume": "sessions_command",
-        "/worker": "worker_command",
+        "/worker": "worker_command", "/language": "language_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
@@ -268,6 +269,7 @@ class CommandLoop:
 - `/reason [EFFORT]` — Select or set reasoning effort (alias: `/effort`).
 - `/api [API]` — Select or set the request protocol used to reach the model.
 - `/set KEY VALUE` — Set `provider.*` and `runtime.*`.
+- `/language [NAME]` — Force or show the reply language; auto follows your messages.
 - `/yolo` — Toggle tool confirmations.
 - `/hints` — Toggle next-step quick hints.
 - `/strict` — Toggle strict tool-call schemas (OpenAI / DeepSeek).
@@ -1382,8 +1384,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             return str(value)
 
         usage = self.session.usage
-        provider = self.session.config.provider
-        resolved = provider.resolve()
         context_tokens = self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         context_budget = self.agent.context.request_token_budget()
         if usage.last_prompt_tokens and usage.last_prompt_budget:
@@ -1743,6 +1743,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
                 f"runtime.worker: {'on' if self.session.settings.worker else 'off'}",
+                f"runtime.language: {self.session.settings.language}",
                 f"worker.provider: {self.session.config.worker_provider or '(off)'}",
                 f"worker.model: {self.session.config.worker_model or '(inherit)'}",
                 f"worker.reasoning: {self.session.config.worker_reasoning or '(inherit)'}",
@@ -1797,6 +1798,23 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         name = self.session.rename(text)
         self.session.save_snapshot()
         return f"Session named: {name}\nResume with: minacode --resume {shlex.quote(name)}"
+
+    def language_command(self, args: str) -> str:
+        """Force this session's reply language, or show the current one. Session-scoped like other
+        runtime switches: it never touches the config file, and workers inherit it from the parent."""
+        if not args:
+            current = self.session.settings.language
+            if current == "auto":
+                return "Reply language: auto (follows your messages)"
+            return f"Reply language: {current}"
+        try:
+            language = RuntimeSettings.clean_language(args)
+        except ConfigError as error:
+            return str(error)
+        self.session.settings.language = language
+        if language == "auto":
+            return "Reply language reset to auto"
+        return f"Reply language set: {language}"
 
     def compact(self, args: str) -> str:
         if args.strip():

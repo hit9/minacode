@@ -140,3 +140,18 @@ def compaction_input(*, state: str, previous_summary: str, older_messages: str, 
             "Recent Messages (rewrite briefly inside summary):\n" + recent_messages,
         ]
     )
+
+
+def language_directive(language: str) -> str:
+    """The fixed LANGUAGE OVERRIDE block appended to the system prompt when the user forced a
+    reply language, or "" for auto. A pure function of the value: no timestamps, session state, or
+    other volatile text, so the system prefix stays prompt-cache stable."""
+    if not language or language.lower() == "auto":
+        return ""
+    return (
+        "LANGUAGE OVERRIDE:\n"
+        f"- The user forced the reply language to {language}: think and write in {language} from "
+        "the first reasoning/thinking token through the final answer, overriding the dominant-"
+        "language rule above. An explicit per-task language request still overrides this. Keep "
+        "code, identifiers, paths, and commands verbatim."
+    )

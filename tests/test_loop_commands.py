@@ -1,6 +1,7 @@
 """CommandLoop surfaces around a turn: the input queue, slash commands, skills, transcript
 rendering, and status output."""
 
+import itertools
 import json
 import os
 import time
@@ -250,7 +251,7 @@ def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
             steps = divider_glow_steps(loop.queue_divider_fragments())
             heads.append(min(range(len(steps)), key=lambda index: (steps[index] is None, steps[index])))
 
-    assert [second - first for first, second in zip(heads, heads[1:], strict=False)] == [1, 1, 1, 1, 1]
+    assert [second - first for first, second in itertools.pairwise(heads)] == [1, 1, 1, 1, 1]
 
 
 def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
