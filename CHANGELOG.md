@@ -26,6 +26,10 @@
   `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
   and re-read after any file change or stale-anchor error. The old wording only named the format and
   the inclusive range, giving the model no instruction against deriving anchors itself.
+- The status bar no longer appends a separate `worker:` segment: while a worker is alive, the
+  leading provider/model segment shows the worker's provider and model instead of the parent's,
+  suffixed `·worker`. The bar tracks what is actually running; it still warns while a delegation
+  is in flight and returns to the parent's values after `/worker reset`.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a
@@ -39,6 +43,10 @@
   and `/worker reset` clears the worker and tells the parent model via a session event.
 
 ### Fixed
+- Fix a worker crash when the worker model emitted text beside a tool call: the worker's output
+  wrapper assumed every Agent emission was a LogLine and built `LogBlock([str])`, which
+  `LogBlock.walk` rejects with `'str' object has no attribute 'walk'` at render time. Bare strings
+  are now wrapped into LogLine items before reaching the parent's log stream.
 - Make `/worker reset` finish the worker runtime it discards: stop and clean up its background
   jobs, remove a disk-only worker after the parent is resumed, and keep the live worker reachable
   with an actionable error if its snapshot cannot be deleted. This prevents orphaned processes and

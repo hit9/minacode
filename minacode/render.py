@@ -949,10 +949,20 @@ class StatusBar:
         return self.sweep_fragments(text) if sweep else self.styled_fragments(entries)
 
     def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
-        provider = self.session.config.provider
+        worker = self.session.worker
+        if worker is not None:
+            # A live worker is what is actually running: its provider/model replaces the parent's
+            # in the leading segment, marked with a worker suffix instead of a separate segment.
+            # warn while a delegation is in flight, plain otherwise.
+            config = worker.config
+            lead_role = "warn" if worker._active_turn_messages else "provider"
+        else:
+            config = self.session.config
+            lead_role = "provider"
+        provider = config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
-        reason = provider.reasoning
-        parts = [(self.session.config.active_provider + "/" + model, "provider"), (reason, "reason")]
+        name = config.active_provider + "/" + model + ("·worker" if worker is not None else "")
+        parts = [(name, lead_role), (provider.reasoning, "reason")]
 
         mcp_status = self.mcp_status()
         if mcp_status:
@@ -963,13 +973,6 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        worker = self.session.worker
-        if worker is not None:
-            # The segment tells the user the next delegation continues the same worker; reset has a
-            # reference point. warn while a delegation is in flight, plain otherwise.
-            worker_model = worker.config.provider.model.rsplit("/", 1)[-1] or "(no model)"
-            worker_role = "warn" if worker._active_turn_messages else "provider"
-            parts.append((f"worker:{worker.config.active_provider}/{worker_model}", worker_role))
         usage = self.session.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;

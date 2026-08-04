@@ -501,10 +501,39 @@ def test_status_bar_shows_worker_segment(tmp_path):
     parent = _delegate_session(tmp_path)
     bar = StatusBar(parent)
     texts = [text for text, _ in bar.entries(show_elapsed=False)]
-    assert not any(text.startswith("worker:") for text in texts)
+    parent_lead = parent.config.active_provider + "/" + (parent.config.provider.model.rsplit("/", 1)[-1] or "(no model)")
+    assert parent_lead in texts and not any(text.endswith("·worker") for text in texts)
+
+    # A live worker replaces the parent's provider/model in the leading segment, suffixed.
     parent.worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     texts = [text for text, _ in bar.entries(show_elapsed=False)]
-    assert any(text.startswith("worker:") for text in texts)
+    assert parent_lead + "·worker" in texts
+    assert parent_lead not in texts
+
+
+# The engine publishes the model's own text as bare strings (content beside tool calls), so the
+# worker output wrapper must wrap them into LogLine items: LogBlock.walk crashes on a str item.
+def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    tool_call = ToolCall(id="call1", name="Note", args={"action": "view"})
+    model = FakeModelClient(
+        [
+            ({"role": "assistant", "content": "thinking out loud"}, [tool_call], "thinking out loud"),
+            ({"role": "assistant", "content": "done"}, [], "done"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    _delegate_call(parent, runner, action="send", order="o")
+
+    assert outputs, "the worker turn produced no output"
+    rendered = [str(block) for block in outputs if isinstance(block, LogBlock)]  # str items raised before the fix
+    assert any("thinking out loud" in text for text in rendered)
 
 
 # 12. the Agent lives on the worker Session, not in a module-level dict: a fresh worker object

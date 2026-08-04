@@ -15,7 +15,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from minacode.base import Json, LogBlock, ToolError
+from minacode.base import Json, LogBlock, LogLine, LogRole, ToolError
 from minacode.prompts import WORKER_PROMPT
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools.base import Tool
@@ -46,6 +46,20 @@ WORKER_TOOLS: tuple[str, ...] = (
 # — e.g. after /resume re-enters the same parent — always gets a fresh Agent: the old one dies with
 # the old worker it was bound to, instead of lingering in a module-level dict keyed by uid.
 
+
+def _worker_output(runner: ToolRunner):
+    """Wrap the worker Agent's output for the parent's log stream.
+
+    The engine publishes LogLine items on the runner paths but bare strings for the model's own
+    text (engine.py's output_fn calls), so the wrapper cannot assume a LogLine: LogBlock.walk
+    only recognizes LogLine and LogBlock items and crashes on a str."""
+
+    def emit(block) -> None:
+        if isinstance(block, str):
+            block = LogLine("", block, LogRole.AUTO)
+        runner.output_fn(LogBlock([block]))
+
+    return emit
 
 class DelegateTool(Tool):
     NAME = "Delegate"
@@ -127,7 +141,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # Same pattern as Tool.resolved_schemas and Session's local imports.
             from minacode.engine import Agent
 
-            agent = Agent(worker, input_fn=runner.input_fn, output_fn=lambda block: runner.output_fn(LogBlock([block])))
+            agent = Agent(worker, input_fn=runner.input_fn, output_fn=_worker_output(runner))
             # Reuse the parent's live region: serial delegation means only one stream at a time.
             agent.tools.live_start = runner.live_start
             agent.tools.live_output = runner.live_output
