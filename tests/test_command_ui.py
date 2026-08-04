@@ -15,6 +15,7 @@ from minacode.base import (
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
     SELECTION_BACK,
+    Config,
     ModelError,
     ProviderConfig,
 )
@@ -681,7 +682,9 @@ def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path):
     command_loop.interactive_input = True
     command_loop.session.config.providers["alt"] = ProviderConfig(model="m")
     calls = []
-    picks = iter(["alt", "off"])
+    # First picker: provider "alt", then the cascade's model/reason pickers (default keeps the
+    # entry's values), then a second /worker provider that clears with "off".
+    picks = iter(["alt", "default", "default", "off"])
 
     def select(title, choices, **kwargs):
         calls.append((title, choices, kwargs))
@@ -693,12 +696,18 @@ def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path):
     assert calls[0][0] == "Worker provider"
     assert "off" in calls[0][1]
     assert calls[0][1][-1] == "off"  # the clear entry trails the provider names
+    assert [call[0] for call in calls] == ["Worker provider", "Worker model", "Worker reasoning"]
     assert first.startswith("Set worker provider = alt")
+    assert "worker model: (inherit)" in first
+    assert "worker reasoning: (inherit)" in first
     assert command_loop.session.config.worker_provider == "alt"
+    assert command_loop.session.config.worker_model == ""
+    assert command_loop.session.config.worker_reasoning == ""
 
     cleared = command_loop.worker_command("provider")
-    assert calls[1][2]["labels"] == {"alt": "alt (current)"}  # the live entry is marked
-    assert cleared == "worker provider: off"
+    assert calls[3][0] == "Worker provider"
+    assert calls[3][2]["labels"] == {"alt": "alt (current)"}  # the live entry is marked
+    assert cleared == "worker provider: off"  # picking "off" clears without cascading
     assert command_loop.session.config.worker_provider == ""
 
 
@@ -769,5 +778,92 @@ def test_worker_model_and_reason_pickers_clear_via_default(tmp_path):
     command_loop.select_choice = lambda *_args, **_kwargs: next(picks)
     assert command_loop.worker_command("model") == "worker model: (inherit)"
     assert command_loop.worker_command("reason") == "worker reasoning: (inherit)"
+    assert command_loop.session.config.worker_model == ""
+    assert command_loop.session.config.worker_reasoning == ""
+
+
+# --- /worker provider cascade: the no-arg picker flows provider -> model -> reasoning. ---
+
+
+def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    command_loop.session.config.providers["fast"] = ProviderConfig(model="fast-model", available_models=("fast-model", "fast-mini"))
+    worker = SimpleNamespace(config=Config())  # a live worker session, like session.worker after a spawn
+    command_loop.session.worker = worker
+    titles = []
+    discovered = []
+    picks = iter(["fast", "fast-mini", "high"])
+
+    def select(title, choices, **kwargs):
+        titles.append(title)
+        return next(picks)
+
+    command_loop.select_choice = select
+    command_loop.remote_models = lambda entry: discovered.append(entry.model) or ("remote-mini",)
+
+    result = command_loop.worker_command("provider")
+
+    assert titles == ["Worker provider", "Worker model", "Worker reasoning"]
+    assert discovered == ["fast-model"]  # discovery ran against the newly selected entry
+    assert command_loop.session.config.worker_provider == "fast"
+    assert command_loop.session.config.worker_model == "fast-mini"
+    assert command_loop.session.config.worker_reasoning == "high"
+    assert "Set worker provider = fast" in result
+    assert "Set worker.model = fast-mini" in result
+    assert "Set worker.reasoning = high" in result
+    # the live worker's detached entry reflects all three stages
+    assert worker.config.active_provider == "fast"
+    assert worker.config.providers["fast"].model == "fast-mini"
+    assert worker.config.providers["fast"].reasoning == "high"
+
+
+def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_stages(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    command_loop.session.config.providers["fast"] = ProviderConfig(model="fast-model", available_models=("fast-model",))
+    command_loop.session.config.worker_model = "m-x"
+    command_loop.session.config.worker_reasoning = "high"
+    picks = iter(["fast", SELECTION_BACK])
+    command_loop.select_choice = lambda *_args, **_kwargs: next(picks)
+    command_loop.remote_models = lambda _entry: ()
+
+    result = command_loop.worker_command("provider")
+
+    assert command_loop.session.config.worker_provider == "fast"  # the provider stage landed
+    assert command_loop.session.config.worker_model == "m-x"  # model/reasoning untouched
+    assert command_loop.session.config.worker_reasoning == "high"
+    assert "Set worker provider = fast" in result
+    assert "worker model: unchanged" in result
+    assert "worker reasoning" not in result
+
+
+def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    command_loop.session.config.providers["fast"] = ProviderConfig(model="fast-model", available_models=("fast-model",))
+    command_loop.session.config.worker_reasoning = "high"
+    picks = iter(["fast", "fast-model", None])  # None = the picker was dismissed
+    command_loop.select_choice = lambda *_args, **_kwargs: next(picks)
+    command_loop.remote_models = lambda _entry: ()
+
+    result = command_loop.worker_command("provider")
+
+    assert command_loop.session.config.worker_provider == "fast"
+    assert command_loop.session.config.worker_model == "fast-model"
+    assert command_loop.session.config.worker_reasoning == "high"  # untouched by the dismissal
+    assert "Set worker.model = fast-model" in result
+    assert "worker reasoning: unchanged" in result
+
+
+def test_worker_provider_typed_form_does_not_cascade(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.config.providers["alt"] = ProviderConfig(model="m")
+    command_loop.select_choice = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("the typed form opens no picker"))
+
+    result = command_loop.worker_command("provider alt")
+
+    assert result.startswith("Set worker provider = alt")
+    assert command_loop.session.config.worker_provider == "alt"
     assert command_loop.session.config.worker_model == ""
     assert command_loop.session.config.worker_reasoning == ""

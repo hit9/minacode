@@ -1489,8 +1489,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 worker_rows.append(
                     (
                         "cache",
-                        f"`{progress_bar(worker_usage.last_cached_prompt_tokens, worker_usage.last_prompt_tokens)}` last read `{token_count(worker_usage.last_cached_prompt_tokens)} / {token_count(worker_usage.last_prompt_tokens)} ({worker_last_cache_ratio:.1f}%)`, write `{token_count(worker_usage.last_cache_write_prompt_tokens)}`; "
-                        f"session read `{token_count(worker_usage.cached_prompt_tokens)} / {token_count(worker_usage.prompt_tokens)} ({worker_cache_ratio:.1f}%)`, write `{token_count(worker_usage.cache_write_prompt_tokens)}`",
+                        (
+                            f"`{progress_bar(worker_usage.last_cached_prompt_tokens, worker_usage.last_prompt_tokens)}` last read `{token_count(worker_usage.last_cached_prompt_tokens)} / {token_count(worker_usage.last_prompt_tokens)} ({worker_last_cache_ratio:.1f}%)`, write `{token_count(worker_usage.last_cache_write_prompt_tokens)}`; "
+                            f"session read `{token_count(worker_usage.cached_prompt_tokens)} / {token_count(worker_usage.prompt_tokens)} ({worker_cache_ratio:.1f}%)`, write `{token_count(worker_usage.cache_write_prompt_tokens)}`"
+                        ),
                     )
                 )
             else:
@@ -2081,9 +2083,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         )
 
     def _worker_provider_picker(self) -> str:
-        summary = (
-            "worker provider: " + (self.session.config.worker_provider or "(off)") + "\nproviders: " + ", ".join(sorted(self.session.config.providers))
-        )
+        summary = "worker provider: " + (self.session.config.worker_provider or "(off)") + "\nproviders: " + ", ".join(sorted(self.session.config.providers))
         choices = tuple(sorted(self.session.config.providers))
         if "off" not in choices:
             choices = (*choices, "off")
@@ -2091,7 +2091,25 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         choice = self.select_choice("Worker provider", choices, labels={current: current + " (current)"} if current else {}, current=current)
         if not isinstance(choice, str):
             return "No change" if choice is SELECTION_BACK else summary
-        return self._worker_set_provider(choice)
+        provider_result = self._worker_set_provider(choice)
+        if self.session.config.worker_provider != choice:
+            # Picking "off" cleared the entry (or the set failed): there is no newly selected
+            # provider entry to pick a model for, so the cascade stops after the provider set.
+            return provider_result
+        # One setup flow, like /provider: worker provider -> worker model -> worker reasoning.
+        # Backing out of any stage keeps the stages already set and reports what landed.
+        lines = [provider_result]
+        set_ok, model_result = self._worker_model_stage()
+        if not set_ok:
+            lines.append("worker model: unchanged")
+            return "\n".join(lines)
+        lines.append(model_result)
+        set_ok, reason_result = self._worker_reason_stage()
+        if not set_ok:
+            lines.append("worker reasoning: unchanged")
+            return "\n".join(lines)
+        lines.append(reason_result)
+        return "\n".join(lines)
 
     def _worker_set_provider(self, name: str) -> str:
         if name == "off" and "off" not in self.session.config.providers:
@@ -2118,6 +2136,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return result
 
     def _worker_model_picker(self) -> str:
+        """Standalone /worker model picker: one selection, no cascade."""
+        return self._worker_model_stage()[1]
+
+    def _worker_model_stage(self) -> tuple[bool, str]:
+        """Pick a worker model override; returns (set, message). Shared by /worker model and the
+        /worker provider cascade so the cascade can tell a set from an abort."""
         entry = self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider]
         configured = tuple(dict.fromkeys(entry.available_models))
         remote = tuple(model for model in self.remote_models(entry) if model not in configured)
@@ -2131,8 +2155,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         labels["default"] = "default - inherit the provider entry's model"
         choice = self.select_choice("Worker model", choice_values, labels=labels, current=override)
         if not isinstance(choice, str):
-            return "No change" if choice is SELECTION_BACK else ("worker model: " + (override or "(inherit)"))
-        return self._worker_set_model(choice)
+            return False, ("No change" if choice is SELECTION_BACK else ("worker model: " + (override or "(inherit)")))
+        return True, self._worker_set_model(choice)
 
     def _worker_set_model(self, value: str) -> str:
         if value != "default":
@@ -2151,6 +2175,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return "Set worker.model = " + value
 
     def _worker_reason_picker(self) -> str:
+        """Standalone /worker reason picker: one selection, no cascade."""
+        return self._worker_reason_stage()[1]
+
+    def _worker_reason_stage(self) -> tuple[bool, str]:
+        """Pick a worker reasoning effort; returns (set, message). Shared by /worker reason and
+        the /worker provider cascade."""
         current = self.session.config.worker_reasoning
         choices = (*REASONING_CHOICES, "default")
         labels = {"default": "default - inherit the provider entry's reasoning"}
@@ -2158,8 +2188,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             labels[current] = current + " (current)"
         choice = self.select_choice("Worker reasoning", choices, labels=labels, current=current)
         if not isinstance(choice, str):
-            return "No change" if choice is SELECTION_BACK else ("worker reasoning: " + (current or "(inherit)"))
-        return self._worker_set_reasoning(choice)
+            return False, ("No change" if choice is SELECTION_BACK else ("worker reasoning: " + (current or "(inherit)")))
+        return True, self._worker_set_reasoning(choice)
 
     def _worker_set_reasoning(self, value: str) -> str:
         if value != "default":

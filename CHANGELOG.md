@@ -71,6 +71,12 @@
   pickers as `/provider` `/model` `/reason` (provider entries plus `off`, the worker entry's
   models plus `default`, reasoning efforts plus `default`), and `/worker` tab-completes its
   subcommands and their values.
+- `/worker provider` without an argument now flows on into the worker model and then the
+  reasoning pickers after the provider is set, mirroring the parent's `/provider` chain, so a
+  fresh worker setup is one selection flow instead of three commands; backing out of any stage
+  keeps the stages already set and the returned message says what landed. The typed
+  `provider NAME` still sets only the provider, and the worker keeps the provider entry's `api`
+  — there is no `/worker api`.
 
 ### Fixed
 - Fix a worker crash when the worker model emitted text beside a tool call: the worker's output

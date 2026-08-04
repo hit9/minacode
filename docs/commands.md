@@ -89,8 +89,11 @@ this off permanently.
 percent — or `worker: no active session` plus the configured `[worker] provider` when no worker
 exists; `on`/`off` toggle the `runtime.worker` setting, and `reset` clears the worker's context
 (file changes and merged diffs survive). `provider` opens a picker over the provider entries —
-with `off` at the end to clear — and `provider NAME` re-targets the worker immediately (and for
-future spawns), while `provider off` clears the entry. `model` and `reason` pick from the worker's
+with `off` at the end to clear — and choosing one flows on into the worker model and then the
+reasoning pickers, mirroring `/provider`'s chain (backing out of any stage keeps the earlier
+stages already set); `provider NAME` re-targets the worker immediately and for future spawns
+without the cascade, while `provider off` clears the entry. The worker keeps the provider
+entry's `api` — there is no `/worker api` — and `model` and `reason` pick from the worker's
 entry models and reasoning efforts, with `default` clearing an override back to inheriting the
 provider entry's value; tab completion offers the subcommands and their values. The `Delegate`
 tool block itself is fixed when the session starts from the configured `[worker] provider`:
