@@ -84,10 +84,17 @@ this off permanently.
 
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
-**`/worker [status|reset|on|off]`** — Inspect or control the worker session: `status` (default)
-shows whether worker delegation is on and whether a worker exists, `on`/`off` toggle the
-`runtime.worker` setting, and `reset` clears the worker's context (file changes and merged diffs
-survive). See [Worker delegation](configuration.md#worker-delegation).
+**`/worker [status|reset|on|off|provider|model|reason]`** — Inspect or control the worker session:
+`status` (default) shows whether worker delegation is on and whether a worker exists, `on`/`off`
+toggle the `runtime.worker` setting, and `reset` clears the worker's context (file changes and
+merged diffs survive). `provider` lists the worker's provider entry — or `(off)` when delegation is
+disabled — and the available entries; `provider NAME` re-targets the worker immediately (and for
+future spawns), and `provider off` clears the entry. The `Delegate` tool block itself is fixed when
+the session starts from the configured `[worker] provider`: switching the provider mid-session
+tunes an already-enabled delegation, but enabling delegation from scratch takes effect after a
+restart. `model` and `reason` show or set temporary overrides for the worker's model and reasoning
+effort, and `default` clears an override back to inheriting the provider entry's value. See [Worker
+delegation](configuration.md#worker-delegation).
 
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
 used to reach the model. `/provider` and `/model` also confirm it as a step in their selection

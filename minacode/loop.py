@@ -1382,9 +1382,36 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         running_jobs = len(self.session.running_jobs())
         if self.session.jobs:
             activity.append(("jobs", f"{running_jobs}/{len(self.session.jobs)}"))
-        rows = [
+
+        def render_table(rows: list[tuple[str, str]]) -> str:
+            return "\n".join(
+                [
+                    "| status | value |",
+                    "| --- | --- |",
+                    *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
+                ]
+            )
+
+        # Common facts first (workspace, session, goal, runtime), then the parent's rows, then the
+        # worker's — /status is an explicit query, so the worker section appears whenever a worker
+        # session exists, in flight or not.
+        common_rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
+        ]
+        if self.session.state.goal:
+            common_rows.append(("goal", self.session.state.goal))
+        runtime = [
+            f"yolo {'on' if self.session.settings.yolo else 'off'}",
+            f"steps {self.session.settings.max_steps}",
+            CodeIndex.status_line(index_status, index_message),
+        ]
+        update = UpdateChecker(self.session).status_line().removeprefix("update: ")
+        if update not in {"current", "unknown"}:
+            runtime.append("update " + update)
+        common_rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
+
+        parent_rows = [
             (
                 "model",
                 f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{resolved.api}`; reasoning `{provider.reasoning}`",
@@ -1401,45 +1428,65 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 else "(no requests yet)",
             ),
         ]
-        worker = self.session.worker
-        if worker is not None:
-            worker_provider = worker.config.provider
-            worker_usage = worker.usage
-            if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
-                worker_ctx = min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)
-            else:
-                worker_ctx = worker.state.context_percent
-            worker_state = "delegating" if worker._active_turn_messages else "idle"
-            rows.append(
-                (
-                    "worker",
-                    f"`{worker.config.active_provider}/{worker_provider.model or '(empty)'}`; reasoning `{worker_provider.reasoning}`; "
-                    f"state `{worker_state}`; context `{worker_ctx}%`; rounds `{worker.state.round_count}`",
-                )
-            )
-        else:
-            rows.append(("worker", f"(none; `[worker] provider` = `{self.session.config.worker_provider or '(off)'}`)"))
-        if self.session.state.goal:
-            rows.append(("goal", self.session.state.goal))
         visible_activity = [(name, value) for name, value in activity if value]
         if visible_activity:
-            rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
+            parent_rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
         if usage.calls:
-            rows.append(("usage", f"calls `{usage.calls}`; total `{token_count(usage.total_tokens)}`"))
-        runtime = [
-            f"yolo {'on' if self.session.settings.yolo else 'off'}",
-            f"steps {self.session.settings.max_steps}",
-            CodeIndex.status_line(index_status, index_message),
-        ]
-        update = UpdateChecker(self.session).status_line().removeprefix("update: ")
-        if update not in {"current", "unknown"}:
-            runtime.append("update " + update)
-        rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
+            parent_rows.append(("usage", f"calls `{usage.calls}`; total `{token_count(usage.total_tokens)}`"))
+
+        worker = self.session.worker
+        worker_rows: list[tuple[str, str]] = []
+        if worker is not None:
+            worker_provider = worker.config.provider
+            worker_rows.append(
+                (
+                    "model",
+                    f"`{worker.config.active_provider}/{worker_provider.model or '(empty)'}`; api `{worker_provider.resolve().api}`; reasoning `{worker_provider.reasoning}`",
+                )
+            )
+            worker_usage = worker.usage
+            if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
+                worker_rows.append(
+                    (
+                        "context",
+                        (
+                            f"`{progress_bar(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget)}` "
+                            f"`~{token_count(worker_usage.last_prompt_tokens)} / {token_count(worker_usage.last_prompt_budget)}` "
+                            f"(`{min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)}%`)"
+                        ),
+                    )
+                )
+            else:
+                worker_rows.append(("context", "(no requests yet)"))
+            if worker_usage.prompt_tokens:
+                worker_cache_ratio = worker_usage.cached_prompt_tokens * 100 / worker_usage.prompt_tokens
+                worker_last_cache_ratio = (worker_usage.last_cached_prompt_tokens * 100 / worker_usage.last_prompt_tokens) if worker_usage.last_prompt_tokens else 0
+                worker_rows.append(
+                    (
+                        "cache",
+                        f"`{progress_bar(worker_usage.last_cached_prompt_tokens, worker_usage.last_prompt_tokens)}` last read `{token_count(worker_usage.last_cached_prompt_tokens)} / {token_count(worker_usage.last_prompt_tokens)} ({worker_last_cache_ratio:.1f}%)`, write `{token_count(worker_usage.last_cache_write_prompt_tokens)}`; "
+                        f"session read `{token_count(worker_usage.cached_prompt_tokens)} / {token_count(worker_usage.prompt_tokens)} ({worker_cache_ratio:.1f}%)`, write `{token_count(worker_usage.cache_write_prompt_tokens)}`",
+                    )
+                )
+            else:
+                worker_rows.append(("cache", "(no requests yet)"))
+            worker_state = "delegating" if worker._active_turn_messages else "idle"
+            worker_rows.append(("state", f"state `{worker_state}`; rounds `{worker.state.round_count}`"))
+        else:
+            worker_rows.append(("worker", f"(none; `[worker] provider` = `{self.session.config.worker_provider or '(off)'}`)"))
         return "\n".join(
             [
-                "| status | value |",
-                "| --- | --- |",
-                *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
+                "### Common",
+                "",
+                render_table(common_rows),
+                "",
+                "### Parent",
+                "",
+                render_table(parent_rows),
+                "",
+                "### Worker",
+                "",
+                render_table(worker_rows),
             ]
         )
 
@@ -1689,6 +1736,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
                 f"runtime.worker: {'on' if self.session.settings.worker else 'off'}",
                 f"worker.provider: {self.session.config.worker_provider or '(off)'}",
+                f"worker.model: {self.session.config.worker_model or '(inherit)'}",
+                f"worker.reasoning: {self.session.config.worker_reasoning or '(inherit)'}",
             ]
         )
 
@@ -1940,10 +1989,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return "quick hints: " + ("on" if self.session.settings.quick_hints else "off")
 
     def worker_command(self, args: str) -> str:
-        from minacode.tools.delegate import DelegateTool
+        from minacode.tools.delegate import DelegateTool, worker_provider_config
 
-        arg = args.strip().lower()
-        if arg == "reset":
+        parts = args.split()
+        subcommand = parts[0].lower() if parts else ""
+        rest = parts[1:]
+        if subcommand == "reset" and not rest:
             result = DelegateTool(self.session, [{"action": "reset"}]).call()
             if 'action="reset"' not in result:
                 return result
@@ -1959,15 +2010,85 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             )
             self.session.save_snapshot()
             return result + "\nWorker context was reset; the next delegation starts from scratch."
-        if arg == "on":
+        if subcommand == "on" and not rest:
             self.session.settings.worker = True
             return "worker: on (the tool block changes, so the prompt-cache scope is recompiled once)"
-        if arg == "off":
+        if subcommand == "off" and not rest:
             self.session.settings.worker = False
             return "worker: off (the worker's context stays on disk; /worker on resumes it)"
-        if arg in {"", "status"}:
+        if subcommand in {"", "status"} and not rest:
             return DelegateTool(self.session, [{"action": "status"}]).call()
-        return "Usage: /worker [status|reset|on|off]"
+        if subcommand == "provider":
+            if len(rest) > 1:
+                return "Usage: /worker provider [NAME]"
+            if not rest:
+                choices = ", ".join(sorted(self.session.config.providers))
+                return "worker provider: " + (self.session.config.worker_provider or "(off)") + "\nproviders: " + choices
+            name = rest[0]
+            if name == "off" and "off" not in self.session.config.providers:
+                # "off" names the clearing action unless a provider entry is literally named "off"
+                # (existence in config.providers wins). The Delegate gate is frozen per session, so
+                # this only clears the next spawn's provider; the live worker keeps running on its
+                # current provider and the tool block never flips mid-session.
+                self.session.config.worker_provider = ""
+                return "worker provider: off"
+            if name not in self.session.config.providers:
+                return "Unknown provider: " + name
+            self.session.config.worker_provider = name
+            worker = self.session.worker
+            if worker is not None:
+                if worker.config.providers is self.session.config.providers:
+                    worker.config.providers = dict(worker.config.providers)
+                worker.config.providers[name] = worker_provider_config(self.session.config, name)
+                worker.config.active_provider = name
+            result = "Set worker provider = " + name
+            if not self.session.worker_tool_enabled:
+                # Delegation was off at session start: the frozen gate keeps the tool block off no
+                # matter what the live config says, so the change only counts after a restart.
+                result += " (delegation is off this session; takes effect after a restart)"
+            return result
+        if subcommand == "model":
+            if len(rest) > 1:
+                return "Usage: /worker model [MODEL]"
+            if not rest:
+                return "worker model: " + (self.session.config.worker_model or "(inherit)")
+            value = rest[0]
+            if value != "default":
+                self.session.config.worker_model = value
+            else:
+                self.session.config.worker_model = ""
+            worker = self.session.worker
+            if worker is not None:
+                # Copy-on-write: replace the live worker's active entry with a fresh detached copy
+                # carrying the current overrides (or the entry's own values once cleared).
+                if worker.config.providers is self.session.config.providers:
+                    worker.config.providers = dict(worker.config.providers)
+                worker.config.providers[worker.config.active_provider] = worker_provider_config(self.session.config, worker.config.active_provider)
+            if value == "default":
+                return "worker model: (inherit)"
+            return "Set worker.model = " + value
+        if subcommand == "reason":
+            if len(rest) > 1:
+                return "Usage: /worker reason [EFFORT]"
+            if not rest:
+                return "worker reasoning: " + (self.session.config.worker_reasoning or "(inherit)")
+            value = rest[0]
+            if value != "default":
+                # "off" is a valid effort, never the clearing word; only "default" clears.
+                if value not in REASONING_CHOICES:
+                    return "Usage: /worker reason " + "|".join(REASONING_CHOICES)
+                self.session.config.worker_reasoning = value
+            else:
+                self.session.config.worker_reasoning = ""
+            worker = self.session.worker
+            if worker is not None:
+                if worker.config.providers is self.session.config.providers:
+                    worker.config.providers = dict(worker.config.providers)
+                worker.config.providers[worker.config.active_provider] = worker_provider_config(self.session.config, worker.config.active_provider)
+            if value == "default":
+                return "worker reasoning: (inherit)"
+            return "Set worker.reasoning = " + value
+        return "Usage: /worker [status|reset|on|off|provider|model|reason]"
 
     def strict(self, args: str) -> str:
         if args:

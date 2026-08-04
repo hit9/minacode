@@ -21,6 +21,7 @@ from minacode.session import Session, SessionSnapshotStore
 from minacode.tools.base import Tool
 
 if TYPE_CHECKING:
+    from minacode.base import Config, ProviderConfig
     from minacode.runner import ToolRunner
 
 # The worker's tool set. Exclusions, and why: Delegate (would recurse), Ask (blocks on user input
@@ -61,6 +62,24 @@ def _worker_output(runner: ToolRunner):
 
     return emit
 
+
+def worker_provider_config(config: Config, provider_name: str) -> ProviderConfig:
+    """The detached provider entry a worker should run on, with [worker] overrides applied.
+
+    A worker must never share a ProviderConfig object with its parent: the /worker
+    provider|model|reason live-switch path replaces the worker's active entry in place, and
+    dataclasses.replace is shallow, so a shared object would leak worker-only changes into the
+    parent's provider. This helper is the single place that copies the entry and folds in the
+    [worker] model/reasoning overrides (empty string = inherit the entry's own value); both
+    _spawn_worker and the live-switch path in loop.py call it."""
+    provider = replace(config.providers[provider_name])
+    if config.worker_model:
+        provider.model = config.worker_model
+    if config.worker_reasoning:
+        provider.reasoning = config.worker_reasoning
+    return provider
+
+
 class DelegateTool(Tool):
     NAME = "Delegate"
     runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the cancel wiring
@@ -99,6 +118,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         once, which is what that flag actually buys."""
         payload = self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
         return str(payload.get("action") or "").strip() == "send"
+
+    def short_args(self) -> list[str]:
+        """The root log line is just the action: `Delegate send`, never the order blob."""
+        payload = self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
+        action = str(payload.get("action") or "").strip()
+        return [action] if action else [""]
 
     def call(self) -> str:
         payload = self.single_dict_arg("Delegate requires named fields")
@@ -179,7 +204,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
     def _spawn_worker(self, parent: Session) -> Session:
         uid = parent.uid + ".w"
         provider_name = parent.config.worker_provider or parent.config.active_provider
-        config = replace(parent.config, active_provider=provider_name)
+        # replace() is shallow, so the worker needs its own providers dict with a detached copy of
+        # the entry it runs on: the /worker live-switch mutates that entry in place, and the
+        # snapshot-load path below receives this same config so a resumed worker picks up the
+        # current provider/model/reasoning overrides.
+        provider = worker_provider_config(parent.config, provider_name)
+        config = replace(parent.config, active_provider=provider_name, providers={**parent.config.providers, provider_name: provider})
         settings = replace(parent.settings)
         try:
             worker = SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=parent.cwd)

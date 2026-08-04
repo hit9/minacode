@@ -26,11 +26,14 @@
   `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
   and re-read after any file change or stale-anchor error. The old wording only named the format and
   the inclusive range, giving the model no instruction against deriving anchors itself.
-- While a worker is alive the status bar tracks what is actually running: it leads with a yellow
-  `[worker]` marker and shows the worker's provider, model, reasoning, and context/cache usage in
-  place of the parent's, returning to the parent's values after `/worker reset`. While a delegation
-  is in flight the working divider carries the same yellow `[worker]` prefix, and `/status` reports
-  the worker's provider, model, reasoning, state, context, and rounds beside the parent's rows.
+- The status bar shows the worker only while a delegation is actually in flight: it leads with a
+  yellow `[worker]` marker and reads the worker's provider, model, reasoning, and context/cache
+  usage, returning to the parent's values the moment the worker answers (the engine clears the
+  in-flight turn in `finish_turn`). An idle worker no longer shadows the parent's row. The working
+  divider carries the same yellow `[worker]` prefix while a delegation runs. `/status` is now
+  sectioned — common workspace/session/goal/runtime first, then the parent's model/context/cache/
+  activity/usage, then the worker's model/context/state rows whenever a worker session exists (or
+  the configured `[worker] provider` line when none does).
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a
@@ -42,6 +45,21 @@
   order and optional `max_steps`), `reset`, `status`. `runtime.worker` gates the tool block and thus
   the prompt-cache scope; turning it off does not clear the worker's context. `/worker` shows status
   and `/worker reset` clears the worker and tells the parent model via a session event.
+- `/worker` now switches the worker's provider, model, and reasoning effort at runtime, mirroring
+  the parent's `/provider` `/model` `/reason` temporary switches: `/worker provider NAME` re-targets
+  the worker (`/worker provider off` clears the entry), `/worker model MODEL` and
+  `/worker reason EFFORT` override the entry's model and reasoning effort, and `default` clears a
+  model/reasoning override back to inheriting the entry's value. A change applies to a live worker
+  immediately and to future spawns, and is session-scoped like `/provider`; the same defaults can
+  be set persistently with the new `[worker] model` and `[worker] reasoning` keys. The `Delegate`
+  tool block is fixed at session start, so a runtime switch tunes an already-enabled delegation but
+  never flips the tool block mid-session, and enabling delegation from scratch (no `[worker]
+  provider` at start) takes effect after a restart. The worker's active provider entry is now always
+  a detached copy, so a switch can never leak into the parent's provider.
+- A finished `Delegate send` now renders as a proper log block: the root line reads `Delegate
+  send` (no argument blob), a summary line reports steps, elapsed, files, and a stopped-at-max-steps
+  flag, and the worker's answer is previewed below like a Bash transcript — the raw envelope tags
+  stay out of the log.
 
 ### Fixed
 - Fix a worker crash when the worker model emitted text beside a tool call: the worker's output

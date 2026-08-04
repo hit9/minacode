@@ -240,6 +240,10 @@ class ToolRunner:
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
     EDIT_PATH_RE: ClassVar[re.Pattern] = re.compile(r'<Edit\s+path=(".*?")')
     MCP_CALL_RE: ClassVar[re.Pattern] = re.compile(r"(?s)<MCPCall\b[^>]*>\n?(.*?)\n?</MCPCall>\s*$")
+    # The envelope DelegateTool._send returns for a finished delegation: attributes in fixed order,
+    # the worker's answer wrapped in <worker> tags. Parsed with a couple of string scans — the
+    # format is ours, so no XML parser is needed.
+    DELEGATE_META_RE: ClassVar[re.Pattern] = re.compile(r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)">')
 
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
@@ -593,7 +597,7 @@ class ToolRunner:
         if call.name == "Note" and not failed and d.display:
             return self.with_batch_suffix(d.display.removeprefix("Note ").strip(), d.batch_suffix)
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
-        tree = d.nested_display or call.name == "Bash"
+        tree = d.nested_display or call.name in ("Bash", "Delegate")
         root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
         children = []
         if failed:
@@ -611,6 +615,13 @@ class ToolRunner:
                 children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         elif call.name == "Ask":
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
+        elif call.name == "Delegate":
+            summary = self.delegate_result_summary(output)
+            if summary:
+                children.append(LogLine("worker", summary, LogRole.META, LogEdge.BRANCH))
+                preview = self.delegate_answer_preview(output)
+                if preview:
+                    children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree:
@@ -695,6 +706,29 @@ class ToolRunner:
         if elapsed is not None:
             parts.append(f"{elapsed:.1f}s")
         return "→ " + " · ".join(parts)
+
+    def delegate_result_summary(self, output: str) -> str:
+        """The one-line summary of a finished Delegate send, from its envelope attributes."""
+        match = self.DELEGATE_META_RE.search(output)
+        if not match:
+            return ""
+        steps, elapsed, files, stopped = match.groups()
+        parts = [f"steps {steps}", elapsed, files]
+        if stopped == "true":
+            parts.append("stopped at max steps")
+        return " · ".join(parts)
+
+    def delegate_answer_preview(self, output: str) -> str:
+        """The worker's answer (the text between <worker> and </worker>), bounded like the Bash
+        transcript preview: clipped per line and capped at BASH_TRANSCRIPT_PREVIEW_LINES."""
+        start = output.find("<worker>")
+        end = output.find("</worker>")
+        if start < 0 or end <= start:
+            return ""
+        answer = output[start + len("<worker>"):end].strip()
+        if not answer:
+            return ""
+        return "\n".join(self.preview_lines(answer, self.BASH_TRANSCRIPT_PREVIEW_LINES))
 
     @staticmethod
     def human_size(num_bytes: int) -> str:

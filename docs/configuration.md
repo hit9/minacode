@@ -149,6 +149,8 @@ context across delegations until you reset it.
 ```toml
 [worker]
 provider = "anthropic"   # worker provider key; unset disables delegation
+model = ""               # optional: override the entry's model (inherit by default)
+reasoning = ""           # optional: override the entry's reasoning effort (inherit by default)
 
 [runtime]
 worker = true            # or /worker on
@@ -164,6 +166,17 @@ tool, skill library, and MCP servers, but only files and the repo really belong 
 `/worker reset` clears the worker's context. Turning delegation off or resetting the worker never
 removes file changes or merged diffs — the worker owns only its conversation, and reset drops that
 conversation (and the wrong beliefs it may have accumulated) on purpose.
+
+The worker's provider, model, and reasoning effort can be changed at runtime, mirroring the
+parent's `/provider` `/model` `/reason` temporary switches: `/worker provider NAME` re-targets the
+worker (`/worker provider off` clears the entry), `/worker model MODEL` and `/worker reason EFFORT`
+override the entry's model and reasoning effort, and `/worker model default` /
+`/worker reason default` clear an override. A change applies to a live worker immediately and to
+future spawns, and is session-scoped like `/provider` — it is not written back to the config file.
+The `Delegate` tool block is fixed at session start from `[worker] provider`: changing the provider
+mid-session tunes an already-enabled delegation, but enabling delegation from scratch (provider
+unset at start) takes effect after a restart. Set the same defaults persistently with the
+`[worker] model` and `[worker] reasoning` keys above.
 
 ## Data location
 

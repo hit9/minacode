@@ -1057,6 +1057,7 @@ class Session:
     tool_names: tuple[str, ...] = ()  # empty tuple = no filtering (parent behavior)
     listed: bool = True  # False -> no latest pointer, hidden from /sessions
     worker: Session | None = None  # runtime handle of the delegated session
+    worker_tool_enabled: bool = False  # Delegate registration gate, frozen at construction from bool(config.worker_provider)
     _agent: Agent | None = None  # runtime handle of the worker's Agent; same lifetime as the worker Session
     tool_counter: int = 0
     turn_diffs: list[TurnDiff] = field(default_factory=list)
@@ -1094,6 +1095,12 @@ class Session:
             from minacode.skill import SkillLibrary  # local import: skill is built on top of session
 
             self.skills = SkillLibrary.load(self)
+        # The Delegate registration gate is frozen per session: computed once from the config this
+        # session was constructed with, so a runtime /worker provider switch tunes an already-
+        # enabled delegation and prepares the next session without flipping the tool block (and
+        # thus the prompt-cache scope) mid-session. Recomputes on every load because the config
+        # passed to SessionSnapshotStore.load is the caller's freshly built one.
+        self.worker_tool_enabled = bool(self.config.worker_provider)
 
     def store_turn_diff(
         self,

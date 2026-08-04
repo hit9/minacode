@@ -952,19 +952,21 @@ class StatusBar:
 
     def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
         worker = self.session.worker
-        if worker is not None:
-            # A live worker is what is actually running: the bar leads with a worker marker and
-            # reads the worker's provider, model, reasoning, and usage below. warn while a
-            # delegation is in flight, plain otherwise.
+        # The worker display is scoped to an in-flight delegation: the engine clears
+        # _active_turn_messages in finish_turn, so the moment the worker answers, the bar returns
+        # to the parent's provider/model/usage exactly as if no worker existed. An idle worker no
+        # longer shadows the parent's row.
+        inflight = worker is not None and bool(worker._active_turn_messages)
+        if inflight:
             config = worker.config
-            lead_role = "warn" if worker._active_turn_messages else "provider"
+            lead_role = "warn"
         else:
             config = self.session.config
             lead_role = "provider"
         provider = config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         parts: list[tuple[str, str]] = []
-        if worker is not None:
+        if inflight:
             parts.append(("[worker]", "worker"))
         parts += [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
 
@@ -977,7 +979,7 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        source = worker if worker is not None else self.session
+        source = worker if inflight else self.session
         usage = source.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;

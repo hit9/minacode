@@ -1090,7 +1090,7 @@ def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     assert loop.command("/status") == (True, False)
     assert plain == []
     assert len(rich) == 1
-    assert rich[0][0].startswith("| status | value |")
+    assert rich[0][0].startswith("### Common")  # /status leads with the common section, then the parent's and the worker's
     assert rich[0][1] == {"rule": False}
 
 

@@ -111,23 +111,36 @@ def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path
     assert not os.path.isfile(worker_path)
 
 
-# 10. two registration gates: Delegate appears only when both [worker] provider is configured and
-#     runtime.worker is on; closing is not reset (the snapshot stays).
+# 10. two registration gates: Delegate appears only when [worker] provider was set at session
+#     start AND runtime.worker is on. The provider half is frozen per session, so a runtime
+#     /worker provider change never flips the tool block; settings.worker stays the live half.
+#     Closing is not reset (the snapshot stays).
 def test_delegate_registration_gates(tmp_path):
-    s = session(tmp_path)
+    from minacode.session import Session
 
-    def names():
+    def names(s):
         return {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
-    assert "Delegate" not in names()
-    s.settings.worker = True
-    assert "Delegate" not in names()  # no [worker] provider yet
-    s.config.worker_provider = "default"
-    assert "Delegate" in names()
-    s.settings.worker = False
-    assert "Delegate" not in names()  # the gate is per-session stable: worker off drops the schema
-    s.settings.worker = True
-    assert "Delegate" in names()
+    # Gate off at session start (no [worker] provider): runtime.worker alone cannot register it,
+    # and setting the provider mid-session is frozen out.
+    off = session(tmp_path)
+    off.settings.worker = True
+    assert "Delegate" not in names(off)
+    off.config.worker_provider = "default"
+    assert "Delegate" not in names(off)
+
+    # Gate on at session start: both halves are required, and a runtime provider change never
+    # flips the tool block.
+    on = Session(cwd=str(tmp_path), config=off.config)
+    assert "Delegate" not in names(on)  # runtime.worker off
+    on.settings.worker = True
+    assert "Delegate" in names(on)
+    on.config.worker_provider = ""
+    assert "Delegate" in names(on)  # the frozen half is unchanged by runtime changes
+    on.settings.worker = False
+    assert "Delegate" not in names(on)  # the live half still drops the schema
+    on.settings.worker = True
+    assert "Delegate" in names(on)
 
 
 def test_worker_config_parsing_and_validation(tmp_path):
@@ -495,25 +508,41 @@ def test_worker_reset_appends_event_message(tmp_path):
 
 
 def test_status_bar_shows_worker_segment(tmp_path):
+    from minacode.base import Config, ProviderConfig
     from minacode.render import StatusBar
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
+    parent.usage.last_prompt_tokens = 200
+    parent.usage.last_prompt_budget = 400
+    parent.usage.last_cached_prompt_tokens = 50
     bar = StatusBar(parent)
     texts = [text for text, _ in bar.entries(show_elapsed=False)]
     parent_lead = parent.config.active_provider + "/" + (parent.config.provider.model.rsplit("/", 1)[-1] or "(no model)")
     assert parent_lead in texts and "[worker]" not in texts
+    assert "ctx 50% · cache 25%" in texts
 
-    # A live worker leads with the marker, keeps the worker's provider/model unsuffixed, and
-    # ctx/cache come from the worker's usage.
-    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
-    parent.worker = worker
+    # A live but idle worker does not take over the bar: marker, provider/model, and usage all
+    # apply only while a delegation is in flight (the engine clears _active_turn_messages in
+    # finish_turn), so an idle worker leaves the parent's values exactly as before it existed.
+    worker_config = Config()
+    worker_config.providers["default"] = ProviderConfig(model="worker-model")
+    worker = Session(cwd=str(tmp_path), config=worker_config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.usage.last_prompt_tokens = 50
     worker.usage.last_prompt_budget = 100
     worker.usage.last_cached_prompt_tokens = 25
+    parent.worker = worker
+    texts = [text for text, _ in bar.entries(show_elapsed=False)]
+    assert "[worker]" not in texts
+    assert parent_lead in texts and "default/worker-model" not in texts
+    assert "ctx 50% · cache 25%" in texts  # the parent's usage stays the source while idle
+    assert "ctx 50% · cache 50%" not in texts  # the worker's usage is not shown while idle
+
+    # In flight: the bar leads with the marker and reads the worker's provider/model and usage.
+    worker._active_turn_messages.append({"role": "user", "content": "order"})
     texts = [text for text, _ in bar.entries(show_elapsed=False)]
     assert texts[0] == "[worker]"
-    assert parent_lead in texts and not any(text.endswith("·worker") for text in texts)
+    assert "default/worker-model" in texts and parent_lead not in texts
     assert "ctx 50% · cache 50%" in texts
 
 
@@ -561,14 +590,35 @@ def test_status_reports_worker_delegation_state(tmp_path):
         loop.command("/status")
         return "\n".join(str(text) for text in outputs)
 
-    assert "[worker] provider" in status_text() and "default" in status_text()
+    # No worker session: the worker section keeps the single configured-[worker]-provider line.
+    text = status_text()
+    assert "### Common" in text and "### Parent" in text and "### Worker" in text
+    assert "[worker] provider" in text and "default" in text
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     parent.worker = worker
-    assert "idle" in status_text()
+
+    # A fresh worker has no requests yet: the worker context row says so instead of inventing
+    # tokens, and the model row mirrors the parent's (provider/model, api, reasoning).
+    text = status_text()
+    assert "reasoning" in text
+    assert "(no requests yet)" in text
+    assert "state `idle`; rounds `0`" in text
+
+    worker.usage.last_prompt_tokens = 50
+    worker.usage.last_prompt_budget = 100
+    worker.usage.last_cached_prompt_tokens = 25
+    worker.usage.prompt_tokens = 50
+    worker.usage.cached_prompt_tokens = 25
+    text = status_text()
+    # Scope to the worker section: the parent's own cache row also says "(no requests yet)".
+    worker_section = text.split("### Worker", 1)[1]
+    assert "~50 / 100" in worker_section and "(no requests yet)" not in worker_section
+    assert "last read `25 / 50 (50.0%)`" in worker_section
 
     worker._active_turn_messages.append({"role": "user", "content": "order"})
-    assert "delegating" in status_text()
+    text = status_text()
+    assert "state `delegating`; rounds `0`" in text
 
 
 # The engine publishes the model's own text as bare strings (content beside tool calls), so the
@@ -769,3 +819,252 @@ def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
     from minacode.tools import EditTool
 
     assert EditTool(s, ["a.py", []]).always_confirms() is False
+
+
+# 21. [worker] model/reasoning parse like [worker] provider and validate the reasoning choices.
+def test_worker_config_parses_model_and_reasoning(tmp_path):
+    from minacode.base import Config
+
+    config = Config.from_dict(
+        {
+            "worker": {"provider": "fast", "model": "m-x", "reasoning": "high"},
+            "provider": {"active": "default", "default": {"model": "d"}, "fast": {"model": "m"}},
+        }
+    )
+    assert config.worker_provider == "fast"
+    assert config.worker_model == "m-x"
+    assert config.worker_reasoning == "high"
+
+    # Defaults: no [worker] model/reasoning means "inherit the entry's value" at spawn time.
+    plain = Config.from_dict({"provider": {"default": {"model": "d"}}})
+    assert plain.worker_model == "" and plain.worker_reasoning == ""
+
+
+def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
+    from minacode.base import Config, ConfigError
+
+    with pytest.raises(ConfigError, match="worker.reasoning"):
+        Config.from_dict({"worker": {"reasoning": "turbo"}, "provider": {"default": {}}})
+
+
+# 22. The Delegate registration gate is frozen per session: /worker provider stores the config for
+#     the next spawn (and live-applies to a live worker) but never flips the tool block mid-
+#     session, whether delegation was on or off at session start. A freshly constructed session
+#     over the same config re-evaluates the gate (simulating a restart), and an unknown name is
+#     rejected without touching the config.
+def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
+    from minacode.base import ProviderConfig
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+    from minacode.session import Session
+    from minacode.tools import Tool
+
+    parent = session(tmp_path)
+    parent.config.providers["alt"] = ProviderConfig(model="m")
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    def names(s):
+        return {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
+
+    parent.settings.worker = True
+    assert parent.worker_tool_enabled is False
+    assert "Delegate" not in names(parent)
+    # Frozen off: the command stores the value for the next spawn and says a restart is needed;
+    # the tool block is unchanged mid-session.
+    assert loop.worker_command("provider alt") == "Set worker provider = alt (delegation is off this session; takes effect after a restart)"
+    assert parent.config.worker_provider == "alt"
+    assert "Delegate" not in names(parent)
+    # "off" clears quietly when the gate is frozen off.
+    assert loop.worker_command("provider off") == "worker provider: off"
+    assert parent.config.worker_provider == ""
+
+    before = parent.config.worker_provider
+    assert loop.worker_command("provider nope") == "Unknown provider: nope"
+    assert parent.config.worker_provider == before
+
+    # Simulating a restart: a freshly constructed session over the same config re-evaluates the
+    # frozen gate, so the stored value registers Delegate...
+    parent.config.worker_provider = "alt"
+    fresh = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings)
+    fresh.settings.worker = True
+    assert fresh.worker_tool_enabled is True
+    assert "Delegate" in names(fresh)
+    # ...and the frozen-on gate stays registered across runtime changes, including clearing the
+    # provider; only the next session re-evaluates it.
+    fresh_agent = Agent(fresh, output_fn=lambda text: None)
+    fresh_loop = CommandLoop(fresh_agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+    assert fresh_loop.worker_command("provider off") == "worker provider: off"
+    assert fresh.config.worker_provider == ""
+    assert "Delegate" in names(fresh)
+
+
+# 23. "off" is the clearing word unless a provider entry is literally named "off": existence in
+#     config.providers wins, so /worker provider off selects that entry.
+def test_worker_provider_off_selects_literal_off_entry(tmp_path):
+    from minacode.base import ProviderConfig
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+
+    parent = session(tmp_path)
+    parent.config.providers["off"] = ProviderConfig(model="m")
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    assert loop.worker_command("provider off") == "Set worker provider = off (delegation is off this session; takes effect after a restart)"
+    assert parent.config.worker_provider == "off"
+
+
+# 24. /worker model and /worker reason store overrides, reject an invalid effort, and "default"
+#     clears; "off" is a valid reasoning effort, never the clearing word.
+def test_worker_model_and_reason_overrides(tmp_path):
+    from minacode.base import REASONING_CHOICES
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+
+    parent = session(tmp_path)
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+
+    assert loop.worker_command("model") == "worker model: (inherit)"
+    assert loop.worker_command("model gpt-5.2") == "Set worker.model = gpt-5.2"
+    assert parent.config.worker_model == "gpt-5.2"
+    assert loop.worker_command("model") == "worker model: gpt-5.2"
+    assert loop.worker_command("model default") == "worker model: (inherit)"
+    assert parent.config.worker_model == ""
+
+    assert loop.worker_command("reason high") == "Set worker.reasoning = high"
+    assert parent.config.worker_reasoning == "high"
+    assert loop.worker_command("reason off") == "Set worker.reasoning = off"  # a valid effort
+    assert parent.config.worker_reasoning == "off"
+    assert loop.worker_command("reason default") == "worker reasoning: (inherit)"
+    assert parent.config.worker_reasoning == ""
+
+    assert loop.worker_command("reason turbo") == "Usage: /worker reason " + "|".join(REASONING_CHOICES)
+    assert loop.worker_command("provider a b") == "Usage: /worker provider [NAME]"
+    assert loop.worker_command("model a b") == "Usage: /worker model [MODEL]"
+    assert loop.worker_command("reason a b") == "Usage: /worker reason [EFFORT]"
+
+
+# 25. spawn isolation: the worker's active ProviderConfig is a detached copy (never `is` the
+#     parent's), [worker] model/reasoning overrides are applied to it, and mutating it does not
+#     leak into the parent's providers entry. A snapshot-resumed worker picks up the overrides the
+#     same way, because the load path receives the same freshly built config.
+def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkeypatch):
+    from minacode.base import ProviderConfig
+    from minacode.session import SessionSnapshotStore
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["alt"] = ProviderConfig(model="m")
+    parent.config.worker_provider = "alt"
+    parent.config.worker_model = "worker-model"
+    parent.config.worker_reasoning = "high"
+    parent.messages.append({"role": "user", "content": "parent request"})
+    parent.save_snapshot()
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="o")
+
+    worker_provider = parent.worker.config.provider
+    assert worker_provider is not parent.config.providers["alt"]
+    assert parent.worker.config.providers is not parent.config.providers
+    assert worker_provider.model == "worker-model"
+    assert worker_provider.reasoning == "high"
+    assert parent.config.providers["alt"].model == "m"
+
+    # Mutating the worker's active entry never leaks into the parent's providers entry.
+    worker_provider.model = "mutated"
+    assert parent.config.providers["alt"].model == "m"
+
+    # Resume: the worker comes back through SessionSnapshotStore.load with the same freshly built
+    # config, so a current override applies to the restored worker too.
+    parent.worker.messages.append({"role": "user", "content": "worker request"})
+    parent.worker.save_snapshot()
+    model.script.append(({"role": "assistant", "content": "two"}, [], "two"))
+    parent.config.worker_model = "resumed-model"
+    fresh = SessionSnapshotStore.load(parent.uid, config=parent.config, settings=parent.settings, cwd=str(tmp_path))
+    runner = _delegate_runner(fresh)
+    _delegate_call(fresh, runner, action="send", order="o")
+    assert fresh.worker.config.provider.model == "resumed-model"
+
+
+# 26. live switch: with a live worker, /worker model X replaces the worker's active entry
+#     immediately while the parent's providers entry is untouched; "default" restores the
+#     underlying entry's model on the live worker.
+def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["default"].model = "parent-model"
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="o")
+
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+    worker = parent.worker
+    assert worker.config.provider.model == "parent-model"
+
+    loop.worker_command("model worker-model")
+    assert worker.config.provider.model == "worker-model"
+    assert parent.config.providers["default"].model == "parent-model"  # untouched
+
+    loop.worker_command("model default")
+    assert worker.config.provider.model == "parent-model"  # restores the entry's model
+    assert parent.config.providers["default"].model == "parent-model"
+
+
+# 27. a live worker also takes /worker provider NAME immediately: its active entry is replaced with
+#     a detached copy and the parent's entry is untouched.
+def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
+    from minacode.base import ProviderConfig
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["alt"] = ProviderConfig(model="m")
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="o")
+
+    agent = Agent(parent, output_fn=lambda text: None)
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
+    worker = parent.worker
+
+    loop.worker_command("provider alt")
+    assert worker.config.active_provider == "alt"
+    assert worker.config.provider is not parent.config.providers["alt"]
+    assert worker.config.provider.model == "m"
+    assert parent.config.providers["alt"].model == "m"  # untouched
+
+
+# 28. a finished Delegate send renders as a proper log block: the confirmation root line is just
+#     `Delegate send` (no argument blob), the finish block carries a steps/elapsed/files summary
+#     and the worker's answer as an OUTPUT preview, and the raw envelope tags never reach the log.
+def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, LogRole, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "the worker answer"}, [], "the worker answer")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "ok"
+
+    blocks = [item for item in outputs if isinstance(item, LogBlock)]
+    # The confirmation line shows the short root (`Delegate send`, not the order blob); the finish
+    # block is the one with OUTPUT children (the worker's answer preview).
+    assert any(block.items and block.items[0].label == "Delegate" and block.items[0].text == "send" for block in blocks)
+    finish = next(block for block in blocks if any(item.role is LogRole.OUTPUT for item, _ in block.walk()))
+    rendered = str(finish)
+    assert "steps 1" in rendered and "(none)" in rendered
+    assert "the worker answer" in rendered
+    assert "<Delegate" not in rendered and "<worker>" not in rendered and "</worker>" not in rendered
+    assert any(item.label == "stored" for item, _ in finish.walk())
