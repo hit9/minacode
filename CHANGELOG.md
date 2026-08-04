@@ -136,6 +136,11 @@
   to pass the user's language unless the user works in English.
 
 ### Fixed
+- Fix running-mode Ctrl-P/Up being a no-op while the input box holds text: the old handler
+  returned after `cursor_up()`, which does nothing on a single-line buffer, so history recall and
+  queued follow-up recall both silently failed whenever the draft was non-empty. The key now
+  behaves like it does with an empty box: recall the latest queued follow-up first, otherwise
+  walk history.
 - Fix a worker crash when the worker model emitted text beside a tool call: the worker's output
   wrapper assumed every Agent emission was a LogLine and built `LogBlock([str])`, which
   `LogBlock.walk` rejects with `'str' object has no attribute 'walk'` at render time. Bare strings

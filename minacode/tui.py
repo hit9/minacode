@@ -731,11 +731,8 @@ class TuiApp:
         bindings.add("c-o", filter=~modal, eager=True)(lambda _: self.on_expand_output())
 
         # Ctrl-P mirrors Up here: readline treats them as synonyms, and both recall the latest
-        # queued follow-up (or move the cursor up / walk history) while a turn is working.
+        # queued follow-up, or walk history when none is queued, while a turn is working.
         def recall(event):
-            if self.input_buffer.text:
-                self.input_buffer.cursor_up()
-                return
             text = self.on_recall()
             if text:
                 self._reset_input(text, cursor_position=len(text))
