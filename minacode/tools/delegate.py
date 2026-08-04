@@ -21,7 +21,6 @@ from minacode.session import Session, SessionSnapshotStore
 from minacode.tools.base import Tool
 
 if TYPE_CHECKING:
-    from minacode.engine import Agent
     from minacode.runner import ToolRunner
 
 # The worker's tool set. Exclusions, and why: Delegate (would recurse), Ask (blocks on user input
@@ -43,8 +42,9 @@ WORKER_TOOLS: tuple[str, ...] = (
 )
 
 # Agent and worker session live and die together; rebuilt on every send would reopen the HTTP client
-# each time. Keyed by the worker uid so reset can drop exactly the right one.
-_AGENTS: dict[str, Agent] = {}
+# each time. The Agent is held by the worker Session itself (Session._agent), so a fresh worker object
+# — e.g. after /resume re-enters the same parent — always gets a fresh Agent: the old one dies with
+# the old worker it was bound to, instead of lingering in a module-level dict keyed by uid.
 
 
 class DelegateTool(Tool):
@@ -104,7 +104,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         # let a per-call max_steps override leak into the parent's budget, and a one-time copy would
         # miss runtime changes (/yolo, /set) between delegations.
         worker.settings = replace(parent.settings, max_steps=int(payload.get("max_steps") or parent.settings.max_steps))
-        agent = _AGENTS.get(worker.uid)
+        agent = worker._agent
         if agent is None:
             # Local import: engine imports minacode.tools at module level (engine.py:30), so a
             # module-level `from minacode.engine import Agent` would cycle tools -> engine -> tools.
@@ -115,7 +115,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # Reuse the parent's live region: serial delegation means only one stream at a time.
             agent.tools.live_start = runner.live_start
             agent.tools.live_output = runner.live_output
-            _AGENTS[worker.uid] = agent
+            worker._agent = agent
         started = time.monotonic()
         before_diffs = len(worker.turn_diffs)
         try:
@@ -130,7 +130,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         files = ", ".join(sorted({diff.path for diff in worker.turn_diffs[before_diffs:]})) or "(none)"
         return "\n".join(
             [
-                f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str("Stopped after max_agent_steps=" in answer).lower()}">',
+                f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str(agent.stopped_at_max_steps).lower()}">',
                 "<worker>",
                 answer.rstrip(),
                 "</worker>",
@@ -138,6 +138,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             ]
         )
 
+    @staticmethod
     @staticmethod
     def _merge_diffs(worker: Session, parent: Session, start: int) -> None:
         for diff in worker.turn_diffs[start:]:
@@ -161,11 +162,15 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                 skills=parent.skills,  # shared objects, never re-discovered
                 mcp=parent.mcp,
             )
-        # load only honors the snapshot's keys, so these three return to their defaults; re-set them
-        # after load or construction, never before.
+        # load only honors the snapshot's keys, so these return to their defaults; re-set them
+        # after load or construction, never before. skills/mcp are shared objects from the parent
+        # (never re-discovered or re-connected): a snapshot-loaded worker that kept its own would
+        # spawn duplicate MCP processes and break its own cache-prefix reuse across delegations.
         worker.system_prompt = WORKER_PROMPT
         worker.tool_names = WORKER_TOOLS
         worker.listed = False
+        worker.skills = parent.skills
+        worker.mcp = parent.mcp
         return worker
 
     def _reset(self) -> str:
@@ -174,7 +179,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         if worker is None:
             return '<Delegate action="reset" alive="false"/>'
         parent.worker = None
-        _AGENTS.pop(worker.uid, None)
+        # The worker Session owns its Agent (Session._agent); dropping the handle releases both.
         # The delete path derives entirely from the parent's own uid; the model's arguments carry no
         # path, so the worst case is deleting this session's own worker, nothing else.
         directory = SessionSnapshotStore.project_dir(parent.config.data_dir, parent.cwd)

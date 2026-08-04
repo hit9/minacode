@@ -65,6 +65,9 @@ class Agent:
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
+        # Set when the last run ended because max_steps ran out (not because the model answered).
+        # Runtime fact for callers like the Delegate tool; never derived from the answer's wording.
+        self.stopped_at_max_steps = False
         # Called with the queued messages when they are flushed into the turn, so the UI can move
         # them from the live queue region up into the scrollback log. Set by CommandLoop.
         self.on_queue_flush: Callable[[list[str]], None] | None = None
@@ -80,6 +83,7 @@ class Agent:
 
     def run(self, user_input: str | UserInput) -> str:
         self.cancel_requested.clear()
+        self.stopped_at_max_steps = False
         self.turn_sources = []
         self.session.clear_quick_hints()  # a new turn invalidates whatever the previous turn offered
         self.session.state.round_count += 1
@@ -152,6 +156,7 @@ class Agent:
                 self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
+            self.stopped_at_max_steps = True
             self.finish_turn(turn_messages, {"role": "assistant", "content": stopped})
             return stopped
         except KeyboardInterrupt:

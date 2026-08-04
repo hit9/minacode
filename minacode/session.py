@@ -36,6 +36,7 @@ from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
 
 if TYPE_CHECKING:
+    from minacode.engine import Agent
     from minacode.mcp import MCPManager
     from minacode.skill import SkillLibrary
 
@@ -1045,6 +1046,7 @@ class Session:
     tool_names: tuple[str, ...] = ()  # empty tuple = no filtering (parent behavior)
     listed: bool = True  # False -> no latest pointer, hidden from /sessions
     worker: Session | None = None  # runtime handle of the delegated session
+    _agent: Agent | None = None  # runtime handle of the worker's Agent; same lifetime as the worker Session
     tool_counter: int = 0
     turn_diffs: list[TurnDiff] = field(default_factory=list)
     history: list[HistorySegment] = field(default_factory=list)

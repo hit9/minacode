@@ -382,3 +382,104 @@ def test_status_bar_shows_worker_segment(tmp_path):
     parent.worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     texts = [text for text, _ in bar.entries(show_elapsed=False)]
     assert any(text.startswith("worker:") for text in texts)
+
+
+# 12. the Agent lives on the worker Session, not in a module-level dict: a fresh worker object
+#     (after /resume re-enters the same parent) always gets a fresh Agent bound to itself.
+def test_agent_lives_on_worker_and_is_rebuilt_with_it(tmp_path, monkeypatch):
+    from minacode.session import SessionSnapshotStore
+
+    parent = _delegate_session(tmp_path)
+    parent.messages.append({"role": "user", "content": "parent request"})
+    parent.save_snapshot()
+    model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="o")
+
+    first_worker = parent.worker
+    first_agent = first_worker._agent
+    assert first_agent is not None
+    assert first_agent.session is first_worker
+
+    # /resume re-enters the same parent: a fresh parent object, worker rebuilt from the snapshot.
+    model.script.append(({"role": "assistant", "content": "two"}, [], "two"))
+    fresh = SessionSnapshotStore.load(parent.uid, config=parent.config, settings=parent.settings, cwd=str(tmp_path))
+    assert fresh.worker is None
+    runner = _delegate_runner(fresh)
+    _delegate_call(fresh, runner, action="send", order="o")
+
+    second_worker = fresh.worker
+    assert second_worker is not first_worker
+    assert second_worker._agent is not first_agent  # the old Agent died with the old worker object
+    assert second_worker._agent.session is second_worker  # and the new one is bound to the new object
+
+
+# 13. a snapshot-restored worker shares the parent's skills/mcp objects (review point 2): load
+#     rebuilds its own copies, so the delegate caller must re-attach the shared ones.
+def test_snapshot_restored_worker_shares_parent_skills_and_mcp(tmp_path, monkeypatch):
+    from minacode.session import SessionSnapshotStore
+
+    parent = _delegate_session(tmp_path)
+    parent.messages.append({"role": "user", "content": "parent request"})
+    parent.save_snapshot()
+    model = FakeModelClient([({"role": "assistant", "content": "one"}, [], "one")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="o")
+    parent.worker.messages.append({"role": "user", "content": "worker request"})
+    parent.worker.save_snapshot()
+
+    # Resume: the worker now comes back through SessionSnapshotStore.load, not the fresh-branch.
+    model.script.append(({"role": "assistant", "content": "two"}, [], "two"))
+    fresh = SessionSnapshotStore.load(parent.uid, config=parent.config, settings=parent.settings, cwd=str(tmp_path))
+    runner = _delegate_runner(fresh)
+    _delegate_call(fresh, runner, action="send", order="o")
+    worker = fresh.worker
+    assert worker.skills is fresh.skills
+    assert worker.mcp is fresh.mcp
+
+
+# 14. stopped_at_max_steps in the envelope is a runtime fact from the Agent, never the answer's wording.
+def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeypatch):
+    from minacode.engine import Agent
+
+    parent = _delegate_session(tmp_path)
+    runner = _delegate_runner(parent)
+
+    def run_stopped(self, order):
+        self.stopped_at_max_steps = True
+        return "done"
+
+    def run_normal(self, order):
+        self.stopped_at_max_steps = False
+        return "Stopped after max_agent_steps=3 (cosmetic wording only)"
+
+    monkeypatch.setattr(Agent, "run", run_stopped)
+    result = _delegate_call(parent, runner, action="send", order="o")
+    assert 'stopped_at_max_steps="true"' in result
+
+    monkeypatch.setattr(Agent, "run", run_normal)
+    result = _delegate_call(parent, runner, action="send", order="o")
+    assert 'stopped_at_max_steps="false"' in result  # the words are irrelevant; the fact is not set
+
+
+# 15. resolve_uid prefix search never resolves to a worker snapshot (review point 5): the parent's
+#     uid prefix must resolve to the parent alone, without ambiguity.
+def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
+    from minacode.session import Session, SessionSnapshotStore
+
+    parent = session(tmp_path)
+    parent.messages.append({"role": "user", "content": "parent request"})
+    parent.save_snapshot()
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.messages.append({"role": "user", "content": "worker request"})
+    worker.save_snapshot()
+
+    resolved = SessionSnapshotStore.resolve_uid(parent.uid[:12], parent.config.data_dir, str(tmp_path))
+    assert resolved == parent.uid
+
+    # And an exact worker uid is not reachable through the prefix path either: it would require
+    # typing the full uid, which the user never sees in listings.
+    resolved_worker = SessionSnapshotStore.resolve_uid(worker.uid, parent.config.data_dir, str(tmp_path))
+    assert resolved_worker == worker.uid  # explicit full uid still works, by design
