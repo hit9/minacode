@@ -132,6 +132,7 @@ def test_worker_config_parsing_and_validation(tmp_path):
 
 # --- Delegation (steps 4-5): the worker is driven through DelegateTool with a scripted model. ---
 
+
 class FakeModelClient:
     """Stands in for minacode.engine.ModelClient: records every request and replays a script of
     (assistant, tool_calls, content) triples, so the worker's loop is exercised without HTTP."""
@@ -234,8 +235,25 @@ def test_delegate_merges_worker_diffs_into_parent(tmp_path, monkeypatch):
     parent.settings.yolo = True
     model = FakeModelClient(
         [
-            ({"role": "assistant", "content": "editing"}, [call("Edit", ["f.txt", [{"op": "create", "content": "x\
-"}]])], "editing"),
+            (
+                {"role": "assistant", "content": "editing"},
+                [
+                    call(
+                        "Edit",
+                        [
+                            "f.txt",
+                            [
+                                {
+                                    "op": "create",
+                                    "content": "x\
+",
+                                }
+                            ],
+                        ],
+                    )
+                ],
+                "editing",
+            ),
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
     )
@@ -268,8 +286,25 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
         def request(self, messages, request_tools=None):
             self.requests.append(messages)
             if len(self.requests) == 1:
-                return ({"role": "assistant", "content": "editing"}, [call("Edit", ["f.txt", [{"op": "create", "content": "x\
-"}]])], "editing")
+                return (
+                    {"role": "assistant", "content": "editing"},
+                    [
+                        call(
+                            "Edit",
+                            [
+                                "f.txt",
+                                [
+                                    {
+                                        "op": "create",
+                                        "content": "x\
+",
+                                    }
+                                ],
+                            ],
+                        )
+                    ],
+                    "editing",
+                )
             started.set()
             cancelled.wait(5)
             raise KeyboardInterrupt
@@ -483,3 +518,15 @@ def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):
     # typing the full uid, which the user never sees in listings.
     resolved_worker = SessionSnapshotStore.resolve_uid(worker.uid, parent.config.data_dir, str(tmp_path))
     assert resolved_worker == worker.uid  # explicit full uid still works, by design
+
+
+# 16. the two blocks that must never drift between SYSTEM_PROMPT and WORKER_PROMPT are spliced from
+#     the same module-level constants, so a wording change in one is a change in both (this is a
+#     composition contract, not a prompt-literal test).
+def test_worker_prompt_shares_language_and_secret_rules_with_parent():
+    from minacode.prompts import LANGUAGE_RULES, SECRET_RULES, SYSTEM_PROMPT, WORKER_PROMPT
+
+    assert LANGUAGE_RULES in SYSTEM_PROMPT
+    assert LANGUAGE_RULES in WORKER_PROMPT
+    assert SECRET_RULES in SYSTEM_PROMPT
+    assert SECRET_RULES in WORKER_PROMPT
