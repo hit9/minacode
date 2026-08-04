@@ -902,6 +902,21 @@ def test_explicit_manual_thinking_maps_max_to_the_largest_budget(tmp_path):
     assert params == {"extra_body": {"enable_thinking": True, "thinking_budget": 32768}}
 
 
+def test_explicit_manual_thinking_budget_stays_under_the_configured_output_cap(tmp_path):
+    """These hosts fold max_tokens into max_completion_tokens and reject a budget that reaches it."""
+    client = ModelClient(session(tmp_path))
+
+    for max_tokens, reasoning, expected in ((16_384, "xhigh", 15_360), (16_384, "max", 15_360), (2_048, "high", 1_024), (0, "max", 32_768)):
+        provider = ProviderConfig(
+            url="https://gateway.example/v1", model="custom-model", chat_reasoning="enable_thinking", reasoning=reasoning, max_tokens=max_tokens
+        )
+        params: dict = {}
+
+        client.apply_provider_params(params, provider)
+
+        assert params["extra_body"]["thinking_budget"] == expected
+
+
 def test_chat_provider_extra_body_passthrough(tmp_path):
     client = ModelClient(session(tmp_path))
 

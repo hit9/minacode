@@ -1208,7 +1208,7 @@ class ModelClient:
             provider.model,
             provider.reasoning,
             effort,
-            self.anthropic_thinking_budget(effort, provider.anthropic_output_cap()),
+            self.manual_thinking_budget(effort, provider.anthropic_output_cap()),
         )
         params.update(thinking_params)
         thinking = thinking_params.get("thinking")
@@ -1218,14 +1218,17 @@ class ModelClient:
         return params
 
     @staticmethod
-    def anthropic_thinking_budget(effort: str, max_tokens: int) -> int:
+    def manual_thinking_budget(effort: str, max_tokens: int) -> int:
         """The manual thinking budget for one effort, kept inside the request's own output budget.
 
-        The API rejects a budget that is not strictly below max_tokens, so a smaller configured
+        Every host with an integer budget rejects one that is not strictly below the output cap —
+        Anthropic on `max_tokens`, the OpenAI-compatible `enable_thinking` hosts on the
+        `max_completion_tokens` they fold that cap into — so a smaller configured
         `provider.max_tokens` has to lower the budget with it rather than fail the request. The
         1,024-token floor is the documented minimum; below that the budget cannot be satisfied at
         all and the provider's own error is the honest answer.
-        Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking"""
+        Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
+                  https://docs.qwencloud.com/api-reference/chat/openai-chat"""
         budget = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
         return max(1024, min(max_tokens - 1024, budget))
 
@@ -1390,7 +1393,12 @@ class ModelClient:
         elif chat_reasoning == "enable_thinking":
             extra["enable_thinking"] = reasoning_enabled
             if reasoning_enabled:
-                extra["thinking_budget"] = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
+                # An unset max_tokens leaves the cap to the host, which sizes its own budget under it.
+                extra["thinking_budget"] = (
+                    self.manual_thinking_budget(effort, provider.max_tokens)
+                    if provider.max_tokens > 0
+                    else THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
+                )
         # Provider-declared extensions (e.g. Qianwen web search) pass through verbatim; minacode's
         # own reasoning fields are layered on top so they stay authoritative on key conflicts.
         extra_body = {**provider.extra_body, **extra}

@@ -136,6 +136,12 @@
   to pass the user's language unless the user works in English.
 
 ### Fixed
+- Fix `chat_reasoning = "enable_thinking"` sending a `thinking_budget` that a configured
+  `provider.max_tokens` cannot cover: these hosts fold `max_tokens` into `max_completion_tokens`
+  and reject a budget that is not strictly below it (`max_completion_tokens [16384] must be
+  greater than thinking_budget [16384]`), so `max_tokens = 16384` with `reasoning = "xhigh"` or
+  `"max"` failed every request. The budget now stays under the cap, the same clamp the Anthropic
+  wire already applied; an unset `max_tokens` still leaves the budget to the host.
 - Fix running-mode Ctrl-P/Up being a no-op while the input box holds text: the old handler
   returned after `cursor_up()`, which does nothing on a single-line buffer, so history recall and
   queued follow-up recall both silently failed whenever the draft was non-empty. The key now
