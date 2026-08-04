@@ -1411,6 +1411,7 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     done = [label for label in labels if label.startswith("worker done · ")]
     assert done, "the finish worker_rule callback never fired"
     assert "worker done · steps 1" in done[0] and " in / " in done[0]
+    assert "(none)" not in done[0]  # no files touched: the files segment is omitted, not '(none)'
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
     finish = next(block for block in blocks if any(item.role is LogRole.OUTPUT for item, _ in block.walk()))

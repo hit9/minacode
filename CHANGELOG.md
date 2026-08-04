@@ -43,7 +43,9 @@
   turn-end line: the start marker and the finish of a successful send or reset each render as a
   gray rule carrying a yellow label (`worker · provider/model · order summary` and
   `worker done · steps · elapsed · tokens in/out · files`, or `worker reset · context cleared`),
-  with the order summary capped at 60 characters and the file list at 48. Without a wired UI the
+  with the order summary capped at 60 characters and the file list at 48; when the worker touched
+  no files the files segment is omitted from the done label instead of reading `(none)`. Without a
+  wired UI the
   old `[worker] ▶` / `[worker] ◀` log lines remain, and the finish block still previews the
   worker's answer and its stored key.
 - The `Delegate` description now leads with when to delegate: bounded, verifiable work you can

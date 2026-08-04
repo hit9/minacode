@@ -662,8 +662,8 @@ class ToolRunner:
                         parts = [f"steps {steps}", elapsed]
                         if in_tokens:
                             parts.append(f"{in_tokens} in / {out_tokens} out")
-                        clipped = files if len(files) <= 48 else files[:47].rstrip() + "…"
-                        parts.append(clipped)
+                        if files != "(none)":
+                            parts.append(files if len(files) <= 48 else files[:47].rstrip() + "…")
                         self.worker_rule("worker done · " + " · ".join(parts), blank_before=True)
                     else:
                         children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
