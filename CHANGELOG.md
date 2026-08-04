@@ -34,6 +34,11 @@
   sectioned — common workspace/session/goal/runtime first, then the parent's model/context/cache/
   activity/usage, then the worker's model/context/state rows whenever a worker session exists (or
   the configured `[worker] provider` line when none does).
+- The worker delegation bracket is now visibly closed on both ends: the finish block of a
+  successful `Delegate` send or reset carries the same yellow `[worker]` identity as the start
+  marker, and a reset states in the log exactly what it cleared and what survives (file changes
+  and merged diffs stay). `/worker reset` answers in plain terms too, instead of echoing the raw
+  envelope. `/status` sections lost the spare blank lines between a heading and its table.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

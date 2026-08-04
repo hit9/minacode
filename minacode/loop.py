@@ -1504,15 +1504,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return "\n".join(
             [
                 "### Common",
-                "",
                 render_table(common_rows),
-                "",
                 "### Parent",
-                "",
                 render_table(parent_rows),
-                "",
                 "### Worker",
-                "",
                 render_table(worker_rows),
             ]
         )
@@ -2034,7 +2029,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 }
             )
             self.session.save_snapshot()
-            return result + "\nWorker context was reset; the next delegation starts from scratch."
+            if 'alive="false"' in result:
+                return "[worker] reset · no worker session to reset."
+            return "[worker] reset · worker context cleared; file changes and merged diffs kept. The next delegation starts from scratch."
         if subcommand == "on" and not rest:
             self.session.settings.worker = True
             return "worker: on (the tool block changes, so the prompt-cache scope is recompiled once)"

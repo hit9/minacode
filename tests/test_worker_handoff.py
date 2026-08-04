@@ -593,6 +593,7 @@ def test_status_reports_worker_delegation_state(tmp_path):
     # No worker session: the worker section keeps the single configured-[worker]-provider line.
     text = status_text()
     assert "### Common" in text and "### Parent" in text and "### Worker" in text
+    assert "### Common\n| status | value |" in text  # sections stay tight: no blank line under a heading
     assert "[worker] provider" in text and "default" in text
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)

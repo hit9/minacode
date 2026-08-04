@@ -599,6 +599,10 @@ class ToolRunner:
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
         tree = d.nested_display or call.name in ("Bash", "Delegate")
         root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
+        if call.name == "Delegate" and not failed:
+            # The delegation bracket: the start marker opens with the yellow "[worker] ▶" line, so
+            # the finish block -- the end marker -- carries the same identity as its title.
+            root = self.log_root("[worker] " + (d.display or self.short_call(call)), LogRole.WORKER, d.batch_suffix, call)
         children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
@@ -616,12 +620,17 @@ class ToolRunner:
         elif call.name == "Ask":
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         elif call.name == "Delegate":
-            summary = self.delegate_result_summary(output)
-            if summary:
-                children.append(LogLine("worker", summary, LogRole.META, LogEdge.BRANCH))
-                preview = self.delegate_answer_preview(output)
-                if preview:
-                    children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
+            if 'action="reset"' in output:
+                # A reset may land between delegations without the user typing /worker reset (the
+                # model can call it), so the log states plainly what it cleared and what survives.
+                children.append(LogLine("done", "worker context cleared; file changes and merged diffs kept", LogRole.META, LogEdge.BRANCH))
+            else:
+                summary = self.delegate_result_summary(output)
+                if summary:
+                    children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
+                    preview = self.delegate_answer_preview(output)
+                    if preview:
+                        children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree:
