@@ -1103,6 +1103,7 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     from minacode.runner import ToolRunner
     from minacode.tools import EditTool
     from minacode.tools.delegate import DelegateTool
+    from prompt_toolkit.utils import get_cwidth
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["fast"] = ProviderConfig(model="worker-model", reasoning="high", api="responses")
@@ -1118,28 +1119,35 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     rows = [(item.label, item.text) for item, _ in block.walk()]
     labels = [label for label, _ in rows]
     texts = [text for _, text in rows]
-    assert "title" in labels and "fix things" in texts
-    assert "order" in labels
-    assert all(f"line {i}" in texts for i in range(1, 13))  # the first 12 order lines
-    assert "line 13" not in texts and "line 14" not in texts
-    assert any("3 more lines" in text for text in texts)  # 15 - 12 = 3 overflow
-    assert "language" in labels and "Chinese" in texts
-    assert "max_steps" in labels and "7" in texts
+    assert any(label.strip() == "title" for label in labels) and "fix things" in texts
+    # The order is a single line: first line plus a (… N more lines) tail, never a 12-line dump.
+    order_label = next(label for label, text in rows if label.strip() == "order")
+    assert order_label.strip() == "order"
+    order_text = next(text for label, text in rows if label.strip() == "order")
+    assert order_text.startswith("line 1")
+    assert "14 more lines" in order_text  # 15 - 1 = 14 overflow, folded into the one line
+    assert "line 2" not in order_text
+    assert any(label.strip() == "language" for label in labels) and "Chinese" in texts
+    assert any(label.strip() == "max_steps" for label in labels) and "7" in texts
     # The worker config is four rows, one per knob, with inherited values marked explicitly.
-    assert "provider" in labels and "model" in labels and "effort" in labels and "api" in labels
+    assert all(label.strip() in {"provider", "model", "effort", "api"} for label, _ in rows if "provider" in label)
     assert "worker" not in labels  # no combined single-line row anymore
-    assert next(text for label, text in rows if label == "provider") == "fast"  # explicit override
-    assert next(text for label, text in rows if label == "model") == "override-model"
-    assert next(text for label, text in rows if label == "effort") == "(inherit) high"
-    assert next(text for label, text in rows if label == "api") == "(inherit) responses"  # worker_api empty
-    # Every brief row is WORKER-role: yellow label, default-foreground value, never the gray META.
-    assert all(item.role is LogRole.WORKER for item, _ in list(block.walk())[1:])
+    assert next(text for label, text in rows if label.strip() == "provider") == "fast"  # explicit override
+    assert next(text for label, text in rows if label.strip() == "model") == "override-model"
+    assert next(text for label, text in rows if label.strip() == "effort") == "(inherit) high"
+    assert next(text for label, text in rows if label.strip() == "api") == "(inherit) responses"  # worker_api empty
+    # Cyan FIELD rows for the whole brief except the trailing gray key legend.
+    assert all(item.role is LogRole.FIELD for item, _ in list(block.walk())[1:-1])
+    legend = list(block.walk())[-1][0]
+    assert legend.role is LogRole.META and "approve" in legend.text
+    # Every field label is padded to one display width so the values start on one column.
+    assert len({get_cwidth(label) for label, _ in rows[1:-1]}) == 1  # root and legend excluded
 
     # An explicit worker_api override wins over the entry's api.
     parent.config.worker_api = "chat"
     block = runner.approval_display(ToolCall("delegate-2", "Delegate", [args]), tool, "confirm")
     rows = [(item.label, item.text) for item, _ in block.walk()]
-    api_row = next(text for label, text in rows if label == "api")
+    api_row = next(text for label, text in rows if label.strip() == "api")
     assert api_row == "chat"
     assert "(inherit)" not in api_row
 
@@ -1201,8 +1209,8 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     assert worker.config.providers is not parent.config.providers
     # The config block printed, and the approval brief was redrawn after the picker returned.
     assert any("worker config" in str(out) for out in outputs if isinstance(out, LogBlock))
-    assert sum(1 for prompt in prompts if "[Y/n/c or reason] " in prompt) == 2
-    assert len([out for out in outputs if isinstance(out, LogBlock) and any(item.label == "order" for item, _ in out.walk())]) == 2
+    assert sum(1 for prompt in prompts if "Approve delegation? [Y/n/c] " in prompt) == 2
+    assert len([out for out in outputs if isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk())]) == 2
 
     # Without an injected picker (headless / non-CommandLoop) the `c` key prints the config block
     # and re-asks without crashing.

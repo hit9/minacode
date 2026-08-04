@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
+from prompt_toolkit.utils import get_cwidth
+
 from minacode.base import (
     ActiveResource,
     Json,
@@ -571,7 +573,9 @@ class ToolRunner:
         while True:
             self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
             always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
-            answer = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + ("[Y/n/c or reason] " if always_option else "[Y/n or reason] ")).strip()
+            answer = self.input_fn(
+                LogBlock.prefix(2, LogEdge.CONTINUE) + ("Approve delegation? [Y/n/c] " if always_option else "Approve? [Y/n or reason] ")
+            ).strip()
             lower = answer.lower()
             if always_option and lower in {"c", "config"}:
                 # The whole-line `c`/`config` opens the worker configuration loop; anything else
@@ -594,11 +598,12 @@ class ToolRunner:
 
     def worker_config_block(self) -> LogBlock:
         """The current effective worker config as a log block: one row per knob, inherited values
-        marked `(inherit)`, matching the approval brief's four worker rows."""
+        marked `(inherit)`, matching the approval brief's four worker rows (same cyan aligned
+        labels)."""
         return LogBlock(
             [
-                LogLine("worker config", "", LogRole.WORKER, LogEdge.BRANCH),
-                *(LogLine(label, value, LogRole.WORKER, LogEdge.CONTINUE) for label, value in self.worker_config_rows()),
+                LogLine("worker config", "", LogRole.FIELD, LogEdge.BRANCH),
+                *(LogLine(label, value, LogRole.FIELD, LogEdge.CONTINUE) for label, value in self._field_pairs(self.worker_config_rows())),
             ]
         )
 
@@ -614,6 +619,13 @@ class ToolRunner:
             ("effort", config.worker_reasoning or f"(inherit) {entry.reasoning}"),
             ("api", config.worker_api or f"(inherit) {entry.api}"),
         ]
+
+    @staticmethod
+    def _field_pairs(rows: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Pad each label to the widest label in the block, CJK-safe (visible width via
+        get_cwidth), so the values start on one column."""
+        width = max(get_cwidth(label) for label, _ in rows) if rows else 0
+        return [(label + " " * max(0, width - get_cwidth(label)), value) for label, value in rows]
 
     def approval_display(
         self,
@@ -637,29 +649,34 @@ class ToolRunner:
         return LogBlock.hierarchy(root, children)
 
     def delegate_approval_children(self, tool: DelegateTool) -> list[LogLine]:
-        """Approval brief for a Delegate send: title, an order excerpt, explicit send parameters,
-        and the worker configuration the send will run under. WORKER-role rows render yellow
-        labels with default-foreground values (never the gray META tone), so the brief scans at a
-        glance; everything is derived from the call and the session config, never from mutable
-        worker state."""
+        """Approval brief for a Delegate send: title, a one-line order excerpt, explicit send
+        parameters, and the worker configuration the send will run under, followed by a key
+        legend. FIELD-role rows render cyan left-aligned labels (padded to one column, CJK-safe)
+        with default-foreground values; everything is derived from the call and the session
+        config, never from mutable worker state."""
         payload = tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
-        children: list[LogLine] = []
+        rows: list[tuple[str, str]] = []
         title = payload.get("title")
         if isinstance(title, str) and title.strip():
-            children.append(LogLine("title", self.oneline(title.strip(), 120), LogRole.WORKER, LogEdge.BRANCH))
+            rows.append(("title", self.oneline(title.strip(), 120)))
         order = payload.get("order")
         if isinstance(order, str) and order.strip():
             lines = order.strip().splitlines()
-            children.append(LogLine("order", "", LogRole.WORKER, LogEdge.BRANCH))
-            children.extend(LogLine("", line, LogRole.WORKER, LogEdge.CONTINUE) for line in lines[:12])
-            if len(lines) > 12:
-                children.append(LogLine("", f"… {len(lines) - 12} more lines", LogRole.WORKER, LogEdge.CONTINUE))
+            text = self.oneline(lines[0].strip(), 100)
+            if len(lines) > 1:
+                text += f"  (… {len(lines) - 1} more lines)"
+            rows.append(("order", text))
         language = payload.get("language")
         if isinstance(language, str) and language.strip():
-            children.append(LogLine("language", self.oneline(language.strip(), 60), LogRole.WORKER, LogEdge.BRANCH))
+            rows.append(("language", self.oneline(language.strip(), 60)))
         if payload.get("max_steps") is not None:
-            children.append(LogLine("max_steps", str(payload["max_steps"]), LogRole.WORKER, LogEdge.BRANCH))
-        children.extend(LogLine(label, value, LogRole.WORKER, LogEdge.CONTINUE) for label, value in self.worker_config_rows())
+            rows.append(("max_steps", str(payload["max_steps"])))
+        rows.extend(self.worker_config_rows())
+        children = [
+            LogLine(label, value, LogRole.FIELD, LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
+            for index, (label, value) in enumerate(self._field_pairs(rows))
+        ]
+        children.append(LogLine("", "Y/Enter approve · n refuse · c worker config · else reason", LogRole.META, LogEdge.END))
         return children
 
     def finish_display(

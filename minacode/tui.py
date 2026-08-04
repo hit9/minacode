@@ -1247,13 +1247,17 @@ class AskViewState:
         preview stacks below the options. The caller caps max_height to the terminal's rows minus
         the reserved chrome (status bar, input row, gaps)."""
         page = self.pages[self.active]
-        parts: StyleAndTextTuples = [("class:choice.title", f"({self.active + 1}/{len(self.specs)}) {self.specs[self.active].question}\n")]
+        parts: StyleAndTextTuples = [
+            ("class:choice.title", f"({self.active + 1}/{len(self.specs)}) {self.specs[self.active].question}\n"),
+            ("", "\n"),
+        ]
         if self.notes_mode:
             parts.append(("class:choice.disabled", "notes: " + self.note_buffer + "\n"))
         elif note := self.notes.get(self.active):
             parts.append(("class:choice.disabled", "notes: " + note + "\n"))
         if not page.enabled():
             parts.append(("class:choice.disabled", "  no matches\n"))
+            parts.append(("", "\n"))
             parts.extend(self._footer())
             return parts
         option_rows = self._option_rows(page)
@@ -1261,8 +1265,10 @@ class AskViewState:
         side_by_side = width >= 100 and bool(preview)
         if side_by_side:
             label_widths = [get_cwidth(page.labels.get(choice, choice)) for choice in page.visible()]
-            left_width = min(max(label_widths) + 6, width * 2 // 5)
-            right_width = max(10, width - left_width - 3)
+            # The +9 covers the number prefix ("> " + "N. ", 6 cells) plus a 3-cell visible gutter
+            # between the longest option row and the preview column.
+            left_width = min(max(label_widths) + 9, width * 2 // 5)
+            right_width = max(10, width - left_width - 2)
             preview_rows = self._preview_rows(preview, right_width)
             body = self._join_rows(option_rows, preview_rows, left_width)
         else:
@@ -1271,7 +1277,8 @@ class AskViewState:
                 preview_rows = self._preview_rows(preview, max(10, width - 4))
                 body.append([("class:choice.disabled", "  " + "─" * max(10, width - 4))])
                 body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
-        budget = max_height - 2 - (1 if self.notes_mode or self.notes.get(self.active) else 0)
+        # Title and footer now each sit on their own blank line (2 extra rows in the budget).
+        budget = max_height - 4 - (1 if self.notes_mode or self.notes.get(self.active) else 0)
         if page.searching:
             budget -= 1
         if len(body) > budget:
@@ -1281,6 +1288,7 @@ class AskViewState:
             parts.extend((*row, ("", "\n")))
         if page.searching:
             parts.append(("", "/" + page.query))
+        parts.append(("", "\n"))
         parts.extend(self._footer())
         return parts
 

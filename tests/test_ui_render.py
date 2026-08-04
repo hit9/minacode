@@ -688,10 +688,16 @@ def test_ask_view_side_by_side_joins_option_and_preview_rows():
     state = _ask_state()
     rows = _rows(state.fragments(width=120, max_height=30))
     assert rows[0] == "(1/2) Which shape?"
+    assert rows[1] == ""  # blank line under the title
+    assert rows[-2] == ""  # blank line above the key legend
     # The selected option's label and its rich preview land on the same rendered row.
-    assert any("Flat" in row and "flat table" in row for row in rows)
-    assert "1. Flat (recommended)" in rows[1]
+    pair = next(row for row in rows if "Flat" in row and "flat table" in row)
+    assert "1. Flat (recommended)" in pair
+    # The longest option row and the preview column keep a visible gutter of at least 3 cells.
+    before_preview = pair.split("bold")[0]
+    assert len(before_preview) - len(before_preview.rstrip()) >= 3
     assert any("↑/↓ or j/k move" in row for row in rows)
+    assert len(rows) <= 30
 
 
 def test_ask_view_stacks_preview_below_options_on_narrow_terminals():

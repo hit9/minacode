@@ -805,6 +805,7 @@ class LogRole(Enum):
     MUTED = auto()
     DIFF = auto()
     WORKER = auto()
+    FIELD = auto()
 
 
 @dataclass(frozen=True)
