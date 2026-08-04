@@ -881,8 +881,7 @@ def test_system_prompt_stable_across_refactors():
 
     from minacode.prompts import SYSTEM_PROMPT
 
-    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "6cbb412a08515bfa24ec8da873af3a62d33493042c0419ba55bb386e20cc0154"
-
+    assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "b4b1e374c9a0e1542823a474c9dece59be58ac305bbd918d44f8d9ab5ce6041c"
 
 # 20. yolo covers editing files and running commands: those mistakes show up in the diff or the
 #     command output at once. A delegation's mistake is the order text, and it only surfaces a whole
