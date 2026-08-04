@@ -352,6 +352,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
+        self.agent.tools.model_stream = self.model_stream_output
         self.agent.tools.question_fn = self.question_interaction
 
     def automatic_compaction_status(self, active: bool) -> None:
@@ -475,16 +476,17 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             activity = retry_status or (
                 ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or "working") + (" · " + attempt_status if attempt_status else "")
             )
-            worker = self.session.worker
-            if worker is not None and worker._active_turn_messages:
-                # The same in-flight predicate as the status bar's worker marker.
-                activity += " · worker"
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:
             label = status
         if queued:
             label = f"{label} [ {queued} queued ]"
-        return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
+        prefix = self.waiting_pulse_fragments()
+        worker = self.session.worker
+        if worker is not None and worker._active_turn_messages:
+            # The same in-flight predicate as the status bar's worker marker.
+            prefix = [("class:divider.worker", "[worker] "), *prefix]
+        return self.sweep_divider_fragments(label, prefix=prefix)
 
     def followup_fragments(self) -> tuple[StyleAndTextTuples, StyleAndTextTuples]:
         with self.session._queue_lock:
@@ -864,6 +866,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 "image.attachment": "ansicyan bold",
                 "input.error": "ansired",
                 "divider.working": "ansimagenta bold",
+                "divider.worker": "ansiyellow bold",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
@@ -1398,6 +1401,24 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 else "(no requests yet)",
             ),
         ]
+        worker = self.session.worker
+        if worker is not None:
+            worker_provider = worker.config.provider
+            worker_usage = worker.usage
+            if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
+                worker_ctx = min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)
+            else:
+                worker_ctx = worker.state.context_percent
+            worker_state = "delegating" if worker._active_turn_messages else "idle"
+            rows.append(
+                (
+                    "worker",
+                    f"`{worker.config.active_provider}/{worker_provider.model or '(empty)'}`; reasoning `{worker_provider.reasoning}`; "
+                    f"state `{worker_state}`; context `{worker_ctx}%`; rounds `{worker.state.round_count}`",
+                )
+            )
+        else:
+            rows.append(("worker", f"(none; `[worker] provider` = `{self.session.config.worker_provider or '(off)'}`)"))
         if self.session.state.goal:
             rows.append(("goal", self.session.state.goal))
         visible_activity = [(name, value) for name, value in activity if value]

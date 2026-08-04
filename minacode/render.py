@@ -107,6 +107,7 @@ class Theme:
         "status.update": "#fb923c",
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
+        "status.worker": "#fbbf24",
         "divider.glow": "#67e8f9",
         "divider.rule": "#4b5563",
         "user.log": "#e0a96d",
@@ -138,6 +139,7 @@ class Theme:
         "status.update": "#9a3412",
         "status.index": "#475569",
         "status.warn": "#b91c1c",
+        "status.worker": "#b45309",
         "divider.glow": "#0e7490",
         "divider.rule": "#9ca3af",
         "user.log": "#9a5b2e",
@@ -843,7 +845,7 @@ class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
-    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn")
+    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn", "worker")
     # The working sweep: one crest crossing the line every couple of seconds. `SWEEP_FALLOFF` sets
     # its half width as a fraction of the line (5.0 → a fifth), wide enough that it drifts rather
     # than blinks. Bands and levels quantize the gradient and the crest; see `sweep_fragments`.
@@ -963,7 +965,7 @@ class StatusBar:
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         parts: list[tuple[str, str]] = []
         if worker is not None:
-            parts.append(("worker", lead_role))
+            parts.append(("[worker]", "worker"))
         parts += [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
 
         mcp_status = self.mcp_status()

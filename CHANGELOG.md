@@ -26,10 +26,11 @@
   `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
   and re-read after any file change or stale-anchor error. The old wording only named the format and
   the inclusive range, giving the model no instruction against deriving anchors itself.
-- While a worker is alive the status bar tracks what is actually running: it leads with a `worker`
-  marker and shows the worker's provider, model, reasoning, and context/cache usage in place of the
-  parent's, returning to the parent's values after `/worker reset`. While a delegation is in flight
-  the marker warns and the working divider carries the same `· worker` mark.
+- While a worker is alive the status bar tracks what is actually running: it leads with a yellow
+  `[worker]` marker and shows the worker's provider, model, reasoning, and context/cache usage in
+  place of the parent's, returning to the parent's values after `/worker reset`. While a delegation
+  is in flight the working divider carries the same yellow `[worker]` prefix, and `/status` reports
+  the worker's provider, model, reasoning, state, context, and rounds beside the parent's rows.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a
@@ -47,6 +48,9 @@
   wrapper assumed every Agent emission was a LogLine and built `LogBlock([str])`, which
   `LogBlock.walk` rejects with `'str' object has no attribute 'walk'` at render time. Bare strings
   are now wrapped into LogLine items before reaching the parent's log stream.
+- Wire the worker's model stream into the parent's live display: `ModelClient` only streams when
+  `on_stream` is set, so the worker ran unstreamed and its reasoning and response progress never
+  reached the CLI. Delegations now reuse the parent's stream preview.
 - Make `/worker reset` finish the worker runtime it discards: stop and clean up its background
   jobs, remove a disk-only worker after the parent is resumed, and keep the live worker reachable
   with an actionable error if its snapshot cannot be deleted. This prevents orphaned processes and

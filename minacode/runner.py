@@ -249,6 +249,9 @@ class ToolRunner:
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
+        # Injected by CommandLoop for the Delegate worker: ModelClient only streams when on_stream
+        # is set, so an unwired worker would run unstreamed and its thinking would stay invisible.
+        self.model_stream: Callable[[str, str], None] | None = None
         self._active_bash: ActiveResource[BashTool] = ActiveResource()
         # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
         self._active_worker: ActiveResource[Agent] = ActiveResource()

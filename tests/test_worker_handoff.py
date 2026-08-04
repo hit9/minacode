@@ -502,7 +502,7 @@ def test_status_bar_shows_worker_segment(tmp_path):
     bar = StatusBar(parent)
     texts = [text for text, _ in bar.entries(show_elapsed=False)]
     parent_lead = parent.config.active_provider + "/" + (parent.config.provider.model.rsplit("/", 1)[-1] or "(no model)")
-    assert parent_lead in texts and "worker" not in texts
+    assert parent_lead in texts and "[worker]" not in texts
 
     # A live worker leads with the marker, keeps the worker's provider/model unsuffixed, and
     # ctx/cache come from the worker's usage.
@@ -512,7 +512,7 @@ def test_status_bar_shows_worker_segment(tmp_path):
     worker.usage.last_prompt_budget = 100
     worker.usage.last_cached_prompt_tokens = 25
     texts = [text for text, _ in bar.entries(show_elapsed=False)]
-    assert texts[0] == "worker"
+    assert texts[0] == "[worker]"
     assert parent_lead in texts and not any(text.endswith("·worker") for text in texts)
     assert "ctx 50% · cache 50%" in texts
 
@@ -531,9 +531,44 @@ def test_working_divider_marks_inflight_worker(tmp_path):
     def label():
         return "".join(text for _style, text in loop.queue_divider_fragments())
 
-    assert "· worker" not in label()
+    assert "[worker]" not in label()
     worker._active_turn_messages.append({"role": "user", "content": "order"})
-    assert "· worker" in label()
+    assert "[worker]" in label()
+
+
+def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    runner.model_stream = lambda kind, text: None
+    _delegate_call(parent, runner, action="send", order="o")
+    assert parent.worker._agent.model.on_stream is runner.model_stream
+
+
+def test_status_reports_worker_delegation_state(tmp_path):
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+    from minacode.session import Session
+
+    parent = _delegate_session(tmp_path)
+    agent = Agent(parent, output_fn=lambda text: None)
+    outputs: list = []
+    loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=outputs.append)
+
+    def status_text():
+        outputs.clear()
+        loop.command("/status")
+        return "\n".join(str(text) for text in outputs)
+
+    assert "[worker] provider" in status_text() and "default" in status_text()
+
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    parent.worker = worker
+    assert "idle" in status_text()
+
+    worker._active_turn_messages.append({"role": "user", "content": "order"})
+    assert "delegating" in status_text()
 
 
 # The engine publishes the model's own text as bare strings (content beside tool calls), so the
