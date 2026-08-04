@@ -530,3 +530,29 @@ def test_worker_prompt_shares_language_and_secret_rules_with_parent():
     assert LANGUAGE_RULES in WORKER_PROMPT
     assert SECRET_RULES in SYSTEM_PROMPT
     assert SECRET_RULES in WORKER_PROMPT
+
+
+# 17. the worker shares only the sections that must not drift (TOOLS / TURN / WORK / LANGUAGE); it
+#     does not inherit the parent's REVIEW or terminal-facing OUTPUT (which would contradict its
+#     own "your output is read by another model" rule), and it has its own OUTPUT section.
+def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
+    from minacode.prompts import (
+        OUTPUT_RULES,
+        REVIEW_RULES,
+        SYSTEM_PROMPT,
+        TOOLS_RULES,
+        TURN_RULES,
+        WORK_RULES,
+        WORKER_OUTPUT_RULES,
+        WORKER_PROMPT,
+    )
+
+    assert TOOLS_RULES in SYSTEM_PROMPT and TOOLS_RULES in WORKER_PROMPT
+    assert TURN_RULES in SYSTEM_PROMPT and TURN_RULES in WORKER_PROMPT
+    assert WORK_RULES in SYSTEM_PROMPT and WORK_RULES in WORKER_PROMPT
+    assert REVIEW_RULES in SYSTEM_PROMPT
+    assert REVIEW_RULES not in WORKER_PROMPT
+    assert OUTPUT_RULES in SYSTEM_PROMPT
+    assert OUTPUT_RULES not in WORKER_PROMPT
+    assert WORKER_OUTPUT_RULES in WORKER_PROMPT
+    assert WORKER_OUTPUT_RULES not in SYSTEM_PROMPT
