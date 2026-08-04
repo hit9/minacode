@@ -17,6 +17,17 @@ uv.lock
 .code-symbol-index/
 .code-workflow-probe.json
 
+# pasted screenshots dropped at the repo root; snapshots/ stays tracked
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+/*.bmp
+/*.tiff
+/*.heic
+/*.avif
+
 # crash core dumps
 core
 core.*
