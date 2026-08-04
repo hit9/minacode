@@ -1527,9 +1527,9 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     assert done[0].startswith("worker done · fix /status blank line · steps 1")
 
 
-# 29. a Delegate reset closes the bracket the same way as a send: the finish block carries the
-#     yellow [worker] root line and states plainly what was cleared and what survives. This is the
-#     fallback when no worker_rule is wired; the wired path puts the notice in a rule label instead.
+# 29. a Delegate reset is a one-shot tool call, not a bracket: it keeps its ordinary tool root
+#     and adds a plain done child stating what was cleared and what survives. No worker_rule rule
+#     and no [worker] ◀ root.
 def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     from minacode.base import LogBlock, ToolCall
     from minacode.context import ContextManager
@@ -1548,9 +1548,9 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
     finish = next(block for block in blocks if any(item.label == "done" for item, _ in block.walk()))
-    assert finish.items[0].label == "[worker]" and finish.items[0].text == "◀"
-    rendered = str(finish)
-    assert "◀" in rendered and "worker context cleared" in rendered
+    # Reset keeps its ordinary tool root (the short_call, not [worker] ◀) and a done child.
+    assert finish.items[0].label != "[worker]"
+    assert "worker context cleared" in str(finish)
 
 
 def test_delegate_reset_finish_worker_rule_label(tmp_path):
@@ -1571,8 +1571,13 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
     status, _message, _observation = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
     assert status == "ok"
 
-    assert labels, "the finish worker_rule callback never fired"
-    assert labels[0] == "worker reset · context cleared"
+    # Reset is a one-shot tool call, not a delegation bracket: no full-width worker_rule rule
+    # fires; the reset shows as an ordinary tool root with a plain done child.
+    assert labels == [], "reset must not emit a worker_rule divider"
+    from minacode.base import LogBlock
+    done = [item for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done"]
+    assert done, "reset should keep its ordinary tool root with a done child"
+    assert "worker context cleared" in next(item.text for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done")
 
 
 # The worker's model stream forwards to the parent loop's live display, except

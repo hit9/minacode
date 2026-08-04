@@ -618,11 +618,13 @@ class ToolRunner:
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
         tree = d.nested_display or call.name in ("Bash", "Delegate")
         root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
-        if call.name == "Delegate" and not failed:
+        is_reset = call.name == "Delegate" and not failed and 'action="reset"' in output
+        if call.name == "Delegate" and not failed and not is_reset:
             # The delegation bracket: the start marker opens with the yellow full-width rule; the
-            # finish closes it with the sibling rule carrying the done summary or reset notice.
-            # Without a wired worker_rule the finish block falls back to the "[worker] ◀" root
-            # line with the detail in the child lines below.
+            # finish closes it with the sibling rule carrying the done summary. Without a wired
+            # worker_rule the finish block falls back to the "[worker] ◀" root line with the detail
+            # in the child lines below. Reset is a one-shot tool call, not a bracket: it keeps its
+            # ordinary tool root and does not print a full-width rule.
             if self.worker_rule is not None:
                 root = None
             else:
@@ -645,14 +647,10 @@ class ToolRunner:
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         elif call.name == "Delegate":
             if 'action="reset"' in output:
-                if self.worker_rule is not None:
-                    # A reset may land between delegations without the user typing /worker reset
-                    # (the model can call it); the rule label states plainly what it cleared.
-                    self.worker_rule("worker reset · context cleared", blank_before=True)
-                else:
-                    # A reset may land between delegations without the user typing /worker reset (the
-                    # model can call it), so the log states plainly what it cleared and what survives.
-                    children.append(LogLine("done", "worker context cleared; file changes and merged diffs kept", LogRole.META, LogEdge.BRANCH))
+                # Reset is a one-shot tool call, not a delegation bracket: it keeps its ordinary
+                # tool root (above) and only adds a plain done child stating what it cleared and
+                # what survives. No full-width `worker reset` rule runs.
+                children.append(LogLine("done", "worker context cleared; file changes and merged diffs kept", LogRole.META, LogEdge.BRANCH))
             else:
                 summary = self.delegate_result_summary(output)
                 if summary:
