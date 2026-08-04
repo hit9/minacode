@@ -26,10 +26,10 @@
   `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
   and re-read after any file change or stale-anchor error. The old wording only named the format and
   the inclusive range, giving the model no instruction against deriving anchors itself.
-- The status bar no longer appends a separate `worker:` segment: while a worker is alive, the
-  leading provider/model segment shows the worker's provider and model instead of the parent's,
-  suffixed `·worker`. The bar tracks what is actually running; it still warns while a delegation
-  is in flight and returns to the parent's values after `/worker reset`.
+- While a worker is alive the status bar tracks what is actually running: it leads with a `worker`
+  marker and shows the worker's provider, model, reasoning, and context/cache usage in place of the
+  parent's, returning to the parent's values after `/worker reset`. While a delegation is in flight
+  the marker warns and the working divider carries the same `· worker` mark.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

@@ -475,6 +475,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             activity = retry_status or (
                 ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or "working") + (" · " + attempt_status if attempt_status else "")
             )
+            worker = self.session.worker
+            if worker is not None and worker._active_turn_messages:
+                # The same in-flight predicate as the status bar's worker marker.
+                activity += " · worker"
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:
             label = status
