@@ -812,6 +812,46 @@ def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeyp
     assert 'stopped_at_max_steps="false"' in result  # the words are irrelevant; the fact is not set
 
 
+# 14b. The send envelope also carries the worker's token spend for this delegation: the program
+#      subtracts worker.usage before/after (the fake model updates nothing, so 0/0), and the finish
+#      summary renders it.
+def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, monkeypatch):
+    from minacode.engine import Agent
+
+    parent = _delegate_session(tmp_path)
+    runner = _delegate_runner(parent)
+
+    def run_quiet(self, order):
+        self.stopped_at_max_steps = False
+        return "done"
+
+    monkeypatch.setattr(Agent, "run", run_quiet)
+    result = _delegate_call(parent, runner, action="send", order="o")
+    assert 'tokens="' in result
+    summary = runner.delegate_result_summary(result)
+    assert " in / " in summary and " out" in summary
+    assert "0 in / 0 out" in summary
+
+
+# 14c. delegate_result_summary formats the raw integer token counts like /status does, and keeps
+#      parsing envelopes written before the tokens attribute existed.
+def test_delegate_summary_formats_tokens_and_tolerates_old_envelopes(tmp_path):
+    parent = _delegate_session(tmp_path)
+    runner = _delegate_runner(parent)
+
+    summary = runner.delegate_result_summary(
+        '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false" tokens="8200/1300">'
+    )
+    assert "8.2K in / 1.3K out" in summary
+
+    legacy = runner.delegate_result_summary(
+        '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false">'
+    )
+    assert "steps 3" in legacy
+    assert "2.5s" in legacy
+    assert "a.txt, b.txt" in legacy
+    assert " in / " not in legacy
+
 # 15. resolve_uid prefix search never resolves to a worker snapshot (review point 5): the parent's
 #     uid prefix must resolve to the parent alone, without ambiguity.
 def test_resolve_uid_prefix_skips_worker_snapshot(tmp_path):

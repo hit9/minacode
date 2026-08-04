@@ -58,6 +58,11 @@
   proposals -- is answered only, action does exactly what was instructed, ambiguity between the
   two resolves to discussion, and a reply that rejects or narrows a proposal approves only what
   it explicitly accepts.
+- The `Delegate` send finish block now shows what that delegation cost: the envelope records the
+  worker's prompt/completion token delta for the send (the program subtracts `worker.usage` before
+  and after the run, never the model's word), and the summary line renders it as e.g.
+  `8.2K in / 1.3K out`. Envelopes written before the `tokens` attribute still parse and simply
+  omit the token part.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

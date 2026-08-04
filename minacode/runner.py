@@ -243,7 +243,7 @@ class ToolRunner:
     # The envelope DelegateTool._send returns for a finished delegation: attributes in fixed order,
     # the worker's answer wrapped in <worker> tags. Parsed with a couple of string scans — the
     # format is ours, so no XML parser is needed.
-    DELEGATE_META_RE: ClassVar[re.Pattern] = re.compile(r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)">')
+    DELEGATE_META_RE: ClassVar[re.Pattern] = re.compile(r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)"(?: tokens="([^"]*)")?>')
 
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
@@ -739,11 +739,23 @@ class ToolRunner:
         match = self.DELEGATE_META_RE.search(output)
         if not match:
             return ""
-        steps, elapsed, files, stopped = match.groups()
+        steps, elapsed, files, stopped, tokens = match.groups()
         parts = [f"steps {steps}", elapsed, files]
+        if tokens is not None:
+            in_tokens, out_tokens = tokens.split("/", 1)
+            parts.append(f"{self.token_count(int(in_tokens))} in / {self.token_count(int(out_tokens))} out")
         if stopped == "true":
             parts.append("stopped at max steps")
         return " · ".join(parts)
+
+    @staticmethod
+    def token_count(value: int) -> str:
+        """Human-readable token count, same format as /status: 1.0M, 1.5K, or the bare number."""
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K"
+        return str(value)
 
     def delegate_answer_preview(self, output: str) -> str:
         """The worker's answer (the text between <worker> and </worker>), bounded like the Bash

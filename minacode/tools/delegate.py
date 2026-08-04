@@ -193,6 +193,8 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             worker._agent = agent
         started = time.monotonic()
         before_diffs = len(worker.turn_diffs)
+        before_in = worker.usage.prompt_tokens
+        before_out = worker.usage.completion_tokens
         # A visible boundary where the delegation starts: until the finish block there is nothing in
         # the scrollback that says who is talking, and the worker's own streamed lines do not. One
         # yellow [worker] line, reading the worker's live config and a one-line order summary.
@@ -211,10 +213,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # Merge diffs even when interrupted, or the user never sees what the worker did.
             self._merge_diffs(worker, parent, before_diffs)
         elapsed = time.monotonic() - started
+        in_tokens = worker.usage.prompt_tokens - before_in
+        out_tokens = worker.usage.completion_tokens - before_out
         files = ", ".join(sorted({diff.path for diff in worker.turn_diffs[before_diffs:]})) or "(none)"
         return "\n".join(
             [
-                f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str(agent.stopped_at_max_steps).lower()}">',
+                f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str(agent.stopped_at_max_steps).lower()}" tokens="{in_tokens}/{out_tokens}">',
                 "<worker>",
                 answer.rstrip(),
                 "</worker>",
