@@ -570,9 +570,15 @@ def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
     model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     runner = _delegate_runner(parent)
-    runner.model_stream = lambda kind, text: None
+    calls = []
+    runner.model_stream = lambda kind, text: calls.append((kind, text))
     _delegate_call(parent, runner, action="send", order="o")
-    assert parent.worker._agent.model.on_stream is runner.model_stream
+    on_stream = parent.worker._agent.model.on_stream
+    assert on_stream is not runner.model_stream  # wrapped: `output_done` must not promote
+    assert callable(on_stream)
+    on_stream("output", "x")
+    on_stream("output_done", "t")
+    assert calls == [("output", "x"), ("", "")]
 
 
 def test_status_reports_worker_delegation_state(tmp_path):
@@ -1472,3 +1478,29 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
 
     assert labels, "the finish worker_rule callback never fired"
     assert labels[0] == "worker reset · context cleared"
+
+
+# The worker's model stream forwards to the parent loop's live display, except
+# `output_done`: the parent's promote would write the completed text a second
+# time on top of what the worker's own output_fn already put in the scrollback,
+# and the worker path never consumes the promoted-text marker. `output_done` is
+# downgraded to a plain ("", "") preview clear; everything else forwards
+# unchanged.
+def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
+    from minacode.tools.delegate import _worker_stream
+
+    calls: list[tuple[str, str]] = []
+
+    class StubRunner:
+        def __init__(self):
+            self.model_stream = lambda kind, text: calls.append((kind, text))
+
+    stream = _worker_stream(StubRunner())
+
+    stream("output", "x")
+    stream("output_done", "t")
+    stream("", "")
+    stream("tool", "Bash")
+
+    assert calls == [("output", "x"), ("", ""), ("", ""), ("tool", "Bash")]
+    assert all(kind != "output_done" for kind, _ in calls)

@@ -62,6 +62,25 @@ def _worker_output(runner: ToolRunner):
 
     return emit
 
+def _worker_stream(runner: ToolRunner):
+    """Wrap the worker Agent's model stream for the parent's live preview.
+
+    The worker's own output_fn already writes completed text into the parent's
+    scrollback, and the parent loop's `output_done` promotion would write it a
+    second time: the promoted-text marker (model_stream_promoted_text) is consumed
+    only by the parent's own agent_output path, never by the worker's
+    _worker_output path. So `output_done` must only clear the preview, never
+    promote; everything else forwards unchanged. Non-TUI behavior is unchanged:
+    without a TUI there is no promotion to skip, and the ("", "") clear is what
+    model_stream_output would have done with the forwarded kind anyway."""
+
+    def stream(kind: str, text: str) -> None:
+        if kind == "output_done":
+            runner.model_stream("", "")
+            return
+        runner.model_stream(kind, text)
+
+    return stream
 
 def worker_provider_config(config: Config, provider_name: str) -> ProviderConfig:
     """The detached provider entry a worker should run on, with [worker] overrides applied.
@@ -186,7 +205,10 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             agent = Agent(worker, input_fn=runner.input_fn, output_fn=_worker_output(runner))
             if runner.model_stream is not None:
                 # The parent loop's stream display; see ToolRunner.model_stream.
-                agent.model.on_stream = runner.model_stream
+                # _worker_stream swallows `output_done`: the worker's own output_fn
+                # already writes completed text into the parent scrollback, and the
+                # loop's promote would write it a second time.
+                agent.model.on_stream = _worker_stream(runner)
             # Reuse the parent's live region: serial delegation means only one stream at a time.
             agent.tools.live_start = runner.live_start
             agent.tools.live_output = runner.live_output

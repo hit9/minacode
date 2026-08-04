@@ -160,6 +160,12 @@
 - The delegation finish block's root line is now a pure closing divider `[worker] ◀` for both
   `Delegate` send and reset: the action name no longer crowds the boundary, and the details — the
   steps/elapsed/files summary or the reset notice — live in the child lines.
+- Worker mid-turn text no longer repeats in the TUI: the worker's model stream
+  now forwards to the parent's live display with `output_done` downgraded to a
+  preview clear, because the worker's own output already lands in the parent
+  scrollback and the parent loop's promote would write it a second time (the
+  promoted-text marker is consumed only by the parent's own agent output path).
+  Final reports and non-TUI output are untouched.
 
 
 ## 0.20.0 - 2026-08-03
