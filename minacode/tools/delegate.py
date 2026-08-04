@@ -50,7 +50,7 @@ WORKER_TOOLS: tuple[str, ...] = (
 class DelegateTool(Tool):
     NAME = "Delegate"
     runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the cancel wiring
-    MUTATES = True  # the delegation itself needs confirmation and obeys yolo; the worker's own tools still confirm per call
+    MUTATES = True  # the delegation itself needs confirmation; the worker's own tools still confirm per call
     STORES_RESULT = True  # results can be long; keep them in tr.N for Recall
     PRODUCES_MODEL_OBSERVATION = False
     DESCRIPTION = """Hand a bounded task to the worker: a second in-process minacode session on its own provider, with its own system prompt and tool set. The worker cannot see this session's history -- only the order text and its own prior history -- so the order must stand alone.
@@ -76,6 +76,17 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             },
             ["action"],
         )
+
+    def always_confirms(self) -> bool:
+        """A send is confirmed even under yolo; status and reset are not.
+
+        What the prompt shows is the order text, and the order is what decides whether a delegation
+        succeeds -- the parent model writes it, and it is also judging its own spec when it decides
+        to delegate at all. Seeing the order before it goes is the only cheap check on that; a bad
+        one costs a whole worker round to discover. Editing files under yolo fails visibly and at
+        once, which is what that flag actually buys."""
+        payload = self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
+        return str(payload.get("action") or "").strip() == "send"
 
     def call(self) -> str:
         payload = self.single_dict_arg("Delegate requires named fields")

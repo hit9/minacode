@@ -607,3 +607,26 @@ def test_system_prompt_stable_across_refactors():
     from minacode.prompts import SYSTEM_PROMPT
 
     assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "6cbb412a08515bfa24ec8da873af3a62d33493042c0419ba55bb386e20cc0154"
+
+
+# 20. yolo covers editing files and running commands: those mistakes show up in the diff or the
+#     command output at once. A delegation's mistake is the order text, and it only surfaces a whole
+#     worker round later, so send is confirmed even under yolo. status and reset stay under it.
+def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
+    from minacode.tools import DelegateTool
+
+    s = session(tmp_path)
+    s.settings.yolo = True
+
+    send = DelegateTool(s, [{"action": "send", "order": "do the thing"}])
+    assert send.needs_confirmation() is True
+    assert send.always_confirms() is True
+
+    for action in ("status", "reset"):
+        other = DelegateTool(s, [{"action": action}])
+        assert other.always_confirms() is False, action
+
+    # Every other mutating tool keeps yolo's meaning: only Delegate opts out.
+    from minacode.tools import EditTool
+
+    assert EditTool(s, ["a.py", []]).always_confirms() is False

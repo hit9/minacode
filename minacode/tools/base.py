@@ -154,6 +154,15 @@ class Tool:
     def needs_confirmation(self) -> bool:
         return self.MUTATES
 
+    def always_confirms(self) -> bool:
+        """True when yolo must not skip this call's confirmation.
+
+        yolo means "I trust you to edit files and run commands": those mistakes are visible in the
+        diff or the command output immediately. A call whose mistake only surfaces a whole round
+        later, and whose prompt is the last chance to inspect what is being committed to, is not
+        covered by that trust and opts out here."""
+        return False
+
     @classmethod
     def log_lexer(cls, _: ToolArgs) -> str:
         return cls.LOG_LEXER

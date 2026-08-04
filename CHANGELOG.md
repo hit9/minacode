@@ -4,6 +4,11 @@
 ## Unreleased
 
 ### Changed
+- Confirm a `Delegate` send even under `yolo`. That flag means "edit files and run commands
+  without asking", and those mistakes are visible in the diff or the command output at once; a
+  delegation's mistake is the order text, which only surfaces a whole worker round later. The
+  prompt shows the order, so it stays the one cheap check on a spec the model wrote for itself.
+  `Delegate` status and reset still follow `yolo`, as does every other tool.
 - A successful `Edit` now refunds the fresh anchors for the region it changed (the same
   `anchor=line:hash` lines `Read` shows), so consecutive edits to the same file can keep going
   without a re-Read; `create` and `replace_all`, which have no per-hunk region, skip the refund to

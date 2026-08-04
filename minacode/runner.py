@@ -447,7 +447,7 @@ class ToolRunner:
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
-            if needs_confirmation and self.session.settings.yolo:
+            if needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
                 d.auto = True
                 pre = self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit)
                 # The "auto …" header duplicates the result line; only surface it when it carries a
