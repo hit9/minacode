@@ -77,6 +77,12 @@
   heading itself is the separator — and the common workspace/session/goal/runtime rows lead
   without a `Common` heading, followed by the `parent` and `worker` sections. The rows and the
   sectioning are unchanged; only the rendering and the `Common` label are gone.
+- The dense `/status` rows get their markdown styling back without the markdown layout: section
+  headings are bold magenta again, backtick spans render as cyan inline code instead of literal
+  backticks, and the context/cache progress bars color their filled cells by occupancy (green
+  below 60%, yellow below 85%, else red) with the empty cells dim gray; the plain (no-color)
+  path drops the backticks. The delegation start divider now reads `worker start · provider/model
+  · order summary` instead of `worker · provider/model · order summary`.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

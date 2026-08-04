@@ -207,6 +207,12 @@ class Theme:
         return cls._pygments_cache[name]
 
 
+# /status values split on backticks: odd spans are inline code; a span that is exactly a progress
+# bar colors its filled cells by occupancy instead of the plain code color.
+_STATUS_BAR_RE = re.compile(r"^\[[█░▏▎▍▌▋▊▉]+\]$")
+_STATUS_PARTIAL_FRAC = {"▏": 1 / 8, "▎": 2 / 8, "▍": 3 / 8, "▌": 4 / 8, "▋": 5 / 8, "▊": 6 / 8, "▉": 7 / 8}
+
+
 class UiPrinter:
     """Render completed output into native terminal scrollback.
 
@@ -344,7 +350,7 @@ class UiPrinter:
                 if title:
                     self.output_fn(title)
                 for label, value in rows:
-                    self.output_fn(f"{label}  {value}")
+                    self.output_fn(f"{label}  {value.replace('`', '')}")
             return
         console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
@@ -352,17 +358,54 @@ class UiPrinter:
                 if not rows:
                     continue
                 if title:
-                    console.print(RichText(title, style="bright_black"))
+                    console.print(RichText(title, style="bold magenta"))
                 table = Table(box=None, padding=0, show_header=False, show_edge=False)
                 table.add_column(style="bright_black", no_wrap=True)
                 table.add_column()
                 for label, value in rows:
                     # One space between the dim label column and the plain value column; Rich only
                     # inserts its own gap when the cell padding is nonzero.
-                    table.add_row(label, " " + str(value).replace(chr(10), " "))
+                    cell = RichText(" ")
+                    cell.append_text(self._status_value(str(value).replace(chr(10), " ")))
+                    table.add_row(label, cell)
                 console.print(table)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
         print_formatted_text(ANSI(cleaned), end="", flush=True)
+
+    def _status_value(self, value: str) -> RichText:
+        """Style a /status value: backtick spans become cyan inline code, and a progress-bar span
+        colors its filled cells by occupancy (green below 60%, yellow below 85%, else red) with
+        the empty cells dim gray."""
+        text = RichText()
+        for index, part in enumerate(value.split("`")):
+            if index % 2 == 0:
+                text.append(part)
+            elif _STATUS_BAR_RE.match(part):
+                text.append_text(self._status_bar(part))
+            else:
+                text.append(part, style="cyan")
+        return text
+
+    @staticmethod
+    def _status_bar(bar: str) -> RichText:
+        filled = bar.count("█")
+        partial = 0.0
+        for char, fraction in _STATUS_PARTIAL_FRAC.items():
+            if char in bar:
+                partial = fraction
+                break
+        slots = len(bar) - 2  # the two brackets
+        ratio = (filled + partial) / slots if slots else 0.0
+        color = "green" if ratio < 0.6 else "yellow" if ratio < 0.85 else "red"
+        text = RichText()
+        for char in bar:
+            if char in "█▏▎▍▌▋▊▉":
+                text.append(char, style=color)
+            elif char == "░":
+                text.append(char, style="bright_black")
+            else:
+                text.append(char)
+        return text
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
     # pushes it to the very edge, which reads as a stray label, not text on a rule) and not

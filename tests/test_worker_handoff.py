@@ -608,7 +608,7 @@ def test_status_reports_worker_delegation_state(tmp_path):
     text = status_text()
     assert "reasoning" in text
     assert "(no requests yet)" in text
-    assert "state `idle`; rounds `0`" in text
+    assert "state idle; rounds 0" in text
 
     worker.usage.last_prompt_tokens = 50
     worker.usage.last_prompt_budget = 100
@@ -619,11 +619,11 @@ def test_status_reports_worker_delegation_state(tmp_path):
     # Scope to the worker section: the parent's own cache row also says "(no requests yet)".
     worker_section = text.split("\nworker\n", 1)[1]
     assert "~50 / 100" in worker_section and "(no requests yet)" not in worker_section
-    assert "last read `25 / 50 (50.0%)`" in worker_section
+    assert "last read 25 / 50 (50.0%)" in worker_section
 
     worker._active_turn_messages.append({"role": "user", "content": "order"})
     text = status_text()
-    assert "state `delegating`; rounds `0`" in text
+    assert "state delegating; rounds 0" in text
 
 
 # /worker's own status branch returns readable text for the human (the model-facing envelope stays
@@ -731,7 +731,7 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
     _delegate_call(parent, runner, action="send", order=order)
 
     assert labels, "the worker_rule callback never fired"
-    assert labels[0].startswith("worker · default/worker-model-x · ")
+    assert labels[0].startswith("worker start · default/worker-model-x · ")
     assert ToolRunner.oneline(order, 60) in labels[0]
     assert not any("[worker]" in rendered for rendered in labels)  # the rule label replaces the [worker] ▶ line
 

@@ -203,7 +203,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
 
         config = worker.config
         if runner.worker_rule is not None:
-            runner.worker_rule(f"worker · {config.active_provider}/{config.provider.model or '(no model)'} · {ToolRunner.oneline(order, 60)}")
+            runner.worker_rule(f"worker start · {config.active_provider}/{config.provider.model or '(no model)'} · {ToolRunner.oneline(order, 60)}")
         else:
             runner.output_fn(
                 LogBlock([LogLine("[worker]", f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {ToolRunner.oneline(order, 200)}", LogRole.WORKER)])
