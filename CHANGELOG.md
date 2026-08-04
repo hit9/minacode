@@ -72,6 +72,11 @@
   and after the run, never the model's word), and the summary line renders it as e.g.
   `8.2K in / 1.3K out`. Envelopes written before the `tokens` attribute still parse and simply
   omit the token part.
+- `/status` now renders as dense rows instead of markdown: borderless zero-padding columns
+  (dim label, plain value, one space between) with no blank line after a section label — the
+  heading itself is the separator — and the common workspace/session/goal/runtime rows lead
+  without a `Common` heading, followed by the `parent` and `worker` sections. The rows and the
+  sectioning are unchanged; only the rendering and the `Common` label are gone.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

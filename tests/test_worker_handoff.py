@@ -591,9 +591,13 @@ def test_status_reports_worker_delegation_state(tmp_path):
         return "\n".join(str(text) for text in outputs)
 
     # No worker session: the worker section keeps the single configured-[worker]-provider line.
+    # The dense rendering has no headings or markdown: the common rows lead, then dim `parent` /
+    # `worker` section labels separate the groups (the heading itself is the separator, no blank
+    # lines anywhere).
     text = status_text()
-    assert "### Common" in text and "### Parent" in text and "### Worker" in text
-    assert "### Common\n| status | value |" in text  # sections stay tight: no blank line under a heading
+    assert text.startswith("workspace")
+    assert "parent" in text and "worker" in text
+    assert "### " not in text and "Common" not in text
     assert "[worker] provider" in text and "default" in text
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -613,7 +617,7 @@ def test_status_reports_worker_delegation_state(tmp_path):
     worker.usage.cached_prompt_tokens = 25
     text = status_text()
     # Scope to the worker section: the parent's own cache row also says "(no requests yet)".
-    worker_section = text.split("### Worker", 1)[1]
+    worker_section = text.split("\nworker\n", 1)[1]
     assert "~50 / 100" in worker_section and "(no requests yet)" not in worker_section
     assert "last read `25 / 50 (50.0%)`" in worker_section
 

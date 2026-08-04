@@ -1364,7 +1364,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         text = self.HELP_HEADING_RE.sub(r"\1:", text)
         return self.HELP_ENTRY_RE.sub(r"  \1  ", text)
 
-    def status(self, args: str) -> str:
+    def status(self, args: str) -> None:
         def progress_bar(value: int, total: int, width: int = 14) -> str:
             ratio = min(1.0, max(0.0, value / total)) if total else 0.0
             eighths = int(ratio * width * 8 + 0.5)
@@ -1418,15 +1418,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         running_jobs = len(self.session.running_jobs())
         if self.session.jobs:
             activity.append(("jobs", f"{running_jobs}/{len(self.session.jobs)}"))
-
-        def render_table(rows: list[tuple[str, str]]) -> str:
-            return "\n".join(
-                [
-                    "| status | value |",
-                    "| --- | --- |",
-                    *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
-                ]
-            )
 
         # Common facts first (workspace, session, goal, runtime), then the parent's rows, then the
         # worker's — /status is an explicit query, so the worker section appears whenever a worker
@@ -1512,16 +1503,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             worker_rows.append(("state", f"state `{worker_state}`; rounds `{worker.state.round_count}`"))
         else:
             worker_rows.append(("worker", f"(none; `[worker] provider` = `{self.session.config.worker_provider or '(off)'}`)"))
-        return "\n".join(
-            [
-                "### Common",
-                render_table(common_rows),
-                "### Parent",
-                render_table(parent_rows),
-                "### Worker",
-                render_table(worker_rows),
-            ]
-        )
+        # Rendered directly instead of through the markdown path: emit_answer pads a blank line after
+        # every heading and a row of whitespace above and below each table box, which stacks into two
+        # blank lines between a heading and its rows. The sections print flush here (the heading is the
+        # separator), and a None return tells the command dispatch the UI already handled the output.
+        self.ui.emit_status([(None, common_rows), ("parent", parent_rows), ("worker", worker_rows)])
 
     def skills_command(self, args: str) -> str:
         library = self.session.skills

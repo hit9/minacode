@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text as RichText
 
 from minacode.base import (
@@ -327,6 +328,39 @@ class UiPrinter:
         console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
+        cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        print_formatted_text(ANSI(cleaned), end="", flush=True)
+
+    def emit_status(self, sections: list[tuple[str | None, list[tuple[str, str]]]]) -> None:
+        """Render /status as dense rows: a dim section heading, then borderless zero-padding columns.
+
+        The markdown path through `emit_answer` pads a blank line after every heading and a row of
+        whitespace above and below each table box, which stacks into two blank lines between a heading
+        and its rows. A captured Rich table (like `emit_turn_end`) prints the sections flush instead:
+        the heading itself is the separator, and sections follow one another with no blank line.
+        """
+        if not self.color:
+            for title, rows in sections:
+                if title:
+                    self.output_fn(title)
+                for label, value in rows:
+                    self.output_fn(f"{label}  {value}")
+            return
+        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=shutil.get_terminal_size().columns)
+        with console.capture() as capture:
+            for title, rows in sections:
+                if not rows:
+                    continue
+                if title:
+                    console.print(RichText(title, style="bright_black"))
+                table = Table(box=None, padding=0, show_header=False, show_edge=False)
+                table.add_column(style="bright_black", no_wrap=True)
+                table.add_column()
+                for label, value in rows:
+                    # One space between the dim label column and the plain value column; Rich only
+                    # inserts its own gap when the cell padding is nonzero.
+                    table.add_row(label, " " + str(value).replace(chr(10), " "))
+                console.print(table)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
