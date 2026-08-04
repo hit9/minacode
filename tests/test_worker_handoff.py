@@ -532,27 +532,57 @@ def test_worker_prompt_shares_language_and_secret_rules_with_parent():
     assert SECRET_RULES in WORKER_PROMPT
 
 
-# 17. the worker shares only the sections that must not drift (TOOLS / TURN / WORK / LANGUAGE); it
-#     does not inherit the parent's REVIEW or terminal-facing OUTPUT (which would contradict its
-#     own "your output is read by another model" rule), and it has its own OUTPUT section.
+# 17. the worker shares only the mechanics that must not drift (TOOLS / TURN / WORK / LANGUAGE);
+#     it does not inherit the parent's REVIEW, terminal-facing OUTPUT, or the parent's tool
+#     enumeration (which names Ask / NextHints / ViewImage the worker does not have), and it has
+#     its own OUTPUT section.
 def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
     from minacode.prompts import (
         OUTPUT_RULES,
+        PARENT_TOOL_ENUM,
+        PARENT_TURN_NEXTHINTS_RULE,
         REVIEW_RULES,
         SYSTEM_PROMPT,
-        TOOLS_RULES,
-        TURN_RULES,
+        TOOLS_MECHANICS_RULES,
+        TURN_MECHANICS_RULES,
         WORK_RULES,
         WORKER_OUTPUT_RULES,
         WORKER_PROMPT,
+        WORKER_TOOL_ENUM,
     )
 
-    assert TOOLS_RULES in SYSTEM_PROMPT and TOOLS_RULES in WORKER_PROMPT
-    assert TURN_RULES in SYSTEM_PROMPT and TURN_RULES in WORKER_PROMPT
+    assert TOOLS_MECHANICS_RULES in SYSTEM_PROMPT and TOOLS_MECHANICS_RULES in WORKER_PROMPT
+    assert TURN_MECHANICS_RULES in SYSTEM_PROMPT and TURN_MECHANICS_RULES in WORKER_PROMPT
     assert WORK_RULES in SYSTEM_PROMPT and WORK_RULES in WORKER_PROMPT
+    assert PARENT_TOOL_ENUM in SYSTEM_PROMPT
+    assert PARENT_TOOL_ENUM not in WORKER_PROMPT
+    assert PARENT_TURN_NEXTHINTS_RULE in SYSTEM_PROMPT
+    assert PARENT_TURN_NEXTHINTS_RULE not in WORKER_PROMPT
     assert REVIEW_RULES in SYSTEM_PROMPT
     assert REVIEW_RULES not in WORKER_PROMPT
     assert OUTPUT_RULES in SYSTEM_PROMPT
     assert OUTPUT_RULES not in WORKER_PROMPT
     assert WORKER_OUTPUT_RULES in WORKER_PROMPT
     assert WORKER_OUTPUT_RULES not in SYSTEM_PROMPT
+    assert WORKER_TOOL_ENUM in WORKER_PROMPT
+    assert WORKER_TOOL_ENUM not in SYSTEM_PROMPT
+
+
+# 18. no prompt may name a tool its role does not have (parent -> TOOL_REGISTRY, worker ->
+#     WORKER_TOOLS). This is a consistency contract between the prompts and the tool registry, not
+#     a prompt-literal test: it fires automatically when anyone adds or removes a tool and forgets
+#     the corresponding prompt mention.
+def test_prompts_never_name_tools_outside_their_toolset():
+    import re
+
+    from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
+    from minacode.tools import TOOL_REGISTRY
+    from minacode.tools.delegate import WORKER_TOOLS
+
+    def mentioned(prompt):
+        return {name for name in TOOL_REGISTRY if re.search(rf"\b{re.escape(name)}\b", prompt)}
+
+    parent_mentioned = mentioned(SYSTEM_PROMPT)
+    assert parent_mentioned <= set(TOOL_REGISTRY)
+    worker_mentioned = mentioned(WORKER_PROMPT)
+    assert worker_mentioned <= set(WORKER_TOOLS), worker_mentioned - set(WORKER_TOOLS)
