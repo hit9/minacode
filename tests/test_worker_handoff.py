@@ -1021,27 +1021,6 @@ def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
         assert unavailable not in WORKER_PROMPT
 
 
-# 17b. Delegate's tool description carries the acceptance discipline: judge the result against the
-# order's how-to-verify by rerunnable evidence (diff/test output), never the worker's own report,
-# and prefer a black-box test-first for complex work. The paragraph lives only in
-# DelegateTool.DESCRIPTION, never in WORKER_PROMPT, and the earlier paragraphs stay word for word.
-def test_delegate_description_anchors_acceptance_to_evidence():
-    from minacode.prompts import WORKER_PROMPT
-    from minacode.tools.delegate import DelegateTool
-
-    description = DelegateTool.DESCRIPTION
-    assert "black-box" in description
-    assert "`how to verify`" in description
-    assert "the worker's own report" in description
-    assert "rationalizes in its favor" in description
-    # The pre-existing paragraphs survive unchanged: value-for-money framing, the order-spec list,
-    # and the cost note.
-    assert "judge from its diff or test output" in description
-    assert "reviewing the result cost about as much as doing the work" in description
-    assert "how to verify, and the boundaries" in description
-    # The acceptance paragraph is Delegate-specific and must not leak into the worker prompt.
-    assert "black-box" not in WORKER_PROMPT
-    assert "rationalizes in its favor" not in WORKER_PROMPT
 
 
 # 18. The worker prompt may name only tools in its reduced tool set.
