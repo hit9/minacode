@@ -519,6 +519,11 @@ class EditTool(Tool):
         lines = ReadTool.split_lines(content)
         out = []
         for clear_start, clear_end, start, end in changes:
+            if start == 0 and end == len(lines):
+                # create and replace_all cover the whole file: the refund table would be the entire
+                # file's anchor list, ballooning one small edit into a full-context dump. Skip it;
+                # the model re-Reads for anchors when it keeps editing such files.
+                continue
             out.append(f"<invalidate>{clear_start}:{clear_end}</invalidate>")
             shown = lines[start:end]
             if shown:

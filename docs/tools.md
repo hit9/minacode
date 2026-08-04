@@ -51,7 +51,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
   - Creates or changes one UTF-8 file by inserting, replacing, or deleting content.
     For an anchored change, `Edit` sends back the `line:hash` value returned by `Read`, `Search`,
     or `InspectCode`. minacode checks the current line immediately before writing and
-    <span class="marker">refuses the edit if the hash no longer matches</span>. Successful edits
+    <span class="marker">refuses the edit if the hash no longer matches</span>. A successful edit
+    also refunds the new anchors for the region it changed, so consecutive edits to the same file
+    keep going without re-reading it first. Successful edits
     appear in [`/diff`](usage.md#reviewing-changes).
 
     :::{figure} ../snapshots/minacode-edit-preview.png

@@ -4,6 +4,11 @@
 ## Unreleased
 
 ### Changed
+- A successful `Edit` now refunds the fresh anchors for the region it changed (the same
+  `anchor=line:hash` lines `Read` shows), so consecutive edits to the same file can keep going
+  without a re-Read; `create` and `replace_all`, which have no per-hunk region, skip the refund to
+  keep output bounded. Anchor validation is unchanged: a stale anchor is still refused with the
+  current line echoed.
 - Model request retries now back off exponentially with jitter and honor the provider's
   `Retry-After` header (clamped to a 30s ceiling) instead of a fixed linear 0.5/1.0/1.5/2.0/2.5s
   ramp; the total budget goes from about 8s to about a minute. The wait is interruptible (observed

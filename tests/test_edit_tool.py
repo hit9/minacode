@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 
 import pytest
@@ -892,3 +893,63 @@ def test_yolo_approves_mutating_tools_without_prompt(tmp_path):
 
     assert (tmp_path / "auto.txt").read_text(encoding="utf-8") == "ok\n"
     assert len(s.tool_records) == 1
+
+
+def test_edit_refunds_anchors_for_immediate_followup(tmp_path):
+    """The core reflux contract: a second edit that uses only the anchors returned by the first
+    edit's output must succeed, so long same-file edit runs never need a fresh Read."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    first = EditTool(s, ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]).call()
+    refunded = re.search(r"<content hashline-numbered>\n(anchor=1:[0-9a-z]+ \| B)\n</content>", first)
+    assert refunded, first
+
+    EditTool(s, ["code.txt", [{"op": "insert_after", "start": refunded.group(1), "content": "x\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nB\nx\nc\n"
+
+
+def test_edit_refunded_anchor_matches_followup_read(tmp_path):
+    """An anchor refunded by a successful edit is exactly the anchor Read reports for the same line."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    first = EditTool(s, ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]).call()
+    refunded = re.search(r"anchor=1:[0-9a-z]+ \| B", first)
+    assert refunded, first
+
+    read = ReadTool(s, [{"path": "code.txt"}]).call()
+    assert refunded.group(0) in read
+
+
+def test_edit_old_anchor_still_rejected_after_edit(tmp_path):
+    """Refluxing new anchors must not soften the guard: an anchor captured before an edit still
+    fails, and the error still echoes the current anchor for the line."""
+    s = session(tmp_path)
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    old = anchor(1, "b\n")
+    EditTool(s, ["code.txt", [{"op": "replace", "start": old, "end": old, "content": "B\n"}]]).call()
+
+    with pytest.raises(ToolError, match="stale anchor"):
+        EditTool(s, ["code.txt", [{"op": "replace", "start": old, "end": old, "content": "x\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
+
+
+def test_edit_whole_file_ops_do_not_refund_full_anchor_table(tmp_path):
+    """create and replace_all have no per-hunk change to describe; refunding the whole file's
+    anchor table would turn one small edit into a large context, so the refund block is omitted."""
+    s = session(tmp_path)
+    path = tmp_path / "big.txt"
+    path.write_text("".join(f"line{i}\n" for i in range(50)), encoding="utf-8")
+
+    replaced = EditTool(s, ["big.txt", [{"op": "replace_all", "old": "line1\n", "new": "LINE1\n"}]]).call()
+    assert "<content hashline-numbered>" not in replaced
+    assert "anchor=" not in replaced
+    assert path.read_text(encoding="utf-8") == "".join(f"LINE{i}\n" if i == 1 else f"line{i}\n" for i in range(50))
+
+    created = EditTool(s, ["fresh.py", [{"op": "create", "content": "".join(f"x{i}\n" for i in range(50))}]]).call()
+    assert "<content hashline-numbered>" not in created
+    assert "anchor=" not in created
+    assert (tmp_path / "fresh.py").read_text(encoding="utf-8") == "".join(f"x{i}\n" for i in range(50))

@@ -435,6 +435,9 @@ suite.
   active model and tool resources, then let the owning turn settle or retract its semantic records.
 - Tool failures become matched tool results rather than broken turns. Cancellation settles every
   already-visible call so later protocol replay remains valid.
+- Anchor validation is a safety boundary, not a friction point: stale or invalid anchors stay
+  refused, and a successful edit refunds the fresh anchors of the region it changed, so long
+  same-file edit runs keep going without a re-Read.
 - Lower layers contain recoverable detail: retained output supports recall, snapshots support
   resume, and deterministic compaction preserves progress when the summarizer is unavailable.
 
