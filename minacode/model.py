@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import email.utils
 import hashlib
 import json
+import random
 import re
 import threading
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from json_repair import repair_json
@@ -23,6 +26,8 @@ from minacode.base import (
     PAUSED_TURN_KEY,
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
+    RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
     ActiveResource,
@@ -59,13 +64,17 @@ if TYPE_CHECKING:
     from anthropic import Anthropic
     from openai import OpenAI
 
-from minacode.session import QueuedInput, Session
+from minacode.session import AgentState, QueuedInput, Session
 from minacode.tools import (
     TOOL_REGISTRY,
     Tool,
 )
 
 _ResultT = TypeVar("_ResultT")
+
+# Retry-wait granularity: sleeping in ~0.1s slices lets the wait observe the UI-thread cancel flag
+# instead of relying on a signal interrupting one long sleep.
+_RETRY_SLEEP_SLICE = 0.1
 
 
 @dataclass(frozen=True)
@@ -104,6 +113,10 @@ class ModelClient:
         # from the parsed result rather than the stream, so a search is logged the same way when
         # streaming is off and on a frontend that shows no live status at all.
         self.on_builtin_call: Callable[[str, str], None] | None = None
+        # Lifecycle hook, mirroring ContextManager.on_compaction: True while a retry backoff wait is in
+        # progress, False in a finally block. Lets the orchestration label the phase without model
+        # depending on a renderer.
+        self.on_retry_wait: Callable[[bool], None] | None = None
 
     def cancel(self) -> None:
         self.cancel_requested.set()
@@ -287,13 +300,47 @@ class ModelClient:
                     state.current_model_attempt = attempt + 2
                     state.model_retry_reason = self.retry_reason(error)
                     state.model_retry_count += 1
-                    time.sleep(0.5 * (attempt + 1))
+                    self._wait_before_retry(self.retry_delay(error, attempt), state)
                 finally:
                     state.current_model_call_started_at = 0.0
                 attempt += 1
         finally:
             state.current_model_attempt = 0
             state.model_retry_reason = ""
+
+    def retry_delay(self, error: Exception, attempt: int) -> float:
+        """Single-wait pacing: provider Retry-After wins when parseable, else exponential backoff + jitter."""
+        if (retry_after := self.retry_after_delay(error)) is not None:
+            return retry_after
+        delay = min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * 2**attempt)
+        # jitter 0.5x-1.5x is not optional: without it, parallel read-only tool batches (and worker vs
+        # parent requests) would retry in lockstep and spike the provider exactly when it is weakest.
+        return delay * (0.5 + random.random())
+
+    def _wait_before_retry(self, delay: float, state: AgentState) -> None:
+        """Sleep in ~0.1s slices, watching the UI-thread cancel signal, and publish the wait as facts:
+        model_retry_until (monotonic deadline, the renderer formats it) and the on_retry_wait phase
+        hook. The retry decision is unchanged (see retryable_error); only the pacing is here."""
+        on_retry_wait = self.on_retry_wait
+        if on_retry_wait is not None:
+            on_retry_wait(True)
+        try:
+            state.model_retry_until = time.monotonic() + delay
+            deadline = state.model_retry_until
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                time.sleep(min(_RETRY_SLEEP_SLICE, remaining))
+                # Cancellation is a control signal from the UI thread; a signal interrupting time.sleep
+                # is not guaranteed (and /resend is refused while waiting, so manual retry needs no
+                # handling here). Observe the flag ourselves.
+                if self.cancel_requested.is_set():
+                    raise KeyboardInterrupt
+        finally:
+            state.model_retry_until = 0.0
+            if on_retry_wait is not None:
+                on_retry_wait(False)
 
     @staticmethod
     def retryable_error(error: Exception) -> bool:
@@ -352,6 +399,47 @@ class ModelClient:
         if "internal server error" in text or "temporarily unavailable" in text:
             return "server error"
         return "transient error"
+
+    @staticmethod
+    def retry_after_delay(error: Exception) -> float | None:
+        """Provider Retry-After (seconds or HTTP-date) from the SDK cause, clamped to RETRY_MAX_DELAY.
+
+        Returns None to fall back to the backoff algorithm when the header is missing, empty,
+        malformed, or negative. Any parsed value is clamped so a single aberrant header cannot stall
+        the CLI for minutes; the retry decision itself is unchanged (see retryable_error)."""
+        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
+        import anthropic
+        import openai
+
+        cause = getattr(error, "__cause__", None)
+        if not isinstance(cause, (openai.APIStatusError, anthropic.APIStatusError)):
+            return None
+        headers = getattr(cause.response, "headers", None) or {}
+        value = headers.get("retry-after")
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            value = value.decode("latin-1")
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            seconds = int(text)
+        except ValueError:
+            # HTTP-date form (RFC 7231; no zone means GMT). parsedate_to_datetime raises on some
+            # malformed inputs instead of returning None, so treat either outcome as "unparseable".
+            try:
+                parsed = email.utils.parsedate_to_datetime(text)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if parsed is None:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            seconds = (parsed - datetime.now(UTC)).total_seconds()
+        if seconds < 0:
+            return None
+        return min(seconds, RETRY_MAX_DELAY)
 
     def truncated_output_error(self, usage: Any) -> ModelOutputTruncated:
         """Report a generation the provider cut off at the output cap before it produced anything.

@@ -347,6 +347,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.model.on_builtin_call = self.builtin_call_output
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
+        self.agent.model.on_retry_wait = self.model_retry_wait_status
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
@@ -357,6 +358,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         """Show automatic context compaction as a distinct phase of the running turn."""
         if self.tui is not None:
             self.tui.set_running("compacting context" if active else "working")
+
+    def model_retry_wait_status(self, active: bool) -> None:
+        """Show a retry backoff wait as a distinct phase instead of claiming the agent is working."""
+        if self.tui is not None:
+            self.tui.set_running("retrying" if active else "working")
 
     @classmethod
     def trim_input_history(cls, path: str) -> None:

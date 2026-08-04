@@ -4,6 +4,14 @@
 ## Unreleased
 
 ### Changed
+- Model request retries now back off exponentially with jitter and honor the provider's
+  `Retry-After` header (clamped to a 30s ceiling) instead of a fixed linear 0.5/1.0/1.5/2.0/2.5s
+  ramp; the total budget goes from about 8s to about a minute. The wait is interruptible (observed
+  in ~0.1s slices, so Ctrl-C aborts promptly) and shows a live countdown in the status bar. Only the
+  pacing changed: which failures are retryable is untouched, and a single aberrant header cannot
+  stall the CLI.
+- A retry backoff wait now shows as its own live phase (`retrying`) instead of claiming the agent is
+  `working`, mirroring the existing compaction phase; the status bar keeps the reason and countdown.
 - Reword the Edit `start`/`end` anchor parameter descriptions: the anchor must be the exact current
   `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
   and re-read after any file change or stale-anchor error. The old wording only named the format and

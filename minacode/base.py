@@ -47,6 +47,12 @@ logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 5
+# Retry pacing: exponential backoff with jitter; RETRY_MAX_DELAY also clamps provider Retry-After
+# values so a single aberrant header cannot stall the CLI for minutes. The wider budget costs
+# wall-clock time only, which is visible and interruptible (see model.request()); retransmitted
+# request prefixes are cache hits, so tokens are nearly free.
+RETRY_BASE_DELAY = 1.0  # seconds; delay = RETRY_BASE_DELAY * 2 ** attempt, then jittered 0.5x-1.5x
+RETRY_MAX_DELAY = 30.0  # seconds; single-wait ceiling, also clamps Retry-After
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
 IMAGE_INPUT_CHOICES = ("auto", "on", "off")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)

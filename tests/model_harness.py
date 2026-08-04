@@ -24,6 +24,8 @@ class _MockClientFactory:
     def _next_response(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
         response = self.responses.pop(0)
+        if isinstance(response, httpx.Response):
+            return response
         if isinstance(response, int):
             return httpx.Response(response)
         status, body = response

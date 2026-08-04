@@ -106,6 +106,7 @@ class AgentState:
     model_retry_count: int = 0
     current_model_attempt: int = 0
     model_retry_reason: str = ""
+    model_retry_until: float = 0.0  # monotonic deadline of the current retry wait; 0 when idle
     compaction_count: int = 0
 
     def __post_init__(self) -> None:

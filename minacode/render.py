@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -925,8 +926,15 @@ class StatusBar:
             return ""
         attempt = self.session.state.current_model_attempt
         text = f"retrying {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else "retrying"
-        reason = self.session.state.model_retry_reason
-        return text + (" · " + reason if reason else "")
+        state = self.session.state
+        reason = state.model_retry_reason
+        if reason:
+            text += " · " + reason
+        # The model publishes the wait deadline as a fact; the renderer formats the countdown.
+        remaining = max(0, math.ceil(state.model_retry_until - time.monotonic()))
+        if remaining:
+            text += f" · {remaining}s"
+        return text
 
     def fragments(self, *, sweep: bool, show_elapsed: bool) -> StyleAndTextTuples:
         entries = self.entries(show_elapsed=show_elapsed)

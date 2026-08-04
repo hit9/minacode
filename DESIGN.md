@@ -429,6 +429,8 @@ suite.
 
 - Retry only bounded, plausibly transient model failures. User cancellation, explicit capability
   rejection, validation errors, and total-generation deadlines are not automatic retry signals.
+  The retry **decision** is fixed; only the **pacing** is flexible: exponential backoff with jitter,
+  waiting on the provider's own `Retry-After` when it is given, and never stalling the CLI.
 - Cancellation is a control signal, not a state mutation from another thread. Fan it out to the
   active model and tool resources, then let the owning turn settle or retract its semantic records.
 - Tool failures become matched tool results rather than broken turns. Cancellation settles every

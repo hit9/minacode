@@ -1087,24 +1087,29 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     s.config.provider.model = "model"
     client = ModelClient(s)
     calls = []
-    retries = []
 
     def fail(_messages, _tools):
         calls.append(1)
         raise ModelError("Error code: 500 - provider failed")
 
     monkeypatch.setattr(client, "chat_request", fail)
-    monkeypatch.setattr(
-        time,
-        "sleep",
-        lambda _seconds: retries.append((s.state.current_model_attempt, s.state.model_retry_reason)),
-    )
+    clock = {"now": 0.0}
+    seen: dict[int, str] = {}
+
+    def sleeper(seconds):
+        # The wait is sliced; record each attempt's phase once and advance the clock so the
+        # slice loop finishes instantly (the status facts, not the pacing, are under test).
+        seen[s.state.current_model_attempt] = s.state.model_retry_reason
+        clock["now"] += seconds
+
+    monkeypatch.setattr(time, "sleep", sleeper)
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
 
     with pytest.raises(ModelError, match="after 6 attempts"):
         client.request([{"role": "user", "content": "hi"}])
 
     assert len(calls) == 6
-    assert retries == [(2, "500"), (3, "500"), (4, "500"), (5, "500"), (6, "500")]
+    assert seen == {2: "500", 3: "500", 4: "500", 5: "500", 6: "500"}
     assert s.state.model_retry_count == 5
     assert s.state.current_model_attempt == 0
     assert s.state.model_retry_reason == ""
@@ -1382,3 +1387,25 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1
     assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_retry_status_renders_countdown_from_model_retry_until(tmp_path, monkeypatch):
+    """The status bar formats the wait deadline published by the model; a passed deadline never
+    renders a negative countdown."""
+    s = session(tmp_path)
+    bar = StatusBar(s)
+    s.state.current_model_attempt = 3
+    s.state.model_retry_count = 1
+    s.state.model_retry_reason = "503"
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+    s.state.model_retry_until = 112.0
+
+    assert bar.retry_status() == "retrying 3/6 · 503 · 12s"
+
+    # Deadline already passed: no negative countdown, no bare seconds fragment.
+    s.state.model_retry_until = 99.0
+    assert bar.retry_status() == "retrying 3/6 · 503"
+
+    # Notice window expires: nothing at all.
+    monkeypatch.setattr(time, "monotonic", lambda: 200.0)
+    assert bar.retry_status() == ""

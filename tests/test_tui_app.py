@@ -1229,3 +1229,16 @@ def test_quick_hint_mode_change_resets_focus():
     app.quick_hint_focus = 2
     app.set_running("working")
     assert app.quick_hint_focus == -1
+
+
+def test_model_retry_wait_status_labels_live_phase(tmp_path):
+    """The model's retry-wait hook is wired to the live phase label: the wait shows as its own
+    phase ("retrying") and returns to "working" when it ends."""
+    command_loop = loop(tmp_path)
+    transitions = []
+    command_loop.tui = SimpleNamespace(set_running=transitions.append)
+    assert command_loop.agent.model.on_retry_wait == command_loop.model_retry_wait_status
+
+    command_loop.agent.model.on_retry_wait(True)
+    command_loop.agent.model.on_retry_wait(False)
+    assert transitions == ["retrying", "working"]
