@@ -12,6 +12,7 @@ from minacode.render import UiPrinter
 from minacode.runner import EditBatchPlan, ToolRunner
 from minacode.session import Session
 from minacode.tools import CodeIndex, EditTool, ReadTool
+from minacode.tools.files import Edit
 
 
 def session(tmp_path):
@@ -953,3 +954,93 @@ def test_edit_whole_file_ops_do_not_refund_full_anchor_table(tmp_path):
     assert "<content hashline-numbered>" not in created
     assert "anchor=" not in created
     assert (tmp_path / "fresh.py").read_text(encoding="utf-8") == "".join(f"x{i}\n" for i in range(50))
+
+
+def test_edit_warns_on_adjacent_duplicate_introduced(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "dup.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+
+    result = EditTool(s, ["dup.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "c\n"}]]).call()
+
+    assert "<warnings>" in result
+    assert "duplicate-lines: adjacent identical lines after this edit; confirm intended" in result
+    # The two anchors name the duplicate pair in the edited file (indexes 1 and 2).
+    assert f"anchor={anchor(1, 'c\n')} | c" in result
+    assert f"anchor={anchor(2, 'c\n')} | c" in result
+    assert result.index("<warnings>") > result.index("@@")  # after the diff, before the refund block
+    assert result.index("</warnings>") < result.index("<invalidate>")
+    assert path.read_text(encoding="utf-8") == "a\nc\nc\n"  # the file was still written
+
+
+def test_edit_no_warning_on_blank_line_duplicates(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "blank.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+
+    result = EditTool(s, ["blank.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "\n\n"}]]).call()
+
+    assert "<warnings>" not in result
+    assert path.read_text(encoding="utf-8") == "a\n\n\nc\n"
+
+
+def test_edit_no_warning_on_pre_existing_duplicates(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "existing.txt"
+    path.write_text("a\nb\nb\nc\n", encoding="utf-8")  # (b, b) pair already present
+
+    result = EditTool(s, ["existing.txt", [{"op": "replace", "start": anchor(0, "a\n"), "end": anchor(0, "a\n"), "content": "A\n"}]]).call()
+
+    assert "<warnings>" not in result
+    assert path.read_text(encoding="utf-8") == "A\nb\nb\nc\n"
+
+
+def test_edit_no_warnings_output_unchanged(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "plain.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+
+    result = EditTool(s, ["plain.txt", [{"op": "replace", "start": anchor(0, "a\n"), "end": anchor(0, "a\n"), "content": "A\n"}]]).call()
+
+    assert "<warnings>" not in result
+    assert "<Edit path=\"plain.txt\">" in result
+    assert path.read_text(encoding="utf-8") == "A\nb\nc\n"
+
+
+def test_edit_warnings_truncated_at_limit(tmp_path):
+    s = session(tmp_path)
+    path = tmp_path / "many.txt"
+    path.write_text("\n".join(f"l{i}" for i in range(8)) + "\n", encoding="utf-8")
+    duplicate_block = "".join(f"d{i}\nd{i}\n" for i in range(8))  # 8 distinct adjacent pairs -> 16 anchors
+
+    result = EditTool(s, ["many.txt", [{"op": "replace", "start": anchor(0, "l0\n"), "end": anchor(7, "l7\n"), "content": duplicate_block}]]).call()
+
+    assert "<warnings>" in result
+    assert result.count("duplicate-lines:") == 1  # one rule fired; the cap is on warnings and anchors
+    anchor_rows = [line for line in result.splitlines() if line.startswith("anchor=")]
+    assert len(anchor_rows) <= 12
+    assert "..." in result
+    assert result.endswith("</Edit>")
+    assert path.read_text(encoding="utf-8") == duplicate_block
+
+
+def test_edit_warnings_do_not_affect_apply(tmp_path):
+    s = session(tmp_path)
+    tool = EditTool(s, ["x.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "c\n"}]])
+    original = "a\nb\nc\n"
+
+    result = tool.apply(original, [tool.parse()[1][0]])
+    assert result.content == "a\nc\nc\n"  # apply output is untouched by warnings
+    assert len(result.changes) == 1
+
+    # warnings_block is a pure string method: it observes before/after and changes nothing.
+    block = tool.warnings_block(original, result.content)
+    assert "duplicate-lines" in block and block.startswith("<warnings>") and block.endswith("</warnings>")
+    assert tool.warnings_block(original, original) == ""
+
+    # Error behavior is unchanged too: overlapping edits still raise.
+    with pytest.raises(ToolError, match="overlap"):
+        tool.apply("a\nb\nc\n", [
+            Edit(op="replace", start=anchor(0, "a\n"), end=anchor(1, "b\n"), content="x\n"),
+            Edit(op="replace", start=anchor(1, "b\n"), end=anchor(2, "c\n"), content="y\n"),
+        ])

@@ -1288,7 +1288,7 @@ def test_tool_schemas_are_strict_for_high_risk_tools():
     edit_params = EditTool.schema()["function"]["parameters"]
     assert edit_params["required"] == ["path", "edits"]
     assert set(edit_params["properties"]) == {"path", "edits"}
-    assert "start/end anchors are inclusive" in EditTool.schema()["function"]["description"]
+    assert "the line at end is itself replaced or deleted" in EditTool.schema()["function"]["description"]
 
     recall_keys = RecallTool.schema()["function"]["parameters"]["properties"]["keys"]
     assert recall_keys["items"]["pattern"] == r"^tr\.\d+$"

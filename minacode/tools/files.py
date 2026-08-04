@@ -8,7 +8,7 @@ import json
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from minacode.base import Json, ModelError, Text, ToolArgs, ToolError
@@ -226,6 +226,45 @@ class EditApplyResult:
     replace_all: bool = False
 
 
+@dataclass
+class EditWarning:
+    """A post-edit observation rendered inside the Edit result. Never affects control flow:
+    warnings are advisory only, and anchors always name lines of the edited file."""
+
+    code: str  # rule name, e.g. "duplicate-lines"
+    message: str
+    anchors: list[tuple[int, str]] = field(default_factory=list)  # (line_index, line_text) in the edited file
+
+
+def _duplicate_lines(before: str, after: str) -> EditWarning | None:
+    """Warn when the edit introduces adjacent identical non-blank lines that were not adjacent
+    in the original file. Pairs are compared by line content only: a pair that already existed
+    before the edit is not reported, blank lines are never reported."""
+    after_lines = ReadTool.split_lines(after)
+    before_lines = ReadTool.split_lines(before)
+
+    def pairs(lines: list[str]) -> set[tuple[str, str]]:
+        return {(lines[i - 1], lines[i]) for i in range(1, len(lines)) if lines[i] == lines[i - 1] and lines[i].strip() != ""}
+
+    new_pairs = pairs(after_lines) - pairs(before_lines)
+    if not new_pairs:
+        return None
+    anchors: list[tuple[int, str]] = []
+    for i in range(1, len(after_lines)):
+        if (after_lines[i - 1], after_lines[i]) in new_pairs:
+            anchors.extend(((i - 1, after_lines[i - 1]), (i, after_lines[i])))
+    return EditWarning(
+        "duplicate-lines",
+        "adjacent identical lines after this edit; confirm intended",
+        sorted(set(anchors)),
+    )
+
+
+# Rule tuple: pure (before: str, after: str) -> EditWarning | None functions. Adding a rule
+# here is enough — call() only invokes warnings_block() and the envelope does not change.
+EDIT_WARNINGS: tuple[Callable[[str, str], EditWarning | None], ...] = (_duplicate_lines,)
+
+
 class EditTool(Tool):
     """Create or patch one file through content-verified anchors rather than line numbers.
 
@@ -244,7 +283,11 @@ class EditTool(Tool):
     """
 
     NAME = "Edit"
-    DESCRIPTION = "Create or patch one UTF-8 file; op=create makes a new file; Edit start/end anchors are inclusive."
+    DESCRIPTION = (
+        "Create or patch one UTF-8 file. op=create writes a new file; replace/delete cover the inclusive "
+        "start..end range (the line at end is itself replaced or deleted); insert_before/insert_after keep "
+        "the anchor line and only add content beside it; never restate lines that already exist in the file."
+    )
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
@@ -268,10 +311,19 @@ class EditTool(Tool):
                 "type": "string",
                 "description": (
                     "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; re-read after any file change or stale-anchor error"
+                    "never invent or calculate it; re-read after any file change or stale-anchor error; "
+                    "inclusive — the line at end is itself replaced or deleted"
                 ),
             },
-            "content": {"type": "string", "description": "New text for create/replace/insert"},
+            "content": {
+                "type": "string",
+                "description": (
+                    "New text for create/replace/insert. For replace: the complete new text of the inclusive range; "
+                    "for insert_before/insert_after: only the new lines — the anchor line is kept and must not be "
+                    "restated; for create: the whole file. The first and last content lines must correspond exactly "
+                    "to the start/end anchor lines."
+                ),
+            },
             "old": {"type": "string", "description": "Text to find for replace_all"},
             "new": {"type": "string", "description": "Replacement text for replace_all"},
         }, ["op"])
@@ -309,15 +361,47 @@ class EditTool(Tool):
         self.last_diff = self.diff(path, original, result.content)
         self.last_before = original
         self.last_after = result.content
-        return "\n".join(
-            [
-                f"<Edit path={json.dumps(self.last_path)}>",
-                self.file_stat(path),
-                self.last_diff.rstrip(),
-                self.edit_context(result.content, result.changes),
-                "</Edit>",
-            ]
-        )
+        parts = [
+            f"<Edit path={json.dumps(self.last_path)}>",
+            self.file_stat(path),
+            self.last_diff.rstrip(),
+        ]
+        block = self.warnings_block(original, result.content)
+        if block:
+            parts.append(block)
+        parts.append(self.edit_context(result.content, result.changes))
+        parts.append("</Edit>")
+        return "\n".join(parts)
+
+    def warnings_block(self, before: str, after: str) -> str:
+        """Render post-edit warnings as a `<warnings>` block, or "" when nothing fired. Warnings
+        are advisory only and never change the edit; anchors always name lines of the edited
+        file. Output is bounded: at most 3 warnings and 12 anchor lines, truncated with "..."
+        (the format_current_ranges convention)."""
+        collected = []
+        for rule in EDIT_WARNINGS:
+            warning = rule(before, after)
+            if warning is not None:
+                collected.append(warning)
+        if not collected:
+            return ""
+        out = ["<warnings>"]
+        shown = 0
+        truncated = False
+        for warning in collected[:3]:
+            out.append(f"{warning.code}: {warning.message}")
+            for index, line in warning.anchors:
+                if shown >= 12:
+                    truncated = True
+                    break
+                out.append(ReadTool.anchor_line(index, line))
+                shown += 1
+            if truncated:
+                break
+        if truncated or len(collected) > 3:
+            out.append("...")
+        out.append("</warnings>")
+        return "\n".join(out)
 
     def turn_diff(self) -> TurnDiff | None:
         path, diff = getattr(self, "last_path", ""), getattr(self, "last_diff", "")
