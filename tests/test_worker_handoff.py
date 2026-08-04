@@ -741,6 +741,79 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
     assert not any("[worker]" in rendered for rendered in labels)  # the rule label replaces the [worker] ▶ line
 
 
+# 11b2. the start divider uses the send's optional `title` when given: the human-readable label
+# replaces the order-first-line summary on both the wired rule and the fallback [worker] ▶ line.
+def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch):
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["default"].model = "worker-model-x"
+    order = "Rewrite the worker handoff plan to cover the start rule, then check it. " * 8
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    labels = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
+    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
+
+    assert labels, "the worker_rule callback never fired"
+    assert labels[0].startswith("worker start · default/worker-model-x · ")
+    assert "fix /status blank line" in labels[0]
+    assert ToolRunner.oneline(order, 60) not in labels[0]
+
+
+def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, LogRole
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["default"].model = "worker-model-x"
+    order = "Rewrite the worker handoff plan to cover the start marker, then check it. " * 8
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
+
+    blocks = [block for block in outputs if isinstance(block, LogBlock)]
+    marker = next(block for block in blocks if any(item.role is LogRole.WORKER for item, _ in block.walk()))
+    rendered = str(marker)
+    assert "[worker]" in rendered and "▶" in rendered
+    assert "default/worker-model-x" in rendered
+    assert "fix /status blank line" in rendered
+    assert ToolRunner.oneline(order, 200) not in rendered
+
+
+def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, monkeypatch):
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["default"].model = "worker-model-x"
+    order = "Rewrite the worker handoff plan to cover the start rule, then check it. " * 8
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    labels = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
+    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    _delegate_call(parent, runner, action="send", order=order)
+
+    assert labels, "the worker_rule callback never fired"
+    assert labels[0].startswith("worker start · default/worker-model-x · ")
+    assert ToolRunner.oneline(order, 60) in labels[0]
+
+
+def test_delegate_rejects_empty_title(tmp_path):
+    from minacode.base import ToolError
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    with pytest.raises(ToolError, match="non-empty string"):
+        DelegateTool(parent, [{"action": "send", "order": "work", "title": "   "}]).call()
+
+
 # 11c. language is a send parameter, not a setting: it lands in the order the worker receives as
 #      an explicit language request covering the live stream and interim messages, not just the end.
 def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, monkeypatch):
@@ -1429,6 +1502,29 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     assert any(item.label == "stored" for item, _ in finish.walk())
     # The done summary lives in the rule label now, not as a child line of the finish block.
     assert not any(item.label == "done" and item.text.startswith("steps ") for item, _ in finish.walk())
+
+
+# 28b. a send with `title` carries the same human-readable label onto the done divider: the title
+# is the first part of the `worker done` rule label, ahead of steps/elapsed/tokens/files.
+def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypatch):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "the worker answer"}, [], "the worker answer")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    labels = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
+    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    status, _message, _observation = runner.run_one(
+        ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}])
+    )
+    assert status == "ok"
+
+    done = [label for label in labels if label.startswith("worker done · ")]
+    assert done, "the finish worker_rule callback never fired"
+    assert done[0].startswith("worker done · fix /status blank line · steps 1")
 
 
 # 29. a Delegate reset closes the bracket the same way as a send: the finish block carries the

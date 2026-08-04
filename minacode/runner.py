@@ -659,7 +659,11 @@ class ToolRunner:
                     if self.worker_rule is not None:
                         fields = self.delegate_result_fields(output)
                         steps, elapsed, files, in_tokens, out_tokens, _ = fields  # non-None: the same parse backed `summary`
-                        parts = [f"steps {steps}", elapsed]
+                        title = ""
+                        if call.args and isinstance(call.args[0], dict):
+                            raw_title = call.args[0].get("title")
+                            title = raw_title.strip() if isinstance(raw_title, str) else ""
+                        parts = ([title] if title else []) + [f"steps {steps}", elapsed]
                         if in_tokens:
                             parts.append(f"{in_tokens} in / {out_tokens} out")
                         if files != "(none)":

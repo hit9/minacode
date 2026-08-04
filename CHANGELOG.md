@@ -80,6 +80,10 @@
 - `/status` renders compact: the command path passes a new `compact` flag to `emit_answer` that
   drops every invisible line — the blank line rich markdown pads after each heading plus the
   whitespace rows above and below each table box — so each heading sits tight against its table.
+- The `Delegate` start and done dividers now show a human-readable title: `send` accepts an
+  optional `title` parameter, and when given it replaces the order-first-line summary on the start
+  divider and leads the `worker done · steps · …` label; without one the dividers fall back to
+  the order's first line as before.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

@@ -107,7 +107,7 @@ class DelegateTool(Tool):
 
 Delegate bounded, verifiable work you can spec in one order and judge from its diff or test output; it buys context hygiene and the worker's model, never speed (delegation is serial). Do small work yourself, explore yourself until the task is bounded, and keep the heart of the current request here: writing the order and reviewing the result cost about as much as doing the work.
 
-Write the order to state: the goal, the files it touches, the constraints, how to verify, and the boundaries (what not to touch). Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again. Set `language` to the user's reply language (e.g. \"Chinese\"): they watch the worker's live output and read its report, so the worker must speak their language; omit `language` only when the user works in English.
+Write the order to state: the goal, the files it touches, the constraints, how to verify, and the boundaries (what not to touch). Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again. Set `language` to the user's reply language (e.g. \"Chinese\"): they watch the worker's live output and read its report, so the worker must speak their language; omit `language` only when the user works in English. Also set a short `title` while writing the spec -- a few words capturing the intent (e.g. \"fix /status blank line\") -- used as the human-readable label of the delegation's start and done dividers; omit `title` to fall back to the order's first line.
 
 Reset the worker when switching tasks, when the spec changed, or after it failed twice in a row (its context has accumulated wrong beliefs). Reset discards the worker's process, not its products: file changes and merged diffs stay."""
 
@@ -128,6 +128,10 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                 "language": {
                     "type": "string",
                     "description": "Reply language for all of the worker's visible output, live stream included (e.g. \"Chinese\"). Pass the user's language unless they work in English",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short human-readable title summarizing the task (shown in the start/done dividers). Omit to fall back to the order's first line.",
                 },
             },
             ["action"],
@@ -183,6 +187,10 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             order += (
                 f"\n\nReply language: {language}. The human user reads this terminal and sees everything you output -- the live stream while you work, your interim messages, and your final report -- so think and write in {language} for all of it; keep code, identifiers, paths, and commands verbatim."
             )
+        raw_title = payload.get("title")
+        title = raw_title.strip() if isinstance(raw_title, str) else ""
+        if raw_title is not None and not title:
+            raise ToolError("Delegate title must be a non-empty string")
         runner = getattr(self, "runner", None)
         if runner is None:
             raise ToolError("Delegate requires a tool runner")
@@ -225,10 +233,10 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
 
         config = worker.config
         if runner.worker_rule is not None:
-            runner.worker_rule(f"worker start · {config.active_provider}/{config.provider.model or '(no model)'} · {ToolRunner.oneline(order, 60)}")
+            runner.worker_rule(f"worker start · {config.active_provider}/{config.provider.model or '(no model)'} · {title or ToolRunner.oneline(order, 60)}")
         else:
             runner.output_fn(
-                LogBlock([LogLine("[worker]", f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {ToolRunner.oneline(order, 200)}", LogRole.WORKER)])
+                LogBlock([LogLine("[worker]", f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {title or ToolRunner.oneline(order, 200)}", LogRole.WORKER)])
             )
         try:
             with runner._active_worker.track(agent):
