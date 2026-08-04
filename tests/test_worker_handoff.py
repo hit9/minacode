@@ -1361,7 +1361,7 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     finish = next(block for block in blocks if any(item.role is LogRole.OUTPUT for item, _ in block.walk()))
     # The finish block is the closing marker of the delegation bracket, so it carries the same
     # yellow [worker] identity as the start marker: a root line whose label is the bracket tag.
-    assert finish.items[0].label == "[worker]" and finish.items[0].text.startswith("◀") and "Delegate send" in finish.items[0].text
+    assert finish.items[0].label == "[worker]" and finish.items[0].text == "◀"
     rendered = str(finish)
     assert "steps 1" in rendered and "(none)" in rendered
     assert "the worker answer" in rendered
@@ -1389,6 +1389,6 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
     finish = next(block for block in blocks if any(item.label == "done" for item, _ in block.walk()))
-    assert finish.items[0].label == "[worker]" and "Delegate reset" in finish.items[0].text
+    assert finish.items[0].label == "[worker]" and finish.items[0].text == "◀"
     rendered = str(finish)
-    assert "◀" in rendered and "Delegate reset" in rendered and "worker context cleared" in rendered
+    assert "◀" in rendered and "worker context cleared" in rendered

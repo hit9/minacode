@@ -618,9 +618,10 @@ class ToolRunner:
         tree = d.nested_display or call.name in ("Bash", "Delegate")
         root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
         if call.name == "Delegate" and not failed:
-            # The delegation bracket: the start marker opens with the yellow "[worker] ▶" line and
-            # the finish block closes it with "[worker] ◀", so both ends are distinguishable at a glance.
-            root = self.log_root("[worker] ◀ " + (d.display or self.short_call(call)), LogRole.WORKER, d.batch_suffix, call)
+            # The delegation bracket: the start marker opens with the yellow "[worker] ▶" line; the
+            # finish block's root line is the closing divider "[worker] ◀", symmetric to it. The
+            # action detail lives in the child lines below (the done summary or the reset notice).
+            root = self.log_root("[worker] ◀", LogRole.WORKER, d.batch_suffix, call)
         children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
