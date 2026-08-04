@@ -1080,7 +1080,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         typed while a turn works, it re-requests the current model call (same path as on_retry)."""
         if self.tui is None or self.tui.input_mode != "running":
             return "/resend re-requests the current model request — type it while a turn is working."
-        if self.session.state.current_model_call_started_at <= 0:
+        if self.session.state.current_model_call_started_at <= 0 or self.session.state.model_retry_until > 0:
             return "Nothing to resend right now; /resend works while the model is generating."
         self.tui.on_retry()
         return None
@@ -2008,7 +2008,7 @@ class TuiRuntime:
 
     def _request_model_retry(self) -> None:
         state = self.loop.session.state
-        if state.current_model_call_started_at <= 0 or state.manual_model_retry_requested:
+        if state.current_model_call_started_at <= 0 or state.model_retry_until > 0 or state.manual_model_retry_requested:
             return
         state.manual_model_retry_requested = True
         state.model_retry_count += 1

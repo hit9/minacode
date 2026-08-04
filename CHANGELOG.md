@@ -39,6 +39,16 @@
   and `/worker reset` clears the worker and tells the parent model via a session event.
 
 ### Fixed
+- Make `/worker reset` finish the worker runtime it discards: stop and clean up its background
+  jobs, remove a disk-only worker after the parent is resumed, and keep the live worker reachable
+  with an actionable error if its snapshot cannot be deleted. This prevents orphaned processes and
+  prevents a reported reset from silently restoring the old context on the next delegation.
+- Ignore `/resend` during an automatic retry countdown, when no model request is in flight, and
+  preserve a resend that races the start of that wait as a retry instead of cancelling the turn.
+- Expire a worker in the same retention sweep as its expired parent regardless of directory scan
+  order, so a fresh subordinate snapshot cannot survive as a hidden orphan.
+- Reject non-integer or non-positive `Delegate.max_steps` values at the tool boundary instead of
+  running an empty worker turn with an invalid budget.
 - Estimate request tokens from UTF-8 bytes instead of characters (4 bytes/token), so CJK-heavy
   sessions are no longer undercounted about 3x: the status bar could show 100% while the next request
   was still estimated under budget and auto-compaction never fired. ASCII payloads estimate exactly

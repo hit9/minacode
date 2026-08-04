@@ -16,6 +16,7 @@ from minacode.base import (
     RETRY_MAX_DELAY,
     ModelError,
     ModelOutputTruncated,
+    ModelRequestRetry,
     ModelResponseTimeout,
 )
 from minacode.model import ModelClient
@@ -414,4 +415,22 @@ def test_retry_wait_phase_hook_resets_on_cancel(tmp_path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         model.request([{"role": "user", "content": "hi"}], None)
     assert phases == [True, False]
+    assert s.state.model_retry_until == 0.0
+
+
+def test_manual_resend_racing_retry_wait_remains_a_retry(tmp_path, monkeypatch):
+    s = _session(tmp_path)
+    model = ModelClient(s)
+    factory = _MockClientFactory([(503, _OVERLOADED)])
+    monkeypatch.setattr(model, "client", factory)
+
+    def resend(_seconds):
+        s.state.manual_model_retry_requested = True
+        model.cancel()
+
+    monkeypatch.setattr(time, "sleep", resend)
+
+    with pytest.raises(ModelRequestRetry):
+        model.request([{"role": "user", "content": "hi"}], None)
+    assert s.state.manual_model_retry_requested is False
     assert s.state.model_retry_until == 0.0

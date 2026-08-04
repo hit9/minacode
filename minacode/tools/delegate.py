@@ -51,8 +51,6 @@ class DelegateTool(Tool):
     NAME = "Delegate"
     runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the cancel wiring
     MUTATES = True  # the delegation itself needs confirmation; the worker's own tools still confirm per call
-    STORES_RESULT = True  # results can be long; keep them in tr.N for Recall
-    PRODUCES_MODEL_OBSERVATION = False
     DESCRIPTION = """Hand a bounded task to the worker: a second in-process minacode session on its own provider, with its own system prompt and tool set. The worker cannot see this session's history -- only the order text and its own prior history -- so the order must stand alone.
 
 Write the order to state: the goal, the files it touches, the constraints, how to verify, and the boundaries (what not to touch). Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again.
@@ -100,9 +98,16 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         raise ToolError(f"unknown action: {action!r}")
 
     def _send(self, payload: Json) -> str:
-        order = str(payload.get("order") or "").strip()
-        if not order:
-            raise ToolError("Delegate send requires an order")
+        raw_order = payload.get("order")
+        if not isinstance(raw_order, str) or not (order := raw_order.strip()):
+            raise ToolError("Delegate send requires a non-empty string order")
+        raw_max_steps = payload.get("max_steps")
+        if raw_max_steps is None:
+            max_steps = self.session.settings.max_steps
+        elif isinstance(raw_max_steps, bool) or not isinstance(raw_max_steps, int) or raw_max_steps < 1:
+            raise ToolError("Delegate max_steps must be an integer >= 1")
+        else:
+            max_steps = raw_max_steps
         runner = getattr(self, "runner", None)
         if runner is None:
             raise ToolError("Delegate requires a tool runner")
@@ -114,7 +119,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         # Rebuild the settings copy on every send: sharing the parent's RuntimeSettings object would
         # let a per-call max_steps override leak into the parent's budget, and a one-time copy would
         # miss runtime changes (/yolo, /set) between delegations.
-        worker.settings = replace(parent.settings, max_steps=int(payload.get("max_steps") or parent.settings.max_steps))
+        worker.settings = replace(parent.settings, max_steps=max_steps)
         agent = worker._agent
         if agent is None:
             # Local import: engine imports minacode.tools at module level (engine.py:30), so a
@@ -149,7 +154,6 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             ]
         )
 
-    @staticmethod
     @staticmethod
     def _merge_diffs(worker: Session, parent: Session, start: int) -> None:
         for diff in worker.turn_diffs[start:]:
@@ -187,18 +191,39 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
     def _reset(self) -> str:
         parent = self.session
         worker = parent.worker
-        if worker is None:
+        uid = worker.uid if worker is not None else parent.uid + ".w"
+        directory = SessionSnapshotStore.project_dir(parent.config.data_dir, parent.cwd)
+        snapshot_path = os.path.join(directory, uid + ".jsonl")
+        meta_path = os.path.join(directory, uid + SessionSnapshotStore.META_SUFFIX)
+        assets_path = os.path.join(directory, uid + ".assets")
+        if worker is None and not any(os.path.exists(path) for path in (snapshot_path, meta_path, assets_path)):
             return '<Delegate action="reset" alive="false"/>'
-        parent.worker = None
-        # The worker Session owns its Agent (Session._agent); dropping the handle releases both.
+
+        # Reset owns the worker runtime, including background processes. Dropping the Session while
+        # one of its Job handles is live would leave an unmanageable process behind.
+        if worker is not None:
+            for job in worker.jobs.values():
+                try:
+                    job.kill()
+                except Exception as error:
+                    raise ToolError(f"worker reset failed to stop {job.id}: {error}") from error
+
         # The delete path derives entirely from the parent's own uid; the model's arguments carry no
         # path, so the worst case is deleting this session's own worker, nothing else.
-        directory = SessionSnapshotStore.project_dir(parent.config.data_dir, parent.cwd)
-        for suffix in (".jsonl", SessionSnapshotStore.META_SUFFIX):
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(directory, worker.uid + suffix))
-        shutil.rmtree(os.path.join(directory, worker.uid + ".assets"), ignore_errors=True)
-        return f'<Delegate action="reset" uid="{worker.uid}"/>'
+        try:
+            os.unlink(snapshot_path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise ToolError(f"worker reset failed to delete its snapshot: {error}") from error
+        with contextlib.suppress(OSError):
+            os.unlink(meta_path)
+        shutil.rmtree(assets_path, ignore_errors=True)
+
+        # The worker Session owns its Agent (Session._agent); drop both only after durable context is
+        # gone. Otherwise a failed unlink would report success and the next send would reload it.
+        parent.worker = None
+        return f'<Delegate action="reset" uid="{uid}"/>'
 
     def _status(self) -> str:
         worker = self.session.worker

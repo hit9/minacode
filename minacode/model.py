@@ -332,10 +332,13 @@ class ModelClient:
                 if remaining <= 0:
                     return
                 time.sleep(min(_RETRY_SLEEP_SLICE, remaining))
-                # Cancellation is a control signal from the UI thread; a signal interrupting time.sleep
-                # is not guaranteed (and /resend is refused while waiting, so manual retry needs no
-                # handling here). Observe the flag ourselves.
+                # Cancellation is a control signal from the UI thread; a signal interrupting
+                # time.sleep is not guaranteed. A /resend racing the start of this wait remains a
+                # retry request, not a user cancellation of the whole turn.
                 if self.cancel_requested.is_set():
+                    if state.manual_model_retry_requested:
+                        state.manual_model_retry_requested = False
+                        raise ModelRequestRetry() from None
                     raise KeyboardInterrupt
         finally:
             state.model_retry_until = 0.0

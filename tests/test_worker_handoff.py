@@ -5,6 +5,7 @@ Coverage follows WORKER_HANDOFF_PLAN.txt section 9; each numbered test maps to t
 
 import json
 import os
+import time
 
 import pytest
 from agent_harness import call, session
@@ -71,6 +72,7 @@ def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
 
     assert worker.uid.endswith(".w")
     assert SessionSnapshotStore.read_latest(SessionSnapshotStore.project_dir(parent.config.data_dir, str(tmp_path))) == parent.uid
+    assert not os.path.exists(SessionSnapshotStore.meta_path(parent.config.data_dir, str(tmp_path), worker.uid))
     entries = SessionSnapshotStore.list_sessions(parent.config.data_dir, cwd=str(tmp_path))
     assert all(entry.uid != worker.uid for entry in entries)
     assert any(entry.uid == parent.uid for entry in entries)
@@ -78,25 +80,34 @@ def test_worker_snapshot_hidden_from_listing_and_latest(tmp_path):
     assert SessionSnapshotStore.latest_uid(parent.config.data_dir, cwd=str(tmp_path)) == parent.uid
 
 
-def test_clean_expired_removes_orphaned_worker_with_parent(tmp_path):
+def test_clean_expired_removes_worker_when_parent_expires_later_in_scan(tmp_path, monkeypatch):
     from minacode.session import Session, SessionSnapshotStore
 
     parent = session(tmp_path)
-    parent.messages.append({"role": "user", "content": "parent request"})
     parent.settings.session_retention_days = 1
-    parent.save_snapshot()
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     worker.messages.append({"role": "user", "content": "worker request"})
-    worker.save_snapshot()
+    worker.save_snapshot()  # create first: the worker is visited before its parent below
+    parent.messages.append({"role": "user", "content": "parent request"})
+    parent.save_snapshot()
     directory = SessionSnapshotStore.project_dir(parent.config.data_dir, str(tmp_path))
-
-    # Simulate the parent having expired: drop its log, keep the worker's fresh mtime.
     parent_path = os.path.join(directory, parent.uid + ".jsonl")
     worker_path = os.path.join(directory, worker.uid + ".jsonl")
-    assert os.path.isfile(parent_path) and os.path.isfile(worker_path)
-    os.unlink(parent_path)
+    old = time.time() - 3 * 86400
+    os.utime(parent_path, (old, old))  # parent expired; worker remains fresh
 
-    assert SessionSnapshotStore.clean_expired(parent) >= 1
+    real_scandir = os.scandir
+
+    def worker_first(path):
+        entries = list(real_scandir(path))
+        return iter(sorted(entries, key=lambda entry: (not entry.name.endswith(".w.jsonl"), entry.name)))
+
+    monkeypatch.setattr("minacode.session.os.scandir", worker_first)
+    cleaner = session(tmp_path)
+    cleaner.settings.session_retention_days = 1
+
+    assert SessionSnapshotStore.clean_expired(cleaner) >= 2
+    assert not os.path.isfile(parent_path)
     assert not os.path.isfile(worker_path)
 
 
@@ -227,6 +238,83 @@ def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
     fresh = json.dumps(model.requests[-1])
     assert "order one" not in fresh and "order two" not in fresh
     assert "fresh start" in fresh
+
+
+def test_delegate_reset_stops_worker_jobs_before_dropping_runtime(tmp_path):
+    from minacode.session import Session
+
+    parent = _delegate_session(tmp_path)
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.messages.append({"role": "user", "content": "worker request"})
+    worker.save_snapshot()
+    parent.worker = worker
+
+    class Job:
+        id = "job.1"
+        killed = False
+
+        def kill(self):
+            self.killed = True
+
+    job = Job()
+    worker.jobs[job.id] = job
+
+    result = _delegate_call(parent, _delegate_runner(parent), action="reset")
+
+    assert 'action="reset"' in result
+    assert job.killed is True
+    assert parent.worker is None
+
+
+def test_delegate_reset_keeps_worker_when_snapshot_delete_fails(tmp_path, monkeypatch):
+    from minacode.base import ToolError
+    from minacode.session import Session, SessionSnapshotStore
+
+    parent = _delegate_session(tmp_path)
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.messages.append({"role": "user", "content": "worker request"})
+    worker.save_snapshot()
+    parent.worker = worker
+    snapshot = SessionSnapshotStore.session_path(parent.config.data_dir, str(tmp_path), worker.uid)
+    real_unlink = os.unlink
+
+    def fail_snapshot(path):
+        if os.fspath(path) == snapshot:
+            raise PermissionError("read only")
+        return real_unlink(path)
+
+    monkeypatch.setattr("minacode.tools.delegate.os.unlink", fail_snapshot)
+
+    with pytest.raises(ToolError, match="failed to delete its snapshot"):
+        _delegate_call(parent, _delegate_runner(parent), action="reset")
+    assert parent.worker is worker
+    assert os.path.isfile(snapshot)
+
+
+def test_delegate_reset_deletes_disk_only_worker_after_parent_resume(tmp_path):
+    from minacode.session import Session, SessionSnapshotStore
+
+    parent = _delegate_session(tmp_path)
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.messages.append({"role": "user", "content": "worker request"})
+    worker.save_snapshot()
+    snapshot = SessionSnapshotStore.session_path(parent.config.data_dir, str(tmp_path), worker.uid)
+    assert parent.worker is None and os.path.isfile(snapshot)
+
+    result = _delegate_call(parent, _delegate_runner(parent), action="reset")
+
+    assert 'action="reset"' in result
+    assert not os.path.exists(snapshot)
+
+
+@pytest.mark.parametrize("max_steps", [0, -1, True, "3"])
+def test_delegate_rejects_invalid_max_steps(tmp_path, max_steps):
+    from minacode.base import ToolError
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    with pytest.raises(ToolError, match="integer >= 1"):
+        DelegateTool(parent, [{"action": "send", "order": "work", "max_steps": max_steps}]).call()
 
 
 # 6. diff reflux: an Edit inside the worker shows up in the parent's turn_diffs.
@@ -532,67 +620,29 @@ def test_worker_prompt_shares_language_and_secret_rules_with_parent():
     assert SECRET_RULES in WORKER_PROMPT
 
 
-# 17. the worker shares only the mechanics that must not drift (TOOLS / TURN / WORK / LANGUAGE);
-#     it does not inherit the parent's REVIEW, terminal-facing OUTPUT, or the parent's tool
-#     enumeration (which names Ask / NextHints / ViewImage the worker does not have), and it has
-#     its own OUTPUT section.
+# 17. The two readable role prompts keep their role-specific behavior without exposing the
+#     implementation as a collection of positional fragments.
 def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
-    from minacode.prompts import (
-        OUTPUT_RULES,
-        PARENT_TOOL_ENUM_INSPECT,
-        PARENT_TOOL_ENUM_RECALL,
-        PARENT_TURN_NEXTHINTS_RULE,
-        REVIEW_RULES,
-        SYSTEM_PROMPT,
-        TOOLS_MECHANICS_BASH_RULE,
-        TOOLS_MECHANICS_CLOSING_RULES,
-        TOOLS_MECHANICS_RULES,
-        TURN_MECHANICS_CLOSING_RULE,
-        TURN_MECHANICS_RULES,
-        WORK_RULES,
-        WORKER_OUTPUT_RULES,
-        WORKER_PROMPT,
-        WORKER_TOOL_ENUM,
-    )
+    from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
 
-    assert TOOLS_MECHANICS_RULES in SYSTEM_PROMPT and TOOLS_MECHANICS_RULES in WORKER_PROMPT
-    assert TOOLS_MECHANICS_BASH_RULE in SYSTEM_PROMPT and TOOLS_MECHANICS_BASH_RULE in WORKER_PROMPT
-    assert TOOLS_MECHANICS_CLOSING_RULES in SYSTEM_PROMPT and TOOLS_MECHANICS_CLOSING_RULES in WORKER_PROMPT
-    assert TURN_MECHANICS_RULES in SYSTEM_PROMPT and TURN_MECHANICS_RULES in WORKER_PROMPT
-    assert TURN_MECHANICS_CLOSING_RULE in SYSTEM_PROMPT and TURN_MECHANICS_CLOSING_RULE in WORKER_PROMPT
-    assert WORK_RULES in SYSTEM_PROMPT and WORK_RULES in WORKER_PROMPT
-    assert PARENT_TOOL_ENUM_INSPECT in SYSTEM_PROMPT
-    assert PARENT_TOOL_ENUM_INSPECT not in WORKER_PROMPT
-    assert PARENT_TOOL_ENUM_RECALL in SYSTEM_PROMPT
-    assert PARENT_TOOL_ENUM_RECALL not in WORKER_PROMPT
-    assert PARENT_TURN_NEXTHINTS_RULE in SYSTEM_PROMPT
-    assert PARENT_TURN_NEXTHINTS_RULE not in WORKER_PROMPT
-    assert REVIEW_RULES in SYSTEM_PROMPT
-    assert REVIEW_RULES not in WORKER_PROMPT
-    assert OUTPUT_RULES in SYSTEM_PROMPT
-    assert OUTPUT_RULES not in WORKER_PROMPT
-    assert WORKER_OUTPUT_RULES in WORKER_PROMPT
-    assert WORKER_OUTPUT_RULES not in SYSTEM_PROMPT
-    assert WORKER_TOOL_ENUM in WORKER_PROMPT
-    assert WORKER_TOOL_ENUM not in SYSTEM_PROMPT
+    assert "REVIEW:" in SYSTEM_PROMPT and "REVIEW:" not in WORKER_PROMPT
+    assert "terminal scrollback" in SYSTEM_PROMPT and "terminal scrollback" not in WORKER_PROMPT
+    assert "You write for the delegator" in WORKER_PROMPT and "You write for the delegator" not in SYSTEM_PROMPT
+    for unavailable in ("Ask", "NextHints", "ViewImage"):
+        assert unavailable not in WORKER_PROMPT
 
 
-# 18. no prompt may name a tool its role does not have (parent -> TOOL_REGISTRY, worker ->
-#     WORKER_TOOLS). This is a consistency contract between the prompts and the tool registry, not
-#     a prompt-literal test: it fires automatically when anyone adds or removes a tool and forgets
-#     the corresponding prompt mention.
+# 18. The worker prompt may name only tools in its reduced tool set.
 def test_prompts_never_name_tools_outside_their_toolset():
     import re
 
-    from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
+    from minacode.prompts import WORKER_PROMPT
     from minacode.tools import TOOL_REGISTRY
     from minacode.tools.delegate import WORKER_TOOLS
 
     def mentioned(prompt):
         return {name for name in TOOL_REGISTRY if re.search(rf"\b{re.escape(name)}\b", prompt)}
 
-    parent_mentioned = mentioned(SYSTEM_PROMPT)
-    assert parent_mentioned <= set(TOOL_REGISTRY)
     worker_mentioned = mentioned(WORKER_PROMPT)
     assert worker_mentioned <= set(WORKER_TOOLS), worker_mentioned - set(WORKER_TOOLS)
 

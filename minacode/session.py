@@ -529,7 +529,7 @@ class SessionSnapshotStore:
         if self.session.listed:
             # Workers never claim the latest pointer: `-c` must keep landing on the parent session.
             self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
-        self.write_meta()
+            self.write_meta()
         self.garbage_collect_assets()
         return self.session.uid
 
@@ -703,6 +703,16 @@ class SessionSnapshotStore:
                 entries = list(os.scandir(directory))
             except OSError:
                 continue
+            expiring_parents: set[str] = set()
+            for entry in entries:
+                if not entry.name.endswith(".jsonl") or not entry.is_file():
+                    continue
+                uid = entry.name[:-6]
+                if uid == session.uid or uid.endswith(".w"):
+                    continue
+                with contextlib.suppress(OSError):
+                    if entry.stat().st_mtime < cutoff:
+                        expiring_parents.add(uid)
             stale_latest = False
             for entry in entries:
                 if not entry.name.endswith(".jsonl") or not entry.is_file():
@@ -713,7 +723,7 @@ class SessionSnapshotStore:
                 try:
                     # A worker outlives its parent only by accident: once the parent log is gone the
                     # worker is an orphan and expires even if its own mtime is fresh.
-                    orphan_worker = uid.endswith(".w") and not os.path.isfile(os.path.join(directory, uid[:-2] + ".jsonl"))
+                    orphan_worker = uid.endswith(".w") and (uid[:-2] in expiring_parents or not os.path.isfile(os.path.join(directory, uid[:-2] + ".jsonl")))
                     if entry.stat().st_mtime >= cutoff and not orphan_worker:
                         continue
                     os.unlink(entry.path)

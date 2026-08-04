@@ -726,8 +726,14 @@ def test_resend_command_only_resends_while_running(tmp_path):
     command_loop.command("/resend")
     assert retried == []
 
-    # Running with a model call in flight: resends via on_retry.
+    # Backoff countdown: there is no request in flight to resend.
     command_loop.session.state.current_model_call_started_at = 1.0
+    command_loop.session.state.model_retry_until = 2.0
+    command_loop.command("/resend")
+    assert retried == []
+
+    # Running with a model call in flight: resends via on_retry.
+    command_loop.session.state.model_retry_until = 0.0
     command_loop.command("/resend")
     assert retried == [True]
 
@@ -740,6 +746,12 @@ def test_manual_resend_preserves_stream_driven_status(tmp_path, monkeypatch):
     runtime = TuiRuntime(command_loop)
     monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
 
+    command_loop.session.state.model_retry_until = 2.0
+    runtime._request_model_retry()
+    assert command_loop.session.state.manual_model_retry_requested is False
+    assert command_loop.session.state.model_retry_count == 0
+
+    command_loop.session.state.model_retry_until = 0.0
     runtime._request_model_retry()
 
     assert command_loop.tui.status_label == "working"
