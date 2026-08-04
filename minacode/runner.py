@@ -454,7 +454,12 @@ class ToolRunner:
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
-            if needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
+            if needs_confirmation and self.session.worker_auto and isinstance(tool, DelegateTool) and tool.always_confirms():
+                # One-time per-task Delegate authorization: the user approved this task's delegations
+                # (the confirm prompt's `a` or /worker auto), so a Delegate send skips the prompt
+                # entirely and renders with the same [auto] tag as a yolo-approved call.
+                d.auto = True
+            elif needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
                 d.auto = True
                 pre = self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit)
                 # The "auto …" header duplicates the result line; only surface it when it carries a
@@ -464,7 +469,13 @@ class ToolRunner:
                     self.output_fn(pre)
                     d.nested_display = True
             elif needs_confirmation:
-                d.nested_display = True
+                if not isinstance(tool, DelegateTool):
+                    # Nested displays drop the root line to avoid duplicating the confirmation
+                    # block's own root. A Delegate send keeps its root: the finish block is the
+                    # closing marker of the delegation bracket and must carry the same yellow
+                    # [worker] identity as the start marker (the worker_auto path above skips this
+                    # branch and renders the root too, so the two paths stay consistent).
+                    d.nested_display = True
                 confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
@@ -557,8 +568,15 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
-        answer = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "[Y/n or reason] ").strip()
+        # A Delegate send offers `a` (always): approve this send and stop asking for the rest of the
+        # task. The authorization is session state (Session.worker_auto), cleared when a new user
+        # task starts, so yolo users get automation back after one explicit per-task consent.
+        always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
+        answer = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + ("[Y/n/a or reason] " if always_option else "[Y/n or reason] ")).strip()
         lower = answer.lower()
+        if always_option and lower in {"a", "always"}:
+            self.session.worker_auto = True
+            return True, ""
         if lower in {"", "y", "yes"}:
             return True, ""
         return False, "" if lower in {"n", "no"} else answer

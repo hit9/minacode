@@ -84,9 +84,10 @@ this off permanently.
 
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
-**`/worker [status|reset|on|off|provider|model|reason]`** — Inspect or control the worker session:
-`status` (default) reports readable lines — provider/model, reasoning, state, rounds, and context
-percent — or `worker: no active session` plus the configured `[worker] provider` when no worker
+**`/worker [status|reset|on|off|provider|model|reason|auto]`** — Inspect or control the worker session:
+`status` (default) reports readable lines — provider/model, reasoning, state, rounds, context
+percent, and whether delegate sends skip confirmation for this task (`worker auto`) — or
+`worker: no active session` plus the configured `[worker] provider` when no worker
 exists; `on`/`off` toggle the `runtime.worker` setting, and `reset` clears the worker's context
 (file changes and merged diffs survive). `provider` opens a picker over the provider entries —
 with `off` at the end to clear — and choosing one flows on into the worker model and then the
@@ -100,6 +101,14 @@ tool block itself is fixed when the session starts from the configured `[worker]
 switching the provider mid-session tunes an already-enabled delegation, but enabling delegation
 from scratch takes effect after a restart. See [Worker
 delegation](configuration.md#worker-delegation).
+
+A `Delegate send` is confirmed even under `yolo` — the prompt shows the order, the one cheap
+check on a spec the model wrote for itself — but the authorization is one-time: the
+confirmation prompt's `a` (always) approves delegations for the rest of the current user task,
+so later sends in the same task run without asking and render as `[auto]`; `/worker auto on`
+keeps delegations unconfirmed until an explicit `/worker auto off` (across task boundaries),
+and `/worker auto off` or the next user task asks again. `/worker auto` with no argument
+reports the current state.
 
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
 used to reach the model. `/provider` and `/model` also confirm it as a step in their selection

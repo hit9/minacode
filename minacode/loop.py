@@ -92,7 +92,7 @@ SET_VALUES: dict[str, tuple[str, ...]] = {
 }
 # fmt: on
 
-WORKER_SUBCOMMANDS = ("status", "reset", "on", "off", "provider", "model", "reason")
+WORKER_SUBCOMMANDS = ("status", "reset", "on", "off", "provider", "model", "reason", "auto")
 
 
 class CommandCompleter(Completer):
@@ -142,6 +142,9 @@ class CommandCompleter(Completer):
                 return
             if sub == "reason":
                 yield from self.matches((*REASONING_CHOICES, "default"), value)
+                return
+            if sub == "auto":
+                yield from self.matches(("on", "off"), value)
                 return
         for command, values in (
             ("/model ", self.models),
@@ -675,6 +678,13 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 return 0
             if handled:
                 continue
+            # A fresh user task starts here: the one-time Delegate authorization is task-scoped, so
+            # each new task re-asks. This synchronous REPL treats every iteration as a fresh task;
+            # the interactive TUI resets at its chat-submit hook instead, because run_agent_turn
+            # also runs queued mid-task follow-ups, which must keep the flag. /worker auto on makes
+            # the flag sticky, so the boundary leaves it alone until /worker auto off.
+            if not self.session.worker_auto_sticky:
+                self.session.worker_auto = False
             self.emit("")
             started = time.monotonic()
             malformed_tool_call = False
@@ -2058,13 +2068,27 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             if not rest:
                 return self._worker_reason_picker()
             return self._worker_set_reasoning(rest[0])
+        if subcommand == "auto":
+            if len(rest) > 1 or (rest and rest[0] not in {"on", "off"}):
+                return "Usage: /worker auto [on|off]"
+            if not rest:
+                return self._worker_auto_status()
+            if rest[0] == "on":
+                # Sticky: unlike the prompt's task-scoped `a`, the typed form survives task
+                # boundaries, so it is cleared only by an explicit /worker auto off.
+                self.session.worker_auto = True
+                self.session.worker_auto_sticky = True
+                return "worker auto: on (delegations proceed without asking until /worker auto off)"
+            self.session.worker_auto = False
+            self.session.worker_auto_sticky = False
+            return "worker auto: off (delegations ask again until /worker auto on)"
         return "Usage: /worker [" + "|".join(WORKER_SUBCOMMANDS) + "]"
 
     def _worker_status(self) -> str:
         """Readable /worker status for the human; the model-facing envelope stays in DelegateTool."""
         worker = self.session.worker
         if worker is None:
-            return "worker: no active session\nworker provider: " + (self.session.config.worker_provider or "(off)")
+            return "worker: no active session\nworker provider: " + (self.session.config.worker_provider or "(off)") + "\n" + self._worker_auto_status()
         usage = worker.usage
         percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget) if usage.last_prompt_budget else worker.state.context_percent
         provider = worker.config.provider
@@ -2076,8 +2100,13 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 "worker state: " + state,
                 "worker rounds: " + str(worker.state.round_count),
                 "worker context: " + str(percent) + "%",
+                self._worker_auto_status(),
             ]
         )
+
+    def _worker_auto_status(self) -> str:
+        """One line for the human: whether delegate sends currently skip confirmation."""
+        return "worker auto: " + ("on" if self.session.worker_auto else "off")
 
     def _worker_provider_picker(self) -> str:
         summary = "worker provider: " + (self.session.config.worker_provider or "(off)") + "\nproviders: " + ", ".join(sorted(self.session.config.providers))
@@ -2306,9 +2335,18 @@ class TuiRuntime:
         self.force_exit_timer.start()
         os.kill(os.getpid(), signal.SIGINT)
 
+    def chat_submit(self, value: str | UserInput) -> None:
+        """A fresh submission from the idle prompt starts a new user task: clear the one-time
+        Delegate authorization so the new task re-asks, unless /worker auto on made it sticky.
+        Queued mid-task follow-ups bypass this hook (they land in `pending` via submit_next after
+        the current turn), so they keep the authorization the task already earned."""
+        if not self.loop.session.worker_auto_sticky:
+            self.loop.session.worker_auto = False
+        self.pending.put(value)
+
     def build_tui(self) -> TuiApp:
         return TuiApp(
-            on_chat_submit=self.pending.put,
+            on_chat_submit=self.chat_submit,
             on_running_submit=self.submit_running,
             on_exit_request=self.request_exit,
             on_force_exit=self.force_exit,

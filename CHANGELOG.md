@@ -43,6 +43,17 @@
   spec in one order, bought for context hygiene and the worker's model, never speed; small work,
   open exploration, and the heart of the current request stay in the parent session, since
   writing the order and reviewing the result cost about as much as doing the work.
+- `Delegate` sends now carry a one-time per-task authorization: the confirmation prompt accepts
+  `a` (always) to approve delegations for the rest of the current user task, so later sends in
+  that task skip the prompt and render as `[auto]` like any yolo-approved call; a new user task
+  clears the flag (mid-task follow-ups do not), and it is never persisted or inherited by the
+  worker. Yolo users get full automation back after that one consent per task — the flag is
+  task-scoped so every new task reconsiders, and since the worker inherits the parent's yolo,
+  delegation still deserves at least one explicit opt-in.
+- `/worker auto on` is sticky: unlike the prompt's task-scoped `a`, the typed opt-in keeps
+  delegations unconfirmed across task boundaries until an explicit `/worker auto off`, which
+  clears both the authorization and the stickiness; with no argument the command reports the
+  current state, and `/worker` status shows the same line.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

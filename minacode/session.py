@@ -1058,6 +1058,8 @@ class Session:
     listed: bool = True  # False -> no latest pointer, hidden from /sessions
     worker: Session | None = None  # runtime handle of the delegated session
     worker_tool_enabled: bool = False  # Delegate registration gate, frozen at construction from bool(config.worker_provider)
+    worker_auto: bool = False  # one-time per-task Delegate authorization; set by the confirm prompt's `a` or /worker auto, cleared at each new user task
+    worker_auto_sticky: bool = False  # /worker auto on keeps the authorization across task boundaries until /worker auto off; never persisted, like worker_auto
     _agent: Agent | None = None  # runtime handle of the worker's Agent; same lifetime as the worker Session
     tool_counter: int = 0
     turn_diffs: list[TurnDiff] = field(default_factory=list)

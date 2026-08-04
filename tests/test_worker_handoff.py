@@ -633,7 +633,7 @@ def test_worker_status_command_is_human_readable(tmp_path):
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert loop.worker_command("") == "worker: no active session\nworker provider: default"
+    assert loop.worker_command("") == chr(10).join(["worker: no active session", "worker provider: default", "worker auto: off"])
     assert loop.worker_command("status") == loop.worker_command("")
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -907,6 +907,177 @@ def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
     assert EditTool(s, ["a.py", []]).always_confirms() is False
 
 
+# 20b. one-time per-task authorization: the confirm prompt's `a` approves this send and sets
+# Session.worker_auto; later sends in the same task skip the prompt and render as [auto]. The flag
+# is task-scoped session state, never persisted, and the worker never sees it.
+def test_delegate_worker_auto_authorizes_first_send_and_skips_later(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, LogRole, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient(
+        [
+            ({"role": "assistant", "content": "answer one"}, [], "answer one"),
+            ({"role": "assistant", "content": "answer two"}, [], "answer two"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    prompts = []
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "a", output_fn=outputs.append)
+
+    # First send: the user picks the always option; the send proceeds and the task is authorized.
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "order one"}]))
+    assert status == "ok"
+    assert parent.worker_auto is True
+    assert len(prompts) == 1
+    assert "[Y/n/a" in prompts[0]  # the Delegate prompt offers the always key
+    assert parent.worker.worker_auto is False  # the flag is parent-only, never inherited
+
+    # Second send in the same task: no confirmation prompt, and the finish display carries [auto].
+    status, _message, _observation = runner.run_one(ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "order two"}]))
+    assert status == "ok"
+    assert parent.worker_auto is True
+    assert len(prompts) == 1  # input_fn was not invoked again
+    assert len(model.requests) == 2
+    blocks = [block for block in outputs if isinstance(block, LogBlock)]
+    finishes = [block for block in blocks if any(item.role is LogRole.OUTPUT for item, _ in block.walk())]
+    assert str(finishes[0]).rstrip().endswith("[approved]")  # the explicit first approval
+    assert str(finishes[-1]).rstrip().endswith("[auto]")  # the second send skips and tags auto
+
+
+def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    parent.settings.yolo = True
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    prompts = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
+
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "ok"
+    assert len(prompts) == 1  # yolo alone does not skip a Delegate send
+    assert parent.worker_auto is False
+
+
+def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "n", output_fn=lambda text: None)
+
+    status, message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "refused"
+    assert "refused" in message
+    assert not model.requests  # the worker never ran
+    assert parent.worker_auto is False
+
+
+def test_worker_auto_does_not_affect_other_tools(tmp_path):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    parent.worker_auto = True
+    prompts = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
+
+    status, _message, _observation = runner.run_one(ToolCall("bash-1", "Bash", ["printf x >> a.txt"]))
+    assert status == "ok"
+    assert len(prompts) == 1  # non-Delegate tools still confirm under the same session
+
+
+def test_new_user_task_resets_worker_auto_at_loop_boundary(tmp_path):
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+
+    parent = _delegate_session(tmp_path)
+    parent.worker_auto = True  # a previous task left the task-scoped authorization on
+
+    class FakeModel:
+        def request(self, messages, tools=None):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = Agent(parent, output_fn=lambda text: None)
+    agent.model = FakeModel()
+    reads = iter(["hello", EOFError()])
+
+    def fake_read(prompt="", **kw):
+        value = next(reads)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    loop = CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.run()
+
+    assert parent.worker_auto is False  # the new user task re-asks
+
+
+# /worker auto on is sticky: unlike the prompt's task-scoped `a`, the typed form survives task
+# boundaries until an explicit /worker auto off, so a delegation in the next task still skips the
+# prompt; off clears both flags and the boundary reset behaves as before.
+def test_worker_auto_sticky_survives_task_boundary_until_off(tmp_path, monkeypatch):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.engine import Agent
+    from minacode.loop import CommandLoop
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    agent = Agent(parent, output_fn=lambda text: None)
+
+    class FakeModel:
+        def request(self, messages, tools=None):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+
+    def make_loop():
+        reads = iter(["hello", EOFError()])
+
+        def fake_read(prompt="", **kw):
+            value = next(reads)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+        return CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+
+    # /worker auto on sets the authorization AND marks it sticky, so the task-boundary reset
+    # (which runs at the top of the next loop iteration) leaves the flag alone.
+    loop = make_loop()
+    assert loop.worker_command("auto on").startswith("worker auto: on")
+    assert parent.worker_auto is True and parent.worker_auto_sticky is True
+    loop.run()
+    assert parent.worker_auto is True and parent.worker_auto_sticky is True  # survived the boundary
+
+    # A send in the new task therefore still skips the confirmation prompt.
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    prompts = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "ok"
+    assert len(prompts) == 0  # the sticky authorization carried across the task boundary
+
+    # /worker auto off clears both flags, and the boundary reset is back to clearing the task flag.
+    assert loop.worker_command("auto off").startswith("worker auto: off")
+    assert parent.worker_auto is False and parent.worker_auto_sticky is False
+    make_loop().run()
+    assert parent.worker_auto is False and parent.worker_auto_sticky is False
+
+
 # 21. [worker] model/reasoning parse like [worker] provider and validate the reasoning choices.
 def test_worker_config_parses_model_and_reasoning(tmp_path):
     from minacode.base import Config
@@ -1149,8 +1320,36 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     # block is the one with OUTPUT children (the worker's answer preview).
     assert any(block.items and block.items[0].label == "Delegate" and block.items[0].text == "send" for block in blocks)
     finish = next(block for block in blocks if any(item.role is LogRole.OUTPUT for item, _ in block.walk()))
+    # The finish block is the closing marker of the delegation bracket, so it carries the same
+    # yellow [worker] identity as the start marker: a root line whose label is the bracket tag.
+    assert finish.items[0].label == "[worker]" and "Delegate send" in finish.items[0].text
     rendered = str(finish)
     assert "steps 1" in rendered and "(none)" in rendered
     assert "the worker answer" in rendered
     assert "<Delegate" not in rendered and "<worker>" not in rendered and "</worker>" not in rendered
     assert any(item.label == "stored" for item, _ in finish.walk())
+
+
+# 29. a Delegate reset closes the bracket the same way as a send: the finish block carries the
+#     yellow [worker] root line and states plainly what was cleared and what survives.
+def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
+    from minacode.base import LogBlock, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.session import Session
+
+    parent = _delegate_session(tmp_path)
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.save_snapshot()
+    parent.worker = worker
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+
+    status, _message, _observation = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
+    assert status == "ok"
+
+    blocks = [item for item in outputs if isinstance(item, LogBlock)]
+    finish = next(block for block in blocks if any(item.label == "done" for item, _ in block.walk()))
+    assert finish.items[0].label == "[worker]" and "Delegate reset" in finish.items[0].text
+    rendered = str(finish)
+    assert "Delegate reset" in rendered and "worker context cleared" in rendered

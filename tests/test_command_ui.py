@@ -663,7 +663,7 @@ def test_worker_command_completion(tmp_path):
     )
 
     sub_texts = [c.text for c in completer.get_completions(Document("/worker "), None)]
-    assert set(sub_texts) == {"status", "reset", "on", "off", "provider", "model", "reason"}
+    assert set(sub_texts) == {"status", "reset", "on", "off", "provider", "model", "reason", "auto"}
 
     provider_texts = [c.text for c in completer.get_completions(Document("/worker provider "), None)]
     assert set(provider_texts) == {"default", "alt", "off"}
@@ -673,6 +673,43 @@ def test_worker_command_completion(tmp_path):
 
     reason_texts = [c.text for c in completer.get_completions(Document("/worker reason "), None)]
     assert set(reason_texts) == set(REASONING_CHOICES) | {"default"}
+
+    auto_texts = [c.text for c in completer.get_completions(Document("/worker auto "), None)]
+    assert set(auto_texts) == {"on", "off"}
+
+
+# /worker auto is the typed form of the one-time per-task Delegate authorization: on/off set the
+# task-scoped flag with plain messages, no argument reports the current state, and /worker status
+# shows the same line.
+def test_worker_auto_subcommand_sets_reports_and_clears(tmp_path):
+    command_loop = loop(tmp_path)
+
+    assert command_loop.worker_command("auto") == "worker auto: off"
+    assert command_loop.session.worker_auto is False
+
+    on_message = command_loop.worker_command("auto on")
+    assert on_message.startswith("worker auto: on")
+    assert "until /worker auto off" in on_message
+    assert command_loop.session.worker_auto is True
+    assert command_loop.session.worker_auto_sticky is True  # the typed form survives task boundaries
+
+    assert command_loop.worker_command("auto") == "worker auto: on"
+
+    off_message = command_loop.worker_command("auto off")
+    assert off_message.startswith("worker auto: off")
+    assert "ask again" in off_message
+    assert command_loop.session.worker_auto is False
+    assert command_loop.session.worker_auto_sticky is False
+
+    assert command_loop.worker_command("auto maybe") == "Usage: /worker auto [on|off]"
+
+
+def test_worker_status_line_reports_worker_auto_state(tmp_path):
+    command_loop = loop(tmp_path)
+
+    assert "worker auto: off" in command_loop.worker_command("")
+    command_loop.session.worker_auto = True
+    assert "worker auto: on" in command_loop.worker_command("")
 
 
 # The no-arg pickers follow the /provider picker pattern: select_choice is stubbed, and the
