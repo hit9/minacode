@@ -22,7 +22,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done
-from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -34,7 +34,10 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar
+from rich.console import Console
+from rich.markdown import Markdown
 
 from minacode.base import (
     SELECTION_BACK,
@@ -45,6 +48,7 @@ from minacode.base import (
 )
 from minacode.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
 from minacode.render import UiPrinter
+from minacode.tools.ask import AskSpec
 
 TUI_MODAL_PENDING = object()
 ViewLine = TypeVar("ViewLine")
@@ -148,7 +152,7 @@ class TuiApp:
     """
 
     MODAL_KEYS: ClassVar[tuple[str, ...]] = tuple(
-        "j k h l g G up down left right tab enter escape q r pagedown pageup c-d c-u c-o backspace c-h /".split()  # noqa: SIM905 - compact key table.
+        "j k h l g G up down left right tab s-tab enter escape q r pagedown pageup c-d c-u c-o backspace c-h /".split()  # noqa: SIM905 - compact key table.
     )
     # Frame budget for the running divider. Motion is smooth only while a moving highlight advances
     # about one cell per frame, so this rate is what `CommandLoop.QUEUE_SWEEP_CELLS_PER_SEC` follows.
@@ -1172,3 +1176,231 @@ class ChoiceViewState:
             if 1 <= number <= len(options):
                 self.selected = number - 1
         return TUI_MODAL_PENDING
+
+
+# Batch-level Ask modal results on top of ChoiceViewState's own SELECTION_* returns: ASK_DONE means
+# every question was answered; (ASK_FREE_TEXT, index) means the question at `index` dropped to the
+# shared input row and the modal should reopen for the rest.
+ASK_DONE = object()
+ASK_FREE_TEXT = object()
+
+
+@dataclass
+class AskViewState:
+    """The Ask tool's multi-question modal: one ChoiceViewState page per question, options on the
+    left and a rich markdown preview of the selected option on the right (below the options on
+    narrow terminals). Enter advances to the next question and submits on the last; Tab cycles
+    pages; `n` edits a note appended to the answer; Esc cancels the whole batch. A question
+    without choices is a single "Type freely..." page that reports ASK_FREE_TEXT so the caller
+    drops to the shared input row."""
+
+    specs: list[AskSpec]
+    pages: list[ChoiceViewState]
+    active: int = 0
+    picked: list[str | None] = field(default_factory=list)
+    notes: dict[int, str] = field(default_factory=dict)
+    notes_mode: bool = False
+    note_buffer: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.picked:
+            self.picked = [None] * len(self.specs)
+
+    @classmethod
+    def build(cls, specs: list[AskSpec]) -> AskViewState:
+        """One page per question; the free-text escape hatch is always offered (mirroring the old
+        choice_application(free_text=True)) and a recommended choice is pre-selected and marked."""
+        pages: list[ChoiceViewState] = []
+        for spec in specs:
+            choices = list(spec.choices) if spec.choices else []
+            labels: dict[str, str] = {}
+            current = ""
+            if spec.recommended is not None and spec.choices and 0 <= spec.recommended < len(spec.choices):
+                current = spec.choices[spec.recommended]
+                labels[current] = current + " (recommended)"
+            choices.append(ChoiceViewState.FREE_TEXT)
+            labels[ChoiceViewState.FREE_TEXT] = "Type freely..."
+            pages.append(
+                ChoiceViewState(
+                    tuple(choices),
+                    labels,
+                    set(),
+                    selected=choices.index(current) if current else 0,
+                )
+            )
+        return cls(specs, pages)
+
+    def preview_text(self) -> str:
+        """The selected option's preview markdown, or '' when it has none."""
+        spec = self.specs[self.active]
+        if not spec.previews:
+            return ""
+        choice = self.pages[self.active].selected_choice()
+        if choice is None or choice not in spec.choices:
+            return ""
+        index = spec.choices.index(choice)
+        return spec.previews[index] if index < len(spec.previews) else ""
+
+    def fragments(self, width: int, max_height: int) -> StyleAndTextTuples:
+        """Render the active question. Options sit left with the selected option's rich markdown
+        preview right when the terminal is wide enough (>=100) and a preview exists; otherwise the
+        preview stacks below the options. The caller caps max_height to the terminal's rows minus
+        the reserved chrome (status bar, input row, gaps)."""
+        page = self.pages[self.active]
+        parts: StyleAndTextTuples = [("class:choice.title", f"({self.active + 1}/{len(self.specs)}) {self.specs[self.active].question}\n")]
+        if self.notes_mode:
+            parts.append(("class:choice.disabled", "notes: " + self.note_buffer + "\n"))
+        elif note := self.notes.get(self.active):
+            parts.append(("class:choice.disabled", "notes: " + note + "\n"))
+        if not page.enabled():
+            parts.append(("class:choice.disabled", "  no matches\n"))
+            parts.extend(self._footer())
+            return parts
+        option_rows = self._option_rows(page)
+        preview = self.preview_text()
+        side_by_side = width >= 100 and bool(preview)
+        if side_by_side:
+            label_widths = [get_cwidth(page.labels.get(choice, choice)) for choice in page.visible()]
+            left_width = min(max(label_widths) + 6, width * 2 // 5)
+            right_width = max(10, width - left_width - 3)
+            preview_rows = self._preview_rows(preview, right_width)
+            body = self._join_rows(option_rows, preview_rows, left_width)
+        else:
+            body = list(option_rows)
+            if preview:
+                preview_rows = self._preview_rows(preview, max(10, width - 4))
+                body.append([("class:choice.disabled", "  " + "─" * max(10, width - 4))])
+                body.extend([("class:choice.preview", "  │ "), *row] for row in preview_rows)
+        budget = max_height - 2 - (1 if self.notes_mode or self.notes.get(self.active) else 0)
+        if page.searching:
+            budget -= 1
+        if len(body) > budget:
+            overflow = len(body) - budget + 1
+            body = body[: budget - 1] + [[("class:choice.disabled", f"  … {overflow} more lines")]]
+        for row in body:
+            parts.extend((*row, ("", "\n")))
+        if page.searching:
+            parts.append(("", "/" + page.query))
+        parts.extend(self._footer())
+        return parts
+
+    @staticmethod
+    def _option_rows(page: ChoiceViewState) -> list[StyleAndTextTuples]:
+        """The page's option rows (one fragment list per row, no trailing newline), styled like
+        ChoiceViewState.fragments' option block."""
+        rows: list[StyleAndTextTuples] = []
+        number = 0
+        for choice in page.visible():
+            label = page.labels.get(choice, choice)
+            if choice in page.disabled:
+                rows.append([("class:choice.disabled", "  " + label)])
+                continue
+            number += 1
+            selected = number - 1 == page.selected
+            row: StyleAndTextTuples = []
+            if selected:
+                row.append(("[SetCursorPosition]", ""))
+            prefix = ("> " if selected else "  ") + f"{number:2d}. "
+            row.append(("class:choice.selected" if selected else "", prefix + label))
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _preview_rows(markdown_text: str, panel_width: int) -> list[StyleAndTextTuples]:
+        """Render markdown to ANSI with Rich (same capture trick as UiPrinter.emit_markdown) and
+        split it into one (style, text) tuple list per line, styles carried across newlines.
+        Preview snippets are ASCII layouts, diffs, and tables whose newlines are structural, so
+        each source line gets a hard line break (Markdown folds in-paragraph newlines to spaces)."""
+        hard_breaks = "\n".join(line.rstrip() + "  " for line in markdown_text.split("\n"))
+        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(10, panel_width))
+        with console.capture() as capture:
+            console.print(Markdown(hard_breaks, hyperlinks=False))
+        cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
+        return AskViewState._ansi_lines(cleaned)
+
+    @staticmethod
+    def _ansi_lines(text: str) -> list[StyleAndTextTuples]:
+        """Split an ANSI string into one (style, text) tuple list per line. prompt_toolkit's ANSI
+        parser emits a fragment per character (it walks SGR state per char), so adjacent fragments
+        with the same style are merged back into runs; SGR state across a newline carries exactly
+        as Rich emitted it."""
+        lines: list[StyleAndTextTuples] = []
+        current: StyleAndTextTuples = []
+        for style, chunk in to_formatted_text(ANSI(text)):
+            pieces = chunk.split("\n")
+            for index, piece in enumerate(pieces):
+                if index:
+                    lines.append(current)
+                    current = []
+                if current and current[-1][0] == style:
+                    current[-1] = (style, current[-1][1] + piece)
+                else:
+                    current.append((style, piece))
+        lines.append(current)
+        return lines
+
+    @staticmethod
+    def _join_rows(left: list[StyleAndTextTuples], right: list[StyleAndTextTuples], left_width: int) -> list[StyleAndTextTuples]:
+        """Merge the option rows and the preview rows column-wise: each left row is padded to
+        left_width (by visible width) and the preview row continues on the same line; rows with no
+        counterpart render alone."""
+        rows: list[StyleAndTextTuples] = []
+        for index in range(max(len(left), len(right))):
+            left_row = left[index] if index < len(left) else []
+            right_row = right[index] if index < len(right) else []
+            used = sum(get_cwidth(text) for _, text in left_row if text)
+            row: StyleAndTextTuples = [*left_row, ("", " " * max(0, left_width - used))]
+            row.extend(right_row)
+            rows.append(row)
+        return rows
+
+    def _footer(self) -> StyleAndTextTuples:
+        return [
+            (
+                "class:choice.disabled",
+                f"↑/↓ or j/k move · Enter select/next · Tab switch · n notes · / search · Esc cancel · ({self.active + 1}/{len(self.specs)})\n",
+            )
+        ]
+
+    def handle_key(self, key: str, data: str = "") -> Any:
+        """The active page's keys plus the batch-level ones: Tab cycles pages, `n` edits a note,
+        Enter advances (submitting on the last page), Esc cancels the whole batch."""
+        if self.notes_mode:
+            if key == "escape":
+                self.notes_mode = False
+                self.note_buffer = ""
+                return TUI_MODAL_PENDING
+            if key == "enter":
+                self.notes[self.active] = self.note_buffer
+                self.notes_mode = False
+                self.note_buffer = ""
+                return TUI_MODAL_PENDING
+            if key in {"backspace", "c-h"}:
+                self.note_buffer = self.note_buffer[:-1]
+                return TUI_MODAL_PENDING
+            text = data if key == "any" else key
+            if len(text) == 1 and text not in "\r\n":
+                self.note_buffer += text
+            return TUI_MODAL_PENDING
+        page = self.pages[self.active]
+        if key in {"tab", "s-tab"}:
+            self.active = (self.active + (1 if key == "tab" else -1)) % len(self.specs)
+            return TUI_MODAL_PENDING
+        if (key == "n" or (key == "any" and data == "n")) and not page.searching:
+            self.notes_mode = True
+            self.note_buffer = self.notes.get(self.active, "")
+            return TUI_MODAL_PENDING
+        result = page.handle_key(key, data)
+        if result is TUI_MODAL_PENDING:
+            return TUI_MODAL_PENDING
+        if result is SELECTION_BACK:
+            return SELECTION_BACK  # the page unwound its own search/query layers; batch cancelled
+        if result is SELECTION_FREE_TEXT:
+            return (ASK_FREE_TEXT, self.active)
+        if isinstance(result, str):
+            self.picked[self.active] = result
+            if self.active == len(self.specs) - 1:
+                return ASK_DONE
+            self.active += 1
+            return TUI_MODAL_PENDING
+        return result  # KeyboardInterrupt and anything else pass through

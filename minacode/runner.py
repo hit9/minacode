@@ -255,7 +255,7 @@ class ToolRunner:
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
         self.worker_rule: Callable | None = None
-        self.question_fn: Callable[[AskSpec, str], str] | None = None
+        self.question_fn: Callable[[list[AskSpec]], list[str]] | None = None
         # Injected by CommandLoop: drives the Delegate confirm-time `c` config loop through the
         # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to
         # printing the current worker config only (headless / non-CommandLoop runners).

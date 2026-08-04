@@ -211,18 +211,17 @@ def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(spec, position):
-        calls.append((spec, position))
-        return "free text answer"
+    def fake_fn(specs):
+        calls.append(specs)
+        return ["free text answer"]
 
     tool = AskTool(s, _q({"question": "Name?"}))
     tool.question_fn = fake_fn
     assert tool.call() == "free text answer"
-    (spec, position) = calls[0]
+    spec = calls[0][0]
     assert spec.choices is None
     assert spec.previews is None
     assert spec.recommended is None
-    assert position == ""
 
 
 def test_ask_tool_call_empty_list_raises(tmp_path):
@@ -282,31 +281,31 @@ def test_ask_tool_call_invalid_recommended_raises(tmp_path):
 
 
 def test_ask_tool_call_invokes_callback(tmp_path):
-    """call() invokes question_fn with question/choices/previews/recommended."""
+    """call() passes the whole batch to question_fn and returns its single answer verbatim."""
     s = session(tmp_path)
     calls = []
 
-    def fake_fn(spec, position):
-        calls.append((spec, position))
-        return "user chose B"
+    def fake_fn(specs):
+        calls.append(specs)
+        return ["user chose B"]
 
     tool = AskTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
     tool.question_fn = fake_fn
     result = tool.call()
     assert result == "user chose B"
-    (spec, position) = calls[0]
+    spec = calls[0][0]
     assert (spec.question, spec.choices, spec.previews, spec.recommended) == ("A or B?", ["A", "B"], ["PA", "PB"], 1)
-    assert position == ""  # a single question carries no position indicator
+    assert len(calls[0]) == 1  # the whole batch arrives in one call
 
 
 def test_ask_tool_call_multiple_questions(tmp_path):
-    """call() asks each question in sequence and labels the combined answers."""
+    """call() asks the whole batch at once and labels the combined answers."""
     s = session(tmp_path)
     asked = []
 
-    def fake_fn(spec, position):
-        asked.append((spec.question, position))
-        return {"Runtime?": "Node", "Name?": "core"}[spec.question]
+    def fake_fn(specs):
+        asked.extend(spec.question for spec in specs)
+        return [{"Runtime?": "Node", "Name?": "core"}[spec.question] for spec in specs]
 
     tool = AskTool(
         s,
@@ -317,7 +316,7 @@ def test_ask_tool_call_multiple_questions(tmp_path):
     )
     tool.question_fn = fake_fn
     result = tool.call()
-    assert asked == [("Runtime?", "1/2"), ("Name?", "2/2")]  # sequential, with position
+    assert asked == ["Runtime?", "Name?"]  # batch order preserved
     assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
 
 
@@ -408,9 +407,9 @@ def test_ask_tool_validates_batch_before_asking(tmp_path):
     s = session(tmp_path)
     asked = []
 
-    def fake_fn(spec, position):
-        asked.append(spec.question)
-        return "x"
+    def fake_fn(specs):
+        asked.extend(spec.question for spec in specs)
+        return ["x"] * len(specs)
 
     tool = AskTool(
         s,
@@ -431,9 +430,9 @@ def test_ask_tool_wired_in_tool_runner(tmp_path):
     ctx = ContextManager(s)
     captured = []
 
-    def fake_question_fn(spec, position):
-        captured.append((spec, position))
-        return "test answer"
+    def fake_question_fn(specs):
+        captured.append(specs)
+        return ["test answer"]
 
     runner = ToolRunner(s, ctx, output_fn=lambda text: None)
     runner.question_fn = fake_question_fn
@@ -442,8 +441,8 @@ def test_ask_tool_wired_in_tool_runner(tmp_path):
     assert results[0]["tool_call_id"] == "q"
     assert results[0]["role"] == "tool"
     assert "test answer" in results[0]["content"]
-    (spec, position) = captured[0]
-    assert (spec.question, spec.choices, spec.recommended, position) == ("A or B?", ["A", "B"], 0, "")
+    spec = captured[0][0]
+    assert (spec.question, spec.choices, spec.recommended) == ("A or B?", ["A", "B"], 0)
 
 
 def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):

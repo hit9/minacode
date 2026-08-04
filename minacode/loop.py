@@ -31,7 +31,6 @@ from minacode.base import (
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
     SELECTION_BACK,
-    SELECTION_FREE_TEXT,
     SESSION_EVENT_KEY,
     Config,
     ConfigError,
@@ -63,7 +62,7 @@ from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tools.delegate import DelegateTool, refresh_worker_entry
-from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
+from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 from minacode.update import UpdateChecker
 
 SetHandler = tuple[str, str, Callable[[str], int | float | None] | None]
@@ -1290,53 +1289,44 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             raise result
         return result
 
-    def question_application(self, spec: AskSpec, position: str = "") -> str:
-        """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
-        choices = spec.choices
-        # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
-        # markdown — no separate styled line, hence no ANSI escapes to mangle.
-        prompt = f"({position}) {spec.question}" if position else spec.question
-        if not choices:
-            return self.tui.request_input("\n" + prompt) if self.tui is not None else self.read_input("\n" + prompt)
-        if not self.interactive_input:
-            return self.read_input("\n" + prompt)
-
-        # Blank separator line before each question so multi-question prompts don't run together.
-        if self.ui.color:
-            self.emit("")
-            self.ui.emit_markdown(prompt)
-        else:
-            self.emit("\n" + prompt + "\n")
-
-        # An optional recommended choice is pre-selected (via current) and marked (via labels),
-        # reusing the selector's existing machinery.
-        labels, current = {}, ""
-        if spec.recommended is not None and 0 <= spec.recommended < len(choices):
-            current = choices[spec.recommended]
-            labels = {current: current + " (recommended)"}
-        previews = spec.previews
-        preview_map = {c: previews[i] for i, c in enumerate(choices) if previews and i < len(previews) and previews[i]}
-        result = self.choice_application(
-            "Select:",
-            tuple(choices),
-            labels,
-            current,
-            set(),
-            preview_fn=lambda choice: preview_map.get(choice, ""),
-            free_text=True,
-        )
-        if result is SELECTION_FREE_TEXT:
-            # The question was already rendered before the choice selector; do not repeat a long
-            # raw prompt when the user switches to free text.
-            self.emit("")
-            return self.tui.request_input("> ") if self.tui is not None else self.read_input("> ")
-        if isinstance(result, str):
-            return result
-        return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
-
-    def question_interaction(self, spec: AskSpec, position: str = "") -> str:
-        """Entry point for Ask; the final tool log renders the returned answer."""
-        return self.question_application(spec, position)
+    def question_interaction(self, specs: list[AskSpec]) -> list[str]:
+        """Entry point for Ask (the whole batch in one call). With a live TUI the batch runs in a
+        single selector modal -- one page per question, options left, the selected option's rich
+        markdown preview right (below the options on narrow terminals); a free-text page drops to
+        the shared input row mid-flow and the modal reopens for the rest. Headless runs keep the
+        plain per-question text prompts. The final tool log renders the returned answers."""
+        if self.tui is None or not self.interactive_input:
+            return [self.read_input("\n" + spec.question) for spec in specs]
+        state = AskViewState.build(specs)
+        while True:
+            size = shutil.get_terminal_size((120, 24))
+            result = self.tui.show_modal(
+                lambda size=size: state.fragments(size.columns, max(1, size.lines - 6)),
+                state.handle_key,
+            )
+            if result is ASK_DONE:
+                break
+            if isinstance(result, tuple) and len(result) == 2 and result[0] is ASK_FREE_TEXT:
+                index = result[1]
+                prompt = f"({index + 1}/{len(specs)}) {specs[index].question}" if len(specs) > 1 else specs[index].question
+                answer = self.tui.request_input("\n" + prompt)
+                state.picked[index] = answer
+                if all(picked is not None for picked in state.picked):
+                    break  # a free-text answer to the last question submits without re-entering the modal
+                state.active = state.picked.index(None)
+                continue
+            if result is SELECTION_BACK or result is None:
+                return [DISMISSED] * len(specs)
+            if isinstance(result, KeyboardInterrupt):
+                raise result
+            return [DISMISSED] * len(specs)
+        answers: list[str] = []
+        for index, spec in enumerate(specs):
+            answer = state.picked[index] or spec.question
+            if note := state.notes.get(index):
+                answer += "\n\nUser notes: " + note
+            answers.append(answer)
+        return answers
 
     def select_reasoning(self) -> str | object | None:
         current = self.session.config.provider.reasoning
