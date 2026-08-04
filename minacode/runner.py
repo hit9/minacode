@@ -668,7 +668,7 @@ class ToolRunner:
                             parts.append(f"{in_tokens} in / {out_tokens} out")
                         if files != "(none)":
                             parts.append(files if len(files) <= 48 else files[:47].rstrip() + "…")
-                        self.worker_rule("worker done · " + " · ".join(parts), blank_before=True)
+                        self.worker_rule("worker done · " + " · ".join(parts))
                     else:
                         children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
                     preview = self.delegate_answer_preview(output)

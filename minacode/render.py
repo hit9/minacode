@@ -367,20 +367,19 @@ class UiPrinter:
         ]
         print_formatted_text(FormattedText(fragments), end="", flush=True)
 
-    def emit_worker_rule(self, label: str, *, blank_before: bool = False) -> None:
+    def emit_worker_rule(self, label: str) -> None:
         """Open or close a delegation with a full-width rule whose yellow label names the worker.
 
         The durable counterpart to the start marker's live divider and a sibling of the turn-end
         rule: gray dashes run edge to edge, the label sits just past a short lead, and the trail
         fills the terminal width. The label is yellow (the worker's identity color) instead of the
-        turn-end label's default tone, so the bracket reads at a glance. `blank_before` lifts the
-        closing rule off the stream above it.
+        turn-end label's default tone, so the bracket reads at a glance. Blank lines on both
+        sides lift the rule off the content above and below it.
         """
         if not self.color:
             self.output_fn(label)
             return
-        if blank_before:
-            self.emit()
+        self.emit()
         width = shutil.get_terminal_size((80, 20)).columns
         limit = max(1, width - 6)
         if get_cwidth(label) > limit:
@@ -402,6 +401,7 @@ class UiPrinter:
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
         print_formatted_text(FormattedText(fragments), end="", flush=True)
+        self.emit()
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:

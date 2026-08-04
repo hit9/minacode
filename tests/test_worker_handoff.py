@@ -729,7 +729,7 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
-    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    runner.worker_rule = lambda label: labels.append(label)
     _delegate_call(parent, runner, action="send", order=order)
 
     assert labels, "the worker_rule callback never fired"
@@ -751,7 +751,7 @@ def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch)
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
-    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    runner.worker_rule = lambda label: labels.append(label)
     _delegate_call(parent, runner, action="send", order=order, title="fix /status blank line")
 
     assert labels, "the worker_rule callback never fired"
@@ -794,7 +794,7 @@ def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, mon
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
-    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    runner.worker_rule = lambda label: labels.append(label)
     _delegate_call(parent, runner, action="send", order=order)
 
     assert labels, "the worker_rule callback never fired"
@@ -1506,7 +1506,7 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     outputs = []
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    runner.worker_rule = lambda label: labels.append(label)
     status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
@@ -1536,7 +1536,7 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
-    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    runner.worker_rule = lambda label: labels.append(label)
     status, _message, _observation = runner.run_one(
         ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}])
     )
@@ -1586,7 +1586,7 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
     outputs = []
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    runner.worker_rule = lambda label: labels.append(label)
 
     status, _message, _observation = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
     assert status == "ok"
