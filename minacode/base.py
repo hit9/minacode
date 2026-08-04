@@ -461,13 +461,14 @@ class Config:
     # registration gate reads Session.worker_tool_enabled, the value frozen from this field at
     # session start, never the live field: a runtime /worker provider switch tunes an already-
     # enabled delegation and prepares the next session, but never flips the tool block (and thus
-    # the prompt-cache scope) mid-session. worker_model/worker_reasoning are runtime-switchable
-    # via /worker model|reason (temporary, like /provider: snapshots rebuild Config from the
-    # config file), and also come from [worker] model/reasoning: an empty string means "inherit
-    # the chosen provider entry's value".
+    # the prompt-cache scope) mid-session. worker_model/worker_reasoning/worker_api are
+    # runtime-switchable via /worker model|reason|api (temporary, like /provider: snapshots
+    # rebuild Config from the config file), and also come from [worker] model/reasoning/api:
+    # an empty string means "inherit the chosen provider entry's value".
     worker_provider: str = ""
     worker_model: str = ""
     worker_reasoning: str = ""
+    worker_api: str = ""
 
     # Backward compatibility: the data dir moved from ~/.nanocode to ~/.minacode.
     LEGACY_DATA_DIR: ClassVar[str] = "~/.nanocode"
@@ -504,6 +505,9 @@ class Config:
         worker_reasoning = cls.str(worker_root, "reasoning", "")
         if worker_reasoning and worker_reasoning not in REASONING_CHOICES:
             raise ConfigError("worker.reasoning must be one of " + ", ".join(REASONING_CHOICES))
+        worker_api = cls.str(worker_root, "api", "")
+        if worker_api and worker_api not in PROVIDER_API_CHOICES:
+            raise ConfigError("worker.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
         return cls(
             active_provider=active,
             providers=providers,
@@ -512,6 +516,7 @@ class Config:
             worker_provider=worker_provider,
             worker_model=cls.str(worker_root, "model", ""),
             worker_reasoning=worker_reasoning,
+            worker_api=worker_api,
         )
 
     @staticmethod
@@ -635,6 +640,7 @@ model = ""
                                # parent's -- same-family models share blind spots
 # model = ""                  # optional: override the entry's model (inherit by default)
 # reasoning = ""              # optional: override the entry's reasoning; /worker reason at runtime
+# api = ""                    # optional: override the entry's api protocol; empty = inherit the entry's own
 # [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
 # auto_connect = false

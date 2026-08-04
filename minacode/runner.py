@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 from minacode.base import (
+    PROVIDER_API_CHOICES,
+    REASONING_CHOICES,
     ActiveResource,
     Json,
     LogBlock,
@@ -38,6 +40,7 @@ from minacode.tools import (
     ReadTool,
     Tool,
 )
+from minacode.tools.delegate import refresh_worker_entry
 
 if TYPE_CHECKING:
     from minacode.engine import Agent
@@ -457,12 +460,7 @@ class ToolRunner:
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
-            if needs_confirmation and self.session.worker_auto and isinstance(tool, DelegateTool) and tool.always_confirms():
-                # One-time per-task Delegate authorization: the user approved this task's delegations
-                # (the confirm prompt's `a` or /worker auto), so a Delegate send skips the prompt
-                # entirely and renders with the same [auto] tag as a yolo-approved call.
-                d.auto = True
-            elif needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
+            if needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
                 d.auto = True
                 pre = self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit)
                 # The "auto …" header duplicates the result line; only surface it when it carries a
@@ -476,8 +474,7 @@ class ToolRunner:
                     # Nested displays drop the root line to avoid duplicating the confirmation
                     # block's own root. A Delegate send keeps its root: the finish block is the
                     # closing marker of the delegation bracket and must carry the same yellow
-                    # [worker] identity as the start marker (the worker_auto path above skips this
-                    # branch and renders the root too, so the two paths stay consistent).
+                    # [worker] identity as the start marker.
                     d.nested_display = True
                 confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
@@ -570,19 +567,72 @@ class ToolRunner:
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
-        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
-        # A Delegate send offers `a` (always): approve this send and stop asking for the rest of the
-        # task. The authorization is session state (Session.worker_auto), cleared when a new user
-        # task starts, so yolo users get automation back after one explicit per-task consent.
-        always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
-        answer = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + ("[Y/n/a or reason] " if always_option else "[Y/n or reason] ")).strip()
-        lower = answer.lower()
-        if always_option and lower in {"a", "always"}:
-            self.session.worker_auto = True
-            return True, ""
-        if lower in {"", "y", "yes"}:
-            return True, ""
-        return False, "" if lower in {"n", "no"} else answer
+        while True:
+            self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
+            always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
+            answer = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + ("[Y/n/c or reason] " if always_option else "[Y/n or reason] ")).strip()
+            lower = answer.lower()
+            if always_option and lower in {"c", "config"}:
+                # The whole-line `c`/`config` opens the worker configuration loop; anything else
+                # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
+                self.delegate_config_cycle(tool)
+                continue  # redraw the approval brief and re-ask
+            if lower in {"", "y", "yes"}:
+                return True, ""
+            return False, "" if lower in {"n", "no"} else answer
+
+    def delegate_config_cycle(self, tool: DelegateTool) -> None:
+        """The `c` loop of a Delegate send prompt: show the worker's provider/model/effort/api and
+        let the user adjust them before confirming. Each successful change refreshes the live
+        worker's entry (see refresh_worker_entry); Enter returns to the confirmation prompt."""
+        config = self.session.config
+        while True:
+            provider_name = config.worker_provider or config.active_provider
+            entry = config.providers[provider_name]
+            self.output_fn(
+                LogBlock(
+                    [
+                        LogLine("worker config", "", LogRole.META, LogEdge.BRANCH),
+                        LogLine("provider", config.worker_provider or f"(inherit) {provider_name}", LogRole.META, LogEdge.CONTINUE),
+                        LogLine("model", config.worker_model or entry.model or "(no model)", LogRole.META, LogEdge.CONTINUE),
+                        LogLine("effort", config.worker_reasoning or entry.reasoning, LogRole.META, LogEdge.CONTINUE),
+                        LogLine("api", config.worker_api or entry.api, LogRole.META, LogEdge.CONTINUE),
+                    ]
+                )
+            )
+            choice = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "[p/m/e/w to change, Enter to return] ").strip().lower()
+            if not choice:
+                return
+            if choice == "p":
+                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "provider name (or 'off' to clear) > ").strip()
+                if value == "off" and "off" not in config.providers:
+                    # "off" names the clearing action unless a provider entry is literally named
+                    # "off" (existence wins), mirroring /worker provider.
+                    config.worker_provider = ""
+                elif value in config.providers:
+                    config.worker_provider = value
+                else:
+                    self.output_fn("Unknown provider: " + value)
+                    continue
+            elif choice == "m":
+                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "model (or 'default' to inherit) > ").strip()
+                config.worker_model = "" if value == "default" else value
+            elif choice == "e":
+                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "effort (" + "|".join(REASONING_CHOICES) + ", or 'default' to inherit) > ").strip()
+                if value != "default" and value not in REASONING_CHOICES:
+                    self.output_fn("Unknown effort: " + value)
+                    continue
+                config.worker_reasoning = "" if value == "default" else value
+            elif choice == "w":
+                value = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "api (" + "|".join(PROVIDER_API_CHOICES) + ", or 'default' to inherit) > ").strip()
+                if value != "default" and value not in PROVIDER_API_CHOICES:
+                    self.output_fn("Unknown api: " + value)
+                    continue
+                config.worker_api = "" if value == "default" else value
+            else:
+                self.output_fn("Invalid choice: " + choice)
+                continue
+            refresh_worker_entry(config, self.session.worker, config.worker_provider if choice == "p" and config.worker_provider else None)
 
     def approval_display(
         self,
@@ -595,14 +645,45 @@ class ToolRunner:
         role = LogRole.TOOL if status == "confirm" else LogRole.AUTO
         root = self.log_root(self.short_call(call), role, batch_suffix, call)
         children = []
-        if tool.NAME != "Edit":
-            return LogBlock.hierarchy(root, children)
-        preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
-        preview_lines = preview.rstrip().splitlines()
-        if preview_lines:
-            children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
-            children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
+        if isinstance(tool, DelegateTool) and tool.always_confirms():
+            children.extend(self.delegate_approval_children(tool))
+        elif tool.NAME == "Edit":
+            preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
+            preview_lines = preview.rstrip().splitlines()
+            if preview_lines:
+                children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
+                children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
         return LogBlock.hierarchy(root, children)
+
+    def delegate_approval_children(self, tool: DelegateTool) -> list[LogLine]:
+        """Approval brief for a Delegate send: title, an order excerpt, explicit send parameters,
+        and the worker configuration the send will run under. Everything is derived from the call
+        and the session config, never from mutable worker state."""
+        payload = tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
+        children: list[LogLine] = []
+        title = payload.get("title")
+        if isinstance(title, str) and title.strip():
+            children.append(LogLine("title", self.oneline(title.strip(), 120), LogRole.META, LogEdge.BRANCH))
+        order = payload.get("order")
+        if isinstance(order, str) and order.strip():
+            lines = order.strip().splitlines()
+            children.append(LogLine("order", "", LogRole.META, LogEdge.BRANCH))
+            children.extend(LogLine("", line, LogRole.META, LogEdge.CONTINUE) for line in lines[:12])
+            if len(lines) > 12:
+                children.append(LogLine("", f"… {len(lines) - 12} more lines", LogRole.META, LogEdge.CONTINUE))
+        language = payload.get("language")
+        if isinstance(language, str) and language.strip():
+            children.append(LogLine("language", self.oneline(language.strip(), 60), LogRole.META, LogEdge.BRANCH))
+        if payload.get("max_steps") is not None:
+            children.append(LogLine("max_steps", str(payload["max_steps"]), LogRole.META, LogEdge.BRANCH))
+        config = self.session.config
+        provider_name = config.worker_provider or config.active_provider
+        entry = config.providers[provider_name]
+        model = config.worker_model or entry.model or "(no model)"
+        effort = config.worker_reasoning or entry.reasoning
+        api = config.worker_api or entry.api
+        children.append(LogLine("worker", f"{provider_name}/{model} · {effort} · {api}", LogRole.META, LogEdge.BRANCH))
+        return children
 
     def finish_display(
         self,

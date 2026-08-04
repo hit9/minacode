@@ -692,7 +692,7 @@ def test_worker_command_completion(tmp_path):
     )
 
     sub_texts = [c.text for c in completer.get_completions(Document("/worker "), None)]
-    assert set(sub_texts) == {"status", "reset", "on", "off", "provider", "model", "reason", "auto"}
+    assert set(sub_texts) == {"status", "reset", "on", "off", "provider", "model", "reason", "api"}
 
     provider_texts = [c.text for c in completer.get_completions(Document("/worker provider "), None)]
     assert set(provider_texts) == {"default", "alt", "off"}
@@ -703,42 +703,53 @@ def test_worker_command_completion(tmp_path):
     reason_texts = [c.text for c in completer.get_completions(Document("/worker reason "), None)]
     assert set(reason_texts) == set(REASONING_CHOICES) | {"default"}
 
-    auto_texts = [c.text for c in completer.get_completions(Document("/worker auto "), None)]
-    assert set(auto_texts) == {"on", "off"}
+    api_texts = [c.text for c in completer.get_completions(Document("/worker api "), None)]
+    assert set(api_texts) == set(PROVIDER_API_CHOICES) | {"default"}
 
 
-# /worker auto is the typed form of the one-time per-task Delegate authorization: on/off set the
-# task-scoped flag with plain messages, no argument reports the current state, and /worker status
-# shows the same line.
-def test_worker_auto_subcommand_sets_reports_and_clears(tmp_path):
+# /worker api is the typed form of the [worker] api knob: it sets the override, "default" clears
+# it back to inheriting the entry's own protocol, and an unknown value is rejected with usage.
+def test_worker_api_subcommand_sets_clears_and_rejects(tmp_path):
     command_loop = loop(tmp_path)
 
-    assert command_loop.worker_command("auto") == "worker auto: off"
-    assert command_loop.session.worker_auto is False
+    assert command_loop.worker_command("api responses") == "Set worker.api = responses"
+    assert command_loop.session.config.worker_api == "responses"
 
-    on_message = command_loop.worker_command("auto on")
-    assert on_message.startswith("worker auto: on")
-    assert "until /worker auto off" in on_message
-    assert command_loop.session.worker_auto is True
-    assert command_loop.session.worker_auto_sticky is True  # the typed form survives task boundaries
+    assert command_loop.worker_command("api default") == "worker api: (inherit)"
+    assert command_loop.session.config.worker_api == ""
 
-    assert command_loop.worker_command("auto") == "worker auto: on"
+    assert command_loop.worker_command("api oai") == "Usage: /worker api " + "|".join(PROVIDER_API_CHOICES)
+    assert command_loop.session.config.worker_api == ""
 
-    off_message = command_loop.worker_command("auto off")
-    assert off_message.startswith("worker auto: off")
-    assert "ask again" in off_message
-    assert command_loop.session.worker_auto is False
-    assert command_loop.session.worker_auto_sticky is False
-
-    assert command_loop.worker_command("auto maybe") == "Usage: /worker auto [on|off]"
+    assert command_loop.worker_command("api chat responses") == "Usage: /worker api [API]"
 
 
-def test_worker_status_line_reports_worker_auto_state(tmp_path):
+def test_worker_api_picker_sets_and_clears_like_the_typed_form(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    picks = iter(["chat", "default"])
+    calls = []
+
+    def select(title, choices, **kwargs):
+        calls.append((title, choices, kwargs))
+        return next(picks)
+
+    command_loop.select_choice = select
+
+    assert command_loop.worker_command("api") == "Set worker.api = chat"
+    assert command_loop.session.config.worker_api == "chat"
+    assert calls[0][0] == "Worker api"
+    assert set(calls[0][1]) == set(PROVIDER_API_CHOICES) | {"default"}
+    assert calls[0][2]["labels"]["default"].startswith("default")
+
+    assert command_loop.worker_command("api") == "worker api: (inherit)"
+    assert command_loop.session.config.worker_api == ""
+
+
+def test_worker_status_line_reports_worker_config(tmp_path):
     command_loop = loop(tmp_path)
 
-    assert "worker auto: off" in command_loop.worker_command("")
-    command_loop.session.worker_auto = True
-    assert "worker auto: on" in command_loop.worker_command("")
+    assert "worker: no active session" in command_loop.worker_command("")
 
 
 # The no-arg pickers follow the /provider picker pattern: select_choice is stubbed, and the

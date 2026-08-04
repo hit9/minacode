@@ -84,18 +84,17 @@ this off permanently.
 
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
-**`/worker [status|reset|on|off|provider|model|reason|auto]`** — Inspect or control the worker session:
+**`/worker [status|reset|on|off|provider|model|reason|api]`** — Inspect or control the worker session:
 `status` (default) reports readable lines — provider/model, reasoning, state, rounds, context
-percent, and whether delegate sends skip confirmation for this task (`worker auto`) — or
-`worker: no active session` plus the configured `[worker] provider` when no worker
+percent — or `worker: no active session` plus the configured `[worker] provider` when no worker
 exists; `on`/`off` toggle the `runtime.worker` setting, and `reset` clears the worker's context
 (file changes and merged diffs survive). `provider` opens a picker over the provider entries —
 with `off` at the end to clear — and choosing one flows on into the worker model and then the
 reasoning pickers, mirroring `/provider`'s chain (backing out of any stage keeps the earlier
 stages already set); `provider NAME` re-targets the worker immediately and for future spawns
-without the cascade, while `provider off` clears the entry. The worker keeps the provider
-entry's `api` — there is no `/worker api` — and `model` and `reason` pick from the worker's
-entry models and reasoning efforts, with `default` clearing an override back to inheriting the
+without the cascade, while `provider off` clears the entry. `model`, `reason`, and `api` pick
+from the worker's entry models, reasoning efforts, and wire protocols (`auto`, `chat`,
+`responses`, `anthropic`), with `default` clearing an override back to inheriting the
 provider entry's value; tab completion offers the subcommands and their values. The `Delegate`
 tool block itself is fixed when the session starts from the configured `[worker] provider`:
 switching the provider mid-session tunes an already-enabled delegation, but enabling delegation
@@ -103,12 +102,11 @@ from scratch takes effect after a restart. See [Worker
 delegation](configuration.md#worker-delegation).
 
 A `Delegate send` is confirmed even under `yolo` — the prompt shows the order, the one cheap
-check on a spec the model wrote for itself — but the authorization is one-time: the
-confirmation prompt's `a` (always) approves delegations for the rest of the current user task,
-so later sends in the same task run without asking and render as `[auto]`; `/worker auto on`
-keeps delegations unconfirmed until an explicit `/worker auto off` (across task boundaries),
-and `/worker auto off` or the next user task asks again. `/worker auto` with no argument
-reports the current state.
+check on a spec the model wrote for itself. The confirmation prints an approval brief: the
+title, an excerpt of the first order lines, any explicit `language` or `max_steps`, and the
+effective worker provider/model/effort/api. `c` opens a small loop that adjusts those worker
+settings before you decide; every send asks, and a refused send feeds your reason back to the
+model.
 
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
 used to reach the model. `/provider` and `/model` also confirm it as a step in their selection

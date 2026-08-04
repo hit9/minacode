@@ -88,17 +88,36 @@ def worker_provider_config(config: Config, provider_name: str) -> ProviderConfig
     """The detached provider entry a worker should run on, with [worker] overrides applied.
 
     A worker must never share a ProviderConfig object with its parent: the /worker
-    provider|model|reason live-switch path replaces the worker's active entry in place, and
+    provider|model|reason|api live-switch path replaces the worker's active entry in place, and
     dataclasses.replace is shallow, so a shared object would leak worker-only changes into the
     parent's provider. This helper is the single place that copies the entry and folds in the
-    [worker] model/reasoning overrides (empty string = inherit the entry's own value); both
+    [worker] model/reasoning/api overrides (empty string = inherit the entry's own value); both
     _spawn_worker and the live-switch path in loop.py call it."""
     provider = replace(config.providers[provider_name])
     if config.worker_model:
         provider.model = config.worker_model
     if config.worker_reasoning:
         provider.reasoning = config.worker_reasoning
+    if config.worker_api:
+        provider.api = config.worker_api
     return provider
+
+
+def refresh_worker_entry(config: Config, worker: Session | None, provider_name: str | None = None) -> None:
+    """Rebuild a live worker's active provider entry from the parent's current [worker] overrides.
+
+    Copy-on-write so the worker never shares the parent's providers dict; provider_name switches
+    the worker's active entry (the /worker provider path) instead of rewriting the current one.
+    A no-op when no worker session exists. Shared by the /worker live switches in loop.py and the
+    Delegate confirm-time configuration loop in runner.py."""
+    if worker is None:
+        return
+    if worker.config.providers is config.providers:
+        worker.config.providers = dict(worker.config.providers)
+    target = provider_name or worker.config.active_provider
+    if provider_name is not None:
+        worker.config.active_provider = provider_name
+    worker.config.providers[target] = worker_provider_config(config, target)
 
 
 class DelegateTool(Tool):

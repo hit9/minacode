@@ -60,17 +60,21 @@
   spec in one order, bought for context hygiene and the worker's model, never speed; small work,
   open exploration, and the heart of the current request stay in the parent session, since
   writing the order and reviewing the result cost about as much as doing the work.
-- `Delegate` sends now carry a one-time per-task authorization: the confirmation prompt accepts
-  `a` (always) to approve delegations for the rest of the current user task, so later sends in
-  that task skip the prompt and render as `[auto]` like any yolo-approved call; a new user task
-  clears the flag (mid-task follow-ups do not), and it is never persisted or inherited by the
-  worker. Yolo users get full automation back after that one consent per task — the flag is
-  task-scoped so every new task reconsiders, and since the worker inherits the parent's yolo,
-  delegation still deserves at least one explicit opt-in.
-- `/worker auto on` is sticky: unlike the prompt's task-scoped `a`, the typed opt-in keeps
-  delegations unconfirmed across task boundaries until an explicit `/worker auto off`, which
-  clears both the authorization and the stickiness; with no argument the command reports the
-  current state, and `/worker` status shows the same line.
+- `Delegate` send confirmation now shows an approval brief under the prompt: the title, an
+  excerpt of the first 12 order lines (with a trailing "… N more lines" when the order is longer),
+  any explicit `language`/`max_steps`, and a `worker:` line reading the effective
+  provider/model/effort/api. The send prompt accepts `c` (or the whole word `config`) to open a
+  small configuration loop — provider/model/effort/api with `off`/`default` clearing, each change
+  live-applied to a running worker — that returns to a redrawn brief before confirming. A
+  `c`-prefixed reason sentence never opens the loop: only a whole-line exact `c`/`config` does.
+- The `[worker]` section and `/worker api [API]` now set a `worker.api` protocol override
+  (`auto|chat|responses|anthropic`, empty = inherit the provider entry's own protocol); the live
+  worker's entry is refreshed the same way `/worker model|reason` already did. The three
+  copy-on-write refresh blocks behind `/worker provider|model|reason|api` are now one shared
+  helper, `refresh_worker_entry`.
+- The one-time per-task Delegate authorization is retired: the confirm prompt's `a` key and
+  `/worker auto on|off` are gone, so every `Delegate` send asks again (still even under `yolo`),
+  and the task-boundary reset hooks that cleared the flag are removed with it.
 - The system prompt's SCOPE now gates action on intent: discussion -- questions, opinions,
   proposals -- is answered only, action does exactly what was instructed, ambiguity between the
   two resolves to discussion, and a reply that rejects or narrows a proposal approves only what

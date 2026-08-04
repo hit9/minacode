@@ -639,7 +639,7 @@ def test_worker_status_command_is_human_readable(tmp_path):
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert loop.worker_command("") == chr(10).join(["worker: no active session", "worker provider: default", "worker auto: off"])
+    assert loop.worker_command("") == chr(10).join(["worker: no active session", "worker provider: default"])
     assert loop.worker_command("status") == loop.worker_command("")
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
@@ -1070,44 +1070,131 @@ def test_delegate_send_is_confirmed_even_under_yolo(tmp_path):
     assert EditTool(s, ["a.py", []]).always_confirms() is False
 
 
-# 20b. one-time per-task authorization: the confirm prompt's `a` approves this send and sets
-# Session.worker_auto; later sends in the same task skip the prompt and render as [auto]. The flag
-# is task-scoped session state, never persisted, and the worker never sees it.
-def test_delegate_worker_auto_authorizes_first_send_and_skips_later(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole, ToolCall
+# 20b. Delegate send confirmation: Y/Enter approve, n refuses without a reason, any other input is
+# a refusal reason passed back to the model. `a` is an ordinary reason now (the always key is
+# retired), and only a whole-line "c"/"config" opens the worker configuration loop.
+def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
+    from minacode.base import ToolCall
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
-    model = FakeModelClient(
-        [
-            ({"role": "assistant", "content": "answer one"}, [], "answer one"),
-            ({"role": "assistant", "content": "answer two"}, [], "answer two"),
-        ]
+    for answer, expected in [("y", (True, "")), ("", (True, "")), ("n", (False, "")), ("a", (False, "a"))]:
+        runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda _prompt, a=answer: a, output_fn=lambda text: None)
+        confirmed, reason = runner.confirm(
+            ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
+        )
+        assert (confirmed, reason) == expected, answer
+
+    # A c-prefixed sentence is an ordinary reason, never the config key (whole-line exact match only).
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "cost too high", output_fn=lambda text: None)
+    confirmed, reason = runner.confirm(
+        ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
     )
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    assert (confirmed, reason) == (False, "cost too high")
+
+
+def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
+    from minacode.base import ProviderConfig, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools import EditTool
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["fast"] = ProviderConfig(model="worker-model", reasoning="high", api="responses")
+    parent.config.worker_provider = "fast"
+    parent.config.worker_model = "override-model"
+    parent.config.worker_api = ""
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
+
+    order_lines = [f"line {i}" for i in range(1, 16)]
+    args = {"action": "send", "order": "\n".join(order_lines), "title": "fix things", "language": "Chinese", "max_steps": 7}
+    tool = DelegateTool(parent, [args])
+    block = runner.approval_display(ToolCall("delegate-1", "Delegate", [args]), tool, "confirm")
+    rows = [(item.label, item.text) for item, _ in block.walk()]
+    labels = [label for label, _ in rows]
+    texts = [text for _, text in rows]
+    assert "title" in labels and "fix things" in texts
+    assert "order" in labels
+    assert all(f"line {i}" in texts for i in range(1, 13))  # the first 12 order lines
+    assert "line 13" not in texts and "line 14" not in texts
+    assert any("3 more lines" in text for text in texts)  # 15 - 12 = 3 overflow
+    assert "language" in labels and "Chinese" in texts
+    assert "max_steps" in labels and "7" in texts
+    worker_line = next(text for label, text in rows if label == "worker")
+    assert "fast/override-model" in worker_line and "high" in worker_line
+    assert "responses" in worker_line  # api inherited from the entry while worker_api is empty
+
+    # An explicit worker_api override wins over the entry's api.
+    parent.config.worker_api = "chat"
+    block = runner.approval_display(ToolCall("delegate-2", "Delegate", [args]), tool, "confirm")
+    rows = [(item.label, item.text) for item, _ in block.walk()]
+    worker_line = next(text for label, text in rows if label == "worker")
+    assert "chat" in worker_line and "responses" not in worker_line
+
+    # Non-send Delegate calls keep the plain display; Edit keeps its preview children.
+    status_tool = DelegateTool(parent, [{"action": "status"}])
+    block = runner.approval_display(ToolCall("delegate-3", "Delegate", [{"action": "status"}]), status_tool, "confirm")
+    assert not block.has_children
+    edit_tool = EditTool(parent, ["a.py", [{"op": "replace_all", "old": "x", "new": "y"}]])
+    (tmp_path / "a.py").write_text("x\n")
+    block = runner.approval_display(ToolCall("edit-1", "Edit", ["a.py", []]), edit_tool, "confirm")
+    assert block.has_children
+
+
+def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):
+    from dataclasses import replace
+
+    from minacode.base import LogBlock, ProviderConfig, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.session import Session
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["alt"] = ProviderConfig(model="alt-model", reasoning="low", api="anthropic")
+    worker = Session(cwd=str(tmp_path), config=replace(parent.config), settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    parent.worker = worker
+    answers = iter(["c", "p", "alt", "m", "worker-m", "e", "off", "w", "responses", "", "y"])
     prompts = []
     outputs = []
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "a", output_fn=outputs.append)
 
-    # First send: the user picks the always option; the send proceeds and the task is authorized.
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "order one"}]))
-    assert status == "ok"
-    assert parent.worker_auto is True
-    assert len(prompts) == 1
-    assert "[Y/n/a" in prompts[0]  # the Delegate prompt offers the always key
-    assert parent.worker.worker_auto is False  # the flag is parent-only, never inherited
+    def input_fn(prompt):
+        prompts.append(prompt)
+        return next(answers)
 
-    # Second send in the same task: no confirmation prompt, and the finish display carries [auto].
-    status, _message, _observation = runner.run_one(ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "order two"}]))
-    assert status == "ok"
-    assert parent.worker_auto is True
-    assert len(prompts) == 1  # input_fn was not invoked again
-    assert len(model.requests) == 2
-    blocks = [block for block in outputs if isinstance(block, LogBlock)]
-    finishes = [block for block in blocks if any(item.role is LogRole.OUTPUT for item, _ in block.walk())]
-    assert str(finishes[0]).rstrip().endswith("[approved]")  # the explicit first approval
-    assert str(finishes[-1]).rstrip().endswith("[auto]")  # the second send skips and tags auto
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=input_fn, output_fn=outputs.append)
+    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}]))
+    assert (confirmed, reason) == (True, "")
+    assert parent.config.worker_provider == "alt"
+    assert parent.config.worker_model == "worker-m"
+    assert parent.config.worker_reasoning == "off"
+    assert parent.config.worker_api == "responses"
+    # The live worker's active entry carries the overrides (copy-on-write, never shared).
+    assert worker.config.active_provider == "alt"
+    entry = worker.config.providers["alt"]
+    assert (entry.model, entry.reasoning, entry.api) == ("worker-m", "off", "responses")
+    assert worker.config.providers is not parent.config.providers
+    assert any("worker config" in str(out) for out in outputs if isinstance(out, LogBlock))
+    assert any("[Y/n/c or reason] " in prompt for prompt in prompts)
+    assert any("[p/m/e/w to change, Enter to return] " in prompt for prompt in prompts)
+
+    # Invalid values are rejected in-loop without touching the config; Enter returns and "n" refuses.
+    answers = iter(["c", "p", "nope", "e", "turbo", "w", "weird", "", "n"])
+    prompts = []
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
+    confirmed, reason = runner.confirm(ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}]))
+    assert (confirmed, reason) == (False, "")
+    text = "\n".join(str(out) for out in outputs)
+    assert "Unknown provider: nope" in text
+    assert "Unknown effort: turbo" in text
+    assert "Unknown api: weird" in text
+    assert parent.config.worker_provider == "alt"  # unchanged
+    assert parent.config.worker_reasoning == "off"  # unchanged
+    assert parent.config.worker_api == "responses"  # unchanged
 
 
 def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
@@ -1125,7 +1212,6 @@ def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatc
     status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
     assert len(prompts) == 1  # yolo alone does not skip a Delegate send
-    assert parent.worker_auto is False
 
 
 def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
@@ -1142,122 +1228,26 @@ def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
     assert status == "refused"
     assert "refused" in message
     assert not model.requests  # the worker never ran
-    assert parent.worker_auto is False
 
 
-def test_worker_auto_does_not_affect_other_tools(tmp_path):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-
-    parent = _delegate_session(tmp_path)
-    parent.worker_auto = True
-    prompts = []
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
-
-    status, _message, _observation = runner.run_one(ToolCall("bash-1", "Bash", ["printf x >> a.txt"]))
-    assert status == "ok"
-    assert len(prompts) == 1  # non-Delegate tools still confirm under the same session
-
-
-def test_new_user_task_resets_worker_auto_at_loop_boundary(tmp_path):
-    from minacode.engine import Agent
-    from minacode.loop import CommandLoop
-
-    parent = _delegate_session(tmp_path)
-    parent.worker_auto = True  # a previous task left the task-scoped authorization on
-
-    class FakeModel:
-        def request(self, messages, tools=None):
-            return {"role": "assistant", "content": "done"}, [], "done"
-
-    agent = Agent(parent, output_fn=lambda text: None)
-    agent.model = FakeModel()
-    reads = iter(["hello", EOFError()])
-
-    def fake_read(prompt="", **kw):
-        value = next(reads)
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
-    loop = CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
-    loop.run()
-
-    assert parent.worker_auto is False  # the new user task re-asks
-
-
-# /worker auto on is sticky: unlike the prompt's task-scoped `a`, the typed form survives task
-# boundaries until an explicit /worker auto off, so a delegation in the next task still skips the
-# prompt; off clears both flags and the boundary reset behaves as before.
-def test_worker_auto_sticky_survives_task_boundary_until_off(tmp_path, monkeypatch):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.engine import Agent
-    from minacode.loop import CommandLoop
-    from minacode.runner import ToolRunner
-
-    parent = _delegate_session(tmp_path)
-    agent = Agent(parent, output_fn=lambda text: None)
-
-    class FakeModel:
-        def request(self, messages, tools=None):
-            return {"role": "assistant", "content": "done"}, [], "done"
-
-    agent.model = FakeModel()
-
-    def make_loop():
-        reads = iter(["hello", EOFError()])
-
-        def fake_read(prompt="", **kw):
-            value = next(reads)
-            if isinstance(value, BaseException):
-                raise value
-            return value
-
-        return CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
-
-    # /worker auto on sets the authorization AND marks it sticky, so the task-boundary reset
-    # (which runs at the top of the next loop iteration) leaves the flag alone.
-    loop = make_loop()
-    assert loop.worker_command("auto on").startswith("worker auto: on")
-    assert parent.worker_auto is True and parent.worker_auto_sticky is True
-    loop.run()
-    assert parent.worker_auto is True and parent.worker_auto_sticky is True  # survived the boundary
-
-    # A send in the new task therefore still skips the confirmation prompt.
-    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
-    prompts = []
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
-    assert status == "ok"
-    assert len(prompts) == 0  # the sticky authorization carried across the task boundary
-
-    # /worker auto off clears both flags, and the boundary reset is back to clearing the task flag.
-    assert loop.worker_command("auto off").startswith("worker auto: off")
-    assert parent.worker_auto is False and parent.worker_auto_sticky is False
-    make_loop().run()
-    assert parent.worker_auto is False and parent.worker_auto_sticky is False
-
-
-# 21. [worker] model/reasoning parse like [worker] provider and validate the reasoning choices.
+# 21. [worker] model/reasoning/api parse like [worker] provider; reasoning and api validate their choices.
 def test_worker_config_parses_model_and_reasoning(tmp_path):
     from minacode.base import Config
 
     config = Config.from_dict(
         {
-            "worker": {"provider": "fast", "model": "m-x", "reasoning": "high"},
+            "worker": {"provider": "fast", "model": "m-x", "reasoning": "high", "api": "responses"},
             "provider": {"active": "default", "default": {"model": "d"}, "fast": {"model": "m"}},
         }
     )
     assert config.worker_provider == "fast"
     assert config.worker_model == "m-x"
     assert config.worker_reasoning == "high"
+    assert config.worker_api == "responses"
 
-    # Defaults: no [worker] model/reasoning means "inherit the entry's value" at spawn time.
+    # Defaults: no [worker] model/reasoning/api means "inherit the entry's value" at spawn time.
     plain = Config.from_dict({"provider": {"default": {"model": "d"}}})
-    assert plain.worker_model == "" and plain.worker_reasoning == ""
+    assert plain.worker_model == "" and plain.worker_reasoning == "" and plain.worker_api == ""
 
 
 def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
@@ -1265,6 +1255,38 @@ def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
 
     with pytest.raises(ConfigError, match="worker.reasoning"):
         Config.from_dict({"worker": {"reasoning": "turbo"}, "provider": {"default": {}}})
+
+
+def test_worker_config_rejects_invalid_worker_api(tmp_path):
+    from minacode.base import Config, ConfigError
+
+    with pytest.raises(ConfigError, match="worker.api"):
+        Config.from_dict({"worker": {"api": "oai"}, "provider": {"default": {}}})
+
+
+def test_worker_provider_config_applies_api_override(tmp_path):
+    """worker_provider_config folds an explicit worker.api into the detached entry; an empty
+    worker_api inherits the entry's own protocol (the worker never shares the parent's object)."""
+    from minacode.base import Config
+    from minacode.tools.delegate import worker_provider_config
+
+    config = Config.from_dict(
+        {
+            "worker": {"provider": "fast", "api": "chat"},
+            "provider": {"active": "default", "default": {"model": "d", "api": "auto"}, "fast": {"model": "m", "api": "anthropic"}},
+        }
+    )
+    entry = worker_provider_config(config, "fast")
+    assert entry.api == "chat"  # the [worker] api override wins
+    assert entry is not config.providers["fast"]
+    assert config.providers["fast"].api == "anthropic"  # the parent's entry is untouched
+
+    config.worker_api = ""
+    entry = worker_provider_config(config, "fast")
+    assert entry.api == "anthropic"  # empty override inherits the entry's api
+
+    entry = worker_provider_config(config, "default")
+    assert entry.api == "auto"
 
 
 # 22. The Delegate registration gate is frozen per session: /worker provider stores the config for
