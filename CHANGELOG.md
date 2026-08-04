@@ -39,6 +39,13 @@
   marker, and a reset states in the log exactly what it cleared and what survives (file changes
   and merged diffs stay). `/worker reset` answers in plain terms too, instead of echoing the raw
   envelope. `/status` sections lost the spare blank lines between a heading and its table.
+- The delegation bracket is now a pair of full-width rule dividers in the same family as the
+  turn-end line: the start marker and the finish of a successful send or reset each render as a
+  gray rule carrying a yellow label (`worker · provider/model · order summary` and
+  `worker done · steps · elapsed · tokens in/out · files`, or `worker reset · context cleared`),
+  with the order summary capped at 60 characters and the file list at 48. Without a wired UI the
+  old `[worker] ▶` / `[worker] ◀` log lines remain, and the finish block still previews the
+  worker's answer and its stored key.
 - The `Delegate` description now leads with when to delegate: bounded, verifiable work you can
   spec in one order, bought for context hygiene and the worker's model, never speed; small work,
   open exploration, and the heart of the current request stay in the parent session, since

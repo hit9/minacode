@@ -252,6 +252,7 @@ class ToolRunner:
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
+        self.worker_rule: Callable | None = None
         self.question_fn: Callable[[AskSpec, str], str] | None = None
         # Injected by CommandLoop for the Delegate worker: ModelClient only streams when on_stream
         # is set, so an unwired worker would run unstreamed and its thinking would stay invisible.
@@ -618,10 +619,14 @@ class ToolRunner:
         tree = d.nested_display or call.name in ("Bash", "Delegate")
         root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
         if call.name == "Delegate" and not failed:
-            # The delegation bracket: the start marker opens with the yellow "[worker] ▶" line; the
-            # finish block's root line is the closing divider "[worker] ◀", symmetric to it. The
-            # action detail lives in the child lines below (the done summary or the reset notice).
-            root = self.log_root("[worker] ◀", LogRole.WORKER, d.batch_suffix, call)
+            # The delegation bracket: the start marker opens with the yellow full-width rule; the
+            # finish closes it with the sibling rule carrying the done summary or reset notice.
+            # Without a wired worker_rule the finish block falls back to the "[worker] ◀" root
+            # line with the detail in the child lines below.
+            if self.worker_rule is not None:
+                root = None
+            else:
+                root = self.log_root("[worker] ◀", LogRole.WORKER, d.batch_suffix, call)
         children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
@@ -640,13 +645,28 @@ class ToolRunner:
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         elif call.name == "Delegate":
             if 'action="reset"' in output:
-                # A reset may land between delegations without the user typing /worker reset (the
-                # model can call it), so the log states plainly what it cleared and what survives.
-                children.append(LogLine("done", "worker context cleared; file changes and merged diffs kept", LogRole.META, LogEdge.BRANCH))
+                if self.worker_rule is not None:
+                    # A reset may land between delegations without the user typing /worker reset
+                    # (the model can call it); the rule label states plainly what it cleared.
+                    self.worker_rule("worker reset · context cleared", blank_before=True)
+                else:
+                    # A reset may land between delegations without the user typing /worker reset (the
+                    # model can call it), so the log states plainly what it cleared and what survives.
+                    children.append(LogLine("done", "worker context cleared; file changes and merged diffs kept", LogRole.META, LogEdge.BRANCH))
             else:
                 summary = self.delegate_result_summary(output)
                 if summary:
-                    children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
+                    if self.worker_rule is not None:
+                        fields = self.delegate_result_fields(output)
+                        steps, elapsed, files, in_tokens, out_tokens, _ = fields  # non-None: the same parse backed `summary`
+                        parts = [f"steps {steps}", elapsed]
+                        if in_tokens:
+                            parts.append(f"{in_tokens} in / {out_tokens} out")
+                        clipped = files if len(files) <= 48 else files[:47].rstrip() + "…"
+                        parts.append(clipped)
+                        self.worker_rule("worker done · " + " · ".join(parts), blank_before=True)
+                    else:
+                        children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
                     preview = self.delegate_answer_preview(output)
                     if preview:
                         children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
@@ -735,17 +755,35 @@ class ToolRunner:
             parts.append(f"{elapsed:.1f}s")
         return "→ " + " · ".join(parts)
 
-    def delegate_result_summary(self, output: str) -> str:
-        """The one-line summary of a finished Delegate send, from its envelope attributes."""
+    def delegate_result_fields(self, output: str) -> tuple[str, str, str, str, str, bool] | None:
+        """Parse a finished Delegate send envelope into its display fields.
+
+        Returns (steps, elapsed, files, in_tokens, out_tokens, stopped) or None when the envelope
+        is missing. Shared by delegate_result_summary (the fallback child line) and the finish
+        rule label, so both show the same numbers.
+        """
         match = self.DELEGATE_META_RE.search(output)
         if not match:
-            return ""
+            return None
         steps, elapsed, files, stopped, tokens = match.groups()
-        parts = [f"steps {steps}", elapsed, files]
         if tokens is not None:
             in_tokens, out_tokens = tokens.split("/", 1)
-            parts.append(f"{self.token_count(int(in_tokens))} in / {self.token_count(int(out_tokens))} out")
-        if stopped == "true":
+            in_tokens = self.token_count(int(in_tokens))
+            out_tokens = self.token_count(int(out_tokens))
+        else:
+            in_tokens = out_tokens = ""
+        return steps, elapsed, files, in_tokens, out_tokens, stopped == "true"
+
+    def delegate_result_summary(self, output: str) -> str:
+        """The one-line summary of a finished Delegate send, from its envelope attributes."""
+        fields = self.delegate_result_fields(output)
+        if fields is None:
+            return ""
+        steps, elapsed, files, in_tokens, out_tokens, stopped = fields
+        parts = [f"steps {steps}", elapsed, files]
+        if in_tokens:
+            parts.append(f"{in_tokens} in / {out_tokens} out")
+        if stopped:
             parts.append("stopped at max steps")
         return " · ".join(parts)
 

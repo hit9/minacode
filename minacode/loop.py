@@ -382,6 +382,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.model_stream = self.model_stream_output
         self.agent.tools.question_fn = self.question_interaction
+        self.agent.tools.worker_rule = self.ui.emit_worker_rule
 
     def automatic_compaction_status(self, active: bool) -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""

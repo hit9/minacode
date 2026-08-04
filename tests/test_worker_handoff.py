@@ -687,7 +687,8 @@ def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch
 
 # 11b. a send opens with a visible start marker: one yellow [worker] line naming the worker's live
 # provider/model and the one-line order summary, so the scrollback has a boundary before the
-# finish block.
+# finish block. This is the fallback when no worker_rule is wired; the wired path emits a
+# full-width yellow rule label instead (see the test below).
 def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     from minacode.base import LogBlock, LogRole
     from minacode.context import ContextManager
@@ -706,8 +707,29 @@ def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     marker = next(block for block in blocks if any(item.role is LogRole.WORKER for item, _ in block.walk()))
     rendered = str(marker)
     assert "[worker]" in rendered
+    assert "▶" in rendered
     assert "default/worker-model-x" in rendered
     assert ToolRunner.oneline(order, 200) in rendered
+
+
+def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    parent.config.providers["default"].model = "worker-model-x"
+    order = "Rewrite the worker handoff plan to cover the start rule, then check it. " * 8
+    model = FakeModelClient([({"role": "assistant", "content": "done"}, [], "done")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    labels = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
+    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    _delegate_call(parent, runner, action="send", order=order)
+
+    assert labels, "the worker_rule callback never fired"
+    assert labels[0].startswith("worker · default/worker-model-x · ")
+    assert ToolRunner.oneline(order, 60) in labels[0]
+    assert not any("[worker]" in rendered for rendered in labels)  # the rule label replaces the [worker] ▶ line
 
 
 # 11c. language is a send parameter, not a setting: it lands in the order the worker receives as
@@ -1341,6 +1363,8 @@ def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
 # 28. a finished Delegate send renders as a proper log block: the confirmation root line is just
 #     `Delegate send` (no argument blob), the finish block carries a steps/elapsed/files summary
 #     and the worker's answer as an OUTPUT preview, and the raw envelope tags never reach the log.
+#     This is the fallback when no worker_rule is wired; the wired path replaces the summary child
+#     line with a yellow rule label (see the test below).
 def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch):
     from minacode.base import LogBlock, LogRole, ToolCall
     from minacode.context import ContextManager
@@ -1369,8 +1393,37 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     assert any(item.label == "stored" for item, _ in finish.walk())
 
 
+def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, LogRole, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "the worker answer"}, [], "the worker answer")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    outputs = []
+    labels = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "ok"
+
+    done = [label for label in labels if label.startswith("worker done · ")]
+    assert done, "the finish worker_rule callback never fired"
+    assert "worker done · steps 1" in done[0] and " in / " in done[0]
+
+    blocks = [item for item in outputs if isinstance(item, LogBlock)]
+    finish = next(block for block in blocks if any(item.role is LogRole.OUTPUT for item, _ in block.walk()))
+    rendered = str(finish)
+    assert "the worker answer" in rendered
+    assert any(item.label == "stored" for item, _ in finish.walk())
+    # The done summary lives in the rule label now, not as a child line of the finish block.
+    assert not any(item.label == "done" and item.text.startswith("steps ") for item, _ in finish.walk())
+
+
 # 29. a Delegate reset closes the bracket the same way as a send: the finish block carries the
-#     yellow [worker] root line and states plainly what was cleared and what survives.
+#     yellow [worker] root line and states plainly what was cleared and what survives. This is the
+#     fallback when no worker_rule is wired; the wired path puts the notice in a rule label instead.
 def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     from minacode.base import LogBlock, ToolCall
     from minacode.context import ContextManager
@@ -1392,3 +1445,25 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     assert finish.items[0].label == "[worker]" and finish.items[0].text == "◀"
     rendered = str(finish)
     assert "◀" in rendered and "worker context cleared" in rendered
+
+
+def test_delegate_reset_finish_worker_rule_label(tmp_path):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.session import Session
+
+    parent = _delegate_session(tmp_path)
+    worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
+    worker.save_snapshot()
+    parent.worker = worker
+    outputs = []
+    labels = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    runner.worker_rule = lambda label, blank_before=False: labels.append(label)
+
+    status, _message, _observation = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
+    assert status == "ok"
+
+    assert labels, "the finish worker_rule callback never fired"
+    assert labels[0] == "worker reset · context cleared"

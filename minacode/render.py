@@ -361,6 +361,42 @@ class UiPrinter:
         ]
         print_formatted_text(FormattedText(fragments), end="", flush=True)
 
+    def emit_worker_rule(self, label: str, *, blank_before: bool = False) -> None:
+        """Open or close a delegation with a full-width rule whose yellow label names the worker.
+
+        The durable counterpart to the start marker's live divider and a sibling of the turn-end
+        rule: gray dashes run edge to edge, the label sits just past a short lead, and the trail
+        fills the terminal width. The label is yellow (the worker's identity color) instead of the
+        turn-end label's default tone, so the bracket reads at a glance. `blank_before` lifts the
+        closing rule off the stream above it.
+        """
+        if not self.color:
+            self.output_fn(label)
+            return
+        if blank_before:
+            self.emit()
+        width = shutil.get_terminal_size((80, 20)).columns
+        limit = max(1, width - 6)
+        if get_cwidth(label) > limit:
+            available = max(1, limit - get_cwidth("…"))
+            clipped = []
+            used = 0
+            for char in label:
+                char_width = max(0, get_cwidth(char))
+                if used + char_width > available:
+                    break
+                clipped.append(char)
+                used += char_width
+            label = "".join(clipped) + "…"
+        lead = "─" * self.TURN_END_LEAD + " "
+        trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)
+        fragments = [
+            ("ansibrightblack", lead),
+            (Theme.style("status.worker"), label),
+            ("ansibrightblack", " " + "─" * trail + "\n"),
+        ]
+        print_formatted_text(FormattedText(fragments), end="", flush=True)
+
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
         body = "\n".join(LogBlock.margin(indent) + line for line in text.splitlines() or [""])
