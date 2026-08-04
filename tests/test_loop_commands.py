@@ -1093,7 +1093,7 @@ def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     assert rich[0][0].startswith("| status | value |")  # the common rows lead without a heading
     assert "### Parent" in rich[0][0] and "### Worker" in rich[0][0]
     assert "### Common" not in rich[0][0]
-    assert rich[0][1] == {"rule": False}
+    assert rich[0][1] == {"rule": False, "compact": True}
 
 
 def test_session_from_config_file_theme_param(tmp_path):

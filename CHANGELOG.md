@@ -77,6 +77,9 @@
 - `/status` is back to markdown table rendering: the common workspace/session/goal/runtime rows
   lead with no `Common` heading, then the `### Parent` and `### Worker` headings introduce the two
   sections. The dense borderless-rendering experiment is removed.
+- `/status` renders compact: the command path passes a new `compact` flag to `emit_answer` that
+  drops every invisible line — the blank line rich markdown pads after each heading plus the
+  whitespace rows above and below each table box — so each heading sits tight against its table.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a

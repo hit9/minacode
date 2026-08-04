@@ -1111,7 +1111,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
             if name == "/status":
-                self.ui.emit_answer(output, rule=False)
+                self.ui.emit_answer(output, rule=False, compact=True)
             else:
                 (self.ui.emit_answer if name in {"/help", "/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
         # A handler that asked to switch sessions ends this run the way /exit does; `main` starts

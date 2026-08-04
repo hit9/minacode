@@ -652,3 +652,15 @@ def test_choice_view_state_fragments_preserve_headers_and_preview():
     assert "  ---- Models ----" in rendered
     assert ">  1. Alpha" in rendered
     assert "  │ first\n  │ second\n" in rendered
+
+
+def test_emit_answer_compact_drops_invisible_lines(monkeypatch):
+    out = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda text, **kwargs: out.append(getattr(text, "value", str(text))))
+    ui = UiPrinter(output_fn=lambda text: None)
+    ui.color = True
+    ui.emit_answer("### Parent\n| status | value |\n| --- | --- |\n| model | `x` |\n", rule=False, compact=True)
+    rendered = out[0]
+    visible = [line for line in rendered.split("\n") if UiPrinter.SGR_RE.sub("", line).strip()]
+    assert rendered.split("\n") == visible + [""]  # no blank or box-padding lines survive
+    assert "Parent" in rendered and "model" in rendered

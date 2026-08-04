@@ -316,7 +316,7 @@ class UiPrinter:
                 seen_content = True
         return "".join(payload for _, payload in tokens)
 
-    def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0) -> None:
+    def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0, compact: bool = False) -> None:
         if not self.color:
             if role == "user":
                 text, role = "\n" + self.USER_LOG_PREFIX + text, ""
@@ -328,6 +328,12 @@ class UiPrinter:
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        if compact:
+            # Rich markdown pads a blank line after every heading plus a whitespace row above and
+            # below each table box; /status wants the heading tight against its table, so drop
+            # every line that carries no visible characters.
+            lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
+            cleaned = "\n".join(lines) + "\n"
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
