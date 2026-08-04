@@ -39,6 +39,10 @@
   marker, and a reset states in the log exactly what it cleared and what survives (file changes
   and merged diffs stay). `/worker reset` answers in plain terms too, instead of echoing the raw
   envelope. `/status` sections lost the spare blank lines between a heading and its table.
+- The `Delegate` description now leads with when to delegate: bounded, verifiable work you can
+  spec in one order, bought for context hygiene and the worker's model, never speed; small work,
+  open exploration, and the heart of the current request stay in the parent session, since
+  writing the order and reviewing the result cost about as much as doing the work.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a
