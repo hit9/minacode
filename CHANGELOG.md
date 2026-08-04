@@ -54,9 +54,10 @@
   delegations unconfirmed across task boundaries until an explicit `/worker auto off`, which
   clears both the authorization and the stickiness; with no argument the command reports the
   current state, and `/worker` status shows the same line.
-- The system prompt's SCOPE now states that a question or opinion request is answer-only, that a
-  reply rejecting one option approves nothing else, and that silence approves nothing; edits
-  happen only on explicit instruction -- a guard against reading engagement as consent.
+- The system prompt's SCOPE now gates action on intent: discussion -- questions, opinions,
+  proposals -- is answered only, action does exactly what was instructed, ambiguity between the
+  two resolves to discussion, and a reply that rejects or narrows a proposal approves only what
+  it explicitly accepts.
 
 ### Added
 - New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a
