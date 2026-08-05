@@ -3,13 +3,189 @@
 
 ## Unreleased
 
+### Added
+- A `[runtime] language` key and a `/language [NAME]` command force the reply language for the
+  session. `auto` (the default) injects nothing, keeping requests byte-identical to before; a
+  language name (e.g. `Chinese` or `简体中文`) appends one fixed `LANGUAGE OVERRIDE` block to the
+  tail of the system prompt. The block is a pure function of the value — no timestamps or session
+  state — so the cacheable system prefix is unchanged, and workers inherit the setting from the
+  parent on every `Delegate` send.
+
 ### Changed
+- Confirm a `Delegate` send even under `yolo`. `yolo` means "I trust you to edit files and run commands
+  without asking", and those mistakes are visible in the diff or the command output at once; a
+  delegation's mistake is the order text, which only surfaces a whole worker round later. The
+  prompt shows the order, so it stays the one cheap check on a spec the model wrote for itself.
+  `Delegate` status and reset still follow `yolo`, as does every other tool.
+- A successful `Edit` now refunds the fresh anchors for the region it changed (the same
+  `anchor=line:hash` lines `Read` shows), so consecutive edits to the same file can keep going
+  without a re-Read; `create` and `replace_all`, which have no per-hunk region, skip the refund to
+  keep output bounded. Anchor validation is unchanged: a stale anchor is still refused with the
+  current line echoed.
+- Model request retries now back off exponentially with jitter and honor the provider's
+  `Retry-After` header (clamped to a 30s ceiling) instead of a fixed linear 0.5/1.0/1.5/2.0/2.5s
+  ramp; the total budget goes from about 8s to about a minute. The wait is interruptible (observed
+  in ~0.1s slices, so Ctrl-C aborts promptly) and shows a live countdown in the status bar. Only the
+  pacing changed: which failures are retryable is untouched, and a single aberrant header cannot
+  stall the CLI.
+- A retry backoff wait now shows as its own live phase (`retrying`) instead of claiming the agent is
+  `working`, mirroring the existing compaction phase. While the wait lasts, the divider shows the
+  `retrying` label with the attempt count, reason, and a live countdown for its whole duration, no
+  longer capped by the two-second notice window; the notice still lingers for two seconds after the
+  wait ends, and the status bar keeps `attempt N/6`.
 - Reword the Edit `start`/`end` anchor parameter descriptions: the anchor must be the exact current
   `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
   and re-read after any file change or stale-anchor error. The old wording only named the format and
   the inclusive range, giving the model no instruction against deriving anchors itself.
+- The status bar shows the worker only while a delegation is actually in flight: it leads with a
+  yellow `[worker]` marker and reads the worker's provider, model, reasoning, and context/cache
+  usage, returning to the parent's values the moment the worker answers (the engine clears the
+  in-flight turn in `finish_turn`). An idle worker no longer shadows the parent's row. The working
+  divider carries the same yellow `[worker]` prefix while a delegation runs. `/status` is now
+  sectioned — common workspace/session/goal/runtime first, then the parent's model/context/cache/
+  activity/usage, then the worker's model/context/state rows whenever a worker session exists (or
+  the configured `[worker] provider` line when none does).
+- The worker delegation bracket is now visibly closed on both ends: the finish block of a
+  successful `Delegate` send or reset carries the same yellow `[worker]` identity as the start
+  marker, and a reset states in the log exactly what it cleared and what survives (file changes
+  and merged diffs stay). `/worker reset` answers in plain terms too, instead of echoing the raw
+  envelope. `/status` sections lost the spare blank lines between a heading and its table.
+- The delegation bracket is now a pair of full-width rule dividers in the same family as the
+  turn-end line: the start marker and the finish of a successful send or reset each render as a
+  gray rule carrying a yellow label (`worker · provider/model · order summary` and
+  `worker done · steps · elapsed · tokens in/out · files`, or `worker reset · context cleared`),
+  with the order summary capped at 60 characters and the file list at 48; when the worker touched
+  no files the files segment is omitted from the done label instead of reading `(none)`. Without a
+  wired UI the
+  old `[worker] ▶` / `[worker] ◀` log lines remain, and the finish block still previews the
+  worker's answer and its stored key.
+- The `Delegate` description now leads with when to delegate: bounded, verifiable work you can
+  spec in one order, bought for context hygiene and the worker's model, never speed; small work,
+  open exploration, and the heart of the current request stay in the parent session, since
+  writing the order and reviewing the result cost about as much as doing the work.
+- `Delegate` send confirmation now shows an approval brief under the prompt: the title, an
+  excerpt of the first 12 order lines (with a trailing "… N more lines" when the order is longer),
+  any explicit `language`/`max_steps`, and a `worker:` line reading the effective
+  provider/model/effort/api. The send prompt accepts `c` (or the whole word `config`) to open a
+  small configuration loop — provider/model/effort/api with `off`/`default` clearing, each change
+  live-applied to a running worker — that returns to a redrawn brief before confirming. A
+  `c`-prefixed reason sentence never opens the loop: only a whole-line exact `c`/`config` does.
+- The `[worker]` section and `/worker api [API]` now set a `worker.api` protocol override
+  (`auto|chat|responses|anthropic`, empty = inherit the provider entry's own protocol); the live
+  worker's entry is refreshed the same way `/worker model|reason` already did. The three
+  copy-on-write refresh blocks behind `/worker provider|model|reason|api` are now one shared
+  helper, `refresh_worker_entry`.
+- The one-time per-task Delegate authorization is retired: the confirm prompt's `a` key and
+  `/worker auto on|off` are gone, so every `Delegate` send asks again (still even under `yolo`),
+  and the task-boundary reset hooks that cleared the flag are removed with it.
+- The system prompt's SCOPE now gates action on intent: discussion -- questions, opinions,
+  proposals -- is answered only, action does exactly what was instructed, ambiguity between the
+  two resolves to discussion, and a reply that rejects or narrows a proposal approves only what
+  it explicitly accepts.
+- The `Delegate` send finish block now shows what that delegation cost: the envelope records the
+  worker's prompt/completion token delta for the send (the program subtracts `worker.usage` before
+  and after the run, never the model's word), and the summary line renders it as e.g.
+  `8.2K in / 1.3K out`. Envelopes written before the `tokens` attribute still parse and simply
+  omit the token part.
+- The delegation start divider now reads `worker start · provider/model · order summary` instead
+  of `worker · provider/model · order summary`.
+- `/status` is back to markdown table rendering: the common workspace/session/goal/runtime rows
+  lead with no `Common` heading, then the `### Parent` and `### Worker` headings introduce the two
+  sections. The dense borderless-rendering experiment is removed.
+- `/status` renders compact: the command path passes a new `compact` flag to `emit_answer` that
+  drops every invisible line — the blank line rich markdown pads after each heading plus the
+  whitespace rows above and below each table box — so each heading sits tight against its table.
+- `Delegate` reset is no longer a full-width `worker reset · context cleared` rule. It is a
+  one-shot tool call, so it keeps its ordinary tool root and a plain `done` child stating what it
+  cleared and what survives; the delegation bracket (start + done dividers) applies only to sends.
+- The `Delegate` start and done dividers now show a human-readable title: `send` accepts an
+  optional `title` parameter, and when given it replaces the order-first-line summary on the start
+  divider and leads the `worker done · steps · …` label; without one the dividers fall back to
+  the order's first line as before.
+
+### Added
+- New `[worker]` config section and the `Delegate` tool: the model can hand a bounded task to a
+  second in-process minacode session (the worker) that runs on its own configured provider, with its
+  own system prompt and a reduced tool set, keeping context across delegations until reset. Enable
+  with `[worker] provider = "..."` plus `runtime.worker = true` (or `/worker on`); `[worker]
+  provider` defaults to disabled, and the spec suggests a different vendor than `provider.active` so
+  the worker's reviews cross-validate the parent's. `Delegate` actions: `send` (with a free-text
+  order and optional `max_steps`), `reset`, `status`. `runtime.worker` gates the tool block and thus
+  the prompt-cache scope; turning it off does not clear the worker's context. `/worker` shows status
+  and `/worker reset` clears the worker and tells the parent model via a session event.
+- `/worker` now switches the worker's provider, model, and reasoning effort at runtime, mirroring
+  the parent's `/provider` `/model` `/reason` temporary switches: `/worker provider NAME` re-targets
+  the worker (`/worker provider off` clears the entry), `/worker model MODEL` and
+  `/worker reason EFFORT` override the entry's model and reasoning effort, and `default` clears a
+  model/reasoning override back to inheriting the entry's value. A change applies to a live worker
+  immediately and to future spawns, and is session-scoped like `/provider`; the same defaults can
+  be set persistently with the new `[worker] model` and `[worker] reasoning` keys. The `Delegate`
+  tool block is fixed at session start, so a runtime switch tunes an already-enabled delegation but
+  never flips the tool block mid-session, and enabling delegation from scratch (no `[worker]
+  provider` at start) takes effect after a restart. The worker's active provider entry is now always
+  a detached copy, so a switch can never leak into the parent's provider.
+- A finished `Delegate send` now renders as a proper log block: the root line reads `Delegate
+  send` (no argument blob), a summary line reports steps, elapsed, files, and a stopped-at-max-steps
+  flag, and the worker's answer is previewed below like a Bash transcript — the raw envelope tags
+  stay out of the log.
+- The log now marks where a delegation starts: a yellow `[worker] ▶ provider/model · order` line
+  is emitted just before the worker runs (the order collapsed to one line, 200 chars), so the
+  scrollback has a boundary until the finish block closes it.
+- `/worker` (no arguments) now answers in readable lines instead of the raw `Delegate` status
+  envelope the model sees: one line per fact (provider/model, reasoning, state, rounds, context
+  percent), or `worker: no active session` plus the configured `[worker] provider` when no worker
+  exists. The model-facing `Delegate status` envelope is unchanged.
+- `/worker provider`, `/worker model`, and `/worker reason` without an argument now open the same
+  pickers as `/provider` `/model` `/reason` (provider entries plus `off`, the worker entry's
+  models plus `default`, reasoning efforts plus `default`), and `/worker` tab-completes its
+  subcommands and their values.
+- `/worker provider` without an argument now flows on into the worker model and then the
+  reasoning pickers after the provider is set, mirroring the parent's `/provider` chain, so a
+  fresh worker setup is one selection flow instead of three commands; backing out of any stage
+  keeps the stages already set and the returned message says what landed. The typed
+  `provider NAME` still sets only the provider, and the worker keeps the provider entry's `api`
+  — there is no `/worker api`.
+- `Delegate` send accepts an optional `language`: the user watches the worker's live stream and
+  reads its report, so the tool appends an explicit reply-language directive to the order covering
+  everything the worker outputs, not just the final answer. The tool description tells the parent
+  to pass the user's language unless the user works in English.
+
+- `/status` is now one flat table instead of three stacked ones. The `### Parent` / `### Worker`
+  headings and the two repeated header rows are gone; the worker's facts join the same table under
+  `worker`, `worker ctx`, and `worker cache` labels, collapsing to a single `worker` row naming the
+  configured `[worker] provider` when no worker session exists. The header column is `field` rather
+  than `status`, and the `cache` row reports read ratios (`last 99.9% (w 1.2K); session 83.4%`)
+  instead of the raw token pairs that made it the one row long enough to wrap.
 
 ### Fixed
+- Fix `chat_reasoning = "enable_thinking"` sending a `thinking_budget` that a configured
+  `provider.max_tokens` cannot cover: these hosts fold `max_tokens` into `max_completion_tokens`
+  and reject a budget that is not strictly below it (`max_completion_tokens [16384] must be
+  greater than thinking_budget [16384]`), so `max_tokens = 16384` with `reasoning = "xhigh"` or
+  `"max"` failed every request. The budget now stays under the cap, the same clamp the Anthropic
+  wire already applied; an unset `max_tokens` still leaves the budget to the host.
+- Fix running-mode Ctrl-P/Up being a no-op while the input box holds text: the old handler
+  returned after `cursor_up()`, which does nothing on a single-line buffer, so history recall and
+  queued follow-up recall both silently failed whenever the draft was non-empty. The key now
+  behaves like it does with an empty box: recall the latest queued follow-up first, otherwise
+  walk history.
+- Fix a worker crash when the worker model emitted text beside a tool call: the worker's output
+  wrapper assumed every Agent emission was a LogLine and built `LogBlock([str])`, which
+  `LogBlock.walk` rejects with `'str' object has no attribute 'walk'` at render time. Bare strings
+  are now wrapped into LogLine items before reaching the parent's log stream.
+- Wire the worker's model stream into the parent's live display: `ModelClient` only streams when
+  `on_stream` is set, so the worker ran unstreamed and its reasoning and response progress never
+  reached the CLI. Delegations now reuse the parent's stream preview.
+- Make `/worker reset` finish the worker runtime it discards: stop and clean up its background
+  jobs, remove a disk-only worker after the parent is resumed, and keep the live worker reachable
+  with an actionable error if its snapshot cannot be deleted. This prevents orphaned processes and
+  prevents a reported reset from silently restoring the old context on the next delegation.
+- Ignore `/resend` during an automatic retry countdown, when no model request is in flight, and
+  preserve a resend that races the start of that wait as a retry instead of cancelling the turn.
+- Expire a worker in the same retention sweep as its expired parent regardless of directory scan
+  order, so a fresh subordinate snapshot cannot survive as a hidden orphan.
+- Reject non-integer or non-positive `Delegate.max_steps` values at the tool boundary instead of
+  running an empty worker turn with an invalid budget.
 - Estimate request tokens from UTF-8 bytes instead of characters (4 bytes/token), so CJK-heavy
   sessions are no longer undercounted about 3x: the status bar could show 100% while the next request
   was still estimated under budget and auto-compaction never fired. ASCII payloads estimate exactly
@@ -18,6 +194,15 @@
   Compaction clears the recorded last-* usage (the compaction request's own fill would otherwise be
   mistaken for a full ordinary context and double-compact the just-shrunk history); the status bar
   falls back to the local estimate until the next ordinary request reports real usage.
+- The delegation finish block's root line is now a pure closing divider `[worker] ◀` for both
+  `Delegate` send and reset: the action name no longer crowds the boundary, and the details — the
+  steps/elapsed/files summary or the reset notice — live in the child lines.
+- Worker mid-turn text no longer repeats in the TUI: the worker's model stream
+  now forwards to the parent's live display with `output_done` downgraded to a
+  preview clear, because the worker's own output already lands in the parent
+  scrollback and the parent loop's promote would write it a second time (the
+  promoted-text marker is consumed only by the parent's own agent output path).
+  Final reports and non-TUI output are untouched.
 
 
 ## 0.20.0 - 2026-08-03

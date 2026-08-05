@@ -861,6 +861,34 @@ def test_tui_running_recall_removes_latest_pending_message(recall_key):
     assert app.input_buffer.text == "second"
 
 
+def test_tui_running_recall_with_draft_walks_history_when_nothing_queued(monkeypatch):
+    recalled = []
+
+    def recall():
+        recalled.append(True)
+        return ""
+
+    app = TuiApp(on_recall=recall)
+    app.set_running("working")
+    app.input_buffer.reset(Document("draft text"))
+    bindings = app.make_bindings()
+    event = type("Event", (), {"current_buffer": app.input_buffer, "arg": 1})()
+    handler = next(binding.handler for binding in reversed(bindings.bindings) if binding.keys == (Keys.Up,) and binding.filter())
+
+    auto_up = []
+    cursor_up = []
+    monkeypatch.setattr(app.input_buffer, "auto_up", lambda count=1: auto_up.append(count))
+    monkeypatch.setattr(app.input_buffer, "cursor_up", lambda: cursor_up.append(True))
+
+    handler(event)
+
+    # A draft must not short-circuit the recall handler: it still tries the queued
+    # follow-up first, and walks history (auto_up) when none is queued.
+    assert recalled == [True]
+    assert auto_up == [1]
+    assert cursor_up == []
+    assert app.input_buffer.text == "draft text"
+
 def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):
     app = TuiApp()
     selected = {"index": 0}
@@ -1229,3 +1257,16 @@ def test_quick_hint_mode_change_resets_focus():
     app.quick_hint_focus = 2
     app.set_running("working")
     assert app.quick_hint_focus == -1
+
+
+def test_model_retry_wait_status_labels_live_phase(tmp_path):
+    """The model's retry-wait hook is wired to the live phase label: the wait shows as its own
+    phase ("retrying") and returns to "working" when it ends."""
+    command_loop = loop(tmp_path)
+    transitions = []
+    command_loop.tui = SimpleNamespace(set_running=transitions.append)
+    assert command_loop.agent.model.on_retry_wait == command_loop.model_retry_wait_status
+
+    command_loop.agent.model.on_retry_wait(True)
+    command_loop.agent.model.on_retry_wait(False)
+    assert transitions == ["retrying", "working"]

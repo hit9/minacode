@@ -23,6 +23,7 @@ from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
     PREVIOUS_CONTEXT_TRIMMED,
+    language_directive,
 )
 from minacode.prompts import (
     compaction_input as format_compaction_input,
@@ -68,8 +69,14 @@ class ContextManager:
         self.on_compaction: Callable[[bool], None] | None = None
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
+        content = base_system.strip()
+        # A forced reply language appends one fixed block to the system tail: stable text that
+        # depends only on the value, so the cacheable system prefix is unchanged.
+        directive = language_directive(self.session.settings.language)
+        if directive:
+            content += "\n\n" + directive
         messages: list[Json] = [
-            {"role": "system", "content": base_system.strip()},
+            {"role": "system", "content": content},
             {"role": "user", "content": "--- Environment ---\n" + (self.environment() or "(empty)")},
         ]
         for context in (self.skills_context(), self.mcp_tools_context()):

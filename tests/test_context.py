@@ -16,7 +16,7 @@ from minacode.base import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.loop import CommandLoop
-from minacode.prompts import COMPACTION_SUMMARY_TITLE
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment
 from minacode.skill import SkillLibrary
@@ -43,6 +43,37 @@ def test_model_messages_are_ordered_context_messages(tmp_path):
     assert [message["content"] for message in messages[4:]] == ["current request", "extra one", "extra two"]
     assert [message["content"] for message in turn] == ["current request", "extra one", "extra two"]
     assert not any("FILE STATE" in message["content"] for message in messages)
+
+
+def test_language_auto_injects_nothing_byte_identical(tmp_path):
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})  # no skills: assert the base frame
+    turn = [{"role": "user", "content": "request"}]
+    messages = ContextManager(s).model_messages(SYSTEM_PROMPT, turn)
+
+    assert messages[0]["content"] == SYSTEM_PROMPT.strip()
+    assert messages[1]["content"].startswith("--- Environment ---")
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+
+
+def test_language_directive_appends_stable_block_to_system_tail(tmp_path):
+    s = session(tmp_path)
+    turn = [{"role": "user", "content": "request"}]
+    context = ContextManager(s)
+    auto_messages = context.model_messages(SYSTEM_PROMPT, turn)
+
+    s.settings.language = "Chinese"
+    forced_messages = context.model_messages(SYSTEM_PROMPT, turn)
+
+    assert forced_messages[0]["content"].startswith(SYSTEM_PROMPT.strip())
+    assert forced_messages[0]["content"].endswith("commands verbatim.")
+    assert "LANGUAGE OVERRIDE:" in forced_messages[0]["content"]
+    assert "Chinese" in forced_messages[0]["content"]
+    assert forced_messages[0]["content"].count("LANGUAGE OVERRIDE:") == 1
+    # only the system tail changes: everything after it is byte-identical to the auto request
+    assert forced_messages[1:] == auto_messages[1:]
+    # the block is a pure function of the value: repeated projections are identical
+    assert context.model_messages(SYSTEM_PROMPT, turn) == forced_messages
 
 
 def test_environment_uses_cached_system_info(tmp_path, monkeypatch):

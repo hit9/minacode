@@ -29,6 +29,9 @@ minacode 即原来的 nanocode。它最初是一个小到可以称作 *nano* 的
 
 ## 亮点
 
+- **Worker 委派：** 通过 `/worker` 把一个有边界的任务交给另一个运行在自己 provider 上的进程内 session；`Delegate` 工具会在多次委派间保留 worker 上下文，直到重置。
+- **强制回复语言：** `/language` 或 `[runtime] language` 锁定本 session 的回复语言。
+- **更智能的重试：** 带抖动的指数退避，并遵循 provider 的 `Retry-After`，以带倒计时的实时 `retrying` 阶段展示。
 - **Prompt-cache 友好：** 稳定的请求前缀让支持缓存的 provider 复用计算，缓存命中率可达 90–99%；`/status` 会显示 provider 返回的实际结果。
 - **代码导航：** 通过可搜索的代码索引跳转到定义、调用者和实现。
 - **实时追加指令：** agent 工作时仍可输入；`Enter` 将消息排入下一次模型调用，`Ctrl-C` 先清除草稿，输入为空时中断当前任务。

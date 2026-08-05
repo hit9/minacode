@@ -726,8 +726,14 @@ def test_resend_command_only_resends_while_running(tmp_path):
     command_loop.command("/resend")
     assert retried == []
 
-    # Running with a model call in flight: resends via on_retry.
+    # Backoff countdown: there is no request in flight to resend.
     command_loop.session.state.current_model_call_started_at = 1.0
+    command_loop.session.state.model_retry_until = 2.0
+    command_loop.command("/resend")
+    assert retried == []
+
+    # Running with a model call in flight: resends via on_retry.
+    command_loop.session.state.model_retry_until = 0.0
     command_loop.command("/resend")
     assert retried == [True]
 
@@ -740,6 +746,12 @@ def test_manual_resend_preserves_stream_driven_status(tmp_path, monkeypatch):
     runtime = TuiRuntime(command_loop)
     monkeypatch.setattr(runtime, "_interrupt_active", lambda _cancel: None)
 
+    command_loop.session.state.model_retry_until = 2.0
+    runtime._request_model_retry()
+    assert command_loop.session.state.manual_model_retry_requested is False
+    assert command_loop.session.state.model_retry_count == 0
+
+    command_loop.session.state.model_retry_until = 0.0
     runtime._request_model_retry()
 
     assert command_loop.tui.status_label == "working"
@@ -799,6 +811,43 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
 
     command_loop.session.state.current_model_call_started_at = 0.0
     assert all(text != "● " for _style, text in command_loop.queue_divider_fragments())
+
+
+def test_retry_divider_shows_full_retry_text_while_waiting(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop.tui.set_running("retrying")
+    command_loop.status_bar.started_at = 90.0
+    command_loop.session.state.current_model_call_started_at = 99.0
+    now = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    command_loop.session.state.current_model_attempt = 3
+    command_loop.session.state.model_retry_reason = "server error"
+    command_loop.session.state.model_retry_count += 1
+    command_loop.session.state.model_retry_until = now[0] + 20.0
+    # Sync the notice tracker with the fresh retry count the way the render thread would, then
+    # let the two-second notice expire while the wait itself is still in progress.
+    command_loop.status_bar.retry_notice_active()
+    command_loop.status_bar.retry_notice_until = 0
+
+    waiting = command_loop.queue_divider_fragments()
+    waiting_text = "".join(text for _style, text in waiting)
+    assert "retrying 3/6 · server error · 20s" in waiting_text
+
+    # Core fix: an in-flight wait keeps the full text even after the two-second notice window
+    # expired, because a long backoff wait can outlast that window entirely.
+    still_waiting = command_loop.queue_divider_fragments()
+    still_text = "".join(text for _style, text in still_waiting)
+    assert "retrying 3/6 · server error · 20s" in still_text
+
+    # Once the wait ends, the divider falls back to the retrying phase label with the attempt
+    # suffix (no reason, no countdown) and never claims the agent is working.
+    command_loop.session.state.model_retry_until = 0
+    after = command_loop.queue_divider_fragments()
+    after_text = "".join(text for _style, text in after)
+    assert "retrying · attempt 3/6" in after_text
+    assert "working" not in after_text
 
 
 def test_tui_activity_uses_transient_cancelling_status(tmp_path):
@@ -946,17 +995,20 @@ def test_input_history_trim_cuts_only_at_an_entry_boundary(tmp_path):
     # A cut inside an entry would leave a partial first line; the survivor must start with a header.
     with open(path, "rb") as file:
         assert file.read(2) == b"# "
-    text = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as file:
+        text = file.read()
     assert all(line.startswith(("#", "+")) for line in text.splitlines() if line)
 
 
 def test_input_history_under_the_cap_is_left_alone(tmp_path):
     path = history_file(tmp_path / "history.txt", 10)
-    before = open(path, "rb").read()
+    with open(path, "rb") as file:
+        before = file.read()
 
     CommandLoop.trim_input_history(str(path))
 
-    assert open(path, "rb").read() == before
+    with open(path, "rb") as file:
+        assert file.read() == before
 
 
 def test_input_history_trim_survives_a_missing_or_odd_file(tmp_path):

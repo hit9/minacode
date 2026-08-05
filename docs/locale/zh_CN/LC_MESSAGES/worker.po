@@ -1,0 +1,196 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the minacode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: minacode 0.20\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-05 01:37-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../worker.md:2
+msgid "Worker delegation"
+msgstr "Worker 委派"
+
+#: ../../worker.md:4
+msgid ""
+"A **worker** is a second minacode session running **in the same "
+"process**. When the model recognizes a bounded task that deserves an "
+"independent look — a review, a refactor, a second opinion — it hands the "
+"task to the worker with the `Delegate` tool. The worker runs on its own "
+"configured provider, with its own system prompt and a reduced tool set, "
+"and keeps its context across delegations until you reset it. It never "
+"calls back into the parent: every delegation is a serial detour whose "
+"result comes back to the parent model."
+msgstr ""
+"**worker** 是运行在**同一进程内**的第二个 minacode "
+"会话。当模型发现某个有边界的任务值得独立审视——审查、重构、第二意见——它会通过 `Delegate` 工具把任务交给 worker。worker"
+" 运行在自己配置的 provider "
+"上，使用自己的系统提示和精简的工具集，并在各次委派之间保留上下文，直到你重置它。它永远不会反向调用父级：每次委派都是一次串行绕行，其结果交还给父模型。"
+
+#: ../../worker.md:11
+msgid ""
+"The design's main motivation is pairing models by cost: a large, capable "
+"model orchestrates as the parent, while the worker — whose tasks are "
+"bounded and spec'd — runs on a small, cheap one, so the tokens a "
+"delegation burns cost a fraction of the parent's rate."
+msgstr "这一设计的主要初衷是按成本搭配模型：一个大而强的模型作为父级负责编排，而任务有界、有 spec 的 worker 跑在一个小而便宜的模型上——一次委派所烧的 token 只相当于父级费率的一小部分。"
+
+#: ../../worker.md:15
+msgid "Quick start"
+msgstr "快速上手"
+
+#: ../../worker.md:17
+msgid ""
+"The parent orchestrates, so it usually runs the larger model; the worker "
+"runs bounded tasks, so a faster, cheaper entry is enough for it — ideally"
+" from a **different vendor** than `provider.active`, so its reviews "
+"cross-validate the parent's. Point `[worker] provider` at that entry and "
+"turn on `[runtime] worker`:"
+msgstr ""
+"父级负责编排，所以通常跑更大的模型；worker 跑有界任务，一个更快、更便宜的条目就"
+"够用——最好与 `provider.active` 来自**不同厂商**，这样它的审查能与父级互相验证。把 "
+"`[worker] provider` 指向该条目并打开 `[runtime] worker`："
+
+#: ../../worker.md:47
+msgid ""
+"On the first run you will see the model call `Delegate` with an `order` "
+"it wrote itself, you approve the send, and the worker takes over: a "
+"yellow bracket opens in the terminal, its progress replaces the parent's "
+"row in the status bar, and its final answer comes back to the parent "
+"model, which decides what to do next. The worker also inherits the "
+"session's language setting (`[runtime] language` or `/language`) on every"
+" send."
+msgstr ""
+"首次运行你会看到模型调用 `Delegate`，携带它自己写的 `order`；你批准发送后 worker "
+"接管：终端里出现一条黄色的分界规则，状态栏里它的进度取代父级那一行，最终答案交还给父模型，由它决定下一步。worker "
+"还会在每次发送时继承会话的语言设置（`[runtime] language` 或 `/language`）。"
+
+#: ../../worker.md:53
+msgid ""
+"`/worker` shows the worker's status, `/worker on` and `/worker off` "
+"toggle delegation for the session, and `/worker reset` clears the "
+"worker's context. `/worker provider NAME`, `/worker model MODEL`, "
+"`/worker reason EFFORT`, and `/worker api API` re-target a live worker "
+"immediately and future spawns, mirroring the parent's `/provider` "
+"`/model` `/reason` `/api` switches; `default` clears an override back to "
+"inheriting the provider entry. See [Commands](commands.md) for the full "
+"syntax."
+msgstr ""
+"`/worker` 显示 worker 的状态，`/worker on` 和 `/worker off` 切换本次会话的委派，`/worker "
+"reset` 清空 worker 的上下文。`/worker provider NAME`、`/worker model "
+"MODEL`、`/worker reason EFFORT` 和 `/worker api API` 会立即重新定向当前存活的 worker "
+"并影响之后的生成，对应父级的 `/provider` `/model` `/reason` `/api` 临时切换；`default` "
+"清除覆盖，恢复继承 provider 条目。完整语法见[命令](commands.md)。"
+
+#: ../../worker.md:60
+msgid "What you see"
+msgstr "你会看到什么"
+
+#: ../../worker.md:62
+msgid "The delegation bracket"
+msgstr "委派分界规则"
+
+#: ../../worker.md:64
+msgid ""
+"Two full-width rules bracket a delegation: a yellow `worker start` rule "
+"with the worker's live provider and model plus the order's title (or "
+"first line), the worker's streamed lines, then a yellow `worker done` "
+"rule with the step count, elapsed time, tokens in and out, and the files "
+"it touched."
+msgstr ""
+"两条全宽规则框住一次委派：一条黄色的 `worker start` 规则，带 worker 当前的 provider、模型和 order "
+"标题（或首行）；接着是 worker 的流式输出行；最后是一条黄色的 `worker done` 规则，带步骤数、耗时、输入输出 token "
+"数和它改动的文件。"
+
+#: ../../worker.md:71
+msgid "Status bar while delegating"
+msgstr "委派期间的状态栏"
+
+#: ../../worker.md:73
+msgid ""
+"While the worker runs, the status bar swaps the parent's row for the "
+"worker's: a `[worker]` marker, then the worker's provider and model, its "
+"reasoning effort, and its context fill with cache ratio."
+msgstr ""
+"worker 运行时，状态栏把父级那一行换成 worker 的：一个 `[worker]` 标记，然后是 worker 的 provider "
+"与模型、它的推理力度，以及它的上下文占用与缓存比例。"
+
+#: ../../worker.md:79
+msgid "The send approval brief"
+msgstr "发送审批简报"
+
+#: ../../worker.md:81
+msgid ""
+"Every `Delegate send` asks for approval, even under `yolo` — the "
+"confirmation prints the title, a one-line excerpt of the order, any "
+"explicit `language` or `max_steps`, and the effective worker "
+"provider/model/effort/api, with `(inherit)` marking a field that inherits"
+" the provider entry's value. `c` opens a small loop that adjusts those "
+"worker settings before you decide; a refused send feeds your reason back "
+"to the model."
+msgstr ""
+"每次 `Delegate send` 都需要审批，即使在 `yolo` 下也一样——确认会打印标题、order 的单行摘录、任何显式的 "
+"`language` 或 `max_steps`，以及生效的 worker "
+"provider/model/effort/api，`(inherit)` 标记表示该字段继承 provider 条目的值。`c` "
+"打开一个小循环，在决定前调整这些 worker 设置；被拒绝的发送会把你的理由反馈给模型。"
+
+#: ../../worker.md:89
+msgid "Semantics"
+msgstr "语义"
+
+#: ../../worker.md:91
+msgid ""
+"**Reset drops the conversation, not the work.** The worker owns only its "
+"conversation; `/worker reset` (or a `Delegate reset` call) clears that "
+"conversation — and the wrong beliefs it may have accumulated — on "
+"purpose, while file changes and merged diffs always survive."
+msgstr ""
+"**重置丢弃的是对话，不是成果。** worker 只拥有它的对话；`/worker reset`（或一次 `Delegate reset` "
+"调用）刻意清空这段对话——连同它可能积累的错误认知——而文件改动和已合并的 diff 始终保留。"
+
+#: ../../worker.md:94
+msgid ""
+"**Snapshots belong to the parent.** A worker's session id is the parent's"
+" with a `.w` suffix; worker snapshots are never listed in `/sessions`, "
+"and when the parent's snapshot expires its orphaned workers expire with "
+"it."
+msgstr ""
+"**快照从属于父级。** worker 的会话 id 是父级 id 加 `.w` 后缀；worker 快照永远不会出现在 `/sessions` "
+"列表里，当父级快照过期时，孤儿的 worker 也随之一并过期。"
+
+#: ../../worker.md:97
+msgid ""
+"**The tool block is frozen at session start.** The `Delegate` tool block "
+"is fixed from `[worker] provider` when the session begins, protecting the"
+" prompt-cache scope: changing the provider mid-session tunes an already-"
+"enabled delegation, but enabling delegation from scratch (provider unset "
+"at start) takes effect after a restart."
+msgstr ""
+"**工具块在会话开始时冻结。** `Delegate` 工具块在会话开始时由 `[worker] provider` 固定，以保护 prompt "
+"缓存的作用域：运行中切换 provider 只会调优已启用的委派，而从头启用委派（开始时未设置 provider）需要重启后才会生效。"
+
+#: ../../worker.md:101
+msgid ""
+"**Sends are confirmed even under `yolo`.** The order is a spec the model "
+"wrote for itself, and the approval brief is the one cheap check on it — "
+"every send asks."
+msgstr "**即使在 `yolo` 下也会确认发送。** order 是模型为自己写的规格，审批简报是对它的唯一廉价检查——每次发送都会询问。"
+
+#: ../../worker.md:103
+msgid ""
+"**The worker inherits your environment.** It shares the parent's cwd, "
+"skills, MCP servers, and language setting; only files and the repository "
+"truly belong to both."
+msgstr "**worker 继承你的环境。** 它共享父级的 cwd、技能、MCP 服务器和语言设置；只有文件和仓库真正属于双方。"
+

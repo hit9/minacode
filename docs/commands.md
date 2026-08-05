@@ -84,6 +84,32 @@ this off permanently.
 
 **`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 
+**`/worker [status|reset|on|off|provider|model|reason|api]`** — Inspect or control the worker session:
+`status` (default) reports readable lines — provider/model, reasoning, state, rounds, context
+percent — or `worker: no active session` plus the configured `[worker] provider` when no worker
+exists; `on`/`off` toggle the `runtime.worker` setting, and `reset` clears the worker's context
+(file changes and merged diffs survive). `provider` opens a picker over the provider entries —
+with `off` at the end to clear — and choosing one flows on into the worker model and then the
+reasoning pickers, mirroring `/provider`'s chain (backing out of any stage keeps the earlier
+stages already set); `provider NAME` re-targets the worker immediately and for future spawns
+without the cascade, while `provider off` clears the entry. `model`, `reason`, and `api` pick
+from the worker's entry models, reasoning efforts, and wire protocols (`auto`, `chat`,
+`responses`, `anthropic`), with `default` clearing an override back to inheriting the
+provider entry's value; tab completion offers the subcommands and their values. The `Delegate`
+tool block is fixed when the session starts — see [Worker
+delegation](worker.md#worker-delegation).
+
+A `Delegate send` is confirmed even under `yolo` — the approval brief is the one cheap check on a
+spec the model wrote for itself; see [Worker delegation](worker.md#worker-delegation). Every
+send asks, and a refused send feeds your reason back to the model.
+
+**`/language [NAME]`** — Show or force the session's reply language. Without an argument it
+prints the current value (`auto` by default). With a name like `Chinese` it appends one fixed
+`LANGUAGE OVERRIDE` block to the tail of the system prompt, so the cacheable prompt prefix
+stays unchanged; `auto` follows your messages and injects nothing. The setting is per-session —
+it is not written back to the configuration file — and workers inherit it from the parent on
+every `Delegate` send.
+
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
 used to reach the model. `/provider` and `/model` also confirm it as a step in their selection
 chain, since the right protocol depends on the model you just picked.

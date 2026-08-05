@@ -29,6 +29,9 @@ minacode is the former nanocode. It started as a single-file agent small enough 
 
 ## Highlights
 
+- **Worker delegation:** hand a bounded task to a second in-process session on its own provider with `/worker`; the `Delegate` tool keeps worker context across delegations until reset.
+- **Forced reply language:** `/language` or `[runtime] language` pins the reply language for the session.
+- **Smarter retries:** exponential backoff with jitter and provider `Retry-After`, shown as a live `retrying` phase with a countdown.
 - **Prompt-cache aware:** stable request prefixes let supported providers reuse work and can reach 90–99% cache hit rates; `/status` shows the reported result.
 - **Code navigation:** jump to definitions, callers, and implementations with a searchable code index.
 - **Live follow-ups:** type while the agent works; `Enter` queues a message for the next model step, while `Ctrl-C` discards a draft or interrupts the task once the input is empty.

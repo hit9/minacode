@@ -23,7 +23,6 @@ from minacode.model import ModelClient, PreparedRequest
 from minacode.prompts import (
     INTERRUPT_MARKER,
     LIVE_FOLLOWUP_PREFIX,
-    SYSTEM_PROMPT,
 )
 from minacode.runner import ToolRunner
 from minacode.session import QueuedInput, Session
@@ -66,6 +65,9 @@ class Agent:
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
+        # Set when the last run ended because max_steps ran out (not because the model answered).
+        # Runtime fact for callers like the Delegate tool; never derived from the answer's wording.
+        self.stopped_at_max_steps = False
         # Called with the queued messages when they are flushed into the turn, so the UI can move
         # them from the live queue region up into the scrollback log. Set by CommandLoop.
         self.on_queue_flush: Callable[[list[str]], None] | None = None
@@ -81,6 +83,7 @@ class Agent:
 
     def run(self, user_input: str | UserInput) -> str:
         self.cancel_requested.clear()
+        self.stopped_at_max_steps = False
         self.turn_sources = []
         self.session.clear_quick_hints()  # a new turn invalidates whatever the previous turn offered
         self.session.state.round_count += 1
@@ -153,6 +156,7 @@ class Agent:
                 self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
+            self.stopped_at_max_steps = True
             self.finish_turn(turn_messages, {"role": "assistant", "content": stopped})
             return stopped
         except KeyboardInterrupt:
@@ -261,9 +265,13 @@ class Agent:
             for call in message.get("tool_calls") or []:
                 call_id = call.get("id")
                 if call_id and call_id not in answered:
-                    turn_messages.append(
-                        {"role": "tool", "tool_call_id": call_id, "content": "Cancelled: the user interrupted before this tool call finished."}
-                    )
+                    if (call.get("function") or {}).get("name") == "Delegate":
+                        # Name who was cancelled and that the worker's context survives: the parent
+                        # cannot see the worker, so the interrupt line is its only notice.
+                        cancelled_text = "Cancelled: the worker's turn was interrupted; its context is kept, reset it with /worker reset."
+                    else:
+                        cancelled_text = "Cancelled: the user interrupted before this tool call finished."
+                    turn_messages.append({"role": "tool", "tool_call_id": call_id, "content": cancelled_text})
                     answered.add(call_id)
         turn_messages.append({"role": "user", "content": INTERRUPT_MARKER})
         self.session.messages.extend(turn_messages)
@@ -273,7 +281,7 @@ class Agent:
         request_turn = [*turn_messages, *(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)]
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
-        messages = self.context.prepare_messages(self.model, SYSTEM_PROMPT, request_turn, tools)
+        messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending)
 

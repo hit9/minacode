@@ -34,7 +34,7 @@ class AskTool(Tool):
     )
     MUTATES = False
     STORES_RESULT = True
-    question_fn: Callable[[AskSpec, str], str] | None = None
+    question_fn: Callable[[list[AskSpec]], list[str]] | None = None
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -42,7 +42,7 @@ class AskTool(Tool):
         question = cls.object_schema({
             "question": {"type": "string", "description": "The question to ask the user"},
             "choices": {"type": "array", "items": {"type": "string"}, "description": "Optional predefined choices the user can pick from"},
-            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview per choice, shown as the user navigates. Make it graphic and concrete, not a restatement of the label: a short code/diff snippet, an ASCII layout or tree, or a file/API shape. Multi-line is fine (use \\n); keep under ~10 lines"},
+            "previews": {"type": "array", "items": {"type": "string"}, "description": "Optional preview per choice, shown as the user navigates. Make it graphic and concrete, not a restatement of the label: a code/diff snippet, an ASCII layout or tree, a table, or a file/API shape. Multi-line is fine (use \\n); the selector renders it as a rich preview panel, so dozens of lines are welcome"},
             "recommended": {"type": "integer", "minimum": 0, "description": "Optional 0-based index of the recommended choice; pre-selected and marked"},
         }, ["question"])
         return cls.object_schema({
@@ -79,14 +79,12 @@ class AskTool(Tool):
             ):
                 raise ToolError(f"{self.NAME} recommended must be a valid 0-based choice index")
             prepared.append(AskSpec(question, choices, previews, recommended))
-        total = len(prepared)
-        answers: list[tuple[str, str]] = []
-        for index, spec in enumerate(prepared):
-            position = f"{index + 1}/{total}" if total > 1 else ""
-            answers.append((spec.question, self.question_fn(spec, position) if self.question_fn else spec.question))
+        # Ask for the whole batch at once (the modal pages through it); fall back to the question
+        # texts when no interactive question function is wired.
+        answers = self.question_fn(prepared) if self.question_fn else [spec.question for spec in prepared]
         if len(answers) == 1:
-            return answers[0][1]
-        return "\n\n".join(f"Q: {q}\nA: {a}" for q, a in answers)
+            return answers[0]
+        return "\n\n".join(f"Q: {spec.question}\nA: {answer}" for spec, answer in zip(prepared, answers))
 
     def short_args(self) -> list[str]:
         questions = self.args[0].get("questions") if self.args and isinstance(self.args[0], dict) else None

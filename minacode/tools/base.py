@@ -66,7 +66,7 @@ class Tool:
     def resolved_schemas(session: Session) -> list[Json]:
         """Return the tool schemas available for this session and provider."""
 
-        from minacode.tools import TOOL_REGISTRY, MCPTool, NextHintsTool, SkillTool  # local import: the registry is built on top of every tool
+        from minacode.tools import TOOL_REGISTRY, DelegateTool, MCPTool, NextHintsTool, SkillTool  # local import: the registry is built on top of every tool
 
         strict = session.config.provider.resolve().strict_tools_active
         # Optional tool families stay out of the model prefix until they have usable session state.
@@ -75,7 +75,11 @@ class Tool:
         return [
             tool.schema(strict)
             for tool in TOOL_REGISTRY.values()
-            if (tool is not SkillTool or has_skills) and (tool is not MCPTool or has_mcp) and (tool is not NextHintsTool or session.settings.quick_hints)
+            if (not session.tool_names or tool.NAME in session.tool_names)
+            and (tool is not SkillTool or has_skills)
+            and (tool is not MCPTool or has_mcp)
+            and (tool is not NextHintsTool or session.settings.quick_hints)
+            and (tool is not DelegateTool or (session.worker_tool_enabled and session.settings.worker))
         ]
 
     @staticmethod
@@ -149,6 +153,15 @@ class Tool:
 
     def needs_confirmation(self) -> bool:
         return self.MUTATES
+
+    def always_confirms(self) -> bool:
+        """True when yolo must not skip this call's confirmation.
+
+        yolo means "I trust you to edit files and run commands": those mistakes are visible in the
+        diff or the command output immediately. A call whose mistake only surfaces a whole round
+        later, and whose prompt is the last chance to inspect what is being committed to, is not
+        covered by that trust and opts out here."""
+        return False
 
     @classmethod
     def log_lexer(cls, _: ToolArgs) -> str:

@@ -31,7 +31,8 @@ from minacode.base import (
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
     SELECTION_BACK,
-    SELECTION_FREE_TEXT,
+    SESSION_EVENT_KEY,
+    Config,
     ConfigError,
     Json,
     LogBlock,
@@ -40,7 +41,9 @@ from minacode.base import (
     LogRole,
     MalformedToolCallError,
     MinacodeError,
+    ModelUsage,
     ProviderConfig,
+    RuntimeSettings,
     Text,
     ToolCall,
     ToolError,
@@ -52,13 +55,14 @@ from minacode.hints import Context as HintContext
 from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX, PREVIOUS_CONTEXT_TRIMMED, SYSTEM_PROMPT
+from minacode.prompts import LIVE_FOLLOWUP_PREFIX, PREVIOUS_CONTEXT_TRIMMED
 from minacode.provider_compat import builtin_tools_issue
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table, search_sources_footer
 from minacode.runner import ToolDisplay
 from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
-from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
+from minacode.tools.delegate import DelegateTool, refresh_worker_entry
+from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
 from minacode.update import UpdateChecker
 
 SetHandler = tuple[str, str, Callable[[str], int | float | None] | None]
@@ -75,18 +79,22 @@ SET_HANDLERS: dict[str, SetHandler] = {
     "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
     "runtime.shell_timeout": ("settings", "shell_timeout", lambda v: max(1, int(v))),
     "runtime.bash_wait_timeout": ("settings", "bash_wait_timeout", lambda v: max(0, int(v))),
+    "runtime.worker": ("settings", "worker", lambda v: v == "on"),
 }
 SET_KEYS = tuple(SET_HANDLERS)
 # Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
 SET_CHOICES: dict[str, tuple[str, ...]] = {
     "provider.stream": ("on", "off"),
     "provider.image_input": IMAGE_INPUT_CHOICES,
+    "runtime.worker": ("on", "off"),
 }
 SET_VALUES: dict[str, tuple[str, ...]] = {
     "provider.temperature": ("off",),
     **SET_CHOICES,
 }
 # fmt: on
+
+WORKER_SUBCOMMANDS = ("status", "reset", "on", "off", "provider", "model", "reason", "api")
 
 
 class CommandCompleter(Completer):
@@ -97,6 +105,7 @@ class CommandCompleter(Completer):
         self,
         providers: Callable[[], tuple[str, ...]] = tuple,
         models: Callable[[], tuple[str, ...]] = tuple,
+        worker_models: Callable[[], tuple[str, ...]] = tuple,
         mcp_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_connected_servers: Callable[[], tuple[str, ...]] = tuple,
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
@@ -104,6 +113,7 @@ class CommandCompleter(Completer):
     ):
         self.providers = providers
         self.models = models
+        self.worker_models = worker_models
         self.mcp_servers = mcp_servers
         self.mcp_connected_servers = mcp_connected_servers
         self.mcp_tools = mcp_tools
@@ -120,6 +130,24 @@ class CommandCompleter(Completer):
             key, _, value = tail.partition(" ")
             yield from self.matches(SET_VALUES.get(key, ()), value)
             return
+        if text.startswith("/worker "):
+            tail = text[len("/worker ") :]
+            if " " not in tail:
+                yield from self.matches(WORKER_SUBCOMMANDS, tail)
+                return
+            sub, _, value = tail.partition(" ")
+            if sub == "provider":
+                yield from self.matches(tuple(dict.fromkeys((*self.providers(), "off"))), value)
+                return
+            if sub == "model":
+                yield from self.matches(self.worker_models(), value)
+                return
+            if sub == "reason":
+                yield from self.matches((*REASONING_CHOICES, "default"), value)
+                return
+            if sub == "api":
+                yield from self.matches((*PROVIDER_API_CHOICES, "default"), value)
+                return
         for command, values in (
             ("/model ", self.models),
             ("/provider ", self.providers),
@@ -171,6 +199,59 @@ class CommandCompleter(Completer):
         return (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
 
 
+def _status_progress_bar(value: int, total: int, width: int = 14) -> str:
+    ratio = min(1.0, max(0.0, value / total)) if total else 0.0
+    eighths = int(ratio * width * 8 + 0.5)
+    full, partial = divmod(eighths, 8)
+    partials = "▏▎▍▌▋▊▉"
+    return "[" + "█" * full + (partials[partial - 1] if partial else "") + "░" * (width - full - bool(partial)) + "]"
+
+
+def _status_token_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return str(value)
+
+
+def _status_render_table(rows: list[tuple[str, str]]) -> str:
+    return "\n".join(
+        [
+            "| field | value |",
+            "| --- | --- |",
+            *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
+        ]
+    )
+
+
+def _status_model_line(config: Config) -> str:
+    active = config.provider
+    return f"`{config.active_provider}/{active.model or '(empty)'}`; `{active.resolve().api}`; `{active.reasoning}`"
+
+
+def _status_context_line(tokens: int, budget: int, percent: int) -> str:
+    return f"`{_status_progress_bar(tokens, budget)}` `~{_status_token_count(tokens)} / {_status_token_count(budget)}` (`{percent}%`)"
+
+
+def _status_cache_line(counts: ModelUsage) -> str:
+    # The read ratios carry the useful signal; the raw token pairs made this the one row that
+    # wrapped on a normal terminal. Writes stay, but only when there were any.
+    def part(label: str, cached: int, prompt: int, written: int) -> str:
+        write = f" (w {_status_token_count(written)})" if written else ""
+        return f"{label} `{cached * 100 / prompt:.1f}%`{write}"
+
+    return " ".join(
+        [
+            f"`{_status_progress_bar(counts.last_cached_prompt_tokens, counts.last_prompt_tokens)}`",
+            part("last", counts.last_cached_prompt_tokens, counts.last_prompt_tokens, counts.last_cache_write_prompt_tokens) + ";"
+            if counts.last_prompt_tokens
+            else "last `n/a`;",
+            part("session", counts.cached_prompt_tokens, counts.prompt_tokens, counts.cache_write_prompt_tokens),
+        ]
+    )
+
+
 class CommandLoop:
     """Own session behavior: read input, dispatch commands, drive turns, and route output.
 
@@ -203,6 +284,7 @@ class CommandLoop:
         "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
         "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict", "/hints": "hints",
         "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command", "/resume": "sessions_command",
+        "/worker": "worker_command", "/language": "language_command",
     }
     COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
     # fmt: on
@@ -239,6 +321,7 @@ class CommandLoop:
 - `/reason [EFFORT]` — Select or set reasoning effort (alias: `/effort`).
 - `/api [API]` — Select or set the request protocol used to reach the model.
 - `/set KEY VALUE` — Set `provider.*` and `runtime.*`.
+- `/language [NAME]` — Force or show the reply language; auto follows your messages.
 - `/yolo` — Toggle tool confirmations.
 - `/hints` — Toggle next-step quick hints.
 - `/strict` — Toggle strict tool-call schemas (OpenAI / DeepSeek).
@@ -331,6 +414,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.input_completer = CommandCompleter(
             providers=lambda: tuple(sorted(self.session.config.providers)),
             models=lambda: self.session.config.provider.available_models,
+            worker_models=lambda: tuple(
+                dict.fromkeys(
+                    (*self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider].available_models, "default")
+                )
+            ),
             mcp_servers=lambda: tuple(config.name for config in self.session.mcp.parse_configs()) if self.session.mcp else (),
             mcp_connected_servers=lambda: (
                 tuple(config.name for config in self.session.mcp.parse_configs() if self.session.mcp.connected(config.name)) if self.session.mcp else ()
@@ -343,16 +431,30 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.model.on_builtin_call = self.builtin_call_output
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
+        self.agent.model.on_retry_wait = self.model_retry_wait_status
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
+        self.agent.tools.model_stream = self.model_stream_output
         self.agent.tools.question_fn = self.question_interaction
+        self.agent.tools.worker_rule = self.ui.emit_worker_rule
+        self.agent.tools.worker_config_picker = self.run_worker_config
+        # Worker agent lifecycle callbacks: delegate.py wires these onto the worker agent when set,
+        # so a worker's retry backoff, provider-side builtin calls, and compaction show in this TUI.
+        self.agent.tools.retry_wait = self.model_retry_wait_status
+        self.agent.tools.builtin_call = self.builtin_call_output
+        self.agent.tools.compaction = self.automatic_compaction_status
 
     def automatic_compaction_status(self, active: bool) -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""
         if self.tui is not None:
             self.tui.set_running("compacting context" if active else "working")
+
+    def model_retry_wait_status(self, active: bool) -> None:
+        """Show a retry backoff wait as a distinct phase instead of claiming the agent is working."""
+        if self.tui is not None:
+            self.tui.set_running("retrying" if active else "working")
 
     @classmethod
     def trim_input_history(cls, path: str) -> None:
@@ -457,20 +559,25 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
 
     def queue_divider_fragments(self, queued: int = 0) -> StyleAndTextTuples:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
-        if status == "working":
+        if status in {"working", "retrying"}:
             retry_status = self.status_bar.retry_status()
             attempt_status = self.status_bar.model_attempt_status()
             with self.model_stream_lock:
                 phase = self.model_stream_kind
             activity = retry_status or (
-                ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or "working") + (" · " + attempt_status if attempt_status else "")
+                ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or status) + (" · " + attempt_status if attempt_status else "")
             )
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:
             label = status
         if queued:
             label = f"{label} [ {queued} queued ]"
-        return self.sweep_divider_fragments(label, prefix=self.waiting_pulse_fragments())
+        prefix = self.waiting_pulse_fragments()
+        worker = self.session.worker
+        if worker is not None and worker._active_turn_messages:
+            # The same in-flight predicate as the status bar's worker marker.
+            prefix = [("class:divider.worker", "[worker] "), *prefix]
+        return self.sweep_divider_fragments(label, prefix=prefix)
 
     def followup_fragments(self) -> tuple[StyleAndTextTuples, StyleAndTextTuples]:
         with self.session._queue_lock:
@@ -718,7 +825,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.session.resumed = False
         # The percent is derived, not persisted, so a resumed session carries a full history with a
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
-        self.agent.context.update_current_tokens(SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         self.emit(f"Restored session: {self.session.uid}")
         if not messages:
@@ -850,6 +957,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 "image.attachment": "ansicyan bold",
                 "input.error": "ansired",
                 "divider.working": "ansimagenta bold",
+                "divider.worker": "ansiyellow bold",
                 "approval": "ansiyellow",
                 "approval.wait": "ansimagenta",
                 "choice.title": "ansicyan bold",
@@ -1058,7 +1166,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
             if name == "/status":
-                self.ui.emit_answer(output, rule=False)
+                self.ui.emit_answer(output, rule=False, compact=True)
             else:
                 (self.ui.emit_answer if name in {"/help", "/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
         # A handler that asked to switch sessions ends this run the way /exit does; `main` starts
@@ -1070,7 +1178,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         typed while a turn works, it re-requests the current model call (same path as on_retry)."""
         if self.tui is None or self.tui.input_mode != "running":
             return "/resend re-requests the current model request — type it while a turn is working."
-        if self.session.state.current_model_call_started_at <= 0:
+        if self.session.state.current_model_call_started_at <= 0 or self.session.state.model_retry_until > 0:
             return "Nothing to resend right now; /resend works while the model is generating."
         self.tui.on_retry()
         return None
@@ -1224,11 +1332,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         disabled: set[str],
         *,
         preview_fn: Callable[[str], str] | None = None,
-        free_text: bool = False,
     ) -> str | object | None:
-        if free_text and self.interactive_input:
-            choices = (*choices, ChoiceViewState.FREE_TEXT)
-            labels = {**labels, ChoiceViewState.FREE_TEXT: "Type freely..."}
         state = ChoiceViewState(choices, labels, disabled)
         options = state.enabled()
         state.selected = options.index(current) if current in options else 0
@@ -1239,53 +1343,49 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             raise result
         return result
 
-    def question_application(self, spec: AskSpec, position: str = "") -> str:
-        """Ask via the shared choice selector, with dynamic previews and a free-text fallback."""
-        choices = spec.choices
-        # Prefix the position (e.g. "(1/3) ...") into the question text so it renders as plain
-        # markdown — no separate styled line, hence no ANSI escapes to mangle.
-        prompt = f"({position}) {spec.question}" if position else spec.question
-        if not choices:
-            return self.tui.request_input("\n" + prompt) if self.tui is not None else self.read_input("\n" + prompt)
-        if not self.interactive_input:
-            return self.read_input("\n" + prompt)
-
-        # Blank separator line before each question so multi-question prompts don't run together.
-        if self.ui.color:
-            self.emit("")
-            self.ui.emit_markdown(prompt)
-        else:
-            self.emit("\n" + prompt + "\n")
-
-        # An optional recommended choice is pre-selected (via current) and marked (via labels),
-        # reusing the selector's existing machinery.
-        labels, current = {}, ""
-        if spec.recommended is not None and 0 <= spec.recommended < len(choices):
-            current = choices[spec.recommended]
-            labels = {current: current + " (recommended)"}
-        previews = spec.previews
-        preview_map = {c: previews[i] for i, c in enumerate(choices) if previews and i < len(previews) and previews[i]}
-        result = self.choice_application(
-            "Select:",
-            tuple(choices),
-            labels,
-            current,
-            set(),
-            preview_fn=lambda choice: preview_map.get(choice, ""),
-            free_text=True,
-        )
-        if result is SELECTION_FREE_TEXT:
-            # The question was already rendered before the choice selector; do not repeat a long
-            # raw prompt when the user switches to free text.
-            self.emit("")
-            return self.tui.request_input("> ") if self.tui is not None else self.read_input("> ")
-        if isinstance(result, str):
-            return result
-        return DISMISSED  # SELECTION_BACK (Esc) — user declined to answer
-
-    def question_interaction(self, spec: AskSpec, position: str = "") -> str:
-        """Entry point for Ask; the final tool log renders the returned answer."""
-        return self.question_application(spec, position)
+    def question_interaction(self, specs: list[AskSpec]) -> list[str]:
+        """Entry point for Ask (the whole batch in one call). With a live TUI the batch runs in a
+        single selector modal -- one page per question, options left, the selected option's rich
+        markdown preview right (below the options on narrow terminals); a free-text page drops to
+        the shared input row mid-flow and the modal reopens for the rest. Headless runs keep the
+        plain per-question text prompts. The final tool log renders the returned answers."""
+        if self.tui is None or not self.interactive_input:
+            return [self.read_input("\n" + spec.question) for spec in specs]
+        state = AskViewState.build(specs)
+        while True:
+            size = shutil.get_terminal_size((120, 24))
+            result = self.tui.show_modal(
+                lambda size=size: state.fragments(size.columns, max(1, size.lines - 6)),
+                state.handle_key,
+            )
+            if result is ASK_DONE:
+                break
+            if isinstance(result, tuple) and len(result) == 2 and result[0] is ASK_FREE_TEXT:
+                index = result[1]
+                prompt = f"({index + 1}/{len(specs)}) {specs[index].question}" if len(specs) > 1 else specs[index].question
+                answer = self.tui.request_input("\n" + prompt)
+                state.picked[index] = answer
+                if all(picked is not None for picked in state.picked):
+                    break  # a free-text answer to the last question submits without re-entering the modal
+                state.active = state.picked.index(None)
+                continue
+            if result is SELECTION_BACK or result is None:
+                return [DISMISSED] * len(specs)
+            if isinstance(result, KeyboardInterrupt):
+                raise result
+            return [DISMISSED] * len(specs)
+        answers: list[str] = []
+        for index, spec in enumerate(specs):
+            picked = state.picked[index]
+            if picked is None:
+                # Unanswered pages should never reach here (ASK_DONE requires the whole batch
+                # answered); defensively cancel rather than leak the question text as an answer.
+                return [DISMISSED] * len(specs)
+            answer = picked
+            if note := state.notes.get(index):
+                answer += "\n\nUser notes: " + note
+            answers.append(answer)
+        return answers
 
     def select_reasoning(self) -> str | object | None:
         current = self.session.config.provider.reasoning
@@ -1312,24 +1412,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return self.HELP_ENTRY_RE.sub(r"  \1  ", text)
 
     def status(self, args: str) -> str:
-        def progress_bar(value: int, total: int, width: int = 14) -> str:
-            ratio = min(1.0, max(0.0, value / total)) if total else 0.0
-            eighths = int(ratio * width * 8 + 0.5)
-            full, partial = divmod(eighths, 8)
-            partials = "▏▎▍▌▋▊▉"
-            return "[" + "█" * full + (partials[partial - 1] if partial else "") + "░" * (width - full - bool(partial)) + "]"
-
-        def token_count(value: int) -> str:
-            if value >= 1_000_000:
-                return f"{value / 1_000_000:.1f}M"
-            if value >= 1_000:
-                return f"{value / 1_000:.1f}K"
-            return str(value)
-
         usage = self.session.usage
-        provider = self.session.config.provider
-        resolved = provider.resolve()
-        context_tokens = self.agent.context.update_current_tokens(SYSTEM_PROMPT)
+        context_tokens = self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         context_budget = self.agent.context.request_token_budget()
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # Display the provider-reported tokens and the budget of the last request; the estimate
@@ -1350,8 +1434,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             index_message = (index_message + "; " if index_message else "") + "run /index"
         elif index_status == "stale" and "run /index" not in index_message:
             index_message = (index_message + "; " if index_message else "") + "run /index or wait for auto update"
-        cache_ratio = (usage.cached_prompt_tokens * 100 / usage.prompt_tokens) if usage.prompt_tokens else 0
-        last_cache_ratio = (usage.last_cached_prompt_tokens * 100 / usage.last_prompt_tokens) if usage.last_prompt_tokens else 0
         connected_mcp = sum(self.session.mcp.connected(config.name) for config in self.session.mcp.parse_configs()) if self.session.mcp else 0
         activity: list[tuple[str, int | str]] = [
             ("history", len(self.session.messages)),
@@ -1365,32 +1447,16 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         running_jobs = len(self.session.running_jobs())
         if self.session.jobs:
             activity.append(("jobs", f"{running_jobs}/{len(self.session.jobs)}"))
+
+        # One flat table: the session's own facts, then the parent's, then the worker's under
+        # `worker*` labels. /status is an explicit query, so the worker rows appear whenever a
+        # worker session exists, in flight or not.
         rows = [
             ("workspace", "`" + self.session.cwd + "`"),
             ("session", "`" + self.session.uid + "`"),
-            (
-                "model",
-                f"`{self.session.config.active_provider}/{provider.model or '(empty)'}`; api `{resolved.api}`; reasoning `{provider.reasoning}`",
-            ),
-            (
-                "context",
-                f"`{progress_bar(context_tokens, context_budget)}` `~{token_count(context_tokens)} / {token_count(context_budget)}` (`{context_percent}%`)",
-            ),
-            (
-                "cache",
-                f"`{progress_bar(usage.last_cached_prompt_tokens, usage.last_prompt_tokens)}` last read `{token_count(usage.last_cached_prompt_tokens)} / {token_count(usage.last_prompt_tokens)} ({last_cache_ratio:.1f}%)`, write `{token_count(usage.last_cache_write_prompt_tokens)}`; "
-                f"session read `{token_count(usage.cached_prompt_tokens)} / {token_count(usage.prompt_tokens)} ({cache_ratio:.1f}%)`, write `{token_count(usage.cache_write_prompt_tokens)}`"
-                if usage.prompt_tokens
-                else "(no requests yet)",
-            ),
         ]
         if self.session.state.goal:
             rows.append(("goal", self.session.state.goal))
-        visible_activity = [(name, value) for name, value in activity if value]
-        if visible_activity:
-            rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
-        if usage.calls:
-            rows.append(("usage", f"calls `{usage.calls}`; total `{token_count(usage.total_tokens)}`"))
         runtime = [
             f"yolo {'on' if self.session.settings.yolo else 'off'}",
             f"steps {self.session.settings.max_steps}",
@@ -1400,13 +1466,33 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if update not in {"current", "unknown"}:
             runtime.append("update " + update)
         rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
-        return "\n".join(
-            [
-                "| status | value |",
-                "| --- | --- |",
-                *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
-            ]
-        )
+
+        rows.append(("model", _status_model_line(self.session.config)))
+        rows.append(("context", _status_context_line(context_tokens, context_budget, context_percent)))
+        rows.append(("cache", _status_cache_line(usage) if usage.prompt_tokens else "(no requests yet)"))
+        visible_activity = [(name, value) for name, value in activity if value]
+        if visible_activity:
+            rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
+        if usage.calls:
+            rows.append(("usage", f"calls `{usage.calls}`; total `{_status_token_count(usage.total_tokens)}`"))
+
+        worker = self.session.worker
+        if worker is None:
+            configured = self.session.config.worker_provider
+            rows.append(("worker", "`off` — `[worker] provider` " + (f"= `{configured}`" if configured else "unset")))
+            return _status_render_table(rows)
+        worker_usage = worker.usage
+        state = f"`{'delegating' if worker._active_turn_messages else 'idle'}`, rounds `{worker.state.round_count}`"
+        rows.append(("worker", _status_model_line(worker.config)))
+        if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
+            percent = min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)
+            context = _status_context_line(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget, percent)
+        else:
+            context = "(no requests yet)"
+        rows.append(("worker ctx", f"{context}; {state}"))
+        if worker_usage.prompt_tokens:
+            rows.append(("worker cache", _status_cache_line(worker_usage)))
+        return _status_render_table(rows)
 
     def skills_command(self, args: str) -> str:
         library = self.session.skills
@@ -1652,6 +1738,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 f"runtime.max_parallel_tools: {self.session.settings.max_parallel_tools}",
                 f"runtime.session_retention_days: {self.session.settings.session_retention_days}",
                 f"runtime.yolo: {'on' if self.session.settings.yolo else 'off'}",
+                f"runtime.worker: {'on' if self.session.settings.worker else 'off'}",
+                f"runtime.language: {self.session.settings.language}",
+                f"worker.provider: {self.session.config.worker_provider or '(off)'}",
+                f"worker.model: {self.session.config.worker_model or '(inherit)'}",
+                f"worker.reasoning: {self.session.config.worker_reasoning or '(inherit)'}",
+                f"worker.api: {self.session.config.worker_api or '(inherit)'}",
             ]
         )
 
@@ -1704,6 +1796,23 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.session.save_snapshot()
         return f"Session named: {name}\nResume with: minacode --resume {shlex.quote(name)}"
 
+    def language_command(self, args: str) -> str:
+        """Force this session's reply language, or show the current one. Session-scoped like other
+        runtime switches: it never touches the config file, and workers inherit it from the parent."""
+        if not args:
+            current = self.session.settings.language
+            if current == "auto":
+                return "Reply language: auto (follows your messages)"
+            return f"Reply language: {current}"
+        try:
+            language = RuntimeSettings.clean_language(args)
+        except ConfigError as error:
+            return str(error)
+        self.session.settings.language = language
+        if language == "auto":
+            return "Reply language reset to auto"
+        return f"Reply language set: {language}"
+
     def compact(self, args: str) -> str:
         if args.strip():
             return "Usage: /compact"
@@ -1732,7 +1841,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 self.status_bar.stop()
         if data is not None:
             self.agent.context.apply_compaction(data, keep, compacted=compacted)
-        self.agent.context.update_current_tokens(SYSTEM_PROMPT)
+        self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         # Compaction rewrites the history in place. Persist it now: leaving the session without
         # running another turn would otherwise resume from the log's pre-compaction state.
         self.session.save_snapshot()
@@ -1902,6 +2011,263 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.session.settings.quick_hints = not self.session.settings.quick_hints
         return "quick hints: " + ("on" if self.session.settings.quick_hints else "off")
 
+    def worker_command(self, args: str) -> str:
+        parts = args.split()
+        subcommand = parts[0].lower() if parts else ""
+        rest = parts[1:]
+        if subcommand == "reset" and not rest:
+            result = DelegateTool(self.session, [{"action": "reset"}]).call()
+            if 'action="reset"' not in result:
+                return result
+            # The parent model does not know the user reset the worker; without this event the next
+            # delegation would write "continue where you left off" against a clean context. Tail
+            # append, ages with compaction, render-hidden, never filtered from the model history.
+            self.session.messages.append(
+                {
+                    "role": "user",
+                    "content": "[Worker context was reset by the user. The next delegation starts from scratch.]",
+                    SESSION_EVENT_KEY: "worker_reset",
+                }
+            )
+            self.session.save_snapshot()
+            if 'alive="false"' in result:
+                return "[worker] reset · no worker session to reset."
+            return "[worker] reset · worker context cleared; file changes and merged diffs kept. The next delegation starts from scratch."
+        if subcommand == "on" and not rest:
+            self.session.settings.worker = True
+            return "worker: on (the tool block changes, so the prompt-cache scope is recompiled once)"
+        if subcommand == "off" and not rest:
+            self.session.settings.worker = False
+            return "worker: off (the worker's context stays on disk; /worker on resumes it)"
+        if subcommand in {"", "status"} and not rest:
+            return self._worker_status()
+        if subcommand == "provider":
+            if len(rest) > 1:
+                return "Usage: /worker provider [NAME]"
+            if not rest:
+                return self._worker_provider_picker()
+            return self._worker_set_provider(rest[0])
+        if subcommand == "model":
+            if len(rest) > 1:
+                return "Usage: /worker model [MODEL]"
+            if not rest:
+                return self._worker_model_picker()
+            return self._worker_set_model(rest[0])
+        if subcommand == "reason":
+            if len(rest) > 1:
+                return "Usage: /worker reason [EFFORT]"
+            if not rest:
+                return self._worker_reason_picker()
+            return self._worker_set_reasoning(rest[0])
+        if subcommand == "api":
+            if len(rest) > 1:
+                return "Usage: /worker api [API]"
+            if not rest:
+                return self._worker_api_picker()
+            return self._worker_set_api(rest[0])
+        return "Usage: /worker [" + "|".join(WORKER_SUBCOMMANDS) + "]"
+
+    def _worker_status(self) -> str:
+        """Readable /worker status for the human; the model-facing envelope stays in DelegateTool."""
+        worker = self.session.worker
+        if worker is None:
+            return "worker: no active session\nworker provider: " + (self.session.config.worker_provider or "(off)")
+        usage = worker.usage
+        percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget) if usage.last_prompt_budget else worker.state.context_percent
+        provider = worker.config.provider
+        state = "delegating" if worker._active_turn_messages else "idle"
+        return "\n".join(
+            [
+                f"worker: {worker.config.active_provider}/{provider.model or '(no model)'}",
+                "worker reasoning: " + provider.reasoning,
+                "worker state: " + state,
+                "worker rounds: " + str(worker.state.round_count),
+                "worker context: " + str(percent) + "%",
+            ]
+        )
+
+    def _worker_provider_picker(self) -> str:
+        summary = "worker provider: " + (self.session.config.worker_provider or "(off)") + "\nproviders: " + ", ".join(sorted(self.session.config.providers))
+        choices = tuple(sorted(self.session.config.providers))
+        if "off" not in choices:
+            choices = (*choices, "off")
+        current = self.session.config.worker_provider
+        choice = self.select_choice("Worker provider", choices, labels={current: current + " (current)"} if current else {}, current=current)
+        if not isinstance(choice, str):
+            return "No change" if choice is SELECTION_BACK else summary
+        provider_result = self._worker_set_provider(choice)
+        if self.session.config.worker_provider != choice:
+            # Picking "off" cleared the entry (or the set failed): there is no newly selected
+            # provider entry to pick a model for, so the cascade stops after the provider set.
+            return provider_result
+        # One setup flow, like /provider: worker provider -> worker model -> worker reasoning.
+        # Backing out of any stage keeps the stages already set and reports what landed.
+        lines = [provider_result]
+        set_ok, model_result = self._worker_model_stage()
+        if not set_ok:
+            lines.append("worker model: unchanged")
+            return "\n".join(lines)
+        lines.append(model_result)
+        set_ok, reason_result = self._worker_reason_stage()
+        if not set_ok:
+            lines.append("worker reasoning: unchanged")
+            return "\n".join(lines)
+        lines.append(reason_result)
+        return "\n".join(lines)
+
+    def _worker_set_provider(self, name: str) -> str:
+        if name == "off" and "off" not in self.session.config.providers:
+            # "off" names the clearing action unless a provider entry is literally named "off"
+            # (existence in config.providers wins). The Delegate gate is frozen per session, so
+            # this only clears the next spawn's provider; the live worker keeps running on its
+            # current provider and the tool block never flips mid-session.
+            self.session.config.worker_provider = ""
+            return "worker provider: off"
+        if name not in self.session.config.providers:
+            return "Unknown provider: " + name
+        self.session.config.worker_provider = name
+        refresh_worker_entry(self.session.config, self.session.worker, name)
+        result = "Set worker provider = " + name
+        if not self.session.worker_tool_enabled:
+            # Delegation was off at session start: the frozen gate keeps the tool block off no
+            # matter what the live config says, so the change only counts after a restart.
+            result += " (delegation is off this session; takes effect after a restart)"
+        return result
+
+    def _worker_simple_field(
+        self,
+        *,
+        title: str,
+        label: str,
+        choices: tuple[str, ...],
+        current: str,
+        labels: dict[str, str],
+        apply: Callable[[str], str],
+    ) -> tuple[bool, str]:
+        """Pick one value through the shared selector and apply it; returns (set, message) so both
+        the standalone /worker pickers and the /worker provider cascade can tell a set from an
+        abort. Shared by worker model/reasoning/api: same shape, no cascade, and each `apply`
+        writes the config and refreshes a live worker itself."""
+        choice = self.select_choice(title, choices, labels=labels, current=current)
+        if not isinstance(choice, str):
+            return False, ("No change" if choice is SELECTION_BACK else (f"{label}: " + (current or "(inherit)")))
+        return True, apply(choice)
+
+    def _worker_model_picker(self) -> str:
+        """Standalone /worker model picker: one selection, no cascade."""
+        return self._worker_model_stage()[1]
+
+    def _worker_model_stage(self) -> tuple[bool, str]:
+        """Pick a worker model override; returns (set, message). Shared by /worker model and the
+        /worker provider cascade so the cascade can tell a set from an abort."""
+        entry = self.session.config.providers[self.session.config.worker_provider or self.session.config.active_provider]
+        configured = tuple(dict.fromkeys(entry.available_models))
+        remote = tuple(model for model in self.remote_models(entry) if model not in configured)
+        override = self.session.config.worker_model
+        choices = [*configured, *remote]
+        if override and override not in choices:
+            choices.append(override)
+        choices.append("default")
+        choice_values = tuple(dict.fromkeys(choices))
+        labels = {override: override + " (current)"} if override in choice_values else {}
+        labels["default"] = "default - inherit the provider entry's model"
+        return self._worker_simple_field(
+            title="Worker model", label="worker model", choices=choice_values, current=override, labels=labels, apply=self._worker_set_model
+        )
+
+    def _worker_set_model(self, value: str) -> str:
+        if value != "default":
+            self.session.config.worker_model = value
+        else:
+            self.session.config.worker_model = ""
+        refresh_worker_entry(self.session.config, self.session.worker)
+        if value == "default":
+            return "worker model: (inherit)"
+        return "Set worker.model = " + value
+
+    def _worker_reason_picker(self) -> str:
+        """Standalone /worker reason picker: one selection, no cascade."""
+        return self._worker_reason_stage()[1]
+
+    def _worker_reason_stage(self) -> tuple[bool, str]:
+        """Pick a worker reasoning effort; returns (set, message). Shared by /worker reason and
+        the /worker provider cascade."""
+        current = self.session.config.worker_reasoning
+        choices = (*REASONING_CHOICES, "default")
+        labels = {"default": "default - inherit the provider entry's reasoning"}
+        if current:
+            labels[current] = current + " (current)"
+        return self._worker_simple_field(
+            title="Worker reasoning", label="worker reasoning", choices=choices, current=current, labels=labels, apply=self._worker_set_reasoning
+        )
+
+    def _worker_set_reasoning(self, value: str) -> str:
+        if value != "default":
+            # "off" is a valid effort, never the clearing word; only "default" clears.
+            if value not in REASONING_CHOICES:
+                return "Usage: /worker reason " + "|".join(REASONING_CHOICES)
+            self.session.config.worker_reasoning = value
+        else:
+            self.session.config.worker_reasoning = ""
+        refresh_worker_entry(self.session.config, self.session.worker)
+        if value == "default":
+            return "worker reasoning: (inherit)"
+        return "Set worker.reasoning = " + value
+
+    def _worker_api_picker(self) -> str:
+        """Standalone /worker api picker: one selection, no cascade."""
+        current = self.session.config.worker_api
+        choices = (*PROVIDER_API_CHOICES, "default")
+        labels = {"default": "default - inherit the provider entry's api"}
+        if current:
+            labels[current] = current + " (current)"
+        return self._worker_simple_field(title="Worker api", label="worker api", choices=choices, current=current, labels=labels, apply=self._worker_set_api)[1]
+
+    def _worker_set_api(self, value: str) -> str:
+        if value != "default":
+            if value not in PROVIDER_API_CHOICES:
+                return "Usage: /worker api " + "|".join(PROVIDER_API_CHOICES)
+            self.session.config.worker_api = value
+        else:
+            self.session.config.worker_api = ""
+        refresh_worker_entry(self.session.config, self.session.worker)
+        if value == "default":
+            return "worker api: (inherit)"
+        return "Set worker.api = " + value
+
+    def run_worker_config(self) -> None:
+        """The Delegate confirm-time `c` loop: pick which worker knob to adjust with the shared
+        choice selector (each field labeled with its current value, done preselected), then drive
+        the corresponding /worker picker -- which writes the config and refreshes a live worker
+        itself. done or Esc returns to the confirmation prompt; non-interactive runs return at
+        once (select_choice yields nothing)."""
+        while True:
+            config = self.session.config
+            provider_name = config.worker_provider or config.active_provider
+            entry = config.providers[provider_name]
+            provider_value = config.worker_provider or f"(inherit) {provider_name}"
+            model_value = config.worker_model or f"(inherit) {entry.model or '(no model)'}"
+            effort_value = config.worker_reasoning or f"(inherit) {entry.reasoning}"
+            api_value = config.worker_api or f"(inherit) {entry.api}"
+            labels = {
+                "provider": f"provider: {provider_value}",
+                "model": f"model: {model_value}",
+                "effort": f"effort: {effort_value}",
+                "api": f"api: {api_value}",
+                "done": "done - return to the confirmation prompt",
+            }
+            choice = self.select_choice("Worker config", ("provider", "model", "effort", "api", "done"), labels=labels, current="done")
+            if choice == "provider":
+                self._worker_provider_picker()
+            elif choice == "model":
+                self._worker_model_picker()
+            elif choice == "effort":
+                self._worker_reason_picker()
+            elif choice == "api":
+                self._worker_api_picker()
+            else:
+                return
+
     def strict(self, args: str) -> str:
         if args:
             return "Usage: /strict"
@@ -1966,7 +2332,7 @@ class TuiRuntime:
 
     def _request_model_retry(self) -> None:
         state = self.loop.session.state
-        if state.current_model_call_started_at <= 0 or state.manual_model_retry_requested:
+        if state.current_model_call_started_at <= 0 or state.model_retry_until > 0 or state.manual_model_retry_requested:
             return
         state.manual_model_retry_requested = True
         state.model_retry_count += 1

@@ -52,6 +52,7 @@ Working through a repository task in an interactive session.
 | **[Tools](tools.md)** | Read, search, navigate code; edit files; run commands; background jobs; optional provider-side web search. |
 | **[Sessions](usage.md#sessions)** | Your work is saved, named, and resumable with `/sessions`, `-c`, or `--resume`. |
 | **[MCP](mcp.md)** | Connect external Model Context Protocol servers and use their tools. |
+| **[Worker](worker.md)** | Delegate bounded tasks to a second in-process session on its own provider, with context kept until reset. |
 | **[Skills](skills.md)** | Load reusable instruction packs on demand. |
 | **[Configuration](configuration.md)** | Providers, runtime settings, and data location. |
 
@@ -72,6 +73,7 @@ safety
 commands
 tools
 configuration
+worker
 mcp
 skills
 ```

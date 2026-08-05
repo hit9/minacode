@@ -33,9 +33,10 @@ from minacode.base import (
     UpdateStatus,
 )
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, WORKING_STATE_CHECKPOINT_TITLE
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
 
 if TYPE_CHECKING:
+    from minacode.engine import Agent
     from minacode.mcp import MCPManager
     from minacode.skill import SkillLibrary
 
@@ -105,6 +106,7 @@ class AgentState:
     model_retry_count: int = 0
     current_model_attempt: int = 0
     model_retry_reason: str = ""
+    model_retry_until: float = 0.0  # monotonic deadline of the current retry wait; 0 when idle
     compaction_count: int = 0
 
     def __post_init__(self) -> None:
@@ -524,8 +526,10 @@ class SessionSnapshotStore:
         self.write_blobs(path, blobs)
         self.write_jsonl(path, record, mode="a")
         self.session._snapshot_saved = SessionSnapshotCodec.marker(self.session)
-        self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
-        self.write_meta()
+        if self.session.listed:
+            # Workers never claim the latest pointer: `-c` must keep landing on the parent session.
+            self.write_latest(self.session.config.data_dir, self.session.cwd, self.session.uid)
+            self.write_meta()
         self.garbage_collect_assets()
         return self.session.uid
 
@@ -633,6 +637,9 @@ class SessionSnapshotStore:
                 if not entry.name.endswith(".jsonl") or not entry.is_file():
                     continue
                 uid = entry.name[:-6]
+                if uid.endswith(".w"):
+                    # Worker sessions are subordinates, not resumable sessions: hidden from listings.
+                    continue
                 meta = cls.read_meta(directory, uid)
                 try:
                     rounds = int(meta.get("rounds") or 0)
@@ -696,6 +703,16 @@ class SessionSnapshotStore:
                 entries = list(os.scandir(directory))
             except OSError:
                 continue
+            expiring_parents: set[str] = set()
+            for entry in entries:
+                if not entry.name.endswith(".jsonl") or not entry.is_file():
+                    continue
+                uid = entry.name[:-6]
+                if uid == session.uid or uid.endswith(".w"):
+                    continue
+                with contextlib.suppress(OSError):
+                    if entry.stat().st_mtime < cutoff:
+                        expiring_parents.add(uid)
             stale_latest = False
             for entry in entries:
                 if not entry.name.endswith(".jsonl") or not entry.is_file():
@@ -704,7 +721,10 @@ class SessionSnapshotStore:
                 if uid == session.uid:
                     continue
                 try:
-                    if entry.stat().st_mtime >= cutoff:
+                    # A worker outlives its parent only by accident: once the parent log is gone the
+                    # worker is an orphan and expires even if its own mtime is fresh.
+                    orphan_worker = uid.endswith(".w") and (uid[:-2] in expiring_parents or not os.path.isfile(os.path.join(directory, uid[:-2] + ".jsonl")))
+                    if entry.stat().st_mtime >= cutoff and not orphan_worker:
                         continue
                     os.unlink(entry.path)
                     shutil.rmtree(os.path.join(directory, uid + ".assets"), ignore_errors=True)
@@ -756,7 +776,7 @@ class SessionSnapshotStore:
     def newest_uid(cls, directory: str) -> str:
         """Fallback for a missing or stale pointer: newest log in the project by mtime."""
         try:
-            entries = [entry for entry in os.scandir(directory) if entry.name.endswith(".jsonl") and entry.is_file()]
+            entries = [entry for entry in os.scandir(directory) if entry.name.endswith(".jsonl") and entry.is_file() and not entry.name.endswith(".w.jsonl")]
         except OSError:
             return ""
         newest = max(entries, key=lambda entry: entry.stat().st_mtime, default=None)
@@ -1030,6 +1050,15 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[QueuedInput] = field(default_factory=list)
     quick_hints: tuple[str, ...] = field(default_factory=tuple)  # transient offered next-step inputs; never serialized, cleared each turn
+    # Worker handoff (see DESIGN.md): the second session this one delegates to, and its per-session
+    # projection knobs. None of these are persisted — SessionSnapshotCodec.snapshot is an explicit
+    # whitelist, so they return to their defaults on load and must be re-set by the delegate caller.
+    system_prompt: str = SYSTEM_PROMPT  # role definition; the parent's default is unchanged
+    tool_names: tuple[str, ...] = ()  # empty tuple = no filtering (parent behavior)
+    listed: bool = True  # False -> no latest pointer, hidden from /sessions
+    worker: Session | None = None  # runtime handle of the delegated session
+    worker_tool_enabled: bool = False  # Delegate registration gate, frozen at construction from bool(config.worker_provider)
+    _agent: Agent | None = None  # runtime handle of the worker's Agent; same lifetime as the worker Session
     tool_counter: int = 0
     turn_diffs: list[TurnDiff] = field(default_factory=list)
     history: list[HistorySegment] = field(default_factory=list)
@@ -1066,6 +1095,12 @@ class Session:
             from minacode.skill import SkillLibrary  # local import: skill is built on top of session
 
             self.skills = SkillLibrary.load(self)
+        # The Delegate registration gate is frozen per session: computed once from the config this
+        # session was constructed with, so a runtime /worker provider switch tunes an already-
+        # enabled delegation and prepares the next session without flipping the tool block (and
+        # thus the prompt-cache scope) mid-session. Recomputes on every load because the config
+        # passed to SessionSnapshotStore.load is the caller's freshly built one.
+        self.worker_tool_enabled = bool(self.config.worker_provider)
 
     def store_turn_diff(
         self,

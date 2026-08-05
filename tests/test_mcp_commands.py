@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -71,7 +72,7 @@ class TestMCPCommands:
         class FakeTool:
             name = "echo"
             description = "Echo"
-            inputSchema = {"type": "object", "properties": {}, "required": []}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
             annotations = None
 
         async def fake_list(url, headers):
@@ -93,7 +94,7 @@ class TestMCPCommands:
         class FakeTool:
             name = "echo"
             description = "Echo"
-            inputSchema = {"type": "object", "properties": {}, "required": []}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
             annotations = None
 
         async def fake_list(url, headers):

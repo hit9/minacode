@@ -429,9 +429,43 @@ suite.
 
 - Retry only bounded, plausibly transient model failures. User cancellation, explicit capability
   rejection, validation errors, and total-generation deadlines are not automatic retry signals.
+  The retry **decision** is fixed; only the **pacing** is flexible: exponential backoff with jitter,
+  waiting on the provider's own `Retry-After` when it is given, and never stalling the CLI.
 - Cancellation is a control signal, not a state mutation from another thread. Fan it out to the
   active model and tool resources, then let the owning turn settle or retract its semantic records.
 - Tool failures become matched tool results rather than broken turns. Cancellation settles every
   already-visible call so later protocol replay remains valid.
+- Anchor validation is a safety boundary, not a friction point: stale or invalid anchors stay
+  refused, and a successful edit refunds the fresh anchors of the region it changed, so long
+  same-file edit runs keep going without a re-Read.
 - Lower layers contain recoverable detail: retained output supports recall, snapshots support
   resume, and deterministic compaction preserves progress when the summarizer is unavailable.
+
+## Worker handoff
+
+A worker is the same process's second minacode session, driven serially by the parent through one
+`Delegate` tool call per round: it is a full minacode (compaction, Recall, tr.N, Job, Skill, MCP,
+diff, confirmation, snapshots) projected from the parent's state with its own system prompt and a
+reduced tool list. The parent delegates; the worker never reaches back. Three decisions here are
+easy to reopen, so their reasons are recorded.
+
+**No worker-to-parent tool calls.** A reverse call would re-enter the parent's `Agent.run` while it
+is mid-turn. The agent loop is the serialized writer of active-turn messages (see "Context is a
+projection"): a second writer inside the same turn would corrupt `_active_turn_messages` and the
+checkpoint, and the parent could not settle its own interrupt while the worker is mutating it. The
+worker's channel back is its final text, and questions end its turn.
+
+**Worker snapshots are subordinate; reset discards process, not product.** The worker uid is
+`parent.uid + ".w"`, so its log, meta, and assets are keyed by the parent's identity: listings,
+latest-pointer resolution, and expiry all skip or cascade over them, and a reset derives its delete
+path entirely from the parent's uid (the model's arguments carry no path). Reset drops the worker's
+context and its cached agent, which is what a worker's context is for: the wrong beliefs accumulated
+across failed delegations. File changes and merged diffs belong to the repo, not the worker, and
+survive.
+
+**The worker's cache prefix is a per-session constant.** The order must be the worker's first user
+message, never spliced into its system prompt, or every delegation would start a fresh cache epoch.
+The worker inherits the parent's `created_at`, so the Environment layer is byte-identical across
+spawns; its tool list is fixed for its lifetime; and it shares the parent's SkillLibrary and
+MCPManager instances so neither index changes between delegations. "Context is a projection" and
+"Cache epochs and breakpoints" apply to the worker exactly as they do to the parent.

@@ -211,6 +211,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-tab-off { color: #56b6c2; }
 .fs-goal { color: #c678dd; }
 .fs-doing { color: #e5c07b; }
+.fs-worker { color: #fbbf24; } /* worker identity color, mirroring render.py Theme.DARK status.worker */
 /* Status bar roles, mirroring the dark palette in minacode/render.py (Theme.DARK). */
 .sb-base { color: #cbd5e1; }
 .sb-sep { color: #4b5563; }
@@ -218,6 +219,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .sb-ctx { color: #facc15; }
 .sb-index { color: #94a3b8; }
 .sb-warn { color: #fb7185; }
+.sb-worker { color: #fbbf24; } /* worker identity color, mirroring render.py Theme.DARK status.worker */
 /* Working-state sweep (render.py sweep_fragments): a blue-to-purple gradient with a bright band. */
 .sb-sweep-a { color: #4f9fc4; }
 .sb-sweep-b { color: #9b82c9; }

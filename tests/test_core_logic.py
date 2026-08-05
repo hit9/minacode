@@ -129,6 +129,27 @@ def test_runtime_settings_reads_limits_and_yolo_override():
     assert settings.yolo is True
 
 
+def test_runtime_language_defaults_normalizes_and_validates():
+    assert RuntimeSettings().language == "auto"
+    assert RuntimeSettings.from_dict({}).language == "auto"
+    assert RuntimeSettings.from_dict({"runtime": {"language": "Chinese"}}).language == "Chinese"
+    assert RuntimeSettings.from_dict({"runtime": {"language": "简体中文"}}).language == "简体中文"
+
+    # empty and case-insensitive "auto" (with surrounding whitespace) normalize to "auto"
+    assert RuntimeSettings.clean_language("") == "auto"
+    assert RuntimeSettings.clean_language("  AUTO  ") == "auto"
+    assert RuntimeSettings.clean_language("auto") == "auto"
+    # valid values pass through unchanged, spaces included
+    assert RuntimeSettings.clean_language("Chinese (Simplified)") == "Chinese (Simplified)"
+    assert RuntimeSettings.clean_language("简体中文") == "简体中文"
+
+    # multiline and over-long values are rejected on the config-parsing path
+    with pytest.raises(ConfigError, match="runtime.language"):
+        RuntimeSettings.from_dict({"runtime": {"language": "Chinese\nJapanese"}})
+    with pytest.raises(ConfigError, match="runtime.language"):
+        RuntimeSettings.clean_language("x" * 65)
+
+
 def test_runtime_settings_default_context_budget_is_256k():
     assert RuntimeSettings().max_context_tokens == 256 * 1024
     assert RuntimeSettings.from_dict({}).max_context_tokens == 256 * 1024
@@ -902,6 +923,21 @@ def test_explicit_manual_thinking_maps_max_to_the_largest_budget(tmp_path):
     assert params == {"extra_body": {"enable_thinking": True, "thinking_budget": 32768}}
 
 
+def test_explicit_manual_thinking_budget_stays_under_the_configured_output_cap(tmp_path):
+    """These hosts fold max_tokens into max_completion_tokens and reject a budget that reaches it."""
+    client = ModelClient(session(tmp_path))
+
+    for max_tokens, reasoning, expected in ((16_384, "xhigh", 15_360), (16_384, "max", 15_360), (2_048, "high", 1_024), (0, "max", 32_768)):
+        provider = ProviderConfig(
+            url="https://gateway.example/v1", model="custom-model", chat_reasoning="enable_thinking", reasoning=reasoning, max_tokens=max_tokens
+        )
+        params: dict = {}
+
+        client.apply_provider_params(params, provider)
+
+        assert params["extra_body"]["thinking_budget"] == expected
+
+
 def test_chat_provider_extra_body_passthrough(tmp_path):
     client = ModelClient(session(tmp_path))
 
@@ -1087,24 +1123,29 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     s.config.provider.model = "model"
     client = ModelClient(s)
     calls = []
-    retries = []
 
     def fail(_messages, _tools):
         calls.append(1)
         raise ModelError("Error code: 500 - provider failed")
 
     monkeypatch.setattr(client, "chat_request", fail)
-    monkeypatch.setattr(
-        time,
-        "sleep",
-        lambda _seconds: retries.append((s.state.current_model_attempt, s.state.model_retry_reason)),
-    )
+    clock = {"now": 0.0}
+    seen: dict[int, str] = {}
+
+    def sleeper(seconds):
+        # The wait is sliced; record each attempt's phase once and advance the clock so the
+        # slice loop finishes instantly (the status facts, not the pacing, are under test).
+        seen[s.state.current_model_attempt] = s.state.model_retry_reason
+        clock["now"] += seconds
+
+    monkeypatch.setattr(time, "sleep", sleeper)
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
 
     with pytest.raises(ModelError, match="after 6 attempts"):
         client.request([{"role": "user", "content": "hi"}])
 
     assert len(calls) == 6
-    assert retries == [(2, "500"), (3, "500"), (4, "500"), (5, "500"), (6, "500")]
+    assert seen == {2: "500", 3: "500", 4: "500", 5: "500", 6: "500"}
     assert s.state.model_retry_count == 5
     assert s.state.current_model_attempt == 0
     assert s.state.model_retry_reason == ""
@@ -1382,3 +1423,25 @@ def test_tool_runner_non_refusal_failures_do_not_stop_batch(tmp_path):
     assert len(s.tool_errors) == 1
     assert len(s.tool_records) == 1
     assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_retry_status_renders_countdown_from_model_retry_until(tmp_path, monkeypatch):
+    """The status bar formats the wait deadline published by the model; a passed deadline never
+    renders a negative countdown."""
+    s = session(tmp_path)
+    bar = StatusBar(s)
+    s.state.current_model_attempt = 3
+    s.state.model_retry_count = 1
+    s.state.model_retry_reason = "503"
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+    s.state.model_retry_until = 112.0
+
+    assert bar.retry_status() == "retrying 3/6 · 503 · 12s"
+
+    # Deadline already passed: no negative countdown, no bare seconds fragment.
+    s.state.model_retry_until = 99.0
+    assert bar.retry_status() == "retrying 3/6 · 503"
+
+    # Notice window expires: nothing at all.
+    monkeypatch.setattr(time, "monotonic", lambda: 200.0)
+    assert bar.retry_status() == ""

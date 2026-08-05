@@ -132,9 +132,27 @@ Optional; the defaults shown are used when omitted.
 | `max_parallel_tools` | `4` | Maximum read-only tool calls executed concurrently; `1` disables parallelism |
 | `session_retention_days` | `7` | Delete saved sessions untouched for this many days, swept in the background at startup; `0` keeps them indefinitely |
 | `theme` | `auto` | Terminal theme: `auto`, `light`, or `dark`; overridden by `--theme` |
+| `worker` | `false` | Let the model delegate to a second in-process session; see below |
+| `language` | `auto` | Force the reply language (`auto` follows your messages and injects nothing); set a name like `Chinese` to append a fixed `LANGUAGE OVERRIDE` block to the system prompt. Change for the current session with `/language` |
 
 Selected tuning values can be changed for the current session with `/set` (Tab completion
 lists the supported keys). `/yolo` toggles `yolo`.
+
+## Worker delegation
+
+The `Delegate` tool and `/worker` command hand bounded tasks to a second in-process session.
+Concepts, quick start, and what you see in the terminal: [Worker delegation](worker.md).
+
+Worker keys inherit the `[worker]` provider entry by default:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `[worker] provider` | — | Worker provider entry key; unset disables delegation |
+| `[worker] model` | inherit | Override the entry's model; empty inherits |
+| `[worker] reasoning` | inherit | Override the entry's reasoning effort; empty inherits |
+| `[worker] api` | inherit | Override the entry's wire protocol; empty inherits |
+
+`[runtime] worker` and `[runtime] language` are in the [Runtime](#runtime) table above.
 
 ## Data location
 

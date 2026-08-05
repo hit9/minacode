@@ -91,7 +91,8 @@ def test_session_stores_content_addressed_image_and_persists_refs(tmp_path):
     assert image is not None
     asset = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets", image.ref)
     assert os.path.isfile(asset)
-    assert open(asset, "rb").read() == path.read_bytes()
+    with open(asset, "rb") as file:
+        assert file.read() == path.read_bytes()
 
     restored = Session.load_snapshot(s.uid, config=s.config)
     assert restored.messages[0] == message

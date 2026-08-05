@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -106,6 +107,7 @@ class Theme:
         "status.update": "#fb923c",
         "status.index": "#94a3b8",
         "status.warn": "#fb7185",
+        "status.worker": "#fbbf24",
         "divider.glow": "#67e8f9",
         "divider.rule": "#4b5563",
         "user.log": "#e0a96d",
@@ -137,6 +139,7 @@ class Theme:
         "status.update": "#9a3412",
         "status.index": "#475569",
         "status.warn": "#b91c1c",
+        "status.worker": "#b45309",
         "divider.glow": "#0e7490",
         "divider.rule": "#9ca3af",
         "user.log": "#9a5b2e",
@@ -313,7 +316,7 @@ class UiPrinter:
                 seen_content = True
         return "".join(payload for _, payload in tokens)
 
-    def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0) -> None:
+    def emit_answer(self, text: str, *, role: str = "", rule: bool = True, indent: int = 0, compact: bool = False) -> None:
         if not self.color:
             if role == "user":
                 text, role = "\n" + self.USER_LOG_PREFIX + text, ""
@@ -325,6 +328,12 @@ class UiPrinter:
         with console.capture() as capture:
             self.render_message(console, text, role, rule, indent)
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        if compact:
+            # Rich markdown pads a blank line after every heading plus a whitespace row above and
+            # below each table box; /status wants the heading tight against its table, so drop
+            # every line that carries no visible characters.
+            lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
+            cleaned = "\n".join(lines) + "\n"
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
@@ -357,6 +366,42 @@ class UiPrinter:
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
         print_formatted_text(FormattedText(fragments), end="", flush=True)
+
+    def emit_worker_rule(self, label: str) -> None:
+        """Open or close a delegation with a full-width rule whose yellow label names the worker.
+
+        The durable counterpart to the start marker's live divider and a sibling of the turn-end
+        rule: gray dashes run edge to edge, the label sits just past a short lead, and the trail
+        fills the terminal width. The label is yellow (the worker's identity color) instead of the
+        turn-end label's default tone, so the bracket reads at a glance. Blank lines on both
+        sides lift the rule off the content above and below it.
+        """
+        if not self.color:
+            self.output_fn(label)
+            return
+        self.emit()
+        width = shutil.get_terminal_size((80, 20)).columns
+        limit = max(1, width - 6)
+        if get_cwidth(label) > limit:
+            available = max(1, limit - get_cwidth("…"))
+            clipped = []
+            used = 0
+            for char in label:
+                char_width = max(0, get_cwidth(char))
+                if used + char_width > available:
+                    break
+                clipped.append(char)
+                used += char_width
+            label = "".join(clipped) + "…"
+        lead = "─" * self.TURN_END_LEAD + " "
+        trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)
+        fragments = [
+            ("ansibrightblack", lead),
+            (Theme.style("status.worker"), label),
+            ("ansibrightblack", " " + "─" * trail + "\n"),
+        ]
+        print_formatted_text(FormattedText(fragments), end="", flush=True)
+        self.emit()
 
     @staticmethod
     def indent_message(text: str, role: str = "", indent: int = 0) -> str:
@@ -428,6 +473,8 @@ class UiPrinter:
         LogRole.TOOL: ("ansigreen", "fg:default"),
         LogRole.AUTO: ("ansiblue", "fg:default"),
         LogRole.META: ("ansibrightblack", "ansibrightblack"),
+        LogRole.WORKER: ("ansiyellow", "fg:default"),
+        LogRole.FIELD: ("ansicyan", "fg:default"),
         LogRole.OUTPUT: ("ansibrightblack", "ansibrightblack"),
         LogRole.ERROR: ("ansired", "fg:default"),
         LogRole.MUTED: ("ansibrightblack", "ansibrightblack"),
@@ -842,7 +889,7 @@ class StatusBar:
     INTERVAL: ClassVar[float] = 0.2
     RETRY_NOTICE_DURATION: ClassVar[float] = 2.0
     INDEX_SPINNER: ClassVar[tuple[str, ...]] = ("~", "/", "-", "\\", "|")
-    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn")
+    ROLE_KEYS: ClassVar[tuple[str, ...]] = ("provider", "reason", "mcp", "ctx", "update", "index", "warn", "worker")
     # The working sweep: one crest crossing the line every couple of seconds. `SWEEP_FALLOFF` sets
     # its half width as a fraction of the line (5.0 → a fifth), wide enough that it drifts rather
     # than blinks. Bands and levels quantize the gradient and the crest; see `sweep_fragments`.
@@ -921,12 +968,24 @@ class StatusBar:
         return f"attempt {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else ""
 
     def retry_status(self) -> str:
-        if not self.retry_notice_active():
+        # The two-second notice window covers the brief aftermath after a wait ends. While the wait
+        # itself is in progress (its monotonic deadline is still in the future) the full text
+        # (attempt, reason, countdown) must keep showing for its whole duration, which can far
+        # outlast that window.
+        waiting = self.session.state.model_retry_until > time.monotonic()
+        if not waiting and not self.retry_notice_active():
             return ""
         attempt = self.session.state.current_model_attempt
         text = f"retrying {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else "retrying"
-        reason = self.session.state.model_retry_reason
-        return text + (" · " + reason if reason else "")
+        state = self.session.state
+        reason = state.model_retry_reason
+        if reason:
+            text += " · " + reason
+        # The model publishes the wait deadline as a fact; the renderer formats the countdown.
+        remaining = max(0, math.ceil(state.model_retry_until - time.monotonic()))
+        if remaining:
+            text += f" · {remaining}s"
+        return text
 
     def fragments(self, *, sweep: bool, show_elapsed: bool) -> StyleAndTextTuples:
         entries = self.entries(show_elapsed=show_elapsed)
@@ -941,10 +1000,24 @@ class StatusBar:
         return self.sweep_fragments(text) if sweep else self.styled_fragments(entries)
 
     def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
-        provider = self.session.config.provider
+        worker = self.session.worker
+        # The worker display is scoped to an in-flight delegation: the engine clears
+        # _active_turn_messages in finish_turn, so the moment the worker answers, the bar returns
+        # to the parent's provider/model/usage exactly as if no worker existed. An idle worker no
+        # longer shadows the parent's row.
+        inflight = worker if worker is not None and bool(worker._active_turn_messages) else None
+        if inflight is not None:
+            config = inflight.config
+            lead_role = "warn"
+        else:
+            config = self.session.config
+            lead_role = "provider"
+        provider = config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
-        reason = provider.reasoning
-        parts = [(self.session.config.active_provider + "/" + model, "provider"), (reason, "reason")]
+        parts: list[tuple[str, str]] = []
+        if inflight is not None:
+            parts.append(("[worker]", "worker"))
+        parts += [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
 
         mcp_status = self.mcp_status()
         if mcp_status:
@@ -955,14 +1028,15 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        usage = self.session.usage
+        source = inflight if inflight is not None else self.session
+        usage = source.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;
             # the estimate (state.context_percent) stays as the fallback before any request exists.
             # This only renders; compaction keeps triggering on the estimate (see DESIGN.md, context.py).
             ctx_percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget)
         else:
-            ctx_percent = self.session.state.context_percent
+            ctx_percent = source.state.context_percent
         ctx_text = "ctx " + str(ctx_percent) + "%"
         if usage.last_prompt_tokens:
             ctx_text += " · cache " + str(usage.last_cached_prompt_tokens * 100 // usage.last_prompt_tokens) + "%"

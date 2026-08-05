@@ -1,6 +1,7 @@
 """Rendering: themes, the external editor, the status bar, the Bash live preview, width
 clipping, and choice-view state."""
 
+import itertools
 import os
 import shutil
 import sys
@@ -23,7 +24,8 @@ from minacode.base import (
     request_budget_for,
 )
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
-from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, TuiApp
+from minacode.tools import AskSpec
+from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState, TuiApp
 
 
 def test_theme_palettes_have_identical_complete_keys():
@@ -368,7 +370,7 @@ def test_status_bar_sweep_shares_styles_between_neighbouring_cells(tmp_path, mon
         styles = [style for style, _text in bar.sweep_fragments(text)]
         assert len(styles) == len(text)
         seen.update(styles)
-        runs.append(1 + sum(1 for left, right in zip(styles, styles[1:], strict=False) if left != right))
+        runs.append(1 + sum(1 for left, right in itertools.pairwise(styles) if left != right))
 
     # A colour per cell costs an escape sequence per column on every frame, and mints a style string
     # that prompt-toolkit's renderer caches for the life of the process. Quantized, neighbours share
@@ -652,3 +654,161 @@ def test_choice_view_state_fragments_preserve_headers_and_preview():
     assert "  ---- Models ----" in rendered
     assert ">  1. Alpha" in rendered
     assert "  │ first\n  │ second\n" in rendered
+
+
+def test_emit_answer_compact_drops_invisible_lines(monkeypatch):
+    out = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda text, **kwargs: out.append(getattr(text, "value", str(text))))
+    ui = UiPrinter(output_fn=lambda text: None)
+    ui.color = True
+    ui.emit_answer("### Parent\n| status | value |\n| --- | --- |\n| model | `x` |\n", rule=False, compact=True)
+    rendered = out[0]
+    visible = [line for line in rendered.split("\n") if UiPrinter.SGR_RE.sub("", line).strip()]
+    assert rendered.split("\n") == visible + [""]  # no blank or box-padding lines survive
+    assert "Parent" in rendered and "model" in rendered
+
+
+# --- AskViewState: the Ask modal (options left, rich markdown preview right, batch keys) ---
+
+
+def _ask_state():
+    return AskViewState.build(
+        [
+            AskSpec("Which shape?", choices=["Flat", "Sections"], previews=["**bold** flat table\n| a | b |", "sections tree"], recommended=0),
+            AskSpec("Name?", choices=["core", "lib"]),
+        ]
+    )
+
+
+def _rows(fragments):
+    return "".join(text for _style, text in fragments).splitlines()
+
+
+def test_ask_view_side_by_side_joins_option_and_preview_rows():
+    state = _ask_state()
+    rows = _rows(state.fragments(width=120, max_height=30))
+    assert rows[0] == "(1/2) Which shape?"
+    assert rows[1] == ""  # blank line under the title
+    assert rows[-2] == ""  # blank line above the key legend
+    # The selected option's label and its rich preview land on the same rendered row.
+    pair = next(row for row in rows if "Flat" in row and "flat table" in row)
+    assert "1. Flat (recommended)" in pair
+    # The longest option row and the preview column keep a visible gutter of at least 3 cells.
+    before_preview = pair.split("bold")[0]
+    assert len(before_preview) - len(before_preview.rstrip()) >= 3
+    assert any("↑/↓ or j/k move" in row for row in rows)
+    assert len(rows) <= 30
+
+
+def test_ask_view_stacks_preview_below_options_on_narrow_terminals():
+    state = _ask_state()
+    rows = _rows(state.fragments(width=80, max_height=30))
+    option_index = next(index for index, row in enumerate(rows) if "Flat" in row)
+    preview_index = next(index for index, row in enumerate(rows) if "flat table" in row)
+    assert preview_index > option_index  # stacked, not side-by-side
+    assert rows[preview_index].startswith("  │ ")
+
+
+def test_ask_view_truncates_overflow_with_more_lines():
+    preview = "\n".join(f"line {i}" for i in range(40))
+    state = AskViewState.build([AskSpec("Q?", choices=["A"], previews=[preview])])
+    rows = _rows(state.fragments(width=120, max_height=8))
+    assert len(rows) <= 8
+    assert any("more lines" in row for row in rows)
+
+
+def test_ask_view_preview_renders_rich_styles():
+    state = AskViewState.build([AskSpec("Q?", choices=["Bold"], previews=["**bold text**"])])
+    fragments = state.fragments(width=120, max_height=30)
+    assert any(style for style, text in fragments if "bold text" in text)  # markdown bold carried a style
+
+
+def test_ask_view_keys_navigate_advance_and_submit():
+    state = _ask_state()
+    assert state.pages[0].selected_choice() == "Flat"  # recommended pre-selected
+    assert state.handle_key("j") is TUI_MODAL_PENDING
+    assert state.pages[0].selected_choice() == "Sections"
+    assert state.handle_key("k") is TUI_MODAL_PENDING
+    assert state.pages[0].selected_choice() == "Flat"
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # first page: pick and advance
+    assert state.active == 1 and state.picked[0] == "Flat"
+    assert state.handle_key("tab") is TUI_MODAL_PENDING  # cycle back to page 1
+    assert state.active == 0
+    assert state.handle_key("s-tab") is TUI_MODAL_PENDING
+    assert state.active == 1
+    assert state.handle_key("enter") is ASK_DONE  # last page submits the batch
+    assert state.picked[1] == "core"
+
+
+def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
+    """Tabbing to the last page and Enter must not submit a half-answered batch: it records the
+    pick and jumps back to the first unanswered page."""
+    state = AskViewState.build(
+        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
+    )
+    assert state.handle_key("tab") is TUI_MODAL_PENDING
+    assert state.handle_key("tab") is TUI_MODAL_PENDING
+    assert state.active == 2
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # picked on the last page, batch not done
+    assert state.picked[2] == "C"
+    assert state.active == 0  # first unanswered page
+
+
+def test_ask_view_out_of_order_answers_submit_when_all_answered():
+    """Answers may land in any order; the batch only submits once every page has a pick."""
+    state = AskViewState.build(
+        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
+    )
+    state.handle_key("tab")
+    state.handle_key("tab")
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # last page answered, batch not done
+    assert state.active == 0
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # page 0 picked
+    assert state.active == 1
+    assert state.handle_key("enter") is ASK_DONE  # page 1 picked: all answered
+    assert state.picked == ["A", "B", "C"]
+
+
+def test_ask_view_free_text_page_reports_and_escape_cancels():
+    state = AskViewState.build([AskSpec("No choices")])
+    assert state.handle_key("enter") == (ASK_FREE_TEXT, 0)
+    assert state.handle_key("escape") is SELECTION_BACK  # whole batch cancelled
+    result = state.handle_key("c-c")
+    assert isinstance(result, KeyboardInterrupt)
+
+
+def test_ask_view_notes_mode_edits_and_saves():
+    state = AskViewState.build([AskSpec("Q?", choices=["A"])])
+    assert state.handle_key("n") is TUI_MODAL_PENDING
+    assert state.notes_mode
+    assert state.handle_key("any", "x") is TUI_MODAL_PENDING
+    assert state.handle_key("any", "y") is TUI_MODAL_PENDING
+    assert state.note_buffer == "xy"
+    assert state.handle_key("backspace") is TUI_MODAL_PENDING
+    assert state.note_buffer == "x"
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # save
+    assert state.notes == {0: "x"} and not state.notes_mode
+    assert state.handle_key("n") is TUI_MODAL_PENDING
+    assert state.handle_key("any", "z") is TUI_MODAL_PENDING
+    assert state.handle_key("escape") is TUI_MODAL_PENDING  # discard
+    assert state.notes == {0: "x"}
+    # The saved note renders on the page.
+    assert "notes: x" in _rows(state.fragments(width=120, max_height=30))
+
+
+def test_ask_view_notes_mode_opens_via_any_key_routing():
+    """The bindings dispatch printable keys outside MODAL_KEYS as ("any", data); `n` must open
+    notes mode through that path too, not only as the named key."""
+    state = AskViewState.build([AskSpec("Q?", choices=["A"])])
+    assert state.handle_key("any", "n") is TUI_MODAL_PENDING
+    assert state.notes_mode
+
+
+def test_ask_view_shift_tab_cycles_backwards():
+    from minacode.tui import TuiApp
+
+    assert "s-tab" in TuiApp.MODAL_KEYS  # the binding table must route it into the modal
+    state = AskViewState.build([AskSpec("1?", choices=["A"]), AskSpec("2?", choices=["B"])])
+    assert state.active == 0
+    assert state.handle_key("s-tab") is TUI_MODAL_PENDING
+    assert state.active == 1

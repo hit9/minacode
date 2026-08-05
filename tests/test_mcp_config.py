@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -384,7 +385,7 @@ class TestMCPManagerDiscovery:
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
 
         async def fake_fail(url, headers):
-            raise Exception("connection refused")
+            raise RuntimeError("connection refused")
 
         monkeypatch.setattr(s.mcp, "_list_tools", fake_fail)
 
@@ -483,7 +484,7 @@ class TestMCPManagerDiscovery:
         class FakeTool:
             name = "echo"
             description = "Echo input"
-            inputSchema = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
             annotations = None
 
         async def fake_list(url, headers):
@@ -608,7 +609,7 @@ class TestServerStatusRendering:
         class FakeTool:
             name = "echo"
             description = "Echo"
-            inputSchema = {"type": "object", "properties": {}, "required": []}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {}, "required": []}
             annotations = None
 
         async def fake_list(url, headers):
@@ -660,7 +661,7 @@ class TestServerStatusRendering:
         class FakeTool:
             name = "echo"
             description = "Echo input back"
-            inputSchema = {"type": "object", "properties": {"t": {"type": "string"}}, "required": ["t"]}
+            inputSchema: ClassVar[dict] = {"type": "object", "properties": {"t": {"type": "string"}}, "required": ["t"]}
             annotations = None
 
         async def fake_list(url, headers):

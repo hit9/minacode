@@ -10,7 +10,9 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import (
     ActiveResource,
@@ -31,12 +33,16 @@ from minacode.tools import (
     AskTool,
     BashTool,
     CodeIndex,
+    DelegateTool,
     Edit,
     EditTool,
     JobTool,
     ReadTool,
     Tool,
 )
+
+if TYPE_CHECKING:
+    from minacode.engine import Agent
 
 
 class EditBatchPlan:
@@ -236,6 +242,12 @@ class ToolRunner:
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
     EDIT_PATH_RE: ClassVar[re.Pattern] = re.compile(r'<Edit\s+path=(".*?")')
     MCP_CALL_RE: ClassVar[re.Pattern] = re.compile(r"(?s)<MCPCall\b[^>]*>\n?(.*?)\n?</MCPCall>\s*$")
+    # The envelope DelegateTool._send returns for a finished delegation: attributes in fixed order,
+    # the worker's answer wrapped in <worker> tags. Parsed with a couple of string scans — the
+    # format is ours, so no XML parser is needed.
+    DELEGATE_META_RE: ClassVar[re.Pattern] = re.compile(
+        r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)"(?: tokens="([^"]*)")?>'
+    )
 
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
         self.session = session
@@ -244,13 +256,34 @@ class ToolRunner:
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
-        self.question_fn: Callable[[AskSpec, str], str] | None = None
+        self.worker_rule: Callable | None = None
+        self.question_fn: Callable[[list[AskSpec]], list[str]] | None = None
+        # Injected by CommandLoop: drives the Delegate confirm-time `c` config loop through the
+        # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to
+        # printing the current worker config only (headless / non-CommandLoop runners).
+        self.worker_config_picker: Callable[[], None] | None = None
+        # Injected by CommandLoop for the Delegate worker: ModelClient only streams when on_stream
+        # is set, so an unwired worker would run unstreamed and its thinking would stay invisible.
+        self.model_stream: Callable[[str, str], None] | None = None
+        # Injected by CommandLoop: lifecycle callbacks the worker agent must see, so retry backoff,
+        # provider-side builtin calls, and automatic compaction of the worker show up in the parent
+        # TUI exactly as they do for the main agent. None degrades to the default (unstreamed,
+        # unlogged) behavior for headless runners.
+        self.retry_wait: Callable[[bool], None] | None = None
+        self.builtin_call: Callable[[str, str], None] | None = None
+        self.compaction: Callable[[bool], None] | None = None
         self._active_bash: ActiveResource[BashTool] = ActiveResource()
+        # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
+        self._active_worker: ActiveResource[Agent] = ActiveResource()
 
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
+        self._active_worker.apply(lambda agent: agent.cancel())
 
     def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
+        if isinstance(tool, DelegateTool):
+            tool.runner = self
+            return tool.call()
         if not isinstance(tool, BashTool):
             return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
         with self._active_bash.track(tool):
@@ -351,7 +384,12 @@ class ToolRunner:
         # read-only MCP). Edit is coordinated serially by EditBatchPlan;
         # Bash streams live output and mutates; Ask blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
-        if tool_class is None or call.name in ("Edit", "NextHints") or tool_class in (BashTool, JobTool, AskTool) or tool_class.PRODUCES_MODEL_OBSERVATION:
+        if (
+            tool_class is None
+            or call.name in ("Delegate", "Edit", "NextHints")
+            or tool_class in (BashTool, JobTool, AskTool)
+            or tool_class.PRODUCES_MODEL_OBSERVATION
+        ):
             return False
         try:
             return not tool_class(self.session, call.args).needs_confirmation()
@@ -432,7 +470,7 @@ class ToolRunner:
             if plan_error:
                 raise ToolError(plan_error)
             needs_confirmation = tool.needs_confirmation()
-            if needs_confirmation and self.session.settings.yolo:
+            if needs_confirmation and self.session.settings.yolo and not tool.always_confirms():
                 d.auto = True
                 pre = self.approval_display(call, tool, "auto", batch_suffix=batch_suffix, planned_edit=planned_edit)
                 # The "auto …" header duplicates the result line; only surface it when it carries a
@@ -442,7 +480,12 @@ class ToolRunner:
                     self.output_fn(pre)
                     d.nested_display = True
             elif needs_confirmation:
-                d.nested_display = True
+                if not isinstance(tool, DelegateTool):
+                    # Nested displays drop the root line to avoid duplicating the confirmation
+                    # block's own root. A Delegate send keeps its root: the finish block is the
+                    # closing marker of the delegation bracket and must carry the same yellow
+                    # [worker] identity as the start marker.
+                    d.nested_display = True
                 confirmed, reason = self.confirm(call, tool, batch_suffix=batch_suffix, planned_edit=planned_edit)
                 if not confirmed:
                     output = "Cancelled: user refused tool call" + ((": " + reason) if reason else "")
@@ -534,12 +577,62 @@ class ToolRunner:
         CodeIndex(self.session).update(list(dict.fromkeys(paths)))
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
-        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
-        answer = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + "[Y/n or reason] ").strip()
-        lower = answer.lower()
-        if lower in {"", "y", "yes"}:
-            return True, ""
-        return False, "" if lower in {"n", "no"} else answer
+        while True:
+            self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
+            always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
+            answer = self.input_fn(
+                LogBlock.prefix(2, LogEdge.CONTINUE) + ("Approve delegation? [Y/n/c] " if always_option else "Approve? [Y/n or reason] ")
+            ).strip()
+            lower = answer.lower()
+            if always_option and lower in {"c", "config"}:
+                # The whole-line `c`/`config` opens the worker configuration loop; anything else
+                # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
+                self.delegate_config_cycle()
+                continue  # redraw the approval brief and re-ask
+            if lower in {"", "y", "yes"}:
+                return True, ""
+            return False, "" if lower in {"n", "no"} else answer
+
+    def delegate_config_cycle(self) -> None:
+        """The `c` action of a Delegate send prompt: show the worker's provider/model/effort/api,
+        then hand the interactive editing to the injected picker loop (CommandLoop.run_worker_config),
+        which reuses the shared choice selector and writes back through the /worker pickers. Without
+        an injected picker (headless, or a runner outside CommandLoop) this only prints the current
+        values; the confirmation prompt re-asks either way."""
+        self.output_fn(self.worker_config_block())
+        if self.worker_config_picker is not None:
+            self.worker_config_picker()
+
+    def worker_config_block(self) -> LogBlock:
+        """The current effective worker config as a log block: one row per knob, inherited values
+        marked `(inherit)`, matching the approval brief's four worker rows (same cyan aligned
+        labels)."""
+        return LogBlock(
+            [
+                LogLine("worker config", "", LogRole.FIELD, LogEdge.BRANCH),
+                *(LogLine(label, value, LogRole.FIELD, LogEdge.CONTINUE) for label, value in self._field_pairs(self.worker_config_rows())),
+            ]
+        )
+
+    def worker_config_rows(self) -> list[tuple[str, str]]:
+        """The effective worker provider/model/effort/api as (label, value) rows; a field that
+        inherits the provider entry's own value is shown as `(inherit) <value>`."""
+        config = self.session.config
+        provider_name = config.worker_provider or config.active_provider
+        entry = config.providers[provider_name]
+        return [
+            ("provider", config.worker_provider or f"(inherit) {provider_name}"),
+            ("model", config.worker_model or f"(inherit) {entry.model or '(no model)'}"),
+            ("effort", config.worker_reasoning or f"(inherit) {entry.reasoning}"),
+            ("api", config.worker_api or f"(inherit) {entry.api}"),
+        ]
+
+    @staticmethod
+    def _field_pairs(rows: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Pad each label to the widest label in the block, CJK-safe (visible width via
+        get_cwidth), so the values start on one column."""
+        width = max(get_cwidth(label) for label, _ in rows) if rows else 0
+        return [(label + " " * max(0, width - get_cwidth(label)), value) for label, value in rows]
 
     def approval_display(
         self,
@@ -552,14 +645,46 @@ class ToolRunner:
         role = LogRole.TOOL if status == "confirm" else LogRole.AUTO
         root = self.log_root(self.short_call(call), role, batch_suffix, call)
         children = []
-        if tool.NAME != "Edit":
-            return LogBlock.hierarchy(root, children)
-        preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
-        preview_lines = preview.rstrip().splitlines()
-        if preview_lines:
-            children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
-            children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
+        if isinstance(tool, DelegateTool) and tool.always_confirms():
+            children.extend(self.delegate_approval_children(tool))
+        elif tool.NAME == "Edit":
+            preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
+            preview_lines = preview.rstrip().splitlines()
+            if preview_lines:
+                children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
+                children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
         return LogBlock.hierarchy(root, children)
+
+    def delegate_approval_children(self, tool: DelegateTool) -> list[LogLine]:
+        """Approval brief for a Delegate send: title, a one-line order excerpt, explicit send
+        parameters, and the worker configuration the send will run under, followed by a key
+        legend. FIELD-role rows render cyan left-aligned labels (padded to one column, CJK-safe)
+        with default-foreground values; everything is derived from the call and the session
+        config, never from mutable worker state."""
+        payload = tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
+        rows: list[tuple[str, str]] = []
+        title = payload.get("title")
+        if isinstance(title, str) and title.strip():
+            rows.append(("title", self.oneline(title.strip(), 120)))
+        order = payload.get("order")
+        if isinstance(order, str) and order.strip():
+            lines = order.strip().splitlines()
+            text = self.oneline(lines[0].strip(), 100)
+            if len(lines) > 1:
+                text += f"  (… {len(lines) - 1} more lines)"
+            rows.append(("order", text))
+        language = payload.get("language")
+        if isinstance(language, str) and language.strip():
+            rows.append(("language", self.oneline(language.strip(), 60)))
+        if payload.get("max_steps") is not None:
+            rows.append(("max_steps", str(payload["max_steps"])))
+        rows.extend(self.worker_config_rows())
+        children = [
+            LogLine(label, value, LogRole.FIELD, LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
+            for index, (label, value) in enumerate(self._field_pairs(rows))
+        ]
+        children.append(LogLine("", "Y/Enter approve · n refuse · c worker config · else reason", LogRole.META, LogEdge.END))
+        return children
 
     def finish_display(
         self,
@@ -575,8 +700,19 @@ class ToolRunner:
         if call.name == "Note" and not failed and d.display:
             return self.with_batch_suffix(d.display.removeprefix("Note ").strip(), d.batch_suffix)
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
-        tree = d.nested_display or call.name == "Bash"
+        tree = d.nested_display or call.name in ("Bash", "Delegate")
         root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
+        is_reset = call.name == "Delegate" and not failed and 'action="reset"' in output
+        if call.name == "Delegate" and not failed and not is_reset:
+            # The delegation bracket: the start marker opens with the yellow full-width rule; the
+            # finish closes it with the sibling rule carrying the done summary. Without a wired
+            # worker_rule the finish block falls back to the "[worker] ◀" root line with the detail
+            # in the child lines below. Reset is a one-shot tool call, not a bracket: it keeps its
+            # ordinary tool root and does not print a full-width rule.
+            if self.worker_rule is not None:
+                root = None
+            else:
+                root = self.log_root("[worker] ◀", LogRole.WORKER, d.batch_suffix, call)
         children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
@@ -593,9 +729,40 @@ class ToolRunner:
                 children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         elif call.name == "Ask":
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
+        elif call.name == "Delegate":
+            if 'action="reset"' in output:
+                # Reset is a one-shot tool call, not a delegation bracket: it keeps its ordinary
+                # tool root (above) and only adds a plain done child stating what it cleared and
+                # what survives. No full-width `worker reset` rule runs.
+                children.append(LogLine("done", "worker context cleared; file changes and merged diffs kept", LogRole.META, LogEdge.BRANCH))
+            else:
+                summary = self.delegate_result_summary(output)
+                if summary:
+                    if self.worker_rule is not None:
+                        fields = self.delegate_result_fields(output)
+                        # `summary` only renders when the envelope parsed, so fields is never None
+                        # here; the guard exists for the type checker.
+                        if fields is not None:
+                            steps, worker_elapsed, files, in_tokens, out_tokens, _ = fields
+                            title = ""
+                            if call.args and isinstance(call.args[0], dict):
+                                raw_title = call.args[0].get("title")
+                                title = raw_title.strip() if isinstance(raw_title, str) else ""
+                            parts = ([title] if title else []) + [f"steps {steps}", worker_elapsed]
+                            if in_tokens:
+                                parts.append(f"{in_tokens} in / {out_tokens} out")
+                            if files != "(none)":
+                                parts.append(files if len(files) <= 48 else files[:47].rstrip() + "…")
+                            self.worker_rule("worker done · " + " · ".join(parts))
+                    else:
+                        children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
+                    preview = self.delegate_answer_preview(output)
+                    if preview:
+                        children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
-        elif not tree:
+        elif not tree and root is not None:
+            # root can be None only on the Delegate worker_rule path, where tree is always True.
             tail = ((" → " + key) if key else "") + tag
             root = LogLine(root.label, root.text, root.role, meta=root.meta + tail, syntax=root.syntax)
         return LogBlock.hierarchy(None if d.nested_display else root, children)
@@ -677,6 +844,59 @@ class ToolRunner:
         if elapsed is not None:
             parts.append(f"{elapsed:.1f}s")
         return "→ " + " · ".join(parts)
+
+    def delegate_result_fields(self, output: str) -> tuple[str, str, str, str, str, bool] | None:
+        """Parse a finished Delegate send envelope into its display fields.
+
+        Returns (steps, elapsed, files, in_tokens, out_tokens, stopped) or None when the envelope
+        is missing. Shared by delegate_result_summary (the fallback child line) and the finish
+        rule label, so both show the same numbers.
+        """
+        match = self.DELEGATE_META_RE.search(output)
+        if not match:
+            return None
+        steps, elapsed, files, stopped, tokens = match.groups()
+        if tokens is not None:
+            in_tokens, out_tokens = tokens.split("/", 1)
+            in_tokens = self.token_count(int(in_tokens))
+            out_tokens = self.token_count(int(out_tokens))
+        else:
+            in_tokens = out_tokens = ""
+        return steps, elapsed, files, in_tokens, out_tokens, stopped == "true"
+
+    def delegate_result_summary(self, output: str) -> str:
+        """The one-line summary of a finished Delegate send, from its envelope attributes."""
+        fields = self.delegate_result_fields(output)
+        if fields is None:
+            return ""
+        steps, elapsed, files, in_tokens, out_tokens, stopped = fields
+        parts = [f"steps {steps}", elapsed, files]
+        if in_tokens:
+            parts.append(f"{in_tokens} in / {out_tokens} out")
+        if stopped:
+            parts.append("stopped at max steps")
+        return " · ".join(parts)
+
+    @staticmethod
+    def token_count(value: int) -> str:
+        """Human-readable token count, same format as /status: 1.0M, 1.5K, or the bare number."""
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K"
+        return str(value)
+
+    def delegate_answer_preview(self, output: str) -> str:
+        """The worker's answer (the text between <worker> and </worker>), bounded like the Bash
+        transcript preview: clipped per line and capped at BASH_TRANSCRIPT_PREVIEW_LINES."""
+        start = output.find("<worker>")
+        end = output.find("</worker>")
+        if start < 0 or end <= start:
+            return ""
+        answer = output[start + len("<worker>") : end].strip()
+        if not answer:
+            return ""
+        return "\n".join(self.preview_lines(answer, self.BASH_TRANSCRIPT_PREVIEW_LINES))
 
     @staticmethod
     def human_size(num_bytes: int) -> str:
