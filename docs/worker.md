@@ -24,9 +24,9 @@ that entry and turn on `[runtime] worker`:
 active = "default"
 
 [provider.default]
-url = "https://api.anthropic.com"
-key = "sk-ant-..."
-model = "claude-sonnet-4"
+url = "https://api.openai.com"
+key = "sk-..."
+model = "gpt-5.5"
 
 # A faster, cheaper entry for the worker, from a different vendor.
 [provider.deepseek]
