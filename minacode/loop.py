@@ -559,13 +559,13 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
 
     def queue_divider_fragments(self, queued: int = 0) -> StyleAndTextTuples:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
-        if status == "working":
+        if status in {"working", "retrying"}:
             retry_status = self.status_bar.retry_status()
             attempt_status = self.status_bar.model_attempt_status()
             with self.model_stream_lock:
                 phase = self.model_stream_kind
             activity = retry_status or (
-                ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or "working") + (" · " + attempt_status if attempt_status else "")
+                ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or status) + (" · " + attempt_status if attempt_status else "")
             )
             label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
         else:

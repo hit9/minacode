@@ -29,7 +29,10 @@
   pacing changed: which failures are retryable is untouched, and a single aberrant header cannot
   stall the CLI.
 - A retry backoff wait now shows as its own live phase (`retrying`) instead of claiming the agent is
-  `working`, mirroring the existing compaction phase; the status bar keeps the reason and countdown.
+  `working`, mirroring the existing compaction phase. While the wait lasts, the divider shows the
+  `retrying` label with the attempt count, reason, and a live countdown for its whole duration, no
+  longer capped by the two-second notice window; the notice still lingers for two seconds after the
+  wait ends, and the status bar keeps `attempt N/6`.
 - Reword the Edit `start`/`end` anchor parameter descriptions: the anchor must be the exact current
   `line:hash` value copied verbatim from Read, Search, or InspectCode, never invented or calculated,
   and re-read after any file change or stale-anchor error. The old wording only named the format and

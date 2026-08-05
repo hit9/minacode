@@ -968,7 +968,12 @@ class StatusBar:
         return f"attempt {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else ""
 
     def retry_status(self) -> str:
-        if not self.retry_notice_active():
+        # The two-second notice window covers the brief aftermath after a wait ends. While the wait
+        # itself is in progress (its monotonic deadline is still in the future) the full text
+        # (attempt, reason, countdown) must keep showing for its whole duration, which can far
+        # outlast that window.
+        waiting = self.session.state.model_retry_until > time.monotonic()
+        if not waiting and not self.retry_notice_active():
             return ""
         attempt = self.session.state.current_model_attempt
         text = f"retrying {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else "retrying"
