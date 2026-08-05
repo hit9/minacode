@@ -1005,9 +1005,9 @@ class StatusBar:
         # _active_turn_messages in finish_turn, so the moment the worker answers, the bar returns
         # to the parent's provider/model/usage exactly as if no worker existed. An idle worker no
         # longer shadows the parent's row.
-        inflight = worker is not None and bool(worker._active_turn_messages)
-        if inflight:
-            config = worker.config
+        inflight = worker if worker is not None and bool(worker._active_turn_messages) else None
+        if inflight is not None:
+            config = inflight.config
             lead_role = "warn"
         else:
             config = self.session.config
@@ -1015,7 +1015,7 @@ class StatusBar:
         provider = config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         parts: list[tuple[str, str]] = []
-        if inflight:
+        if inflight is not None:
             parts.append(("[worker]", "worker"))
         parts += [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
 
@@ -1028,7 +1028,7 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        source = worker if inflight else self.session
+        source = inflight if inflight is not None else self.session
         usage = source.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;

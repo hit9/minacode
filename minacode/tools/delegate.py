@@ -76,10 +76,15 @@ def _worker_stream(runner: ToolRunner):
     model_stream_output would have done with the forwarded kind anyway."""
 
     def stream(kind: str, text: str) -> None:
-        if kind == "output_done":
-            runner.model_stream("", "")
+        # Read through a local so the None check narrows: the attribute is Optional on the
+        # runner, and on_stream is only wired when it is set, but the checker cannot see that here.
+        model_stream = runner.model_stream
+        if model_stream is None:
             return
-        runner.model_stream(kind, text)
+        if kind == "output_done":
+            model_stream("", "")
+            return
+        model_stream(kind, text)
 
     return stream
 

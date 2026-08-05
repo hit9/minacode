@@ -740,17 +740,20 @@ class ToolRunner:
                 if summary:
                     if self.worker_rule is not None:
                         fields = self.delegate_result_fields(output)
-                        steps, elapsed, files, in_tokens, out_tokens, _ = fields  # non-None: the same parse backed `summary`
-                        title = ""
-                        if call.args and isinstance(call.args[0], dict):
-                            raw_title = call.args[0].get("title")
-                            title = raw_title.strip() if isinstance(raw_title, str) else ""
-                        parts = ([title] if title else []) + [f"steps {steps}", elapsed]
-                        if in_tokens:
-                            parts.append(f"{in_tokens} in / {out_tokens} out")
-                        if files != "(none)":
-                            parts.append(files if len(files) <= 48 else files[:47].rstrip() + "…")
-                        self.worker_rule("worker done · " + " · ".join(parts))
+                        # `summary` only renders when the envelope parsed, so fields is never None
+                        # here; the guard exists for the type checker.
+                        if fields is not None:
+                            steps, worker_elapsed, files, in_tokens, out_tokens, _ = fields
+                            title = ""
+                            if call.args and isinstance(call.args[0], dict):
+                                raw_title = call.args[0].get("title")
+                                title = raw_title.strip() if isinstance(raw_title, str) else ""
+                            parts = ([title] if title else []) + [f"steps {steps}", worker_elapsed]
+                            if in_tokens:
+                                parts.append(f"{in_tokens} in / {out_tokens} out")
+                            if files != "(none)":
+                                parts.append(files if len(files) <= 48 else files[:47].rstrip() + "…")
+                            self.worker_rule("worker done · " + " · ".join(parts))
                     else:
                         children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
                     preview = self.delegate_answer_preview(output)
@@ -758,7 +761,8 @@ class ToolRunner:
                         children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
-        elif not tree:
+        elif not tree and root is not None:
+            # root can be None only on the Delegate worker_rule path, where tree is always True.
             tail = ((" → " + key) if key else "") + tag
             root = LogLine(root.label, root.text, root.role, meta=root.meta + tail, syntax=root.syntax)
         return LogBlock.hierarchy(None if d.nested_display else root, children)

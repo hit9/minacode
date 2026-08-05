@@ -1380,7 +1380,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             return [DISMISSED] * len(specs)
         answers: list[str] = []
         for index, spec in enumerate(specs):
-            answer = state.picked[index] if state.picked[index] is not None else spec.question
+            picked = state.picked[index]
+            answer = picked if picked is not None else spec.question
             if note := state.notes.get(index):
                 answer += "\n\nUser notes: " + note
             answers.append(answer)
@@ -2220,9 +2221,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         labels = {"default": "default - inherit the provider entry's api"}
         if current:
             labels[current] = current + " (current)"
-        return self._worker_simple_field(
-            title="Worker api", label="worker api", choices=choices, current=current, labels=labels, apply=self._worker_set_api
-        )[1]
+        return self._worker_simple_field(title="Worker api", label="worker api", choices=choices, current=current, labels=labels, apply=self._worker_set_api)[1]
 
     def _worker_set_api(self, value: str) -> str:
         if value != "default":

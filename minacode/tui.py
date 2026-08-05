@@ -1233,7 +1233,7 @@ class AskViewState:
     def preview_text(self) -> str:
         """The selected option's preview markdown, or '' when it has none."""
         spec = self.specs[self.active]
-        if not spec.previews:
+        if not spec.previews or not spec.choices:
             return ""
         choice = self.pages[self.active].selected_choice()
         if choice is None or choice not in spec.choices:
@@ -1334,14 +1334,19 @@ class AskViewState:
         as Rich emitted it."""
         lines: list[StyleAndTextTuples] = []
         current: StyleAndTextTuples = []
-        for style, chunk in to_formatted_text(ANSI(text)):
+        for fragment in to_formatted_text(ANSI(text)):
+            style = fragment[0]
+            chunk = fragment[1]
+            assert isinstance(chunk, str)  # ANSI fragments are always (style, str)
             pieces = chunk.split("\n")
             for index, piece in enumerate(pieces):
                 if index:
                     lines.append(current)
                     current = []
                 if current and current[-1][0] == style:
-                    current[-1] = (style, current[-1][1] + piece)
+                    text = current[-1][1]
+                    assert isinstance(text, str)  # ANSI fragments are always (style, str)
+                    current[-1] = (style, text + piece)
                 else:
                     current.append((style, piece))
         lines.append(current)
@@ -1356,8 +1361,9 @@ class AskViewState:
         for index in range(max(len(left), len(right))):
             left_row = left[index] if index < len(left) else []
             right_row = right[index] if index < len(right) else []
-            used = sum(get_cwidth(text) for _, text in left_row if text)
-            row: StyleAndTextTuples = [*left_row, ("", " " * max(0, left_width - used))]
+            used = sum(get_cwidth(fragment[1]) for fragment in left_row if isinstance(fragment[1], str) and fragment[1])
+            row: StyleAndTextTuples = list(left_row)
+            row.append(("", " " * max(0, left_width - used)))
             row.extend(right_row)
             rows.append(row)
         return rows
