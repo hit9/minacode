@@ -1710,3 +1710,107 @@ def test_worker_stream_forwards_output_and_suppresses_output_done_promote():
 
     assert calls == [("output", "x"), ("", ""), ("", ""), ("tool", "Bash")]
     assert all(kind != "output_done" for kind, _ in calls)
+
+
+# 30. automatic compaction on the worker: the same ContextManager path the parent uses. The
+#     budget estimate overruns, the compaction runs inline (bracketed by the on_compaction
+#     lifecycle callback), the deterministic-trim fallback carries it when the model has no
+#     `compact` (FakeModelClient does not), the compacted state persists into the worker snapshot,
+#     and the next delegation runs on the compacted context without re-compacting.
+
+
+def _worker_history_for_compaction(parent):
+    """Return the spawned worker with a fat synthetic history appended after the first send."""
+    worker = parent.worker
+    assert worker is not None
+    big = "x" * 100_000
+    worker.messages.extend(
+        [
+            {"role": "user", "content": big + " u1"},
+            {"role": "assistant", "content": big + " a1"},
+            {"role": "user", "content": big + " u2"},
+            {"role": "assistant", "content": big + " a2"},
+            {"role": "user", "content": big + " u3"},
+            {"role": "assistant", "content": big + " a3"},
+            {"role": "user", "content": "final small request"},
+        ]
+    )
+    return worker
+
+
+def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
+    from minacode.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
+
+    parent = _delegate_session(tmp_path)
+    # A real delegation first: the worker is spawned through DelegateTool._send and keeps its
+    # agent (ModelClient + ContextManager). The budget must be tight enough that the estimate
+    # overruns it: 40k context -> 19_520 request budget (16_384 output reserve + 4_096 safety).
+    parent.settings.max_context_tokens = 40_000
+    model = FakeModelClient([({"role": "assistant", "content": "answer one"}, [], "answer one")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="order one")
+    worker = _worker_history_for_compaction(parent)
+
+    calls = []
+    worker._agent.context.on_compaction = lambda active: calls.append(active)
+    messages = worker._agent.context.prepare_messages(worker._agent.model, WORKER_PROMPT, turn_messages=None)
+
+    # One compaction, with the lifecycle callback bracketing the phase (True then False).
+    assert worker.state.compaction_count == 1
+    assert calls == [True, False]
+    # FakeModelClient has no `compact`, so the deterministic-trim fallback leaves its note in the
+    # session summary instead of calling a model.
+    assert PREVIOUS_CONTEXT_TRIMMED in worker.state.summary
+    # The compacted head is replaced by a single checkpoint marker: 9 messages -> summary + keep.
+    assert len(worker.messages) == 2
+    assert any(str(m.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE) for m in worker.messages)
+    # The oversized history is gone from the projection, while the checkpoint survives; the
+    # compacted head was stored as a recallable history segment.
+    projected = [str(m.get("content") or "") for m in messages]
+    assert any(content.startswith(COMPACTION_SUMMARY_TITLE) for content in projected)
+    assert not any("u1" in content for content in projected)
+    assert worker.history and worker.history[-1].key == "seg.1"
+    # The overdue-by-usage guard resets: compaction clears the last-* usage fields.
+    assert worker.usage.last_prompt_budget == 0
+
+
+def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, monkeypatch):
+    from minacode.prompts import COMPACTION_SUMMARY_TITLE, PREVIOUS_CONTEXT_TRIMMED
+    from minacode.session import SessionSnapshotStore
+
+    parent = _delegate_session(tmp_path)
+    parent.settings.max_context_tokens = 40_000
+    model = FakeModelClient(
+        [
+            ({"role": "assistant", "content": "answer one"}, [], "answer one"),
+            ({"role": "assistant", "content": "answer two"}, [], "answer two"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    _delegate_call(parent, runner, action="send", order="order one")
+    worker = _worker_history_for_compaction(parent)
+
+    worker._agent.context.prepare_messages(worker._agent.model, WORKER_PROMPT, turn_messages=None)
+    assert worker.state.compaction_count == 1
+
+    # Persistence: the snapshot holds the compacted state, not the pre-compaction history.
+    worker.save_snapshot()
+    loaded = SessionSnapshotStore.load(worker.uid, config=worker.config, settings=worker.settings, cwd=worker.cwd)
+    assert loaded.state.compaction_count == 1
+    assert PREVIOUS_CONTEXT_TRIMMED in loaded.state.summary
+    assert [m.get("content") for m in loaded.messages[:2]] == [m.get("content") for m in worker.messages]
+    assert not any("x" * 1000 in str(m.get("content") or "") for m in loaded.messages)
+
+    # Continuity: the next delegation runs on the compacted context (summary in, oversized
+    # history out) and does not re-compact.
+    calls = []
+    worker._agent.context.on_compaction = lambda active: calls.append(active)
+    _delegate_call(parent, runner, action="send", order="order two")
+    assert calls == []
+    assert worker.state.compaction_count == 1
+    second = json.dumps(model.requests[1])
+    assert COMPACTION_SUMMARY_TITLE in second
+    assert "order two" in second
+    assert "x" * 200 not in second
