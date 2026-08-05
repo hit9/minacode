@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.21.0 - 2026-08-04
+
 ### Added
 - A `[runtime] language` key and a `/language [NAME]` command force the reply language for the
   session. `auto` (the default) injects nothing, keeping requests byte-identical to before; a
