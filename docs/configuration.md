@@ -138,48 +138,21 @@ Optional; the defaults shown are used when omitted.
 Selected tuning values can be changed for the current session with `/set` (Tab completion
 lists the supported keys). `/yolo` toggles `yolo`.
 
-(worker-delegation)=
 ## Worker delegation
 
-With `[worker] provider` set and `runtime.worker` on, the model gains a `Delegate` tool that hands a
-bounded task to a second session **in the same process** (the worker). The worker runs on its own
-configured provider — usually a different vendor than `provider.active`, so its reviews
-cross-validate the parent's — with its own system prompt and a reduced tool set, and it keeps its
-context across delegations until you reset it.
+The `Delegate` tool and `/worker` command hand bounded tasks to a second in-process session.
+Concepts, quick start, and what you see in the terminal: [Worker delegation](worker.md).
 
-```toml
-[worker]
-provider = "anthropic"   # worker provider key; unset disables delegation
-model = ""               # optional: override the entry's model (inherit by default)
-reasoning = ""           # optional: override the entry's reasoning effort (inherit by default)
-api = ""                 # optional: override the entry's wire protocol (inherit by default)
+Worker keys inherit the `[worker]` provider entry by default:
 
-[runtime]
-worker = true            # or /worker on
-```
+| Key | Default | Meaning |
+|---|---|---|
+| `[worker] provider` | — | Worker provider entry key; unset disables delegation |
+| `[worker] model` | inherit | Override the entry's model; empty inherits |
+| `[worker] reasoning` | inherit | Override the entry's reasoning effort; empty inherits |
+| `[worker] api` | inherit | Override the entry's wire protocol; empty inherits |
 
-A `Delegate` call runs to completion before the parent's turn continues: you see the worker's
-progress in the status bar, and the worker's final text is returned to the parent model, which
-decides what to do next. A worker is a full minacode session — compaction, Recall, tools, skills,
-confirmation — projected from the parent's state: it shares the parent's cwd, environment, Note
-tool, skill library, and MCP servers, but only files and the repo really belong to both.
-
-`/worker` shows status, `/worker on`/`/worker off` toggle `runtime.worker` for the session, and
-`/worker reset` clears the worker's context. Turning delegation off or resetting the worker never
-removes file changes or merged diffs — the worker owns only its conversation, and reset drops that
-conversation (and the wrong beliefs it may have accumulated) on purpose.
-
-The worker's provider, model, reasoning effort, and wire protocol can be changed at runtime,
-mirroring the parent's `/provider` `/model` `/reason` `/api` temporary switches: `/worker provider NAME`
-re-targets the worker (`/worker provider off` clears the entry), `/worker model MODEL`,
-`/worker reason EFFORT`, and `/worker api API` override the entry's model, reasoning effort,
-and wire protocol, and `default` in place of a value clears an override. A change applies to a live
-worker immediately and to future spawns, and is session-scoped like `/provider` — it is not
-written back to the config file.
-The `Delegate` tool block is fixed at session start from `[worker] provider`: changing the provider
-mid-session tunes an already-enabled delegation, but enabling delegation from scratch (provider
-unset at start) takes effect after a restart. Set the same defaults persistently with the
-`[worker] model`, `[worker] reasoning`, and `[worker] api` keys above.
+`[runtime] worker` and `[runtime] language` are in the [Runtime](#runtime) table above.
 
 ## Data location
 

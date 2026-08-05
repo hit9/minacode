@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-02 00:58-0700\n"
+"POT-Creation-Date: 2026-08-05 01:11-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -18,11 +18,11 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: ../../index.md:58
+#: ../../index.md:59
 msgid "Guide"
 msgstr "指南"
 
-#: ../../index.md:68
+#: ../../index.md:69
 msgid "Reference"
 msgstr "参考"
 
@@ -148,6 +148,16 @@ msgid "Connect external Model Context Protocol servers and use their tools."
 msgstr "连接外部 Model Context Protocol server 并使用其工具。"
 
 #: ../../index.md:40
+msgid "**[Worker](worker.md)**"
+msgstr "**[Worker](worker.md)**"
+
+#: ../../index.md:40
+msgid ""
+"Delegate bounded tasks to a second in-process session on its own "
+"provider, with context kept until reset."
+msgstr "把有边界的任务委派给同一进程内、运行在独立 provider 上的第二个会话，上下文保留到重置为止。"
+
+#: ../../index.md:40
 msgid "**[Skills](skills.md)**"
 msgstr "**[Skills](skills.md)**"
 
@@ -162,4 +172,3 @@ msgstr "**[配置](configuration.md)**"
 #: ../../index.md:40
 msgid "Providers, runtime settings, and data location."
 msgstr "Provider、runtime 设置和数据目录。"
-

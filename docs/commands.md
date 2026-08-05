@@ -96,17 +96,12 @@ without the cascade, while `provider off` clears the entry. `model`, `reason`, a
 from the worker's entry models, reasoning efforts, and wire protocols (`auto`, `chat`,
 `responses`, `anthropic`), with `default` clearing an override back to inheriting the
 provider entry's value; tab completion offers the subcommands and their values. The `Delegate`
-tool block itself is fixed when the session starts from the configured `[worker] provider`:
-switching the provider mid-session tunes an already-enabled delegation, but enabling delegation
-from scratch takes effect after a restart. See [Worker
-delegation](configuration.md#worker-delegation).
+tool block is fixed when the session starts — see [Worker
+delegation](worker.md#worker-delegation).
 
-A `Delegate send` is confirmed even under `yolo` — the prompt shows the order, the one cheap
-check on a spec the model wrote for itself. The confirmation prints an approval brief: the
-title, an excerpt of the first order lines, any explicit `language` or `max_steps`, and the
-effective worker provider/model/effort/api. `c` opens a small loop that adjusts those worker
-settings before you decide; every send asks, and a refused send feeds your reason back to the
-model.
+A `Delegate send` is confirmed even under `yolo` — the approval brief is the one cheap check on a
+spec the model wrote for itself; see [Worker delegation](worker.md#worker-delegation). Every
+send asks, and a refused send feeds your reason back to the model.
 
 **`/language [NAME]`** — Show or force the session's reply language. Without an argument it
 prints the current value (`auto` by default). With a name like `Chinese` it appends one fixed

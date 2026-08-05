@@ -116,7 +116,7 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 * - **`Delegate`**
   - Hands a bounded task to a second in-process session (the worker) that runs on its own
     configured provider with a reduced tool set, keeping its context across delegations until
-    reset. It appears only when [worker delegation](configuration.md#worker-delegation) is
+    reset. It appears only when [worker delegation](worker.md#worker-delegation) is
     enabled.
 ::::
 

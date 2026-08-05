@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-04 23:46-0700\n"
+"POT-Creation-Date: 2026-08-05 01:11-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -581,15 +581,15 @@ msgstr "让模型委派给同一进程内的第二个会话；见下文"
 msgid "`language`"
 msgstr "`language`"
 
-
 #: ../../configuration.md
 msgid ""
 "Force the reply language (`auto` follows your messages and injects "
 "nothing); set a name like `Chinese` to append a fixed `LANGUAGE OVERRIDE`"
 " block to the system prompt. Change for the current session with "
 "`/language`"
-msgstr "强制回复语言(`auto` 跟随你的消息、不注入任何内容);设置语言名(如 `Chinese`)会在系统提示词尾部追加一个固定的 `LANGUAGE O"
-"VERRIDE` 块。可用 `/language` 为当前会话修改"
+msgstr ""
+"强制回复语言(`auto` 跟随你的消息、不注入任何内容);设置语言名(如 `Chinese`)会在系统提示词尾部追加一个固定的 "
+"`LANGUAGE OVERRIDE` 块。可用 `/language` 为当前会话修改"
 
 #: ../../configuration.md:138
 msgid ""
@@ -597,82 +597,68 @@ msgid ""
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:142
+#: ../../configuration.md:141
 msgid "Worker delegation"
 msgstr "Worker 委派"
 
-#: ../../configuration.md:144
+#: ../../configuration.md:143
 msgid ""
-"With `[worker] provider` set and `runtime.worker` on, the model gains a "
-"`Delegate` tool that hands a bounded task to a second session **in the "
-"same process** (the worker). The worker runs on its own configured "
-"provider — usually a different vendor than `provider.active`, so its "
-"reviews cross-validate the parent's — with its own system prompt and a "
-"reduced tool set, and it keeps its context across delegations until you "
-"reset it."
-msgstr ""
-"设置 `[worker] provider` 且启用 `runtime.worker` 后，模型获得一个 `Delegate` "
-"工具，可将有限的任务交给**同一进程内**的第二个会话（worker）。worker 使用自己配置的 provider——通常是与 "
-"`provider.active` "
-"不同的厂商，以便它的审查与父会话互相验证——使用自己的系统提示和精简的工具集，并在各次委派之间保留上下文，直到你重置它。"
+"The `Delegate` tool and `/worker` command hand bounded tasks to a second "
+"in-process session. Concepts, quick start, and what you see in the "
+"terminal: [Worker delegation](worker.md)."
+msgstr "`Delegate` 工具和 `/worker` 命令把有边界的任务交给同一进程内的第二个会话。概念、快速上手和终端里的实际表现：[Worker 委派](worker.md)。"
 
-#: ../../configuration.md:161
+#: ../../configuration.md:146
+msgid "Worker keys inherit the `[worker]` provider entry by default:"
+msgstr "worker 键默认继承 `[worker]` provider 条目："
+
+#: ../../configuration.md
+msgid "`[worker] provider`"
+msgstr "`[worker] provider`"
+
+#: ../../configuration.md
+msgid "Worker provider entry key; unset disables delegation"
+msgstr "worker 的 provider 条目键；不设置则禁用委派"
+
+#: ../../configuration.md
+msgid "`[worker] model`"
+msgstr "`[worker] model`"
+
+#: ../../configuration.md
+msgid "inherit"
+msgstr "继承"
+
+#: ../../configuration.md
+msgid "Override the entry's model; empty inherits"
+msgstr "覆盖条目的模型；留空则继承"
+
+#: ../../configuration.md
+msgid "`[worker] reasoning`"
+msgstr "`[worker] reasoning`"
+
+#: ../../configuration.md
+msgid "Override the entry's reasoning effort; empty inherits"
+msgstr "覆盖条目的推理力度；留空则继承"
+
+#: ../../configuration.md
+msgid "`[worker] api`"
+msgstr "`[worker] api`"
+
+#: ../../configuration.md
+msgid "Override the entry's wire protocol; empty inherits"
+msgstr "覆盖条目的线上协议；留空则继承"
+
+#: ../../configuration.md:155
 msgid ""
-"A `Delegate` call runs to completion before the parent's turn continues: "
-"you see the worker's progress in the status bar, and the worker's final "
-"text is returned to the parent model, which decides what to do next. A "
-"worker is a full minacode session — compaction, Recall, tools, skills, "
-"confirmation — projected from the parent's state: it shares the parent's "
-"cwd, environment, Note tool, skill library, and MCP servers, but only "
-"files and the repo really belong to both."
-msgstr ""
-"`Delegate` 调用会完整执行完毕后父会话才继续：你可以在状态栏看到 worker 的进度，worker "
-"的最终文本会返回给父模型，由它决定下一步。worker 是一个完整的 minacode "
-"会话——压缩、Recall、工具、技能、确认——从父会话的状态投影而来：它共享父会话的 cwd、环境、Note 工具、技能库和 MCP "
-"server，但真正同时属于双方的只有文件和仓库。"
+"`[runtime] worker` and `[runtime] language` are in the "
+"[Runtime](#runtime) table above."
+msgstr "`[runtime] worker` 和 `[runtime] language` 见上方[运行时](#runtime)表格。"
 
-#: ../../configuration.md:167
-msgid ""
-"`/worker` shows status, `/worker on`/`/worker off` toggle "
-"`runtime.worker` for the session, and `/worker reset` clears the worker's"
-" context. Turning delegation off or resetting the worker never removes "
-"file changes or merged diffs — the worker owns only its conversation, and"
-" reset drops that conversation (and the wrong beliefs it may have "
-"accumulated) on purpose."
-msgstr ""
-"`/worker` 显示状态，`/worker on`/`/worker off` 切换当前 session 的 "
-"`runtime.worker`，`/worker reset` 清除 worker 的上下文。关闭委派或重置 worker "
-"都不会删除文件改动或已合并的 diff——worker 只拥有自己的对话，而重置正是有意丢弃这段对话（以及它可能积累的错误认知）。"
-
-#: ../../configuration.md:172
-msgid ""
-"The worker's provider, model, reasoning effort, and wire protocol can be "
-"changed at runtime, mirroring the parent's `/provider` `/model` `/reason`"
-" `/api` temporary switches: `/worker provider NAME` re-targets the worker"
-" (`/worker provider off` clears the entry), `/worker model MODEL`, "
-"`/worker reason EFFORT`, and `/worker api API` override the entry's "
-"model, reasoning effort, and wire protocol, and `default` in place of a "
-"value clears an override. A change applies to a live worker immediately "
-"and to future spawns, and is session-scoped like `/provider` — it is not "
-"written back to the config file. The `Delegate` tool block is fixed at "
-"session start from `[worker] provider`: changing the provider mid-session"
-" tunes an already-enabled delegation, but enabling delegation from "
-"scratch (provider unset at start) takes effect after a restart. Set the "
-"same defaults persistently with the `[worker] model`, `[worker] "
-"reasoning`, and `[worker] api` keys above."
-msgstr "worker 的 provider、模型、推理强度与 wire 协议可以在运行时修改,与父级的 `/provider` `/model` `/reaso"
-"n` `/api` 临时切换保持一致:`/worker provider NAME` 重新指定 worker(`/worker provider off"
-"` 清除条目),`/worker model MODEL`、`/worker reason EFFORT` 与 `/worker api API` 覆盖"
-"条目的模型、推理强度与 wire 协议,以 `default` 代替值即可清除覆盖。修改立即作用于当前 worker,也对未来的生成生效,并且与 `/p"
-"rovider` 一样是 session 级的——不会写回配置文件。`Delegate` 工具块在会话启动时根据 `[worker] provider`"
-" 固定:会话中途更换 provider 只能调优已启用的委派,从头启用委派(启动时未设置 provider)需要重启后生效。持久化设置同样的默认值,请使"
-"用上文的 `[worker] model`、`[worker] reasoning` 与 `[worker] api` 键。"
-
-#: ../../configuration.md:184
+#: ../../configuration.md:157
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:191
+#: ../../configuration.md:164
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -683,7 +669,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:195
+#: ../../configuration.md:168
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -693,7 +679,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:199
+#: ../../configuration.md:172
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "
@@ -701,254 +687,3 @@ msgid ""
 msgstr ""
 "`<data_dir>/history.txt` 保存所有项目共用的输入历史，供 Up 与 Ctrl-P 调取。该文件上限为 512 "
 "KB，仅保留最近的条目。"
-
-#~ msgid "Cap on output tokens (omit to use the server default)"
-#~ msgstr "输出 token 上限；省略则使用 server 默认值"
-
-#~ msgid "`128000`"
-#~ msgstr "`128000`"
-
-#~ msgid "Context budget before automatic compaction"
-#~ msgstr "触发自动 compact 前的 context 预算"
-
-#~ msgid "Providers"
-#~ msgstr "Provider"
-
-#~ msgid ""
-#~ "Switch providers within a session with"
-#~ " `/provider [NAME]` and models with "
-#~ "`/model [MODEL]`."
-#~ msgstr "在 session 中使用 `/provider [NAME]` 切换 provider，使用 `/model [MODEL]` 切换模型。"
-
-#~ msgid "`url`"
-#~ msgstr "`url`"
-
-#~ msgid "—"
-#~ msgstr "—"
-
-#~ msgid "Base URL of the API"
-#~ msgstr "API 的 base URL"
-
-#~ msgid "`key`"
-#~ msgstr "`key`"
-
-#~ msgid "API key"
-#~ msgstr "API key"
-
-#~ msgid "`model`"
-#~ msgstr "`model`"
-
-#~ msgid "Model name"
-#~ msgstr "模型名称"
-
-#~ msgid "`api`"
-#~ msgstr "`api`"
-
-#~ msgid ""
-#~ "Request format: `auto`, `anthropic`, or "
-#~ "`chat`. `auto` picks the right one "
-#~ "for the host and model."
-#~ msgstr "请求格式：`auto`、`anthropic` 或 `chat`；`auto` 根据 host 和模型选择。"
-
-#~ msgid "`reasoning`"
-#~ msgstr "`reasoning`"
-
-#~ msgid "`medium`"
-#~ msgstr "`medium`"
-
-#~ msgid "Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`"
-#~ msgstr "Reasoning effort：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`"
-
-#~ msgid "`chat_reasoning`"
-#~ msgstr "`chat_reasoning`"
-
-#~ msgid ""
-#~ "Chat-API reasoning format: `auto`, "
-#~ "`off`, `reasoning`, `reasoning_effort`, `thinking`,"
-#~ " or `enable_thinking`"
-#~ msgstr ""
-#~ "Chat API reasoning "
-#~ "格式：`auto`、`off`、`reasoning`、`reasoning_effort`、`thinking` 或 "
-#~ "`enable_thinking`"
-
-#~ msgid "`prompt_cache_key`"
-#~ msgstr "`prompt_cache_key`"
-
-#~ msgid "Stable prompt-cache key; use `off` to disable or provide a custom key"
-#~ msgstr "稳定的 prompt-cache key；设为 `off` 可关闭，也可提供自定义值"
-
-#~ msgid "`timeout`"
-#~ msgstr "`timeout`"
-
-#~ msgid "`120`"
-#~ msgstr "`120`"
-
-#~ msgid "Request timeout, in seconds"
-#~ msgstr "请求超时秒数"
-
-#~ msgid "`available_models`"
-#~ msgstr "`available_models`"
-
-#~ msgid "Models offered by `/model`'s picker"
-#~ msgstr "`/model` 选择器中显示的模型"
-
-#~ msgid "`temperature`"
-#~ msgstr "`temperature`"
-
-#~ msgid "Sampling temperature (omit to use the server default)"
-#~ msgstr "Sampling temperature；省略则使用 server 默认值"
-
-#~ msgid "`max_tokens`"
-#~ msgstr "`max_tokens`"
-
-#~ msgid "Cap on output tokens and reserve that space during automatic compaction"
-#~ msgstr "输出 token 上限，自动 compaction 时会预留这部分空间"
-
-#~ msgid "`strict_tools`"
-#~ msgstr "`strict_tools`"
-
-#~ msgid ""
-#~ "Emit strict tool-call schemas where "
-#~ "supported (OpenAI, DeepSeek); toggle live "
-#~ "with `/strict`"
-#~ msgstr "在支持的 API（OpenAI、DeepSeek）上使用严格 tool-call schema；可通过 `/strict` 切换"
-
-#~ msgid ""
-#~ "For well-known hosts, `auto` settings"
-#~ " pick sensible defaults for you, so"
-#~ " <span class=\"marker\">`url`, `key`, and "
-#~ "`model` are usually all you need</span>."
-#~ " Anything you set explicitly is "
-#~ "always respected. Tested with DeepSeek, "
-#~ "OpenCode, Alibaba Cloud, and ZenMux; "
-#~ "other OpenAI-compatible and Anthropic "
-#~ "endpoints work too."
-#~ msgstr ""
-#~ "对于已知 host，`auto` 会选择合理默认值，所以通常<span "
-#~ "class=\"marker\">只需填写 `url`、`key` 和 "
-#~ "`model`</span>。显式设置的值始终优先。已测试 DeepSeek、OpenCode、阿里云和 "
-#~ "ZenMux；其他 OpenAI-compatible 与 Anthropic "
-#~ "endpoint 也可以使用。"
-
-#~ msgid "Host-side tools offered to the model, passed to the provider verbatim"
-#~ msgstr "提供给模型的 Provider 侧工具，原样传给 Provider"
-
-#~ msgid ""
-#~ "Some providers run tools themselves —"
-#~ " web search above all — instead "
-#~ "of asking minacode to run them; "
-#~ "see [Provider-side tools](tools.md#provider-"
-#~ "side-tools) for how they behave in"
-#~ " a session. `builtin_tools` is a list"
-#~ " of tool entries appended verbatim to"
-#~ " the `tools` array of whichever "
-#~ "protocol the provider speaks, so the "
-#~ "wire shape is the provider's own:"
-#~ msgstr ""
-#~ "部分 Provider 会自己执行工具——最典型的就是联网搜索——而不是交给 minacode "
-#~ "执行；它们在 session 中的表现见 [Provider 侧工具](tools.md"
-#~ "#provider-side-tools)。`builtin_tools` 是一组工具配置，会原样追加到"
-#~ " Provider 所用协议的 `tools` 数组中，因此其格式就是该 "
-#~ "Provider 自己的格式："
-
-#~ msgid ""
-#~ "minacode does not validate entries "
-#~ "beyond requiring a `type`, since the "
-#~ "catalog belongs to each provider; an "
-#~ "unsupported entry surfaces as that "
-#~ "provider's own error. Enabling a builtin"
-#~ " tool changes the cached prompt "
-#~ "prefix, and the prompt cache key "
-#~ "changes with it. `/config` lists what"
-#~ " is active."
-#~ msgstr ""
-#~ "除要求必须有 `type` 外，minacode 不校验条目内容，因为工具清单属于各个 "
-#~ "Provider；不支持的条目会以该 Provider 自己的报错形式呈现。启用 builtin "
-#~ "工具会改变被缓存的 prompt 前缀，prompt cache key "
-#~ "也随之改变。`/config` 会列出当前生效的配置。"
-
-#~ msgid ""
-#~ "When a provider reports its sources, "
-#~ "minacode lists them under the answer."
-#~ " Those sources are display only: the"
-#~ " stored answer stays exactly what the"
-#~ " model wrote, and nothing extra "
-#~ "replays to the provider on later "
-#~ "turns."
-#~ msgstr ""
-#~ "当 Provider 返回来源时，minacode "
-#~ "会在回答下方列出这些来源。来源仅用于展示：存入历史的回答仍然与模型所写的完全一致，后续轮次也不会因此向 Provider "
-#~ "多发送任何内容。"
-
-#~ msgid ""
-#~ "Unknown OpenAI-compatible endpoints stay "
-#~ "on the generic path. If automatic "
-#~ "protocol selection is wrong for an "
-#~ "endpoint, set `api` explicitly. `/status` "
-#~ "shows the active model and cache "
-#~ "usage reported by the provider."
-#~ msgstr ""
-#~ "未知的 OpenAI-compatible endpoint "
-#~ "会使用通用路径。如果自动选择的协议不正确，请显式设置 `api`。`/status` 会显示当前模型以及 "
-#~ "provider 报告的缓存用量。"
-
-#~ msgid ""
-#~ "Entries are protocol-specific: they "
-#~ "match the provider's documented API wire"
-#~ " and required shape, and known "
-#~ "providers only accept entries whose "
-#~ "lifecycle minacode supports. An unsupported"
-#~ " entry or a wire mismatch is "
-#~ "refused locally with an explanation "
-#~ "before the request is sent. Switching"
-#~ " `/api` may therefore require updating "
-#~ "`builtin_tools` (or `extra_body`) to match."
-#~ " `/config` lists what is active."
-#~ msgstr ""
-#~ "条目是协议相关的：它们必须匹配 Provider 文档规定的 API wire "
-#~ "和必要结构，且已知 Provider 只接受 minacode "
-#~ "已覆盖其生命周期的条目。不支持的条目或 wire 不匹配会在请求发送前本地拒绝并给出说明。切换 "
-#~ "`/api` 时可能需要同步更新 `builtin_tools`（或 "
-#~ "`extra_body`）。`/config` 会列出当前生效的配置。"
-
-#~ msgid ""
-#~ "Entries are protocol-specific: they "
-#~ "match the provider's documented API wire"
-#~ " and required shape. For a known "
-#~ "provider, entries configured for another "
-#~ "wire stay in the configuration but "
-#~ "are omitted from the request; switching"
-#~ " `/api` back activates them again. "
-#~ "This lets one provider configuration "
-#~ "serve models on different wires without"
-#~ " removing settings. `/api` reports inactive"
-#~ " entries, and `/config` shows both "
-#~ "the configured list and its active "
-#~ "projection. An entry on its intended "
-#~ "wire is still refused locally when "
-#~ "its shape or lifecycle is unsupported."
-#~ " Unknown providers retain generic pass-"
-#~ "through behavior."
-#~ msgstr ""
-#~ "条目与协议相关：必须匹配 Provider 文档规定的 API wire "
-#~ "和结构。对于已知 Provider，配置给其他 wire 的条目会保留在配置中，但不会加入当前请求；切换"
-#~ " `/api` 回去后会再次生效。这样，同一 Provider 配置便可服务使用不同 "
-#~ "wire 的模型，无须删除设置。`/api` 会报告 inactive "
-#~ "条目，`/config` 会同时显示已配置列表和当前生效的投影。条目位于其适用 wire "
-#~ "时，若结构或生命周期不受支持，仍会在本地拒绝。未知 Provider 保持通用透传行为。"
-
-#~ msgid "`8192`"
-#~ msgstr "`8192`"
-
-#~ msgid ""
-#~ "Output-token cap per model request "
-#~ "and reserved compaction space; `0` uses"
-#~ " the provider default"
-#~ msgstr "每次模型请求的输出 token 上限及 compaction 预留空间；`0` 使用 provider 默认值"
-
-#~ msgid "Total context ceiling used to calculate the automatic-compaction budget"
-#~ msgstr "用于计算自动 compaction 预算的 context 总上限"
-
-#~ msgid "`16384`"
-#~ msgstr "`16384`"
-
