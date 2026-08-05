@@ -1208,8 +1208,8 @@ class AskViewState:
 
     @classmethod
     def build(cls, specs: list[AskSpec]) -> AskViewState:
-        """One page per question; the free-text escape hatch is always offered (mirroring the old
-        choice_application(free_text=True)) and a recommended choice is pre-selected and marked."""
+        """One page per question; the free-text escape hatch is always offered and a recommended
+        choice is pre-selected and marked."""
         pages: list[ChoiceViewState] = []
         for spec in specs:
             choices = list(spec.choices) if spec.choices else []
@@ -1413,8 +1413,8 @@ class AskViewState:
             return (ASK_FREE_TEXT, self.active)
         if isinstance(result, str):
             self.picked[self.active] = result
-            if self.active == len(self.specs) - 1:
+            if all(p is not None for p in self.picked):
                 return ASK_DONE
-            self.active += 1
+            self.active = next(i for i, p in enumerate(self.picked) if p is None)
             return TUI_MODAL_PENDING
         return result  # KeyboardInterrupt and anything else pass through

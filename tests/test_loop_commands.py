@@ -764,7 +764,6 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
         "",
         set(),
         preview_fn=lambda choice: "one\\ntwo" if choice == "A" else "",
-        free_text=True,
     )
 
     assert result == "A"

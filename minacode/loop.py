@@ -1332,11 +1332,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         disabled: set[str],
         *,
         preview_fn: Callable[[str], str] | None = None,
-        free_text: bool = False,
     ) -> str | object | None:
-        if free_text and self.interactive_input:
-            choices = (*choices, ChoiceViewState.FREE_TEXT)
-            labels = {**labels, ChoiceViewState.FREE_TEXT: "Type freely..."}
         state = ChoiceViewState(choices, labels, disabled)
         options = state.enabled()
         state.selected = options.index(current) if current in options else 0
@@ -1381,7 +1377,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         answers: list[str] = []
         for index, spec in enumerate(specs):
             picked = state.picked[index]
-            answer = picked if picked is not None else spec.question
+            if picked is None:
+                # Unanswered pages should never reach here (ASK_DONE requires the whole batch
+                # answered); defensively cancel rather than leak the question text as an answer.
+                return [DISMISSED] * len(specs)
+            answer = picked
             if note := state.notes.get(index):
                 answer += "\n\nUser notes: " + note
             answers.append(answer)

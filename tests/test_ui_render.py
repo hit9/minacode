@@ -740,6 +740,35 @@ def test_ask_view_keys_navigate_advance_and_submit():
     assert state.picked[1] == "core"
 
 
+def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
+    """Tabbing to the last page and Enter must not submit a half-answered batch: it records the
+    pick and jumps back to the first unanswered page."""
+    state = AskViewState.build(
+        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
+    )
+    assert state.handle_key("tab") is TUI_MODAL_PENDING
+    assert state.handle_key("tab") is TUI_MODAL_PENDING
+    assert state.active == 2
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # picked on the last page, batch not done
+    assert state.picked[2] == "C"
+    assert state.active == 0  # first unanswered page
+
+
+def test_ask_view_out_of_order_answers_submit_when_all_answered():
+    """Answers may land in any order; the batch only submits once every page has a pick."""
+    state = AskViewState.build(
+        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
+    )
+    state.handle_key("tab")
+    state.handle_key("tab")
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # last page answered, batch not done
+    assert state.active == 0
+    assert state.handle_key("enter") is TUI_MODAL_PENDING  # page 0 picked
+    assert state.active == 1
+    assert state.handle_key("enter") is ASK_DONE  # page 1 picked: all answered
+    assert state.picked == ["A", "B", "C"]
+
+
 def test_ask_view_free_text_page_reports_and_escape_cancels():
     state = AskViewState.build([AskSpec("No choices")])
     assert state.handle_key("enter") == (ASK_FREE_TEXT, 0)
