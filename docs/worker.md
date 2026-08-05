@@ -8,29 +8,34 @@ configured provider, with its own system prompt and a reduced tool set, and keep
 across delegations until you reset it. It never calls back into the parent: every delegation is
 a serial detour whose result comes back to the parent model.
 
+The design's main motivation is pairing models by cost: a large, capable model orchestrates as
+the parent, while the worker — whose tasks are bounded and spec'd — runs on a small, cheap one,
+so the tokens a delegation burns cost a fraction of the parent's rate.
+
 ## Quick start
 
-Give the worker its own provider entry — usually a **different vendor** than `provider.active`,
-so its reviews cross-validate the parent's — then point `[worker] provider` at it and turn on
-`[runtime] worker`:
+The parent orchestrates, so it usually runs the larger model; the worker runs bounded tasks,
+so a faster, cheaper entry is enough for it — ideally from a **different vendor** than
+`provider.active`, so its reviews cross-validate the parent's. Point `[worker] provider` at
+that entry and turn on `[runtime] worker`:
 
 ```toml
 [provider]
 active = "default"
 
 [provider.default]
-url = "https://api.deepseek.com"
-key = "sk-..."
-model = "deepseek-v4-flash"
-
-# A second entry for the worker, from a different vendor.
-[provider.anthropic]
 url = "https://api.anthropic.com"
 key = "sk-ant-..."
 model = "claude-sonnet-4"
 
+# A faster, cheaper entry for the worker, from a different vendor.
+[provider.deepseek]
+url = "https://api.deepseek.com"
+key = "sk-..."
+model = "deepseek-v4-flash"
+
 [worker]
-provider = "anthropic"   # worker provider key; unset disables delegation
+provider = "deepseek"    # worker provider key; unset disables delegation
 model = ""               # optional: override the entry's model (inherit by default)
 reasoning = ""           # optional: override the entry's reasoning effort (inherit by default)
 api = ""                 # optional: override the entry's wire protocol (inherit by default)
@@ -61,7 +66,7 @@ provider and model plus the order's title (or first line), the worker's streamed
 yellow `worker done` rule with the step count, elapsed time, tokens in and out, and the files it
 touched.
 
-<div class="term-shot" role="img" aria-label="The delegation bracket: a full-width yellow worker start rule naming the worker's provider, model, and order title, a few worker tool lines beneath it, and a yellow worker done rule with step count, elapsed time, token counts, and touched files."><span class="fs-worker">──── worker start · anthropic/claude-sonnet-4 · Review the parser refactor ────</span><span class="fs-tool">  ├ Read minacode/loop.py</span><span class="fs-tool">  ├ Read tests/test_edit_tool.py</span><span class="fs-tool">  └ Bash uv run pytest tests/ -q</span><span class="fs-worker">──── worker done · steps 7 · 43.2s · 12.4K in / 1.1K out · minacode/loop.py, tests/ ────</span></div>
+<div class="term-shot" role="img" aria-label="The delegation bracket: a full-width yellow worker start rule naming the worker's provider, model, and order title, a few worker tool lines beneath it, and a yellow worker done rule with step count, elapsed time, token counts, and touched files."><span class="fs-worker">──── worker start · deepseek/deepseek-v4-flash · Review the parser refactor ────</span><span class="fs-tool">  ├ Read minacode/loop.py</span><span class="fs-tool">  ├ Read tests/test_edit_tool.py</span><span class="fs-tool">  └ Bash uv run pytest tests/ -q</span><span class="fs-worker">──── worker done · steps 7 · 43.2s · 12.4K in / 1.1K out · minacode/loop.py, tests/ ────</span></div>
 
 ### Status bar while delegating
 
@@ -69,7 +74,7 @@ While the worker runs, the status bar swaps the parent's row for the worker's: a
 marker, then the worker's provider and model, its reasoning effort, and its context fill with
 cache ratio.
 
-<div class="term-shot" role="img" aria-label="The status bar while a delegation runs: a yellow [worker] marker, then the worker's provider and model, its reasoning effort, and its context fill with cache ratio."><span><span class="fs-i fs-dim">delegating </span><span class="fs-i sb-worker">[worker]</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-warn">anthropic/claude-sonnet-4</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">high</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 41% · cache 95%</span></span></div>
+<div class="term-shot" role="img" aria-label="The status bar while a delegation runs: a yellow [worker] marker, then the worker's provider and model, its reasoning effort, and its context fill with cache ratio."><span><span class="fs-i fs-dim">delegating </span><span class="fs-i sb-worker">[worker]</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-warn">deepseek/deepseek-v4-flash</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">medium</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 41% · cache 95%</span></span></div>
 
 ### The send approval brief
 
@@ -79,7 +84,7 @@ provider/model/effort/api, with `(inherit)` marking a field that inherits the pr
 value. `c` opens a small loop that adjusts those worker settings before you decide; a refused
 send feeds your reason back to the model.
 
-<div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a key legend row."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) anthropic</span><span><span class="fs-i fs-sel">model    </span>(inherit) claude-sonnet-4</span><span><span class="fs-i fs-sel">effort   </span>(inherit) high</span><span><span class="fs-i fs-sel">api      </span>(inherit) anthropic</span><span class="fs-dim">  Y/Enter approve · n refuse · c worker config · else reason</span></div>
+<div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a key legend row."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span class="fs-dim">  Y/Enter approve · n refuse · c worker config · else reason</span></div>
 
 ## Semantics
 
