@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-03 10:59-0700\n"
+"POT-Creation-Date: 2026-08-04 23:46-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -577,17 +577,31 @@ msgstr "`worker`"
 msgid "Let the model delegate to a second in-process session; see below"
 msgstr "让模型委派给同一进程内的第二个会话；见下文"
 
-#: ../../configuration.md:137
+#: ../../configuration.md
+msgid "`language`"
+msgstr "`language`"
+
+
+#: ../../configuration.md
+msgid ""
+"Force the reply language (`auto` follows your messages and injects "
+"nothing); set a name like `Chinese` to append a fixed `LANGUAGE OVERRIDE`"
+" block to the system prompt. Change for the current session with "
+"`/language`"
+msgstr "强制回复语言(`auto` 跟随你的消息、不注入任何内容);设置语言名(如 `Chinese`)会在系统提示词尾部追加一个固定的 `LANGUAGE O"
+"VERRIDE` 块。可用 `/language` 为当前会话修改"
+
+#: ../../configuration.md:138
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:141
+#: ../../configuration.md:142
 msgid "Worker delegation"
 msgstr "Worker 委派"
 
-#: ../../configuration.md:143
+#: ../../configuration.md:144
 msgid ""
 "With `[worker] provider` set and `runtime.worker` on, the model gains a "
 "`Delegate` tool that hands a bounded task to a second session **in the "
@@ -597,12 +611,12 @@ msgid ""
 "reduced tool set, and it keeps its context across delegations until you "
 "reset it."
 msgstr ""
-"设置 `[worker] provider` 且启用 `runtime.worker` 后，模型获得一个 `Delegate` 工具，"
-"可将有限的任务交给**同一进程内**的第二个会话（worker）。worker 使用自己配置的 provider——"
-"通常是与 `provider.active` 不同的厂商，以便它的审查与父会话互相验证——"
-"使用自己的系统提示和精简的工具集，并在各次委派之间保留上下文，直到你重置它。"
+"设置 `[worker] provider` 且启用 `runtime.worker` 后，模型获得一个 `Delegate` "
+"工具，可将有限的任务交给**同一进程内**的第二个会话（worker）。worker 使用自己配置的 provider——通常是与 "
+"`provider.active` "
+"不同的厂商，以便它的审查与父会话互相验证——使用自己的系统提示和精简的工具集，并在各次委派之间保留上下文，直到你重置它。"
 
-#: ../../configuration.md:157
+#: ../../configuration.md:161
 msgid ""
 "A `Delegate` call runs to completion before the parent's turn continues: "
 "you see the worker's progress in the status bar, and the worker's final "
@@ -612,13 +626,12 @@ msgid ""
 "cwd, environment, Note tool, skill library, and MCP servers, but only "
 "files and the repo really belong to both."
 msgstr ""
-"`Delegate` 调用会完整执行完毕后父会话才继续：你可以在状态栏看到 worker 的进度，"
-"worker 的最终文本会返回给父模型，由它决定下一步。"
-"worker 是一个完整的 minacode 会话——压缩、Recall、工具、技能、确认——"
-"从父会话的状态投影而来：它共享父会话的 cwd、环境、Note 工具、技能库和 MCP server，"
-"但真正同时属于双方的只有文件和仓库。"
+"`Delegate` 调用会完整执行完毕后父会话才继续：你可以在状态栏看到 worker 的进度，worker "
+"的最终文本会返回给父模型，由它决定下一步。worker 是一个完整的 minacode "
+"会话——压缩、Recall、工具、技能、确认——从父会话的状态投影而来：它共享父会话的 cwd、环境、Note 工具、技能库和 MCP "
+"server，但真正同时属于双方的只有文件和仓库。"
 
-#: ../../configuration.md:163
+#: ../../configuration.md:167
 msgid ""
 "`/worker` shows status, `/worker on`/`/worker off` toggle "
 "`runtime.worker` for the session, and `/worker reset` clears the worker's"
@@ -627,15 +640,39 @@ msgid ""
 " reset drops that conversation (and the wrong beliefs it may have "
 "accumulated) on purpose."
 msgstr ""
-"`/worker` 显示状态，`/worker on`/`/worker off` 切换当前 session 的 `runtime.worker`，"
-"`/worker reset` 清除 worker 的上下文。关闭委派或重置 worker 都不会删除文件改动或已合并的 "
-"diff——worker 只拥有自己的对话，而重置正是有意丢弃这段对话（以及它可能积累的错误认知）。"
+"`/worker` 显示状态，`/worker on`/`/worker off` 切换当前 session 的 "
+"`runtime.worker`，`/worker reset` 清除 worker 的上下文。关闭委派或重置 worker "
+"都不会删除文件改动或已合并的 diff——worker 只拥有自己的对话，而重置正是有意丢弃这段对话（以及它可能积累的错误认知）。"
 
-#: ../../configuration.md:168
+#: ../../configuration.md:172
+msgid ""
+"The worker's provider, model, reasoning effort, and wire protocol can be "
+"changed at runtime, mirroring the parent's `/provider` `/model` `/reason`"
+" `/api` temporary switches: `/worker provider NAME` re-targets the worker"
+" (`/worker provider off` clears the entry), `/worker model MODEL`, "
+"`/worker reason EFFORT`, and `/worker api API` override the entry's "
+"model, reasoning effort, and wire protocol, and `default` in place of a "
+"value clears an override. A change applies to a live worker immediately "
+"and to future spawns, and is session-scoped like `/provider` — it is not "
+"written back to the config file. The `Delegate` tool block is fixed at "
+"session start from `[worker] provider`: changing the provider mid-session"
+" tunes an already-enabled delegation, but enabling delegation from "
+"scratch (provider unset at start) takes effect after a restart. Set the "
+"same defaults persistently with the `[worker] model`, `[worker] "
+"reasoning`, and `[worker] api` keys above."
+msgstr "worker 的 provider、模型、推理强度与 wire 协议可以在运行时修改,与父级的 `/provider` `/model` `/reaso"
+"n` `/api` 临时切换保持一致:`/worker provider NAME` 重新指定 worker(`/worker provider off"
+"` 清除条目),`/worker model MODEL`、`/worker reason EFFORT` 与 `/worker api API` 覆盖"
+"条目的模型、推理强度与 wire 协议,以 `default` 代替值即可清除覆盖。修改立即作用于当前 worker,也对未来的生成生效,并且与 `/p"
+"rovider` 一样是 session 级的——不会写回配置文件。`Delegate` 工具块在会话启动时根据 `[worker] provider`"
+" 固定:会话中途更换 provider 只能调优已启用的委派,从头启用委派(启动时未设置 provider)需要重启后生效。持久化设置同样的默认值,请使"
+"用上文的 `[worker] model`、`[worker] reasoning` 与 `[worker] api` 键。"
+
+#: ../../configuration.md:184
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:175
+#: ../../configuration.md:191
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -646,7 +683,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:179
+#: ../../configuration.md:195
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -656,7 +693,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:183
+#: ../../configuration.md:199
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "
