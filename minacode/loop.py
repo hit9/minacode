@@ -199,6 +199,59 @@ class CommandCompleter(Completer):
         return (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
 
 
+def _status_progress_bar(value: int, total: int, width: int = 14) -> str:
+    ratio = min(1.0, max(0.0, value / total)) if total else 0.0
+    eighths = int(ratio * width * 8 + 0.5)
+    full, partial = divmod(eighths, 8)
+    partials = "▏▎▍▌▋▊▉"
+    return "[" + "█" * full + (partials[partial - 1] if partial else "") + "░" * (width - full - bool(partial)) + "]"
+
+
+def _status_token_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return str(value)
+
+
+def _status_render_table(rows: list[tuple[str, str]]) -> str:
+    return "\n".join(
+        [
+            "| field | value |",
+            "| --- | --- |",
+            *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
+        ]
+    )
+
+
+def _status_model_line(config: Config) -> str:
+    active = config.provider
+    return f"`{config.active_provider}/{active.model or '(empty)'}`; `{active.resolve().api}`; `{active.reasoning}`"
+
+
+def _status_context_line(tokens: int, budget: int, percent: int) -> str:
+    return f"`{_status_progress_bar(tokens, budget)}` `~{_status_token_count(tokens)} / {_status_token_count(budget)}` (`{percent}%`)"
+
+
+def _status_cache_line(counts: ModelUsage) -> str:
+    # The read ratios carry the useful signal; the raw token pairs made this the one row that
+    # wrapped on a normal terminal. Writes stay, but only when there were any.
+    def part(label: str, cached: int, prompt: int, written: int) -> str:
+        write = f" (w {_status_token_count(written)})" if written else ""
+        return f"{label} `{cached * 100 / prompt:.1f}%`{write}"
+
+    return " ".join(
+        [
+            f"`{_status_progress_bar(counts.last_cached_prompt_tokens, counts.last_prompt_tokens)}`",
+            part("last", counts.last_cached_prompt_tokens, counts.last_prompt_tokens, counts.last_cache_write_prompt_tokens) + ";"
+            if counts.last_prompt_tokens
+            else "last `n/a`;",
+            part("session", counts.cached_prompt_tokens, counts.prompt_tokens, counts.cache_write_prompt_tokens),
+        ]
+    )
+
+
 class CommandLoop:
     """Own session behavior: read input, dispatch commands, drive turns, and route output.
 
@@ -387,6 +440,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.question_fn = self.question_interaction
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
         self.agent.tools.worker_config_picker = self.run_worker_config
+        # Worker agent lifecycle callbacks: delegate.py wires these onto the worker agent when set,
+        # so a worker's retry backoff, provider-side builtin calls, and compaction show in this TUI.
+        self.agent.tools.retry_wait = self.model_retry_wait_status
+        self.agent.tools.builtin_call = self.builtin_call_output
+        self.agent.tools.compaction = self.automatic_compaction_status
 
     def automatic_compaction_status(self, active: bool) -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""
@@ -1322,7 +1380,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             return [DISMISSED] * len(specs)
         answers: list[str] = []
         for index, spec in enumerate(specs):
-            answer = state.picked[index] or spec.question
+            answer = state.picked[index] if state.picked[index] is not None else spec.question
             if note := state.notes.get(index):
                 answer += "\n\nUser notes: " + note
             answers.append(answer)
@@ -1353,20 +1411,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return self.HELP_ENTRY_RE.sub(r"  \1  ", text)
 
     def status(self, args: str) -> str:
-        def progress_bar(value: int, total: int, width: int = 14) -> str:
-            ratio = min(1.0, max(0.0, value / total)) if total else 0.0
-            eighths = int(ratio * width * 8 + 0.5)
-            full, partial = divmod(eighths, 8)
-            partials = "▏▎▍▌▋▊▉"
-            return "[" + "█" * full + (partials[partial - 1] if partial else "") + "░" * (width - full - bool(partial)) + "]"
-
-        def token_count(value: int) -> str:
-            if value >= 1_000_000:
-                return f"{value / 1_000_000:.1f}M"
-            if value >= 1_000:
-                return f"{value / 1_000:.1f}K"
-            return str(value)
-
         usage = self.session.usage
         context_tokens = self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         context_budget = self.agent.context.request_token_budget()
@@ -1403,39 +1447,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if self.session.jobs:
             activity.append(("jobs", f"{running_jobs}/{len(self.session.jobs)}"))
 
-        def render_table(rows: list[tuple[str, str]]) -> str:
-            return "\n".join(
-                [
-                    "| field | value |",
-                    "| --- | --- |",
-                    *(f"| {name} | {Text.clean(str(value)).replace(chr(10), ' ').replace('|', chr(92) + '|')} |" for name, value in rows),
-                ]
-            )
-
-        def model_line(config: Config) -> str:
-            active = config.provider
-            return f"`{config.active_provider}/{active.model or '(empty)'}`; `{active.resolve().api}`; `{active.reasoning}`"
-
-        def context_line(tokens: int, budget: int, percent: int) -> str:
-            return f"`{progress_bar(tokens, budget)}` `~{token_count(tokens)} / {token_count(budget)}` (`{percent}%`)"
-
-        def cache_line(counts: ModelUsage) -> str:
-            # The read ratios carry the useful signal; the raw token pairs made this the one row that
-            # wrapped on a normal terminal. Writes stay, but only when there were any.
-            def part(label: str, cached: int, prompt: int, written: int) -> str:
-                write = f" (w {token_count(written)})" if written else ""
-                return f"{label} `{cached * 100 / prompt:.1f}%`{write}"
-
-            return " ".join(
-                [
-                    f"`{progress_bar(counts.last_cached_prompt_tokens, counts.last_prompt_tokens)}`",
-                    part("last", counts.last_cached_prompt_tokens, counts.last_prompt_tokens, counts.last_cache_write_prompt_tokens) + ";"
-                    if counts.last_prompt_tokens
-                    else "last `n/a`;",
-                    part("session", counts.cached_prompt_tokens, counts.prompt_tokens, counts.cache_write_prompt_tokens),
-                ]
-            )
-
         # One flat table: the session's own facts, then the parent's, then the worker's under
         # `worker*` labels. /status is an explicit query, so the worker rows appear whenever a
         # worker session exists, in flight or not.
@@ -1455,32 +1466,32 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             runtime.append("update " + update)
         rows.append(("runtime", "; ".join(f"`{value}`" for value in runtime)))
 
-        rows.append(("model", model_line(self.session.config)))
-        rows.append(("context", context_line(context_tokens, context_budget, context_percent)))
-        rows.append(("cache", cache_line(usage) if usage.prompt_tokens else "(no requests yet)"))
+        rows.append(("model", _status_model_line(self.session.config)))
+        rows.append(("context", _status_context_line(context_tokens, context_budget, context_percent)))
+        rows.append(("cache", _status_cache_line(usage) if usage.prompt_tokens else "(no requests yet)"))
         visible_activity = [(name, value) for name, value in activity if value]
         if visible_activity:
             rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
         if usage.calls:
-            rows.append(("usage", f"calls `{usage.calls}`; total `{token_count(usage.total_tokens)}`"))
+            rows.append(("usage", f"calls `{usage.calls}`; total `{_status_token_count(usage.total_tokens)}`"))
 
         worker = self.session.worker
         if worker is None:
             configured = self.session.config.worker_provider
             rows.append(("worker", "`off` — `[worker] provider` " + (f"= `{configured}`" if configured else "unset")))
-            return render_table(rows)
+            return _status_render_table(rows)
         worker_usage = worker.usage
         state = f"`{'delegating' if worker._active_turn_messages else 'idle'}`, rounds `{worker.state.round_count}`"
-        rows.append(("worker", model_line(worker.config)))
+        rows.append(("worker", _status_model_line(worker.config)))
         if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
             percent = min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)
-            context = context_line(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget, percent)
+            context = _status_context_line(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget, percent)
         else:
             context = "(no requests yet)"
         rows.append(("worker ctx", f"{context}; {state}"))
         if worker_usage.prompt_tokens:
-            rows.append(("worker cache", cache_line(worker_usage)))
-        return render_table(rows)
+            rows.append(("worker cache", _status_cache_line(worker_usage)))
+        return _status_render_table(rows)
 
     def skills_command(self, args: str) -> str:
         library = self.session.skills
@@ -2122,6 +2133,25 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             result += " (delegation is off this session; takes effect after a restart)"
         return result
 
+    def _worker_simple_field(
+        self,
+        *,
+        title: str,
+        label: str,
+        choices: tuple[str, ...],
+        current: str,
+        labels: dict[str, str],
+        apply: Callable[[str], str],
+    ) -> tuple[bool, str]:
+        """Pick one value through the shared selector and apply it; returns (set, message) so both
+        the standalone /worker pickers and the /worker provider cascade can tell a set from an
+        abort. Shared by worker model/reasoning/api: same shape, no cascade, and each `apply`
+        writes the config and refreshes a live worker itself."""
+        choice = self.select_choice(title, choices, labels=labels, current=current)
+        if not isinstance(choice, str):
+            return False, ("No change" if choice is SELECTION_BACK else (f"{label}: " + (current or "(inherit)")))
+        return True, apply(choice)
+
     def _worker_model_picker(self) -> str:
         """Standalone /worker model picker: one selection, no cascade."""
         return self._worker_model_stage()[1]
@@ -2140,10 +2170,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         choice_values = tuple(dict.fromkeys(choices))
         labels = {override: override + " (current)"} if override in choice_values else {}
         labels["default"] = "default - inherit the provider entry's model"
-        choice = self.select_choice("Worker model", choice_values, labels=labels, current=override)
-        if not isinstance(choice, str):
-            return False, ("No change" if choice is SELECTION_BACK else ("worker model: " + (override or "(inherit)")))
-        return True, self._worker_set_model(choice)
+        return self._worker_simple_field(
+            title="Worker model", label="worker model", choices=choice_values, current=override, labels=labels, apply=self._worker_set_model
+        )
 
     def _worker_set_model(self, value: str) -> str:
         if value != "default":
@@ -2167,10 +2196,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         labels = {"default": "default - inherit the provider entry's reasoning"}
         if current:
             labels[current] = current + " (current)"
-        choice = self.select_choice("Worker reasoning", choices, labels=labels, current=current)
-        if not isinstance(choice, str):
-            return False, ("No change" if choice is SELECTION_BACK else ("worker reasoning: " + (current or "(inherit)")))
-        return True, self._worker_set_reasoning(choice)
+        return self._worker_simple_field(
+            title="Worker reasoning", label="worker reasoning", choices=choices, current=current, labels=labels, apply=self._worker_set_reasoning
+        )
 
     def _worker_set_reasoning(self, value: str) -> str:
         if value != "default":
@@ -2192,10 +2220,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         labels = {"default": "default - inherit the provider entry's api"}
         if current:
             labels[current] = current + " (current)"
-        choice = self.select_choice("Worker api", choices, labels=labels, current=current)
-        if not isinstance(choice, str):
-            return "No change" if choice is SELECTION_BACK else ("worker api: " + (current or "(inherit)"))
-        return self._worker_set_api(choice)
+        return self._worker_simple_field(
+            title="Worker api", label="worker api", choices=choices, current=current, labels=labels, apply=self._worker_set_api
+        )[1]
 
     def _worker_set_api(self, value: str) -> str:
         if value != "default":

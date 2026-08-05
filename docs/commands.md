@@ -108,6 +108,13 @@ effective worker provider/model/effort/api. `c` opens a small loop that adjusts 
 settings before you decide; every send asks, and a refused send feeds your reason back to the
 model.
 
+**`/language [NAME]`** — Show or force the session's reply language. Without an argument it
+prints the current value (`auto` by default). With a name like `Chinese` it appends one fixed
+`LANGUAGE OVERRIDE` block to the tail of the system prompt, so the cacheable prompt prefix
+stays unchanged; `auto` follows your messages and injects nothing. The setting is per-session —
+it is not written back to the configuration file — and workers inherit it from the parent on
+every `Delegate` send.
+
 **`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
 used to reach the model. `/provider` and `/model` also confirm it as a step in their selection
 chain, since the right protocol depends on the model you just picked.

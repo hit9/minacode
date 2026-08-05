@@ -222,6 +222,42 @@ def test_delegate_context_continuity(tmp_path, monkeypatch):
     assert model.requests[1][0] == model.requests[0][0]  # same system prompt across delegations
 
 
+# 5b. the worker agent inherits the parent's lifecycle callbacks: retry backoff, provider-side
+#     builtin calls, and automatic compaction surface in the parent TUI. Wiring is None-guarded
+#     like model_stream: an uninjected runner leaves the worker's callbacks unset.
+def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "answer"}, [], "answer")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    retry_wait = lambda active: None
+    builtin_call = lambda label, detail: None
+    compaction = lambda active: None
+    runner.retry_wait = retry_wait
+    runner.builtin_call = builtin_call
+    runner.compaction = compaction
+
+    _delegate_call(parent, runner, action="send", order="work")
+
+    agent = parent.worker._agent
+    assert agent is not None
+    assert agent.model.on_retry_wait is retry_wait
+    assert agent.model.on_builtin_call is builtin_call
+    assert agent.context.on_compaction is compaction
+
+    # None-guard: without injected callbacks the worker's hooks stay unset.
+    parent2 = _delegate_session(tmp_path)
+    model2 = FakeModelClient([({"role": "assistant", "content": "answer"}, [], "answer")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model2)
+    runner2 = _delegate_runner(parent2)
+    _delegate_call(parent2, runner2, action="send", order="work")
+    agent2 = parent2.worker._agent
+    assert getattr(agent2.model, "on_retry_wait", None) is None
+    assert getattr(agent2.model, "on_builtin_call", None) is None
+    assert agent2.context.on_compaction is None
+
+
+
 # 5. reset: after reset, the next send carries no prior history, and the snapshot file is gone.
 def test_delegate_reset_clears_context_and_snapshot(tmp_path, monkeypatch):
     from minacode.session import SessionSnapshotStore

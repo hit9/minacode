@@ -12,7 +12,7 @@
   parent on every `Delegate` send.
 
 ### Changed
-- Confirm a `Delegate` send even under `yolo`.
+- Confirm a `Delegate` send even under `yolo`. `yolo` means "I trust you to edit files and run commands
   without asking", and those mistakes are visible in the diff or the command output at once; a
   delegation's mistake is the order text, which only surfaces a whole worker round later. The
   prompt shows the order, so it stays the one cheap check on a spec the model wrote for itself.

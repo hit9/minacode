@@ -1044,3 +1044,24 @@ def test_edit_warnings_do_not_affect_apply(tmp_path):
             Edit(op="replace", start=anchor(0, "a\n"), end=anchor(1, "b\n"), content="x\n"),
             Edit(op="replace", start=anchor(1, "b\n"), end=anchor(2, "c\n"), content="y\n"),
         ])
+
+
+def test_duplicate_lines_rule_branches():
+    """_duplicate_lines only fires on pairs that are new in `after` and neither blank nor existing
+    in `before`; it returns the warning object or None, never raising."""
+    from minacode.tools.files import _duplicate_lines
+
+    # ① an edit introducing adjacent identical non-blank lines reports duplicate-lines.
+    warning = _duplicate_lines("a\nb\n", "a\nb\nb\n")
+    assert warning is not None
+    assert warning.code == "duplicate-lines"
+    assert warning.message == "adjacent identical lines after this edit; confirm intended"
+
+    # ② a pair already adjacent in `before` is not reported.
+    assert _duplicate_lines("a\na\n", "a\na\n") is None
+
+    # ③ blank lines never report, even when the edit piles them up.
+    assert _duplicate_lines("x\n", "x\n\n\n") is None
+
+    # ④ no adjacent duplicates at all: None.
+    assert _duplicate_lines("a\nb\n", "a\nc\n") is None

@@ -790,6 +790,21 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
     assert prompts == ["\nPick?"]  # one shared-input prompt, the question spelled out again
 
 
+def test_ask_free_text_empty_answer_is_kept(tmp_path):
+    """An explicitly empty free-text answer is a legal answer: the batch must return [""] and
+    never fall back to the question text (which is only the placeholder for unanswered pages)."""
+    output = []
+    loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "", output_fn=output.append)
+    loop.interactive_input = True
+    results = iter([(ASK_FREE_TEXT, 0), ASK_DONE])
+    loop.tui = SimpleNamespace(
+        request_input=lambda prompt: "",
+        show_modal=lambda fragments_fn, key_fn: next(results),
+    )
+
+    assert loop.question_interaction([AskSpec("Pick?")]) == [""]
+
+
 def test_ask_free_text_on_last_question_submits_without_reentering_modal(tmp_path):
     """A free-text answer to the final question completes the batch right after the shared input
     row; the modal must not reopen for it (a second show_modal would fail the call-count assert)."""

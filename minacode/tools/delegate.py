@@ -241,6 +241,16 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # Reuse the parent's live region: serial delegation means only one stream at a time.
             agent.tools.live_start = runner.live_start
             agent.tools.live_output = runner.live_output
+            # Same None-guarded wiring style as model_stream: the worker is a full session, so its
+            # retry backoff, provider-side builtin calls, and automatic compaction surface in the
+            # parent TUI like the main agent's. on_queue_flush is deliberately not wired (a worker
+            # does not receive live follow-ups).
+            if runner.retry_wait is not None:
+                agent.model.on_retry_wait = runner.retry_wait
+            if runner.builtin_call is not None:
+                agent.model.on_builtin_call = runner.builtin_call
+            if runner.compaction is not None:
+                agent.context.on_compaction = runner.compaction
             worker._agent = agent
         started = time.monotonic()
         before_diffs = len(worker.turn_diffs)

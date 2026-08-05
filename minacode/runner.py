@@ -265,6 +265,13 @@ class ToolRunner:
         # Injected by CommandLoop for the Delegate worker: ModelClient only streams when on_stream
         # is set, so an unwired worker would run unstreamed and its thinking would stay invisible.
         self.model_stream: Callable[[str, str], None] | None = None
+        # Injected by CommandLoop: lifecycle callbacks the worker agent must see, so retry backoff,
+        # provider-side builtin calls, and automatic compaction of the worker show up in the parent
+        # TUI exactly as they do for the main agent. None degrades to the default (unstreamed,
+        # unlogged) behavior for headless runners.
+        self.retry_wait: Callable[[bool], None] | None = None
+        self.builtin_call: Callable[[str, str], None] | None = None
+        self.compaction: Callable[[bool], None] | None = None
         self._active_bash: ActiveResource[BashTool] = ActiveResource()
         # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
         self._active_worker: ActiveResource[Agent] = ActiveResource()
