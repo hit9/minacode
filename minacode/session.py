@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 
 CONTEXT_LAYOUT_VERSION = 2
+TRANSCRIPT_SYNC_VERSION = 1
 
 
 def local_timestamp(value: float | None = None) -> str:
@@ -166,6 +167,7 @@ class ToolErrorRecord:
 @dataclass
 class TurnDiff:
     SNAPSHOT_CHAR_LIMIT: ClassVar[int] = 1_000_000
+    TRANSCRIPT_CHAR_LIMIT: ClassVar[int] = 64 * 1024
 
     key: str
     turn: int
@@ -182,6 +184,13 @@ class TurnDiff:
         half the file size it can actually afford. Both are dropped together when either is too
         large: one alone would read as the file being created or deleted wholesale."""
         return ("", "") if max(len(before), len(after)) > cls.SNAPSHOT_CHAR_LIMIT else (before, after)
+
+    @classmethod
+    def bounded_transcript(cls, diff: str) -> str:
+        if len(diff) <= cls.TRANSCRIPT_CHAR_LIMIT:
+            return diff
+        clipped = diff[: cls.TRANSCRIPT_CHAR_LIMIT].rsplit("\n", 1)[0]
+        return clipped + "\n… diff preview truncated; see /diff for the retained session diff"
 
 
 @dataclass
@@ -200,10 +209,9 @@ class SessionSnapshotCodec:
     """Decide what is durable, and encode it so saving stays cheap as the session grows.
 
     A session is snapshotted after every response and tool batch, so rewriting all of it each time
-    would make saving cost more the longer the session runs. Each save records lengths and digests of
-    the append-only sequences, and the next save emits only what was appended; the loader replays
-    those deltas onto the last full snapshot. A sequence that changed in any way other than growing is
-    rewritten whole, so a stale prefix can never be persisted silently.
+    would make saving cost more the longer the session runs. Bounded model state uses prefix digests;
+    the unbounded visible transcript uses an append-only length and tail sentinel, while the active
+    turn is replaced separately. The loader replays those deltas onto the last full snapshot.
 
     Large repeated text — file snapshots behind diffs, message text evicted by compaction — is stored
     once per unique content and referenced by hash, because the same content routinely appears as one
@@ -212,6 +220,8 @@ class SessionSnapshotCodec:
     Legacy system-role resume markers are filtered during migration. New lifecycle events are
     append-only user messages: durable model context with protocol-neutral metadata hidden from UI.
     """
+
+    TRANSCRIPT_TOOL_ARGUMENT_CHAR_LIMIT: ClassVar[int] = 64 * 1024
 
     @staticmethod
     def digest(value: object) -> str:
@@ -222,24 +232,29 @@ class SessionSnapshotCodec:
     def marker(cls, session: Session) -> Json:
         messages = cls.snapshot_messages(session)
         transcript_messages = cls.snapshot_transcript_messages(session)
+        active_transcript_messages = cls.active_transcript_messages(session)
         records = [cls.tool_record(record) for record in session.tool_records]
-        transcript_records = [cls.transcript_tool_record(record) for record in session.transcript_tool_records]
         errors = [cls.tool_error(error) for error in session.tool_errors]
         turn_diff_keys = [diff.key for diff in session.turn_diffs]
-        transcript_turn_diff_keys = [diff.key for diff in session.transcript_turn_diffs]
+        transcript_diff_len = len(session.transcript_turn_diffs)
+        transcript_diff_tail = cls.transcript_turn_diff(session.transcript_turn_diffs[-1]) if session.transcript_turn_diffs else None
         # fmt: off
         return {
             "messages_len": len(messages), "messages_digest": cls.digest(messages), "tool_counter": session.tool_counter,
-            "transcript_messages_len": len(transcript_messages), "transcript_messages_digest": cls.digest(transcript_messages),
+            "transcript_messages_len": len(transcript_messages), "transcript_messages_tail_digest": cls.tail_digest(transcript_messages),
+            "active_transcript_messages_digest": cls.digest(active_transcript_messages),
             "pending_user_inputs_digest": cls.digest([item.to_json() for item in session.pending_user_inputs]),
             "tool_records_len": len(records), "tool_records_digest": cls.digest(records),
-            "transcript_tool_records_len": len(transcript_records), "transcript_tool_records_digest": cls.digest(transcript_records),
             "tool_errors_len": len(errors), "tool_errors_digest": cls.digest(errors),
             "turn_diffs_len": len(turn_diff_keys), "turn_diffs_keys_digest": cls.digest(turn_diff_keys),
-            "transcript_turn_diffs_len": len(transcript_turn_diff_keys), "transcript_turn_diffs_keys_digest": cls.digest(transcript_turn_diff_keys),
+            "transcript_turn_diffs_len": transcript_diff_len, "transcript_turn_diffs_tail_digest": cls.digest(transcript_diff_tail),
             "history_len": len(session.history), "history_keys_digest": cls.digest([seg.key for seg in session.history]),
         }
         # fmt: on
+
+    @classmethod
+    def tail_digest(cls, values: list[Json]) -> str:
+        return cls.digest(values[-1] if values else None)
 
     @classmethod
     def turn_diff(cls, diff: TurnDiff, blobs: dict[str, str]) -> Json:
@@ -268,11 +283,6 @@ class SessionSnapshotCodec:
     @staticmethod
     def tool_record(record: ToolResultRecord) -> Json:
         return asdict(record)
-
-    @staticmethod
-    def transcript_tool_record(record: ToolResultRecord) -> Json:
-        # Resume rendering needs the stable key and call shape, not the retained full output.
-        return {"key": record.key, "name": record.name, "args": record.args, "note": record.note}
 
     @staticmethod
     def tool_error(error: ToolErrorRecord) -> Json:
@@ -306,7 +316,7 @@ class SessionSnapshotCodec:
         return any(
             (
                 bool(cls.snapshot_messages(session)),
-                bool(cls.snapshot_transcript_messages(session)),
+                bool(cls.snapshot_transcript_messages(session) or cls.active_transcript_messages(session)),
                 bool(session.pending_user_inputs),
                 bool(session.tool_records),
                 bool(session.tool_errors),
@@ -329,12 +339,68 @@ class SessionSnapshotCodec:
         return [message for message in messages if not cls.is_legacy_internal_message(message)]
 
     @classmethod
+    def transcript_message(cls, message: Json) -> Json | None:
+        """Project a model message into visible, provider-neutral resume history."""
+        if cls.is_internal_message(message) or ImageInputs.is_tool_observation(message):
+            return None
+        role = str(message.get("role") or "")
+        if role == "user":
+            return {"role": "user", "content": ImageInputs.label_text(message)}
+        if role == "assistant":
+            projected: Json = {"role": "assistant", "content": message.get("content")}
+            calls: list[Json] = []
+            for raw in message.get("tool_calls") or []:
+                if not isinstance(raw, dict):
+                    continue
+                raw_function = raw.get("function")
+                if not isinstance(raw_function, dict):
+                    continue
+                arguments = raw_function.get("arguments", "")
+                serialized_arguments = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+                arguments_truncated = len(serialized_arguments) > cls.TRANSCRIPT_TOOL_ARGUMENT_CHAR_LIMIT
+                function = {
+                    "name": str(raw_function.get("name") or ""),
+                    "arguments": "{}" if arguments_truncated else arguments,
+                }
+                call = {"id": str(raw.get("id") or ""), "type": "function", "function": function}
+                if arguments_truncated:
+                    call["arguments_truncated"] = True
+                calls.append(call)
+            if calls:
+                projected["tool_calls"] = calls
+            return Text.value(projected)
+        if role == "tool":
+            projected = {"role": "tool", "tool_call_id": str(message.get("tool_call_id") or "")}
+            if "status" in message:
+                projected["result_key"] = str(message.get("result_key") or "")
+                projected["status"] = str(message.get("status") or "unknown")
+                return projected
+            content = str(message.get("content") or "")
+            if content.startswith("tool "):
+                first_line = content.splitlines()[0]
+                key_match = re.match(r"tool (tr\.\d+)\b", first_line)
+                projected["result_key"] = key_match.group(1) if key_match else ""
+                projected["status"] = "failed" if "\nstatus: failed\n" in "\n" + content + "\n" else "ok"
+            return projected
+        return None
+
+    @classmethod
+    def transcript_messages(cls, messages: list[Json]) -> list[Json]:
+        return [projected for message in messages if (projected := cls.transcript_message(message)) is not None]
+
+    @classmethod
     def snapshot_messages(cls, session: Session) -> list[Json]:
         return cls.persistable_messages([*session.messages, *session._active_turn_messages])
 
     @classmethod
     def snapshot_transcript_messages(cls, session: Session) -> list[Json]:
-        return cls.persistable_messages([*session.transcript_messages, *session._active_transcript_messages])
+        # Runtime transcript messages are already semantic projections and never internal events.
+        # Returning the append-only list directly keeps checkpoint bookkeeping O(1).
+        return session.transcript_messages
+
+    @classmethod
+    def active_transcript_messages(cls, session: Session) -> list[Json]:
+        return cls.persistable_messages(session._active_transcript_messages)
 
     @staticmethod
     def state(state: AgentState) -> Json:
@@ -365,10 +431,10 @@ class SessionSnapshotCodec:
             "uid": session.uid, "cwd": session.cwd, "created_at": session.created_at,
             "context_layout_version": session.context_layout_version, "messages": cls.snapshot_messages(session),
             "transcript_messages": cls.snapshot_transcript_messages(session),
+            "active_transcript_messages": cls.active_transcript_messages(session), "transcript_sync": TRANSCRIPT_SYNC_VERSION,
             "pending_user_inputs": [item.to_json() for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
-            "transcript_tool_records": [cls.transcript_tool_record(record) for record in session.transcript_tool_records],
             "turn_diffs": [cls.turn_diff(diff, blobs) for diff in session.turn_diffs],
             "transcript_turn_diffs": [cls.transcript_turn_diff(diff) for diff in session.transcript_turn_diffs],
             "history": [cls.history_segment(segment, blobs) for segment in session.history],
@@ -383,16 +449,13 @@ class SessionSnapshotCodec:
             "state": cls.state(session.state),
             "created_at": session.created_at,
             "context_layout_version": session.context_layout_version,
+            "transcript_sync": TRANSCRIPT_SYNC_VERSION,
         }
         cls.add_sequence_delta(delta, "messages", cls.snapshot_messages(session), saved, "messages_len", "messages_digest")
-        cls.add_sequence_delta(
-            delta,
-            "transcript_messages",
-            cls.snapshot_transcript_messages(session),
-            saved,
-            "transcript_messages_len",
-            "transcript_messages_digest",
-        )
+        cls.add_append_only_delta(delta, "transcript_messages", cls.snapshot_transcript_messages(session), saved)
+        active_transcript_messages = cls.active_transcript_messages(session)
+        if cls.digest(active_transcript_messages) != saved.get("active_transcript_messages_digest", cls.digest([])):
+            delta["active_transcript_messages_replace"] = active_transcript_messages
         pending_user_inputs = [item.to_json() for item in session.pending_user_inputs]
         if cls.digest(pending_user_inputs) != saved.get("pending_user_inputs_digest", cls.digest([])):
             delta["pending_user_inputs"] = pending_user_inputs
@@ -412,14 +475,6 @@ class SessionSnapshotCodec:
             "tool_errors_len",
             "tool_errors_digest",
         )
-        cls.add_sequence_delta(
-            delta,
-            "transcript_tool_records",
-            [cls.transcript_tool_record(record) for record in session.transcript_tool_records],
-            saved,
-            "transcript_tool_records_len",
-            "transcript_tool_records_digest",
-        )
         cls.add_turn_diffs_delta(delta, session.turn_diffs, saved, blobs)
         cls.add_transcript_turn_diffs_delta(delta, session.transcript_turn_diffs, saved)
         cls.add_history_delta(delta, session.history, saved, blobs)
@@ -432,6 +487,17 @@ class SessionSnapshotCodec:
             if len(current) > last_len:
                 delta[key] = current[last_len:]
         elif cls.digest(current) != saved.get(digest_key):
+            delta[key + "_replace"] = current
+
+    @classmethod
+    def add_append_only_delta(cls, delta: Json, key: str, current: list[Json], saved: Json) -> None:
+        last_len = int(saved.get(key + "_len", 0) or 0)
+        saved_tail = saved.get(key + "_tail_digest", cls.digest(None))
+        prefix_is_saved = len(current) >= last_len and (last_len == 0 or cls.digest(current[last_len - 1]) == saved_tail)
+        if prefix_is_saved:
+            if len(current) > last_len:
+                delta[key] = current[last_len:]
+        else:
             delta[key + "_replace"] = current
 
     @classmethod
@@ -449,18 +515,19 @@ class SessionSnapshotCodec:
 
     @staticmethod
     def transcript_turn_diff(diff: TurnDiff) -> Json:
-        return {"key": diff.key, "turn": diff.turn, "path": diff.path, "diff": diff.diff, "round": diff.round}
+        return {"key": diff.key, "turn": diff.turn, "path": diff.path, "diff": TurnDiff.bounded_transcript(diff.diff), "round": diff.round}
 
     @classmethod
     def add_transcript_turn_diffs_delta(cls, delta: Json, current: list[TurnDiff], saved: Json) -> None:
-        keys = [diff.key for diff in current]
-        last_len = int(saved.get("transcript_turn_diffs_len", 0) or 0)
-        saved_digest = saved.get("transcript_turn_diffs_keys_digest")
-        if cls.digest(keys[:last_len]) == saved_digest:
+        key = "transcript_turn_diffs"
+        last_len = int(saved.get(key + "_len", 0) or 0)
+        saved_tail = saved.get(key + "_tail_digest", cls.digest(None))
+        prefix_is_saved = len(current) >= last_len and (last_len == 0 or cls.digest(cls.transcript_turn_diff(current[last_len - 1])) == saved_tail)
+        if prefix_is_saved:
             if len(current) > last_len:
-                delta["transcript_turn_diffs"] = [cls.transcript_turn_diff(diff) for diff in current[last_len:]]
-        elif cls.digest(keys) != saved_digest:
-            delta["transcript_turn_diffs_replace"] = [cls.transcript_turn_diff(diff) for diff in current]
+                delta[key] = [cls.transcript_turn_diff(diff) for diff in current[last_len:]]
+        else:
+            delta[key + "_replace"] = [cls.transcript_turn_diff(diff) for diff in current]
 
     @classmethod
     def add_history_delta(cls, delta: Json, current: list[HistorySegment], saved: Json, blobs: dict[str, str]) -> None:
@@ -477,8 +544,8 @@ class SessionSnapshotCodec:
     def merge(cls, data: Json, delta: Json) -> None:
         cls.merge_sequence(data, delta, "messages")
         cls.merge_sequence(data, delta, "transcript_messages")
+        cls.merge_sequence(data, delta, "active_transcript_messages")
         cls.merge_sequence(data, delta, "tool_records")
-        cls.merge_sequence(data, delta, "transcript_tool_records")
         cls.merge_sequence(data, delta, "tool_errors")
         cls.merge_sequence(data, delta, "turn_diffs")
         cls.merge_sequence(data, delta, "transcript_turn_diffs")
@@ -491,7 +558,7 @@ class SessionSnapshotCodec:
             data["state"] = delta["state"]
         if "pending_user_inputs" in delta:
             data["pending_user_inputs"] = delta["pending_user_inputs"]
-        for key in ("created_at", "context_layout_version"):
+        for key in ("created_at", "context_layout_version", "transcript_sync"):
             if key in delta:
                 data[key] = delta[key]
 
@@ -856,15 +923,21 @@ class SessionSnapshotStore:
         messages = SessionSnapshotCodec.persistable_messages(data.get("messages", []))
         tool_records = SessionSnapshotCodec.tool_records(data.get("tool_records", []))
         turn_diffs = SessionSnapshotCodec.turn_diffs(data.get("turn_diffs", []), blobs)
-        has_transcript = any(key in data for key in ("transcript_messages", "transcript_tool_records", "transcript_turn_diffs"))
+        raw_transcript_messages = data.get("transcript_messages", [])
+        raw_active_transcript_messages = data.get("active_transcript_messages", [])
+        has_transcript = any(key in data for key in ("transcript_messages", "active_transcript_messages", "transcript_turn_diffs", "transcript_sync"))
         if has_transcript:
-            transcript_messages = SessionSnapshotCodec.persistable_messages(data.get("transcript_messages", []))
+            committed_transcript_messages = SessionSnapshotCodec.transcript_messages(raw_transcript_messages)
+            active_transcript_messages = SessionSnapshotCodec.transcript_messages(raw_active_transcript_messages)
+            transcript_messages = [*committed_transcript_messages, *active_transcript_messages]
             transcript_tool_records = SessionSnapshotCodec.tool_records(data.get("transcript_tool_records", []))
             transcript_turn_diffs = SessionSnapshotCodec.turn_diffs(data.get("transcript_turn_diffs", []), {})
         else:
             # Older snapshots used model context as their only transcript. Preserve what still
             # exists there; conversation already removed by an old compaction cannot be recovered.
-            transcript_messages = list(messages)
+            committed_transcript_messages = []
+            active_transcript_messages = []
+            transcript_messages = SessionSnapshotCodec.transcript_messages(messages)
             transcript_tool_records = list(tool_records)
             transcript_turn_diffs = list(turn_diffs)
         raw_created_at = data.get("created_at", header.get("created_at"))
@@ -889,6 +962,7 @@ class SessionSnapshotStore:
             tool_errors=SessionSnapshotCodec.tool_errors(data.get("tool_errors", [])),
             turn_diffs=turn_diffs,
             transcript_turn_diffs=transcript_turn_diffs,
+            transcript_incomplete=bool(data.get("_transcript_incomplete")),
             history=SessionSnapshotCodec.history(data.get("history", []), blobs),
             pending_user_inputs=[item for value in data.get("pending_user_inputs", []) if (item := QueuedInput.from_json(value)) is not None],
             uid=data.get("uid", uid),
@@ -899,17 +973,22 @@ class SessionSnapshotStore:
         # Mark the loaded prefix before appending durable lifecycle/checkpoint events, so the next
         # snapshot writes them as an append-only delta.
         session._snapshot_saved = SessionSnapshotCodec.marker(session)
+        # Active transcript data is flattened into committed memory on load. Keep the marker at
+        # the on-disk boundary so the next save appends that partial turn once, then clears active.
+        session._snapshot_saved.update(
+            {
+                "transcript_messages_len": len(committed_transcript_messages),
+                "transcript_messages_tail_digest": SessionSnapshotCodec.tail_digest(committed_transcript_messages),
+                "active_transcript_messages_digest": SessionSnapshotCodec.digest(active_transcript_messages),
+            }
+        )
         if not has_transcript:
-            # The first post-upgrade save writes the recovered legacy transcript into the existing
-            # JSONL. Treating it as already saved would let a later compaction erase it again.
             session._snapshot_saved.update(
                 {
                     "transcript_messages_len": 0,
-                    "transcript_messages_digest": SessionSnapshotCodec.digest([]),
-                    "transcript_tool_records_len": 0,
-                    "transcript_tool_records_digest": SessionSnapshotCodec.digest([]),
+                    "transcript_messages_tail_digest": SessionSnapshotCodec.digest(None),
                     "transcript_turn_diffs_len": 0,
-                    "transcript_turn_diffs_keys_digest": SessionSnapshotCodec.digest([]),
+                    "transcript_turn_diffs_tail_digest": SessionSnapshotCodec.digest(None),
                 }
             )
         if session.context_layout_version < CONTEXT_LAYOUT_VERSION:
@@ -955,6 +1034,8 @@ class SessionSnapshotStore:
         merged: Json | None = None
         blobs: dict[str, str] = {}
         header: Json = {}
+        transcript_sync_seen = False
+        transcript_incomplete = False
         with open(path, encoding="utf-8") as file:
             for index, line in enumerate(file):
                 line = line.strip()
@@ -968,10 +1049,16 @@ class SessionSnapshotStore:
                     blobs[parsed["blob"]] = parsed.get("text", "")
                 elif merged is None:
                     merged = parsed
+                    transcript_sync_seen = "transcript_sync" in parsed
                 else:
+                    if transcript_sync_seen and "transcript_sync" not in parsed:
+                        transcript_incomplete = True
                     SessionSnapshotCodec.merge(merged, parsed)
+                    transcript_sync_seen = transcript_sync_seen or "transcript_sync" in parsed
         if merged is None:
             raise MinacodeError(f"Empty session file: {path}")
+        if transcript_incomplete:
+            merged["_transcript_incomplete"] = True
         return merged, blobs, header
 
     @classmethod
@@ -1160,6 +1247,7 @@ class Session:
     transcript_messages: list[Json] = field(default_factory=list)
     transcript_tool_records: list[ToolResultRecord] = field(default_factory=list)
     transcript_turn_diffs: list[TurnDiff] = field(default_factory=list)
+    transcript_incomplete: bool = False
     _snapshot_saved: dict = field(default_factory=dict)
     _blobs_written: set[str] = field(default_factory=set)
     _meta_written: dict = field(default_factory=dict)
@@ -1203,7 +1291,7 @@ class Session:
         before, after = TurnDiff.bounded_snapshots(before, after)
         record = TurnDiff(key, turn, path, diff, before, after, round)
         self.turn_diffs.append(record)
-        self.transcript_turn_diffs.append(TurnDiff(key, turn, path, diff, round=round))
+        self.transcript_turn_diffs.append(TurnDiff(key, turn, path, TurnDiff.bounded_transcript(diff), round=round))
         if len(self.turn_diffs) > 100:
             self.turn_diffs.pop(0)
 
@@ -1248,7 +1336,6 @@ class Session:
         self.tool_results[key] = output
         record = ToolResultRecord(key, name, args, output, note)
         self.tool_records.append(record)
-        self.transcript_tool_records.append(ToolResultRecord(key, name, args, "", note))
         if len(self.tool_results) > 400:
             old = self.tool_records.pop(0)
             self.tool_results.pop(old.key, None)

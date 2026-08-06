@@ -831,8 +831,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
         self.agent.context.update_current_tokens(self.agent.session.system_prompt)
         transcript = self.session.transcript_messages or self.session.messages
+        tool_results = {
+            str(message.get("tool_call_id") or ""): message for message in transcript if message.get("role") == "tool" and message.get("tool_call_id")
+        }
+        semantic_tool_results = any("status" in message for message in tool_results.values())
         messages = [message for message in transcript if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         self.emit(f"Restored session: {self.session.uid}")
+        if self.session.transcript_incomplete:
+            self.emit("Warning: this transcript may omit turns written by an older minacode version.")
         if not messages:
             return
         transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
@@ -842,10 +848,17 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             if index:
                 self.emit("")
             for message in turn.messages:
-                tool_record_index = self.render_transcript_message(message, tool_record_index, diffs)
-        self.render_remaining_tool_records(tool_record_index, diffs)
+                tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results)
+        if not semantic_tool_results:
+            self.render_remaining_tool_records(tool_record_index, diffs)
 
-    def render_transcript_message(self, message: Json, tool_record_index: int = 0, diffs: dict[str, str] | None = None) -> int:
+    def render_transcript_message(
+        self,
+        message: Json,
+        tool_record_index: int = 0,
+        diffs: dict[str, str] | None = None,
+        tool_results: dict[str, Json] | None = None,
+    ) -> int:
         role = str(message.get("role") or "")
         content = ImageInputs.label_text(message).strip()
         raw_calls = message.get("tool_calls")
@@ -853,20 +866,30 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if role == "assistant" and content:
             self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL if has_tool_calls else TurnBox.ROOT_LEVEL)
         if role == "assistant":
-            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {})
+            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {})
         if role == "user" and content and not ImageInputs.is_tool_observation(message):
             # The follow-up marker is model-facing context, part of history because it was sent.
             # The scrollback shows what the user typed, exactly as it looked when they typed it.
             self.ui.emit_answer(content.removeprefix(LIVE_FOLLOWUP_PREFIX.strip()).lstrip(), role=role, rule=False)
         return tool_record_index
 
-    def render_transcript_tool_calls(self, message: Json, tool_record_index: int, diffs: dict[str, str]) -> int:
+    def render_transcript_tool_calls(
+        self,
+        message: Json,
+        tool_record_index: int,
+        diffs: dict[str, str],
+        tool_results: dict[str, Json] | None = None,
+    ) -> int:
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
             return tool_record_index
         for raw in raw_calls:
             call = self.transcript_tool_call(raw)
             if call is None:
+                continue
+            result = (tool_results or {}).get(call.id)
+            if result is not None and "status" in result:
+                self.emit_transcript_tool(call, str(result.get("result_key") or ""), diffs, failed=result.get("status") != "ok")
                 continue
             record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
             self.emit_transcript_tool(call, record.key if record else "", diffs)
@@ -878,13 +901,13 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             call = ToolCall(id="", name=record.name, args=record.args)
             self.emit_transcript_tool(call, record.key, diffs)
 
-    def emit_transcript_tool(self, call: ToolCall, key: str, diffs: dict[str, str]) -> None:
+    def emit_transcript_tool(self, call: ToolCall, key: str, diffs: dict[str, str], *, failed: bool = False) -> None:
         """An Edit shows the diff it made, the way it did when the edit ran live. Live, that preview
         comes from the approval block; here the stored diff text is the same string, so replaying it
         needs no reconstruction."""
         preview = diffs.get(key, "") if call.name == "Edit" else ""
         if not preview:
-            self.emit(self.agent.tools.finish_display(call, key, "", failed=False))
+            self.emit(self.agent.tools.finish_display(call, key, "failed in saved session" if failed else "", failed=failed))
             return
         # The preview block carries the call line, so the result collapses to its trailing marker
         # underneath it — the same nesting the live approval block produces.

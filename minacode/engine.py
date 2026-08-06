@@ -25,7 +25,7 @@ from minacode.prompts import (
     LIVE_FOLLOWUP_PREFIX,
 )
 from minacode.runner import ToolRunner
-from minacode.session import QueuedInput, Session
+from minacode.session import QueuedInput, Session, SessionSnapshotCodec
 from minacode.tools import (
     Tool,
 )
@@ -93,7 +93,7 @@ class Agent:
         user_message = self.session.images.message(user_input)
         user_text = self.session.images.label_text(user_message)
         turn_messages: list[Json] = [user_message]
-        transcript_messages: list[Json] = [user_message]
+        transcript_messages: list[Json] = [self.transcript_message(user_message)]
         if self.session.mcp is not None:
             mentions = self.session.mcp.resolve_mentions(user_text)
             if mentions:
@@ -138,7 +138,7 @@ class Agent:
                     # never mistaken for the answer even though it carries no tool call of ours.
                     assistant_message = self.assistant_turn_message(assistant, [], content)
                     turn_messages.append(assistant_message)
-                    transcript_messages.append(assistant_message)
+                    transcript_messages.append(self.transcript_message(assistant_message))
                     if content.strip():
                         self.output_fn(content.strip())
                     self.checkpoint_turn(turn_messages, transcript_messages)
@@ -160,13 +160,13 @@ class Agent:
                     )
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)
                 turn_messages.append(assistant)
-                transcript_messages.append(assistant)
+                transcript_messages.append(self.transcript_message(assistant))
                 if content.strip():
                     self.output_fn(content.strip())
                 tool_batches += 1
                 tool_messages = self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
                 turn_messages.extend(tool_messages)
-                transcript_messages.extend(self.transcript_tool_messages(tool_messages))
+                transcript_messages.extend(SessionSnapshotCodec.transcript_messages(tool_messages))
                 self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages, transcript_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
@@ -240,7 +240,7 @@ class Agent:
 
     def finish_turn(self, turn_messages: list[Json], transcript_messages: list[Json], assistant: Json) -> None:
         self.session.messages.extend([*turn_messages, assistant])
-        self.session.transcript_messages.extend([*transcript_messages, assistant])
+        self.session.transcript_messages.extend([*transcript_messages, self.transcript_message(assistant)])
         self.session._active_turn_messages.clear()
         self.session._active_transcript_messages.clear()
         self.session.state.turn_messages = 0
@@ -264,17 +264,17 @@ class Agent:
         The tool-bearing assistant message keeps only the calls; the answer becomes its own final
         message so it appears exactly once in history."""
         answer = content.strip()
-        transcript_messages = transcript_messages if transcript_messages is not None else list(turn_messages)
+        transcript_messages = transcript_messages if transcript_messages is not None else SessionSnapshotCodec.transcript_messages(turn_messages)
         tool_message = dict(assistant or {})
         tool_message["content"] = None
         tool_message.pop("tool_calls", None)
         assistant_message = self.assistant_turn_message(tool_message, tool_calls, "")
         turn_messages.append(assistant_message)
-        transcript_messages.append(assistant_message)
+        transcript_messages.append(self.transcript_message(assistant_message))
         batches = tool_batches + 1
         result_messages = self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
         turn_messages.extend(result_messages)
-        transcript_messages.extend(self.transcript_tool_messages(result_messages))
+        transcript_messages.extend(SessionSnapshotCodec.transcript_messages(result_messages))
         self.raise_if_cancelled()
         self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
         return answer
@@ -313,9 +313,11 @@ class Agent:
         self.session.transcript_messages.extend(transcript_messages)
 
     @staticmethod
-    def transcript_tool_messages(messages: list[Json]) -> list[Json]:
-        """Keep tool-result ordering and call matching without duplicating model-facing output."""
-        return [{"role": "tool", "tool_call_id": message.get("tool_call_id")} for message in messages if message.get("role") == "tool"]
+    def transcript_message(message: Json) -> Json:
+        projected = SessionSnapshotCodec.transcript_message(message)
+        if projected is None:
+            raise ValueError("internal messages cannot be added to the visible transcript")
+        return projected
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
@@ -397,7 +399,7 @@ class Agent:
         # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.
         messages = [item.message(LIVE_FOLLOWUP_PREFIX) for item in pending]
         turn_messages.extend(messages)
-        transcript_messages.extend(messages)
+        transcript_messages.extend(SessionSnapshotCodec.transcript_messages(messages))
         self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:
             self.on_queue_flush(texts)

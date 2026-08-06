@@ -157,11 +157,21 @@ def test_transcript_tool_metadata_does_not_duplicate_retained_output_or_file_sna
     s.store_turn_diff(key, 1, "x.py", "-old\n+new\n", before="old\n", after="new\n")
     s.save_snapshot()
 
-    snapshot = next(line for line in read_jsonl(log_path(s)) if "transcript_tool_records" in line)
-    assert snapshot["transcript_tool_records"] == [{"key": key, "name": "Edit", "args": ["x.py"], "note": ""}]
-    assert "output" not in snapshot["transcript_tool_records"][0]
+    snapshot = next(line for line in read_jsonl(log_path(s)) if "uid" in line)
+    assert "transcript_tool_records" not in snapshot
     assert snapshot["transcript_turn_diffs"] == [{"key": key, "turn": 1, "path": "x.py", "diff": "-old\n+new\n", "round": 0}]
     assert "before_blob" not in snapshot["transcript_turn_diffs"][0]
+
+
+def test_transcript_diff_preview_is_bounded(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    key = s.store_tool_result("Edit", ["x.py"], "done")
+    s.store_turn_diff(key, 1, "x.py", "+line\n" * 20_000)
+    s.save_snapshot()
+
+    preview = read_jsonl(log_path(s))[0]["transcript_turn_diffs"][0]["diff"]
+    assert len(preview) < TurnDiff.TRANSCRIPT_CHAR_LIMIT + 100
+    assert preview.endswith("see /diff for the retained session diff")
 
 
 def test_loading_legacy_snapshot_migrates_surviving_history_before_later_compaction(tmp_path):
@@ -174,6 +184,8 @@ def test_loading_legacy_snapshot_migrates_surviving_history_before_later_compact
     lines = read_lines(log_path(s))
     for line in lines[1:]:
         line.pop("transcript_messages", None)
+        line.pop("active_transcript_messages", None)
+        line.pop("transcript_sync", None)
         line.pop("transcript_tool_records", None)
         line.pop("transcript_turn_diffs", None)
     with open(log_path(s), "w", encoding="utf-8") as file:
@@ -189,6 +201,92 @@ def test_loading_legacy_snapshot_migrates_surviving_history_before_later_compact
     restored.save_snapshot()
     migrated = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
     assert [message["content"] for message in migrated.transcript_messages] == ["legacy request", "legacy answer"]
+
+
+def test_active_transcript_is_replaced_separately_then_committed_once(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    user = {"role": "user", "content": "working request"}
+    s._active_transcript_messages = [user]
+    s.save_snapshot()
+
+    first = read_jsonl(log_path(s))[0]
+    assert first["transcript_messages"] == []
+    assert first["active_transcript_messages"] == [user]
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert restored.transcript_messages == [user]
+    restored.save_snapshot()
+
+    merged, _, _ = SessionSnapshotStore.read_merged(log_path(s))
+    assert merged["transcript_messages"] == [user]
+    assert merged["active_transcript_messages"] == []
+    loaded_again = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert loaded_again.transcript_messages == [user]
+
+
+def test_transcript_checkpoint_does_not_hash_the_saved_prefix(tmp_path, monkeypatch):
+    s = session_with_data_dir(tmp_path)
+    s.transcript_messages.extend({"role": "user", "content": str(index)} for index in range(2_000))
+    s.save_snapshot()
+    saved_prefix = s.transcript_messages
+    original_digest = SessionSnapshotCodec.digest
+
+    def guarded_digest(value):
+        assert value is not saved_prefix
+        assert not isinstance(value, list) or len(value) < 2_000
+        return original_digest(value)
+
+    monkeypatch.setattr(SessionSnapshotCodec, "digest", guarded_digest)
+    s.transcript_messages.append({"role": "assistant", "content": "new"})
+    s.save_snapshot()
+
+    assert read_jsonl(log_path(s))[-1]["transcript_messages"] == [{"role": "assistant", "content": "new"}]
+
+
+def test_transcript_projection_strips_provider_state_and_keeps_semantic_tool_result():
+    assistant = {
+        "role": "assistant",
+        "content": "checking",
+        "_responses_output": [{"type": "reasoning", "encrypted_content": "opaque"}],
+        "reasoning_content": "hidden",
+        "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+    }
+    tool = {"role": "tool", "tool_call_id": "call-1", "content": "tool tr.7 Read file.py\noutput:\ndata"}
+
+    assert SessionSnapshotCodec.transcript_message(assistant) == {
+        "role": "assistant",
+        "content": "checking",
+        "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+    }
+    assert SessionSnapshotCodec.transcript_message(tool) == {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "result_key": "tr.7",
+        "status": "ok",
+    }
+
+    assistant["tool_calls"][0]["function"]["arguments"] = "x" * (SessionSnapshotCodec.TRANSCRIPT_TOOL_ARGUMENT_CHAR_LIMIT + 1)
+    projected = SessionSnapshotCodec.transcript_message(assistant)
+    assert projected is not None
+    assert projected["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert projected["tool_calls"][0]["arguments_truncated"] is True
+
+
+def test_old_version_write_after_transcript_sync_is_detected(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "first"})
+    s.transcript_messages.append({"role": "user", "content": "first"})
+    s.save_snapshot()
+
+    SessionSnapshotStore.write_jsonl(
+        log_path(s),
+        {"messages": [{"role": "assistant", "content": "written by old version"}]},
+        mode="a",
+    )
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert restored.transcript_incomplete is True
+    assert [message["content"] for message in restored.transcript_messages] == ["first"]
 
 
 def test_delta_omits_messages_when_nothing_new(tmp_path):

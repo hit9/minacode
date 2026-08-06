@@ -5,8 +5,11 @@
 
 ### Fixed
 - Keep a separate append-only CLI transcript when model context is compacted, so resuming a session
-  still shows its original user/assistant turns, tool calls, and Edit previews. Existing snapshots
-  remain loadable and migrate the history they still contain on their next save.
+  still shows its original user/assistant turns, tool calls, failures, and Edit previews. Transcript
+  checkpoints no longer re-hash the full history, provider-only continuation data and large tool
+  arguments are excluded, and tool results replay by call id instead of name/order. Existing
+  snapshots remain loadable and migrate the history they still contain on their next save; if an
+  older minacode later writes the same log, resume warns that the transcript may be incomplete.
 - Persist automatic current-turn compaction in the live turn instead of rewriting a throwaway
   request copy, so the next step or a post-Ctrl-C “continue” does not compact the same oversized
   prefix again. Cancelling compaction now applies deterministic trimming before the turn stops.

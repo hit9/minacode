@@ -158,6 +158,7 @@ def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
 
     assert agent.run("finish") == "done"
     assert s.messages[-1]["_responses_output"][0]["type"] == "reasoning"
+    assert s.transcript_messages[-1] == {"role": "assistant", "content": "done"}
     s.save_snapshot()
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     restored_assistant = next(message for message in reversed(restored.messages) if message.get("role") == "assistant")
@@ -196,6 +197,12 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     assert "<Read" in messages[2]["content"]
     assert [record.name for record in restored.tool_records] == ["Read"]
     assert [message["role"] for message in restored.transcript_messages] == ["user", "assistant", "tool"]
+    assert restored.transcript_messages[-1] == {
+        "role": "tool",
+        "tool_call_id": "Read-id",
+        "result_key": "tr.1",
+        "status": "ok",
+    }
 
 
 def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
@@ -952,6 +959,8 @@ def test_agent_tool_error_feedback_is_visible_on_next_model_request(tmp_path):
     assert "tool - Bash" in second_context
     assert "status: failed" in second_context
     assert "Bash" in second_context
+    failed_result = next(message for message in s.transcript_messages if message.get("role") == "tool")
+    assert failed_result == {"role": "tool", "tool_call_id": "Bash-id", "result_key": "", "status": "failed"}
 
 
 def test_provider_compatibility_and_prompt_cache_key(tmp_path):

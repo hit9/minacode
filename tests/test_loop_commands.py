@@ -574,6 +574,48 @@ def test_resumed_session_does_not_render_tool_results(tmp_path):
     assert "raw tool result" not in text
 
 
+def test_resumed_session_matches_retried_tool_results_by_call_id(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    arguments = json.dumps({"files": [{"path": "a.py", "ranges": [[0, 1]]}]})
+    failed_call = {"id": "failed", "type": "function", "function": {"name": "Read", "arguments": arguments}}
+    successful_call = {"id": "successful", "type": "function", "function": {"name": "Read", "arguments": arguments}}
+    s.transcript_messages.extend(
+        [
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "content": None, "tool_calls": [failed_call]},
+            {"role": "tool", "tool_call_id": "failed", "result_key": "", "status": "failed"},
+            {"role": "assistant", "content": None, "tool_calls": [successful_call]},
+            {"role": "tool", "tool_call_id": "successful", "result_key": "tr.1", "status": "ok"},
+        ]
+    )
+    s.tool_records.append(ToolResultRecord("tr.1", "Read", [{"path": "a.py", "ranges": [[0, 1]]}], "data", "a.py 0:1"))
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    text = "\n".join(output)
+    failed = text.index("[failed]")
+    stored = text.index("tr.1")
+    assert failed < stored
+    assert text.count("tr.1") == 1
+
+
+def test_resumed_session_warns_when_older_version_wrote_after_transcript(tmp_path):
+    s = session(tmp_path)
+    s.resumed = True
+    s.transcript_incomplete = True
+    s.transcript_messages.append({"role": "user", "content": "visible"})
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), output_fn=output.append)
+
+    loop.render_resumed_session()
+
+    assert output[0] == f"Restored session: {s.uid}"
+    assert output[1] == "Warning: this transcript may omit turns written by an older minacode version."
+
+
 def test_resumed_session_hides_internal_checkpoint_and_resume_events(tmp_path):
     s = session(tmp_path)
     s.resumed = True

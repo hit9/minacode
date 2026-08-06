@@ -372,10 +372,18 @@ stored once as content-addressed blobs. Persist semantic checkpoints, not object
   and release them on failure or interruption. Retries therefore see exactly the same input.
 - Keep image assets while any persisted, queued, or retained reference needs them; garbage collect
   only after the surviving snapshot no longer does.
-- Reconstruct transcript and UI state from the append-only transcript records on resume. Never
-  rebuild it from compacted model messages, and never persist live preview rows as conversation
-  messages. An older snapshot without transcript records migrates the model history that still
-  survives; content compacted by that older version is not recoverable.
+- Keep model context and the CLI transcript as logical streams in the same JSONL. Committed
+  transcript messages only append; the bounded active-turn transcript is replaced separately and
+  folded into the committed stream exactly once after a crash or normal turn completion. Checkpoint
+  cost therefore does not grow with transcript length.
+- Persist only the provider-neutral, visible transcript projection: user/assistant text, canonical
+  tool calls, and semantic tool results keyed by `tool_call_id`. Do not duplicate provider
+  continuation state or retained tool output, and cap replay-only tool arguments and Edit previews.
+  Never persist live preview rows as conversation messages.
+- An older snapshot without transcript records migrates the model history that still survives;
+  content compacted by that older version is not recoverable. Every transcript-aware write carries
+  a sync marker, so a later write by an older version is detected and resume warns that the CLI
+  transcript may have a gap instead of silently presenting it as complete.
 - Store the session start once as a local ISO timestamp with a numeric timezone offset. Resume
   appends another timestamped lifecycle event with canonical role `user`: it describes new user
   context, remains a tail addition, and works identically through Chat and Responses. It is hidden
