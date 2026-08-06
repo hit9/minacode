@@ -3,6 +3,15 @@
 
 ## Unreleased
 
+### Fixed
+- Suppress the MCP client transport loggers (`mcp.client.streamable_http`, `mcp.client.sse`,
+  `mcp.client.stdio`). They log expected, already-surfaced failures (an `httpx.ReadTimeout` on a
+  slow server, dropped SSE/stdio frames, JSON-RPC parse errors) at `ERROR` with full tracebacks via
+  `logging.lastResort`, which dumped them onto the TUI mid-render (e.g. the `Error in post_writer`
+  traceback that appeared behind `/provider` while background discovery timed out).
+  `MCPManager` already captures these same failures into `server_errors` and the status bar, so the
+  library's own transport traceback was pure noise.
+
 
 ## 0.21.0 - 2026-08-04
 

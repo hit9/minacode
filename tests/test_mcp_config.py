@@ -801,3 +801,40 @@ class TestStatusBarMCPStatus:
 # ---------------------------------------------------------------------------
 # ContextManager — MCP context blocks
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Library logging — MCP client transport tracebacks must not reach the TUI
+# ---------------------------------------------------------------------------
+# minacode.base configures the noisy MCP client transport loggers so that
+# expected-and-already-surfaced failures (httpx ReadTimeout on a slow server,
+# dropped SSE/stdio frames, JSON-RPC parse errors) don't dump full tracebacks
+# onto stderr mid-render via logging.lastResort.
+
+
+class TestTransportLoggingSuppressed:
+    def test_transport_loggers_at_critical(self):
+        """Importing minacode.base raises the transport loggers out of the ERROR band."""
+        import logging
+
+        import minacode.base  # noqa: F401 — side effect: module-level logging config
+
+        for name in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
+            logger = logging.getLogger(name)
+            assert logger.level == logging.CRITICAL, f"{name} should be CRITICAL, got {logging.getLevelName(logger.level)}"
+
+    def test_post_writer_traceback_does_not_reach_stderr(self, capsys):
+        """logger.exception on the streamable_http transport produces no stderr output."""
+        import logging
+
+        import minacode.base  # noqa: F401
+
+        log = logging.getLogger("mcp.client.streamable_http")
+        try:
+            raise ZeroDivisionError("simulated transport failure")
+        except ZeroDivisionError:
+            log.exception("Error in post_writer")
+        captured = capsys.readouterr()
+        assert "Error in post_writer" not in captured.err
+        assert "ZeroDivisionError" not in captured.err
+        assert captured.err == ""

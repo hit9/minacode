@@ -44,6 +44,13 @@ logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
 # actionable "authentication required" message; suppress this logger's ERROR-level
 # traceback spam (incl. the RuntimeError minacode raises as control flow).
 logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
+# MCP client transports log expected-and-already-surfaced failures (httpx ReadTimeout on a
+# slow server, dropped SSE/stdio frames, JSON-RPC parse errors) at ERROR with full
+# tracebacks via logging.lastResort, which dumps them onto the TUI mid-render.
+# MCPManager captures these same failures into server_errors and the status bar, so the
+# library's own transport traceback is pure noise. Raise it out of the ERROR band.
+for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
+    logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 MODEL_REQUEST_RETRIES = 5
