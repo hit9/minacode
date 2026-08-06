@@ -202,9 +202,14 @@ class ContextManager:
         if on_compaction is not None:
             on_compaction(True, "")
         error_detail = ""
+        interrupted = False
         try:
             try:
                 data = model.compact(self.compaction_input(compacted))
+            except KeyboardInterrupt:
+                error_detail = "cancelled by user"
+                interrupted = True
+                data = None
             except Exception as error:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
                 error_detail = Text.clip_width(" ".join(str(error).split()) or type(error).__name__, 220)
                 data = None
@@ -219,6 +224,8 @@ class ContextManager:
         finally:
             if on_compaction is not None:
                 on_compaction(False, error_detail)
+        if interrupted:
+            raise KeyboardInterrupt
         return True
 
     def environment(self) -> str:

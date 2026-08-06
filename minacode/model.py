@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from json_repair import repair_json
 
@@ -75,6 +75,7 @@ _ResultT = TypeVar("_ResultT")
 # Retry-wait granularity: sleeping in ~0.1s slices lets the wait observe the UI-thread cancel flag
 # instead of relying on a signal interrupting one long sleep.
 _RETRY_SLEEP_SLICE = 0.1
+_COMPACTION_RESPONSE_TIMEOUT = 60.0
 
 
 @dataclass(frozen=True)
@@ -223,44 +224,44 @@ class ModelClient:
         images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
         return (chars + 3) // 4 + images
 
-    def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT]) -> _ResultT:
-        response_timeout = self.session.config.provider.response_timeout
-        expired = threading.Event()
-        timer: threading.Timer | None = None
-        if response_timeout:
+    def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT], *, response_timeout: float | None = None) -> _ResultT:
+        response_timeout = self.session.config.provider.response_timeout if response_timeout is None else response_timeout
+        outcome: list[tuple[bool, object]] = []
+        completed = threading.Event()
 
-            def expire() -> None:
-                expired.set()
-                with contextlib.suppress(Exception):
-                    client.close()
-
-            timer = threading.Timer(response_timeout, expire)
-            timer.daemon = True
-        with self.active_client.track(client):
-            if timer is not None:
-                timer.start()
+        def invoke() -> None:
             try:
-                result = request()
+                outcome.append((True, request()))
+            except BaseException as error:  # noqa: BLE001 - preserve the provider call's exact outcome across the deadline thread boundary.
+                outcome.append((False, error))
+            finally:
+                completed.set()
+
+        worker = threading.Thread(target=invoke, name="model-request", daemon=True)
+        with self.active_client.track(client):
+            worker.start()
+            try:
+                deadline = time.monotonic() + response_timeout if response_timeout else 0.0
+                while not completed.wait(_RETRY_SLEEP_SLICE):
+                    if self.cancel_requested.is_set():
+                        raise KeyboardInterrupt
+                    if deadline and time.monotonic() >= deadline:
+                        raise ModelResponseTimeout(
+                            f"Model response exceeded provider.response_timeout={response_timeout:g}s; set it to 0 to disable the total-generation limit"
+                        )
+                succeeded, value = outcome[0]
+                if not succeeded:
+                    raise cast(BaseException, value)
                 if self.cancel_requested.is_set():
                     raise KeyboardInterrupt
-                if expired.is_set():
-                    raise ModelResponseTimeout(
-                        f"Model response exceeded provider.response_timeout={response_timeout}s; set it to 0 to disable the total-generation limit"
-                    )
-                return result
+                return cast(_ResultT, value)
             except ModelResponseTimeout:
                 raise
             except Exception as error:
                 if self.cancel_requested.is_set():
                     raise KeyboardInterrupt from None
-                if expired.is_set():
-                    raise ModelResponseTimeout(
-                        f"Model response exceeded provider.response_timeout={response_timeout}s; set it to 0 to disable the total-generation limit"
-                    ) from error
                 raise ModelError(str(error)) from error
             finally:
-                if timer is not None:
-                    timer.cancel()
                 with contextlib.suppress(Exception):
                     client.close()
 
@@ -493,7 +494,9 @@ class ModelClient:
             request_budget_for(self.session.settings.max_context_tokens, self.session.config.provider.output_token_budget()),
         )
 
-    def chat_request(self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+    def chat_request(
+        self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True, response_timeout: float | None = None
+    ) -> tuple[Json, list[ToolCall], str]:
         messages = self.chat_messages(messages)
         provider = self.session.config.provider
         resolved = provider.resolve()
@@ -513,9 +516,9 @@ class ModelClient:
             params["stream_options"] = {"include_usage": True}
         client = self.client()
         if stream:
-            message, usage, finish_reason = self.call_client(client, lambda: self._chat_stream(client, params))
+            message, usage, finish_reason = self.call_client(client, lambda: self._chat_stream(client, params), response_timeout=response_timeout)
         else:
-            response = self.call_client(client, lambda: client.chat.completions.create(**params))
+            response = self.call_client(client, lambda: client.chat.completions.create(**params), response_timeout=response_timeout)
             usage = getattr(response, "usage", None)
             message = response.choices[0].message
             finish_reason = str(self.message_field(response.choices[0], "finish_reason") or "")
@@ -652,7 +655,9 @@ class ModelClient:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
         return message, usage, finish_reason
 
-    def api_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+    def api_request(
+        self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True, response_timeout: float | None = None
+    ) -> tuple[Json, list[ToolCall], str]:
         api = self.session.config.provider.resolve().api
         if api == "anthropic":
             request = self.anthropic_request
@@ -660,9 +665,13 @@ class ModelClient:
             request = self.responses_request
         else:
             request = self.chat_request
-        return request(messages, tools) if allow_stream else request(messages, tools, allow_stream=False)
+        if allow_stream and response_timeout is None:
+            return request(messages, tools)
+        return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout)
 
-    def responses_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+    def responses_request(
+        self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True, response_timeout: float | None = None
+    ) -> tuple[Json, list[ToolCall], str]:
         provider = self.session.config.provider
         resolved = provider.resolve()
         stream = allow_stream and provider.stream and self.on_stream is not None
@@ -694,10 +703,10 @@ class ModelClient:
             params["extra_body"] = provider.extra_body
         client = self.client()
         if stream:
-            result = self.call_client(client, lambda: self._responses_stream(client, params))
+            result = self.call_client(client, lambda: self._responses_stream(client, params), response_timeout=response_timeout)
             streamed = True
         else:
-            result = self.call_client(client, lambda: client.responses.create(**params))
+            result = self.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
             streamed = False
         self._record_usage(self.message_field(result, "usage"))
         return self.responses_result(result, streamed)
@@ -951,7 +960,9 @@ class ModelClient:
     def compact(self, context: str) -> Json:
         self.cancel_requested.clear()
         messages = [{"role": "system", "content": COMPACTION_PROMPT}, {"role": "user", "content": Text.clean(context)}]
-        _, _, content = self.api_request(messages, None, allow_stream=False)
+        configured_timeout = self.session.config.provider.response_timeout
+        response_timeout = min(configured_timeout, _COMPACTION_RESPONSE_TIMEOUT) if configured_timeout else _COMPACTION_RESPONSE_TIMEOUT
+        _, _, content = self.api_request(messages, None, allow_stream=False, response_timeout=response_timeout)
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")
@@ -1091,16 +1102,18 @@ class ModelClient:
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "minacode-" + digest[:24]
 
-    def anthropic_request(self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True) -> tuple[Json, list[ToolCall], str]:
+    def anthropic_request(
+        self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True, response_timeout: float | None = None
+    ) -> tuple[Json, list[ToolCall], str]:
         messages = Text.value(messages)
         params = self.anthropic_params(messages, tools)
         client = self.anthropic_client()
         stream = allow_stream and self.session.config.provider.stream and self.on_stream is not None
         if stream:
-            result = self.call_client(client, lambda: self._anthropic_stream(client, params))
+            result = self.call_client(client, lambda: self._anthropic_stream(client, params), response_timeout=response_timeout)
             streamed = True
         else:
-            result = self.call_client(client, lambda: client.messages.create(**params))
+            result = self.call_client(client, lambda: client.messages.create(**params), response_timeout=response_timeout)
             streamed = False
         self._record_usage(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result, streamed)

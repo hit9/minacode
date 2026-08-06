@@ -278,7 +278,10 @@ class Agent:
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
-        request_turn = [*turn_messages, *(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)]
+        # Without a queued follow-up this must be the real active-turn list: current-turn compaction
+        # rewrites it in place, and a throwaway copy would make the next step compact the same prefix
+        # again. Pending input stays transactional in a copy until the provider accepts it.
+        request_turn = turn_messages if not pending else [*turn_messages, *(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)]
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)

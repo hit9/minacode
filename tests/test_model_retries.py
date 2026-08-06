@@ -2,6 +2,7 @@
 
 import email.utils
 import json
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -102,18 +103,6 @@ def test_request_retry_exhausted(tmp_path, monkeypatch):
 
 
 def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monkeypatch):
-    class ImmediateTimer:
-        def __init__(self, interval, callback):
-            assert interval == 600
-            self.callback = callback
-            self.daemon = False
-
-        def start(self):
-            self.callback()
-
-        def cancel(self):
-            pass
-
     class Client:
         def __init__(self):
             self.close_count = 0
@@ -121,15 +110,25 @@ def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monke
         def close(self):
             self.close_count += 1
 
-    s = _session(tmp_path)
+    s = _session(tmp_path, response_timeout=0.01)
     model = ModelClient(s)
     client = Client()
-    monkeypatch.setattr(model_module.threading, "Timer", ImmediateTimer)
+    started = threading.Event()
+    release = threading.Event()
 
-    with pytest.raises(ModelResponseTimeout, match=r"provider\.response_timeout=600s") as caught:
-        model.call_client(client, lambda: "completed after deadline")
+    def blocked_request():
+        started.set()
+        release.wait()
+        return "completed after deadline"
 
-    assert client.close_count == 2
+    try:
+        with pytest.raises(ModelResponseTimeout, match=r"provider\.response_timeout=0\.01s") as caught:
+            model.call_client(client, blocked_request)
+    finally:
+        release.set()
+
+    assert started.is_set()
+    assert client.close_count == 1
     assert model.retryable_error(caught.value) is False
 
     calls = 0
@@ -158,42 +157,25 @@ def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypat
     model = ModelClient(s)
     client = Client()
 
-    def unexpected_timer(*_args, **_kwargs):
-        raise AssertionError("response_timeout=0 must not create a timer")
-
-    monkeypatch.setattr(model_module.threading, "Timer", unexpected_timer)
-
     assert model.call_client(client, lambda: "complete") == "complete"
     assert client.closed is True
 
 
-def test_total_response_timeout_relabels_interrupted_transport(tmp_path, monkeypatch):
-    class ImmediateTimer:
-        def __init__(self, _interval, callback):
-            self.callback = callback
-            self.daemon = False
-
-        def start(self):
-            self.callback()
-
-        def cancel(self):
-            pass
-
-    class Client:
-        def close(self):
-            pass
-
+@pytest.mark.parametrize(("configured", "expected"), [(600, 60.0), (30, 30.0), (0, 60.0)])
+def test_compaction_has_a_bounded_response_deadline(tmp_path, monkeypatch, configured, expected):
     s = _session(tmp_path)
+    s.config.provider.response_timeout = configured
     model = ModelClient(s)
-    monkeypatch.setattr(model_module.threading, "Timer", ImmediateTimer)
+    seen = []
 
-    def interrupted_request():
-        raise RuntimeError("connection closed")
+    def api_request(_messages, _tools, **kwargs):
+        seen.append(kwargs)
+        return {}, [], '{"summary":"short"}'
 
-    with pytest.raises(ModelResponseTimeout, match=r"provider\.response_timeout=600s") as caught:
-        model.call_client(Client(), interrupted_request)
+    monkeypatch.setattr(model, "api_request", api_request)
 
-    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert model.compact("long context") == {"summary": "short"}
+    assert seen == [{"allow_stream": False, "response_timeout": expected}]
 
 
 def _retry_wait_recorder(monkeypatch, factory):

@@ -3,6 +3,14 @@
 
 ## Unreleased
 
+### Fixed
+- Persist automatic current-turn compaction in the live turn instead of rewriting a throwaway
+  request copy, so the next step or a post-Ctrl-C “continue” does not compact the same oversized
+  prefix again. Cancelling compaction now applies deterministic trimming before the turn stops.
+- Enforce `provider.response_timeout` as a real caller-side deadline even when an SDK's synchronous
+  request ignores cross-thread `close()`, and cap compaction requests at 60 seconds before falling
+  back to deterministic trimming.
+
 
 ## 0.21.2 - 2026-08-06
 

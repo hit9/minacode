@@ -5,6 +5,7 @@ import platform
 import shutil
 from types import SimpleNamespace
 
+import pytest
 from agent_harness import call, session
 
 import minacode.context as context_module
@@ -16,7 +17,7 @@ from minacode.base import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.loop import CommandLoop
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, SYSTEM_PROMPT
+from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment
 from minacode.skill import SkillLibrary
@@ -353,6 +354,48 @@ def test_turn_compaction_evicts_the_prefix_before_a_late_followup(tmp_path):
     assert "old step 19" in [message["content"] for message in compacted]
     assert keep[0]["content"] == "late follow-up"
     assert [message["content"] for message in keep[1:]] == [f"new step {index}" for index in range(2, 10)]
+
+
+def test_prepare_request_persists_current_turn_compaction_without_pending_input(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    agent = Agent(s, output_fn=lambda _text: None)
+    turn = [
+        {"role": "user", "content": "original request"},
+        *({"role": "assistant", "content": f"old step {index}"} for index in range(20)),
+        {"role": "user", "content": "continue"},
+        *({"role": "assistant", "content": f"new step {index}"} for index in range(10)),
+    ]
+    agent.model.compact = lambda _text: {"summary": "compact summary"}
+
+    agent.prepare_request(turn)
+
+    assert len(turn) == 10
+    assert turn[0]["content"] == "continue"
+    assert turn[1]["content"].startswith(COMPACTION_SUMMARY_TITLE)
+    assert "original request" in s.history[-1].text
+
+
+def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_path):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    context = ContextManager(s)
+    turn = [{"role": "user", "content": "request"}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
+    phases = []
+    context.on_compaction = lambda active, error: phases.append((active, error))
+
+    class InterruptedModel:
+        def compact(self, _text):
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        context.prepare_messages(InterruptedModel(), "system", turn)
+
+    assert len(turn) == 10
+    assert turn[0]["content"] == "request"
+    assert turn[1]["content"].startswith(COMPACTION_SUMMARY_TITLE)
+    assert CURRENT_TURN_CONTEXT_TRIMMED in turn[1]["content"]
+    assert phases == [(True, ""), (False, "cancelled by user")]
 
 
 def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
