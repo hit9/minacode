@@ -3,15 +3,18 @@
 
 ## Unreleased
 
+
+## 0.21.3 - 2026-08-06
+
 ### Fixed
 - Keep a separate append-only CLI transcript when model context is compacted, so resuming a session
   still shows its original user/assistant turns, tool calls, failures, and Edit previews. Transcript
   checkpoints no longer re-hash the full history, provider-only continuation data and large tool
   arguments are excluded, and tool results replay by call id instead of name/order. Successful tool
   output containing the text `status: failed` is no longer misclassified, and interrupted calls get
-  an explicit failed transcript result. Existing
-  snapshots remain loadable and migrate the history they still contain on their next save; if an
-  older minacode later writes the same log, resume warns that the transcript may be incomplete.
+  an explicit failed transcript result. Existing snapshots remain loadable and migrate the history
+  they still contain on their next save; if an older minacode later writes the same log, resume warns
+  that the transcript may be incomplete.
 - Persist automatic current-turn compaction in the live turn instead of rewriting a throwaway
   request copy, so the next step or a post-Ctrl-C “continue” does not compact the same oversized
   prefix again. A queued live follow-up now commits its staged compacted turn after the provider
