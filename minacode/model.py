@@ -349,6 +349,7 @@ class ModelClient:
     def retryable_error(error: Exception) -> bool:
         # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
         import anthropic
+        import httpx
         import openai
 
         # A truncated generation is deterministic: the same request hits the same output cap again.
@@ -369,6 +370,14 @@ class ModelClient:
 
         # Built-in network/timeout errors are retryable.
         if isinstance(cause, (TimeoutError, asyncio.TimeoutError, ConnectionError, ConnectionResetError, ConnectionAbortedError)):
+            return True
+
+        # Streaming reads surface httpx transport errors unwrapped: the provider SDKs' Stream.__stream__
+        # iterates the response directly and re-raises httpx failures (a dropped connection mid-stream is
+        # httpx.ReadError, an interrupted chunked body is httpx.RemoteProtocolError) rather than wrapping
+        # them as APIConnectionError. They're the same class of transient failure. httpx transport errors
+        # don't inherit OSError, so the isinstance above misses them.
+        if isinstance(cause, httpx.TransportError):
             return True
 
         # Fallback: parse status codes embedded in the error text or cause attributes.

@@ -11,6 +11,14 @@
   traceback that appeared behind `/provider` while background discovery timed out).
   `MCPManager` already captures these same failures into `server_errors` and the status bar, so the
   library's own transport traceback was pure noise.
+- Retry streaming transport errors that the provider SDKs raise unwrapped. The SDKs' `Stream` iterator
+  re-raises httpx failures directly instead of wrapping them as `APIConnectionError`, so a server dropping
+  the connection mid-stream (`httpx.ReadError`) or closing before the chunked body completes
+  (`httpx.RemoteProtocolError` — "peer closed connection without sending complete message body
+  (incomplete chunked read)") reached `retryable_error` with an httpx cause. httpx transport errors don't
+  inherit `OSError`, so the existing `ConnectionError`/`TimeoutError` isinstance checks missed them and the
+  first failure surfaced as `Error: ...` instead of retrying. httpx `TransportError` is now retryable, the
+  same class of transient failure as the SDK connection/timeout errors already handled.
 
 
 ## 0.21.0 - 2026-08-04

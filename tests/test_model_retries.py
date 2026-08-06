@@ -434,3 +434,50 @@ def test_manual_resend_racing_retry_wait_remains_a_retry(tmp_path, monkeypatch):
         model.request([{"role": "user", "content": "hi"}], None)
     assert s.state.manual_model_retry_requested is False
     assert s.state.model_retry_until == 0.0
+
+
+def test_streamed_httpx_transport_error_is_retryable():
+    """httpx transport errors raised transparently during streaming (the provider SDK's
+    Stream.__stream__ does not wrap them as APIConnectionError) are the same class of transient
+    failure and must retry. Regression for "Error: peer closed connection without sending
+    complete message body (incomplete chunked read)" surfacing on the first attempt."""
+    cause = httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)")
+    error = ModelError(str(cause))
+    error.__cause__ = cause
+    assert ModelClient.retryable_error(error) is True
+    assert ModelClient.retry_reason(error) == "connection"
+
+
+def test_streamed_httpx_read_error_is_retryable():
+    """A connection dropped mid-stream (httpx.ReadError) is transient, like ConnectionResetError."""
+    cause = httpx.ReadError("peer closed connection without sending bytes")
+    error = ModelError(str(cause))
+    error.__cause__ = cause
+    assert ModelClient.retryable_error(error) is True
+
+
+def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
+    """A streaming httpx transport error (raised unwrapped by the SDK's Stream.__stream__ and
+    wrapped by call_client as ModelError(cause)) is retried to success, not surfaced on the
+    first attempt. Regression for "Error: peer closed connection without sending complete
+    message body (incomplete chunked read)"."""
+    s = _session(tmp_path)
+    model = ModelClient(s)
+    _patch_fast_clock(monkeypatch)
+
+    cause = httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)")
+    calls = {"n": 0}
+
+    def api_request(_messages, _tools, **_kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ModelError(str(cause)) from cause
+        return {}, [], "ok"
+
+    monkeypatch.setattr(model, "api_request", api_request)
+
+    _assistant, _tool_calls, content = model.request([{"role": "user", "content": "hi"}], None)
+
+    assert content == "ok"
+    assert calls["n"] == 2
+    assert s.state.model_retry_count == 1
