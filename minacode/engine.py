@@ -117,7 +117,7 @@ class Agent:
                         # The request reached the provider, so its follow-ups belong to history from
                         # here on, and any correction sent next lands after them — history keeps the
                         # order the provider saw, because a sent message can never be taken back.
-                        self.accept_pending_inputs(turn_messages, transcript_messages, request.pending)
+                        self.accept_pending_inputs(turn_messages, transcript_messages, request.pending, request.turn_messages)
                         assistant, tool_calls, content = self.correct_textual_tool_calls(
                             assistant,
                             tool_calls,
@@ -307,6 +307,7 @@ class Agent:
                     else:
                         cancelled_text = "Cancelled: the user interrupted before this tool call finished."
                     turn_messages.append({"role": "tool", "tool_call_id": call_id, "content": cancelled_text})
+                    transcript_messages.append({"role": "tool", "tool_call_id": call_id, "result_key": "", "status": "failed"})
                     answered.add(call_id)
         turn_messages.append({"role": "user", "content": INTERRUPT_MARKER})
         self.session.messages.extend(turn_messages)
@@ -329,7 +330,7 @@ class Agent:
         tools = Tool.resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
-        return PreparedRequest(messages, tools, pending)
+        return PreparedRequest(messages, tools, pending, request_turn)
 
     @classmethod
     def textual_tool_call(cls, content: str, tools: list[Json]) -> str | None:
@@ -391,14 +392,23 @@ class Agent:
         sequence = ", then ".join(names)
         return MalformedToolCallError(f"Model emitted tool calls as text {count} times ({sequence}); none of the textual calls were executed.")
 
-    def accept_pending_inputs(self, turn_messages: list[Json], transcript_messages: list[Json], pending: list[QueuedInput]) -> None:
+    def accept_pending_inputs(
+        self,
+        turn_messages: list[Json],
+        transcript_messages: list[Json],
+        pending: list[QueuedInput],
+        prepared_turn_messages: list[Json] | None = None,
+    ) -> None:
         if not pending:
             return
         texts = [item.text for item in pending]
         # Committed with the marker the provider was sent, not the bare text: dropping it here would
         # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.
         messages = [item.message(LIVE_FOLLOWUP_PREFIX) for item in pending]
-        turn_messages.extend(messages)
+        if prepared_turn_messages is None:
+            turn_messages.extend(messages)
+        else:
+            turn_messages[:] = prepared_turn_messages
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(messages))
         self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:

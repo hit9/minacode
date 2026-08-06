@@ -83,6 +83,15 @@ class PreparedRequest:
     messages: list[Json]
     tools: list[Json]
     pending: list[QueuedInput]
+    turn_messages: list[Json]
+
+
+class _RequestLease:
+    """Keep callbacks inside the lifetime of the background request that produced them."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.active = True
 
 
 class ModelClient:
@@ -109,6 +118,7 @@ class ModelClient:
         self.session = session
         self.cancel_requested = threading.Event()
         self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
+        self._request_local = threading.local()
         self.on_stream: Callable[[str, str], None] | None = None
         # Called with (label, detail) for each provider-side tool call a response reports. Reported
         # from the parsed result rather than the stream, so a search is logged the same way when
@@ -228,13 +238,16 @@ class ModelClient:
         response_timeout = self.session.config.provider.response_timeout if response_timeout is None else response_timeout
         outcome: list[tuple[bool, object]] = []
         completed = threading.Event()
+        lease = _RequestLease()
 
         def invoke() -> None:
+            self._request_local.lease = lease
             try:
                 outcome.append((True, request()))
             except BaseException as error:  # noqa: BLE001 - preserve the provider call's exact outcome across the deadline thread boundary.
                 outcome.append((False, error))
             finally:
+                del self._request_local.lease
                 completed.set()
 
         worker = threading.Thread(target=invoke, name="model-request", daemon=True)
@@ -262,8 +275,31 @@ class ModelClient:
                     raise KeyboardInterrupt from None
                 raise ModelError(str(error)) from error
             finally:
+                with lease.lock:
+                    lease.active = False
                 with contextlib.suppress(Exception):
                     client.close()
+
+    def _request_active(self) -> bool:
+        lease = getattr(self._request_local, "lease", None)
+        if lease is None:
+            return not self.cancel_requested.is_set()
+        with lease.lock:
+            return lease.active and not self.cancel_requested.is_set()
+
+    def _raise_if_request_inactive(self) -> None:
+        if not self._request_active():
+            raise KeyboardInterrupt
+
+    def _request_callback(self, callback: Callable[[], None]) -> None:
+        lease = getattr(self._request_local, "lease", None)
+        if lease is None:
+            if not self.cancel_requested.is_set():
+                callback()
+            return
+        with lease.lock:
+            if lease.active and not self.cancel_requested.is_set():
+                callback()
 
     def request(self, messages: list[Json], tools: list[Json] | None = None) -> tuple[Json, list[ToolCall], str]:
         if missing := self.session.missing_config():
@@ -590,6 +626,7 @@ class ModelClient:
 
         try:
             for chunk in client.chat.completions.create(**params):
+                self._raise_if_request_inactive()
                 if chunk_usage := self.message_field(chunk, "usage"):
                     usage = chunk_usage
                 choices = self.message_field(chunk, "choices") or []
@@ -731,6 +768,7 @@ class ModelClient:
 
         try:
             for event in client.responses.create(**params):
+                self._raise_if_request_inactive()
                 event_type = str(self.message_field(event, "type") or "")
                 # Two spellings of the same event: hosts that summarize reasoning stream the summary,
                 # hosts that expose the raw chain stream the text. DeepSeek only ever sends the
@@ -796,7 +834,7 @@ class ModelClient:
 
     def _emit_stream(self, kind: str, delta: str) -> None:
         if self.on_stream is not None:
-            self.on_stream(kind, delta)
+            self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
 
     def responses_input(self, messages: list[Json]) -> list[Json]:
         converted: list[Json] = []
@@ -1015,7 +1053,9 @@ class ModelClient:
 
     def report_builtin_call(self, name: str, detail: object) -> None:
         if self.on_builtin_call is not None:
-            self.on_builtin_call(builtin_tool_label(name), str(detail or "").strip())
+            label = builtin_tool_label(name)
+            text = str(detail or "").strip()
+            self._request_callback(lambda: self.on_builtin_call(label, text) if self.on_builtin_call is not None else None)
 
     @staticmethod
     def collect_sources(*groups: Any) -> list[Json]:
@@ -1140,6 +1180,7 @@ class ModelClient:
         try:
             with client.messages.stream(**params) as stream:
                 for event in stream:
+                    self._raise_if_request_inactive()
                     event_type = self.message_field(event, "type")
                     if event_type == "content_block_start":
                         block = self.message_field(event, "content_block")
@@ -1202,6 +1243,7 @@ class ModelClient:
                         index = int(self.message_field(event, "index") or 0)
                         if index in server_tools:
                             server_tools[index]["json"] += str(self.message_field(delta, "partial_json") or "")
+                self._raise_if_request_inactive()
                 return stream.get_final_message()
         finally:
             self._emit_stream("", "")

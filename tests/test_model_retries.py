@@ -145,6 +145,94 @@ def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monke
     assert s.state.model_retry_count == 0
 
 
+def test_timed_out_request_cannot_emit_after_a_new_request_starts(tmp_path):
+    class Client:
+        def close(self):
+            pass  # Deliberately ignore close, like the SDK behavior this boundary must contain.
+
+    s = _session(tmp_path, response_timeout=0.01)
+    model = ModelClient(s)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    stream = []
+    builtins = []
+    model.on_stream = lambda kind, text: stream.append((kind, text))
+    model.on_builtin_call = lambda label, detail: builtins.append((label, detail))
+
+    def stale_request():
+        started.set()
+        release.wait()
+        try:
+            model._emit_stream("output", "stale")
+            model.report_builtin_call("web_search_call", "stale query")
+            model._emit_stream("", "")
+            return "stale"
+        finally:
+            finished.set()
+
+    with pytest.raises(ModelResponseTimeout):
+        model.call_client(Client(), stale_request)
+    assert started.is_set()
+
+    def current_request():
+        model._emit_stream("output", "current")
+        return "current"
+
+    assert model.call_client(Client(), current_request, response_timeout=1) == "current"
+    release.set()
+    assert finished.wait(1)
+    assert stream == [("output", "current")]
+    assert builtins == []
+
+
+def test_cancelled_request_stays_stale_after_next_request_clears_cancel(tmp_path):
+    class Client:
+        def close(self):
+            pass
+
+    s = _session(tmp_path, response_timeout=1)
+    model = ModelClient(s)
+    started = threading.Event()
+    release = threading.Event()
+    caller_finished = threading.Event()
+    worker_finished = threading.Event()
+    stream = []
+    errors = []
+    model.on_stream = lambda kind, text: stream.append((kind, text))
+
+    def stale_request():
+        started.set()
+        release.wait()
+        try:
+            model._emit_stream("output", "stale")
+            return "stale"
+        finally:
+            worker_finished.set()
+
+    def call_stale_request():
+        try:
+            model.call_client(Client(), stale_request)
+        except BaseException as error:  # The cancellation contract is KeyboardInterrupt.
+            errors.append(error)
+        finally:
+            caller_finished.set()
+
+    caller = threading.Thread(target=call_stale_request)
+    caller.start()
+    assert started.wait(1)
+    model.cancel()
+    assert caller_finished.wait(1)
+    assert isinstance(errors[0], KeyboardInterrupt)
+
+    model.cancel_requested.clear()  # ModelClient.request does this before the next request.
+    assert model.call_client(Client(), lambda: model._emit_stream("output", "current") or "current") == "current"
+    release.set()
+    assert worker_finished.wait(1)
+    caller.join()
+    assert stream == [("output", "current")]
+
+
 def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypatch):
     class Client:
         def __init__(self):

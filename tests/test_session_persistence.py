@@ -251,7 +251,11 @@ def test_transcript_projection_strips_provider_state_and_keeps_semantic_tool_res
         "reasoning_content": "hidden",
         "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
     }
-    tool = {"role": "tool", "tool_call_id": "call-1", "content": "tool tr.7 Read file.py\noutput:\ndata"}
+    tool = {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": "tool tr.7 Read file.py\noutput:\nmatching file text\nstatus: failed\nstill a successful Read",
+    }
 
     assert SessionSnapshotCodec.transcript_message(assistant) == {
         "role": "assistant",
@@ -264,6 +268,9 @@ def test_transcript_projection_strips_provider_state_and_keeps_semantic_tool_res
         "result_key": "tr.7",
         "status": "ok",
     }
+    assert SessionSnapshotCodec.transcript_message(
+        {"role": "tool", "tool_call_id": "call-2", "content": "tool - Read missing.py\nstatus: failed\noutput:\nmissing"}
+    ) == {"role": "tool", "tool_call_id": "call-2", "result_key": "", "status": "failed"}
 
     assistant["tool_calls"][0]["function"]["arguments"] = "x" * (SessionSnapshotCodec.TRANSCRIPT_TOOL_ARGUMENT_CHAR_LIMIT + 1)
     projected = SessionSnapshotCodec.transcript_message(assistant)

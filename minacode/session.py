@@ -380,7 +380,7 @@ class SessionSnapshotCodec:
                 first_line = content.splitlines()[0]
                 key_match = re.match(r"tool (tr\.\d+)\b", first_line)
                 projected["result_key"] = key_match.group(1) if key_match else ""
-                projected["status"] = "failed" if "\nstatus: failed\n" in "\n" + content + "\n" else "ok"
+                projected["status"] = "failed" if first_line.startswith("tool - ") else "ok"
             return projected
         return None
 
@@ -930,6 +930,8 @@ class SessionSnapshotStore:
             committed_transcript_messages = SessionSnapshotCodec.transcript_messages(raw_transcript_messages)
             active_transcript_messages = SessionSnapshotCodec.transcript_messages(raw_active_transcript_messages)
             transcript_messages = [*committed_transcript_messages, *active_transcript_messages]
+            # Read-only bridge for the first transcript snapshot shape; new semantic tool events
+            # carry their own call id/status/key and never write this duplicate metadata.
             transcript_tool_records = SessionSnapshotCodec.tool_records(data.get("transcript_tool_records", []))
             transcript_turn_diffs = SessionSnapshotCodec.turn_diffs(data.get("transcript_turn_diffs", []), {})
         else:
@@ -1245,7 +1247,7 @@ class Session:
     created_at: str = field(default_factory=local_timestamp)
     context_layout_version: int = CONTEXT_LAYOUT_VERSION
     transcript_messages: list[Json] = field(default_factory=list)
-    transcript_tool_records: list[ToolResultRecord] = field(default_factory=list)
+    transcript_tool_records: list[ToolResultRecord] = field(default_factory=list)  # legacy read-only replay bridge
     transcript_turn_diffs: list[TurnDiff] = field(default_factory=list)
     transcript_incomplete: bool = False
     _snapshot_saved: dict = field(default_factory=dict)

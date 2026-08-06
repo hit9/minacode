@@ -376,6 +376,33 @@ def test_prepare_request_persists_current_turn_compaction_without_pending_input(
     assert "original request" in s.history[-1].text
 
 
+def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path):
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+    turn = [
+        {"role": "user", "content": "original request"},
+        *({"role": "assistant", "content": f"old step {index}"} for index in range(20)),
+    ]
+    transcript = [agent.transcript_message(turn[0])]
+    s.enqueue_user_input("late follow-up")
+    agent.model.compact = lambda _text: {"summary": "compact summary"}
+    agent.context.request_token_budget = lambda: 10
+    agent.context.request_tokens = lambda messages, tools=None: 100 if any("old step" in str(message.get("content") or "") for message in messages) else 1
+
+    request = agent.prepare_request(turn)
+
+    assert any("old step" in str(message.get("content") or "") for message in turn)
+    assert not any("old step" in str(message.get("content") or "") for message in request.turn_messages)
+    agent.accept_pending_inputs(turn, transcript, request.pending, request.turn_messages)
+    assert turn == request.turn_messages
+    assert transcript[-1]["content"].endswith("late follow-up")
+    assert s.state.compaction_count == 1
+
+    agent.prepare_request(turn)
+
+    assert s.state.compaction_count == 1
+
+
 def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1

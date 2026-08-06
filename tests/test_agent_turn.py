@@ -230,6 +230,35 @@ def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
     assert restored.transcript_messages == []
 
 
+def test_interrupted_unfinished_tool_call_gets_semantic_transcript_result(tmp_path):
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class ToolCallingModel:
+        def request(self, messages, tools=None):
+            return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], ""
+
+    agent.model = ToolCallingModel()
+
+    def interrupt_tools(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    agent.tools.run = interrupt_tools
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("read file")
+
+    assert s.transcript_messages[-1] == {
+        "role": "tool",
+        "tool_call_id": "Read-id",
+        "result_key": "",
+        "status": "failed",
+    }
+    restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    assert restored.transcript_messages[-1] == s.transcript_messages[-1]
+
+
 def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, monkeypatch):
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     s = session(tmp_path)
