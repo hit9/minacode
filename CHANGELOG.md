@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.21.1 - 2026-08-05
+
 ### Fixed
 - Suppress the MCP client transport loggers (`mcp.client.streamable_http`, `mcp.client.sse`,
   `mcp.client.stdio`). They log expected, already-surfaced failures (an `httpx.ReadTimeout` on a
