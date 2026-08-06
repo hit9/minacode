@@ -966,8 +966,10 @@ def test_edit_warns_on_adjacent_duplicate_introduced(tmp_path):
     assert "<warnings>" in result
     assert "duplicate-lines: adjacent identical lines after this edit; confirm intended" in result
     # The two anchors name the duplicate pair in the edited file (indexes 1 and 2).
-    assert f"anchor={anchor(1, 'c\n')} | c" in result
-    assert f"anchor={anchor(2, 'c\n')} | c" in result
+    a1 = anchor(1, "c\n")
+    a2 = anchor(2, "c\n")
+    assert f"anchor={a1} | c" in result
+    assert f"anchor={a2} | c" in result
     assert result.index("<warnings>") > result.index("@@")  # after the diff, before the refund block
     assert result.index("</warnings>") < result.index("<invalidate>")
     assert path.read_text(encoding="utf-8") == "a\nc\nc\n"  # the file was still written
