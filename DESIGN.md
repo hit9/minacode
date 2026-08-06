@@ -142,9 +142,10 @@ One local process with explicit owners for each kind of behavior. The layers are
   vocabulary every presentation layer renders and the resource handles they cancel through;
   `provider_compat.py` folds the evidence-backed model and provider data in `model_catalog.py` into
   resolved request policy.
-- `Session` owns protocol-neutral semantic state: messages, active-turn checkpoints, queued input,
-  retained output, diffs, usage, and session-scoped resources such as jobs and images. Its snapshot
-  codec decides which of that state is persistable.
+- `Session` owns protocol-neutral semantic state: compactable model messages, the append-only
+  completed transcript, active-turn checkpoints, queued input, retained output, diffs, usage, and
+  session-scoped resources such as jobs and images. Its snapshot codec decides which of that state
+  is persistable.
 - Agent semantics are split by owner: `context.py` builds and compacts the model-facing context,
   `model.py` owns provider protocol adapters, streaming, and retry policy, `runner.py` owns tool
   execution and cancellation, and `engine.py` composes them into the turn loop with its commit or
@@ -216,6 +217,12 @@ Keep these forms separate even when they contain similar data:
 Only the first form is snapshotted. Provider clients, timers, stream fragments, and terminal layout
 are reconstructed. A live preview may disappear without changing history; completed transcript is
 always derived from semantic records rather than preview rows.
+
+Durable state contains two timelines with different retention rules. Model messages are compactable
+working context. Transcript messages and their lightweight tool/diff replay metadata are append-only
+for the life of the saved session and never enter a provider request. The agent checkpoints and
+commits both timelines at the same turn boundaries, so either one can be reconstructed after an
+interrupt without making terminal output a source of truth.
 
 ## Provider and protocol boundary
 
@@ -365,8 +372,10 @@ stored once as content-addressed blobs. Persist semantic checkpoints, not object
   and release them on failure or interruption. Retries therefore see exactly the same input.
 - Keep image assets while any persisted, queued, or retained reference needs them; garbage collect
   only after the surviving snapshot no longer does.
-- Reconstruct transcript and UI state from semantic records on resume. Never persist live preview
-  rows as conversation messages.
+- Reconstruct transcript and UI state from the append-only transcript records on resume. Never
+  rebuild it from compacted model messages, and never persist live preview rows as conversation
+  messages. An older snapshot without transcript records migrates the model history that still
+  survives; content compacted by that older version is not recoverable.
 - Store the session start once as a local ISO timestamp with a numeric timezone offset. Resume
   appends another timestamped lifecycle event with canonical role `user`: it describes new user
   context, remains a tail addition, and works identically through Chat and Responses. It is hidden
@@ -395,6 +404,10 @@ the alternate screen to hide that artifact—the cure would discard more valuabl
 Compaction is the deliberate persisted exception to send-time-only projection: it replaces old
 active messages with a summary when the effective request, including tools, reaches the input
 budget.
+
+Compaction rewrites only model messages and their recall indexes. It never rewrites the completed
+transcript or its lightweight tool/diff replay metadata, including when the active turn itself must
+be compacted.
 
 - Compact prior history first and the active turn only if the rebuilt request remains too large.
 - Keep the latest user boundary and a recent tail. Never split assistant tool calls from their

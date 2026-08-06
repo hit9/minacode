@@ -4,6 +4,9 @@
 ## Unreleased
 
 ### Fixed
+- Keep a separate append-only CLI transcript when model context is compacted, so resuming a session
+  still shows its original user/assistant turns, tool calls, and Edit previews. Existing snapshots
+  remain loadable and migrate the history they still contain on their next save.
 - Persist automatic current-turn compaction in the live turn instead of rewriting a throwaway
   request copy, so the next step or a post-Ctrl-C “continue” does not compact the same oversized
   prefix again. Cancelling compaction now applies deterministic trimming before the turn stops.

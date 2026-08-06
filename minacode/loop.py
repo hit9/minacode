@@ -830,11 +830,13 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # The percent is derived, not persisted, so a resumed session carries a full history with a
         # zeroed reading. Recompute it now or the status bar reports 0% until the first turn.
         self.agent.context.update_current_tokens(self.agent.session.system_prompt)
-        messages = [message for message in self.session.messages if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
+        transcript = self.session.transcript_messages or self.session.messages
+        messages = [message for message in transcript if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
         self.emit(f"Restored session: {self.session.uid}")
         if not messages:
             return
-        diffs = {diff.key: diff.diff for diff in self.session.turn_diffs if diff.key and diff.diff}
+        transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
+        diffs = {diff.key: diff.diff for diff in transcript_diffs if diff.key and diff.diff}
         tool_record_index = 0
         for index, turn in enumerate(TurnBox.group(messages)):
             if index:
@@ -871,7 +873,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         return tool_record_index
 
     def render_remaining_tool_records(self, tool_record_index: int, diffs: dict[str, str]) -> None:
-        for record in self.session.tool_records[tool_record_index:]:
+        records = self.session.transcript_tool_records or self.session.tool_records
+        for record in records[tool_record_index:]:
             call = ToolCall(id="", name=record.name, args=record.args)
             self.emit_transcript_tool(call, record.key, diffs)
 
@@ -930,7 +933,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is not None and not tool_class.STORES_RESULT:
             return None, tool_record_index
-        records = self.session.tool_records
+        records = self.session.transcript_tool_records or self.session.tool_records
         while tool_record_index < len(records):
             record = records[tool_record_index]
             tool_record_index += 1

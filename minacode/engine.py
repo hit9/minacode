@@ -93,6 +93,7 @@ class Agent:
         user_message = self.session.images.message(user_input)
         user_text = self.session.images.label_text(user_message)
         turn_messages: list[Json] = [user_message]
+        transcript_messages: list[Json] = [user_message]
         if self.session.mcp is not None:
             mentions = self.session.mcp.resolve_mentions(user_text)
             if mentions:
@@ -101,7 +102,7 @@ class Agent:
             skill_mentions = self.session.skills.resolve_mentions(user_text)
             if skill_mentions:
                 turn_messages.append({"role": "user", "content": skill_mentions})
-        self.checkpoint_turn(turn_messages)
+        self.checkpoint_turn(turn_messages, transcript_messages)
         try:
             for step in range(self.session.settings.max_steps):
                 self.session.state.turn_step = step + 1
@@ -116,7 +117,7 @@ class Agent:
                         # The request reached the provider, so its follow-ups belong to history from
                         # here on, and any correction sent next lands after them — history keeps the
                         # order the provider saw, because a sent message can never be taken back.
-                        self.accept_pending_inputs(turn_messages, request.pending)
+                        self.accept_pending_inputs(turn_messages, transcript_messages, request.pending)
                         assistant, tool_calls, content = self.correct_textual_tool_calls(
                             assistant,
                             tool_calls,
@@ -125,6 +126,7 @@ class Agent:
                             tools=request.tools,
                             names=malformed_tool_names,
                             turn_messages=turn_messages,
+                            transcript_messages=transcript_messages,
                         )
                         break
                     except ModelRequestRetry:
@@ -134,40 +136,54 @@ class Agent:
                     # Resuming means sending this message back unchanged and asking again, so it
                     # joins the turn like any other step: bounded by max_steps, checkpointed, and
                     # never mistaken for the answer even though it carries no tool call of ours.
-                    turn_messages.append(self.assistant_turn_message(assistant, [], content))
+                    assistant_message = self.assistant_turn_message(assistant, [], content)
+                    turn_messages.append(assistant_message)
+                    transcript_messages.append(assistant_message)
                     if content.strip():
                         self.output_fn(content.strip())
-                    self.checkpoint_turn(turn_messages)
+                    self.checkpoint_turn(turn_messages, transcript_messages)
                     continue
                 if not tool_calls:
                     if not content.strip():
                         raise ModelError("empty final response")
                     answer = content.strip()
-                    self.finish_turn(turn_messages, self.assistant_turn_message(assistant, [], answer))
+                    self.finish_turn(turn_messages, transcript_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
                 if content.strip() and self.terminal_next_hints(tool_calls):
-                    return self.finish_with_next_hints(turn_messages, assistant, tool_calls, content, tool_batches)
+                    return self.finish_with_next_hints(
+                        turn_messages,
+                        assistant,
+                        tool_calls,
+                        content,
+                        tool_batches,
+                        transcript_messages=transcript_messages,
+                    )
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)
                 turn_messages.append(assistant)
+                transcript_messages.append(assistant)
                 if content.strip():
                     self.output_fn(content.strip())
                 tool_batches += 1
-                turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else ""))
+                tool_messages = self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
+                turn_messages.extend(tool_messages)
+                transcript_messages.extend(self.transcript_tool_messages(tool_messages))
                 self.raise_if_cancelled()
-                self.checkpoint_turn(turn_messages)
+                self.checkpoint_turn(turn_messages, transcript_messages)
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
             self.stopped_at_max_steps = True
-            self.finish_turn(turn_messages, {"role": "assistant", "content": stopped})
+            self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": stopped})
             return stopped
         except KeyboardInterrupt:
             self.session.release_user_inputs()
-            self.settle_interrupted_turn(turn_messages)
+            self.settle_interrupted_turn(turn_messages, transcript_messages)
             self.session.save_snapshot()
             raise
         except Exception:
             self.session.release_user_inputs()
             self.session.messages.extend(self.session._active_turn_messages)
+            self.session.transcript_messages.extend(self.session._active_transcript_messages)
             self.session._active_turn_messages.clear()
+            self.session._active_transcript_messages.clear()
             self.session.state.turn_messages = 0
             self.session.save_snapshot()
             raise
@@ -182,6 +198,7 @@ class Agent:
         tools: list[Json],
         names: list[str],
         turn_messages: list[Json],
+        transcript_messages: list[Json],
     ) -> tuple[Json, list[ToolCall], str]:
         """Retry terminal textual tool markup with a protocol correction sent as a real message.
 
@@ -194,7 +211,7 @@ class Agent:
             correction: Json = {"role": "user", "content": self.tool_call_correction(textual_tool)}
             corrections.append(correction)
             turn_messages.append(correction)
-            self.checkpoint_turn(turn_messages)
+            self.checkpoint_turn(turn_messages, transcript_messages)
             correction_messages = [*base_messages, *corrections]
             while True:
                 try:
@@ -216,36 +233,53 @@ class Agent:
             if isinstance(source, dict):
                 self.turn_sources.append(source)
 
-    def checkpoint_turn(self, turn_messages: list[Json]) -> None:
+    def checkpoint_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:
         self.session._active_turn_messages = list(turn_messages)
+        self.session._active_transcript_messages = list(transcript_messages)
         self.session.save_snapshot()
 
-    def finish_turn(self, turn_messages: list[Json], assistant: Json) -> None:
+    def finish_turn(self, turn_messages: list[Json], transcript_messages: list[Json], assistant: Json) -> None:
         self.session.messages.extend([*turn_messages, assistant])
+        self.session.transcript_messages.extend([*transcript_messages, assistant])
         self.session._active_turn_messages.clear()
+        self.session._active_transcript_messages.clear()
         self.session.state.turn_messages = 0
 
     def terminal_next_hints(self, tool_calls: list[ToolCall]) -> bool:
         """True when a batch is nothing but NextHints calls — a terminal batch that ends the turn."""
         return bool(tool_calls) and all(call.name == "NextHints" for call in tool_calls)
 
-    def finish_with_next_hints(self, turn_messages: list[Json], assistant: Json, tool_calls: list[ToolCall], content: str, tool_batches: int) -> str:
+    def finish_with_next_hints(
+        self,
+        turn_messages: list[Json],
+        assistant: Json,
+        tool_calls: list[ToolCall],
+        content: str,
+        tool_batches: int,
+        *,
+        transcript_messages: list[Json] | None = None,
+    ) -> str:
         """Run an all-NextHints batch and finish the turn with `content` in a single model call.
 
         The tool-bearing assistant message keeps only the calls; the answer becomes its own final
         message so it appears exactly once in history."""
         answer = content.strip()
+        transcript_messages = transcript_messages if transcript_messages is not None else list(turn_messages)
         tool_message = dict(assistant or {})
         tool_message["content"] = None
         tool_message.pop("tool_calls", None)
-        turn_messages.append(self.assistant_turn_message(tool_message, tool_calls, ""))
+        assistant_message = self.assistant_turn_message(tool_message, tool_calls, "")
+        turn_messages.append(assistant_message)
+        transcript_messages.append(assistant_message)
         batches = tool_batches + 1
-        turn_messages.extend(self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else ""))
+        result_messages = self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
+        turn_messages.extend(result_messages)
+        transcript_messages.extend(self.transcript_tool_messages(result_messages))
         self.raise_if_cancelled()
-        self.finish_turn(turn_messages, {"role": "assistant", "content": answer})
+        self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
         return answer
 
-    def settle_interrupted_turn(self, turn_messages: list[Json]) -> None:
+    def settle_interrupted_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:
         """Settle a turn the user interrupted with Ctrl-C.
 
         Two cases, mirroring what the CLI shows. *Retract*: the agent had not said or done
@@ -255,8 +289,9 @@ class Agent:
         the partial turn stands (what the CLI showed happened) and an interrupt marker is
         appended, keeping the context valid and telling the model the turn ended early."""
         self.session._active_turn_messages.clear()
+        self.session._active_transcript_messages.clear()
         self.session.state.turn_messages = 0
-        if not any(message.get("role") != "user" for message in turn_messages):
+        if not any(message.get("role") != "user" for message in transcript_messages):
             return
         answered = {message.get("tool_call_id") for message in turn_messages if message.get("role") == "tool"}
         for message in turn_messages:
@@ -275,6 +310,12 @@ class Agent:
                     answered.add(call_id)
         turn_messages.append({"role": "user", "content": INTERRUPT_MARKER})
         self.session.messages.extend(turn_messages)
+        self.session.transcript_messages.extend(transcript_messages)
+
+    @staticmethod
+    def transcript_tool_messages(messages: list[Json]) -> list[Json]:
+        """Keep tool-result ordering and call matching without duplicating model-facing output."""
+        return [{"role": "tool", "tool_call_id": message.get("tool_call_id")} for message in messages if message.get("role") == "tool"]
 
     def prepare_request(self, turn_messages: list[Json]) -> PreparedRequest:
         pending = self.session.claim_user_inputs()
@@ -348,13 +389,15 @@ class Agent:
         sequence = ", then ".join(names)
         return MalformedToolCallError(f"Model emitted tool calls as text {count} times ({sequence}); none of the textual calls were executed.")
 
-    def accept_pending_inputs(self, turn_messages: list[Json], pending: list[QueuedInput]) -> None:
+    def accept_pending_inputs(self, turn_messages: list[Json], transcript_messages: list[Json], pending: list[QueuedInput]) -> None:
         if not pending:
             return
         texts = [item.text for item in pending]
         # Committed with the marker the provider was sent, not the bare text: dropping it here would
         # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.
-        turn_messages.extend(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)
+        messages = [item.message(LIVE_FOLLOWUP_PREFIX) for item in pending]
+        turn_messages.extend(messages)
+        transcript_messages.extend(messages)
         self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:
             self.on_queue_flush(texts)

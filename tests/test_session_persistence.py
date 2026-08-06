@@ -131,6 +131,66 @@ def test_second_save_writes_delta_with_only_new_data(tmp_path):
     assert delta["tool_counter"] == 2
 
 
+def test_transcript_appends_when_model_messages_are_replaced(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    first = {"role": "user", "content": "original request"}
+    s.messages.append(first)
+    s.transcript_messages.append(first)
+    s.save_snapshot()
+
+    s.messages[:] = [{"role": "user", "content": "compacted context", SESSION_EVENT_KEY: "compaction_checkpoint"}]
+    s.transcript_messages.append({"role": "assistant", "content": "original answer"})
+    s.save_snapshot()
+
+    delta = read_jsonl(log_path(s))[1]
+    assert delta["messages_replace"] == s.messages
+    assert delta["transcript_messages"] == [{"role": "assistant", "content": "original answer"}]
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert restored.messages[0]["content"] == "compacted context"
+    assert [message["content"] for message in restored.transcript_messages] == ["original request", "original answer"]
+
+
+def test_transcript_tool_metadata_does_not_duplicate_retained_output_or_file_snapshots(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    key = s.store_tool_result("Edit", ["x.py"], "full retained output")
+    s.store_turn_diff(key, 1, "x.py", "-old\n+new\n", before="old\n", after="new\n")
+    s.save_snapshot()
+
+    snapshot = next(line for line in read_jsonl(log_path(s)) if "transcript_tool_records" in line)
+    assert snapshot["transcript_tool_records"] == [{"key": key, "name": "Edit", "args": ["x.py"], "note": ""}]
+    assert "output" not in snapshot["transcript_tool_records"][0]
+    assert snapshot["transcript_turn_diffs"] == [{"key": key, "turn": 1, "path": "x.py", "diff": "-old\n+new\n", "round": 0}]
+    assert "before_blob" not in snapshot["transcript_turn_diffs"][0]
+
+
+def test_loading_legacy_snapshot_migrates_surviving_history_before_later_compaction(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.extend([{"role": "user", "content": "legacy request"}, {"role": "assistant", "content": "legacy answer"}])
+    key = s.store_tool_result("Bash", ["pwd"], str(tmp_path))
+    s.store_turn_diff(key, 1, "x.py", "-old\n+new\n")
+    s.save_snapshot()
+
+    lines = read_lines(log_path(s))
+    for line in lines[1:]:
+        line.pop("transcript_messages", None)
+        line.pop("transcript_tool_records", None)
+        line.pop("transcript_turn_diffs", None)
+    with open(log_path(s), "w", encoding="utf-8") as file:
+        for line in lines:
+            file.write(json.dumps(line) + "\n")
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert [message["content"] for message in restored.transcript_messages] == ["legacy request", "legacy answer"]
+    assert [record.key for record in restored.transcript_tool_records] == [key]
+    assert [diff.key for diff in restored.transcript_turn_diffs] == [key]
+
+    restored.messages[:] = [{"role": "user", "content": "new compacted context", SESSION_EVENT_KEY: "compaction_checkpoint"}]
+    restored.save_snapshot()
+    migrated = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    assert [message["content"] for message in migrated.transcript_messages] == ["legacy request", "legacy answer"]
+
+
 def test_delta_omits_messages_when_nothing_new(tmp_path):
     """Delta line omits the messages key when no new messages."""
     s = session_with_data_dir(tmp_path)
@@ -817,6 +877,44 @@ def _resumed_transcript(tmp_path, diff_text, *, lines_cap=None):
         loop.TRANSCRIPT_DIFF_LINES = lines_cap
     loop.render_resumed_session()
     return "\n".join(str(item) for item in output)
+
+
+def test_resume_replays_full_transcript_after_model_context_and_retained_records_are_pruned(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    call_message = {
+        "role": "assistant",
+        "content": "Updating the old file.",
+        "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Edit", "arguments": '{"path": "x.py"}'}}],
+    }
+    visible = [
+        {"role": "user", "content": "old request that must remain visible"},
+        call_message,
+        {"role": "tool", "tool_call_id": "c1", "content": "tool tr.1 Edit x.py\noutput:\nupdated"},
+        {"role": "assistant", "content": "old answer that must remain visible"},
+    ]
+    s.messages.extend(visible)
+    s.transcript_messages.extend(visible)
+    s.store_tool_result("Edit", ["x.py"], "updated")
+    s.store_turn_diff("tr.1", 1, "x.py", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-old\n+new\n")
+    s.save_snapshot()
+
+    s.messages[:] = [{"role": "user", "content": "compacted model context", SESSION_EVENT_KEY: "compaction_checkpoint"}]
+    s.tool_records.clear()
+    s.tool_results.clear()
+    s.turn_diffs.clear()
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+    output = []
+    CommandLoop(Agent(restored, output_fn=output.append), output_fn=output.append).render_resumed_session()
+    text = "\n".join(str(item) for item in output)
+
+    assert "old request that must remain visible" in text
+    assert "Updating the old file." in text
+    assert "old answer that must remain visible" in text
+    assert "stored tr.1" in text
+    assert "-old" in text and "+new" in text
+    assert "compacted model context" not in text
 
 
 def test_compact_command_persists_the_compacted_history(tmp_path):

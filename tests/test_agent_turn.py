@@ -184,6 +184,7 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
         agent.run("read file")
 
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "user"]
+    assert [message["role"] for message in s.transcript_messages] == ["user", "assistant", "tool"]
     assert s.messages[-1]["content"] == INTERRUPT_MARKER
     assert s._active_turn_messages == []
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
@@ -194,6 +195,7 @@ def test_interrupted_turn_persists_completed_tool_batches_for_resume(tmp_path):
     assert messages[2]["tool_call_id"] == "Read-id"
     assert "<Read" in messages[2]["content"]
     assert [record.name for record in restored.tool_records] == ["Read"]
+    assert [message["role"] for message in restored.transcript_messages] == ["user", "assistant", "tool"]
 
 
 def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
@@ -212,10 +214,54 @@ def test_interrupted_turn_before_any_output_is_retracted(tmp_path):
     # Retract: the agent produced nothing, so the turn leaves no trace in the context or on disk,
     # while the input history (a separate FileHistory) still recalls it for Ctrl-P.
     assert s.messages == []
+    assert s.transcript_messages == []
     assert s._active_turn_messages == []
+    assert s._active_transcript_messages == []
     restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
     messages = [message for message in restored.messages if not SessionSnapshotCodec.is_internal_message(message)]
     assert messages == []
+    assert restored.transcript_messages == []
+
+
+def test_current_turn_compaction_does_not_rewrite_visible_transcript(tmp_path, monkeypatch):
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda _text: None)
+    prepare_calls = 0
+
+    def prepare_messages(_model, _system, turn_messages, _tools):
+        nonlocal prepare_calls
+        prepare_calls += 1
+        if prepare_calls == 2:
+            turn_messages[:] = [{"role": "user", "content": "compacted current turn"}]
+        return list(turn_messages)
+
+    monkeypatch.setattr(agent.context, "prepare_messages", prepare_messages)
+    monkeypatch.setattr(agent.context, "update_percent", lambda _messages, _tools: 0)
+
+    class Model:
+        calls = 0
+
+        def request(self, _messages, _tools=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {}, [call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])], "checking"
+            return {}, [], "done"
+
+    agent.model = Model()
+
+    assert agent.run("read the file") == "done"
+    assert [message.get("content") for message in s.messages] == ["compacted current turn", "done"]
+    assert [message["role"] for message in s.transcript_messages] == ["user", "assistant", "tool", "assistant"]
+    assert s.transcript_messages[0]["content"] == "read the file"
+    assert s.transcript_messages[1]["content"] == "checking"
+    assert s.transcript_messages[-1]["content"] == "done"
+
+    s.save_snapshot()
+    restored = Session.load_snapshot(s.uid, config=s.config, settings=s.settings)
+    assert [message["role"] for message in restored.transcript_messages] == ["user", "assistant", "tool", "assistant"]
+    assert restored.transcript_messages[0]["content"] == "read the file"
 
 
 def test_interrupted_turn_completes_dangling_tool_calls(tmp_path):
