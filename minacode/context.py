@@ -66,7 +66,7 @@ class ContextManager:
         # Automatic compaction runs inside request projection, below the UI layer. This lifecycle
         # hook lets orchestration expose that real phase without making context depend on a renderer.
         # False is emitted in a finally block, including model failures that fall back to trimming.
-        self.on_compaction: Callable[[bool], None] | None = None
+        self.on_compaction: Callable[[bool, str], None] | None = None
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         content = base_system.strip()
@@ -200,11 +200,13 @@ class ContextManager:
             return False
         on_compaction = self.on_compaction
         if on_compaction is not None:
-            on_compaction(True)
+            on_compaction(True, "")
+        error_detail = ""
         try:
             try:
                 data = model.compact(self.compaction_input(compacted))
-            except Exception:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
+            except Exception as error:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
+                error_detail = Text.clip_width(" ".join(str(error).split()) or type(error).__name__, 220)
                 data = None
             self.apply_compaction(
                 data,
@@ -216,7 +218,7 @@ class ContextManager:
             )
         finally:
             if on_compaction is not None:
-                on_compaction(False)
+                on_compaction(False, error_detail)
         return True
 
     def environment(self) -> str:
@@ -258,8 +260,10 @@ class ContextManager:
         if index is None:
             compacted, keep = self.compaction_parts_for(messages)
             return self.without_compaction_summaries(compacted), self.without_compaction_summaries(keep)
-        compacted, keep = self.compaction_parts_for(messages[index + 1 :])
-        return self.without_compaction_summaries(compacted), self.without_compaction_summaries(messages[: index + 1] + keep)
+        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :])
+        compacted = self.without_compaction_summaries(messages[:index] + compacted_tail)
+        keep = self.without_compaction_summaries([messages[index]] + keep_tail)
+        return compacted, keep
 
     def without_compaction_summaries(self, messages: list[Json]) -> list[Json]:
         return [message for message in messages if not self.is_compaction_summary(message)]

@@ -4,6 +4,15 @@
 ## Unreleased
 
 
+## 0.21.2 - 2026-08-06
+
+### Fixed
+- Compact long active turns around the latest follow-up instead of retaining the entire prefix before
+  that user boundary, which could leave a session permanently over budget and make every resume enter
+  compaction again. The compacting divider now includes elapsed time, preserves its phase around model
+  retry waits, and reports the provider error when compaction falls back to deterministic trimming.
+
+
 ## 0.21.1 - 2026-08-05
 
 ### Fixed

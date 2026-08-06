@@ -1753,7 +1753,7 @@ def test_worker_compaction_triggers_on_budget_overrun(tmp_path, monkeypatch):
     worker = _worker_history_for_compaction(parent)
 
     calls = []
-    worker._agent.context.on_compaction = lambda active: calls.append(active)
+    worker._agent.context.on_compaction = lambda active, _error: calls.append(active)
     messages = worker._agent.context.prepare_messages(worker._agent.model, WORKER_PROMPT, turn_messages=None)
 
     # One compaction, with the lifecycle callback bracketing the phase (True then False).
@@ -1806,7 +1806,7 @@ def test_worker_compaction_persists_and_flows_into_next_delegation(tmp_path, mon
     # Continuity: the next delegation runs on the compacted context (summary in, oversized
     # history out) and does not re-compact.
     calls = []
-    worker._agent.context.on_compaction = lambda active: calls.append(active)
+    worker._agent.context.on_compaction = lambda active, _error: calls.append(active)
     _delegate_call(parent, runner, action="send", order="order two")
     assert calls == []
     assert worker.state.compaction_count == 1

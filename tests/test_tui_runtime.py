@@ -312,8 +312,27 @@ def test_automatic_compaction_replaces_working_divider_status(tmp_path):
 
     command_loop.agent.context.prepare_messages(command_loop.agent.model, "system")
 
-    assert "compacting context" in divider_during_compaction[0]
+    assert "compacting context (" in divider_during_compaction[0]
     assert command_loop.tui.status_label == "working"
+
+
+def test_compaction_retry_returns_to_compacting_and_reports_fallback(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    output = []
+    command_loop.tool_output = output.append
+
+    command_loop.automatic_compaction_status(True)
+    command_loop.model_retry_wait_status(True)
+    assert command_loop.tui.status_label == "retrying"
+
+    command_loop.model_retry_wait_status(False)
+    assert command_loop.tui.status_label == "compacting context"
+
+    command_loop.automatic_compaction_status(False, "provider timed out")
+    assert command_loop.tui.status_label == "working"
+    assert output[0].items[0].label == "compaction fallback"
+    assert output[0].items[0].text == "provider timed out"
 
 
 def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypatch):

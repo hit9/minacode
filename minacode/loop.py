@@ -395,6 +395,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.model_stream_text = ""
         self.model_stream_promoted_text = ""
         self.live_status_paused = False
+        self.compaction_active = False
         # Set to the uid this run should hand over to. `main` reads it after run() returns and
         # builds the next CommandLoop around that session.
         self.resume_request = ""
@@ -446,15 +447,18 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.builtin_call = self.builtin_call_output
         self.agent.tools.compaction = self.automatic_compaction_status
 
-    def automatic_compaction_status(self, active: bool) -> None:
+    def automatic_compaction_status(self, active: bool, error: str = "") -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""
+        self.compaction_active = active
         if self.tui is not None:
             self.tui.set_running("compacting context" if active else "working")
+        if error:
+            self.tool_output(LogBlock([LogLine("compaction fallback", error, LogRole.ERROR, LogEdge.END)]))
 
     def model_retry_wait_status(self, active: bool) -> None:
         """Show a retry backoff wait as a distinct phase instead of claiming the agent is working."""
         if self.tui is not None:
-            self.tui.set_running("retrying" if active else "working")
+            self.tui.set_running("retrying" if active else ("compacting context" if self.compaction_active else "working"))
 
     @classmethod
     def trim_input_history(cls, path: str) -> None:
@@ -559,7 +563,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
 
     def queue_divider_fragments(self, queued: int = 0) -> StyleAndTextTuples:
         status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
-        if status in {"working", "retrying"}:
+        if status in {"working", "retrying", "compacting context"}:
             retry_status = self.status_bar.retry_status()
             attempt_status = self.status_bar.model_attempt_status()
             with self.model_stream_lock:
@@ -1821,7 +1825,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if not compacted:
             return "No prior conversation to compact"
         fallback = False
+        fallback_error = ""
         self.status_bar.begin()
+        self.compaction_active = True
         if self.tui is not None:
             self.tui.set_running("compacting context")
         else:
@@ -1830,11 +1836,13 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             data = self.agent.model.compact(self.agent.context.compaction_input(compacted))
         except KeyboardInterrupt:
             return "Cancelled"
-        except Exception:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.
+        except Exception as error:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.
             self.agent.context.apply_compaction(None, keep, fallback_note=PREVIOUS_CONTEXT_TRIMMED, compacted=compacted)
             fallback = True
+            fallback_error = Text.clip_width(" ".join(str(error).split()) or type(error).__name__, 220)
             data = None
         finally:
+            self.compaction_active = False
             if self.tui is not None:
                 self.tui.set_dispatching()
             else:
@@ -1845,7 +1853,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # Compaction rewrites the history in place. Persist it now: leaving the session without
         # running another turn would otherwise resume from the log's pre-compaction state.
         self.session.save_snapshot()
-        fallback_note = " (fallback)" if fallback else ""
+        fallback_note = f" (fallback: {fallback_error})" if fallback else ""
         return (
             f"Compacted context: messages {before} -> {len(self.session.messages)}, "
             f"prior summary inserted, ctx {self.session.state.context_percent}%{fallback_note}"

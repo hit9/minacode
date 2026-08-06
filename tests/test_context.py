@@ -174,7 +174,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     ]
     context = ContextManager(s)
     compaction_phases = []
-    context.on_compaction = compaction_phases.append
+    context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
         def __init__(self):
@@ -338,6 +338,23 @@ def test_turn_compaction_does_not_recompact_a_prior_summary(tmp_path):
     assert all(message.get("content") != summary for message in [*compacted, *keep])
 
 
+def test_turn_compaction_evicts_the_prefix_before_a_late_followup(tmp_path):
+    context = ContextManager(session(tmp_path))
+    messages = [
+        {"role": "user", "content": "original request"},
+        *({"role": "assistant", "content": f"old step {index}"} for index in range(20)),
+        {"role": "user", "content": "late follow-up"},
+        *({"role": "assistant", "content": f"new step {index}"} for index in range(10)),
+    ]
+
+    compacted, keep = context.turn_compaction_parts(messages)
+
+    assert compacted[0]["content"] == "original request"
+    assert "old step 19" in [message["content"] for message in compacted]
+    assert keep[0]["content"] == "late follow-up"
+    assert [message["content"] for message in keep[1:]] == [f"new step {index}" for index in range(2, 10)]
+
+
 def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
     """One request can drive dozens of tool calls. /compact must summarize that tail too, or a
     long turn leaves the context as large as it started."""
@@ -376,7 +393,7 @@ def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
     s.messages = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
     context = ContextManager(s)
     compaction_phases = []
-    context.on_compaction = compaction_phases.append
+    context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class ExplodingModel:
         def compact(self, text):
@@ -610,7 +627,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     s.messages = [{"role": "user", "content": str(index)} for index in range(10)]
     context = ContextManager(s)
     compaction_phases = []
-    context.on_compaction = compaction_phases.append
+    context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FailingModel:
         def compact(self, text):
@@ -703,7 +720,7 @@ def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
     ]
     context = ContextManager(s)
     compaction_phases = []
-    context.on_compaction = compaction_phases.append
+    context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
         def compact(self, text):
@@ -735,7 +752,7 @@ def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     ]
     context = ContextManager(s)
     compaction_phases = []
-    context.on_compaction = compaction_phases.append
+    context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
         def compact(self, text):
