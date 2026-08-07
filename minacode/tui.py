@@ -21,7 +21,7 @@ from prompt_toolkit.application import Application, create_app_session, run_in_t
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Condition, has_completions, is_done
+from prompt_toolkit.filters import Condition, has_completions, is_done, is_searching
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
@@ -725,7 +725,7 @@ class TuiApp:
             # Without this, this eager binding wins over prompt_toolkit's search-mode Enter and
             # runs on the search field's own buffer, which has no accept handler, so the key
             # press would do nothing.
-            if pt_search.is_searching():
+            if is_searching():
                 pt_search.accept_search()
                 return
             event.current_buffer.validate_and_handle()
@@ -789,7 +789,7 @@ class TuiApp:
                 result = self.modal.key_fn("c-c", event.data)
                 self.close_modal(None if result is TUI_MODAL_PENDING else result)
                 return
-            if pt_search.is_searching():
+            if is_searching():
                 # While a Ctrl-R search is in flight, Ctrl-C aborts the search and restores the
                 # pre-search input (readline behavior); it must not clear the matched entry.
                 self._abort_history_search()
@@ -818,7 +818,7 @@ class TuiApp:
             # The readline convention for discarding the line, and the one key that means the same
             # thing in every editor here. Ctrl-C also clears, but while the agent runs it spends a
             # press that would otherwise interrupt; this one never competes with stopping the turn.
-            if pt_search.is_searching():
+            if is_searching():
                 # Like Ctrl-C, abort an in-flight Ctrl-R search and restore the pre-search input
                 # instead of clearing the matched entry.
                 self._abort_history_search()
