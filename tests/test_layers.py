@@ -123,3 +123,18 @@ def test_module_level_imports_stay_within_or_below_layer(module: str):
             f"{path} imports {target} ({target} is layer {target_layer}, above {module}'s layer {source}); "
             "cross-layer imports may only point downward"
         )
+
+
+def test_every_subpackage_is_declared_for_distribution():
+    """setuptools uses an explicit package list, so a new subpackage that nobody adds there is
+    simply absent from the wheel. Tests run from the source tree and never notice; the failure
+    surfaces only as an ImportError after install, against whatever stale files remain."""
+    import tomllib
+
+    declared = set(tomllib.loads((REPO / "pyproject.toml").read_text())["tool"]["setuptools"]["packages"])
+    found = {
+        "minacode." + path.parent.relative_to(MINACODE).as_posix().replace("/", ".")
+        for path in MINACODE.rglob("__init__.py")
+        if path.parent != MINACODE
+    } | {"minacode"}
+    assert found == declared, f"pyproject packages out of sync: missing {sorted(found - declared)}, stale {sorted(declared - found)}"

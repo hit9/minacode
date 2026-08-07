@@ -12,8 +12,10 @@ test:
 	$(PYTHON) -m compileall -q minacode
 	$(PYTHON) -m pytest
 
+# setuptools stages into build/ and never prunes it, so a module deleted from the source tree
+# keeps shipping in every later wheel. Clear both trees before building.
 clean-dist:
-	rm -rf dist
+	rm -rf dist build
 
 build: clean-dist
 	uv build
