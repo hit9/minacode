@@ -492,6 +492,87 @@ def test_interactive_tui_history_keys_recall_when_queue_is_empty(monkeypatch, tm
     assert recalled == ["queued message"]
 
 
+def test_interactive_tui_ctrl_r_search_enter_fills_input_without_submitting(monkeypatch, tmp_path):
+    received = []
+    app = None
+
+    def submit(text):
+        received.append(text)
+        app.set_idle()
+
+    app = TuiApp(
+        on_chat_submit=submit,
+        history=FileHistory(str(tmp_path / "history.txt")),
+    )
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("earlier prompt\r")
+        wait_until(lambda: received == ["earlier prompt"])
+        pipe_input.send_text("\x12")
+        wait_until(lambda: app.app.layout.current_control is app.search_toolbar.control)
+        pipe_input.send_text("earlier")
+        wait_until(lambda: app.search_toolbar.control.buffer.text == "earlier")
+        # prompt_toolkit only applies the incremental search on another Ctrl-R (or up/down)
+        # press; typing alone fills the search field and the UI preview, not the buffer.
+        pipe_input.send_text("\x12")
+        wait_until(lambda: app.input_buffer.text == "earlier prompt")
+        # Enter accepts the match into the input box and ends the search without submitting.
+        pipe_input.send_text("\r")
+        wait_until(
+            lambda: app.app.layout.current_control is not app.search_toolbar.control
+            and app.input_buffer.text == "earlier prompt"
+        )
+        assert len(received) == 1
+        # The second Enter sends the accepted text.
+        pipe_input.send_text("\r")
+        wait_until(lambda: len(received) == 2)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert received == ["earlier prompt", "earlier prompt"]
+
+
+@pytest.mark.parametrize("abort_key", ["\x03", "\x15"])
+def test_interactive_tui_search_abort_keys_restore_pre_search_input(monkeypatch, tmp_path, abort_key):
+    received = []
+    app = None
+
+    def submit(text):
+        received.append(text)
+        app.set_idle()
+
+    app = TuiApp(
+        on_chat_submit=submit,
+        history=FileHistory(str(tmp_path / "history.txt")),
+    )
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("earlier prompt\r")
+        wait_until(lambda: received == ["earlier prompt"])
+        pipe_input.send_text("draft text")
+        wait_until(lambda: app.input_buffer.text == "draft text")
+        pipe_input.send_text("\x12")
+        wait_until(lambda: app.app.layout.current_control is app.search_toolbar.control)
+        pipe_input.send_text("earlier")
+        # prompt_toolkit only applies the incremental search on another Ctrl-R (or up/down)
+        # press; typing alone fills the search field and the UI preview, not the buffer.
+        pipe_input.send_text("\x12")
+        wait_until(lambda: app.input_buffer.text == "earlier prompt")
+        pipe_input.send_text(abort_key)
+        wait_until(
+            lambda: app.input_buffer.text == "draft text"
+            and app.app.layout.current_control is not app.search_toolbar.control
+        )
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert received == ["earlier prompt"]
+
+
 def test_interactive_tui_tab_inserts_single_completion_without_menu(monkeypatch):
     app = TuiApp(completer=CommandCompleter())
 

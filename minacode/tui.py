@@ -198,6 +198,7 @@ class TuiApp:
         self.input_images: tuple[ImageRef, ...] = ()
         self._last_input_text = ""
         self._changing_input = False
+        self._search_start_text = ""
         self.input_error = ""
         self.history = history
         self.input_buffer = Buffer(
@@ -413,6 +414,11 @@ class TuiApp:
             self.input_buffer.reset(Document(str(user_input), cursor_position=position))
         finally:
             self._changing_input = False
+
+    def _abort_history_search(self) -> None:
+        """Abort an in-flight Ctrl-R search and restore the input as it was before the search started."""
+        pt_search.stop_search()
+        self._reset_input(self._search_start_text)
 
     def quick_hints(self) -> tuple[str, ...]:
         return self.quick_hints_fn()
@@ -712,7 +718,18 @@ class TuiApp:
             bindings.add(str(number), filter=modal, eager=True)(lambda event, number=number: self.dispatch_modal_key(str(number), event.data))
         bindings.add(Keys.Any, filter=modal)(lambda event: self.dispatch_modal_key("any", event.data))
 
-        bindings.add("enter", filter=~modal, eager=True)(lambda event: event.current_buffer.validate_and_handle())
+        def enter(event):
+            # Enter ends a Ctrl-R history search by placing the match into the input box without
+            # submitting it, so the text can be reviewed or edited first; a second Enter sends.
+            # Without this, this eager binding wins over prompt_toolkit's search-mode Enter and
+            # runs on the search field's own buffer, which has no accept handler, so the key
+            # press would do nothing.
+            if pt_search.is_searching():
+                pt_search.accept_search()
+                return
+            event.current_buffer.validate_and_handle()
+
+        bindings.add("enter", filter=~modal, eager=True)(enter)
         bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
         for key, reverse in (("tab", False), ("s-tab", True)):
             bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.tab_or_complete(event.current_buffer, reverse=reverse))
@@ -729,6 +746,9 @@ class TuiApp:
             if event.app.layout.current_control is self.search_toolbar.control:
                 pt_search.do_incremental_search(direction, count=event.arg)
             else:
+                # Snapshot the input before starting a new search so aborting it (Ctrl-C / Ctrl-U
+                # while searching) can restore exactly what was there, including any draft.
+                self._search_start_text = self.input_buffer.text
                 pt_search.start_search(direction=direction)
 
         bindings.add("c-r", filter=~modal, eager=True)(history_search)
@@ -768,6 +788,11 @@ class TuiApp:
                 result = self.modal.key_fn("c-c", event.data)
                 self.close_modal(None if result is TUI_MODAL_PENDING else result)
                 return
+            if pt_search.is_searching():
+                # While a Ctrl-R search is in flight, Ctrl-C aborts the search and restores the
+                # pre-search input (readline behavior); it must not clear the matched entry.
+                self._abort_history_search()
+                return
             if self.input_mode == "approval" and self._input_pending is not None:
                 self._input_result = ""
                 self._input_pending.set()
@@ -792,6 +817,11 @@ class TuiApp:
             # The readline convention for discarding the line, and the one key that means the same
             # thing in every editor here. Ctrl-C also clears, but while the agent runs it spends a
             # press that would otherwise interrupt; this one never competes with stopping the turn.
+            if pt_search.is_searching():
+                # Like Ctrl-C, abort an in-flight Ctrl-R search and restore the pre-search input
+                # instead of clearing the matched entry.
+                self._abort_history_search()
+                return
             self.input_buffer.reset(Document(""))
 
         bindings.add("c-u", filter=~modal & edits_input, eager=True)(clear_input)
