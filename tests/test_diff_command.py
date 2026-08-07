@@ -5,10 +5,13 @@ import sys
 import time
 
 import minacode.cli.commands as commands_mod
-from minacode.base import Config, ToolCall
+from minacode.base import ToolCall
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop
 from minacode.cli.commands import diff_command
 from minacode.cli.modals import diff_viewer
+from minacode.config import (
+    Config,
+)
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.render import UiPrinter
@@ -57,7 +60,10 @@ def test_diff_preserves_cli_history_when_tmux_alternate_screen_is_off(tmp_path):
 import threading
 import time
 
-from minacode.base import Config
+from minacode.config import (
+    Config,
+)
+
 from minacode.engine import Agent
 from minacode.cli import CommandLoop
 from minacode.cli.commands import diff_command

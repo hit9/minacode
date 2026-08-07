@@ -9,7 +9,10 @@ import httpx
 from anthropic import Anthropic
 from openai import OpenAI
 
-from minacode.base import Config, ProviderConfig
+from minacode.config import (
+    Config,
+    ProviderConfig,
+)
 from minacode.session import Session
 
 

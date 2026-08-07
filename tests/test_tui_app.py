@@ -22,12 +22,14 @@ import minacode.tui as tui_module
 from minacode import hints
 from minacode.base import (
     SESSION_EVENT_KEY,
-    Config,
     LogBlock,
     LogEdge,
 )
 from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.cli.commands import select_choice
+from minacode.config import (
+    Config,
+)
 from minacode.engine import Agent
 from minacode.hints import HintPicker
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX

@@ -10,11 +10,13 @@ from minacode.base import (
     PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
     ConfigError,
-    ConfigFile,
     ModelError,
-    ProviderConfig,
     ToolCall,
     builtin_tool_label,
+)
+from minacode.config import (
+    ConfigFile,
+    ProviderConfig,
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent

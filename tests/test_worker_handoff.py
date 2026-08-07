@@ -145,7 +145,12 @@ def test_delegate_registration_gates(tmp_path):
 
 
 def test_worker_config_parsing_and_validation(tmp_path):
-    from minacode.base import Config, ConfigError, RuntimeSettings
+    from minacode.base import ConfigError
+    from minacode.config import (
+        Config,
+        RuntimeSettings,
+    )
+
 
     config = Config.from_dict({"worker": {"provider": "fast"}, "provider": {"active": "default", "default": {"model": "d"}, "fast": {"model": "m"}}})
     assert config.worker_provider == "fast"
@@ -545,7 +550,10 @@ def test_worker_reset_appends_event_message(tmp_path):
 
 
 def test_status_bar_shows_worker_segment(tmp_path):
-    from minacode.base import Config, ProviderConfig
+    from minacode.config import (
+        Config,
+        ProviderConfig,
+    )
     from minacode.render import StatusBar
     from minacode.session import Session
 
@@ -865,6 +873,7 @@ def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, m
 def test_delegate_send_rejects_a_blank_language(tmp_path):
     from minacode.base import ToolError
 
+
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
     with pytest.raises(ToolError, match="language"):
@@ -1137,7 +1146,10 @@ def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
 def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.base import LogRole, ProviderConfig, ToolCall
+    from minacode.base import LogRole, ToolCall
+    from minacode.config import (
+        ProviderConfig,
+    )
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.tools import EditTool
@@ -1202,7 +1214,10 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
 def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):
     from dataclasses import replace
 
-    from minacode.base import LogBlock, ProviderConfig, ToolCall
+    from minacode.base import LogBlock, ToolCall
+    from minacode.config import (
+        ProviderConfig,
+    )
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.session import Session
@@ -1298,7 +1313,10 @@ def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
 
 # 21. [worker] model/reasoning/api parse like [worker] provider; reasoning and api validate their choices.
 def test_worker_config_parses_model_and_reasoning(tmp_path):
-    from minacode.base import Config
+    from minacode.config import (
+    Config,
+)
+
 
     config = Config.from_dict(
         {
@@ -1317,14 +1335,22 @@ def test_worker_config_parses_model_and_reasoning(tmp_path):
 
 
 def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
-    from minacode.base import Config, ConfigError
+    from minacode.base import ConfigError
+    from minacode.config import (
+        Config,
+    )
+
 
     with pytest.raises(ConfigError, match="worker.reasoning"):
         Config.from_dict({"worker": {"reasoning": "turbo"}, "provider": {"default": {}}})
 
 
 def test_worker_config_rejects_invalid_worker_api(tmp_path):
-    from minacode.base import Config, ConfigError
+    from minacode.base import ConfigError
+    from minacode.config import (
+        Config,
+    )
+
 
     with pytest.raises(ConfigError, match="worker.api"):
         Config.from_dict({"worker": {"api": "oai"}, "provider": {"default": {}}})
@@ -1333,7 +1359,9 @@ def test_worker_config_rejects_invalid_worker_api(tmp_path):
 def test_worker_provider_config_applies_api_override(tmp_path):
     """worker_provider_config folds an explicit worker.api into the detached entry; an empty
     worker_api inherits the entry's own protocol (the worker never shares the parent's object)."""
-    from minacode.base import Config
+    from minacode.config import (
+        Config,
+    )
     from minacode.tools.delegate import worker_provider_config
 
     config = Config.from_dict(
@@ -1361,8 +1389,10 @@ def test_worker_provider_config_applies_api_override(tmp_path):
 #     over the same config re-evaluates the gate (simulating a restart), and an unknown name is
 #     rejected without touching the config.
 def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
-    from minacode.base import ProviderConfig
     from minacode.cli import CommandLoop
+    from minacode.config import (
+        ProviderConfig,
+    )
     from minacode.engine import Agent
     from minacode.session import Session
     from minacode.tools import Tool
@@ -1410,8 +1440,10 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
 # 23. "off" is the clearing word unless a provider entry is literally named "off": existence in
 #     config.providers wins, so /worker provider off selects that entry.
 def test_worker_provider_off_selects_literal_off_entry(tmp_path):
-    from minacode.base import ProviderConfig
     from minacode.cli import CommandLoop
+    from minacode.config import (
+        ProviderConfig,
+    )
     from minacode.engine import Agent
 
     parent = session(tmp_path)
@@ -1426,8 +1458,10 @@ def test_worker_provider_off_selects_literal_off_entry(tmp_path):
 # 24. /worker model and /worker reason store overrides, reject an invalid effort, and "default"
 #     clears; "off" is a valid reasoning effort, never the clearing word.
 def test_worker_model_and_reason_overrides(tmp_path):
-    from minacode.base import REASONING_CHOICES
     from minacode.cli import CommandLoop
+    from minacode.config import (
+        REASONING_CHOICES,
+    )
     from minacode.engine import Agent
 
     parent = session(tmp_path)
@@ -1459,7 +1493,9 @@ def test_worker_model_and_reason_overrides(tmp_path):
 #     leak into the parent's providers entry. A snapshot-resumed worker picks up the overrides the
 #     same way, because the load path receives the same freshly built config.
 def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkeypatch):
-    from minacode.base import ProviderConfig
+    from minacode.config import (
+        ProviderConfig,
+    )
     from minacode.session import SessionSnapshotStore
 
     parent = _delegate_session(tmp_path)
@@ -1528,8 +1564,10 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
 # 27. a live worker also takes /worker provider NAME immediately: its active entry is replaced with
 #     a detached copy and the parent's entry is untouched.
 def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
-    from minacode.base import ProviderConfig
     from minacode.cli import CommandLoop
+    from minacode.config import (
+        ProviderConfig,
+    )
     from minacode.engine import Agent
 
     parent = _delegate_session(tmp_path)
@@ -1683,6 +1721,7 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
     # fires; the reset shows as an ordinary tool root with a plain done child.
     assert labels == [], "reset must not emit a worker_rule divider"
     from minacode.base import LogBlock
+
     done = [item for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done"]
     assert done, "reset should keep its ordinary tool root with a done child"
     assert "worker context cleared" in next(item.text for block in outputs if isinstance(block, LogBlock) for item, _ in block.walk() if item.label == "done")

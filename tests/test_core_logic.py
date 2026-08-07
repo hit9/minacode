@@ -10,24 +10,26 @@ import minacode.__main__ as cli
 import minacode.update as update_module
 from minacode.__main__ import main
 from minacode.base import (
-    ANTHROPIC_DEFAULT_MAX_TOKENS,
-    CHAT_REASONING_CHOICES,
-    DEFAULT_MAX_TOKENS,
-    DEFAULT_OUTPUT_RESERVE_TOKENS,
     HTTP_USER_AGENT,
     RESPONSES_OUTPUT_KEY,
-    Config,
     ConfigError,
-    ConfigFile,
     ModelError,
     ModelUsage,
-    ProviderConfig,
-    RuntimeSettings,
     ToolCall,
     UpdateStatus,
     __version__,
 )
 from minacode.cli import CommandLoop
+from minacode.config import (
+    ANTHROPIC_DEFAULT_MAX_TOKENS,
+    CHAT_REASONING_CHOICES,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
+    Config,
+    ConfigFile,
+    ProviderConfig,
+    RuntimeSettings,
+)
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient

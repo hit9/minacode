@@ -13,7 +13,9 @@ import pytest
 # ---------------------------------------------------------------------------
 from mcp_harness import mcp_cfg, mcp_tool_info, session
 
-from minacode.base import Config
+from minacode.config import (
+    Config,
+)
 from minacode.context import ContextManager
 from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig
 from minacode.render import StatusBar

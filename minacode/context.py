@@ -15,6 +15,8 @@ from minacode.base import (
     SESSION_EVENT_KEY,
     Json,
     Text,
+)
+from minacode.config import (
     request_budget_for,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs

@@ -14,7 +14,12 @@ import pytest
 from model_harness import _AnthropicMockClientFactory, _MockClientFactory
 from openai_mock_server import OpenAIMockServer
 
-from minacode.base import MIN_CONTEXT_SAFETY_TOKENS, SESSION_EVENT_KEY, Config, ProviderConfig
+from minacode.base import SESSION_EVENT_KEY
+from minacode.config import (
+    MIN_CONTEXT_SAFETY_TOKENS,
+    Config,
+    ProviderConfig,
+)
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient

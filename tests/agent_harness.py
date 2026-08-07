@@ -2,8 +2,10 @@
 the user-input queue helpers."""
 
 from minacode.base import (
-    Config,
     ToolCall,
+)
+from minacode.config import (
+    Config,
 )
 from minacode.session import Session
 

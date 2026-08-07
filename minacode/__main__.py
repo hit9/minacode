@@ -12,8 +12,13 @@ import subprocess
 import sys
 import threading
 
-from minacode.base import Config, ConfigError, ConfigFile, MinacodeError, RuntimeSettings, UpdateStatus, __version__
+from minacode.base import ConfigError, MinacodeError, UpdateStatus, __version__
 from minacode.cli import CommandLoop
+from minacode.config import (
+    Config,
+    ConfigFile,
+    RuntimeSettings,
+)
 from minacode.engine import Agent
 from minacode.render import Theme
 from minacode.session import Session

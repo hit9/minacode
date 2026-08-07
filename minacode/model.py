@@ -37,12 +37,14 @@ from minacode.base import (
     ModelRequestRetry,
     ModelResponseTimeout,
     ModelUsage,
-    ProviderConfig,
     Text,
     ToolArgs,
     ToolCall,
     ToolError,
     builtin_tool_label,
+)
+from minacode.config import (
+    ProviderConfig,
     request_budget_for,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs

@@ -7,8 +7,10 @@ import os
 import shutil
 import time
 
-from minacode.base import Config
 from minacode.cli import CommandLoop
+from minacode.config import (
+    Config,
+)
 from minacode.engine import Agent
 from minacode.render import BashLivePreview
 from minacode.session import Session

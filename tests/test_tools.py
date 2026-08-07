@@ -7,14 +7,16 @@ import pytest
 
 import minacode
 from minacode.base import (
-    ConfigFile,
     LogBlock,
     LogEdge,
     LogLine,
     LogRole,
-    RuntimeSettings,
     ToolCall,
     ToolError,
+)
+from minacode.config import (
+    ConfigFile,
+    RuntimeSettings,
 )
 from minacode.context import ContextManager
 from minacode.model import ModelClient

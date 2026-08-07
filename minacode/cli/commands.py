@@ -18,19 +18,21 @@ from typing import TYPE_CHECKING
 
 from minacode.base import (
     HTTP_USER_AGENT,
-    IMAGE_INPUT_CHOICES,
-    PROVIDER_API_CHOICES,
-    REASONING_CHOICES,
     SELECTION_BACK,
     SESSION_EVENT_KEY,
-    Config,
     ConfigError,
     ModelUsage,
-    ProviderConfig,
-    RuntimeSettings,
     Text,
 )
 from minacode.cli.modals import choice_application, diff_viewer, mcp_manager, select_choice
+from minacode.config import (
+    IMAGE_INPUT_CHOICES,
+    PROVIDER_API_CHOICES,
+    REASONING_CHOICES,
+    Config,
+    ProviderConfig,
+    RuntimeSettings,
+)
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED
 from minacode.provider_compat import builtin_tools_issue
 from minacode.render import markdown_table

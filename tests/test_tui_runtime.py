@@ -19,12 +19,14 @@ import minacode.cli as loop_module
 import minacode.render as render_module
 import minacode.tui as tui_module
 from minacode.base import (
-    Config,
     MalformedToolCallError,
     MinacodeError,
     ToolCall,
 )
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
+from minacode.config import (
+    Config,
+)
 from minacode.engine import Agent
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore

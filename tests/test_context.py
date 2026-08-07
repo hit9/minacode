@@ -10,12 +10,14 @@ from agent_harness import call, session
 
 import minacode.context as context_module
 from minacode.base import (
-    DEFAULT_OUTPUT_RESERVE_TOKENS,
-    MIN_CONTEXT_SAFETY_TOKENS,
     ModelError,
 )
 from minacode.cli import CommandLoop
 from minacode.cli.commands import compact
+from minacode.config import (
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
+    MIN_CONTEXT_SAFETY_TOKENS,
+)
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT

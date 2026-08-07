@@ -14,10 +14,13 @@ import pytest
 from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info
 
 import minacode.cli.commands as commands_mod
-from minacode.base import SELECTION_BACK, Config
+from minacode.base import SELECTION_BACK
 from minacode.cli import CommandCompleter, CommandLoop
 from minacode.cli.commands import mcp_command
 from minacode.cli.modals import mcp_manager
+from minacode.config import (
+    Config,
+)
 from minacode.engine import Agent
 from minacode.mcp import MCPFileTokenStore, MCPManager
 from minacode.render import StatusBar, UiPrinter

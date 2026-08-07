@@ -21,6 +21,8 @@ from minacode.base import (
     LogLine,
     LogRole,
     Text,
+)
+from minacode.config import (
     request_budget_for,
 )
 from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter

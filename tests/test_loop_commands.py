@@ -21,7 +21,6 @@ from minacode.base import (
     DISMISSED,
     SELECTION_BACK,
     SESSION_EVENT_KEY,
-    Config,
     LogBlock,
     LogLine,
     Text,
@@ -38,6 +37,9 @@ from minacode.cli.commands import (
     status,
 )
 from minacode.cli.modals import choice_application, question_interaction, select_choice
+from minacode.config import (
+    Config,
+)
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.prompts import SYSTEM_PROMPT

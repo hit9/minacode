@@ -15,7 +15,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
-from minacode.base import Config, Json, Text, ToolError
+from minacode.base import Json, Text, ToolError
+from minacode.config import (
+    Config,
+)
 from minacode.session import Session
 
 if TYPE_CHECKING:

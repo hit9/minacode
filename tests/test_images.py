@@ -15,8 +15,12 @@ from prompt_toolkit.history import FileHistory
 
 import minacode.cli as loop_module
 import minacode.tui as tui_module
-from minacode.base import Config, ModelError, ProviderConfig, ToolCall, ToolError
+from minacode.base import ModelError, ToolCall, ToolError
 from minacode.cli import CommandLoop
+from minacode.config import (
+    Config,
+    ProviderConfig,
+)
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.image import (

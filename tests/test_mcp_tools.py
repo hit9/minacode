@@ -12,7 +12,10 @@ import pytest
 # ---------------------------------------------------------------------------
 from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info, session
 
-from minacode.base import Config, ToolCall, ToolError
+from minacode.base import ToolCall, ToolError
+from minacode.config import (
+    Config,
+)
 from minacode.context import ContextManager
 from minacode.mcp import MCPManager, MCPResourceInfo, MCPToolInfo
 from minacode.runner import ToolRunner

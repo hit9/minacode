@@ -17,8 +17,12 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
 
-from minacode.base import PROVIDER_API_CHOICES, REASONING_CHOICES, Text
+from minacode.base import Text
 from minacode.cli.commands import SET_KEYS, SET_VALUES, WORKER_SUBCOMMANDS
+from minacode.config import (
+    PROVIDER_API_CHOICES,
+    REASONING_CHOICES,
+)
 from minacode.hints import Context as HintContext
 from minacode.hints import HintPicker
 from minacode.render import Theme, UiPrinter

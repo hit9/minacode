@@ -11,13 +11,15 @@ from agent_harness import call, queue, session
 
 import minacode.engine as engine_module
 from minacode.base import (
-    ANTHROPIC_DEFAULT_MAX_TOKENS,
-    Config,
     LogBlock,
     MalformedToolCallError,
     ModelError,
-    ProviderConfig,
     ToolCall,
+)
+from minacode.config import (
+    ANTHROPIC_DEFAULT_MAX_TOKENS,
+    Config,
+    ProviderConfig,
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent

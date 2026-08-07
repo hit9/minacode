@@ -14,12 +14,8 @@ from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interac
 import minacode.cli.commands as commands_mod
 import minacode.cli.modals as modals_mod
 from minacode.base import (
-    PROVIDER_API_CHOICES,
-    REASONING_CHOICES,
     SELECTION_BACK,
-    Config,
     ModelError,
-    ProviderConfig,
 )
 from minacode.cli import COMMANDS, CommandCompleter, CommandLoop
 from minacode.cli.commands import (
@@ -38,6 +34,12 @@ from minacode.cli.commands import (
     worker_command,
 )
 from minacode.cli.modals import bash_output_viewer, choice_application, diff_viewer, select_choice
+from minacode.config import (
+    PROVIDER_API_CHOICES,
+    REASONING_CHOICES,
+    Config,
+    ProviderConfig,
+)
 from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.session import Session

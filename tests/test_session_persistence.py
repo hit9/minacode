@@ -6,9 +6,13 @@ from typing import ClassVar
 
 import pytest
 
-from minacode.base import SESSION_EVENT_KEY, Config, MinacodeError, RuntimeSettings
+from minacode.base import SESSION_EVENT_KEY, MinacodeError
 from minacode.cli import CommandLoop
 from minacode.cli.commands import compact
+from minacode.config import (
+    Config,
+    RuntimeSettings,
+)
 from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX

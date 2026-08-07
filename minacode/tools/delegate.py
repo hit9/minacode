@@ -21,7 +21,10 @@ from minacode.session import Session, SessionSnapshotStore
 from minacode.tools.base import Tool
 
 if TYPE_CHECKING:
-    from minacode.base import Config, ProviderConfig
+    from minacode.config import (
+    Config,
+    ProviderConfig,
+)
     from minacode.runner import ToolRunner
 
 # The worker's tool set. Exclusions, and why: Delegate (would recurse), Ask (blocks on user input
