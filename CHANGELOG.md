@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.21.4 - 2026-08-07
+
 ### Changed
 - `Ctrl-R` history search: `Enter` now ends the search with the match placed in the input box
   instead of submitting it immediately, so the text can be reviewed or edited first; a second
