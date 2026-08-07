@@ -16,11 +16,14 @@ Keep this file short. It is an entry point, not a second design document.
 - `minacode/context.py`, `minacode/model.py`, `minacode/runner.py`: context projection and
   compaction, provider request protocols, and the tool execution lifecycle.
 - `minacode/update.py`: the background version check.
-- `minacode/session.py`: durable semantic state and persistence.
+- `minacode/session/`: durable semantic state (`__init__.py`) and snapshot persistence
+  (`store.py`); `store.py` never imports the package at module scope.
 - `minacode/tools/`, `minacode/image.py`, `minacode/mcp.py`, `minacode/skill.py`: vertical feature modules.
   `tools/` splits the built-in tool set by capability and owns the registry in its `__init__.py`.
-- `minacode/provider_compat.py`: evidence-backed provider compatibility policy.
-- `minacode/loop.py`, `minacode/tui.py`, `minacode/render.py`: commands, interaction, and presentation.
+- `minacode/config.py`, `minacode/provider_compat.py`: config-file settings and evidence-backed
+  provider compatibility policy.
+- `minacode/cli/`, `minacode/tui.py`, `minacode/render.py`: commands (`cli/commands.py`, `cli/modals.py`),
+  the TUI runtime (`cli/runtime.py`), view fragments (`cli/view.py`), interaction, and presentation.
 - `tests/`: behavior-oriented tests grouped by subsystem and boundary.
 
 ## Project workflow

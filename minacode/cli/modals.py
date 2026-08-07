@@ -124,7 +124,6 @@ def mcp_manager(loop: CommandLoop) -> None:
         modal_open.clear()
 
 
-
 def select_choice(
     loop: CommandLoop,
     title: str,
@@ -147,7 +146,6 @@ def select_choice(
         return None
 
 
-
 def choice_application(
     loop: CommandLoop,
     title: str,
@@ -167,7 +165,6 @@ def choice_application(
     if isinstance(result, KeyboardInterrupt):
         raise result
     return result
-
 
 
 def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
@@ -213,7 +210,6 @@ def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
             answer += "\n\nUser notes: " + note
         answers.append(answer)
     return answers
-
 
 
 def bash_output_viewer(loop: CommandLoop) -> None:
@@ -277,7 +273,6 @@ def bash_output_viewer(loop: CommandLoop) -> None:
         return TUI_MODAL_PENDING
 
     loop.tui.show_modal(fragments, handle_key)
-
 
 
 def diff_viewer(loop: CommandLoop) -> None:
@@ -367,4 +362,3 @@ def diff_viewer(loop: CommandLoop) -> None:
         return result
 
     loop.tui.show_modal(fragments, modal_key, exclusive=True)
-

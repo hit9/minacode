@@ -19,8 +19,8 @@ Modules, with dependencies pointing downward only:
 ```
               __main__                     entry, startup ordering
                   |
-    loop.py -- tui.py -- render.py         commands, interaction, presentation
-        |
+    cli/ -- tui.py -- render.py            commands (cli/commands.py, cli/modals.py),
+        |                                    TUI runtime (cli/runtime.py), view (cli/view.py)
     engine.py                              the turn loop: commit or roll back
         |
         +-- context.py                     request projection, compaction
@@ -30,17 +30,19 @@ Modules, with dependencies pointing downward only:
                   |
    tools/   mcp.py   skill.py             vertical features
                   |
-             session.py                    durable semantic state
+             session/                      durable semantic state (__init__.py)
+                  |                         and snapshot persistence (store.py)
                   |
               image.py                     image storage and model projection
                   |
-   base.py   provider_compat.py            value types, config, policy
+   base.py   config.py   provider_compat.py  value types, settings, policy
                   |
             model_catalog.py               evidence-backed compatibility data
 ```
 
-`session.py` reaches `tools/`, `mcp.py`, and `skill.py` through deferred imports, commented at
-those call sites; that is why features sit above it without a module-scope cycle.
+`session/__init__.py` reaches `tools/`, `mcp.py`, and `skill.py` through deferred imports,
+commented at those call sites, and `session/store.py` reaches the live state types the same way;
+that is why features sit above `session/` without a module-scope cycle.
 
 A turn, and the three ways it can end:
 

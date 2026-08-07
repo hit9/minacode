@@ -84,7 +84,6 @@ class CommandLoop:
     # assigned right after the registry.
     COMMANDS: ClassVar[tuple[str, ...]]
 
-
     HELP = """### Commands
 
 - `/help` — Show this help.
@@ -221,7 +220,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.model_stream = self.model_stream_output
-        self.agent.tools.question_fn = question_interaction
+        self.agent.tools.question_fn = lambda specs: question_interaction(self, specs)
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
         self.agent.tools.worker_config_picker = commands.WorkerFlow(self).run_worker_config
         # Worker agent lifecycle callbacks: delegate.py wires these onto the worker agent when set,

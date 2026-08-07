@@ -406,8 +406,8 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
     title = "Sessions" + (" · all projects" if argument == "all" else "")
     # The preview renders on every frame, so it reads the list already in hand, never the store.
     by_uid = {entry.uid: entry for entry in entries}
-    chosen = choice_application(loop, 
-        title, tuple(entry.uid for entry in entries), labels, loop.session.uid, set(), preview_fn=lambda uid: session_preview(loop, by_uid.get(uid))
+    chosen = choice_application(
+        loop, title, tuple(entry.uid for entry in entries), labels, loop.session.uid, set(), preview_fn=lambda uid: session_preview(loop, by_uid.get(uid))
     )
     if not isinstance(chosen, str) or chosen == loop.session.uid:
         return None

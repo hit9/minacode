@@ -81,8 +81,6 @@ class SystemInfo:
         )
 
 
-
-
 @dataclass
 class ProviderConfig:
     COMPATIBILITY: ClassVar[dict[str, CompatibilityProfile]] = COMPATIBILITY_PROFILES
@@ -221,8 +219,6 @@ class ProviderConfig:
         return value
 
 
-
-
 @dataclass
 class RuntimeSettings:
     shell_timeout: int = 60
@@ -267,8 +263,6 @@ class RuntimeSettings:
         if len(value) > 64 or any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ConfigError("runtime.language must be a single-line language name up to 64 chars, or auto")
         return value
-
-
 
 
 @dataclass
@@ -497,5 +491,3 @@ model = ""
         except tomllib.TOMLDecodeError as error:
             raise ConfigError(f"invalid config {config_path}: {error}") from error
         return data if isinstance(data, dict) else {}
-
-

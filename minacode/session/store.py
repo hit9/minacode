@@ -921,5 +921,3 @@ class SessionSnapshotStore:
     @staticmethod
     def path_for(data_dir: str, *parts: str) -> str:
         return os.path.abspath(os.path.join(os.path.expanduser(data_dir), *parts))
-
-
