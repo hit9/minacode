@@ -52,7 +52,7 @@ class Command:
     name: str  # "/status"
     handler: Callable[[CommandLoop, str], str | None]
     aliases: tuple[str, ...] = ()
-    queue_safe: bool = False  # 可在 running 输入区执行
+    queue_safe: bool = False  # may run from the follow-up input while a turn works
     render: str = "plain"  # "plain" | "answer" | "compact"
 
 

@@ -93,11 +93,11 @@ class SessionSnapshotCodec:
 
     @classmethod
     def turn_diff(cls, diff: TurnDiffT, blobs: dict[str, str]) -> Json:
-        from minacode.session import TurnDiff
-
         """File snapshots are stored by content hash, not inline. Editing one file repeatedly makes
         each version appear twice — as one edit's `after` and the next edit's `before` — and a
         rewrite of the retained window would otherwise re-serialize every snapshot again."""
+        from minacode.session import TurnDiff
+
         before, after = TurnDiff.bounded_snapshots(diff.before, diff.after)
         return {
             "key": diff.key,
