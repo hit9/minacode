@@ -521,7 +521,7 @@ def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
 #     the message reaches the next request (render-hidden, never filtered from the model history).
 def test_worker_reset_appends_event_message(tmp_path):
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -584,7 +584,7 @@ def test_status_bar_shows_worker_segment(tmp_path):
 
 def test_working_divider_marks_inflight_worker(tmp_path):
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -619,7 +619,7 @@ def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
 
 def test_status_reports_worker_delegation_state(tmp_path):
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -668,7 +668,7 @@ def test_status_reports_worker_delegation_state(tmp_path):
 # in DelegateTool): no-live-worker, one line per fact, and the usage/state-context-percent values
 def test_worker_status_command_is_human_readable(tmp_path):
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -1361,7 +1361,7 @@ def test_worker_provider_config_applies_api_override(tmp_path):
 def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     from minacode.base import ProviderConfig
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
     from minacode.session import Session
     from minacode.tools import Tool
 
@@ -1410,7 +1410,7 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
 def test_worker_provider_off_selects_literal_off_entry(tmp_path):
     from minacode.base import ProviderConfig
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
 
     parent = session(tmp_path)
     parent.config.providers["off"] = ProviderConfig(model="m")
@@ -1426,7 +1426,7 @@ def test_worker_provider_off_selects_literal_off_entry(tmp_path):
 def test_worker_model_and_reason_overrides(tmp_path):
     from minacode.base import REASONING_CHOICES
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
 
     parent = session(tmp_path)
     agent = Agent(parent, output_fn=lambda text: None)
@@ -1500,7 +1500,7 @@ def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkey
 #     underlying entry's model on the live worker.
 def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "parent-model"
@@ -1528,7 +1528,7 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
 def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     from minacode.base import ProviderConfig
     from minacode.engine import Agent
-    from minacode.loop import CommandLoop
+    from minacode.cli import CommandLoop
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["alt"] = ProviderConfig(model="m")

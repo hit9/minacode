@@ -15,7 +15,7 @@ from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info
 
 from minacode.base import SELECTION_BACK, Config
 from minacode.engine import Agent
-from minacode.loop import CommandCompleter, CommandLoop
+from minacode.cli import CommandCompleter, CommandLoop
 from minacode.mcp import MCPFileTokenStore, MCPManager
 from minacode.render import StatusBar, UiPrinter
 from minacode.session import Session, SessionSnapshotStore

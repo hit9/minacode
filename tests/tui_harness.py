@@ -14,7 +14,7 @@ from minacode.base import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import CommandLoop
 from minacode.session import Session
 
 

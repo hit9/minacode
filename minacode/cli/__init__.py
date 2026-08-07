@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
@@ -95,6 +95,15 @@ SET_VALUES: dict[str, tuple[str, ...]] = {
 # fmt: on
 
 WORKER_SUBCOMMANDS = ("status", "reset", "on", "off", "provider", "model", "reason", "api")
+
+
+@dataclass(frozen=True)
+class Command:
+    name: str  # "/status"
+    handler: Callable[[CommandLoop, str], str | None]
+    aliases: tuple[str, ...] = ()
+    queue_safe: bool = False  # 可在 running 输入区执行
+    render: str = "plain"  # "plain" | "answer" | "compact"
 
 
 class CommandCompleter(Completer):
@@ -277,21 +286,10 @@ class CommandLoop:
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     INPUT_HISTORY_BYTES: ClassVar[int] = 512 * 1024
-    # fmt: off
-    COMMAND_HANDLERS: ClassVar[dict[str, str]] = {
-        "/help": "help", "/status": "status", "/ps": "ps_command", "/diff": "diff_command",
-        "/skills": "skills_command", "/config": "config",
-        "/compact": "compact", "/index": "index", "/provider": "provider", "/model": "model",
-        "/reason": "reason", "/effort": "reason", "/api": "api", "/set": "set_value", "/yolo": "yolo", "/strict": "strict", "/hints": "hints",
-        "/mcp": "mcp_command", "/resend": "resend_command", "/name": "name_command", "/sessions": "sessions_command", "/resume": "sessions_command",
-        "/worker": "worker_command", "/language": "language_command",
-    }
-    COMMANDS: ClassVar[tuple[str, ...]] = tuple(COMMAND_HANDLERS) + ("/exit", "/quit")
-    # fmt: on
-
-    # Commands safe to run from the follow-up input while the agent works: read-only
-    # views plus /yolo, whose single atomic flag flip the agent simply reads at the next approval.
-    QUEUE_RUN_COMMANDS: ClassVar[frozenset[str]] = frozenset({"/help", "/status", "/skills", "/ps", "/mcp", "/diff", "/yolo", "/hints", "/resend"})
+    # The command registry (`COMMANDS` below, after the class) drives dispatch, the completer's
+    # name tuple, and the queue-safe allowlist. `CommandLoop.COMMANDS` is derived from it and
+    # assigned right after the registry.
+    COMMANDS: ClassVar[tuple[str, ...]]
     MODEL_CONFIGURED_LABEL = "---- Configured models ----"
     MODEL_DISCOVERED_LABEL = "---- Discovered models ----"
     MODEL_LABELS = frozenset((MODEL_CONFIGURED_LABEL, MODEL_DISCOVERED_LABEL))
@@ -684,7 +682,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def run_queued_command(self, text: str) -> None:
         """Dispatch a read-only slash command while an agent turn is running."""
         name = text.partition(" ")[0]
-        if name not in self.QUEUE_RUN_COMMANDS:
+        entry = COMMAND_LOOKUP.get(name)
+        if entry is None or not entry.queue_safe:
             self.emit(f"{name} is unavailable while the agent is working; press Ctrl-C to run it.")
             return
         if name == "/mcp":
@@ -1190,15 +1189,16 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if not text.startswith("/"):
             return False, False
         name, _, args = text.partition(" ")
-        method_name = self.COMMAND_HANDLERS.get(name)
-        handler = getattr(self, method_name, None) if method_name else None
-        output = handler(args.strip()) if handler else f"Unknown command: {name}"
+        entry = COMMAND_LOOKUP.get(name)
+        output = entry.handler(self, args.strip()) if entry else f"Unknown command: {name}"
         # A None result means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
-            if name == "/status":
+            if entry is not None and entry.render == "compact":
                 self.ui.emit_answer(output, rule=False, compact=True)
+            elif entry is not None and entry.render == "answer":
+                self.ui.emit_answer(output)
             else:
-                (self.ui.emit_answer if name in {"/help", "/ps", "/mcp", "/skills", "/diff"} else self.emit)(output)
+                self.emit(output)
         # A handler that asked to switch sessions ends this run the way /exit does; `main` starts
         # the next one on the session it named.
         return True, bool(self.resume_request)
@@ -2333,6 +2333,42 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         except (ConfigError, ValueError):
             return "Invalid value for " + key
         return "Set " + key
+
+
+# The single source of command metadata: dispatch, the completer's name tuple, and the
+# queue-safe allowlist all derive from this registry (see CommandLoop.COMMANDS, COMMAND_LOOKUP,
+# and QUEUE_SAFE_COMMANDS below).
+# fmt: off
+COMMANDS: tuple[Command, ...] = (
+    Command("/help", CommandLoop.help, render="answer"),
+    Command("/status", CommandLoop.status, queue_safe=True, render="compact"),
+    Command("/ps", CommandLoop.ps_command, queue_safe=True, render="answer"),
+    Command("/diff", CommandLoop.diff_command, queue_safe=True, render="answer"),
+    Command("/skills", CommandLoop.skills_command, queue_safe=True, render="answer"),
+    Command("/config", CommandLoop.config),
+    Command("/compact", CommandLoop.compact),
+    Command("/index", CommandLoop.index),
+    Command("/provider", CommandLoop.provider),
+    Command("/model", CommandLoop.model),
+    Command("/reason", CommandLoop.reason, aliases=("/effort",)),
+    Command("/api", CommandLoop.api),
+    Command("/set", CommandLoop.set_value),
+    Command("/yolo", CommandLoop.yolo, queue_safe=True),
+    Command("/strict", CommandLoop.strict),
+    Command("/hints", CommandLoop.hints, queue_safe=True),
+    Command("/mcp", CommandLoop.mcp_command, queue_safe=True, render="answer"),
+    Command("/resend", CommandLoop.resend_command, queue_safe=True),
+    Command("/name", CommandLoop.name_command),
+    Command("/sessions", CommandLoop.sessions_command, aliases=("/resume",)),
+    Command("/worker", CommandLoop.worker_command),
+    Command("/language", CommandLoop.language_command),
+)
+# fmt: on
+
+
+CommandLoop.COMMANDS = tuple(dict.fromkeys(name for command in COMMANDS for name in (command.name, *command.aliases))) + ("/exit", "/quit")
+COMMAND_LOOKUP = {name: command for command in COMMANDS for name in (command.name, *command.aliases)}
+QUEUE_SAFE_COMMANDS = frozenset(command.name for command in COMMANDS if command.queue_safe)
 
 
 class TuiRuntime:

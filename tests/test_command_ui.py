@@ -20,7 +20,7 @@ from minacode.base import (
     ProviderConfig,
 )
 from minacode.engine import Agent
-from minacode.loop import SET_KEYS, CommandCompleter, CommandLoop
+from minacode.cli import COMMANDS, SET_KEYS, CommandCompleter, CommandLoop
 from minacode.model import ModelClient
 from minacode.session import Session
 from minacode.tools import Tool
@@ -34,6 +34,19 @@ def diff_loop(tmp_path):
     command_loop.session.store_turn_diff("tr.1", 1, "a.py", "unused", before=before, after=after, round=1)
     command_loop.session.store_turn_diff("tr.2", 2, "b.py", "unused", before="old\n", after="new\n", round=1)
     return command_loop
+
+
+# The registry is the single source of command metadata; HELP stays a hand-written literal with
+# manual wrapping and non-command sections, so every registered name and alias must appear in it.
+# `/worker` is a pre-existing gap: it is registered in master's COMMAND_HANDLERS but missing from
+# master's HELP literal. It is listed here so the omission stays visible instead of silent; any
+# new registered command missing from HELP fails this test unless explicitly added to the set.
+HELP_OMISSIONS = frozenset({"/worker"})
+
+
+def test_registry_names_and_aliases_appear_in_help():
+    missing = {name for command in COMMANDS for name in (command.name, *command.aliases) if name not in CommandLoop.HELP}
+    assert missing <= HELP_OMISSIONS, f"registered commands missing from HELP: {sorted(missing - HELP_OMISSIONS)}"
 
 
 class ModalHarness:
@@ -373,7 +386,8 @@ def test_effort_is_an_alias_for_reason(tmp_path):
 
     # Registered as a command that dispatches to the same handler as /reason.
     assert "/effort" in CommandLoop.COMMANDS
-    assert CommandLoop.COMMAND_HANDLERS["/effort"] == CommandLoop.COMMAND_HANDLERS["/reason"]
+    reason_command = next(command for command in COMMANDS if command.name == "/reason")
+    assert "/effort" in reason_command.aliases
 
     # Dispatch sets reasoning effort exactly like /reason.
     command_loop.command("/effort high")

@@ -28,7 +28,7 @@ from minacode.base import (
 )
 from minacode.engine import Agent
 from minacode.hints import HintPicker
-from minacode.loop import CommandCompleter, CommandLoop, TuiRuntime
+from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex

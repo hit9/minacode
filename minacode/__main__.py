@@ -13,8 +13,8 @@ import sys
 import threading
 
 from minacode.base import Config, ConfigError, ConfigFile, MinacodeError, RuntimeSettings, UpdateStatus, __version__
+from minacode.cli import CommandLoop
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
 from minacode.render import Theme
 from minacode.session import Session
 from minacode.update import UpdateChecker

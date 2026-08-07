@@ -8,7 +8,7 @@ import pytest
 
 from minacode.base import SESSION_EVENT_KEY, Config, MinacodeError, RuntimeSettings
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import CommandLoop
 from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff

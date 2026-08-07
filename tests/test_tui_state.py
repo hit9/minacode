@@ -5,10 +5,10 @@ These tests exercise the stateful parts of the TUI without requiring a real term
 
 import time
 
-import minacode.loop as loop_module
+import minacode.cli as loop_module
 from minacode.base import Config
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import CommandLoop
 from minacode.render import BashLivePreview
 from minacode.session import Session
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState

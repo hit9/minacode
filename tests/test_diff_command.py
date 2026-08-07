@@ -7,7 +7,7 @@ import time
 from minacode.base import Config, ToolCall
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore, TurnDiff
@@ -39,7 +39,7 @@ def test_diff_appears_in_help():
 
 
 def test_diff_is_allowed_while_agent_works():
-    assert "/diff" in CommandLoop.QUEUE_RUN_COMMANDS
+    assert "/diff" in QUEUE_SAFE_COMMANDS
 
 
 def test_diff_preserves_cli_history_when_tmux_alternate_screen_is_off(tmp_path):
@@ -56,7 +56,7 @@ import time
 
 from minacode.base import Config
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import CommandLoop
 from minacode.session import Session
 from minacode.tui import TuiApp
 

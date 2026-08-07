@@ -16,7 +16,7 @@ from minacode.base import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import CommandLoop
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment

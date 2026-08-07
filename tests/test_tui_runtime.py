@@ -4,6 +4,7 @@ resume, and session housekeeping at startup."""
 import os
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from tui_harness import ResizableOutput, loop, run_interactive_tui, session, wait_until
 
+import minacode.cli as loop_module
 import minacode.render as render_module
 import minacode.tui as tui_module
 from minacode.base import (
@@ -23,7 +25,7 @@ from minacode.base import (
     ToolCall,
 )
 from minacode.engine import Agent
-from minacode.loop import CommandLoop, TuiRuntime
+from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
@@ -732,7 +734,7 @@ def test_resend_command_only_resends_while_running(tmp_path):
     command_loop.tui = TuiApp(on_retry=lambda: retried.append(True))
 
     # Reachable from the running follow-up input (queue region), not just the idle prompt.
-    assert "/resend" in CommandLoop.QUEUE_RUN_COMMANDS
+    assert "/resend" in QUEUE_SAFE_COMMANDS
 
     # Idle chat: no-op with guidance.
     command_loop.tui.set_idle()
@@ -903,7 +905,10 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
 def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.ui.color = True
-    monkeypatch.setattr(command_loop, "status", lambda _args: "status marker")
+    # Dispatch calls the registry's callable directly, so patch the registry entry (not the
+    # instance method) to keep the /status handler deterministic.
+    status_entry = replace(loop_module.COMMAND_LOOKUP["/status"], handler=lambda _loop, _args: "status marker")
+    monkeypatch.setattr(loop_module, "COMMAND_LOOKUP", {**loop_module.COMMAND_LOOKUP, "/status": status_entry})
     printed = []
     monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
 

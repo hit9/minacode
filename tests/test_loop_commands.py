@@ -14,7 +14,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
-import minacode.loop as loop_module
+import minacode.cli as loop_module
 from minacode.base import (
     DISMISSED,
     SELECTION_BACK,
@@ -28,7 +28,7 @@ from minacode.base import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import CommandLoop
 from minacode.prompts import SYSTEM_PROMPT
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner

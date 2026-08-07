@@ -29,7 +29,7 @@ from minacode.base import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.loop import CommandLoop
+from minacode.cli import CommandLoop
 from minacode.model import ModelClient
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner
