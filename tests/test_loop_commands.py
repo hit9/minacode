@@ -184,13 +184,13 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     queue(s, "run tests", "then push")
 
-    sent, waiting = loop.followup_fragments()
+    sent, waiting = loop.view.followup_fragments()
     text = "".join(t for _, t in [*sent, *waiting])
     assert "2 queued" in text and "working" in text
     assert "+ run tests" in text and "+ then push" in text
 
     claimed = s.claim_user_inputs()
-    sent, waiting = loop.followup_fragments()
+    sent, waiting = loop.view.followup_fragments()
     sent_text = "".join(t for _, t in sent)
     waiting_text = "".join(t for _, t in waiting)
     assert "• run tests" in sent_text and "• then push" in sent_text
@@ -198,13 +198,13 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
     assert "run tests" not in waiting_text and "then push" not in waiting_text
 
     queue(s, "after claim")
-    sent, waiting = loop.followup_fragments()
+    sent, waiting = loop.view.followup_fragments()
     assert "• run tests" in "".join(t for _, t in sent)
     assert "1 queued" in "".join(t for _, t in waiting)
     assert "+ after claim" in "".join(t for _, t in waiting)
 
     s.release_user_inputs()
-    sent, waiting = loop.followup_fragments()
+    sent, waiting = loop.view.followup_fragments()
     assert sent == []
     released = "".join(t for _, t in waiting)
     assert "3 queued" in released
@@ -212,7 +212,7 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
 
     s.claim_user_inputs()
     s.acknowledge_user_inputs(claimed)
-    sent, waiting = loop.followup_fragments()
+    sent, waiting = loop.view.followup_fragments()
     assert "run tests" not in "".join(t for _, t in [*sent, *waiting])
     assert "then push" not in "".join(t for _, t in [*sent, *waiting])
 
@@ -221,14 +221,14 @@ def test_queue_live_region_shows_divider_and_pending(tmp_path):
         seen_head = False
         for tick in range(200):
             mp.setattr(time, "monotonic", lambda tick=tick: tick * 0.1)
-            fragments = loop.queue_divider_fragments()
+            fragments = loop.view.queue_divider_fragments()
             seen_head = seen_head or any(style == "class:divider.glow0" and text == "-" for style, text in fragments)
             assert any(style == "class:divider.working" and text.startswith("working") for style, text in fragments)
             assert all(not style.startswith("class:divider.glow") or text == "-" for style, text in fragments)
         assert seen_head
 
     s.pending_user_inputs = []
-    sent, waiting = loop.followup_fragments()
+    sent, waiting = loop.view.followup_fragments()
     empty = "".join(t for _, t in [*sent, *waiting])
     assert "working" in empty and "queued" not in empty and "run tests" not in empty
 
@@ -243,13 +243,13 @@ def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
 
     # A head that outruns its own glow between frames stops reading as motion, so the sweep speed
     # is tied to the frame rate rather than chosen independently of it.
-    assert loop.QUEUE_SWEEP_CELLS_PER_SEC * TuiApp.ANIMATION_INTERVAL == pytest.approx(1.0)
+    assert loop.view.QUEUE_SWEEP_CELLS_PER_SEC * TuiApp.ANIMATION_INTERVAL == pytest.approx(1.0)
 
     with pytest.MonkeyPatch.context() as mp:
         heads = []
         for frame in range(6):
             mp.setattr(time, "monotonic", lambda frame=frame: 1000.0 + frame * TuiApp.ANIMATION_INTERVAL)
-            steps = divider_glow_steps(loop.queue_divider_fragments())
+            steps = divider_glow_steps(loop.view.queue_divider_fragments())
             heads.append(min(range(len(steps)), key=lambda index: (steps[index] is None, steps[index])))
 
     assert [second - first for first, second in itertools.pairwise(heads)] == [1, 1, 1, 1, 1]
@@ -257,22 +257,22 @@ def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
 
 def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    styled = {rule for rule, _style in loop.style().style_rules}
+    styled = {rule for rule, _style in loop.view.style().style_rules}
 
     with pytest.MonkeyPatch.context() as mp:
         seen = set()
         for tick in range(400):
             mp.setattr(time, "monotonic", lambda tick=tick: 1000.0 + tick * 0.017)
-            seen.update(step for step in divider_glow_steps(loop.queue_divider_fragments()) if step is not None)
+            seen.update(step for step in divider_glow_steps(loop.view.queue_divider_fragments()) if step is not None)
 
     # Every shade the comet can emit must exist in the style, or those cells render as plain text.
     assert seen and all(f"divider.glow{step}" in styled for step in seen)
     # A head resting between two cells lights both at the same reduced shade instead of snapping
     # onto the nearer one, which is what keeps the motion smooth when a frame arrives late.
     with pytest.MonkeyPatch.context() as mp:
-        span = loop.GLOW_STEPS / loop.GLOW_REACH
-        mp.setattr(time, "monotonic", lambda: (3 + 0.5) / loop.QUEUE_SWEEP_CELLS_PER_SEC)
-        steps = divider_glow_steps(loop.queue_divider_fragments())
+        span = loop.view.GLOW_STEPS / loop.view.GLOW_REACH
+        mp.setattr(time, "monotonic", lambda: (3 + 0.5) / loop.view.QUEUE_SWEEP_CELLS_PER_SEC)
+        steps = divider_glow_steps(loop.view.queue_divider_fragments())
 
     assert steps[3] == steps[4] == int(0.5 * span)
     assert steps[3] > 0  # dimmer than a head sitting exactly on a cell
@@ -287,7 +287,7 @@ def test_live_bash_output_stays_above_working_divider_and_queue(tmp_path):
     loop.live_preview.text = "live output"
     loop.live_preview.started_at = time.monotonic()
 
-    text = "".join(fragment for _, fragment in loop.tui_activity_fragments())
+    text = "".join(fragment for _, fragment in loop.view.tui_activity_fragments())
 
     assert text.index("live output") < text.index("working") < text.index("+ follow up")
     assert "live output\n\n---" in text

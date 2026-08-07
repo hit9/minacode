@@ -307,7 +307,7 @@ def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     divider_during_compaction = []
 
     def compact(_context):
-        divider_during_compaction.append(fragment_list_to_text(command_loop.queue_divider_fragments()))
+        divider_during_compaction.append(fragment_list_to_text(command_loop.view.queue_divider_fragments()))
         return {"summary": "compact summary"}
 
     command_loop.agent.model.compact = compact
@@ -348,7 +348,7 @@ def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypat
         raise KeyboardInterrupt
 
     command_loop.agent.run = interrupt
-    command_loop.emit = lambda text: emitted.append((text, command_loop.model_stream_fragments()))
+    command_loop.emit = lambda text: emitted.append((text, command_loop.view.model_stream_fragments()))
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
     runtime.run_agent_turn("question")
@@ -363,7 +363,7 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
     command_loop.session.config.provider.url = "http://test"
     command_loop.session.config.provider.key = "sk-test"
     command_loop.ui.color = True
-    app = TuiApp(activity_fragments_fn=command_loop.tui_activity_fragments)
+    app = TuiApp(activity_fragments_fn=command_loop.view.tui_activity_fragments)
     command_loop.tui = app
     output = TextRecordingOutput()
     arguments_blocked = threading.Event()
@@ -426,7 +426,7 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
             wait_until(lambda: arguments_blocked.is_set() or request_finished.is_set(), timeout=2)
             assert arguments_blocked.is_set(), worker_errors
             assert timeline[:2] == ["white response", "tool arguments"]
-            assert command_loop.model_stream_fragments() == []
+            assert command_loop.view.model_stream_fragments() == []
             assert response in output.text()
             assert not request_finished.is_set()
         finally:
@@ -488,7 +488,7 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
 
     assert emitted == [answer]
     assert command_loop.model_stream_promoted_text == ""
-    assert command_loop.model_stream_fragments() == []
+    assert command_loop.view.model_stream_fragments() == []
 
 
 def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(tmp_path, monkeypatch):
@@ -793,12 +793,12 @@ def test_recalling_sent_input_does_not_leave_revising_status(tmp_path, monkeypat
     assert runtime.recall() == "revise me"
     command_loop.model_stream_output("output", "updated response")
 
-    retrying = "".join(text for _style, text in command_loop.queue_divider_fragments())
+    retrying = "".join(text for _style, text in command_loop.view.queue_divider_fragments())
     assert "retrying" in retrying
     assert "revising" not in retrying
 
     command_loop.status_bar.retry_notice_until = 0
-    responding = "".join(text for _style, text in command_loop.queue_divider_fragments())
+    responding = "".join(text for _style, text in command_loop.view.queue_divider_fragments())
     assert "responding" in responding
     assert "revising" not in responding
     assert command_loop.session.state.manual_model_retry_requested is True
@@ -816,14 +816,14 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
     command_loop.session.state.current_model_attempt = 2
     command_loop.session.state.model_retry_reason = "timeout"
     command_loop.session.state.model_retry_count += 1
-    retrying = command_loop.queue_divider_fragments()
+    retrying = command_loop.view.queue_divider_fragments()
     retrying_text = "".join(text for _style, text in retrying)
     assert "retrying 2/6 · timeout (10s)" in retrying_text
     assert any(text == "● " for _style, text in retrying)
     assert ("retrying 2/6 · timeout", "warn") in command_loop.status_bar.entries(show_elapsed=True)
 
     now[0] = 102.1
-    working = command_loop.queue_divider_fragments()
+    working = command_loop.view.queue_divider_fragments()
     working_text = "".join(text for _style, text in working)
     assert "working · attempt 2/6 (12s)" in working_text
     assert "retrying" not in working_text
@@ -831,7 +831,7 @@ def test_retry_divider_keeps_pulse_and_elapsed_then_returns_to_working(tmp_path,
     assert ("attempt 2/6", "warn") in command_loop.status_bar.entries(show_elapsed=True)
 
     command_loop.session.state.current_model_call_started_at = 0.0
-    assert all(text != "● " for _style, text in command_loop.queue_divider_fragments())
+    assert all(text != "● " for _style, text in command_loop.view.queue_divider_fragments())
 
 
 def test_retry_divider_shows_full_retry_text_while_waiting(tmp_path, monkeypatch):
@@ -852,20 +852,20 @@ def test_retry_divider_shows_full_retry_text_while_waiting(tmp_path, monkeypatch
     command_loop.status_bar.retry_notice_active()
     command_loop.status_bar.retry_notice_until = 0
 
-    waiting = command_loop.queue_divider_fragments()
+    waiting = command_loop.view.queue_divider_fragments()
     waiting_text = "".join(text for _style, text in waiting)
     assert "retrying 3/6 · server error · 20s" in waiting_text
 
     # Core fix: an in-flight wait keeps the full text even after the two-second notice window
     # expired, because a long backoff wait can outlast that window entirely.
-    still_waiting = command_loop.queue_divider_fragments()
+    still_waiting = command_loop.view.queue_divider_fragments()
     still_text = "".join(text for _style, text in still_waiting)
     assert "retrying 3/6 · server error · 20s" in still_text
 
     # Once the wait ends, the divider falls back to the retrying phase label with the attempt
     # suffix (no reason, no countdown) and never claims the agent is working.
     command_loop.session.state.model_retry_until = 0
-    after = command_loop.queue_divider_fragments()
+    after = command_loop.view.queue_divider_fragments()
     after_text = "".join(text for _style, text in after)
     assert "retrying · attempt 3/6" in after_text
     assert "working" not in after_text
@@ -876,7 +876,7 @@ def test_tui_activity_uses_transient_cancelling_status(tmp_path):
     command_loop.tui = TuiApp()
     command_loop.tui.set_running("cancelling")
 
-    text = "".join(fragment for _style, fragment in command_loop.queue_divider_fragments())
+    text = "".join(fragment for _style, fragment in command_loop.view.queue_divider_fragments())
 
     assert "cancelling" in text
     assert "working" not in text

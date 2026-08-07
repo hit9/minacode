@@ -135,7 +135,7 @@ def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeyp
     for mode, expected in (("dark", "#e0a96d"), ("light", "#9a5b2e")):
         monkeypatch.setattr(Theme, "_mode", mode)
         assert UiPrinter.user_log_style() == expected
-        assert command_loop.style().get_attrs_for_style_str("").color == ""
+        assert command_loop.view.style().get_attrs_for_style_str("").color == ""
 
 
 def test_tool_labels_keep_legacy_green_style():
@@ -239,7 +239,7 @@ def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
 
     command_loop = loop(tmp_path)
     command_loop.session.enqueue_user_input("queued message")
-    sent, waiting = command_loop.followup_fragments()
+    sent, waiting = command_loop.view.followup_fragments()
     assert any(style == expected and "queued message" in text for style, text in [*sent, *waiting])
 
 

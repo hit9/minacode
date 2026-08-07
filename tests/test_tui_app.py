@@ -753,45 +753,45 @@ def test_tui_running_queue_hint_shows_recall_and_interrupt(tmp_path):
     command_loop.tui.set_running("working")
     command_loop.session.enqueue_user_input("queued")
 
-    assert command_loop.tui_input_hint() == "↑ recalls queued · Ctrl-C interrupts"
+    assert command_loop.view.tui_input_hint() == "↑ recalls queued · Ctrl-C interrupts"
 
 
 def test_tui_chat_input_shows_random_idle_placeholder(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
 
-    hint = command_loop.tui_input_hint()
+    hint = command_loop.view.tui_input_hint()
     assert hint in {entry.text for entry in hints.HINTS}
-    assert command_loop.tui_input_hint() == hint  # stable within a situation (no flicker)
+    assert command_loop.view.tui_input_hint() == hint  # stable within a situation (no flicker)
 
 
 def test_tui_idle_hint_sessions_only_before_work(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
-    command_loop._hint_picker = HintPicker(choice=lambda pool: pool[-1])
+    command_loop.view._hint_picker = HintPicker(choice=lambda pool: pool[-1])
 
     # Early session: the pool ends with the /sessions hint (the only early-only entry).
-    assert command_loop.tui_input_hint() == "/sessions resumes a past session"
+    assert command_loop.view.tui_input_hint() == "/sessions resumes a past session"
 
     # Once work exists the session is no longer early and /sessions leaves the pool.
     command_loop.session.store_tool_result("Bash", ["ls"], "ok")
-    assert command_loop.tui_input_hint() == "Type / for commands"  # last technique hint
+    assert command_loop.view.tui_input_hint() == "Type / for commands"  # last technique hint
 
 
 def test_tui_idle_hint_favors_diff_right_after_editing(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
-    command_loop._hint_picker = HintPicker(choice=lambda pool: pool[-1])
+    command_loop.view._hint_picker = HintPicker(choice=lambda pool: pool[-1])
     command_loop.session.store_tool_result("Bash", ["ls"], "ok")  # mature phase
     command_loop.session.state.round_count = 1
     command_loop.session.store_turn_diff("tr.1", 1, "a.py", "diff", round=1)
 
     # The post-edit pool ends with the weighted /diff copies.
-    assert command_loop.tui_input_hint() == "/diff reviews recent edits"
+    assert command_loop.view.tui_input_hint() == "/diff reviews recent edits"
 
     # A later round without edits drops /diff back out of the pool.
     command_loop.session.state.round_count = 2
-    assert command_loop.tui_input_hint() == "Type / for commands"
+    assert command_loop.view.tui_input_hint() == "Type / for commands"
 
 
 class _StubJob:
@@ -802,16 +802,16 @@ class _StubJob:
 def test_tui_idle_hint_ps_while_jobs_running(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
-    command_loop._hint_picker = HintPicker(choice=lambda pool: pool[-1])
+    command_loop.view._hint_picker = HintPicker(choice=lambda pool: pool[-1])
     command_loop.session.store_tool_result("Bash", ["ls"], "ok")  # mature
 
-    assert command_loop.tui_input_hint() == "Type / for commands"  # no jobs yet
+    assert command_loop.view.tui_input_hint() == "Type / for commands"  # no jobs yet
 
     command_loop.session.jobs["j1"] = _StubJob("running")
-    assert command_loop.tui_input_hint() == "/ps lists background jobs"
+    assert command_loop.view.tui_input_hint() == "/ps lists background jobs"
 
     command_loop.session.jobs["j1"] = _StubJob("done")  # finished -> hint clears
-    assert command_loop.tui_input_hint() == "Type / for commands"
+    assert command_loop.view.tui_input_hint() == "Type / for commands"
 
 
 def test_tui_hint_context_projects_availability(tmp_path):
@@ -821,13 +821,13 @@ def test_tui_hint_context_projects_availability(tmp_path):
     session.skills = None
     session.mcp = None
     session.jobs.clear()
-    ctx = command_loop._hint_context()
+    ctx = command_loop.view._hint_context()
     assert not ctx.skills_available and not ctx.mcp_connected and not ctx.jobs_running
 
     session.skills = SimpleNamespace(skills={"demo": object()})
     session.mcp = SimpleNamespace(tools={"srv": []})
     session.jobs["j1"] = _StubJob("running")
-    ctx = command_loop._hint_context()
+    ctx = command_loop.view._hint_context()
     assert ctx.skills_available and ctx.mcp_connected and ctx.jobs_running
 
 
@@ -835,12 +835,12 @@ def test_tui_idle_hint_rerolls_each_turn(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     picks = iter(["first", "second"])
-    command_loop._hint_picker = HintPicker(choice=lambda pool: next(picks))
+    command_loop.view._hint_picker = HintPicker(choice=lambda pool: next(picks))
     command_loop.session.state.round_count = 1
-    assert command_loop.tui_input_hint() == "first"
-    assert command_loop.tui_input_hint() == "first"  # stable within the round
+    assert command_loop.view.tui_input_hint() == "first"
+    assert command_loop.view.tui_input_hint() == "first"  # stable within the round
     command_loop.session.state.round_count = 2
-    assert command_loop.tui_input_hint() == "second"  # a new turn re-rolls
+    assert command_loop.view.tui_input_hint() == "second"  # a new turn re-rolls
 
 
 def test_edit_delta_frames_minimal_edit():

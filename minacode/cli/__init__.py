@@ -5,15 +5,13 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import queue
 import re
 import shlex
 import shutil
-import signal
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
@@ -21,7 +19,6 @@ from prompt_toolkit import print_formatted_text
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import (
@@ -50,16 +47,16 @@ from minacode.base import (
     TurnBox,
     __version__,
 )
+from minacode.cli.runtime import TuiRuntime
+from minacode.cli.view import View
 from minacode.engine import Agent
-from minacode.hints import Context as HintContext
-from minacode.hints import HintPicker
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX, PREVIOUS_CONTEXT_TRIMMED
 from minacode.provider_compat import builtin_tools_issue
-from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter, markdown_table, search_sources_footer
+from minacode.render import BashLivePreview, StatusBar, UiPrinter, markdown_table, search_sources_footer
 from minacode.runner import ToolDisplay
-from minacode.session import QueuedInput, SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
+from minacode.session import SessionEntry, SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, AskSpec, CodeIndex
 from minacode.tools.delegate import DelegateTool, refresh_worker_entry
 from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState, DiffViewState, TabbedViewState, TuiApp
@@ -281,8 +278,6 @@ class CommandLoop:
     HUNK_HEADER_RE: ClassVar[re.Pattern] = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
     HELP_HEADING_RE: ClassVar[re.Pattern] = re.compile(r"^### (.+)$", re.MULTILINE)
     HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)
-    QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
-    QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     INPUT_HISTORY_BYTES: ClassVar[int] = 512 * 1024
@@ -383,7 +378,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def __init__(self, agent: Agent, input_fn=input, output_fn=print):
         self.agent = agent
         self.session = agent.session
-        self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/hints.py
+        self.view = View(self)
         self.input_fn = input_fn
         self.ui = UiPrinter(output_fn)
         self.status_bar = StatusBar(self.session)
@@ -496,171 +491,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 fragments.append(("", "\n"))
             fragments.extend([("class:prompt", UiPrinter.USER_LOG_PREFIX), (UiPrinter.user_log_style(), text), ("", "\n")])
         fragments.append(("", "\n"))
-        print_formatted_text(FormattedText(fragments), style=self.style(), end="", flush=True)
-
-    # Breathing green dot shown on the divider while a model request is in flight. The label moves
-    # from working to thinking/responding as stream events arrive; the pulse remains until completion.
-    WAITING_PULSE_STYLES: ClassVar[tuple[str, ...]] = (
-        "fg:#0a3d0a",
-        "fg:#146114",
-        "fg:#1f8a1f",
-        "fg:#2dbf2d bold",
-        "fg:#43e043 bold",
-        "fg:#7bff7b bold",
-    )
-    WAITING_PULSE_PERIOD: ClassVar[float] = 1.6
-
-    def waiting_pulse_fragments(self) -> StyleAndTextTuples:
-        if self.session.state.current_model_call_started_at <= 0:
-            return []
-        # Triangular breath: 0 → 1 → 0 over WAITING_PULSE_PERIOD seconds, mapped onto the palette.
-        phase = (time.monotonic() % self.WAITING_PULSE_PERIOD) / self.WAITING_PULSE_PERIOD
-        intensity = 1.0 - abs(2.0 * phase - 1.0)
-        idx = min(len(self.WAITING_PULSE_STYLES) - 1, int(intensity * len(self.WAITING_PULSE_STYLES)))
-        return [(self.WAITING_PULSE_STYLES[idx], "● ")]
-
-    # One cell per frame. A head that advances further than its own glow between redraws stops
-    # reading as motion and starts reading as a dash blinking at scattered positions.
-    QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 1.0 / TuiApp.ANIMATION_INTERVAL
-    # A comet: a soft head with a tail fading into the dim rule, by distance from the head. The ramp
-    # is finer than one shade per cell, so a head between two cells lights both partially instead of
-    # snapping onto the nearer one. The divider is only drawn while working; there is no idle look.
-    GLOW_REACH: ClassVar[float] = 4.0
-    GLOW_STEPS: ClassVar[int] = 12
-
-    def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: StyleAndTextTuples | None = None) -> StyleAndTextTuples:
-        prefix = prefix or []
-        prefix_len = sum(len(fragment[1]) for fragment in prefix)
-        cols = shutil.get_terminal_size((80, 20)).columns
-        width = width if width is not None else max(20, min(52, cols - 2))
-        body_len = prefix_len + len(label) + 2  # prefix + " label "
-        lead = 3
-        trail = max(3, width - lead - body_len)
-        dash_count = lead + trail
-        # The comet head bounces over the horizontal rule only. The label stays stable and readable
-        # while the glow appears to pass through the dash track on either side.
-        span = max(1, dash_count - 1)
-        phase = time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC % (2 * span)
-        head = phase if phase <= span else 2 * span - phase
-
-        def dashes(offset: int, count: int) -> StyleAndTextTuples:
-            fragments: StyleAndTextTuples = []
-            for i in range(count):
-                step = int(abs(offset + i - head) / self.GLOW_REACH * self.GLOW_STEPS)
-                fragments.append((f"class:divider.glow{step}" if step < self.GLOW_STEPS else "class:queue.rule", "-"))
-            return fragments
-
-        return [
-            *dashes(0, lead),
-            ("class:queue.rule", " "),
-            *prefix,
-            ("class:divider.working", label),
-            ("class:queue.rule", " "),
-            *dashes(lead, trail),
-        ]
-
-    def queue_divider_fragments(self, queued: int = 0) -> StyleAndTextTuples:
-        status = self.tui.status_label if self.tui is not None and self.tui.status_label else "working"
-        if status in {"working", "retrying", "compacting context"}:
-            retry_status = self.status_bar.retry_status()
-            attempt_status = self.status_bar.model_attempt_status()
-            with self.model_stream_lock:
-                phase = self.model_stream_kind
-            activity = retry_status or (
-                ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or status) + (" · " + attempt_status if attempt_status else "")
-            )
-            label = f"{activity} ({Text.elapsed_since(self.status_bar.started_at)})"
-        else:
-            label = status
-        if queued:
-            label = f"{label} [ {queued} queued ]"
-        prefix = self.waiting_pulse_fragments()
-        worker = self.session.worker
-        if worker is not None and worker._active_turn_messages:
-            # The same in-flight predicate as the status bar's worker marker.
-            prefix = [("class:divider.worker", "[worker] "), *prefix]
-        return self.sweep_divider_fragments(label, prefix=prefix)
-
-    def followup_fragments(self) -> tuple[StyleAndTextTuples, StyleAndTextTuples]:
-        with self.session._queue_lock:
-            pending = list(self.session.pending_user_inputs)
-
-        def render(items: list[QueuedInput], marker: str, marker_style: str) -> StyleAndTextTuples:
-            fragments: StyleAndTextTuples = []
-            for item in items:
-                for index, line in enumerate(item.text.splitlines()):
-                    fragments.extend([("", "\n"), (marker_style, marker if index == 0 else "  "), (UiPrinter.user_log_style(), line)])
-            return fragments
-
-        sent = [item for item in pending if item.inflight]
-        queued = [item for item in pending if not item.inflight]
-        transcript = render(sent, UiPrinter.USER_LOG_PREFIX, "class:prompt")
-        # The divider is a standing boundary for the whole turn. Only messages that have not entered
-        # a model request remain below it; sent messages render above it until the request commits them.
-        waiting = self.queue_divider_fragments(len(queued))
-        waiting.extend(render(queued, "+ ", UiPrinter.user_log_style()))
-        return transcript, waiting
-
-    def tui_activity_fragments(self) -> StyleAndTextTuples:
-        sent, waiting = self.followup_fragments()
-        fragments = sent
-        if fragments:
-            fragments.append(("", "\n"))
-        stream = self.model_stream_fragments()
-        fragments.extend(stream)
-        if stream:
-            fragments.append(("", "\n"))
-        with self.live_preview.lock:
-            lines = self.live_preview.frame_lines() if self.live_preview.active else []
-        for line in lines:
-            fragments.extend([("ansibrightblack", line), ("", "\n")])
-        if lines:
-            fragments.append(("", "\n"))
-        fragments.extend(waiting)
-        return fragments
-
-    def model_stream_fragments(self) -> StyleAndTextTuples:
-        with self.model_stream_lock:
-            kind, text = self.model_stream_kind, self.model_stream_text
-        if not text:
-            return []
-        width = max(20, shutil.get_terminal_size((120, 20)).columns)
-        label = "thinking" if kind == "reasoning" else "responding"
-        rows = [Text.clip_width(line.expandtabs(4), max(1, width - 4)) for line in text.replace("\r", "\n").splitlines()[-6:]]
-        lines = [f"├─ {label}", *(f"│  {row}" for row in rows)]
-        fragments: StyleAndTextTuples = []
-        for line in lines:
-            fragments.extend([("ansibrightblack", line), ("", "\n")])
-        return fragments
-
-    def tui_input_hint(self) -> str:
-        if self.tui is None:
-            return ""
-        if self.tui.input_mode == "running":
-            with self.session._queue_lock:
-                has_pending = any(not item.inflight for item in self.session.pending_user_inputs)
-            return self.QUEUE_PENDING_HINT if has_pending else self.QUEUE_EMPTY_HINT
-        if self.tui.input_mode == "chat":
-            return self._hint_picker.pick(self._hint_context(), self.session.state.round_count)
-        return ""
-
-    def _hint_context(self) -> HintContext:
-        """Project the session into the small situation the hint mechanism selects on.
-
-        round_count only advances at the start of the next turn, so at idle it still names the
-        round that just finished; edited_round therefore clears on its own once a later round
-        makes no edits.
-        """
-        session = self.session
-        round_count = session.state.round_count
-        edited = any((diff.round or diff.turn) == round_count for diff in session.turn_diffs)
-        return HintContext(
-            early=not session.tool_records,
-            edited_round=round_count if edited else None,
-            skills_available=bool(session.skills and session.skills.skills),
-            mcp_connected=bool(session.mcp and session.mcp.tools),
-            jobs_running=any(job.status == "running" for job in session.jobs.values()),
-        )
+        print_formatted_text(FormattedText(fragments), style=self.view.style(), end="", flush=True)
 
     def editor_context(self) -> str:
         """The agent's most recent reply, restated as read-only reference inside the external
@@ -970,49 +801,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             # pasted, and only the uid is guaranteed to still mean this session tomorrow.
             name = self.session.name
             self.emit(f"Resume {name!r} with:\nminacode --resume {uid}" if name else f"Resume with:\nminacode --resume {uid}")
-
-    def style(self) -> Style:
-        rule = Theme.style("divider.rule")
-        return Style.from_dict(
-            {
-                "prompt": "ansicyan bold",
-                # The comet fades into the rule it travels over, so both come from the palette.
-                "queue.rule": rule,
-                **{f"divider.glow{step}": color for step, color in enumerate(Theme.ramp("divider.glow", "divider.rule", self.GLOW_STEPS))},
-                "queue.hint": "ansibrightblack",
-                "quickhint": "ansicyan",
-                "quickhint.focused": "reverse",
-                "quickhint.sep": "ansibrightblack",
-                "image.attachment": "ansicyan bold",
-                "input.error": "ansired",
-                "divider.working": "ansimagenta bold",
-                "divider.worker": "ansiyellow bold",
-                "approval": "ansiyellow",
-                "approval.wait": "ansimagenta",
-                "choice.title": "ansicyan bold",
-                "choice.selected": "reverse",
-                "choice.disabled": "ansibrightblack",
-                "choice.preview": "ansigreen italic",
-                "choice.status.connected": "ansigreen bold",
-                "choice.status.connecting": "ansigreen bold",
-                "choice.status.disconnected": "ansiyellow bold",
-                "choice.status.disconnecting": "ansiyellow bold",
-                "choice.status.error": "ansired bold",
-                "choice.status.skipped": "ansibrightblack",
-                "tab.active": "bold reverse ansicyan",
-                "tab.inactive": "ansicyan",
-                "completion-menu": "noreverse bg:default",
-                "completion-menu.completion": "noreverse bg:default fg:default",
-                "completion-menu.completion.current": "noreverse bg:default fg:ansicyan bold",
-                "completion-menu.meta.completion": "noreverse bg:default fg:ansibrightblack",
-                "completion-menu.meta.completion.current": "noreverse bg:default fg:ansicyan",
-                "bottom-toolbar": "noreverse bg:default fg:default",
-                "bottom-toolbar.text": "noreverse bg:default fg:default",
-                "search-toolbar": "noreverse bg:default fg:default",
-                "search-toolbar.prompt": "ansicyan",
-                "search-toolbar.text": "fg:default",
-            }
-        )
 
     def read_input(
         self,
@@ -2365,236 +2153,6 @@ COMMANDS: tuple[Command, ...] = (
 )
 # fmt: on
 
-
 CommandLoop.COMMANDS = tuple(dict.fromkeys(name for command in COMMANDS for name in (command.name, *command.aliases))) + ("/exit", "/quit")
 COMMAND_LOOKUP = {name: command for command in COMMANDS for name in (command.name, *command.aliases)}
 QUEUE_SAFE_COMMANDS = frozenset(command.name for command in COMMANDS if command.queue_safe)
-
-
-class TuiRuntime:
-    """Own the interactive session timeline while CommandLoop owns session behavior."""
-
-    def __init__(self, command_loop: CommandLoop):
-        self.loop = command_loop
-        self.pending: queue.Queue[UserInput] = queue.Queue()
-        self.stop = threading.Event()
-        self.cancel_pending = threading.Event()
-        self.main_busy = threading.Event()
-        self.force_exit_timer: threading.Timer | None = None
-        self.error: BaseException | None = None
-
-    @property
-    def tui(self) -> TuiApp:
-        assert self.loop.tui is not None
-        return self.loop.tui
-
-    def _interrupt_active(self, cancel: Callable[[], None]) -> None:
-        threading.Thread(target=cancel, daemon=True).start()
-        if self.main_busy.is_set():
-            os.kill(os.getpid(), signal.SIGINT)
-
-    def interrupt(self) -> None:
-        if self.cancel_pending.is_set():
-            return
-        self.cancel_pending.set()
-        self.tui.set_running("cancelling")
-        self._interrupt_active(self.loop.agent.cancel)
-
-    def _request_model_retry(self) -> None:
-        state = self.loop.session.state
-        if state.current_model_call_started_at <= 0 or state.model_retry_until > 0 or state.manual_model_retry_requested:
-            return
-        state.manual_model_retry_requested = True
-        state.model_retry_count += 1
-        self.tui.invalidate()
-        self._interrupt_active(self.loop.agent.model.cancel)
-
-    def submit_running(self, value: str | UserInput) -> None:
-        value = value if isinstance(value, UserInput) else UserInput(value)
-        text = str(value).strip()
-        if not text:
-            return
-        if not value.images and "\n" not in text and text.startswith("/"):
-            threading.Thread(target=self.loop.run_queued_command, args=(text,), daemon=True).start()
-        else:
-            self.loop.session.enqueue_user_input(value)
-            self.loop.session.save_snapshot()
-        self.tui.invalidate()
-
-    def recall(self) -> str | UserInput:
-        return self.loop.recall_pending_input(self._request_model_retry)
-
-    def expand_output(self) -> None:
-        threading.Thread(target=self.loop.bash_output_viewer, name="bash-output", daemon=True).start()
-
-    def request_exit(self) -> None:
-        self.stop.set()
-        self.loop.save_and_emit_resume()
-
-    def force_exit(self) -> None:
-        self.stop.set()
-        threading.Thread(target=self.loop.agent.cancel, daemon=True).start()
-        self.force_exit_timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
-        self.force_exit_timer.daemon = True
-        self.force_exit_timer.start()
-        os.kill(os.getpid(), signal.SIGINT)
-
-    def build_tui(self) -> TuiApp:
-        return TuiApp(
-            on_chat_submit=self.pending.put,
-            on_running_submit=self.submit_running,
-            on_exit_request=self.request_exit,
-            on_force_exit=self.force_exit,
-            on_interrupt=self.interrupt,
-            on_retry=self._request_model_retry,
-            on_recall=self.recall,
-            on_expand_output=self.expand_output,
-            status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
-            activity_fragments_fn=self.loop.tui_activity_fragments,
-            input_hint_fn=self.loop.tui_input_hint,
-            quick_hints_fn=lambda: self.loop.session.quick_hints if self.loop.session.settings.quick_hints else (),
-            editor_context_fn=self.loop.editor_context,
-            images=self.loop.session.images,
-            history=self.loop.input_history,
-            completer=self.loop.input_completer,
-        )
-
-    def submit_next(self, entered: Sequence[str | UserInput]) -> None:
-        if not entered:
-            return
-        first = entered[0] if isinstance(entered[0], UserInput) else UserInput(entered[0])
-        self.pending.put(first)
-        for text in entered[1:]:
-            self.loop.session.enqueue_user_input(text)
-
-    def reset_turn(self) -> None:
-        self.loop.model_stream_output("", "")
-        # A request can fail after permanent promotion but before Agent re-publishes the text and
-        # consumes its marker. Never let that stale marker suppress an identical later response.
-        with self.loop.model_stream_lock:
-            self.loop.model_stream_promoted_text = ""
-        self.tui.set_idle()
-        self.cancel_pending.clear()
-        self.main_busy.clear()
-
-    def dispatch(self, user_input: str | UserInput) -> bool:
-        """Dispatch one input. Return true when it was fully handled as a command."""
-        user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
-        self.loop.ui.emit_answer(user_input.display_text(), role="user", rule=False)
-        try:
-            handled, exit_now = self.loop.command(user_input.strip())
-        except (KeyboardInterrupt, MinacodeError) as error:
-            self.loop.emit("Cancelled" if isinstance(error, KeyboardInterrupt) else f"Error: {error}")
-            self.submit_next(self.loop.take_pending_inputs())
-            self.reset_turn()
-            return True
-        if exit_now:
-            self.stop.set()
-            self.main_busy.clear()
-            self.tui.exit()
-            return True
-        if handled:
-            # A command must not strand queued follow-ups: flush them as run_agent_turn does, so
-            # they keep chaining once the command completes (e.g. /compact then queued input).
-            # Submit before restoring the idle prompt, where newer input can enter `pending`.
-            self.submit_next(self.loop.take_pending_inputs())
-            self.reset_turn()
-            return True
-        return False
-
-    def run_agent_turn(self, user_input: str | UserInput) -> None:
-        user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
-        self.loop.emit("")
-        self.loop.status_bar.begin()
-        self.tui.set_running("working")
-        started = time.monotonic()
-        cancelled = False
-        malformed_tool_call = False
-        promoted_answer = ""
-        try:
-            answer = self.loop.agent.run(user_input)
-        except KeyboardInterrupt:
-            self.submit_next(self.loop.take_pending_inputs())
-            answer = ""
-            cancelled = True
-        except MalformedToolCallError as error:
-            answer = str(error)
-            malformed_tool_call = True
-        except MinacodeError as error:
-            answer = f"Error: {error}"
-        finally:
-            # Snapshot the stream-promotion marker before reset_turn clears it: a terminal NextHints
-            # batch promotes its answer into scrollback like any tool batch, but nothing re-publishes
-            # it through agent_output, so without this the final emit below would print it again.
-            with self.loop.model_stream_lock:
-                promoted_answer = self.loop.model_stream_promoted_text
-            self.reset_turn()
-            self.loop.session.state.manual_model_retry_requested = False
-            CodeIndex(self.loop.session).update_pending_async()
-        if cancelled:
-            self.loop.emit("Cancelled")
-            return
-        if remaining := self.loop.unpromoted_text(answer, promoted_answer):
-            if self.loop.ui.color:
-                self.loop.emit()
-            self.loop.ui.emit_answer(remaining, rule=False)
-        # Emitted outside the promotion check: a promoted answer is already in scrollback without
-        # its sources, so skipping the footer there would drop them exactly when a search ran.
-        if footer := search_sources_footer(self.loop.agent.turn_sources):
-            self.loop.ui.emit_answer(footer, rule=False)
-        if not malformed_tool_call:
-            self.loop.ui.emit_turn_end(started)
-        self.loop.session.save_snapshot()
-        self.submit_next(self.loop.take_pending_inputs())
-
-    def run_agent_loop(self) -> None:
-        while not self.stop.is_set():
-            try:
-                user_input = self.pending.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            self.main_busy.set()
-            self.loop.session.clear_quick_hints()  # the user acted; drop last turn's offerings (also covers slash commands, which skip Agent.run)
-            if self.cancel_pending.is_set():
-                self.loop.emit("Cancelled")
-                self.reset_turn()
-                continue
-            if not self.dispatch(user_input):
-                self.run_agent_turn(user_input)
-
-    def run_tui_app(self) -> None:
-        try:
-            self.tui.run(style=self.loop.style())
-        except BaseException as error:  # noqa: BLE001 - propagate every TUI-thread failure on the main thread.
-            self.error = error
-            self.stop.set()
-
-    def run(self) -> int:
-        """Run the agent on the main thread and prompt-toolkit on one joined UI thread."""
-        self.loop.tui = self.build_tui()
-        tui_thread = threading.Thread(target=self.run_tui_app, name="tui")
-        tui_thread.start()
-        try:
-            self.tui.ready.wait()
-            if self.error is not None:
-                raise self.error
-            # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
-            # so the primary-screen application places them in native terminal/tmux scrollback.
-            self.loop.start_session()
-            self.submit_next(self.loop.take_pending_inputs())
-            self.run_agent_loop()
-        finally:
-            self.stop.set()
-            if self.force_exit_timer is not None:
-                self.force_exit_timer.cancel()
-            self.tui.exit()
-            # Do not let interpreter finalization race a TUI thread flushing stdout. The emergency
-            # force-exit timer remains responsible for terminating a genuinely wedged application.
-            tui_thread.join()
-            try:
-                self.loop.close_background_output()
-            finally:
-                self.loop.tui = None
-        if self.error is not None:
-            raise self.error
-        return 0

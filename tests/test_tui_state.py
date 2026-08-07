@@ -165,25 +165,25 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
     loop.model_stream_output("reasoning", "checking the request")
-    reasoning = "".join(text for _style, text in loop.model_stream_fragments())
+    reasoning = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "thinking" in reasoning
     assert "checking the request" in reasoning
-    assert "thinking" in "".join(text for _style, text in loop.queue_divider_fragments())
+    assert "thinking" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("output", "answering now")
-    output = "".join(text for _style, text in loop.model_stream_fragments())
+    output = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "responding" in output
     assert "answering now" in output
     assert "checking the request" not in output
-    assert "responding" in "".join(text for _style, text in loop.queue_divider_fragments())
+    assert "responding" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("correcting malformed tool call 1/5 · Bash", "")
-    assert loop.model_stream_fragments() == []
-    assert "correcting malformed tool call 1/5 · Bash" in "".join(text for _style, text in loop.queue_divider_fragments())
+    assert loop.view.model_stream_fragments() == []
+    assert "correcting malformed tool call 1/5 · Bash" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("", "")
-    assert loop.model_stream_fragments() == []
-    assert "working" in "".join(text for _style, text in loop.queue_divider_fragments())
+    assert loop.view.model_stream_fragments() == []
+    assert "working" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
 
 def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_path):
@@ -195,21 +195,21 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
     claimed = session.claim_user_inputs()
     loop.model_stream_output("reasoning", "checking the formatter")
 
-    activity = "".join(text for _style, text in loop.tui_activity_fragments())
+    activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert activity.count("use black instead") == 1
     assert activity.index("• use black instead") < activity.index("├─ thinking") < activity.rindex("thinking")
     assert "+ use black instead" not in activity
     assert "queued" not in activity and "sent" not in activity
 
     session.release_user_inputs()
-    requeued = "".join(text for _style, text in loop.tui_activity_fragments())
+    requeued = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert "• use black instead" not in requeued
     assert "[ 1 queued ]" in requeued
     assert requeued.rindex("thinking") < requeued.index("+ use black instead")
 
     session.claim_user_inputs()
     session.acknowledge_user_inputs(claimed)
-    committed = "".join(text for _style, text in loop.tui_activity_fragments())
+    committed = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert "use black instead" not in committed
 
 
@@ -221,7 +221,7 @@ def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypa
 
     loop.model_stream_output("output", "\n".join(f"line {index} with a deliberately long suffix" for index in range(8)))
 
-    preview = "".join(text for _style, text in loop.model_stream_fragments())
+    preview = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "line 0" not in preview
     assert "line 1" not in preview
     assert "line 2" in preview
