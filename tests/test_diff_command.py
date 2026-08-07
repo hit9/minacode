@@ -4,10 +4,13 @@ import subprocess
 import sys
 import time
 
+import minacode.cli.commands as commands_mod
 from minacode.base import Config, ToolCall
+from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop
+from minacode.cli.commands import diff_command
+from minacode.cli.modals import diff_viewer
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore, TurnDiff
@@ -57,6 +60,7 @@ import time
 from minacode.base import Config
 from minacode.engine import Agent
 from minacode.cli import CommandLoop
+from minacode.cli.commands import diff_command
 from minacode.session import Session
 from minacode.tui import TuiApp
 
@@ -71,7 +75,7 @@ def drive():
     while app.app is None or not app.app.is_running:
         time.sleep(0.005)
     print("HISTORY MARKER", flush=True)
-    print(loop.diff_command(""), flush=True)
+    print(diff_command(loop, ""), flush=True)
 
 
 threading.Thread(target=drive, daemon=True).start()
@@ -138,7 +142,7 @@ print(TuiApp.alternate_screen_available())
         subprocess.run([*command, "kill-server"], check=False, capture_output=True)
 
 
-def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_path):
+def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.store_turn_diff("tr.1", 1, "a.py", "-old\n+new\n", round=1)
     lp = loop(s)
@@ -146,9 +150,9 @@ def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_path):
     lp.ui.color = True
     lp.tui = type("Tui", (), {"alternate_screen_available": staticmethod(lambda: False)})()
     opened = []
-    lp.diff_viewer = lambda: opened.append(True)
+    monkeypatch.setattr(commands_mod, "diff_viewer", lambda _loop: opened.append(True))
 
-    result = lp.diff_command("")
+    result = diff_command(lp, "")
 
     assert opened == []
     assert "### Latest · Round 1" in result
@@ -157,17 +161,17 @@ def test_diff_falls_back_to_inline_output_without_alternate_screen(tmp_path):
 
 def test_diff_rejects_args(tmp_path):
     lp = loop(session(tmp_path))
-    assert lp.diff_command("extra") == "Usage: /diff"
+    assert diff_command(lp, "extra") == "Usage: /diff"
 
 
 def test_diff_outside_git_repo(tmp_path):
     lp = loop(session(tmp_path))
-    assert lp.diff_command("") == "No changes"
+    assert diff_command(lp, "") == "No changes"
 
 
 def test_diff_clean_session(tmp_path):
     lp = loop(session(tmp_path))
-    assert lp.diff_command("") == "No changes"
+    assert diff_command(lp, "") == "No changes"
 
 
 def test_diff_round_with_no_net_changes_is_empty(tmp_path):
@@ -175,7 +179,7 @@ def test_diff_round_with_no_net_changes_is_empty(tmp_path):
     s.store_turn_diff("tr.1", 1, "a.py", "-old\n+mid\n", before="old\n", after="mid\n", round=1)
     s.store_turn_diff("tr.2", 2, "a.py", "-mid\n+old\n", before="mid\n", after="old\n", round=1)
 
-    assert loop(s).diff_command("") == "No changes"
+    assert diff_command(loop(s), "") == "No changes"
 
 
 def test_diff_shows_latest_round(tmp_path):
@@ -184,7 +188,7 @@ def test_diff_shows_latest_round(tmp_path):
     s.store_turn_diff("tr.2", 2, "new.py", "-old\n+new\n", round=2)
 
     lp = loop(s)
-    result = lp.diff_command("")
+    result = diff_command(lp, "")
 
     assert "### Latest · Round 2" in result
     assert "#### new.py" in result
@@ -199,7 +203,7 @@ def test_diff_shows_latest_round_outside_git_repo(tmp_path):
     s.store_turn_diff("tr.1", 3, "x.py", "-a\n+b\n")
 
     lp = loop(s)
-    result = lp.diff_command("")
+    result = diff_command(lp, "")
 
     assert "### Latest · Round 3" in result
     assert "#### x.py" in result
@@ -216,7 +220,7 @@ def test_diff_ignores_git_worktree_changes(tmp_path):
     (tmp_path / "untracked.py").write_text("hello\n", encoding="utf-8")
 
     lp = loop(session(tmp_path))
-    assert lp.diff_command("") == "No changes"
+    assert diff_command(lp, "") == "No changes"
 
 
 def test_diff_bounds_large_session_output(tmp_path):
@@ -225,7 +229,7 @@ def test_diff_bounds_large_session_output(tmp_path):
     s.store_turn_diff("tr.1", 1, "a.py", large, round=1)
 
     lp = loop(s)
-    result = lp.diff_command("")
+    result = diff_command(lp, "")
     assert "truncated" in result.lower()
 
 
@@ -259,7 +263,7 @@ def test_diff_viewer_list_shows_change_counts_without_status_prefix(tmp_path):
 
     lp.tui = Modal()
 
-    lp.diff_viewer()
+    diff_viewer(lp)
 
     text = "".join(fragment for _style, fragment in rendered)
     assert "+2 -1 a.py" in text
@@ -474,7 +478,7 @@ def test_resume_renders_turn_diffs_from_the_snapshot(tmp_path):
     s.save_snapshot()
 
     loaded = Session.load_snapshot(s.uid, config=s.config, settings=s.settings, cwd=str(tmp_path))
-    result = loop(loaded).diff_command("")
+    result = diff_command(loop(loaded), "")
 
     assert [(diff.key, diff.path, diff.before, diff.after) for diff in loaded.turn_diffs] == [("tr.1", "x.py", "old\n", "new\n")]
     assert "### Latest" in result

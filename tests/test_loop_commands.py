@@ -15,6 +15,8 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
 import minacode.cli as loop_module
+import minacode.cli.commands as commands_mod
+import minacode.cli.modals as modals_mod
 from minacode.base import (
     DISMISSED,
     SELECTION_BACK,
@@ -26,9 +28,18 @@ from minacode.base import (
     ToolError,
     TurnBox,
 )
+from minacode.cli import CommandLoop
+from minacode.cli.commands import (
+    name_command,
+    session_label,
+    session_preview,
+    sessions_command,
+    skills_command,
+    status,
+)
+from minacode.cli.modals import choice_application, question_interaction, select_choice
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.cli import CommandLoop
 from minacode.prompts import SYSTEM_PROMPT
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner
@@ -440,20 +451,20 @@ def test_sessions_command_lists_saved_sessions_without_a_tui(tmp_path):
     s.config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert loop.sessions_command("") == "No saved sessions yet."
+    assert sessions_command(loop, "") == "No saved sessions yet."
 
     older = stored_session(tmp_path, "sort the picker by date")
     s.messages.append({"role": "user", "content": "current work"})
     s.save_snapshot()
-    listed = loop.sessions_command("")
+    listed = sessions_command(loop, "")
 
     assert older.uid in listed and "sort the picker by date" in listed
     assert s.uid in listed and "current" in listed
-    assert loop.sessions_command("nonsense") == "Usage: /sessions [all]"
+    assert sessions_command(loop, "nonsense") == "Usage: /sessions [all]"
     assert loop.resume_request == ""
 
 
-def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path):
+def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
@@ -462,7 +473,7 @@ def test_sessions_command_hands_the_chosen_session_to_the_next_run(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     loop.tui = TuiApp()
     loop.interactive_input = True
-    loop.choice_application = lambda *args, **kwargs: target.uid
+    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: target.uid)
 
     handled, exit_now = loop.command("/sessions")
 
@@ -499,14 +510,14 @@ def test_session_labels_carry_age_and_size(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
     entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
-    label = loop.session_label(entry)
+    label = session_label(loop, entry)
 
     assert label.startswith("current work")
     assert "just now" in label and "4 rounds" in label and "current" in label
     s.state.round_count = 1
     s.save_snapshot()
-    assert "1 round " in loop.session_label(SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]) + " "
-    assert entry.uid in loop.session_preview(entry)
+    assert "1 round " in session_label(loop, SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]) + " "
+    assert entry.uid in session_preview(loop, entry)
 
 
 def test_name_command_shows_and_sets_the_session_name(tmp_path):
@@ -515,10 +526,10 @@ def test_name_command_shows_and_sets_the_session_name(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     s.save_snapshot()
 
-    assert loop.name_command("") == "Session name: make the divider smoother (from the opening message)"
+    assert name_command(loop, "") == "Session name: make the divider smoother (from the opening message)"
 
-    assert loop.name_command("divider polish").startswith("Session named: divider polish")
-    assert loop.name_command("") == "Session name: divider polish (set by you)"
+    assert name_command(loop, "divider polish").startswith("Session named: divider polish")
+    assert name_command(loop, "") == "Session name: divider polish (set by you)"
     # The rename is durable on its own, without waiting for the next turn to save.
     assert Session.load_snapshot(s.uid, config=s.config).name == "divider polish"
 
@@ -526,7 +537,7 @@ def test_name_command_shows_and_sets_the_session_name(tmp_path):
 def test_name_command_reports_an_unnamed_session(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert loop.name_command("") == "Session name: (unnamed)"
+    assert name_command(loop, "") == "Session name: (unnamed)"
 
 
 def test_empty_exit_does_not_print_resume_command(tmp_path):
@@ -782,7 +793,7 @@ def test_select_choice_noninteractive_does_not_prompt(tmp_path):
     output = []
     loop = CommandLoop(Agent(session(tmp_path), output_fn=output.append), input_fn=lambda prompt="": "1", output_fn=output.append)
 
-    assert loop.select_choice("Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
+    assert select_choice(loop, "Pick", ("a", "b"), labels={"a": "A"}, current="a") is None
     assert output == []
 
 
@@ -799,7 +810,7 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
 
     loop.tui = Modal()
 
-    result = loop.choice_application(
+    result = choice_application(loop, 
         "Select:",
         ("A", "B"),
         {},
@@ -827,7 +838,7 @@ def test_ask_free_text_prompt_has_no_control_newline(tmp_path):
         show_modal=lambda fragments_fn, key_fn: next(results),
     )
 
-    assert loop.question_interaction([AskSpec("Pick?", choices=["A"], previews=["preview"])]) == ["typed answer"]
+    assert question_interaction(loop, [AskSpec("Pick?", choices=["A"], previews=["preview"])]) == ["typed answer"]
     assert prompts == ["\nPick?"]  # one shared-input prompt, the question spelled out again
 
 
@@ -843,7 +854,7 @@ def test_ask_free_text_empty_answer_is_kept(tmp_path):
         show_modal=lambda fragments_fn, key_fn: next(results),
     )
 
-    assert loop.question_interaction([AskSpec("Pick?")]) == [""]
+    assert question_interaction(loop, [AskSpec("Pick?")]) == [""]
 
 
 def test_ask_free_text_on_last_question_submits_without_reentering_modal(tmp_path):
@@ -861,7 +872,7 @@ def test_ask_free_text_on_last_question_submits_without_reentering_modal(tmp_pat
 
     loop.tui = SimpleNamespace(request_input=lambda prompt: "typed", show_modal=show_modal)
 
-    assert loop.question_interaction([AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"])]) == ["A", "typed"]
+    assert question_interaction(loop, [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"])]) == ["A", "typed"]
     assert len(calls) == 1
 
 
@@ -876,7 +887,7 @@ def test_ask_without_choices_uses_shared_tui_input(tmp_path):
         show_modal=lambda fragments_fn, key_fn: next(results),
     )
 
-    assert loop.question_interaction([AskSpec("Explain the issue")]) == ["typed answer"]
+    assert question_interaction(loop, [AskSpec("Explain the issue")]) == ["typed answer"]
     assert prompts == ["\nExplain the issue"]
 
 
@@ -886,17 +897,17 @@ def test_ask_headless_keeps_plain_per_question_prompts(tmp_path):
     prompts = []
     loop.read_input = lambda prompt: prompts.append(prompt) or "answer"
 
-    assert loop.question_interaction([AskSpec("One?"), AskSpec("Two?", choices=["A"])]) == ["answer", "answer"]
+    assert question_interaction(loop, [AskSpec("One?"), AskSpec("Two?", choices=["A"])]) == ["answer", "answer"]
     assert prompts == ["\nOne?", "\nTwo?"]
 
 
-def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path):
+def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path, monkeypatch):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     emitted = []
     loop.emit = emitted.append
-    loop.question_interaction = lambda specs: ["B"]
+    monkeypatch.setattr(modals_mod, "question_interaction", lambda _loop, specs: ["B"])
 
-    assert loop.question_interaction([AskSpec("Which?", choices=["A", "B"])]) == ["B"]
+    assert modals_mod.question_interaction(loop, [AskSpec("Which?", choices=["A", "B"])]) == ["B"]
     assert emitted == []
 
 
@@ -914,7 +925,7 @@ def test_ask_notes_flow_into_the_answer(tmp_path):
 
     loop.tui = SimpleNamespace(show_modal=show_modal)
 
-    assert loop.question_interaction([AskSpec("Q?", choices=["A"], recommended=0)]) == ["A\n\nUser notes: keep the header"]
+    assert question_interaction(loop, [AskSpec("Q?", choices=["A"], recommended=0)]) == ["A\n\nUser notes: keep the header"]
 
 
 def test_ask_escape_cancels_the_whole_batch(tmp_path):
@@ -923,7 +934,7 @@ def test_ask_escape_cancels_the_whole_batch(tmp_path):
     loop.interactive_input = True
     loop.tui = SimpleNamespace(show_modal=lambda fragments_fn, key_fn: SELECTION_BACK)
 
-    result = loop.question_interaction([AskSpec("One?"), AskSpec("Two?")])
+    result = question_interaction(loop, [AskSpec("One?"), AskSpec("Two?")])
     assert result == [DISMISSED, DISMISSED]
 
 
@@ -1093,12 +1104,12 @@ def test_skill_tool_absent_only_when_no_skills(tmp_path):
 
 def test_skills_command_lists_installed(tmp_path):
     base = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
-    assert "### Skills · 1" in base.skills_command("")
-    assert "| `minacode-help` | builtin |" in base.skills_command("")
+    assert "### Skills · 1" in skills_command(base, "")
+    assert "| `minacode-help` | builtin |" in skills_command(base, "")
 
     _write_skill(tmp_path, "release-notes", "Draft a CHANGELOG entry.", "body")
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda t: None), output_fn=lambda t: None)
-    output = loop.skills_command("")
+    output = skills_command(loop, "")
     assert "| skill | source | description |" in output
     assert "| `release-notes` | project | Draft a CHANGELOG entry. |" in output
 
@@ -1130,12 +1141,12 @@ def test_status_and_bar_show_skill_count(tmp_path):
 
     count = len(s.skills.skills)
     assert count == 3
-    status = loop.status("")
-    assert "mcp `1`" in status
-    assert f"skills `{count}`" in status
-    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in status
-    assert "| cache | (no requests yet) |" in status
-    assert "| field | value |" in status
+    rendered = status(loop, "")
+    assert "mcp `1`" in rendered
+    assert f"skills `{count}`" in rendered
+    assert f"/ {loop.agent.context.request_token_budget() / 1_000:.1f}K" in rendered
+    assert "| cache | (no requests yet) |" in rendered
+    assert "| field | value |" in rendered
     bar_text = " | ".join(text for text, _ in StatusBar(s).entries(show_elapsed=False))
     assert f"skills {count}" in bar_text
 
@@ -1152,10 +1163,10 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     assert active_percent > persisted_percent
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
-    status = loop.status("")
+    rendered = status(loop, "")
 
     assert s.state.context_percent == active_percent
-    context_row = next(line for line in status.splitlines() if line.startswith("| context |"))
+    context_row = next(line for line in rendered.splitlines() if line.startswith("| context |"))
     assert f"`{active_percent}%`" in context_row
 
 
@@ -1169,7 +1180,7 @@ def test_status_context_row_uses_last_real_tokens_when_available(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
     def context_row() -> str:
-        return next(line for line in loop.status("").splitlines() if line.startswith("| context |"))
+        return next(line for line in status(loop, "").splitlines() if line.startswith("| context |"))
 
     assert "`~20.0K / 80.0K`" in context_row()
     assert "`25%`" in context_row()
@@ -1190,7 +1201,7 @@ def test_status_cache_row_labels_last_and_session_token_counts(tmp_path):
     s.usage.prompt_tokens = 100_000
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
-    cache_row = next(line for line in loop.status("").splitlines() if line.startswith("| cache |"))
+    cache_row = next(line for line in status(loop, "").splitlines() if line.startswith("| cache |"))
 
     # Ratios, not the raw pairs: this was the one row long enough to wrap on a normal terminal.
     assert "last `99.9%` (w 1.2K); session `83.4%` (w 4.5K)" in cache_row

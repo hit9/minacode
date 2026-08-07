@@ -13,8 +13,8 @@ import minacode.tui as tui_module
 from minacode.base import (
     Config,
 )
-from minacode.engine import Agent
 from minacode.cli import CommandLoop
+from minacode.engine import Agent
 from minacode.session import Session
 
 

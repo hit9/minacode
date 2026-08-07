@@ -26,9 +26,10 @@ from minacode.base import (
     LogBlock,
     LogEdge,
 )
+from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime
+from minacode.cli.commands import select_choice
 from minacode.engine import Agent
 from minacode.hints import HintPicker
-from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
@@ -1248,7 +1249,7 @@ def test_interactive_tui_choice_ctrl_c_reports_cancellation(monkeypatch, tmp_pat
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         selector = threading.Thread(
-            target=lambda: result.append(command_loop.select_choice("Pick", ("a", "b"))),
+            target=lambda: result.append(select_choice(command_loop, "Pick", ("a", "b"))),
             daemon=True,
         )
         selector.start()

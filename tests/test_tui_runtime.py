@@ -24,8 +24,8 @@ from minacode.base import (
     MinacodeError,
     ToolCall,
 )
-from minacode.engine import Agent
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
+from minacode.engine import Agent
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex

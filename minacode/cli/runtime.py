@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from minacode.base import MalformedToolCallError, MinacodeError
+from minacode.cli.modals import bash_output_viewer
 from minacode.image import UserInput
 from minacode.render import search_sources_footer
 from minacode.tools import CodeIndex
@@ -74,7 +75,7 @@ class TuiRuntime:
         return self.loop.recall_pending_input(self._request_model_retry)
 
     def expand_output(self) -> None:
-        threading.Thread(target=self.loop.bash_output_viewer, name="bash-output", daemon=True).start()
+        threading.Thread(target=lambda: bash_output_viewer(self.loop), name="bash-output", daemon=True).start()
 
     def request_exit(self) -> None:
         self.stop.set()

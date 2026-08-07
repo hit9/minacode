@@ -7,14 +7,18 @@ its `loop` reference; it renders, it does not own behavior.
 
 from __future__ import annotations
 
+import re
 import shutil
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar
 
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
 
-from minacode.base import Text
+from minacode.base import PROVIDER_API_CHOICES, REASONING_CHOICES, Text
+from minacode.cli.commands import SET_KEYS, SET_VALUES, WORKER_SUBCOMMANDS
 from minacode.hints import Context as HintContext
 from minacode.hints import HintPicker
 from minacode.render import Theme, UiPrinter
@@ -23,6 +27,114 @@ from minacode.tui import TuiApp
 
 if TYPE_CHECKING:
     from minacode.cli import CommandLoop
+
+
+class CommandCompleter(Completer):
+    """Prompt-toolkit completer for slash commands and their arguments."""
+
+    MCP_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"@([A-Za-z0-9_.-]*)$")
+    SKILL_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$")
+
+    def __init__(
+        self,
+        providers: Callable[[], tuple[str, ...]] = tuple,
+        models: Callable[[], tuple[str, ...]] = tuple,
+        worker_models: Callable[[], tuple[str, ...]] = tuple,
+        mcp_servers: Callable[[], tuple[str, ...]] = tuple,
+        mcp_connected_servers: Callable[[], tuple[str, ...]] = tuple,
+        mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
+        skills: Callable[[], tuple[str, ...]] = tuple,
+    ):
+        self.providers = providers
+        self.models = models
+        self.worker_models = worker_models
+        self.mcp_servers = mcp_servers
+        self.mcp_connected_servers = mcp_connected_servers
+        self.mcp_tools = mcp_tools
+        self.skills = skills
+
+    def get_completions(self, document, complete_event):
+        del complete_event
+        text = document.text_before_cursor
+        if text.startswith("/set "):
+            tail = text[len("/set ") :]
+            if " " not in tail:
+                yield from self.matches(SET_KEYS, tail)
+                return
+            key, _, value = tail.partition(" ")
+            yield from self.matches(SET_VALUES.get(key, ()), value)
+            return
+        if text.startswith("/worker "):
+            tail = text[len("/worker ") :]
+            if " " not in tail:
+                yield from self.matches(WORKER_SUBCOMMANDS, tail)
+                return
+            sub, _, value = tail.partition(" ")
+            if sub == "provider":
+                yield from self.matches(tuple(dict.fromkeys((*self.providers(), "off"))), value)
+                return
+            if sub == "model":
+                yield from self.matches(self.worker_models(), value)
+                return
+            if sub == "reason":
+                yield from self.matches((*REASONING_CHOICES, "default"), value)
+                return
+            if sub == "api":
+                yield from self.matches((*PROVIDER_API_CHOICES, "default"), value)
+                return
+        for command, values in (
+            ("/model ", self.models),
+            ("/provider ", self.providers),
+            ("/reason ", lambda: REASONING_CHOICES),
+            ("/effort ", lambda: REASONING_CHOICES),
+            ("/api ", lambda: PROVIDER_API_CHOICES),
+            ("/strict ", lambda: ("on", "off")),
+        ):
+            if text.startswith(command):
+                yield from self.matches(values(), text[len(command) :])
+                return
+        if text.startswith("/mcp "):
+            tail = text[len("/mcp ") :]
+            if " " not in tail:
+                yield from self.matches(("connect", "disconnect", "tools"), tail)
+                return
+            sub, _, value = tail.partition(" ")
+            if sub == "connect":
+                completed, _, prefix = value.rpartition(" ")
+                selected = set(completed.split())
+                yield from self.matches((name for name in self.mcp_servers() if name not in selected), prefix)
+                return
+            if sub == "disconnect":
+                yield from self.matches(self.mcp_servers(), value)
+                return
+            if sub == "tools":
+                yield from self.matches(self.mcp_connected_servers(), value)
+                return
+
+        at_match = CommandCompleter.MCP_MENTION_RE.search(text)
+        if at_match:
+            server_part, dot, tool_part = at_match.group(1).partition(".")
+            if dot:
+                yield from self.matches(self.mcp_tools(server_part), tool_part)
+            else:
+                yield from self.matches(self.mcp_servers(), server_part)
+            return
+
+        skill_match = CommandCompleter.SKILL_MENTION_RE.search(text)
+        if skill_match:
+            yield from self.matches(self.skills(), skill_match.group(1))
+            return
+
+        if text.startswith("/") and " " not in text:
+            # CommandLoop.COMMANDS is populated at the end of cli/__init__.py, after this module
+            # is imported; resolve it lazily to avoid the import cycle.
+            from minacode.cli import CommandLoop
+
+            yield from self.matches(CommandLoop.COMMANDS, text)
+
+    @staticmethod
+    def matches(values, prefix: str):
+        return (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
 
 
 class View:

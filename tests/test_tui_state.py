@@ -3,12 +3,13 @@
 These tests exercise the stateful parts of the TUI without requiring a real terminal.
 """
 
+import os
+import shutil
 import time
 
-import minacode.cli as loop_module
 from minacode.base import Config
-from minacode.engine import Agent
 from minacode.cli import CommandLoop
+from minacode.engine import Agent
 from minacode.render import BashLivePreview
 from minacode.session import Session
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState
@@ -217,7 +218,7 @@ def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypa
     config = Config()
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
-    monkeypatch.setattr(loop_module.shutil, "get_terminal_size", lambda fallback: loop_module.os.terminal_size((40, 20)))
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((40, 20)))
 
     loop.model_stream_output("output", "\n".join(f"line {index} with a deliberately long suffix" for index in range(8)))
 

@@ -14,9 +14,10 @@ from minacode.base import (
     MIN_CONTEXT_SAFETY_TOKENS,
     ModelError,
 )
+from minacode.cli import CommandLoop
+from minacode.cli.commands import compact
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.cli import CommandLoop
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment
@@ -737,7 +738,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
             return {"summary": "summary", "plan": ["next"], "known": ["fact"]}
 
     loop.agent.model = FakeModel()
-    result = loop.compact("")
+    result = compact(loop, "")
 
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
     assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)

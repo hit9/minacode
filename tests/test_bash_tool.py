@@ -8,9 +8,10 @@ import pytest
 
 import minacode.render as render_module
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from minacode.cli import CommandLoop
+from minacode.cli.commands import ps_command
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.cli import CommandLoop
 from minacode.render import BashLivePreview, UiPrinter
 from minacode.runner import ToolDisplay, ToolRunner
 from minacode.session import Session
@@ -407,7 +408,7 @@ def test_ps_hides_jobs_that_finished_without_polling(tmp_path):
     s.jobs["job.1"].process.wait(timeout=2)
     command_loop = CommandLoop(Agent(s), input_fn=lambda prompt="": "", output_fn=lambda text: None)
 
-    assert command_loop.ps_command("") == "No active jobs (1 total)."
+    assert ps_command(command_loop, "") == "No active jobs (1 total)."
 
 
 def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):

@@ -16,6 +16,7 @@ from prompt_toolkit.history import FileHistory
 import minacode.cli as loop_module
 import minacode.tui as tui_module
 from minacode.base import Config, ModelError, ProviderConfig, ToolCall, ToolError
+from minacode.cli import CommandLoop
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.image import (
@@ -27,7 +28,6 @@ from minacode.image import (
     ImageRef,
     UserInput,
 )
-from minacode.cli import CommandLoop
 from minacode.model import ModelClient
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore

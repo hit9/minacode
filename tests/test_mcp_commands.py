@@ -13,9 +13,12 @@ import pytest
 # ---------------------------------------------------------------------------
 from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info
 
+import minacode.cli.commands as commands_mod
 from minacode.base import SELECTION_BACK, Config
-from minacode.engine import Agent
 from minacode.cli import CommandCompleter, CommandLoop
+from minacode.cli.commands import mcp_command
+from minacode.cli.modals import mcp_manager
+from minacode.engine import Agent
 from minacode.mcp import MCPFileTokenStore, MCPManager
 from minacode.render import StatusBar, UiPrinter
 from minacode.session import Session, SessionSnapshotStore
@@ -82,7 +85,7 @@ class TestMCPCommands:
         s.mcp.discover_auto()
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("")
+        result = mcp_command(loop, "")
         assert "test" in result
         assert "| `test` | auto | ● connected | 1     |" in result
 
@@ -104,7 +107,7 @@ class TestMCPCommands:
         s.mcp.discover_auto()
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("tools")
+        result = mcp_command(loop, "tools")
         assert "### `test`" in result
         assert "echo" in result
 
@@ -114,7 +117,7 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("tools")
+        result = mcp_command(loop, "tools")
 
         assert calls == []
         assert result == "(no connected MCP servers)"
@@ -185,7 +188,7 @@ class TestMCPCommands:
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
-        result = loop.mcp_command("connect test")
+        result = mcp_command(loop, "connect test")
 
         assert result == "MCP server connected: test; tools=0; resources=0"
         assert attempts.count(True) == 1
@@ -274,8 +277,8 @@ class TestMCPCommands:
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        loop.mcp_command("connect test")
-        loop.mcp_command("connect test")
+        mcp_command(loop, "connect test")
+        mcp_command(loop, "connect test")
 
         assert calls == ["test", "test"]
 
@@ -424,7 +427,7 @@ class TestMCPCommands:
         )
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        result = loop.mcp_command("connect alpha beta")
+        result = mcp_command(loop, "connect alpha beta")
 
         assert result == "connected batch"
         assert calls == [(["alpha", "beta"], {"interactive": False, "notify": loop.emit})]
@@ -433,7 +436,7 @@ class TestMCPCommands:
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        assert loop.mcp_command("connect missing") == "MCP server not found: missing"
+        assert mcp_command(loop, "connect missing") == "MCP server not found: missing"
 
     def test_mcp_disconnect_removes_connected_server(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
@@ -441,7 +444,7 @@ class TestMCPCommands:
         s.mcp.resources["test"] = []
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        assert loop.mcp_command("disconnect test") == "MCP server disconnected: test"
+        assert mcp_command(loop, "disconnect test") == "MCP server disconnected: test"
         assert not s.mcp.connected("test")
 
     def test_mcp_disconnect_oauth_also_clears_authentication(self, monkeypatch):
@@ -462,9 +465,9 @@ class TestMCPCommands:
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         loop.tui = SimpleNamespace(input_mode="idle")
         calls = []
-        monkeypatch.setattr(loop, "mcp_manager", lambda: calls.append("manager"))
+        monkeypatch.setattr(commands_mod, "mcp_manager", lambda _loop: calls.append("manager"))
 
-        assert loop.mcp_command("") is None
+        assert mcp_command(loop, "") is None
         assert calls == ["manager"]
 
     def test_mcp_manager_connects_selected_server(self, monkeypatch):
@@ -492,7 +495,7 @@ class TestMCPCommands:
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
         monkeypatch.setattr(s.mcp, "connect_server", connect)
 
-        loop.mcp_manager()
+        mcp_manager(loop, )
 
         assert connected.is_set()
         assert s.mcp.connected("test")
@@ -520,7 +523,7 @@ class TestMCPCommands:
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
         monkeypatch.setattr(s.mcp, "disconnect_server", disconnect)
 
-        loop.mcp_manager()
+        mcp_manager(loop, )
 
         assert not s.mcp.connected("test")
 
@@ -549,7 +552,7 @@ class TestMCPCommands:
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
         monkeypatch.setattr(s.mcp, "connect_server", connect)
 
-        loop.mcp_manager()
+        mcp_manager(loop, )
 
         assert all(event.is_set() for event in started.values())
 
@@ -581,7 +584,7 @@ class TestMCPCommands:
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=invalidate)
         monkeypatch.setattr(s.mcp, "connect_server", connect)
 
-        loop.mcp_manager()
+        mcp_manager(loop, )
         modal_closed = True
         release.set()
 
@@ -607,7 +610,7 @@ class TestMCPCommands:
 
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
 
-        loop.mcp_manager()
+        mcp_manager(loop, )
 
         lines = captured["text"].splitlines()
         connected = next(line for line in lines if " a " in line)
@@ -646,7 +649,7 @@ class TestMCPCommands:
         """Bad /mcp subcommand returns error."""
         s = Session(cwd="/tmp")
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("bad_subcommand")
+        result = mcp_command(loop, "bad_subcommand")
         assert "Unknown" in result
 
     def test_mcp_subcommands_reject_extra_args(self):
@@ -654,19 +657,19 @@ class TestMCPCommands:
         s = Session(cwd="/tmp")
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
-        assert loop.mcp_command("tools a b") == "Usage: /mcp tools [server]"
-        assert loop.mcp_command("connect") == "Usage: /mcp connect <server> [server ...]"
-        assert loop.mcp_command("disconnect") == "Usage: /mcp disconnect <server>"
-        assert loop.mcp_command("disconnect a b") == "Usage: /mcp disconnect <server>"
-        assert "Unknown" in loop.mcp_command("login test")
-        assert "Unknown" in loop.mcp_command("logout test")
+        assert mcp_command(loop, "tools a b") == "Usage: /mcp tools [server]"
+        assert mcp_command(loop, "connect") == "Usage: /mcp connect <server> [server ...]"
+        assert mcp_command(loop, "disconnect") == "Usage: /mcp disconnect <server>"
+        assert mcp_command(loop, "disconnect a b") == "Usage: /mcp disconnect <server>"
+        assert "Unknown" in mcp_command(loop, "login test")
+        assert "Unknown" in mcp_command(loop, "logout test")
 
     def test_no_mcp_config(self):
         """No MCP config returns message."""
         s = Session(cwd="/tmp")
         s.mcp = None
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("")
+        result = mcp_command(loop, "")
         assert "not configured" in result
 
 
@@ -685,7 +688,7 @@ class TestMCPCommandsByName:
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: discovered.append(name))
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
-        result = loop.mcp_command("tools a")
+        result = mcp_command(loop, "tools a")
 
         assert discovered == []
         assert result == "MCP server 'a' is not connected; run /mcp connect a"
@@ -837,14 +840,14 @@ class TestMCPUserScenarios:
         assert "[search]" in self.mcp_context(agent.model)
         assert "[docs]" not in self.mcp_context(agent.model)
 
-        assert loop.mcp_command("connect docs") == "MCP server connected: docs; tools=1; resources=1"
+        assert mcp_command(loop, "connect docs") == "MCP server connected: docs; tools=1; resources=1"
         assert agent.run("Read the project guide") == "done"
         context = self.mcp_context(agent.model)
         assert "[search]" in context
         assert "[docs]" in context
         assert "docs://guide.md" in context
 
-        assert loop.mcp_command("disconnect search") == "MCP server disconnected: search"
+        assert mcp_command(loop, "disconnect search") == "MCP server disconnected: search"
         assert agent.run("Continue with the documentation") == "done"
         context = self.mcp_context(agent.model)
         assert "[search]" not in context
@@ -901,7 +904,7 @@ class TestMCPUserScenarios:
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
-        result = loop.mcp_command("connect metabase")
+        result = mcp_command(loop, "connect metabase")
 
         assert result == "MCP server connected: metabase; tools=1; resources=0"
         assert oauth_value(store, url, "mcp-oauth-token", "/tokens")["access_token"] == "fresh-token"
@@ -922,7 +925,7 @@ class TestMCPUserScenarios:
         monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("non-interactive connect opened OAuth"))
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
 
-        result = loop.mcp_command("connect metabase")
+        result = mcp_command(loop, "connect metabase")
 
         assert result == "MCP server error: metabase: authentication required; run /mcp connect metabase"
         assert oauth_value(store, url, "mcp-oauth-token", "/tokens")["access_token"] == "cached-token"
@@ -988,7 +991,7 @@ class TestMCPUserScenarios:
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         loop.interactive_input = True
 
-        result = loop.mcp_command("connect valid stale plain")
+        result = mcp_command(loop, "connect valid stale plain")
 
         assert authorized == ["stale"]
         assert all(s.mcp.connected(name) for name in ("valid", "stale", "plain"))
@@ -1019,7 +1022,7 @@ class TestMCPUserScenarios:
         agent.model = self.model()
         loop = CommandLoop(agent, input_fn=lambda _: "", output_fn=lambda _text: None)
 
-        result = loop.mcp_command("connect catalog offline")
+        result = mcp_command(loop, "connect catalog offline")
         assert "● connected  `catalog`" in result
         assert "● error  `offline` — service unavailable" in result
 
@@ -1052,7 +1055,7 @@ class TestMCPUserScenarios:
         monkeypatch.setattr(s.mcp, "_list_resources", no_resources)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _text: None)
         result = []
-        worker = threading.Thread(target=lambda: result.append(loop.mcp_command("connect alpha beta")))
+        worker = threading.Thread(target=lambda: result.append(mcp_command(loop, "connect alpha beta")))
         worker.start()
         assert all(event.wait(1) for event in started.values())
         assert StatusBar(s).mcp_status().startswith("mcp 0/2")

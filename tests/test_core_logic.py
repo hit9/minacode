@@ -27,9 +27,9 @@ from minacode.base import (
     UpdateStatus,
     __version__,
 )
+from minacode.cli import CommandLoop
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.cli import CommandLoop
 from minacode.model import ModelClient
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner

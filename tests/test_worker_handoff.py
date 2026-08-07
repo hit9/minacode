@@ -11,6 +11,7 @@ import pytest
 from agent_harness import call, session
 
 from minacode.base import SESSION_EVENT_KEY
+from minacode.cli.commands import worker_command
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
@@ -520,8 +521,8 @@ def test_delegate_settings_isolated_and_fresh(tmp_path, monkeypatch):
 # 11. user reset: /worker reset appends a SESSION_EVENT_KEY message to the parent's history tail, and
 #     the message reaches the next request (render-hidden, never filtered from the model history).
 def test_worker_reset_appends_event_message(tmp_path):
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -583,8 +584,8 @@ def test_status_bar_shows_worker_segment(tmp_path):
 
 
 def test_working_divider_marks_inflight_worker(tmp_path):
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -618,8 +619,8 @@ def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
 
 
 def test_status_reports_worker_delegation_state(tmp_path):
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
@@ -667,16 +668,16 @@ def test_status_reports_worker_delegation_state(tmp_path):
 # /worker's own status branch returns readable text for the human (the model-facing envelope stays
 # in DelegateTool): no-live-worker, one line per fact, and the usage/state-context-percent values
 def test_worker_status_command_is_human_readable(tmp_path):
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
     from minacode.session import Session
 
     parent = _delegate_session(tmp_path)
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert loop.worker_command("") == chr(10).join(["worker: no active session", "worker provider: default"])
-    assert loop.worker_command("status") == loop.worker_command("")
+    assert worker_command(loop, "") == chr(10).join(["worker: no active session", "worker provider: default"])
+    assert worker_command(loop, "status") == worker_command(loop, "")
 
     worker = Session(cwd=str(tmp_path), config=parent.config, settings=parent.settings, uid=parent.uid + ".w", listed=False)
     parent.worker = worker
@@ -685,7 +686,7 @@ def test_worker_status_command_is_human_readable(tmp_path):
     worker.state.round_count = 3
     worker.usage.last_prompt_tokens = 50
     worker.usage.last_prompt_budget = 100
-    text = loop.worker_command("status")
+    text = worker_command(loop, "status")
     assert "worker: default/worker-model-x" in text
     assert "worker reasoning: high" in text
     assert "worker state: idle" in text
@@ -694,12 +695,12 @@ def test_worker_status_command_is_human_readable(tmp_path):
     assert "<Delegate" not in text
 
     worker._active_turn_messages.append({"role": "user", "content": "order"})
-    assert "worker state: delegating" in loop.worker_command("status")
+    assert "worker state: delegating" in worker_command(loop, "status")
 
     # Without provider-reported usage the state estimate is the fallback, like the envelope.
     worker.usage.last_prompt_budget = 0
     worker.state.context_percent = 42
-    assert "worker context: 42%" in loop.worker_command("status")
+    assert "worker context: 42%" in worker_command(loop, "status")
 
 
 # The engine publishes the model's own text as bare strings (content beside tool calls), so the
@@ -1134,12 +1135,13 @@ def test_delegate_send_confirmation_prompt_and_reasons(tmp_path, monkeypatch):
 
 
 def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
+    from prompt_toolkit.utils import get_cwidth
+
     from minacode.base import LogRole, ProviderConfig, ToolCall
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.tools import EditTool
     from minacode.tools.delegate import DelegateTool
-    from prompt_toolkit.utils import get_cwidth
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["fast"] = ProviderConfig(model="worker-model", reasoning="high", api="responses")
@@ -1360,8 +1362,8 @@ def test_worker_provider_config_applies_api_override(tmp_path):
 #     rejected without touching the config.
 def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     from minacode.base import ProviderConfig
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
     from minacode.session import Session
     from minacode.tools import Tool
 
@@ -1378,15 +1380,15 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     assert "Delegate" not in names(parent)
     # Frozen off: the command stores the value for the next spawn and says a restart is needed;
     # the tool block is unchanged mid-session.
-    assert loop.worker_command("provider alt") == "Set worker provider = alt (delegation is off this session; takes effect after a restart)"
+    assert worker_command(loop, "provider alt") == "Set worker provider = alt (delegation is off this session; takes effect after a restart)"
     assert parent.config.worker_provider == "alt"
     assert "Delegate" not in names(parent)
     # "off" clears quietly when the gate is frozen off.
-    assert loop.worker_command("provider off") == "worker provider: off"
+    assert worker_command(loop, "provider off") == "worker provider: off"
     assert parent.config.worker_provider == ""
 
     before = parent.config.worker_provider
-    assert loop.worker_command("provider nope") == "Unknown provider: nope"
+    assert worker_command(loop, "provider nope") == "Unknown provider: nope"
     assert parent.config.worker_provider == before
 
     # Simulating a restart: a freshly constructed session over the same config re-evaluates the
@@ -1400,7 +1402,7 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
     # provider; only the next session re-evaluates it.
     fresh_agent = Agent(fresh, output_fn=lambda text: None)
     fresh_loop = CommandLoop(fresh_agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
-    assert fresh_loop.worker_command("provider off") == "worker provider: off"
+    assert worker_command(fresh_loop, "provider off") == "worker provider: off"
     assert fresh.config.worker_provider == ""
     assert "Delegate" in names(fresh)
 
@@ -1409,15 +1411,15 @@ def test_worker_provider_command_does_not_flip_registration_gate(tmp_path):
 #     config.providers wins, so /worker provider off selects that entry.
 def test_worker_provider_off_selects_literal_off_entry(tmp_path):
     from minacode.base import ProviderConfig
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
 
     parent = session(tmp_path)
     parent.config.providers["off"] = ProviderConfig(model="m")
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert loop.worker_command("provider off") == "Set worker provider = off (delegation is off this session; takes effect after a restart)"
+    assert worker_command(loop, "provider off") == "Set worker provider = off (delegation is off this session; takes effect after a restart)"
     assert parent.config.worker_provider == "off"
 
 
@@ -1425,31 +1427,31 @@ def test_worker_provider_off_selects_literal_off_entry(tmp_path):
 #     clears; "off" is a valid reasoning effort, never the clearing word.
 def test_worker_model_and_reason_overrides(tmp_path):
     from minacode.base import REASONING_CHOICES
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
 
     parent = session(tmp_path)
     agent = Agent(parent, output_fn=lambda text: None)
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
 
-    assert loop.worker_command("model") == "worker model: (inherit)"
-    assert loop.worker_command("model gpt-5.2") == "Set worker.model = gpt-5.2"
+    assert worker_command(loop, "model") == "worker model: (inherit)"
+    assert worker_command(loop, "model gpt-5.2") == "Set worker.model = gpt-5.2"
     assert parent.config.worker_model == "gpt-5.2"
-    assert loop.worker_command("model") == "worker model: gpt-5.2"
-    assert loop.worker_command("model default") == "worker model: (inherit)"
+    assert worker_command(loop, "model") == "worker model: gpt-5.2"
+    assert worker_command(loop, "model default") == "worker model: (inherit)"
     assert parent.config.worker_model == ""
 
-    assert loop.worker_command("reason high") == "Set worker.reasoning = high"
+    assert worker_command(loop, "reason high") == "Set worker.reasoning = high"
     assert parent.config.worker_reasoning == "high"
-    assert loop.worker_command("reason off") == "Set worker.reasoning = off"  # a valid effort
+    assert worker_command(loop, "reason off") == "Set worker.reasoning = off"  # a valid effort
     assert parent.config.worker_reasoning == "off"
-    assert loop.worker_command("reason default") == "worker reasoning: (inherit)"
+    assert worker_command(loop, "reason default") == "worker reasoning: (inherit)"
     assert parent.config.worker_reasoning == ""
 
-    assert loop.worker_command("reason turbo") == "Usage: /worker reason " + "|".join(REASONING_CHOICES)
-    assert loop.worker_command("provider a b") == "Usage: /worker provider [NAME]"
-    assert loop.worker_command("model a b") == "Usage: /worker model [MODEL]"
-    assert loop.worker_command("reason a b") == "Usage: /worker reason [EFFORT]"
+    assert worker_command(loop, "reason turbo") == "Usage: /worker reason " + "|".join(REASONING_CHOICES)
+    assert worker_command(loop, "provider a b") == "Usage: /worker provider [NAME]"
+    assert worker_command(loop, "model a b") == "Usage: /worker model [MODEL]"
+    assert worker_command(loop, "reason a b") == "Usage: /worker reason [EFFORT]"
 
 
 # 25. spawn isolation: the worker's active ProviderConfig is a detached copy (never `is` the
@@ -1499,8 +1501,8 @@ def test_delegate_spawn_isolates_provider_and_applies_overrides(tmp_path, monkey
 #     immediately while the parent's providers entry is untouched; "default" restores the
 #     underlying entry's model on the live worker.
 def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["default"].model = "parent-model"
@@ -1514,11 +1516,11 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
     worker = parent.worker
     assert worker.config.provider.model == "parent-model"
 
-    loop.worker_command("model worker-model")
+    worker_command(loop, "model worker-model")
     assert worker.config.provider.model == "worker-model"
     assert parent.config.providers["default"].model == "parent-model"  # untouched
 
-    loop.worker_command("model default")
+    worker_command(loop, "model default")
     assert worker.config.provider.model == "parent-model"  # restores the entry's model
     assert parent.config.providers["default"].model == "parent-model"
 
@@ -1527,8 +1529,8 @@ def test_worker_model_switch_applies_to_live_worker(tmp_path, monkeypatch):
 #     a detached copy and the parent's entry is untouched.
 def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     from minacode.base import ProviderConfig
-    from minacode.engine import Agent
     from minacode.cli import CommandLoop
+    from minacode.engine import Agent
 
     parent = _delegate_session(tmp_path)
     parent.config.providers["alt"] = ProviderConfig(model="m")
@@ -1541,7 +1543,7 @@ def test_worker_provider_switch_applies_to_live_worker(tmp_path, monkeypatch):
     loop = CommandLoop(agent, input_fn=lambda prompt: "", output_fn=lambda text: None)
     worker = parent.worker
 
-    loop.worker_command("provider alt")
+    worker_command(loop, "provider alt")
     assert worker.config.active_provider == "alt"
     assert worker.config.provider is not parent.config.providers["alt"]
     assert worker.config.provider.model == "m"

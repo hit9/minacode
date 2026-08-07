@@ -7,8 +7,9 @@ from typing import ClassVar
 import pytest
 
 from minacode.base import SESSION_EVENT_KEY, Config, MinacodeError, RuntimeSettings
-from minacode.engine import Agent
 from minacode.cli import CommandLoop
+from minacode.cli.commands import compact
+from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
@@ -1036,7 +1037,7 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
 
     loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
     loop.agent.model.compact = lambda _context: {"summary": "a compacted summary"}
-    result = loop.compact("")
+    result = compact(loop, "")
 
     assert "Compacted context" in result
     assert len(s.messages) < before
