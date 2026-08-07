@@ -1300,12 +1300,15 @@ def test_quick_hint_tab_ignored_without_hints():
     assert app.quick_hint_focus == -1
 
 
-def test_quick_hint_enter_submits_focused_chip():
+def test_quick_hint_enter_fills_input_without_submitting():
     app, submitted = quick_hint_app()
     app.quick_hint_focus = 1
+    assert app._accept(app.input_buffer) is True
+    assert submitted == []
+    assert app.input_buffer.text == "show the diff"
+    assert app.quick_hint_focus == -1
     app._accept(app.input_buffer)
     assert [str(value) for value in submitted] == ["show the diff"]
-    assert app.quick_hint_focus == -1
 
 
 def test_quick_hint_enter_on_empty_unfocused_input_does_nothing():
@@ -1323,7 +1326,7 @@ def test_quick_hint_fragments_highlight_focused_chip():
 
 def test_quick_hint_placeholder_hints_keys_until_focused():
     app, _ = quick_hint_app()
-    assert app.placeholder_text() == "Tab cycles suggestions \u00b7 Enter submits"
+    assert app.placeholder_text() == "Tab cycles suggestions \u00b7 Enter fills the input, second Enter sends"
     app.quick_hint_focus = 0
     assert app.placeholder_text() == ""
 

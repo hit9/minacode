@@ -355,6 +355,7 @@ class TuiApp:
         if self.input_mode == "chat" and not buffer.text.strip() and 0 <= self.quick_hint_focus < len(self.quick_hints()):
             self._reset_input(self.quick_hints()[self.quick_hint_focus])
             self.quick_hint_focus = -1
+            return True
         text = buffer.text
         if self.input_mode == "approval" and self._input_pending is not None:
             self._input_result = text
@@ -454,7 +455,7 @@ class TuiApp:
 
     def placeholder_text(self) -> str:
         if self.input_mode == "chat" and self.quick_hints():
-            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter submits"
+            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter fills the input, second Enter sends"
         return self.input_hint_fn()
 
     def _on_input_text_changed(self, buffer: Buffer) -> None:

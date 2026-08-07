@@ -8,6 +8,9 @@
   instead of submitting it immediately, so the text can be reviewed or edited first; a second
   `Enter` sends it. `Ctrl-C` and `Ctrl-U` during a search abort it and restore the input that
   was there before the search started.
+- A focused quick-hint chip: `Enter` now only fills the chip text into the input box instead of
+  submitting it immediately, so the text can be reviewed or edited first; a second `Enter` sends
+  it. The input placeholder now reflects the two-step flow.
 
 ## 0.21.3 - 2026-08-06
 
