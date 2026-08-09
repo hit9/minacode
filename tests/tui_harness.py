@@ -36,7 +36,11 @@ class ResizableOutput(DummyOutput):
         return self.size
 
 
-def wait_until(predicate, timeout=1.0):
+# Generous on purpose: the TUI runs in a separate thread and these conditions are only
+# reached after the event loop processes piped input. Under CI load (contended cores,
+# GC pauses, slow /tmp) a 1s budget flakes, so allow several seconds. Success returns
+# immediately, so this only lengthens genuinely-deadlocked failures.
+def wait_until(predicate, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
