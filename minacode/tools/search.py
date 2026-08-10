@@ -183,6 +183,7 @@ class SearchTool(Tool):
             if not path or not isinstance(number, int):
                 continue
             prefix = ">" if event["type"] == "match" else " "
+            # ripgrep counts from 1; match_line takes the 0-based index the Python backend produces.
             rows.append(self.match_line(prefix, path, number - 1, text))
         return rows
 

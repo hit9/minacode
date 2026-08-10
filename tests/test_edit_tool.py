@@ -20,7 +20,8 @@ def session(tmp_path):
 
 
 def anchor(index, line):
-    return f"{index}:{ReadTool.line_hash(line)}"
+    """Anchor for a 0-based line index, rendered the way the model sees it (1-based)."""
+    return ReadTool.anchor(index, line)
 
 
 def test_approval_segments_highlight_inline_edit_preview():
@@ -72,7 +73,7 @@ def test_batch_edit_no_change_reports_current_target_range(tmp_path, monkeypatch
     assert s.tool_errors
     message = s.tool_errors[0].error
     assert "edit produced no changes; requested content already matches target range" in message
-    assert "anchor=1:" + ReadTool.line_hash("b\n") + " | b" in message
+    assert "anchor=2:" + ReadTool.line_hash("b\n") + " | b" in message
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
@@ -87,7 +88,7 @@ def test_batch_edit_stale_anchor_reports_current_line(tmp_path, monkeypatch):
     runner.run([ToolCall("bad", "Edit", ["code.txt", [{"op": "replace", "start": anchor(1, "wrong\n"), "end": anchor(1, "wrong\n"), "content": "B\n"}]])])
 
     assert s.tool_errors
-    assert "current is anchor=1:" + ReadTool.line_hash("b\n") + " | b" in s.tool_errors[0].error
+    assert "current is anchor=2:" + ReadTool.line_hash("b\n") + " | b" in s.tool_errors[0].error
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
@@ -184,7 +185,7 @@ def test_edit_accepts_inspect_code_anchor(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "note.txt"
     path.write_text("old\n", encoding="utf-8")
-    inspect_anchor = "anchor=0:" + ReadTool.indexed_line_hash("old\n")
+    inspect_anchor = "anchor=1:" + ReadTool.indexed_line_hash("old\n")
 
     result = EditTool(s, ["note.txt", [{"op": "replace", "start": inspect_anchor, "end": inspect_anchor, "content": "new\n"}]]).call()
 
@@ -199,7 +200,7 @@ def test_edit_anchor_consistent_with_read_on_exotic_line_boundary(tmp_path):
     path = tmp_path / "ff.txt"
     path.write_text("a\nb\x0cc\nd\n", encoding="utf-8")  # form-feed inside the middle line
     read = ReadTool(s, [{"path": "ff.txt"}]).call()
-    assert f"anchor=2:{ReadTool.line_hash('d')} | d" in read  # Read numbers "d" as line 2
+    assert f"anchor=3:{ReadTool.line_hash('d')} | d" in read  # Read numbers "d" as line 3
     EditTool(s, ["ff.txt", [{"op": "replace", "start": anchor(2, "d\n"), "end": anchor(2, "d\n"), "content": "D\n"}]]).call()
     assert path.read_text(encoding="utf-8") == "a\nb\x0cc\nD\n"
 
@@ -343,7 +344,7 @@ def test_edit_no_change_reports_current_target_range(tmp_path):
     message = str(error.value)
     assert "edit produced no changes; requested content already matches target range" in message
     assert "<current-target-ranges hashline-numbered>" in message
-    assert "anchor=0:" + ReadTool.line_hash("old\n") + " | old" in message
+    assert "anchor=1:" + ReadTool.line_hash("old\n") + " | old" in message
 
 
 def test_edit_rejects_directory_target(tmp_path):
@@ -395,7 +396,7 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
         EditTool(s, ["note.txt", [{"op": "replace", "start": anchor(0, "wrong\n"), "end": anchor(0, "wrong\n"), "content": "new\n"}]]).call()
 
     assert "stale anchor" in str(error.value)
-    assert "current is anchor=0:" + ReadTool.line_hash("old\n") + " | old" in str(error.value)
+    assert "current is anchor=1:" + ReadTool.line_hash("old\n") + " | old" in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -740,7 +741,7 @@ def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_pa
     runner.run(
         [
             ToolCall("insert", "Edit", ["code.txt", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "x\n"}]]),
-            ToolCall("read", "Read", [{"path": "code.txt", "ranges": [[0, 0]]}]),
+            ToolCall("read", "Read", [{"path": "code.txt", "ranges": [[1, 0]]}]),
             ToolCall("replace", "Edit", ["code.txt", [{"op": "replace", "start": anchor(3, "c\n"), "end": anchor(3, "c\n"), "content": "C\n"}]]),
         ]
     )
@@ -903,7 +904,7 @@ def test_edit_refunds_anchors_for_immediate_followup(tmp_path):
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     first = EditTool(s, ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]).call()
-    refunded = re.search(r"<content hashline-numbered>\n(anchor=1:[0-9a-z]+ \| B)\n</content>", first)
+    refunded = re.search(r"<content hashline-numbered>\n(anchor=2:[0-9a-z]+ \| B)\n</content>", first)
     assert refunded, first
 
     EditTool(s, ["code.txt", [{"op": "insert_after", "start": refunded.group(1), "content": "x\n"}]]).call()
@@ -917,7 +918,7 @@ def test_edit_refunded_anchor_matches_followup_read(tmp_path):
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     first = EditTool(s, ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]).call()
-    refunded = re.search(r"anchor=1:[0-9a-z]+ \| B", first)
+    refunded = re.search(r"anchor=2:[0-9a-z]+ \| B", first)
     assert refunded, first
 
     read = ReadTool(s, [{"path": "code.txt"}]).call()

@@ -3,6 +3,18 @@
 
 ## Unreleased
 
+### Changed
+- Line numbers are now 1-based everywhere the model sees them, and line ranges include both ends.
+  `Read`, `Search`, `InspectCode`, edit anchors, and `Recall` ranges previously counted from 0 with
+  an exclusive end, which disagreed with every other source of line numbers in the same context —
+  `grep -n`, Bash output, tracebacks, diff hunks, editors. A line reported as `anchor=91:49shj` is
+  now the line `grep -n` calls 91, and `Read` with `ranges: [[91, 91]]` returns exactly that line.
+  Requires `code-symbol-index>=0.4.0`, which makes the same change to `InspectCode`'s output.
+- Anchors captured in sessions created before this change decode one line low. The content hash
+  makes that safe: such an anchor is either relocated to the line it actually describes or refused
+  with `stale anchor`, and cannot silently apply to the neighbouring line. Re-read the file when
+  one is refused.
+
 
 ## 0.21.4 - 2026-08-07
 

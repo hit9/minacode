@@ -195,9 +195,9 @@ class EditBatchPlan:
 
     def resolve_anchor(self, state: FileState, anchor: str) -> int:
         index, expected = ReadTool.require_anchor(anchor)
-        if index < len(state.lines) and ReadTool.anchor_matches(state.lines[index].text, expected):
+        if 0 <= index < len(state.lines) and ReadTool.anchor_matches(state.lines[index].text, expected):
             return index
-        if index < len(state.original) and ReadTool.anchor_matches(state.original[index], expected):
+        if 0 <= index < len(state.original) and ReadTool.anchor_matches(state.original[index], expected):
             current = state.current_origin(index)
             if current is not None:
                 return current
@@ -205,7 +205,7 @@ class EditBatchPlan:
         relocated = ReadTool.relocated_anchor([line.text for line in state.lines], index, expected)
         if relocated is not None:
             return relocated
-        current_line = ReadTool.anchor_line(index, state.lines[index].text) if index < len(state.lines) else "out of range"
+        current_line = ReadTool.anchor_line(index, state.lines[index].text) if 0 <= index < len(state.lines) else "out of range"
         raise ToolError(f"stale anchor {anchor}; current is {current_line}")
 
 

@@ -22,7 +22,7 @@ class RecallTool(Tool):
         # fmt: off
         return cls.object_schema({
             "keys": {"type": "array", "items": {"type": "string", "pattern": "^tr\\.\\d+$"}, "minItems": 1, "description": 'Stored result keys to recall, e.g. ["tr.3","tr.5"]'},
-            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 0-based [start,end] output-line slices to limit recalled context"},
+            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Optional 1-based [start,end] output-line slices, inclusive of both ends, to limit recalled context"},
         }, ["keys"])
         # fmt: on
 
@@ -84,7 +84,8 @@ class RecallTool(Tool):
         if not ranges:
             return value
         lines = value.splitlines()
-        return "\n".join("\n".join(lines[start:end]) for start, end in ranges if end > start)
+        # Ranges are 1-based and inclusive, like every other line range the model works with.
+        return "\n".join("\n".join(lines[max(start, 1) - 1 : end]) for start, end in ranges if end >= max(start, 1))
 
 
 class RecallContextTool(Tool):

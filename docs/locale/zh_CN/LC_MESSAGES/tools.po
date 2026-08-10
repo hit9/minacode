@@ -62,12 +62,16 @@ msgstr "缩短后的结果如下："
 
 #: ../../tools.md:36
 msgid ""
-"In `684:234ew`, `684` is the zero-based line number and `234ew` is a "
-"short hash of that line's content. The line number locates the edit; the "
-"hash proves that the line has not changed since it was read."
+"In `684:234ew`, `684` is the line number and `234ew` is a short hash of "
+"that line's content. The line number locates the edit; the hash proves "
+"that the line has not changed since it was read. Line numbers are one-"
+"based and ranges include both ends, matching what `grep -n`, your editor, "
+"tracebacks, and diffs show, so `Read`, `Search`, and `InspectCode` all "
+"agree on which line is which."
 msgstr ""
-"在 `684:234ew` 中，`684` 是从零开始的行号，`234ew` 是该行内容的短 hash。行号用于定位编辑位置，hash "
-"用于确认该行自读取后没有变化。"
+"在 `684:234ew` 中，`684` 是行号，`234ew` 是该行内容的短 hash。行号用于定位编辑位置，hash "
+"用于确认该行自读取后没有变化。行号从 1 开始，区间两端都包含，与 `grep -n`、编辑器、traceback "
+"和 diff 显示的一致，因此 `Read`、`Search`、`InspectCode` 对「哪一行是哪一行」的判断完全一致。"
 
 #: ../../tools.md:39
 msgid "**`ViewImage`**"

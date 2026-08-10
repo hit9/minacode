@@ -33,9 +33,11 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     </Read>
     ```
 
-    In `684:234ew`, `684` is the zero-based line number and `234ew` is a short hash of that
-    line's content. The line number locates the edit; the hash proves that the line has not
-    changed since it was read.
+    In `684:234ew`, `684` is the line number and `234ew` is a short hash of that line's content.
+    The line number locates the edit; the hash proves that the line has not changed since it was
+    read. Line numbers are one-based and ranges include both ends, matching what `grep -n`, your
+    editor, tracebacks, and diffs show, so `Read`, `Search`, and `InspectCode` all agree on which
+    line is which.
 * - **`ViewImage`**
   - Opens one local PNG, JPEG, WebP, or single-frame GIF as visual input for the active model.
     The agent can use it proactively for screenshots, mockups, diagrams, and generated assets.

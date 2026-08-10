@@ -26,8 +26,8 @@ class ReadTool(Tool):
         "use Recall(tr.N) for full stored output."
     )
     EXAMPLE = (
-        'Read ranges. Example: {"path":"src/app.py","ranges":[[0,80],[120,180]]}',
-        'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[0,80]]},{"path":"README.md","ranges":[[0,40]]}]}',
+        'Read ranges. Example: {"path":"src/app.py","ranges":[[1,80],[120,180]]}',
+        'Read several files. Example: {"files":[{"path":"src/app.py","ranges":[[1,80]]},{"path":"README.md","ranges":[[1,40]]}]}',
     )
 
     @classmethod
@@ -35,7 +35,7 @@ class ReadTool(Tool):
         # fmt: off
         return cls.object_schema({
             "path": {"type": "string", "description": "File path to read"},
-            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 1-based and inclusive of both ends; omit to read the whole file"},
         }, ["path"])
         # fmt: on
 
@@ -44,7 +44,7 @@ class ReadTool(Tool):
         # fmt: off
         return cls.object_schema({
             "path": {"type": "string", "description": "File path to read (single-file form)"},
-            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 0-based and end-exclusive; omit to read the whole file"},
+            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 1-based and inclusive of both ends; omit to read the whole file"},
             "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
         })
         # fmt: on
@@ -54,7 +54,7 @@ class ReadTool(Tool):
         return (
             payload["files"]
             if isinstance(payload.get("files"), list)
-            else [{"path": payload.get("path", ""), "ranges": cls.ranges_arg(payload.get("ranges") or [[0, 0]])}]
+            else [{"path": payload.get("path", ""), "ranges": cls.ranges_arg(payload.get("ranges") or [[1, 0]])}]
         )
 
     @classmethod
@@ -81,7 +81,11 @@ class ReadTool(Tool):
 
     @classmethod
     def anchor(cls, index: int, line: str) -> str:
-        return f"{index}:{cls.line_hash(line)}"
+        # Line numbers are 0-based everywhere inside the tools (they index straight into the line
+        # list) and 1-based only in what the model reads, so they agree with the numbering it sees
+        # from grep, tracebacks, diffs, and InspectCode. This and parse_anchor are the pair that
+        # crosses that boundary; every caller on either side keeps working in 0-based indices.
+        return f"{index + 1}:{cls.line_hash(line)}"
 
     @classmethod
     def anchor_line(cls, index: int, line: str) -> str:
@@ -93,11 +97,15 @@ class ReadTool(Tool):
 
     @staticmethod
     def parse_anchor(value: str) -> tuple[int, str] | None:
+        """Return the anchor's 0-based line index and hash. The counterpart to `anchor`: the model
+        writes a 1-based number, callers get an index they can use against a line list directly. An
+        anchor carried over from a session written before line numbers became 1-based decodes one
+        line early, which the hash check and `relocated_anchor` correct, so the index can be -1."""
         text = value.split("|", 1)[0].strip()
         if text.startswith("anchor="):
             text = text.removeprefix("anchor=").strip()
         match = ReadTool._ANCHOR_RE.fullmatch(text)
-        return (int(match.group(1)), match.group(2).lower()) if match else None
+        return (int(match.group(1)) - 1, match.group(2).lower()) if match else None
 
     @staticmethod
     def require_anchor(anchor: str) -> tuple[int, str]:
@@ -137,7 +145,7 @@ class ReadTool(Tool):
             if unexpected := sorted(set(spec) - {"path", "ranges"}):
                 raise ToolError("Read unexpected field: " + ", ".join(unexpected))
             path = str(spec.get("path") or "").strip()
-            raw_ranges = self.ranges_arg(spec.get("ranges") if "ranges" in spec else [[0, 0]])
+            raw_ranges = self.ranges_arg(spec.get("ranges") if "ranges" in spec else [[1, 0]])
             if not path:
                 raise ToolError("Read requires non-empty path")
             if not isinstance(raw_ranges, list) or not raw_ranges:
@@ -150,10 +158,13 @@ class ReadTool(Tool):
         with open(path, encoding="utf-8") as file:
             lines = file.readlines()
         out = [f"<Read path={json.dumps(self.session.relpath(path))}>", self.file_stat(path), f"<total_lines>{len(lines)}</total_lines>"]
-        for start, requested_end in ranges:
-            start = min(start, len(lines))
+        for requested_start, requested_end in ranges:
+            # Requested bounds are 1-based and inclusive; `end` 0 still means "to the end of the
+            # file". A start of 0 is not a valid line number but unambiguously means the top, so it
+            # reads as line 1 rather than failing.
+            start = min(max(requested_start, 1) - 1, len(lines))
             end = max(start, len(lines) if requested_end == 0 else min(len(lines), requested_end))
-            out.append(f"<range>{start}:{end}</range>")
+            out.append(f"<range>{start + 1}:{end}</range>")
             out.append("<content hashline-numbered>")
             out.extend(self.anchor_line(i, lines[i]) for i in range(start, end))
             out.append("</content>")
@@ -580,7 +591,7 @@ class EditTool(Tool):
         shown_lines = 0
         range_index = -1
         for range_index, (start, end) in enumerate(ranges[:3]):
-            out.append(f"<target start={start} end={end}>")
+            out.append(f"<target start={start + 1} end={end}>")
             if start == end:
                 out.append("(empty range)")
             else:
@@ -608,7 +619,8 @@ class EditTool(Tool):
                 # file's anchor list, ballooning one small edit into a full-context dump. Skip it;
                 # the model re-Reads for anchors when it keeps editing such files.
                 continue
-            out.append(f"<invalidate>{clear_start}:{clear_end}</invalidate>")
+            # Reported like every other range the model sees: 1-based, both ends inclusive.
+            out.append(f"<invalidate>{clear_start + 1}:{clear_end}</invalidate>")
             shown = lines[start:end]
             if shown:
                 out.append("<content hashline-numbered>")
@@ -636,12 +648,12 @@ class EditTool(Tool):
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
         index, expected = ReadTool.require_anchor(anchor)
-        if index < len(lines) and ReadTool.anchor_matches(lines[index], expected):
+        if 0 <= index < len(lines) and ReadTool.anchor_matches(lines[index], expected):
             return index
         relocated = ReadTool.relocated_anchor(lines, index, expected)
         if relocated is not None:
             return relocated
-        if index >= len(lines):
+        if not 0 <= index < len(lines):
             raise ToolError("anchor line out of range")
         current = ReadTool.anchor_line(index, lines[index])
         raise ToolError(f"stale anchor {anchor}; current is {current}")
