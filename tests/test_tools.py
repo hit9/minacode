@@ -1074,6 +1074,25 @@ def test_read_search_and_anchors_report_one_based_line_numbers(tmp_path):
     assert (tmp_path / "sample.py").read_text(encoding="utf-8") == "alpha\nbeta\nFOUND\nomega\n"
 
 
+def test_read_echoes_ranges_the_model_could_have_written(tmp_path):
+    """short_args is echoed back to the model in the tool message, not just printed in the
+    terminal, so the "read to the end of the file" sentinel must not surface as a literal 0."""
+    s = session(tmp_path)
+    (tmp_path / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    def echo(args):
+        return ReadTool(s, args).short_args()
+
+    assert echo([{"path": "a.py"}]) == ["a.py"]  # whole file: no range, matching the omitted input
+    assert echo([{"path": "a.py", "ranges": [[1, 0]]}]) == ["a.py"]
+    assert echo([{"path": "a.py", "ranges": [[2, 0]]}]) == ["a.py 2:"]  # line 2 to the end
+    assert echo([{"path": "a.py", "ranges": [[2, 3]]}]) == ["a.py 2:3"]
+    assert echo([{"path": "a.py", "ranges": [[1, 1], [3, 0]]}]) == ["a.py 1:1,3:"]
+
+    # Omitting ranges and passing null (what strict-schema providers send) mean the same thing.
+    assert ReadTool.payload_args({"path": "a.py"}) == ReadTool.payload_args({"path": "a.py", "ranges": None})
+
+
 def test_anchor_from_zero_based_session_relocates_instead_of_editing_the_wrong_line(tmp_path):
     """A session started before line numbers became 1-based can replay an anchor that is one line
     low. The content hash makes that recoverable: the anchor is relocated to the line it actually
@@ -1090,7 +1109,8 @@ def test_anchor_from_zero_based_session_relocates_instead_of_editing_the_wrong_l
     # When the line's content is duplicated there is no single line to relocate to, so the edit
     # is refused rather than guessed at.
     (tmp_path / "dup.py").write_text("head\nsame\nsame\n", encoding="utf-8")
-    ambiguous = f"1:{ReadTool.line_hash('same\n')}"  # "same" was line 1 under the old numbering
+    same_hash = ReadTool.line_hash("same\n")
+    ambiguous = f"1:{same_hash}"  # "same" was line 1 under the old numbering
     with pytest.raises(ToolError, match="stale anchor"):
         EditTool(s, ["dup.py", [{"op": "replace", "start": ambiguous, "end": ambiguous, "content": "x\n"}]]).call()
 

@@ -134,13 +134,15 @@ def test_read_tool_message_inlines_bounded_output(tmp_path):
     path.write_text("first\n" + "\n".join(f"middle-{index}" for index in range(20000)) + "\nlast\n", encoding="utf-8")
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-    call_obj = call("Read", [{"path": "large.txt", "ranges": [[0, 0]]}])
+    call_obj = call("Read", [{"path": "large.txt", "ranges": [[1, 0]]}])
     output = ReadTool(s, call_obj.args).call()
     key = s.store_tool_result("Read", call_obj.args, output)
 
     message = runner.tool_message(call_obj, key, output)
 
-    assert message.startswith("tool tr.1 Read large.txt 0:0\noutput:\n")
+    # A whole-file read prints no range: 1:0 is the "to the end of the file" sentinel, and
+    # echoing it raw would show the model an empty-looking range it never wrote.
+    assert message.startswith("tool tr.1 Read large.txt\noutput:\n")
     assert "<Read" in message
     assert "<bounded_output" in message
     assert 'recall="tr.1"' in message

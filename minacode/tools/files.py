@@ -35,7 +35,7 @@ class ReadTool(Tool):
         # fmt: off
         return cls.object_schema({
             "path": {"type": "string", "description": "File path to read"},
-            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 1-based and inclusive of both ends; omit to read the whole file"},
+            "ranges": {"type": "array", "minItems": 1, "items": cls.RANGE_SCHEMA, "description": "Line ranges [[start,end],...], 1-based and inclusive of both ends; end 0 reads from start to the end of the file; omit to read the whole file"},
         }, ["path"])
         # fmt: on
 
@@ -44,7 +44,7 @@ class ReadTool(Tool):
         # fmt: off
         return cls.object_schema({
             "path": {"type": "string", "description": "File path to read (single-file form)"},
-            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 1-based and inclusive of both ends; omit to read the whole file"},
+            "ranges": {"type": "array", "items": cls.RANGE_SCHEMA, "minItems": 1, "description": "Line ranges [[start,end],...], 1-based and inclusive of both ends; end 0 reads from start to the end of the file; omit to read the whole file"},
             "files": {"type": "array", "items": cls.arg_schema(), "minItems": 1, "description": "Batch form: list of {path, ranges} to read several files in one call"},
         })
         # fmt: on
@@ -133,7 +133,17 @@ class ReadTool(Tool):
         return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())
 
     def short_args(self) -> list[str]:
-        return [self.session.relpath(path) + " " + ",".join(f"{start}:{end}" for start, end in ranges) for path, ranges in self.targets()]
+        # This echoes the call back to the model, not just the terminal, so it has to read as a
+        # range the model could have written. `end` 0 is the "to the end of the file" sentinel:
+        # printed raw it says 1:0, which under 1-based inclusive bounds reads as an empty range.
+        return [(self.session.relpath(path) + " " + ",".join(filter(None, map(self.range_label, ranges)))).rstrip() for path, ranges in self.targets()]
+
+    @staticmethod
+    def range_label(bounds: tuple[int, int]) -> str:
+        start, end = bounds
+        if end == 0:
+            return "" if start <= 1 else f"{start}:"  # whole file / from start to the end
+        return f"{start}:{end}"
 
     def targets(self) -> list[tuple[str, list[tuple[int, int]]]]:
         if not self.args:
