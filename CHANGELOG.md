@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.22.1 - 2026-08-09
+
 ### Fixed
 - A whole-file `Read` no longer echoes `1:0` back to the model. The tool message repeats the call's
   ranges into the conversation, and `end` 0 is the "to the end of the file" sentinel, so a read the
