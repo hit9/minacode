@@ -272,22 +272,29 @@ class ToolRunner:
         self.retry_wait: Callable[[bool], None] | None = None
         self.builtin_call: Callable[[str, str], None] | None = None
         self.compaction: Callable[[bool, str], None] | None = None
+        # Bash and Job are the tools that block on something outside the agent, so Ctrl-C has to
+        # reach them: Bash kills its process group, Job abandons a wait and leaves the job running.
         self._active_bash: ActiveResource[BashTool] = ActiveResource()
+        self._active_job: ActiveResource[JobTool] = ActiveResource()
         # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
         self._active_worker: ActiveResource[Agent] = ActiveResource()
 
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
+        self._active_job.apply(lambda tool: tool.cancel())
         self._active_worker.apply(lambda agent: agent.cancel())
 
     def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
         if isinstance(tool, DelegateTool):
             tool.runner = self
             return tool.call()
-        if not isinstance(tool, BashTool):
-            return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
-        with self._active_bash.track(tool):
-            return tool.call()
+        if isinstance(tool, BashTool):
+            with self._active_bash.track(tool):
+                return tool.call()
+        if isinstance(tool, JobTool):
+            with self._active_job.track(tool):
+                return tool.call()
+        return planned_edit.call(tool) if planned_edit and isinstance(tool, EditTool) else tool.call()
 
     def run(self, calls: list[ToolCall], batch_suffix: str = "") -> list[Json]:
         messages: list[Json] = []

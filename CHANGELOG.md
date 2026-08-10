@@ -3,6 +3,21 @@
 
 ## Unreleased
 
+### Fixed
+- `Job(action="wait")` can no longer hold the agent indefinitely. Waiting with no timeout blocked
+  until the process exited, which is exactly what a model does right after a slow `Bash` is
+  backgrounded — so backgrounding handed control back and the very next call gave it away again,
+  for as long as the command ran. A wait now lasts 60s by default, the model can ask for up to
+  900s when it knows the job is slow, and a wait that ends with the job still running says so
+  instead of looking like a result.
+- `Ctrl-C` now interrupts a `Job` wait. Only `Bash` was wired to the runner's cancellation, so a
+  wait was unreachable from the cancelling thread and could not be taken back. Interrupting a wait
+  abandons the wait only: the command keeps running and stays addressable through `Job`.
+
+### Changed
+- The note on a backgrounded `Bash` leads with `status` rather than `wait`, and says to keep
+  working. It is read at the moment control comes back, and waiting is what gives it away.
+
 
 ## 0.22.1 - 2026-08-09
 

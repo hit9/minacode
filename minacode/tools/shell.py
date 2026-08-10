@@ -328,8 +328,11 @@ class BashTool(Tool):
         threading.Thread(target=drain_pipe, args=(stderr_pipe,), daemon=True).start()
         partial_stdout = "".join(stdout_parts)
         partial_stderr = "".join(stderr_parts)
+        # Leads with status, not wait: this note is read right after backgrounding handed control
+        # back, and waiting is what gives it away again. Getting on with other work is the point.
         note = (
-            f'backgrounded after {self.session.settings.bash_wait_timeout}s; still running as {job_id}. Use Job(action="wait"|"status"|"kill", job="{job_id}").'
+            f"backgrounded after {self.session.settings.bash_wait_timeout}s; still running as {job_id}. "
+            f'Keep working; check it later with Job(action="status"|"wait"|"kill", job="{job_id}").'
         )
         partial_stderr = partial_stderr + ("\n" if partial_stderr else "") + note
         return self.process_result("BashToolResult", -1, partial_stdout, partial_stderr)
@@ -393,6 +396,22 @@ class JobTool(Tool):
     ACTIONS: ClassVar[tuple[str, ...]] = ("start", "status", "wait", "list", "kill")
     MAX_JOBS: ClassVar[int] = 8
     DEFAULT_LIMIT: ClassVar[int] = 4096
+    # How long one wait may hold the agent. Backgrounding hands control back and waiting is the one
+    # way to give it away again, so a wait always ends: at the model's timeout, at MAX_WAIT, or at
+    # Ctrl-C. The default is short because parking the agent should be a deliberate choice; a model
+    # that knows the job is long asks for longer, up to the ceiling.
+    DEFAULT_WAIT: ClassVar[int] = 60
+    MAX_WAIT: ClassVar[int] = 900
+    POLL_INTERVAL: ClassVar[float] = 0.1
+
+    def __init__(self, session: Session, args: ToolArgs):
+        super().__init__(session, args)
+        self._interrupted = threading.Event()
+
+    def cancel(self) -> None:
+        """Ctrl-C during a wait. This abandons the wait, not the job: the command keeps running and
+        stays addressable through `Job`, which is the whole point of having backgrounded it."""
+        self._interrupted.set()
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -401,7 +420,7 @@ class JobTool(Tool):
             "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
             "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
             "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
-            "timeout": {"type": "integer", "minimum": 0, "description": "Seconds to wait for action=wait (0 means block until the process exits)"},
+            "timeout": {"type": "integer", "minimum": 0, "description": f"Seconds to wait for action=wait; omit or 0 waits {cls.DEFAULT_WAIT}s, and {cls.MAX_WAIT}s is the maximum. Ask for longer when the job is known to be slow; a wait that ends with the job still running says so, and waiting again is fine"},
             "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
         }, ["action"])
         # fmt: on
@@ -474,23 +493,30 @@ class JobTool(Tool):
         self.session.jobs[job_id] = BackgroundJob(id=job_id, command=command, process=proc, log_path=log_path, started_at=time.monotonic())
         return f"Started {job_id}: {command}"
 
+    def wait_budget(self, requested: Any) -> int:
+        timeout = int(requested or 0)
+        return self.DEFAULT_WAIT if timeout <= 0 else min(timeout, self.MAX_WAIT)
+
+    def _await_process(self, job: BackgroundJob, requested: Any) -> bool:
+        """Wait for the job, in slices, so Ctrl-C lands within POLL_INTERVAL instead of after the
+        whole budget. Returns whether the wait was interrupted. A single blocking process.wait()
+        would be simpler but unreachable from the cancelling thread."""
+        deadline = time.monotonic() + self.wait_budget(requested)
+        while job.process.poll() is None and time.monotonic() < deadline:
+            if self._interrupted.wait(self.POLL_INTERVAL):
+                break
+        job.update_status()
+        return self._interrupted.is_set()
+
     def _status(self, payload: Json) -> str:
         job = self._resolve_job(payload)
-        timeout = int(payload.get("timeout") or 0)
-        if timeout > 0:
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                job.process.wait(timeout=timeout)
-        job.update_status()
-        return self._format(job, payload)
+        interrupted = self._await_process(job, payload.get("timeout")) if int(payload.get("timeout") or 0) > 0 else False
+        return self._format(job, payload, interrupted=interrupted)
 
     def _wait(self, payload: Json) -> str:
         job = self._resolve_job(payload)
-        timeout = payload.get("timeout")
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            # timeout omitted or 0 means block until the process exits (per the schema).
-            job.process.wait(timeout=None if not timeout else max(1, int(timeout)))
-        job.update_status()
-        return self._format(job, payload)
+        interrupted = self._await_process(job, payload.get("timeout"))
+        return self._format(job, payload, interrupted=interrupted)
 
     def _list(self) -> str:
         if not self.session.jobs:
@@ -520,7 +546,7 @@ class JobTool(Tool):
         job.update_status()
         return job
 
-    def _format(self, job: BackgroundJob, payload: Json) -> str:
+    def _format(self, job: BackgroundJob, payload: Json, *, interrupted: bool = False) -> str:
         limit = max(1, int(payload.get("limit") or self.DEFAULT_LIMIT))
         output = job.tail(limit)
         lines = [
@@ -531,6 +557,11 @@ class JobTool(Tool):
         ]
         if job.exit_code is not None:
             lines.append(f"Exit code: {job.exit_code}")
+        if job.status == "running":
+            # A wait that comes back while the job runs returns the same shape as one that comes
+            # back because it finished. Without this the output below reads as the final result.
+            reason = "the user interrupted the wait" if interrupted else f"the wait ended; one wait lasts at most {self.MAX_WAIT}s"
+            lines.append(f"Still running ({reason}); any output above is partial. Do other work and check back, or wait again.")
         if output:
             lines.extend(["--- output ---", output])
         return "\n".join(lines)

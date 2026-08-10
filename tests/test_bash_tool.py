@@ -51,6 +51,76 @@ def test_job_wait_and_list_report_completed_output(tmp_path):
     assert "| job.1 | done | 0 | printf completed |" in listed
 
 
+def test_job_wait_is_bounded_and_says_the_job_is_still_running(tmp_path, monkeypatch):
+    """Backgrounding hands control back to the agent; waiting must not take it away for good.
+    A wait ends at the model's timeout or at MAX_WAIT, whichever is shorter, and a job that
+    outlives it is reported as still running rather than looking like it finished."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 1)
+    monkeypatch.setattr(JobTool, "MAX_WAIT", 1)
+    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call()
+
+    for payload in ({}, {"timeout": 0}, {"timeout": 3600}):
+        started = time.monotonic()
+        waited = JobTool(s, [{"action": "wait", "job": "job.1", **payload}]).call()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 5, f"wait with {payload} blocked for {elapsed:.1f}s"
+        assert "Status: running" in waited
+        assert "Still running (the wait ended" in waited
+        assert "Exit code:" not in waited
+
+    # status with a timeout goes through the same budget.
+    started = time.monotonic()
+    assert "Still running" in JobTool(s, [{"action": "status", "job": "job.1", "timeout": 3600}]).call()
+    assert time.monotonic() - started < 5
+
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
+def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 1)
+    monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
+    JobTool(s, [{"action": "start", "command": "sleep 2; printf slow-done"}]).call()
+
+    # The default would have given up at 1s; asking for 30 sees the job through to the end.
+    started = time.monotonic()
+    waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 30}]).call()
+
+    assert 1 < time.monotonic() - started < 20
+    assert "Status: done" in waited
+    assert "--- output ---\nslow-done" in waited
+    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget(None) == 1
+    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget(3600) == 900
+
+
+def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypatch):
+    """Ctrl-C during a wait reaches JobTool through the runner and abandons the wait only: the
+    command keeps running, so the agent gets control back without losing the job."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+    JobTool(s, [{"action": "start", "command": "sleep 60"}]).call()
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
+    result = []
+
+    thread = threading.Thread(target=lambda: result.append(runner.call_tool(tool)))
+    thread.start()
+    deadline = time.monotonic() + 2
+    while runner._active_job.value is not tool and time.monotonic() < deadline:
+        time.sleep(0.01)
+    started = time.monotonic()
+    runner.cancel()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive(), "cancel did not interrupt the wait"
+    assert time.monotonic() - started < 3
+    assert "Still running (the user interrupted the wait)" in result[0]
+    assert s.jobs["job.1"].process.poll() is None  # the job itself survives the interrupt
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
 def test_bash_behaviors(tmp_path):
     s = session(tmp_path)
     bash = BashTool(s, ["printf out; printf err >&2; exit 3"]).call()
