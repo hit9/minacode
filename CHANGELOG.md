@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.22.0 - 2026-08-09
+
 ### Changed
 - Line numbers are now 1-based everywhere the model sees them, and line ranges include both ends.
   `Read`, `Search`, `InspectCode`, edit anchors, and `Recall` ranges previously counted from 0 with
