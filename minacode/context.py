@@ -9,6 +9,7 @@ from typing import ClassVar, TypeVar
 
 from minacode.base import (
     ANTHROPIC_CONTENT_KEY,
+    MAX_AGENTS_MD_TOKENS,
     MAX_TOOL_OUTPUT_TOKENS,
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
@@ -242,6 +243,32 @@ class ContextManager:
             f"- arch: {info.arch}",
             f"- shell_timeout: {self.session.settings.shell_timeout}s",
         ]
+        if self.session.settings.agents_md and info.agents_md:
+            content = info.agents_md
+            if self.estimated_text_tokens(content) > MAX_AGENTS_MD_TOKENS:
+                # Bound the fixed prefix (DESIGN.md): keep the head and tail, mark the middle. The
+                # marker itself must count against the cap too, so shrink the excerpts until the
+                # whole bounded content estimates within MAX_AGENTS_MD_TOKENS.
+                limit = MAX_AGENTS_MD_TOKENS * 4
+                head_limit = max(1, limit * 2 // 5)
+                tail_limit = max(1, limit - head_limit)
+                while True:
+                    head = self.head_excerpt(content, head_limit)
+                    tail = self.tail_excerpt(content, tail_limit)
+                    omitted = max(
+                        0,
+                        self.estimated_text_tokens(content) - self.estimated_text_tokens(head) - self.estimated_text_tokens(tail),
+                    )
+                    marker = f"... ({info.agents_md_source} truncated to fit the prefix; approximately {omitted} tokens omitted) ..."
+                    bounded = "\n".join(part for part in (head.rstrip(), marker, tail.lstrip()) if part)
+                    if self.estimated_text_tokens(bounded) <= MAX_AGENTS_MD_TOKENS or (head_limit <= 1 and tail_limit <= 1):
+                        content = bounded
+                        break
+                    head_limit = max(1, head_limit * 3 // 4)
+                    tail_limit = max(1, tail_limit * 3 // 4)
+            rows.append("")
+            rows.append(f"--- Project instructions ({info.agents_md_source}) ---")
+            rows.append(content)
         return "\n".join(rows)
 
     def compaction_input(self, messages: list[Json]) -> str:

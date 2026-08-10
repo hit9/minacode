@@ -3,6 +3,12 @@
 
 ## Unreleased
 
+### Added
+- The project's `AGENTS.md` (or `CLAUDE.md` fallback) is now injected into every request as a
+  bounded "Project instructions" section of the Environment block, so repo-specific conventions
+  ride the cache-stable prefix. Controlled by `[runtime] agents_md` (default on); `/status` and
+  `/config` show whether it is loaded.
+
 ### Fixed
 - `Job(action="wait")` can no longer hold the agent indefinitely. Waiting with no timeout blocked
   until the process exited, which is exactly what a model does right after a slow `Bash` is

@@ -3,6 +3,7 @@ history index it leaves behind."""
 
 import platform
 import shutil
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from agent_harness import call, session
 
 import minacode.context as context_module
 from minacode.base import (
+    MAX_AGENTS_MD_TOKENS,
     ModelError,
 )
 from minacode.cli import CommandLoop
@@ -22,7 +24,7 @@ from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
-from minacode.session import HistorySegment
+from minacode.session import HistorySegment, Session
 from minacode.skill import SkillLibrary
 from minacode.tools import EditTool, ReadTool
 
@@ -103,6 +105,103 @@ def test_environment_uses_cached_system_info(tmp_path, monkeypatch):
     assert "- arch: test-arch" in first
     assert "- detected_commands (available via Bash): bash, rg, sed" in first
     assert "- detected_commands (available via Bash): bash, rg, sed" in second
+
+
+# --- AGENTS.md / CLAUDE.md injection (runtime.agents_md, default on) ---
+
+
+def test_environment_injects_agents_md(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# Rules\nAlways run pytest.\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = ContextManager(s)
+    env = context.environment()
+    assert "--- Project instructions (AGENTS.md) ---" in env
+    assert "# Rules\nAlways run pytest." in env
+    messages = context.model_messages(SYSTEM_PROMPT, [{"role": "user", "content": "request"}])
+    assert messages[1]["content"].startswith("--- Environment ---")
+    assert messages[1]["content"] == "--- Environment ---\n" + env
+    assert "--- Project instructions (AGENTS.md) ---" in messages[1]["content"]
+    # still the same Environment user message: the injected section sits after the header
+    assert messages[1]["content"].index("--- Project instructions (AGENTS.md) ---") > messages[1]["content"].index("--- Environment ---")
+    assert messages[1]["content"].count("--- Project instructions") == 1
+
+
+def test_environment_falls_back_to_claude_md(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("# Claude rules\nAlways run pytest.\n", encoding="utf-8")
+    s = session(tmp_path)
+    env = ContextManager(s).environment()
+    assert "--- Project instructions (CLAUDE.md) ---" in env
+    assert "# Claude rules\nAlways run pytest." in env
+
+
+def test_environment_agents_md_precedence(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("agents content\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("claude content\n", encoding="utf-8")
+    s = session(tmp_path)
+    env = ContextManager(s).environment()
+    assert "--- Project instructions (AGENTS.md) ---" in env
+    assert "agents content" in env
+    assert "claude content" not in env
+
+
+def test_environment_agents_md_disabled(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# Rules\nAlways run pytest.\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.settings.agents_md = False
+    env = ContextManager(s).environment()
+    assert "Project instructions" not in env
+    assert "# Rules" not in env
+
+
+def test_environment_agents_md_bounded(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("\n".join(f"line {i}" for i in range(20000)), encoding="utf-8")
+    s = session(tmp_path)
+    context = ContextManager(s)
+    env = context.environment()
+    assert "truncated to fit the prefix" in env
+    injected = env.split("--- Project instructions (AGENTS.md) ---", 1)[1].lstrip("\n")
+    assert context.estimated_text_tokens(injected) <= MAX_AGENTS_MD_TOKENS
+
+
+def test_environment_agents_md_absent(tmp_path):
+    s = session(tmp_path)
+    info = s.system_info
+    assert info is not None
+    baseline = "\n".join(
+        [
+            f"- cwd: {info.cwd}",
+            f"- session_started_at: {s.created_at}",
+            "- detected_commands (available via Bash): " + (", ".join(info.commands) or "(none)"),
+            f"- os: {info.os}",
+            f"- arch: {info.arch}",
+            f"- shell_timeout: {s.settings.shell_timeout}s",
+        ]
+    )
+    env = ContextManager(s).environment()
+    assert "Project instructions" not in env
+    assert env == baseline  # byte-identical to the pre-injection Environment, no extra blank rows
+
+
+def test_environment_agents_md_cache_stable(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# Rules\nAlways run pytest.\n", encoding="utf-8")
+    s = session(tmp_path)
+    context = ContextManager(s)
+    turn = [{"role": "user", "content": "request"}]
+    assert context.model_messages(SYSTEM_PROMPT, turn) == context.model_messages(SYSTEM_PROMPT, turn)
+
+
+def test_environment_agents_md_cache_stable_across_worker(tmp_path):
+    """A worker inherits the parent's shared system_info and settings, so its Environment is
+    byte-identical — the spawn invariant DelegateTool._spawn_worker relies on (cache-critical)."""
+    (tmp_path / "AGENTS.md").write_text("# Rules\nAlways run pytest.\n", encoding="utf-8")
+    parent = session(tmp_path)
+    worker = Session(
+        cwd=parent.cwd,
+        system_info=parent.system_info,  # shared: skip a SystemInfo.detect
+        settings=replace(parent.settings),
+        created_at=parent.created_at,  # the Environment layer includes session_started_at
+    )
+    assert ContextManager(worker).environment() == ContextManager(parent).environment()
 
 
 def test_session_tool_result_store_prunes_old_records(tmp_path):

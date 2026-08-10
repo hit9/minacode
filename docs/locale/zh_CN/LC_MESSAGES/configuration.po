@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-05 01:11-0700\n"
+"POT-Creation-Date: 2026-08-10 02:55-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -591,24 +591,37 @@ msgstr ""
 "强制回复语言(`auto` 跟随你的消息、不注入任何内容);设置语言名(如 `Chinese`)会在系统提示词尾部追加一个固定的 "
 "`LANGUAGE OVERRIDE` 块。可用 `/language` 为当前会话修改"
 
-#: ../../configuration.md:138
+#: ../../configuration.md
+msgid "`agents_md`"
+msgstr "`agents_md`"
+
+#: ../../configuration.md
+msgid ""
+"Inject the project's `AGENTS.md` (falling back to `CLAUDE.md`) into every"
+" request as a bounded \"Project instructions\" section of the Environment"
+" block"
+msgstr "将项目的 `AGENTS.md`（找不到时回退 `CLAUDE.md`）注入到每次请求，作为 Environment 块中一个有边界的「Project instructions」段落"
+
+#: ../../configuration.md:139
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:141
+#: ../../configuration.md:142
 msgid "Worker delegation"
 msgstr "Worker 委派"
 
-#: ../../configuration.md:143
+#: ../../configuration.md:144
 msgid ""
 "The `Delegate` tool and `/worker` command hand bounded tasks to a second "
 "in-process session. Concepts, quick start, and what you see in the "
 "terminal: [Worker delegation](worker.md)."
-msgstr "`Delegate` 工具和 `/worker` 命令把有边界的任务交给同一进程内的第二个会话。概念、快速上手和终端里的实际表现：[Worker 委派](worker.md)。"
+msgstr ""
+"`Delegate` 工具和 `/worker` 命令把有边界的任务交给同一进程内的第二个会话。概念、快速上手和终端里的实际表现：[Worker "
+"委派](worker.md)。"
 
-#: ../../configuration.md:146
+#: ../../configuration.md:147
 msgid "Worker keys inherit the `[worker]` provider entry by default:"
 msgstr "worker 键默认继承 `[worker]` provider 条目："
 
@@ -648,17 +661,17 @@ msgstr "`[worker] api`"
 msgid "Override the entry's wire protocol; empty inherits"
 msgstr "覆盖条目的线上协议；留空则继承"
 
-#: ../../configuration.md:155
+#: ../../configuration.md:156
 msgid ""
 "`[runtime] worker` and `[runtime] language` are in the "
 "[Runtime](#runtime) table above."
 msgstr "`[runtime] worker` 和 `[runtime] language` 见上方[运行时](#runtime)表格。"
 
-#: ../../configuration.md:157
+#: ../../configuration.md:158
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:164
+#: ../../configuration.md:165
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -669,7 +682,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:168
+#: ../../configuration.md:169
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -679,7 +692,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:172
+#: ../../configuration.md:173
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "
@@ -687,3 +700,4 @@ msgid ""
 msgstr ""
 "`<data_dir>/history.txt` 保存所有项目共用的输入历史，供 Up 与 Ctrl-P 调取。该文件上限为 512 "
 "KB，仅保留最近的条目。"
+

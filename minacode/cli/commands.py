@@ -252,6 +252,12 @@ def status(loop: CommandLoop, args: str) -> str:
         f"steps {loop.session.settings.max_steps}",
         CodeIndex.status_line(index_status, index_message),
     ]
+    info = loop.session.system_info
+    if loop.session.settings.agents_md:
+        source = info.agents_md_source if info is not None else ""
+        runtime.append(f"agents_md on ({source})" if source else "agents_md on (none)")
+    else:
+        runtime.append("agents_md off")
     update = UpdateChecker(loop.session).status_line().removeprefix("update: ")
     if update not in {"current", "unknown"}:
         runtime.append("update " + update)
@@ -384,6 +390,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"runtime.yolo: {'on' if loop.session.settings.yolo else 'off'}",
             f"runtime.worker: {'on' if loop.session.settings.worker else 'off'}",
             f"runtime.language: {loop.session.settings.language}",
+            f"runtime.agents_md: {'on' if loop.session.settings.agents_md else 'off'}",
             f"worker.provider: {loop.session.config.worker_provider or '(off)'}",
             f"worker.model: {loop.session.config.worker_model or '(inherit)'}",
             f"worker.reasoning: {loop.session.config.worker_reasoning or '(inherit)'}",

@@ -66,18 +66,38 @@ class SystemInfo:
     )
     # fmt: on
 
+    AGENTS_MD_FILES: ClassVar[tuple[str, ...]] = ("AGENTS.md", "CLAUDE.md")
+
     cwd: str
     os: str
     arch: str
     commands: tuple[str, ...]
+    agents_md: str = ""  # loaded project-instructions text; "" when no candidate file was found
+    agents_md_source: str = ""  # the file it came from, e.g. "AGENTS.md" or "CLAUDE.md"; "" when none
+
+    @classmethod
+    def load_agents_md(cls, cwd: str) -> tuple[str, str]:
+        """Read the first existing candidate file under cwd; return (content, source), or ("", "").
+
+        No upward traversal, no merging. UTF-8 decoded; OSError/UnicodeDecodeError return ("", "")."""
+        for name in cls.AGENTS_MD_FILES:
+            try:
+                with open(os.path.join(cwd, name), encoding="utf-8") as file:
+                    return file.read(), name
+            except (OSError, UnicodeDecodeError):
+                continue
+        return "", ""
 
     @classmethod
     def detect(cls, cwd: str) -> SystemInfo:
+        agents_md, agents_md_source = cls.load_agents_md(cwd)
         return cls(
             cwd=cwd,
             os=platform.system() or sys.platform,
             arch=platform.machine() or "unknown",
             commands=tuple(name for name in cls.COMMANDS if shutil.which(name)),
+            agents_md=agents_md,
+            agents_md_source=agents_md_source,
         )
 
 
@@ -237,6 +257,7 @@ class RuntimeSettings:
     worker: bool = False  # register the Delegate tool (see [worker] in ConfigFile.DEFAULT_TEXT)
     theme: str = "auto"
     language: str = "auto"  # forced reply language; "auto" injects nothing (see /language)
+    agents_md: bool = True  # inject the project's AGENTS.md (or CLAUDE.md fallback) into every request
 
     @classmethod
     def from_dict(cls, data: Json, *, yolo: bool = False, theme: str = "") -> RuntimeSettings:
@@ -253,6 +274,7 @@ class RuntimeSettings:
             worker=Config.bool(runtime, "worker", False),
             theme=theme or Config.str(runtime, "theme", "auto"),
             language=RuntimeSettings.clean_language(Config.str(runtime, "language", "auto")),
+            agents_md=Config.bool(runtime, "agents_md", True),
         )
 
     @staticmethod
@@ -447,6 +469,8 @@ model = ""
                                # (flipping it changes the tool block and thus the prompt-cache scope)
 # language = "auto"           # auto follows your messages and injects nothing; set a language
                                # name (e.g. "Chinese") to force the reply language
+# agents_md = true               # inject the project's AGENTS.md (or CLAUDE.md fallback) into every
+                                 # request as a bounded Project-instructions section of Environment
 
 # [worker]                     # optional: hand tasks to a second minacode session (Delegate tool)
 # provider = "fast"           # a provider entry; pick one from a DIFFERENT vendor than

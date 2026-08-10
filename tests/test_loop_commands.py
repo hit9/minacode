@@ -1153,6 +1153,24 @@ def test_status_and_bar_show_skill_count(tmp_path):
     assert f"skills {count}" in bar_text
 
 
+def test_status_shows_agents_md_state(tmp_path):
+    # No candidate file in cwd: still on, but nothing loaded.
+    s = session(tmp_path)
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+    assert "agents_md on (none)" in status(loop, "")
+
+    # Loaded from the project's AGENTS.md.
+    (tmp_path / "AGENTS.md").write_text("# Rules\n", encoding="utf-8")
+    loaded = session(tmp_path)
+    loaded_loop = CommandLoop(Agent(loaded, output_fn=lambda text: None), output_fn=lambda text: None)
+    rendered = status(loaded_loop, "")
+    assert "agents_md on (AGENTS.md)" in rendered
+
+    # Disabled at runtime: reports off.
+    loaded.settings.agents_md = False
+    assert "agents_md off" in status(loaded_loop, "")
+
+
 def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 100_000

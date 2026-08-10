@@ -43,6 +43,10 @@ logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
     logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
 MAX_TOOL_OUTPUT_TOKENS = 6_000
+# Cap on the AGENTS.md (or CLAUDE.md fallback) content injected into every request's fixed
+# prefix, per DESIGN.md's "bound the fixed prefix" rule; truncation happens in
+# ContextManager.environment, so SystemInfo.detect returns the file verbatim.
+MAX_AGENTS_MD_TOKENS = 8_000
 MODEL_REQUEST_RETRIES = 5
 # Retry pacing: exponential backoff with jitter; RETRY_MAX_DELAY also clamps provider Retry-After
 # values so a single aberrant header cannot stall the CLI for minutes. The wider budget costs
