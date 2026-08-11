@@ -188,6 +188,24 @@ def test_materialized_tool_output_survives_the_asset_collector(tmp_path):
         assert file.read() == large
 
 
+def test_owns_asset_covers_the_assets_directory_and_nothing_else(tmp_path):
+    """The predicate that waives the out-of-workspace approval, so its edges are a permission
+    boundary: a sibling whose name merely starts the same way is not inside it, and neither is a
+    parent reached back through it."""
+    s = session_with_data_dir(tmp_path)
+    assets = s.images.assets_dir()
+    os.makedirs(assets, exist_ok=True)
+    parent = os.path.dirname(assets)
+
+    assert s.owns_asset(os.path.join(assets, "tr.1.txt")) is True
+    assert s.owns_asset(os.path.join(assets, "nested", "deep.txt")) is True
+    assert s.owns_asset(assets) is True
+    assert s.owns_asset(assets + "-sibling/secret.txt") is False  # prefix match is not containment
+    assert s.owns_asset(os.path.join(assets, "..", "other.jsonl")) is False  # normalized, not textual
+    assert s.owns_asset(parent) is False
+    assert s.owns_asset(str(tmp_path / "elsewhere.txt")) is False
+
+
 def test_materialized_tool_output_expires_with_its_tool_result(tmp_path):
     """It is retained by its result, not forever: once the result is pruned the file is collected,
     so a long session cannot accumulate an asset for every large output it ever saw."""
