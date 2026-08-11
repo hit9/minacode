@@ -52,7 +52,7 @@ class SearchTool(Tool):
         return payload.get("queries") or [payload]
 
     def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(request["path"]) for request in self.requests())
+        return any(not (self.session.in_cwd(request["path"]) or self.session.owns_asset(request["path"])) for request in self.requests())
 
     def call(self) -> str:
         return "\n\n".join(self.search(request) for request in self.requests())

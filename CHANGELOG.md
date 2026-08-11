@@ -52,6 +52,10 @@
   over the budget are written, and a read-only or full disk leaves truncation itself untouched.
 
 ### Fixed
+- `Read` and `Search` no longer ask for confirmation to open the session's own assets. The file a
+  truncated tool result is materialized to lives outside the workspace, so following the path the
+  `<bounded_output>` marker just handed the model tripped the out-of-workspace prompt. Every other
+  path outside the workspace still asks.
 - The file a truncated tool result is materialized to is no longer deleted on the next save. The
   session's asset collector kept only image references, so it collected the file immediately while
   the `<bounded_output>` marker went on advertising its path - the model was sent looking for a file

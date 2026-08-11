@@ -15,6 +15,7 @@ from minacode.base import (
     ToolError,
 )
 from minacode.config import (
+    Config,
     ConfigFile,
     RuntimeSettings,
 )
@@ -170,6 +171,28 @@ def test_read_target_validation_is_actionable(tmp_path, args, message):
 def test_note_validation_errors_are_actionable(tmp_path, payload, message):
     with pytest.raises(ToolError, match=message):
         NoteTool(session(tmp_path), [payload]).call()
+
+
+def test_reading_a_materialized_tool_output_needs_no_confirmation(tmp_path):
+    """The marker of a truncated result hands the model an absolute path outside the workspace, so
+    the out-of-workspace prompt would stop the model from reading a file minacode itself wrote and
+    told it to read. Assets are exempt; anything else outside the workspace still asks."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    s = Session(cwd=str(workspace), config=Config(data_dir=str(tmp_path / "data")))
+    large = "\n".join(f"line {index}" for index in range(20000))
+    key = s.store_tool_result("Bash", ["big"], large)
+    ContextManager(s).bound_output(large, key)
+    asset = os.path.join(s.images.assets_dir(), key + ".txt")
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("private\n", encoding="utf-8")
+
+    assert ReadTool(s, [{"path": asset}]).needs_confirmation() is False
+    assert SearchTool(s, [{"path": asset, "pattern": "line 5"}]).needs_confirmation() is False
+    assert ReadTool(s, [{"path": str(outside)}]).needs_confirmation() is True
+    assert SearchTool(s, [{"path": str(outside), "pattern": "private"}]).needs_confirmation() is True
+    # Reading it really does return the full output the marker promised.
+    assert "line 19999" in ReadTool(s, [{"path": asset}]).call()
 
 
 def test_mcp_tool_handles_missing_manager_and_invalid_arguments(tmp_path):

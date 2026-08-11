@@ -127,7 +127,7 @@ class ReadTool(Tool):
         return matches[0]
 
     def needs_confirmation(self) -> bool:
-        return any(not self.session.in_cwd(path) for path, _ in self.targets())
+        return any(not (self.session.in_cwd(path) or self.session.owns_asset(path)) for path, _ in self.targets())
 
     def call(self) -> str:
         return "\n\n".join(self.read_one(path, ranges) for path, ranges in self.targets())

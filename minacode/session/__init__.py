@@ -448,6 +448,16 @@ class Session:
         except ValueError:
             return False
 
+    def owns_asset(self, path: str) -> bool:
+        """True for a file in this session's own assets directory -- a materialized tool output or a
+        stored image. Reading one back is minacode following a path it just handed the model, not the
+        model reaching outside the workspace, so it is not what an out-of-workspace prompt is for."""
+        try:
+            directory = os.path.realpath(self.images.assets_dir())
+            return os.path.commonpath([directory, os.path.realpath(path)]) == directory
+        except (ValueError, OSError):
+            return False
+
     def request_token_budget(self) -> int:
         """The input budget one request is measured against, under this session's *current* config.
 
