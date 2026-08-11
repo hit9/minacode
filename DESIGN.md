@@ -5,8 +5,8 @@ short: document durable conclusions, not implementation diaries or complete inve
 
 ## Orientation
 
-minacode turns one user request into a bounded loop of model calls and tool calls, in one local
-process. Four objectives explain most of the decisions below, and they are frequently in tension:
+minacode turns one user request into a bounded loop of model and tool calls in one local process.
+Four objectives, often in tension, explain most decisions below:
 
 1. **Resumable.** A session survives a crash, an interrupt, or a quit at any point.
 2. **Protocol-neutral.** History is stored in one model; Chat, Responses, and Anthropic formats
@@ -14,7 +14,7 @@ process. Four objectives explain most of the decisions below, and they are frequ
 3. **Bounded.** Context, retained output, and previews all have ceilings; nothing grows forever.
 4. **Truthful.** The screen reports real state, and the terminal's own scrollback stays intact.
 
-Modules, with dependencies pointing downward only:
+Modules (dependencies point downward only):
 
 ```
               __main__                     entry, startup ordering
@@ -40,11 +40,11 @@ Modules, with dependencies pointing downward only:
             model_catalog.py               evidence-backed compatibility data
 ```
 
-`session/__init__.py` reaches `tools/`, `mcp.py`, and `skill.py` through deferred imports,
-commented at those call sites, and `session/store.py` reaches the live state types the same way;
-that is why features sit above `session/` without a module-scope cycle.
+`session/__init__.py` and `session/store.py` reach upward features/state types only via deferred
+imports (commented at each call site), so features sit above `session/` without a module-scope
+cycle.
 
-A turn, and the three ways it can end:
+A turn, and its three endings:
 
 ```
   user input
@@ -72,21 +72,21 @@ A turn, and the three ways it can end:
 ```
 
 The turn is a transaction: messages accumulate outside durable history until one of those three
-endings. That is what makes resume safe, and why nothing else may append mid-turn.
+endings, and nothing else may append mid-turn.
 
 ## Common pitfalls
 
-Each of these looks like a cleanup or a small improvement, and each breaks something the code
-depends on. The section naming the rule is in parentheses.
+Each looks like a cleanup and breaks something the code depends on; the section naming the rule
+is in parentheses.
 
 - **Lifting a deferred import to module scope.** Startup latency is a feature; the SDKs cost ~0.8s
   and are not needed until the first request (Startup path).
 - **Rewriting stored history in a request transform.** Replay rules, image expansion, and schema
   dedup are send-time only; a resumed session must equal the saved one (Context is a projection).
 - **Returning fewer tool results than the model emitted calls.** Refused, failed, skipped, and
-  interrupted calls each still need a matching result, or replay is invalid (Tool-call lifecycle).
-- **Inserting context between the stable layers.** Saving a few tokens mid-prompt invalidates the
-  cached prefix for every later turn (Context is a projection).
+  interrupted calls each need a matching result, or replay is invalid (Tool-call lifecycle).
+- **Inserting context between the stable layers.** Saving tokens mid-prompt invalidates the cached
+  prefix for every later turn (Context is a projection).
 - **Persisting a live preview row, or reading state back off the screen.** Rendered text is never
   the source of truth (Three forms of state, Terminal boundary).
 - **Expecting compaction to rescue an oversized fixed prefix.** It cannot; bound the source at its
@@ -99,157 +99,127 @@ depends on. The section naming the rule is in parentheses.
 
 - Docstrings describe interfaces and contracts, not development history.
 - Comments protect local, non-obvious invariants and may link to primary evidence.
-- Add a note here only for a cross-cutting decision that future maintainers may otherwise reopen.
-  If a decision changes, keep the old conclusion visible and mark it as superseded.
+- Add a note here only for a cross-cutting decision maintainers may otherwise reopen; keep old
+  conclusions visible and mark them superseded when a decision changes.
 
 ### Engineering posture
 
-- **Abstract:** Use deep, local, earned abstractions that hide real complexity behind small
-  interfaces; remove dead code and pass-through wrappers, and keep a private helper with its owner.
-- **Layer:** Keep dependencies directed from higher-level orchestration toward stable lower-level
-  concepts; lower modules never import presentation or orchestration layers.
-- **Keep it simple:** Choose the smallest cohesive, behavior-preserving implementation, avoid
-  speculative specialization, separate unrelated changes, and keep the changelog aligned.
-- Prefer a generic standards path. Specialize only for a necessary, documented incompatibility,
-  and keep primary evidence beside the rule.
-- Prefer explicit imports and pragmatic typing: model domain shapes precisely, keep JSON as
-  `dict[str, Any]`, and suppress a type error only when runtime behavior is demonstrably safe.
-- Test contracts and reproduced regressions at their boundaries, not private spelling or prompt
-  literals. CI enforces formatting, lint, typing, and the full suite.
-- Keep UI and user documentation quiet and direct. Show truthful state with progressive detail;
-  keep compatibility machinery and investigation history out of the common user path.
+- **Abstract:** deep, local, earned abstractions behind small interfaces; remove dead code and
+  pass-through wrappers.
+- **Layer:** dependencies point from orchestration toward stable lower-level concepts; lower
+  modules never import presentation or orchestration.
+- **Keep it simple:** smallest cohesive, behavior-preserving change; no speculative specialization;
+  keep the changelog aligned.
+- Prefer generic standards; specialize only for a necessary, documented incompatibility, with
+  primary evidence beside the rule.
+- Prefer explicit imports and pragmatic typing; suppress a type error only when runtime behavior is
+  demonstrably safe.
+- Test contracts and reproduced regressions at their boundaries; CI enforces formatting, lint,
+  typing, and the full suite.
+- Keep UI and user docs quiet and direct; keep compatibility machinery and investigation history
+  out of the common user path.
 
 ### Test design
 
 Tests protect observable contracts and reproduced regressions, not implementation shape.
 
-- Prefer black-box tests through the narrowest stable public boundary that observes the complete
-  behavior. Use white-box tests only when a pure algorithm or difficult edge condition cannot be
-  exercised clearly there.
-- A bug fix should reproduce the real failure, then cover the intended result and any unsafe path
-  that must remain rejected.
-- Assert semantic output, durable state, or protocol payloads. Assert exact text, call order, or
-  rendering only when those details are themselves the contract.
-- Mock external or nondeterministic boundaries such as providers, clocks, processes, and terminals;
-  do not mock the core behavior under test.
-- Keep tests deterministic and fast. Replace sleeps with events or controlled time, and reserve
-  PTY or tmux tests for behavior that truly depends on a terminal.
+- Prefer black-box tests at the narrowest stable public boundary observing complete behavior;
+  white-box only when a pure algorithm or edge cannot be exercised clearly there.
+- A bug fix reproduces the real failure, then covers the intended result and unsafe paths that must
+  stay rejected.
+- Assert semantic output, durable state, or protocol payloads; exact text, call order, or rendering
+  only when those details are the contract.
+- Mock external or nondeterministic boundaries (providers, clocks, processes, terminals); never the
+  core behavior under test.
+- Keep tests deterministic and fast; reserve PTY/tmux for behavior that truly needs a terminal.
 
 ## System shape
 
-One local process with explicit owners for each kind of behavior. The layers are drawn in
-[Orientation](#orientation); this section records what each owner is responsible for.
+- `base.py` defines configuration, shared value types, and error categories, plus the log-line
+  vocabulary and resource handles; `provider_compat.py` folds `model_catalog.py` data into resolved
+  request policy.
+- `Session` owns protocol-neutral semantic state (messages, transcript, checkpoints, queued input,
+  retained output, diffs, usage, session resources); its snapshot codec decides what is persistable.
+- Agent semantics split by owner: `context.py` projects/compacts, `model.py` owns adapters,
+  streaming, retry, `runner.py` owns execution/cancellation, `engine.py` composes the turn loop.
+  Dependencies point downward only, so no pair needs a deferred import.
+- `CommandLoop`/`TuiRuntime` orchestrate commands and transitions; `TuiApp` owns input, keys,
+  layout, modals; `render.py` owns presentation.
+- `tools/`, `image.py`, `mcp.py`, `skill.py` are vertical features that never leak storage or UI
+  details; `tools/` splits built-ins by capability, with the registry in `__init__.py`.
 
-- `base.py` defines configuration, shared value types, and error categories, including the log-line
-  vocabulary every presentation layer renders and the resource handles they cancel through;
-  `provider_compat.py` folds the evidence-backed model and provider data in `model_catalog.py` into
-  resolved request policy.
-- `Session` owns protocol-neutral semantic state: compactable model messages, the append-only
-  completed transcript, active-turn checkpoints, queued input, retained output, diffs, usage, and
-  session-scoped resources such as jobs and images. Its snapshot codec decides which of that state
-  is persistable.
-- Agent semantics are split by owner: `context.py` builds and compacts the model-facing context,
-  `model.py` owns provider protocol adapters, streaming, and retry policy, `runner.py` owns tool
-  execution and cancellation, and `engine.py` composes them into the turn loop with its commit or
-  rollback. They depend downward only: `engine.py` -> `context.py`/`runner.py` -> `model.py` ->
-  `base.py`, so no pair needs a deferred import to break a cycle.
-- `CommandLoop` and `TuiRuntime` orchestrate commands and runtime transitions. `TuiApp` owns input,
-  key bindings, layout, and modals; `render.py` owns transcript and status presentation.
-- `tools/`, `image.py`, `mcp.py`, and `skill.py` are vertical feature modules. They expose useful
-  behavior to the engine without making the engine understand their storage or UI details. Inside
-  `tools/`, each module owns one capability (files, search, shell, memory, ask, plugin) over the
-  shared `Tool` base; `__init__.py` owns the registry and is the package's only import surface.
-
-State changes belong to the module that owns their meaning. Higher layers may request a transition
-or observe it through callbacks, but rendered text and widget state are never the source of truth.
-Dependencies point toward stable concepts: configuration and value types do not know the runtime;
-feature and session modules do not know the command loop or terminal; orchestration composes them at
-the boundary. Do not introduce a shared module merely to break a cycle—fix the ownership instead.
+State changes belong to the module owning their meaning. Dependencies point toward stable
+concepts: configuration and value types do not know the runtime; feature and session modules do not
+know the command loop or terminal. Do not add a shared module to break a cycle — fix the ownership
+instead.
 
 ### Startup path
 
 Nothing a first keystroke does not need may be imported at startup. Interactive startup was once
-939ms, of which 934ms was imports and 5ms was work; the prompt could not echo a character until it
-finished. The heavy third-party SDKs are therefore imported at their point of use, not at module
-scope: `MCPManager` defers `fastmcp` (~0.35s) and `ModelClient` defers `anthropic` and `openai`
-(~0.8s together), each declaring the names under `TYPE_CHECKING` so annotations and type checking
-stay complete. Do not lift these back to module scope for tidiness; that is the regression, and
-`tests/test_cli.py` asserts a fresh interpreter loads neither SDK.
+939ms — 934ms imports, 5ms work. The heavy SDKs import at their point of use: `MCPManager` defers
+`fastmcp` (~0.35s), `ModelClient` defers `anthropic`/`openai` (~0.8s together), names declared
+under `TYPE_CHECKING`. Do not lift them back to module scope; `tests/test_cli.py` asserts a fresh
+interpreter loads neither SDK.
 
-`main` then warms the deferred SDKs on a daemon thread so the deferral does not simply move the
-cost onto the first request. Racing that thread is safe because CPython locks imports per module;
-the reasoning and its limits are recorded on `warm_provider_sdks`, beside the code that depends on
-them.
+`main` warms the deferred SDKs on a daemon thread so deferral does not move the cost to the first
+request; racing is safe because CPython locks imports per module (see `warm_provider_sdks`).
 
 ### Future MCP client lifecycle
 
-`MCPManager` currently opens a short-lived client for each discovery, tool, or resource operation.
-This is sufficient for stateless servers, but repeatedly starts stdio processes, prevents transport
-reuse, and cannot preserve legacy servers that rely on process-lifetime state. A future MCP revision
-should evaluate one managed client runtime per configured server, with explicit connect, reconnect,
-cancellation, and close ownership.
-
-That runtime would reuse transport resources without treating an MCP connection as durable semantic
-state. MCP is moving toward a sessionless protocol with explicit state handles
-([SEP-2567](https://modelcontextprotocol.io/seps/2567-sessionless-mcp)); protocol negotiation and
-server-specific compatibility remain the client library's responsibility. Keep the current FastMCP
-3 dependency until the modern protocol support is stable, and do not add roots, sampling, extension,
-or provider-specific machinery without a demonstrated minacode use case.
+`MCPManager` opens a short-lived client per discovery/tool/resource operation: fine for stateless
+servers, but it restarts stdio processes and cannot preserve legacy process-lifetime servers. A
+future revision should use one managed client runtime per server with explicit
+connect/reconnect/cancellation/close ownership. MCP is moving toward a sessionless protocol
+([SEP-2567](https://modelcontextprotocol.io/seps/2567-sessionless-mcp)); keep the current FastMCP 3
+dependency until that support is stable, and do not add roots, sampling, extension, or
+provider-specific machinery without a demonstrated use case.
 
 ## Turn execution and authority
 
-One agent turn is a bounded state machine; see [Orientation](#orientation) for its shape.
-
-- The user's request defines authority for the entire turn. A model may propose work, but model text,
-  a plan, or an inferred next step cannot broaden that authority; tool validation and approval remain
-  runtime responsibilities.
-- The agent loop is the serialized writer of active-turn messages. TUI and background workers cross
-  that boundary through queues, callbacks, and cancellation signals rather than editing the turn.
-- Treat a completed request, an ordered tool-result batch, and turn completion as coherent transition
-  boundaries. UI progress may lead them, but resume must restart from a protocol-valid sequence.
+- The user's request defines authority for the whole turn; model text, plans, or inferred next
+  steps cannot broaden it — tool validation and approval stay runtime responsibilities.
+- The agent loop is the serialized writer of active-turn messages; TUI and workers cross that
+  boundary through queues, callbacks, and cancellation, never by editing the turn.
+- Treat a completed request, an ordered tool-result batch, and turn completion as coherent
+  transition boundaries; resume must restart from a protocol-valid sequence.
 
 ## Three forms of state
 
-Keep these forms separate even when they contain similar data:
+1. **Durable session state** — what semantically happened; sufficient to resume.
+2. **Request projection** — adapts that state to one model, protocol, and context budget.
+3. **Ephemeral UI state** — drafts, live previews, animation, selection, modal layout.
 
-1. **Durable session state** records what semantically happened and is sufficient to resume.
-2. **Request projection** adapts that state to one model, protocol, and context budget.
-3. **Ephemeral UI state** covers drafts, live previews, animation, selection, and modal layout.
+Only the first is snapshotted; provider clients, timers, stream fragments, and terminal layout
+are reconstructed. Completed transcript is always derived from semantic records, never preview
+rows.
 
-Only the first form is snapshotted. Provider clients, timers, stream fragments, and terminal layout
-are reconstructed. A live preview may disappear without changing history; completed transcript is
-always derived from semantic records rather than preview rows.
-
-Durable state contains two timelines with different retention rules. Model messages are compactable
-working context. Transcript messages and their lightweight tool/diff replay metadata are append-only
-for the life of the saved session and never enter a provider request. The agent checkpoints and
-commits both timelines at the same turn boundaries, so either one can be reconstructed after an
-interrupt without making terminal output a source of truth.
+Durable state holds two timelines: model messages are compactable working context; transcript
+messages and their tool/diff replay metadata are append-only for the session's life and never enter
+a provider request.
 
 ## Provider and protocol boundary
 
-Configuration expresses user intent. `ProviderConfig.resolve()` is the single fold where explicit
-settings and evidence-backed compatibility become a `ResolvedProvider`; explicit settings win and
-unknown hosts stay on the generic standards path.
+`ProviderConfig.resolve()` is the single fold where explicit settings and evidence-backed
+compatibility become a `ResolvedProvider`; explicit settings win, unknown hosts stay on the
+generic standards path.
 
-- `model_catalog.py` declares provider overlays and reusable model capabilities, with primary
-  evidence beside each exception. `provider_compat.py` owns generic matching and fallback; neither
-  module wraps provider SDKs or lets the catalog become an allowlist for otherwise valid models.
-- `ModelClient` owns the Chat, Responses, and Anthropic wire formats. Session history remains one
-  normalized model with namespaced opaque fields for protocol continuation data.
-- Lifecycle and checkpoint metadata is local bookkeeping, not a provider extension. Adapters strip
-  its namespaced key while preserving the canonical role and content: Chat sends ordinary messages;
-  Responses maps assistant calls and tool results to `function_call` and `function_call_output`
-  items. Provider-specific objects never become the durable state model.
-- Reasoning is continuation data, not one universal text field. Preserve what the provider returns,
-  choose replay policy while projecting a request, and estimate the same effective wire payload.
-- Capability discovery must be conservative and session-local. A successful image request can
-  establish support; only an explicit modality rejection can establish non-support.
+- `model_catalog.py` declares overlays/capabilities with primary evidence beside each exception;
+  `provider_compat.py` owns generic matching and fallback. Neither wraps SDKs nor allowlists valid
+  models.
+- `ModelClient` owns the Chat, Responses, and Anthropic wire formats; history stays one normalized
+  model with namespaced opaque fields for continuation data.
+- Lifecycle/checkpoint metadata is local bookkeeping, not a provider extension: adapters strip the
+  key while preserving canonical role/content — Chat sends ordinary messages; Responses maps calls
+  and results to `function_call`/`function_call_output` items.
+- Reasoning is continuation data: preserve what the provider returns, choose replay policy at
+  projection, estimate the same wire payload.
+- Capability discovery is conservative and session-local: a successful image request can establish
+  support; only an explicit modality rejection establishes non-support.
 
 ## Context is a projection
 
 Session messages are the protocol-neutral source of truth. A model request is derived at the send
-boundary from the system prompt, environment, capability indexes, append-only conversation, active
+boundary from system prompt, environment, capability indexes, append-only conversation, active
 turn, and tool schemas.
 
 - The normal layout is:
@@ -262,152 +232,129 @@ turn, and tool schemas.
   active turn
   ```
 
-  There is no rebuilt Memory, history-index, current-date, recent-error, or code-index-status block
-  inserted before the tail. Those values either already exist in matched tool history, are queried
-  on demand, or are runtime/UI state that does not belong in every model request.
-- Treat cache-prefix stability as the first review criterion for every system prompt, tool schema or
-  ordering, and context-layout change. Order requests from version-stable system and tools, through
-  session-stable capability context and the append-only conversation. Mutable goal, plan, known
-  facts, and checks enter that log through `Note` calls and full compaction checkpoints; never
-  rebuild them as an inserted per-request block. Prefer trigger-local tail additions over
-  conditionally rewriting an earlier layer. Prefix stability never justifies stale state.
-- Apply replay rules, image expansion, request-local reminders, and repeated-schema reduction only
-  while building the request. These transforms must not rewrite stored history or user text.
-- Estimate the payload that will actually cross the selected protocol boundary, including tool
-  schemas and image cost. Reserve output capacity and a safety margin before declaring input space
-  available.
-- Keep estimated request size separate from provider-reported usage. The estimate drives preparation
-  and compaction for the next request; reported prompt, completion, and cached tokens describe calls
-  that already happened and are observability data.
-- Prompt-cache usage is an observed transport optimization, not free context. Cached tokens remain
-  part of the request and compaction pressure. Read and write counts are separate observability
-  fields; absence of provider-reported write accounting does not mean no breakpoint was created.
+  No rebuilt Memory, history-index, current-date, recent-error, or code-index-status block is
+  inserted before the tail: those values already exist in matched tool history, are queried on
+  demand, or are runtime/UI state.
+- Treat cache-prefix stability as the first review criterion for system prompt, tool schema or
+  ordering, and context-layout changes: order from version-stable system and tools, through
+  session-stable capability context, to the append-only conversation. Mutable goal/plan/known/checks
+  enter that log through `Note` calls and compaction checkpoints, never as an inserted block.
+  Prefix stability never justifies stale state.
+- Replay rules, image expansion, request-local reminders, and repeated-schema reduction apply only
+  while building the request; they never rewrite stored history or user text.
+- Estimate the actual wire payload (tool schemas, image cost) and reserve output capacity plus a
+  safety margin before declaring input space.
+- Keep estimated request size separate from provider-reported usage: the estimate drives
+  preparation/compaction; reported tokens describe past calls (observability only).
+- Prompt-cache usage is an observed transport optimization, not free context: cached tokens remain
+  part of the request and compaction pressure; missing write accounting does not mean no breakpoint.
 
 ### Cache epochs and breakpoints
 
-Implicit prompt caching is exact-prefix reuse, including tool schemas. A normal turn only appends,
-so an earlier user or tool boundary remains matchable while the newest boundary becomes the next
-write candidate. `Note` updates and resume events obey the same rule; they are conversation, not
-context inserted ahead of conversation.
+Implicit prompt caching is exact-prefix reuse, including tool schemas; a normal turn only appends,
+and `Note` updates and resume events are conversation, not context inserted ahead of it.
 
 - A stable cache key scopes related requests but does not replace exact-prefix matching or require
-  an explicit provider cache API.
+  an explicit cache API.
 - Changing the model, tools, system prompt, skills, MCP capabilities, or another early layer may
   shorten reuse or begin a new scope.
-- Compaction deliberately replaces an old prefix and therefore begins one new cache epoch. The
-  emitted checkpoint is then stable history, so the following turn can warm from it; compaction
-  must not cause every later turn to break again.
-- Anthropic's explicit system breakpoint remains a protocol policy in `ModelClient`; it does not
-  change the protocol-neutral append-only history model used by Chat and Responses.
-- The tool block is part of that prefix, so it is a per-session constant, never a per-request lever.
-  Emptying or reshaping it to steer one response discards the whole cached prefix, moves the request
-  into another cache scope, and reads to the model as a broken tool set: it then reports its tools
-  as unavailable and asks the user to restore them. Steer with a message, never with the schema.
+- Compaction replaces an old prefix and begins one new cache epoch; its checkpoint is stable
+  history, so the next turn warms from it — compaction must not break every later turn.
+- Anthropic's system breakpoint is a `ModelClient` protocol policy, not a change to the
+  protocol-neutral history model.
+- The tool block is part of the prefix: a per-session constant, never a per-request lever.
+  Reshaping it discards the cached prefix and reads to the model as a broken tool set; steer with a
+  message, never with the schema.
 
 ### A sent message is irrevocable
 
-Every message that reaches the provider is committed to history in the order it was sent. There is
-no request-local message: nothing may be constructed for one request and then withheld from the
-next one. A message the model answered but can no longer see is ghost context — it explains a
-response that the transcript, the snapshot, and the user can no longer account for.
+Every message that reaches the provider is committed to history in order; there is no
+request-local message. A message the model answered but can no longer see is ghost context the
+transcript, snapshot, and user cannot account for.
 
 - Runtime nudges (live follow-up markers, protocol corrections, resume events) are ordinary
-  conversation. Append them, checkpoint them, and let them age out through compaction like any
-  other message. A marker added for the model is committed with the message it marked; hide it at
-  render time instead, so the scrollback still shows what the user typed.
-- Corrections stack rather than replace. Retrying with the previous correction swapped out rewrites
-  an already-sent prefix, which both loses the record and breaks the cache.
-- An aborted turn keeps what it already sent. Failure settles history; it does not rewind it.
-- The runtime instructs, it does not enforce. When the model ignores an instruction, the loop
-  continues and the next message can say so again; it never reshapes the request to compel an
-  answer.
+  conversation: append, checkpoint, let them age out. A marker for the model is committed with the
+  message it marked; hide it at render time.
+- Corrections stack rather than replace; swapping the previous correction out rewrites an
+  already-sent prefix and breaks the cache.
+- An aborted turn keeps what it already sent; failure settles history, it does not rewind it.
+- The runtime instructs, it does not enforce: an ignored instruction is restated in the next
+  message, never enforced by reshaping the request.
 
 ## Tool-call lifecycle
 
 A tool call is intent, not a result. Consume a stream to its protocol terminal event before
-dispatching its complete call set, then return results before the model may judge or retry them.
+dispatching its complete call set; return results before the model may judge or retry them.
 
-- Text that resembles tool markup never has execution authority. When a response has no native
-  calls but ends with a complete `<invoke>` for a known tool, the agent may discard it and retry
-  up to five times, each correction a committed turn message sent with the unchanged tool list.
-  Never parse its arguments or synthesize a call id or result.
-- Every emitted call receives a matching result, including malformed, refused, failed, skipped,
-  and interrupted calls. This keeps replay valid across protocols.
-- Independent read-only calls may run concurrently. Mutating or interactive calls remain ordered;
-  all outcomes are displayed, stored, and returned in the model's original order.
-- A tool may produce a model observation in addition to its matched textual result. Observations
-  follow every result in the proposed batch, use the durable protocol-neutral message model, and
-  are projected into each provider's native multimodal shape only at the request boundary.
-- Interrupting before assistant activity retracts the turn. Once text or a tool call is visible,
-  preserve the partial turn and add cancellation results for unanswered calls.
+- Text resembling tool markup never has execution authority. A response with no native calls but a
+  complete `<invoke>` for a known tool may be discarded and retried up to five times, each
+  correction a committed message with the unchanged tool list; never parse arguments or synthesize
+  call ids/results.
+- Every emitted call receives a matching result — malformed, refused, failed, skipped, interrupted —
+  keeping replay valid across protocols.
+- Independent read-only calls may run concurrently; mutating or interactive calls stay ordered, and
+  all outcomes return in the model's original order.
+- A tool may produce a model observation in addition to its matched textual result; observations use
+  the durable protocol-neutral message model and project into provider-native multimodal shape only
+  at the request boundary.
+- Interrupting before assistant activity retracts the turn; once text or a call is visible, preserve
+  the partial turn and add cancellation results for unanswered calls.
 
 ## Retention and recall
 
-Bounded active context and recoverable detail are separate concerns:
-
-- A large tool result enters the conversation as a bounded view while its retained full output is
-  addressed by `tr.N`. `Recall` can retrieve selected line ranges; a hard session ceiling prevents
-  indefinite growth, and compaction prunes records no surviving message or summary references.
-- Compaction stores one bounded verbatim excerpt of each evicted span as `seg.N`. `RecallContext`
-  gets a segment or regex-searches all retained segments; it does not pretend the excerpt is a
-  lossless copy of arbitrarily large conversation history.
-- Segment titles are not standing context. `RecallContext(list)` pages through them newest first,
-  while search covers the warm segment store and `get` retrieves selected excerpts.
-- `AgentState` is the durable semantic view of goal, plan, known facts, and checks. `Note(update)`
-  changes it transactionally and its matched call/result makes the change visible in append-only
-  model history; `Note(view)` reads selected fields without mutation. Compaction materializes the
-  complete current state into one checkpoint before older Note history can leave active context.
-- Recall tools do not create new retained-result keys. Their output is ordinary, bounded turn
-  context and should be requested selectively instead of recursively copying cold detail into hot
-  context.
-- Snapshot JSONL is the persistence and resume boundary, not a model-facing search engine. Runtime
-  recall uses the current retained indexes and never scans historical log records opportunistically.
+- A large tool result enters conversation as a bounded view; its retained full output is addressed
+  by `tr.N`. `Recall` retrieves selected line ranges; a hard session ceiling prevents growth, and
+  compaction prunes records nothing surviving references.
+- Compaction stores one bounded verbatim excerpt of each evicted span as `seg.N`; `RecallContext`
+  gets a segment or regex-searches retained segments — it never pretends the excerpt is lossless.
+- Segment titles are not standing context: `RecallContext(list)` pages newest first; search covers
+  the warm store; `get` retrieves excerpts.
+- `AgentState` is the durable semantic view of goal/plan/known/checks; `Note(update)` changes it
+  transactionally with a visible call/result in append-only history, `Note(view)` reads only.
+  Compaction materializes the full state into one checkpoint before older Note history leaves
+  active context.
+- Recall tools create no new retained-result keys; their output is ordinary bounded context,
+  requested selectively rather than copying cold detail into hot context.
+- Snapshot JSONL is the persistence/resume boundary, not a search engine; runtime recall uses
+  current retained indexes, never opportunistic log scans.
 
 ## Persistence and input transactions
 
-Snapshots are project-scoped JSONL: one full snapshot followed by deltas, with large repeated text
-stored once as content-addressed blobs. Persist semantic checkpoints, not object graphs.
+Snapshots are project-scoped JSONL: one full snapshot plus deltas, large repeated text stored once
+as content-addressed blobs. Persist semantic checkpoints, not object graphs.
 
-- Checkpoint active turns at stable request and tool boundaries; never serialize a partial protocol
-  object merely because it is visible in a live preview.
-- Claim queued follow-ups for the next request, acknowledge them only after that request succeeds,
-  and release them on failure or interruption. Retries therefore see exactly the same input.
-- Keep image assets while any persisted, queued, or retained reference needs them; garbage collect
-  only after the surviving snapshot no longer does.
-- Keep model context and the CLI transcript as logical streams in the same JSONL. Committed
-  transcript messages only append; the bounded active-turn transcript is replaced separately and
-  folded into the committed stream exactly once after a crash or normal turn completion. Checkpoint
-  cost therefore does not grow with transcript length.
-- Persist only the provider-neutral, visible transcript projection: user/assistant text, canonical
-  tool calls, and semantic tool results keyed by `tool_call_id`. Do not duplicate provider
-  continuation state or retained tool output, and cap replay-only tool arguments and Edit previews.
-  Never persist live preview rows as conversation messages.
-- An older snapshot without transcript records migrates the model history that still survives;
-  content compacted by that older version is not recoverable. Every transcript-aware write carries
-  a sync marker, so a later write by an older version is detected and resume warns that the CLI
-  transcript may have a gap instead of silently presenting it as complete.
-- Store the session start once as a local ISO timestamp with a numeric timezone offset. Resume
-  appends another timestamped lifecycle event with canonical role `user`: it describes new user
-  context, remains a tail addition, and works identically through Chat and Responses. It is hidden
-  from transcript rendering, not filtered from persistence or model history.
-- `context_layout_version` versions model-visible layout independently of the JSONL format. Loading
-  an older layout converts a numeric legacy `created_at` to local time when necessary, emits at
-  most one complete state checkpoint, advances the layout version, then appends the resume event.
-  The next snapshot persists these as an append-only delta.
+- Checkpoint active turns at stable request/tool boundaries; never serialize a partial protocol
+  object visible in a live preview.
+- Claim queued follow-ups for the next request, acknowledge only after it succeeds, release on
+  failure/interruption — retries see exactly the same input.
+- Keep image assets while any persisted, queued, or retained reference needs them; collect only
+  after the surviving snapshot no longer does.
+- Keep model context and CLI transcript as logical streams in one JSONL: committed transcript only
+  appends, and the bounded active-turn transcript is folded in exactly once after crash or
+  completion.
+- Persist only the provider-neutral visible projection: user/assistant text, canonical tool calls,
+  semantic results keyed by `tool_call_id`. No provider continuation state or retained output
+  duplication; cap replay-only arguments and Edit previews; never persist preview rows.
+- Older snapshots without transcript records migrate surviving model history; content compacted by
+  them is unrecoverable. Every transcript-aware write carries a sync marker, so an older writer is
+  detected and resume warns of a possible transcript gap.
+- Store session start once as a local ISO timestamp with numeric offset. Resume appends a
+  timestamped lifecycle event with canonical role `user` — a tail addition, same through Chat and
+  Responses, hidden from rendering but not from persistence or history.
+- `context_layout_version` versions model-visible layout independently of JSONL format: loading an
+  older layout converts legacy `created_at`, emits at most one checkpoint, advances the version,
+  appends the resume event; the next snapshot persists an append-only delta.
 
 ## Terminal boundary
 
-The terminal has two deliberately different output paths:
+- Completed user/assistant/tool output prints into native terminal or tmux scrollback.
+- Drafts, live previews, queue state, selectors, and status are one prompt-toolkit application on
+  the primary screen; exclusive viewers like `/diff` may use the alternate screen and restore on
+  exit.
 
-- Completed user, assistant, and tool output is printed into native terminal or tmux scrollback.
-- Drafts, live model/tool previews, queue state, selectors, and status are one prompt-toolkit
-  application on the primary screen. Exclusive viewers such as `/diff` may temporarily use the
-  alternate screen and restore the transcript on exit.
-
-Preserving native scrollback is more important than making every transient frame durable. Terminal
-resize and reflow can leave copies of a live preview in scrollback; those copies are visual artifacts,
-not session history. Do not clear scrollback, persist preview rows, or move the whole application to
-the alternate screen to hide that artifact—the cure would discard more valuable behavior.
+Preserving native scrollback beats making every transient frame durable: resize/reflow can leave
+preview copies in scrollback — visual artifacts, not history. Do not clear scrollback, persist
+preview rows, or switch to the alternate screen to hide that artifact.
 
 ## Compaction
 
@@ -415,80 +362,69 @@ Compaction is the deliberate persisted exception to send-time-only projection: i
 active messages with a summary when the effective request, including tools, reaches the input
 budget.
 
-Compaction rewrites only model messages and their recall indexes. It never rewrites the completed
-transcript or its lightweight tool/diff replay metadata, including when the active turn itself must
-be compacted.
+It rewrites only model messages and their recall indexes — never the completed transcript or its
+tool/diff replay metadata, even when the active turn is compacted.
 
-- Compact prior history first and the active turn only if the rebuilt request remains too large.
-- Keep the latest user boundary and a recent tail. Never split assistant tool calls from their
-  following results.
-- Feed the previous summary and structured goal, plan, known facts, and checks to the compactor
-  explicitly. Do not treat an old summary as ordinary conversation to summarize again; each newly
-  evicted message span is captured once before it leaves the active history.
-- Store a bounded verbatim excerpt as a `seg.N` history segment for `RecallContext`. Replace the
-  evicted prefix with one append-only checkpoint containing the summary, complete working state,
-  and new segment pointer; use surviving messages and checkpoints as the reachability set when
-  compaction prunes `tr.N` records.
-- If model-generated compaction fails, fall back to deterministic trimming with an explicit marker.
-  Compaction must remain a recovery path, and its output never enters the live answer preview.
-- Compaction cannot make an oversized fixed prefix, latest user boundary, tool schema set, or single
-  retained object fit. Bound such sources at their owner or fail clearly; never claim that deleting
-  protocol structure made a request valid.
+- Compact prior history first; the active turn only if the rebuilt request is still too large.
+- Keep the latest user boundary and a recent tail; never split assistant tool calls from their
+  results.
+- Feed the previous summary and structured goal/plan/known/checks to the compactor explicitly; an
+  old summary is not ordinary conversation to summarize again; each evicted span is captured once.
+- Store a bounded verbatim excerpt as a `seg.N` segment; replace the evicted prefix with one
+  checkpoint (summary + working state + segment pointer); prune `tr.N` records by the surviving
+  reachability set.
+- On model compaction failure, fall back to deterministic trimming with an explicit marker that
+  never enters the live answer preview.
+- Compaction cannot fit an oversized fixed prefix, latest user boundary, tool schema set, or single
+  retained object: bound at the owner or fail clearly; deleting protocol structure does not make a
+  request valid.
 
 ## Cache test boundary
 
-Cache behavior is tested through the real Agent and provider SDK request serialization against a
-test-only OpenAI HTTP behavior model. The mock implements both Chat Completions and Responses,
-implicit user/tool breakpoints, longest exact-prefix reads, stable-key scopes, and read/write usage.
-Black-box cases cover ordinary multi-turn growth, Note/tool-result boundaries, resume, one
-compaction epoch, and model-scope changes.
-
-The mock is a deterministic contract test, not evidence that a live provider retained a prefix for
-any particular duration or token threshold. Provider integration tests, when credentials are
-available, should verify reported usage and request acceptance without replacing the deterministic
-suite.
+Cache behavior is tested through the real Agent and SDK request serialization against a test-only
+OpenAI HTTP behavior model (both APIs, implicit breakpoints, longest exact-prefix reads,
+stable-key scopes, read/write usage); black-box cases cover multi-turn growth,
+Note/tool-result boundaries, resume, one compaction epoch, and model-scope changes. The mock is a
+deterministic contract test, not evidence a live provider retained a prefix for any duration or
+threshold; provider integration tests verify reported usage and acceptance without replacing it.
 
 ## Failure boundaries
 
-- Retry only bounded, plausibly transient model failures. User cancellation, explicit capability
-  rejection, validation errors, and total-generation deadlines are not automatic retry signals.
-  The retry **decision** is fixed; only the **pacing** is flexible: exponential backoff with jitter,
-  waiting on the provider's own `Retry-After` when it is given, and never stalling the CLI.
-- Cancellation is a control signal, not a state mutation from another thread. Fan it out to the
-  active model and tool resources, then let the owning turn settle or retract its semantic records.
-- Tool failures become matched tool results rather than broken turns. Cancellation settles every
-  already-visible call so later protocol replay remains valid.
-- Anchor validation is a safety boundary, not a friction point: stale or invalid anchors stay
-  refused, and a successful edit refunds the fresh anchors of the region it changed, so long
-  same-file edit runs keep going without a re-Read.
+- Retry only bounded, plausibly transient model failures. Cancellation, capability rejection,
+  validation errors, and generation deadlines are not retry signals. The retry **decision** is
+  fixed; only **pacing** is flexible: backoff with jitter, honoring `Retry-After`, never stalling
+  the CLI.
+- Cancellation is a control signal, not a state mutation from another thread: fan out to model and
+  tool resources, let the owning turn settle or retract its records.
+- Tool failures become matched tool results, not broken turns; cancellation settles every
+  already-visible call so replay stays valid.
+- Anchor validation is a safety boundary, not friction: stale/invalid anchors stay refused; a
+  successful edit refunds the fresh anchors of the changed region so long same-file runs continue.
 - Lower layers contain recoverable detail: retained output supports recall, snapshots support
-  resume, and deterministic compaction preserves progress when the summarizer is unavailable.
+  resume, deterministic compaction preserves progress when the summarizer is unavailable.
 
 ## Worker handoff
 
 A worker is the same process's second minacode session, driven serially by the parent through one
-`Delegate` tool call per round: it is a full minacode (compaction, Recall, tr.N, Job, Skill, MCP,
-diff, confirmation, snapshots) projected from the parent's state with its own system prompt and a
-reduced tool list. The parent delegates; the worker never reaches back. Three decisions here are
-easy to reopen, so their reasons are recorded.
+`Delegate` tool call per round: a full minacode (compaction, Recall, tr.N, Job, Skill, MCP, diff,
+confirmation, snapshots) with its own system prompt and reduced tool list. The worker never
+reaches back. Three decisions are easy to reopen; their reasons follow.
 
-**No worker-to-parent tool calls.** A reverse call would re-enter the parent's `Agent.run` while it
-is mid-turn. The agent loop is the serialized writer of active-turn messages (see "Context is a
-projection"): a second writer inside the same turn would corrupt `_active_turn_messages` and the
-checkpoint, and the parent could not settle its own interrupt while the worker is mutating it. The
-worker's channel back is its final text, and questions end its turn.
+**No worker-to-parent tool calls.** A reverse call would re-enter the parent's `Agent.run` mid-turn;
+the agent loop is the serialized writer of active-turn messages (see "Context is a projection"), so
+a second writer would corrupt `_active_turn_messages` and the checkpoint, and the parent could not
+settle its own interrupt meanwhile. The worker's channel back is its final text; questions end its
+turn.
 
 **Worker snapshots are subordinate; reset discards process, not product.** The worker uid is
-`parent.uid + ".w"`, so its log, meta, and assets are keyed by the parent's identity: listings,
-latest-pointer resolution, and expiry all skip or cascade over them, and a reset derives its delete
-path entirely from the parent's uid (the model's arguments carry no path). Reset drops the worker's
-context and its cached agent, which is what a worker's context is for: the wrong beliefs accumulated
-across failed delegations. File changes and merged diffs belong to the repo, not the worker, and
-survive.
+`parent.uid + ".w"`, keying its log/meta/assets by the parent's identity: listings, latest-pointer
+resolution, and expiry skip or cascade over them; reset derives its delete path from the parent's
+uid (the model's arguments carry no path). Reset drops the worker's context and cached agent — the
+wrong beliefs accumulated across failed delegations — while file changes and merged diffs belong to
+the repo and survive.
 
 **The worker's cache prefix is a per-session constant.** The order must be the worker's first user
-message, never spliced into its system prompt, or every delegation would start a fresh cache epoch.
-The worker inherits the parent's `created_at`, so the Environment layer is byte-identical across
-spawns; its tool list is fixed for its lifetime; and it shares the parent's SkillLibrary and
-MCPManager instances so neither index changes between delegations. "Context is a projection" and
-"Cache epochs and breakpoints" apply to the worker exactly as they do to the parent.
+message, never spliced into its system prompt, or every delegation starts a fresh cache epoch. The
+worker inherits the parent's `created_at` (Environment byte-identical across spawns), keeps its
+tool list fixed, and shares the parent's SkillLibrary/MCPManager so no index changes between
+delegations.
