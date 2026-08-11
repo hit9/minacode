@@ -52,6 +52,12 @@
   over the budget are written, and a read-only or full disk leaves truncation itself untouched.
 
 ### Fixed
+- A truncated tool result no longer collapses to nothing when the output has very long lines. The
+  head and tail excerpts snap to a line boundary, which threw away the whole excerpt when a single
+  line was longer than the budget - the common shape of an MCP server returning compact JSON, where
+  the model was left with a marker announcing that nearly everything was omitted and no content on
+  either side of it. Snapping is now abandoned when it would cost more than half the budget, so such
+  a result keeps a real head and tail, and `Recall` over it returns real content too.
 - The `Ask` tool's free-text input no longer opens with a stray `^J`. The blank line above the
   question was a leading newline in the prompt, and the input's single-line prefix renders a literal
   newline as the `^J` control character rather than a line break; it is now a layout gap.

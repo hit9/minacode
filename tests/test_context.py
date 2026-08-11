@@ -3,6 +3,7 @@ history index it leaves behind."""
 
 import os
 import platform
+import re
 import shutil
 from dataclasses import replace
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from agent_harness import call, session
 import minacode.context as context_module
 from minacode.base import (
     MAX_AGENTS_MD_TOKENS,
+    MAX_TOOL_OUTPUT_TOKENS,
     ModelError,
 )
 from minacode.cli import CommandLoop
@@ -227,6 +229,40 @@ def test_bounded_output_marks_recall_key(tmp_path):
     assert "tail" in bounded
     assert "<bounded_output" in bounded
     assert 'recall="tr.large"' in bounded
+
+
+def test_bounded_output_keeps_head_and_tail_of_a_single_line_payload(tmp_path):
+    """The reported failure: an MCP server returns one long line of compact JSON, and snapping the
+    excerpts to a line boundary threw away everything but the wrapper tags -- the model saw a marker
+    claiming ~9.5k omitted tokens out of ~9.5k, with no content on either side of it."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+    payload = '{"id": 1, "system_prompt": "' + "x" * 40000 + '", "tail_field": "last"}'
+    large = f'<MCPCall server="orion" tool="get_agent">\n{payload}\n</MCPCall>'
+
+    bounded = context.bound_output(large, "tr.1")
+
+    assert '"system_prompt"' in bounded  # real head, not just the opening tag
+    assert '"tail_field": "last"' in bounded  # real tail, not just the closing tag
+    estimated = context.estimated_text_tokens(large)
+    omitted = int(re.findall(r'omitted_tokens="(\d+)"', bounded)[0])
+    # Roughly the whole budget is spent on content, rather than snapped away with it.
+    assert omitted <= estimated - MAX_TOOL_OUTPUT_TOKENS // 2
+
+
+def test_bounded_output_still_snaps_excerpts_to_line_boundaries(tmp_path):
+    """Line-oriented output keeps whole lines: snapping is only abandoned when it would cost more
+    than half the budget, so ordinary logs never gain a half-line at the cut."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+    large = "\n".join(f"line {index} " + "y" * 40 for index in range(20000))
+
+    bounded = context.bound_output(large, "tr.1")
+    head, _, rest = bounded.partition("<bounded_output")
+    _, _, tail = rest.partition("/>")
+
+    assert all(line in large.split("\n") for line in head.strip().split("\n"))
+    assert all(line in large.split("\n") for line in tail.strip().split("\n"))
 
 
 def test_bounded_output_materializes_full_output_to_asset_file(tmp_path):

@@ -492,17 +492,26 @@ class ContextManager:
         except OSError:
             return ""
 
-    @staticmethod
-    def head_excerpt(text: str, limit: int) -> str:
-        if len(text) <= limit:
-            return text
-        return text[:limit].rsplit("\n", 1)[0] or text[:limit]
+    # Snapping an excerpt to a line boundary may only cost this fraction of the budget. A payload
+    # whose lines are longer than the budget -- one-line JSON is the common case, and exactly what
+    # an MCP server returns -- would otherwise snap away nearly everything it was asked to keep.
+    EXCERPT_SNAP_FLOOR = 0.5
 
-    @staticmethod
-    def tail_excerpt(text: str, limit: int) -> str:
+    @classmethod
+    def head_excerpt(cls, text: str, limit: int) -> str:
         if len(text) <= limit:
             return text
-        return text[-limit:].split("\n", 1)[-1] or text[-limit:]
+        window = text[:limit]
+        snapped = window.rsplit("\n", 1)[0]
+        return snapped if len(snapped) >= limit * cls.EXCERPT_SNAP_FLOOR else window
+
+    @classmethod
+    def tail_excerpt(cls, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        window = text[-limit:]
+        snapped = window.split("\n", 1)[-1]
+        return snapped if len(snapped) >= limit * cls.EXCERPT_SNAP_FLOOR else window
 
     def estimated_tokens(self, messages: list[Json]) -> int:
         # Normalized assistant fields already contain visible text and tool calls, so provider
