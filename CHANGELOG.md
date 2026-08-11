@@ -65,6 +65,8 @@
   the indentation of wrapped code lines, and shortens its key legend on narrow terminals.
 
 ### Changed
+- `runtime.max_agent_steps` defaults to `400` instead of `200`. The cap is a runaway stop, not a
+  budget, and long tool loops were hitting it as ordinary work rather than as a fault.
 - The note on a backgrounded `Bash` leads with `status` rather than `wait`, and says to keep
   working. It is read at the moment control comes back, and waiting is what gives it away.
 

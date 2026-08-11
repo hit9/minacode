@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-10 02:55-0700\n"
+"POT-Creation-Date: 2026-08-10 23:40-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -500,8 +500,8 @@ msgid "`max_agent_steps`"
 msgstr "`max_agent_steps`"
 
 #: ../../configuration.md
-msgid "`200`"
-msgstr "`200`"
+msgid "`400`"
+msgstr "`400`"
 
 #: ../../configuration.md
 msgid "Maximum tool steps in one turn"
@@ -600,7 +600,9 @@ msgid ""
 "Inject the project's `AGENTS.md` (falling back to `CLAUDE.md`) into every"
 " request as a bounded \"Project instructions\" section of the Environment"
 " block"
-msgstr "将项目的 `AGENTS.md`（找不到时回退 `CLAUDE.md`）注入到每次请求，作为 Environment 块中一个有边界的「Project instructions」段落"
+msgstr ""
+"将项目的 `AGENTS.md`（找不到时回退 `CLAUDE.md`）注入到每次请求，作为 Environment "
+"块中一个有边界的「Project instructions」段落"
 
 #: ../../configuration.md:139
 msgid ""
@@ -700,4 +702,7 @@ msgid ""
 msgstr ""
 "`<data_dir>/history.txt` 保存所有项目共用的输入历史，供 Up 与 Ctrl-P 调取。该文件上限为 512 "
 "KB，仅保留最近的条目。"
+
+#~ msgid "`200`"
+#~ msgstr "`200`"
 

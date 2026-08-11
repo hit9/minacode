@@ -247,7 +247,7 @@ class RuntimeSettings:
     # the model with a partial-output payload. Set to 0 to disable promotion (fall back to killing
     # on shell_timeout).
     bash_wait_timeout: int = 10
-    max_steps: int = 200
+    max_steps: int = 400
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     session_retention_days: int = 7
     # Max read-only tool calls from one model batch to execute concurrently; 1 disables parallelism.
@@ -265,7 +265,7 @@ class RuntimeSettings:
         return cls(
             shell_timeout=Config.int(runtime, "shell_timeout", 60),
             bash_wait_timeout=max(0, Config.int(runtime, "bash_wait_timeout", 10)),
-            max_steps=max(1, Config.int(runtime, "max_agent_steps", 200)),
+            max_steps=max(1, Config.int(runtime, "max_agent_steps", 400)),
             max_context_tokens=max(1, Config.int(runtime, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
@@ -463,7 +463,7 @@ model = ""
 # quick_hints = true           # model-suggested next-step chips; toggle with /hints
 # max_context_tokens = 262144      # 256K; how much of the model's window to use, not its size.
                                # Raise it for a 1M-window model; lower it for a smaller one.
-# max_agent_steps = 200
+# max_agent_steps = 400
 # shell_timeout = 60
 # worker = false               # register the Delegate tool; toggle with /worker on|off
                                # (flipping it changes the tool block and thus the prompt-cache scope)

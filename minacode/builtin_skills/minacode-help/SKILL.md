@@ -138,7 +138,7 @@ Common runtime settings live under `[runtime]`:
 - `yolo = false`: keep mutating-tool confirmations enabled.
 - `quick_hints = true`: allow next-step suggestion chips.
 - `max_context_tokens = 245760`: context ceiling used for compaction budgeting.
-- `max_agent_steps = 200`: maximum tool steps in one turn.
+- `max_agent_steps = 400`: maximum tool steps in one turn.
 - `shell_timeout = 60`: maximum shell command lifetime.
 - `bash_wait_timeout = 10`: foreground wait before a command becomes a background job.
 - `max_parallel_tools = 4`: maximum concurrent read-only tool calls.

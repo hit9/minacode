@@ -126,7 +126,7 @@ Optional; the defaults shown are used when omitted.
 | `yolo` | `false` | Start without confirmation prompts |
 | `quick_hints` | `true` | Let the model offer selectable next-step chips; toggle with `/hints` |
 | `max_context_tokens` | `262144` (256K) | How much of the model's context window to use, which sets the automatic-compaction budget. It is a budget, not the window's size: raise it for a 1M-window model, lower it for a smaller one |
-| `max_agent_steps` | `200` | Maximum tool steps in one turn |
+| `max_agent_steps` | `400` | Maximum tool steps in one turn |
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |
 | `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |
 | `max_parallel_tools` | `4` | Maximum read-only tool calls executed concurrently; `1` disables parallelism |
