@@ -262,6 +262,10 @@ class ToolRunner:
         # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to
         # printing the current worker config only (headless / non-CommandLoop runners).
         self.worker_config_picker: Callable[[], None] | None = None
+        # Injected by CommandLoop: opens a read-only full-order viewer for the Delegate
+        # confirm-time `v`/`view` key (see cli.modals.delegate_order_viewer). None degrades the
+        # `v` key to printing the whole order (headless / non-CommandLoop runners).
+        self.order_viewer: Callable[[str, list[tuple[str, str]]], None] | None = None
         # Injected by CommandLoop for the Delegate worker: ModelClient only streams when on_stream
         # is set, so an unwired worker would run unstreamed and its thinking would stay invisible.
         self.model_stream: Callable[[str, str], None] | None = None
@@ -596,6 +600,12 @@ class ToolRunner:
                 # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
                 self.delegate_config_cycle()
                 continue  # redraw the approval brief and re-ask
+            if always_option and lower in {"v", "view"}:
+                # Same whole-line exact-match rule as `c`: `v`/`view` opens the read-only order
+                # viewer; anything else (e.g. "cost too high") is an ordinary refusal reason.
+                if isinstance(tool, DelegateTool):
+                    self.delegate_order_view(call, tool)
+                continue  # redraw the approval brief and re-ask
             if lower in {"", "y", "yes"}:
                 return True, ""
             return False, "" if lower in {"n", "no"} else answer
@@ -609,6 +619,52 @@ class ToolRunner:
         self.output_fn(self.worker_config_block())
         if self.worker_config_picker is not None:
             self.worker_config_picker()
+
+    def delegate_order_view(self, call: ToolCall, tool: DelegateTool) -> None:
+        """The `v` action of a Delegate send prompt: open a read-only viewer with the full,
+        untruncated order. Without an injected viewer (headless, or a runner outside CommandLoop)
+        this prints the whole order; the confirmation prompt re-asks either way."""
+        payload = self._delegate_payload(tool)
+        order = payload.get("order")
+        if not isinstance(order, str) or not order.strip():
+            return  # nothing to view
+        header_rows = self._delegate_header_rows(payload)
+        if self.order_viewer is not None:
+            self.order_viewer(order, header_rows)
+        else:
+            self.output_fn(self.full_order_block(order, header_rows))
+
+    def full_order_block(self, order: str, header_rows: list[tuple[str, str]]) -> LogBlock:
+        """Headless fallback for the Delegate `v` action: header rows then the whole order, one
+        line each, so no order content is dropped."""
+        return LogBlock(
+            [
+                LogLine("delegate order", "", LogRole.FIELD, LogEdge.BRANCH),
+                *(LogLine(label, value, LogRole.FIELD, LogEdge.CONTINUE) for label, value in self._field_pairs(header_rows)),
+                *(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in order.splitlines()),
+            ]
+        )
+
+    @staticmethod
+    def _delegate_payload(tool: DelegateTool) -> dict:
+        """The single-dict argument of a Delegate send call, or {} when the shape differs."""
+        return tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
+
+    def _delegate_header_rows(self, payload: dict) -> list[tuple[str, str]]:
+        """(label, value) rows for a Delegate send: title, explicit send parameters, and the
+        worker configuration it runs under. The order itself is excluded; viewers show it in
+        full separately."""
+        rows: list[tuple[str, str]] = []
+        title = payload.get("title")
+        if isinstance(title, str) and title.strip():
+            rows.append(("title", self.oneline(title.strip(), 120)))
+        language = payload.get("language")
+        if isinstance(language, str) and language.strip():
+            rows.append(("language", self.oneline(language.strip(), 60)))
+        if payload.get("max_steps") is not None:
+            rows.append(("max_steps", str(payload["max_steps"])))
+        rows.extend(self.worker_config_rows())
+        return rows
 
     def worker_config_block(self) -> LogBlock:
         """The current effective worker config as a log block: one row per knob, inherited values
@@ -668,29 +724,20 @@ class ToolRunner:
         legend. FIELD-role rows render cyan left-aligned labels (padded to one column, CJK-safe)
         with default-foreground values; everything is derived from the call and the session
         config, never from mutable worker state."""
-        payload = tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
-        rows: list[tuple[str, str]] = []
-        title = payload.get("title")
-        if isinstance(title, str) and title.strip():
-            rows.append(("title", self.oneline(title.strip(), 120)))
+        payload = self._delegate_payload(tool)
+        rows = self._delegate_header_rows(payload)
         order = payload.get("order")
         if isinstance(order, str) and order.strip():
             lines = order.strip().splitlines()
             text = self.oneline(lines[0].strip(), 100)
             if len(lines) > 1:
                 text += f"  (… {len(lines) - 1} more lines)"
-            rows.append(("order", text))
-        language = payload.get("language")
-        if isinstance(language, str) and language.strip():
-            rows.append(("language", self.oneline(language.strip(), 60)))
-        if payload.get("max_steps") is not None:
-            rows.append(("max_steps", str(payload["max_steps"])))
-        rows.extend(self.worker_config_rows())
+            rows.insert(1 if rows and rows[0][0] == "title" else 0, ("order", text))
         children = [
             LogLine(label, value, LogRole.FIELD, LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
             for index, (label, value) in enumerate(self._field_pairs(rows))
         ]
-        children.append(LogLine("", "Y/Enter approve · n refuse · c worker config · else reason", LogRole.META, LogEdge.END))
+        children.append(LogLine("", "Y/Enter approve · n refuse · c worker config · v view order · else reason", LogRole.META, LogEdge.END))
         return children
 
     def finish_display(

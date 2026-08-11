@@ -9,6 +9,7 @@ without a CommandLoop instance.
 from __future__ import annotations
 
 import shutil
+import textwrap
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -270,6 +271,55 @@ def bash_output_viewer(loop: CommandLoop) -> None:
             return None
         if isinstance(result, str):
             opened = result
+        return TUI_MODAL_PENDING
+
+    loop.tui.show_modal(fragments, handle_key)
+
+
+def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple[str, str]]) -> None:
+    """Read-only viewer for the Delegate `v` key: header rows plus the complete, soft-wrapped
+    order text. Esc/q closes back to the approval prompt; nothing here edits anything."""
+    if loop.tui is None:
+        return
+    width = max(40, shutil.get_terminal_size((120, 20)).columns - 6)
+    lines: list[str] = []
+    lines.extend(f"{label}  {value}" for label, value in header_rows)
+    lines.append("")
+    for raw in order.splitlines():
+        if not raw.strip():
+            lines.append("")
+            continue
+        lines.extend(textwrap.wrap(raw, width))
+    scroll = 0
+
+    def viewport() -> int:
+        return max(3, shutil.get_terminal_size().lines - 6)
+
+    def fragments() -> StyleAndTextTuples:
+        nonlocal scroll
+        height = viewport()
+        scroll = min(scroll, max(0, len(lines) - height))
+        parts: StyleAndTextTuples = [("class:choice.disabled", "  Delegate order · read-only\n")]
+        parts.extend(("", f"  {line}\n") for line in lines[scroll : scroll + height])
+        parts.append(("class:choice.disabled", "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q close\n"))
+        return parts
+
+    def handle_key(key: str, data: str) -> Any:
+        nonlocal scroll
+        if key in {"q", "c-o", "escape"}:
+            return None
+        height = viewport()
+        if key in {"down", "j"}:
+            scroll += 1
+        elif key in {"up", "k"}:
+            scroll -= 1
+        elif key in {"pagedown", "c-d"}:
+            scroll += height if key == "pagedown" else height // 2
+        elif key in {"pageup", "c-u"}:
+            scroll -= height if key == "pageup" else height // 2
+        elif key in {"g", "G"}:
+            scroll = 0 if key == "g" else 10**9
+        scroll = max(0, scroll)
         return TUI_MODAL_PENDING
 
     loop.tui.show_modal(fragments, handle_key)

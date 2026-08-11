@@ -1278,6 +1278,87 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     assert parent.config.worker_api == "responses"  # untouched without a picker
 
 
+def test_delegate_view_opens_viewer_then_approves(tmp_path):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    order_lines = [f"line {i}" for i in range(1, 16)]
+    order = "\n".join(order_lines)
+    args = {"action": "send", "order": order, "title": "fix things", "max_steps": 7}
+    seen = []
+    answers = iter(["v", "y"])
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
+    runner.order_viewer = lambda order_text, header_rows: seen.append((order_text, header_rows))
+    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    assert (confirmed, reason) == (True, "")
+    assert len(seen) == 1  # the `v` key opened the viewer exactly once
+    viewed_order, header_rows = seen[0]
+    assert viewed_order == order  # full, untruncated order
+    assert all(line in viewed_order for line in order_lines)
+    assert any(label == "title" and value == "fix things" for label, value in header_rows)
+    assert any(label == "max_steps" and value == "7" for label, value in header_rows)
+    assert any(label in {"provider", "model", "effort", "api"} for label, _ in header_rows)
+    assert not any(label == "order" for label, _ in header_rows)  # order is shown in full in the viewer
+
+
+def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
+    from minacode.base import LogBlock, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    order_lines = [f"line {i}" for i in range(1, 16)]
+    order = "\n".join(order_lines)
+    args = {"action": "send", "order": order}
+    outputs = []
+    answers = iter(["v", "n"])
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=outputs.append)
+    # order_viewer stays None: headless / non-CommandLoop runners print the full order instead.
+    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    assert (confirmed, reason) == (False, "")
+    texts = [item.text for out in outputs if isinstance(out, LogBlock) for item, _ in out.walk()]
+    assert all(line in texts for line in order_lines)  # nothing dropped, unlike the brief excerpt
+
+
+def test_delegate_view_empty_order_is_noop(tmp_path):
+    from minacode.base import LogBlock, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    args = {"action": "send", "order": ""}
+    seen = []
+    outputs = []
+    answers = iter(["v", "y"])
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=outputs.append)
+    runner.order_viewer = lambda order_text, header_rows: seen.append((order_text, header_rows))
+    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    assert (confirmed, reason) == (True, "")
+    assert seen == []  # nothing to view: `v` is a no-op, the prompt just re-asks
+    assert not any(
+        isinstance(out, LogBlock) and any(item.label.strip() == "delegate order" for item, _ in out.walk()) for out in outputs
+    )
+
+
+def test_delegate_approval_legend_mentions_view(tmp_path):
+    from minacode.base import LogRole, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
+    children = runner.delegate_approval_children(DelegateTool(parent, [{"action": "send", "order": "o"}]))
+    legend = children[-1]
+    assert legend.role is LogRole.META
+    assert "v view order" in legend.text
+
+
 def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
     from minacode.base import ToolCall
     from minacode.context import ContextManager
