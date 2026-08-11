@@ -166,6 +166,29 @@ def test_environment_agents_md_bounded(tmp_path):
     assert context.estimated_text_tokens(injected) <= MAX_AGENTS_MD_TOKENS
 
 
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("line oriented", "\n".join(f"rule {index} " + "x" * 60 for index in range(6000))),
+        ("one very long line", "x" * 200_000),  # excerpts cannot snap to a line boundary here
+        ("wide characters", "中文规则一二三四五六七八九十" * 4000),
+        ("barely over the cap", "z" * (MAX_AGENTS_MD_TOKENS * 4 + 10)),
+    ],
+)
+def test_environment_agents_md_bounding_spends_the_budget_it_is_given(tmp_path, label, text):
+    """Bounding has a cap to respect and a budget to spend. Reserving the marker up front instead of
+    shrinking until it fits keeps a large file near its whole allowance -- overshooting the shrink
+    used to leave a quarter of the cap unused, which is a quarter of the project's instructions."""
+    (tmp_path / "AGENTS.md").write_text(text, encoding="utf-8")
+    context = ContextManager(session(tmp_path))
+    injected = context.environment().split("--- Project instructions (AGENTS.md) ---", 1)[1].lstrip("\n")
+    tokens = context.estimated_text_tokens(injected)
+
+    assert "truncated to fit the prefix" in injected
+    assert tokens <= MAX_AGENTS_MD_TOKENS, f"{label} exceeded the cap"
+    assert tokens >= MAX_AGENTS_MD_TOKENS * 0.95, f"{label} wasted the cap"
+
+
 def test_environment_agents_md_absent(tmp_path):
     s = session(tmp_path)
     info = s.system_info
