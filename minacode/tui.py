@@ -781,7 +781,8 @@ class TuiApp:
 
         def ctrl_c(event):  # pragma: no cover — interactive path
             # Never quit on Ctrl-C. Instead:
-            #   * approval mode → cancel this specific prompt (empty reply back to the agent).
+            #   * approval mode → refuse this specific prompt ("cancelled", never "" which would be
+            #     read as the default approve in confirm()).
             #   * idle chat → clear the current input silently.
             #   * agent running → discard a draft, or interrupt the turn when the input is empty.
             # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
@@ -795,7 +796,7 @@ class TuiApp:
                 self._abort_history_search()
                 return
             if self.input_mode == "approval" and self._input_pending is not None:
-                self._input_result = ""
+                self._input_result = "cancelled"
                 self._input_pending.set()
                 return
             if self.input_mode == "chat":

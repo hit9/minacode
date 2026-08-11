@@ -1168,7 +1168,9 @@ def test_interactive_tui_ctrl_c_cancels_approval_without_interrupting_turn(monke
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
-    assert result == [""]
+    # Ctrl-C refuses the approval: the input resolves to "cancelled" (never "", which confirm()
+    # would read as the default approve), and the turn is not interrupted.
+    assert result == ["cancelled"]
     assert interrupted == []
 
 

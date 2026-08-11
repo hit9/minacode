@@ -23,6 +23,10 @@
 - `Ctrl-C` now interrupts a `Job` wait. Only `Bash` was wired to the runner's cancellation, so a
   wait was unreachable from the cancelling thread and could not be taken back. Interrupting a wait
   abandons the wait only: the command keeps running and stays addressable through `Job`.
+- Ctrl-C at a tool approval prompt no longer approves the call. The approval cancel returned an
+  empty reply, which the confirmation loop read as the default "yes", so interrupting a Delegate
+  (or any tool) confirmation silently started it instead of cancelling. Ctrl-C at an approval now
+  refuses the call.
 
 ### Changed
 - The note on a backgrounded `Bash` leads with `status` rather than `wait`, and says to keep

@@ -1359,6 +1359,81 @@ def test_delegate_approval_legend_mentions_view(tmp_path):
     assert "v view order" in legend.text
 
 
+def test_delegate_confirm_cancelled_value_refuses(tmp_path):
+    # Ctrl-C in approval mode submits "cancelled" (never "", which confirm() would read as the
+    # default approve); the contract is that this value must refuse the call.
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "cancelled", output_fn=lambda text: None)
+    confirmed, reason = runner.confirm(
+        ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
+    )
+    assert confirmed is False
+    assert "cancelled" in reason
+
+
+def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from minacode.cli.modals import delegate_order_viewer
+    from minacode.tui import TUI_MODAL_PENDING
+
+    # Fixed terminal size keeps the viewport deterministic: 40 lines - 6 = 34 visible rows.
+    size = os.terminal_size((120, 40))
+    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+
+    captured = {}
+    loop = SimpleNamespace(
+        tui=SimpleNamespace(
+            show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(
+                fragments_fn=fragments_fn, key_fn=key_fn, exclusive=kwargs.get("exclusive", False)
+            )
+        )
+    )
+    order_lines = [f"line {i} " + "word " * 30 for i in range(200)]  # wraps to ~400 lines
+    delegate_order_viewer(loop, "\n".join(order_lines), [("title", "fix things")])
+    fragments = captured["fragments_fn"]
+    handle_key = captured["key_fn"]
+    assert captured["exclusive"] is True  # full-screen alternate-screen viewer
+
+    def visible_text() -> str:
+        return "".join(text for _style, text in fragments())
+
+    first = visible_text()
+    assert "Delegate order · read-only" in first
+    assert "line 0 " in first
+
+    # down/j scroll one line each; the visible slice changes.
+    assert handle_key("down", "") is TUI_MODAL_PENDING
+    second = visible_text()
+    assert second != first
+    assert handle_key("j", "") is TUI_MODAL_PENDING
+    third = visible_text()
+    assert third != second
+
+    # c-d scrolls half a page (viewport 34 -> +17 rows).
+    assert handle_key("c-d", "") is TUI_MODAL_PENDING
+    fourth = visible_text()
+    assert fourth != third
+
+    # g returns to the top; G jumps to the bottom (clamped at render time).
+    assert handle_key("g", "") is TUI_MODAL_PENDING
+    assert visible_text() == first
+    assert handle_key("G", "") is TUI_MODAL_PENDING
+    bottom = visible_text()
+    assert "line 199 " in bottom
+
+    # escape/q/c-o close the viewer.
+    assert handle_key("escape", "") is None
+    assert handle_key("q", "") is None
+    assert handle_key("c-o", "") is None
+
+
 def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
     from minacode.base import ToolCall
     from minacode.context import ContextManager

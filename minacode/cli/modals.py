@@ -322,7 +322,7 @@ def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple
         scroll = max(0, scroll)
         return TUI_MODAL_PENDING
 
-    loop.tui.show_modal(fragments, handle_key)
+    loop.tui.show_modal(fragments, handle_key, exclusive=True)
 
 
 def diff_viewer(loop: CommandLoop) -> None:
