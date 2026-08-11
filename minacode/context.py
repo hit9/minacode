@@ -59,6 +59,11 @@ class ContextManager:
     """
 
     COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+    # Fallback window when the ordinary one leaves nothing to compact. The recent window is a message
+    # count, not a size, so a handful of very large messages after the latest user message can blow
+    # the budget while all of them sit inside the kept tail -- and then every request is over budget
+    # with an empty compactable head. Never zero: the latest exchange has to survive.
+    COMPACT_MINIMUM_RECENT: ClassVar[int] = 2
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
     TOOL_RECORD_KEY: ClassVar[re.Pattern] = re.compile(r"\btr\.\d+\b")
@@ -70,6 +75,9 @@ class ContextManager:
         # hook lets orchestration expose that real phase without making context depend on a renderer.
         # False is emitted in a finally block, including model failures that fall back to trimming.
         self.on_compaction: Callable[[bool, str], None] | None = None
+        # Message count per scope ("history"/"turn") at the last automatic compaction decision. See
+        # _auto_compaction_allowed: this is what stops a compaction loop.
+        self._auto_compacted_at: dict[str, int] = {}
 
     def model_messages(self, base_system: str, turn_messages: list[Json] | None = None) -> list[Json]:
         content = base_system.strip()
@@ -173,14 +181,52 @@ class ContextManager:
         raw = self.request_tokens(messages, tools)
         if raw < budget and not self._overdue_by_usage():
             return messages
-        compacted, keep = self.compaction_parts()
-        if self._compact_messages(model, compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages):
-            messages = self.model_messages(base_system, turn_messages)
-        if turn_messages is not None and self.request_tokens(messages, tools) >= budget:
-            compacted, keep = self.turn_compaction_parts(turn_messages)
-            if self._compact_messages(model, compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages):
+        attempted = compacted_any = False
+        if self._auto_compaction_allowed("history", self.session.messages):
+            attempted = True
+            compacted, keep = self.compaction_parts()
+            if not compacted:
+                compacted, keep = self.compaction_parts(self.COMPACT_MINIMUM_RECENT)
+            if self._compact_messages(model, compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages):
+                compacted_any = True
                 messages = self.model_messages(base_system, turn_messages)
+            self._auto_compacted_at["history"] = len(self.session.messages)
+        if turn_messages is not None and self.request_tokens(messages, tools) >= budget and self._auto_compaction_allowed("turn", turn_messages):
+            attempted = True
+            compacted, keep = self.turn_compaction_parts(turn_messages)
+            if not compacted:
+                compacted, keep = self.turn_compaction_parts(turn_messages, self.COMPACT_MINIMUM_RECENT)
+            if self._compact_messages(model, compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages):
+                compacted_any = True
+                messages = self.model_messages(base_system, turn_messages)
+            self._auto_compacted_at["turn"] = len(turn_messages)
+        # Only a real dead end is worth a word: a pass ran, freed nothing, and the request is still
+        # over budget. Reporting per pass would fire on every ordinary turn, where the history pass
+        # does the work and the short current turn has nothing to give. `attempted` keeps it to one
+        # report -- once both scopes are marked, later requests skip the passes and stay quiet.
+        if attempted and not compacted_any and self.request_tokens(messages, tools) >= budget:
+            self._report_incompressible()
         return messages
+
+    def _auto_compaction_allowed(self, scope: str, messages: list[Json]) -> bool:
+        """Whether an automatic pass over `scope` may run, given it already ran at some message count.
+
+        Compaction shrinks history but cannot always get under budget -- a single huge tool result
+        is not splittable at all -- so "still over budget" is not by itself a reason to compact
+        again. Deciding twice on the same messages is the runaway compaction this has regressed into
+        before. Any change in the count (growth, or the shrink compaction itself caused) buys exactly
+        one more attempt, which also keeps a fresh, shorter turn from inheriting the previous turn's
+        mark. The count is what an attempt is spent on, so a failed attempt is spent too and the
+        report below cannot repeat on every request.
+        """
+        return self._auto_compacted_at.get(scope) != len(messages)
+
+    def _report_incompressible(self) -> None:
+        """Say that the request is going out over budget. Nothing here can fix it: what is left is
+        the latest exchange, which compaction may never drop -- so say so instead of silently
+        sending a request the provider is likely to reject."""
+        if self.on_compaction is not None:
+            self.on_compaction(False, "context is over budget and nothing is left to compact: the latest exchange alone exceeds it")
 
     def _overdue_by_usage(self) -> bool:
         """The last completed request filled ~99% of its budget, so the next one compacts even if the
@@ -280,23 +326,23 @@ class ContextManager:
             recent_messages=self.messages_text(recent),
         )
 
-    def compaction_parts(self) -> tuple[list[Json], list[Json]]:
+    def compaction_parts(self, recent: int | None = None) -> tuple[list[Json], list[Json]]:
         """Split history for manual compaction and the first automatic pass."""
         messages = self.session.messages
         index = self.latest_user_index(messages)
         if index is None:
             return self.without_compaction_summaries(messages), []
-        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :])
+        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :], recent)
         compacted = self.without_compaction_summaries(messages[:index] + compacted_tail)
         keep = self.without_compaction_summaries([messages[index]] + keep_tail)
         return compacted, keep
 
-    def turn_compaction_parts(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+    def turn_compaction_parts(self, messages: list[Json], recent: int | None = None) -> tuple[list[Json], list[Json]]:
         index = self.latest_user_index(messages)
         if index is None:
-            compacted, keep = self.compaction_parts_for(messages)
+            compacted, keep = self.compaction_parts_for(messages, recent)
             return self.without_compaction_summaries(compacted), self.without_compaction_summaries(keep)
-        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :])
+        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :], recent)
         compacted = self.without_compaction_summaries(messages[:index] + compacted_tail)
         keep = self.without_compaction_summaries([messages[index]] + keep_tail)
         return compacted, keep
@@ -304,14 +350,17 @@ class ContextManager:
     def without_compaction_summaries(self, messages: list[Json]) -> list[Json]:
         return [message for message in messages if not self.is_compaction_summary(message)]
 
-    def compaction_parts_for(self, messages: list[Json]) -> tuple[list[Json], list[Json]]:
+    def compaction_parts_for(self, messages: list[Json], recent: int | None = None) -> tuple[list[Json], list[Json]]:
         """Split messages into a compactable head and a recent tail, never inside a tool exchange.
 
         The cut walks back past a run of tool results and the assistant message that called them, since
         a history with tool calls whose results were summarized away — or results whose call is gone —
         is rejected by every provider. Giving a few extra messages to the summary is the cheaper loss.
+        That walk can reach zero, which is why a smaller `recent` does not always produce a head: a
+        latest user message followed by one enormous tool result cannot be split here at all, and
+        has to be bounded on the way in instead.
         """
-        cut = max(0, len(messages) - self.COMPACT_RECENT_MESSAGES)
+        cut = max(0, len(messages) - (self.COMPACT_RECENT_MESSAGES if recent is None else recent))
         if cut < len(messages) and messages[cut].get("role") == "tool":
             while cut > 0 and messages[cut - 1].get("role") == "tool":
                 cut -= 1

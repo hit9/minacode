@@ -15,6 +15,16 @@
   refusal reason, and because no letter is a shortcut, a reason can start with any word at all.
   Each action submits exactly the line you could have typed, so the protocol underneath is
   unchanged and headless runs keep `y`/`n`/`v`/`c` verbatim.
+- Context at 100% no longer sits there without compacting. The compactable head is everything
+  before the latest user message, and after a compaction that is only the previous summary — which
+  is filtered out — so a session whose latest user message was followed by fewer than eight
+  messages had nothing to compact and went over budget on every request from then on. Since the
+  recent window is a message count rather than a size, a few large messages were enough to trigger
+  it. A smaller window is now tried when the ordinary one leaves nothing, and when nothing can be
+  compacted at all the run says so instead of silently sending an over-budget request.
+- Automatic compaction is now explicitly limited to one pass per scope until the messages change.
+  Nothing enforced that before — the loop was prevented only as a side effect of the bug above, so
+  fixing it without a real guard would have turned a stuck context into a compaction loop.
 - A rejected `Note` no longer prints its whole body in grey. An argument rejection is meant to be a
   quiet one-line summary, but it reused the tool's display, and `Note` keeps the entire rendered
   note there so a successful call can print it — so a rejected update dimmed thirty lines and left

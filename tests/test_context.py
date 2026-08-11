@@ -579,6 +579,132 @@ def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
     assert s.messages == [{"role": "user", "content": "old"}, {"role": "assistant", "content": "answer"}]
 
 
+def _huge_history(tmp_path, steps, *, budget_tokens=200_000, chars=160_000):
+    """A session that has already been compacted once, still over budget, with `steps` large
+    assistant messages after the latest user message."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = budget_tokens
+    s.state.summary = "old summary"
+    s.messages = [
+        {"role": "user", "content": COMPACTION_SUMMARY_TITLE + "\nold summary"},
+        {"role": "user", "content": "keep going"},
+        *({"role": "assistant", "content": f"step {index} " + "y" * chars} for index in range(steps)),
+    ]
+    return s, ContextManager(s)
+
+
+class _CountingModel:
+    def __init__(self):
+        self.calls = 0
+
+    def compact(self, _text):
+        self.calls += 1
+        return {"summary": "new summary"}
+
+
+def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
+    # The loop guard. Compaction shrinks history but cannot always get under budget, so "still over
+    # budget" must not by itself justify compacting again: re-deciding on the same messages is the
+    # runaway compaction this has regressed into before. One automatic pass per scope, until the
+    # message list actually changes.
+    s, context = _huge_history(tmp_path, steps=30)
+    model = _CountingModel()
+
+    for _ in range(5):
+        context.prepare_messages(model, "system")
+
+    assert model.calls == 1
+    assert s.state.compaction_count == 1
+
+    # A new message is new information, so one more pass is allowed -- and again only one.
+    s.messages.append({"role": "assistant", "content": "another step " + "y" * 160_000})
+    for _ in range(5):
+        context.prepare_messages(model, "system")
+
+    assert model.calls == 2
+
+
+def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
+    # The recent window is a message count, not a size. Once a session has been compacted, the only
+    # compactable head is what sits before the latest user message -- and that is just the previous
+    # summary, which is filtered out. So a handful of large messages after that user message left an
+    # empty head, and every following request went out over budget without compacting anything.
+    for steps in (2, 6, 8):
+        _s, context = _huge_history(tmp_path, steps=steps)
+        budget = context.request_token_budget()
+        before = context.request_tokens(context.model_messages("system"), None)
+        model = _CountingModel()
+
+        context.prepare_messages(model, "system")
+
+        after = context.request_tokens(context.model_messages("system"), None)
+        if before < budget:
+            assert model.calls == 0, f"{steps} steps fit; nothing should have been compacted"
+        else:
+            assert model.calls == 1, f"{steps} large messages after the user message were left uncompacted"
+            assert after < budget, f"{steps} steps: still over budget after compacting"
+
+
+def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
+    # The irreducible case: the latest user message and one enormous tool result. The cut may not
+    # land between a tool result and the call that produced it, so there is nothing to compact at
+    # any window. Say so once rather than silently sending a request the provider will reject.
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 200_000
+    s.messages = [
+        {"role": "user", "content": "read the file"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "function": {"name": "Read", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "x" * 1_000_000},
+    ]
+    context = ContextManager(s)
+    reports = []
+    context.on_compaction = lambda active, error: reports.append((active, error))
+    model = _CountingModel()
+
+    for _ in range(4):
+        context.prepare_messages(model, "system")
+
+    assert model.calls == 0  # nothing could be compacted, so nothing was sent to the model
+    assert len(reports) == 1, "the dead end must be reported, and only once"
+    assert reports[0][0] is False
+    assert "nothing is left to compact" in reports[0][1]
+
+    # A new message buys one more attempt, and reports again because it is still a dead end.
+    s.messages.append({"role": "assistant", "content": "still working"})
+    context.prepare_messages(model, "system")
+    assert len(reports) == 2
+    assert model.calls == 0
+
+    # A new *user* message is different: everything before it becomes compactable again, so the
+    # dead end ends and a real compaction runs.
+    s.messages.append({"role": "user", "content": "carry on"})
+    context.prepare_messages(model, "system")
+    assert model.calls == 1
+    assert reports[-2:] == [(True, ""), (False, "")]
+
+
+def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path):
+    # Same guard for the current-turn pass, and it must not carry across turns: a fresh turn is a
+    # different (shorter) list, and blocking it because the previous turn was longer would leave the
+    # new one uncompactable.
+    _s, context = _huge_history(tmp_path, steps=2)
+    model = _CountingModel()
+    turn = [{"role": "user", "content": "request"}, *({"role": "assistant", "content": "t " + "y" * 160_000} for _ in range(30))]
+
+    for _ in range(5):
+        context.prepare_messages(model, "system", turn)
+    first = model.calls
+    assert first >= 1
+
+    for _ in range(5):
+        context.prepare_messages(model, "system", turn)
+    assert model.calls == first  # nothing changed, nothing recompacted
+
+    next_turn = [{"role": "user", "content": "next"}, *({"role": "assistant", "content": "n " + "y" * 160_000} for _ in range(30))]
+    context.prepare_messages(model, "system", next_turn)
+    assert model.calls > first  # a new turn is not blocked by the previous turn's mark
+
+
 def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch):
     context = ContextManager(session(tmp_path))
     calls = 0
