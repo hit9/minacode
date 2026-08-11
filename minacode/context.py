@@ -15,6 +15,7 @@ from minacode.base import (
     PROVIDER_ECHO_KEYS,
     RESPONSES_OUTPUT_KEY,
     SESSION_EVENT_KEY,
+    TOOL_OUTPUT_ASSET_SUFFIX,
     Json,
     Text,
 )
@@ -484,7 +485,7 @@ class ContextManager:
         """
         try:
             directory = self.session.images.assets_dir()
-            path = os.path.join(directory, key + ".txt")
+            path = os.path.join(directory, key + TOOL_OUTPUT_ASSET_SUFFIX)
             os.makedirs(directory, exist_ok=True)
             with open(path, "w", encoding="utf-8") as file:
                 file.write(text)

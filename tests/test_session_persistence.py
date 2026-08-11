@@ -13,6 +13,7 @@ from minacode.config import (
     Config,
     RuntimeSettings,
 )
+from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
@@ -166,6 +167,41 @@ def test_transcript_tool_metadata_does_not_duplicate_retained_output_or_file_sna
     assert "transcript_tool_records" not in snapshot
     assert snapshot["transcript_turn_diffs"] == [{"key": key, "turn": 1, "path": "x.py", "diff": "-old\n+new\n", "round": 0}]
     assert "before_blob" not in snapshot["transcript_turn_diffs"][0]
+
+
+def test_materialized_tool_output_survives_the_asset_collector(tmp_path):
+    """The reported failure: the asset collector kept only image refs, so the file a truncated tool
+    result was materialized to was deleted on the very next save -- while the marker in the
+    conversation went on advertising its path, sending the model hunting for a file that was gone."""
+    s = session_with_data_dir(tmp_path)
+    large = "\n".join(f"line {index}" for index in range(20000))
+    key = s.store_tool_result("Bash", ["big"], large)
+    marker = ContextManager(s).bound_output(large, key)
+    path = os.path.join(s.images.assets_dir(), key + ".txt")
+    assert f'file="{path}"' in marker
+
+    s.messages.append({"role": "user", "content": marker})
+    s.save_snapshot()
+    s.save_snapshot()  # the collector runs on every save, not only the first
+
+    with open(path, encoding="utf-8") as file:
+        assert file.read() == large
+
+
+def test_materialized_tool_output_expires_with_its_tool_result(tmp_path):
+    """It is retained by its result, not forever: once the result is pruned the file is collected,
+    so a long session cannot accumulate an asset for every large output it ever saw."""
+    s = session_with_data_dir(tmp_path)
+    large = "\n".join(f"line {index}" for index in range(20000))
+    key = s.store_tool_result("Bash", ["big"], large)
+    ContextManager(s).bound_output(large, key)
+    path = os.path.join(s.images.assets_dir(), key + ".txt")
+    assert os.path.exists(path)
+
+    s.tool_results.pop(key)
+    s.save_snapshot()
+
+    assert not os.path.exists(path)
 
 
 def test_transcript_diff_preview_is_bounded(tmp_path):

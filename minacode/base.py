@@ -43,6 +43,9 @@ logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
 for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
     logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
 MAX_TOOL_OUTPUT_TOKENS = 6_000
+# Extension of the file a truncated tool result is materialized to, named after the result's key.
+# ContextManager.materialize_output writes it; the session store's asset collector retains it.
+TOOL_OUTPUT_ASSET_SUFFIX = ".txt"
 # Cap on the AGENTS.md (or CLAUDE.md fallback) content injected into every request's fixed
 # prefix, per DESIGN.md's "bound the fixed prefix" rule; truncation happens in
 # ContextManager.environment, so SystemInfo.detect returns the file verbatim.

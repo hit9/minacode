@@ -52,6 +52,11 @@
   over the budget are written, and a read-only or full disk leaves truncation itself untouched.
 
 ### Fixed
+- The file a truncated tool result is materialized to is no longer deleted on the next save. The
+  session's asset collector kept only image references, so it collected the file immediately while
+  the `<bounded_output>` marker went on advertising its path - the model was sent looking for a file
+  that no longer existed. The file is now retained for as long as its tool result is, and collected
+  with it.
 - A truncated tool result no longer collapses to nothing when the output has very long lines. The
   head and tail excerpts snap to a line boundary, which threw away the whole excerpt when a single
   line was longer than the budget - the common shape of an MCP server returning compact JSON, where

@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
-from minacode.base import SESSION_EVENT_KEY, Json, MinacodeError, ModelUsage, Text
+from minacode.base import SESSION_EVENT_KEY, TOOL_OUTPUT_ASSET_SUFFIX, Json, MinacodeError, ModelUsage, Text
 from minacode.config import Config, ConfigFile, RuntimeSettings
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef
 
@@ -533,6 +533,11 @@ class SessionSnapshotStore:
             refs.update(image.ref for raw in raw_images if (image := ImageRef.from_json(raw)) is not None)
         refs.update(image.ref for item in self.session.pending_user_inputs for image in item.images)
         refs.update(self.session.images.retained_refs)
+        # Images are not the only thing in here: ContextManager.materialize_output writes a
+        # truncated tool result's full text as "<key>.txt", and the marker in the conversation
+        # promises that path. Retain one for as long as its tool result is retained, so the two
+        # expire together and the promise is never left pointing at a deleted file.
+        refs.update(key + TOOL_OUTPUT_ASSET_SUFFIX for key in self.session.tool_results)
         with contextlib.suppress(OSError):
             for entry in os.scandir(directory):
                 if entry.is_file() and entry.name not in refs:
