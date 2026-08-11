@@ -48,8 +48,10 @@
   truncated marker. The `<bounded_output>` marker carries the file's absolute path under
   `file="..."`, so the model can `Read`, `Search`, or `grep` the full output instead of paging
   through `Recall` slices - which are themselves re-truncated and can't show the whole thing at
-  once. The file lives in the session's `.assets` directory and is cleaned up with it; only outputs
-  over the budget are written, and a read-only or full disk leaves truncation itself untouched.
+  once. The marker also carries a `hint="..."` naming the cheaper move, because an attribute name
+  says where the rest of the output went, not what to do about it. The file lives in the session's
+  `.assets` directory and is cleaned up with it; only outputs over the budget are written, and a
+  read-only or full disk leaves truncation itself untouched.
 
 ### Fixed
 - `Read` and `Search` no longer ask for confirmation to open the session's own assets. The file a

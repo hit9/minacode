@@ -456,6 +456,12 @@ class ContextManager:
     def is_compaction_summary(self, message: Json) -> bool:
         return message.get("role") == "user" and str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE)
 
+    # What to do about the omitted middle, in the marker that reports it. Kept to one line: this is
+    # paid on every truncated output, and the model needs the next move, not an explanation. Ordered
+    # by what is certain to be there -- Search is built in, grep is near-universal, jq is neither.
+    OMITTED_OUTPUT_HINT = "file holds this output in full; Search it for the part you need, or Bash grep/jq -- cheaper than paging the text back with Recall"
+    OMITTED_OUTPUT_RECALL_HINT = "Recall this key with ranges to page the omitted lines back"
+
     def bound_output(self, text: str, key: str = "", *, stable_marker: bool = False) -> str:
         estimated = self.estimated_text_tokens(text)
         if estimated <= MAX_TOOL_OUTPUT_TOKENS:
@@ -474,6 +480,11 @@ class ContextManager:
             path = self.materialize_output(key, text)
             if path:
                 note += f' file="{path}"'
+            # An attribute name is not an instruction: `recall` and `file` say where the rest of the
+            # output is, not what to do about it. Say which one to reach for, because the cheap move
+            # is the non-obvious one -- searching the file costs the matched lines, while recalling
+            # pays context for every line it pages back, including all the ones that were skipped.
+            note += f' hint="{self.OMITTED_OUTPUT_HINT if path else self.OMITTED_OUTPUT_RECALL_HINT}"'
         note += "/>"
         return "\n".join(part for part in (head.rstrip(), note, tail.lstrip()) if part)
 

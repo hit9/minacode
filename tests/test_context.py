@@ -278,6 +278,27 @@ def test_bounded_output_materializes_full_output_to_asset_file(tmp_path):
         assert file.read() == large
 
 
+def test_bounded_output_marker_names_the_cheaper_way_to_read_the_rest(tmp_path):
+    """`recall` and `file` say where the omitted middle went, not what to do about it, and the cheap
+    move is the non-obvious one. The marker points at whichever one the result actually has."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+    large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
+
+    bounded = context.bound_output(large, "tr.1")
+    assert f'hint="{ContextManager.OMITTED_OUTPUT_HINT}"' in bounded
+
+    # No file to point at: the marker falls back to naming the Recall form that pages.
+    (tmp_path / "blocked.txt").write_text("x", encoding="utf-8")
+    s.images.assets_dir = lambda: str(tmp_path / "blocked.txt" / "sub")
+    fileless = context.bound_output(large, "tr.2")
+    assert 'file="' not in fileless
+    assert f'hint="{ContextManager.OMITTED_OUTPUT_RECALL_HINT}"' in fileless
+
+    # The compaction summary is bounded with no key at all: nothing to recall, nothing to advise.
+    assert "hint=" not in context.bound_output(large, "")
+
+
 def test_bounded_output_small_or_keyless_never_writes_asset_file(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
