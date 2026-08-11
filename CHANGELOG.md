@@ -27,6 +27,16 @@
   empty reply, which the confirmation loop read as the default "yes", so interrupting a Delegate
   (or any tool) confirmation silently started it instead of cancelling. Ctrl-C at an approval now
   refuses the call.
+- Cancelling an approval is now its own signal rather than a stand-in string, closing the two
+  remaining ways a cancel could still be read as an answer: `Ctrl-D` on an empty approval line
+  approved the call, and so did quitting the app while an approval was waiting. Both now refuse.
+  The placeholder text a cancel used to submit also no longer leaks — it reached the model as the
+  refusal reason, and it became the literal answer to an `Ask` free-text question; Ctrl-C on an
+  `Ask` page now dismisses the batch.
+- The Delegate order viewer no longer overflows on CJK text. It wrapped by character count, so an
+  order written in Chinese produced rows twice the terminal width and the overflow was cut off.
+  Wrapping now measures terminal cells, follows a terminal resize while the viewer is open, keeps
+  the indentation of wrapped code lines, and shortens its key legend on narrow terminals.
 
 ### Changed
 - The note on a backgrounded `Bash` leads with `status` rather than `wait`, and says to keep

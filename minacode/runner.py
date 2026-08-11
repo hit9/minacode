@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from prompt_toolkit.utils import get_cwidth
 
@@ -591,9 +591,13 @@ class ToolRunner:
         while True:
             self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit))
             always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
-            answer = self.input_fn(
-                LogBlock.prefix(2, LogEdge.CONTINUE) + ("Approve delegation? [Y/n/c] " if always_option else "Approve? [Y/n or reason] ")
-            ).strip()
+            reply = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + ("Approve delegation? [Y/n/c] " if always_option else "Approve? [Y/n or reason] "))
+            if reply is None:
+                # The TUI cancelled the prompt (Ctrl-C, Ctrl-D on an empty line, app shutdown).
+                # A cancel is a plain refusal: never the default approve, and never a reason —
+                # the model would read placeholder text as something the user actually typed.
+                return False, ""
+            answer = reply.strip()
             lower = answer.lower()
             if always_option and lower in {"c", "config"}:
                 # The whole-line `c`/`config` opens the worker configuration loop; anything else
@@ -603,8 +607,8 @@ class ToolRunner:
             if always_option and lower in {"v", "view"}:
                 # Same whole-line exact-match rule as `c`: `v`/`view` opens the read-only order
                 # viewer; anything else (e.g. "cost too high") is an ordinary refusal reason.
-                if isinstance(tool, DelegateTool):
-                    self.delegate_order_view(call, tool)
+                # `always_option` already established that this is a DelegateTool.
+                self.delegate_order_view(cast(DelegateTool, tool))
                 continue  # redraw the approval brief and re-ask
             if lower in {"", "y", "yes"}:
                 return True, ""
@@ -620,7 +624,7 @@ class ToolRunner:
         if self.worker_config_picker is not None:
             self.worker_config_picker()
 
-    def delegate_order_view(self, call: ToolCall, tool: DelegateTool) -> None:
+    def delegate_order_view(self, tool: DelegateTool) -> None:
         """The `v` action of a Delegate send prompt: open a read-only viewer with the full,
         untruncated order. Without an injected viewer (headless, or a runner outside CommandLoop)
         this prints the whole order; the confirmation prompt re-asks either way."""
@@ -650,14 +654,17 @@ class ToolRunner:
         """The single-dict argument of a Delegate send call, or {} when the shape differs."""
         return tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
 
-    def _delegate_header_rows(self, payload: dict) -> list[tuple[str, str]]:
+    def _delegate_header_rows(self, payload: dict, order_row: tuple[str, str] | None = None) -> list[tuple[str, str]]:
         """(label, value) rows for a Delegate send: title, explicit send parameters, and the
-        worker configuration it runs under. The order itself is excluded; viewers show it in
-        full separately."""
+        worker configuration it runs under. The order itself is excluded, because the viewer shows
+        it in full separately; the approval brief passes its one-line excerpt as `order_row` and
+        this decides where it sits, so callers never have to splice a row into this list."""
         rows: list[tuple[str, str]] = []
         title = payload.get("title")
         if isinstance(title, str) and title.strip():
             rows.append(("title", self.oneline(title.strip(), 120)))
+        if order_row is not None:
+            rows.append(order_row)
         language = payload.get("language")
         if isinstance(language, str) and language.strip():
             rows.append(("language", self.oneline(language.strip(), 60)))
@@ -725,14 +732,15 @@ class ToolRunner:
         with default-foreground values; everything is derived from the call and the session
         config, never from mutable worker state."""
         payload = self._delegate_payload(tool)
-        rows = self._delegate_header_rows(payload)
         order = payload.get("order")
+        order_row = None
         if isinstance(order, str) and order.strip():
             lines = order.strip().splitlines()
             text = self.oneline(lines[0].strip(), 100)
             if len(lines) > 1:
                 text += f"  (… {len(lines) - 1} more lines)"
-            rows.insert(1 if rows and rows[0][0] == "title" else 0, ("order", text))
+            order_row = ("order", text)
+        rows = self._delegate_header_rows(payload, order_row)
         children = [
             LogLine(label, value, LogRole.FIELD, LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
             for index, (label, value) in enumerate(self._field_pairs(rows))

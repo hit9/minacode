@@ -1359,21 +1359,51 @@ def test_delegate_approval_legend_mentions_view(tmp_path):
     assert "v view order" in legend.text
 
 
-def test_delegate_confirm_cancelled_value_refuses(tmp_path):
-    # Ctrl-C in approval mode submits "cancelled" (never "", which confirm() would read as the
-    # default approve); the contract is that this value must refuse the call.
+def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
+    # The TUI signals Ctrl-C / Ctrl-D-on-empty / app shutdown by returning None from request_input.
+    # confirm() must read that as a plain refusal: not "" (the default approve) and not a reason,
+    # which would reach the model as text the user never typed. Holds for every tool, not just
+    # Delegate, so check the Delegate prompt and an ordinary one.
     from minacode.base import ToolCall
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "cancelled", output_fn=lambda text: None)
-    confirmed, reason = runner.confirm(
-        ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
-    )
-    assert confirmed is False
-    assert "cancelled" in reason
+    args = {"action": "send", "order": "o"}
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: None, output_fn=lambda text: None)
+    assert runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args])) == (False, "")
+
+    call = ToolCall("bash-1", "Bash", ["echo hi"])
+    assert runner.confirm(call, TOOL_REGISTRY["Bash"](parent, ["echo hi"])) == (False, "")
+
+
+def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
+    # A CJK order is two terminal cells per character. Wrapping by character count (textwrap) makes
+    # every row twice as wide as the terminal, and the modal window does not wrap, so the overflow
+    # is simply lost. No rendered row may exceed the terminal width.
+    import os
+    from types import SimpleNamespace
+
+    from prompt_toolkit.utils import get_cwidth
+
+    from minacode.cli.modals import delegate_order_viewer
+
+    size = os.terminal_size((60, 40))
+    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+
+    captured = {}
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "    def nested(): " + "x = 1  " * 20])
+    delegate_order_viewer(loop, order, [("title", "中文标题" * 10)])
+
+    rows = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
+    assert rows, "the viewer rendered nothing"
+    assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
+    assert any("把这个仓库里的审批快捷键" in row for row in rows)  # the CJK text is still there, just wrapped
+    # Continuation rows of an indented source line keep that indent, so code in an order stays readable.
+    nested = [row for row in rows if "x = 1" in row]
+    assert len(nested) > 1 and all(row.startswith("      ") for row in nested)
 
 
 def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):

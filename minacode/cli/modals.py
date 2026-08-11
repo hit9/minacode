@@ -9,7 +9,6 @@ without a CommandLoop instance.
 from __future__ import annotations
 
 import shutil
-import textwrap
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -189,6 +188,8 @@ def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
             index = result[1]
             prompt = f"({index + 1}/{len(specs)}) {specs[index].question}" if len(specs) > 1 else specs[index].question
             answer = loop.tui.request_input("\n" + prompt)
+            if answer is None:
+                return [DISMISSED] * len(specs)  # Ctrl-C on a free-text page dismisses the batch
             state.picked[index] = answer
             if all(picked is not None for picked in state.picked):
                 break  # a free-text answer to the last question submits without re-entering the modal
@@ -281,27 +282,57 @@ def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple
     order text. Esc/q closes back to the approval prompt; nothing here edits anything."""
     if loop.tui is None:
         return
-    width = max(40, shutil.get_terminal_size((120, 20)).columns - 6)
-    lines: list[str] = []
-    lines.extend(f"{label}  {value}" for label, value in header_rows)
-    lines.append("")
-    for raw in order.splitlines():
-        if not raw.strip():
-            lines.append("")
-            continue
-        lines.extend(textwrap.wrap(raw, width))
+    margin = "  "
+    wrapped: dict[int, list[str]] = {}
+
+    def wrap(text: str, width: int, continuation: str) -> list[str]:
+        """One source line as display rows. Text.wrap_styled measures in terminal cells, so a CJK
+        order (two cells per character) wraps where it actually reaches the right edge instead of
+        overflowing at twice the width; `continuation` re-indents the rows after the first so
+        indented code in an order keeps its shape."""
+        rows = Text.wrap_styled([("", margin)], [("", margin + continuation)], [("", text)], width)
+        return ["".join(chunk for _style, chunk in row) for row in rows]
+
+    def layout(width: int) -> list[str]:
+        """Header rows then the whole order, wrapped for `width`. Cached per width: the wrap has to
+        be redone when the terminal is resized, but not on every keypress."""
+        if width in wrapped:
+            return wrapped[width]
+        lines: list[str] = []
+        for label, value in header_rows:
+            lines.extend(wrap(f"{label}  {value}", width, " " * (get_cwidth(label) + 2)))
+        lines.append("")
+        for raw in order.splitlines():
+            if not raw.strip():
+                lines.append("")
+                continue
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            lines.extend(wrap(raw, width, indent[: max(0, width // 4)]))
+        wrapped[width] = lines
+        return lines
+
     scroll = 0
 
+    def size() -> tuple[int, int]:
+        columns, rows = shutil.get_terminal_size((120, 24))
+        return max(20, columns), max(3, rows - 6)
+
     def viewport() -> int:
-        return max(3, shutil.get_terminal_size().lines - 6)
+        return size()[1]
 
     def fragments() -> StyleAndTextTuples:
         nonlocal scroll
-        height = viewport()
+        width, height = size()
+        lines = layout(width)
         scroll = min(scroll, max(0, len(lines) - height))
+        # The full legend needs ~78 cells; drop to the key names alone rather than let it spill past
+        # the right edge on a narrow terminal, where the modal window would just cut it off.
+        legend = "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q close"
+        if get_cwidth(legend) > width:
+            legend = "  ↑/↓ · Ctrl-U/D · g/G · Esc/q close"
         parts: StyleAndTextTuples = [("class:choice.disabled", "  Delegate order · read-only\n")]
-        parts.extend(("", f"  {line}\n") for line in lines[scroll : scroll + height])
-        parts.append(("class:choice.disabled", "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q close\n"))
+        parts.extend(("", f"{line}\n") for line in lines[scroll : scroll + height])
+        parts.append(("class:choice.disabled", Text.clip_width(legend, width) + "\n"))
         return parts
 
     def handle_key(key: str, data: str) -> Any:

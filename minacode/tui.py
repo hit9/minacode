@@ -217,7 +217,9 @@ class TuiApp:
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
         self.input_prompt = UiPrinter.PROMPT_PREFIX
         self._input_pending: threading.Event | None = None
-        self._input_result: str = ""
+        # None is the cancellation signal, distinct from every string the user can submit (including
+        # ""). See request_input: callers must not read a cancel as an answer.
+        self._input_result: str | None = None
         self.status_label: str = ""
         self.modal: TuiModal | None = None
         self.modal_lock = threading.Lock()
@@ -227,10 +229,16 @@ class TuiApp:
         self.exclusive_modal_window: Window | None = None
         self.status_window: Window | None = None
 
-    def request_input(self, prompt: str) -> str:
+    def request_input(self, prompt: str) -> str | None:
         """Called from the agent thread to get a line of user input inline (approval prompts,
-        Ask tool, etc.). Blocks until the TUI thread's widget submits. If the app has exited
-        before submission, returns "" so the caller unwinds cleanly."""
+        Ask tool, etc.). Blocks until the TUI thread's widget submits, and returns what was
+        submitted -- possibly "".
+
+        Returns None when the input was cancelled instead of answered: Ctrl-C, Ctrl-D on an empty
+        line, or the app exiting while the agent thread is still parked here. Cancellation must be
+        its own value, not a string: "" is a legitimate submission that `confirm` reads as the
+        default approve, and any placeholder text ("cancelled") would reach the model as a real
+        answer. Callers decide what a cancel means -- `confirm` refuses, Ask dismisses."""
         # A tool approval must not replace an already-visible selector. Wait for that selector to
         # close, then reuse the shared input row.
         with self.modal_lock:
@@ -240,7 +248,7 @@ class TuiApp:
         previous_document: Document | None = None
         previous_images = self.input_images
         self._input_pending = event
-        self._input_result = ""
+        self._input_result = None
 
         def switch(document: Document, mode: str, prompt_text: str, done: threading.Event) -> None:
             nonlocal previous_document
@@ -781,8 +789,8 @@ class TuiApp:
 
         def ctrl_c(event):  # pragma: no cover — interactive path
             # Never quit on Ctrl-C. Instead:
-            #   * approval mode → refuse this specific prompt ("cancelled", never "" which would be
-            #     read as the default approve in confirm()).
+            #   * approval mode → cancel this specific prompt (None, never "" which confirm() reads
+            #     as the default approve, and never placeholder text the model would see).
             #   * idle chat → clear the current input silently.
             #   * agent running → discard a draft, or interrupt the turn when the input is empty.
             # Exit remains reserved for Ctrl-D on an empty chat input or the /exit slash command.
@@ -796,7 +804,7 @@ class TuiApp:
                 self._abort_history_search()
                 return
             if self.input_mode == "approval" and self._input_pending is not None:
-                self._input_result = "cancelled"
+                self._input_result = None
                 self._input_pending.set()
                 return
             if self.input_mode == "chat":
@@ -830,7 +838,9 @@ class TuiApp:
 
         def ctrl_d(event):  # pragma: no cover — interactive path
             if self.input_mode == "approval" and self._input_pending is not None:
-                self._input_result = self.input_buffer.text
+                # EOF on an empty approval line cancels rather than submitting "", which confirm()
+                # would read as the default approve -- the same trap Ctrl-C used to fall into.
+                self._input_result = self.input_buffer.text or None
                 self._input_pending.set()
             elif self.input_buffer.text and self.input_mode in {"chat", "running"}:
                 self.input_buffer.delete()
@@ -977,10 +987,11 @@ class TuiApp:
         finally:
             self.ready.set()
             self.app = None
-            # If the agent thread is still parked in request_input at exit, unblock it so its
-            # frame unwinds instead of leaking a thread.
+            # If the agent thread is still parked in request_input at exit, unblock it so its frame
+            # unwinds instead of leaking a thread. It unblocks as a cancel: a pending approval must
+            # not be granted by the app shutting down.
             if self._input_pending is not None:
-                self._input_result = ""
+                self._input_result = None
                 self._input_pending.set()
             if self.modal is not None:
                 self.close_modal(None)

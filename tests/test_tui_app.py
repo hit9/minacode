@@ -1168,10 +1168,57 @@ def test_interactive_tui_ctrl_c_cancels_approval_without_interrupting_turn(monke
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
-    # Ctrl-C refuses the approval: the input resolves to "cancelled" (never "", which confirm()
-    # would read as the default approve), and the turn is not interrupted.
-    assert result == ["cancelled"]
+    # Ctrl-C cancels the approval: request_input resolves to None, which is neither "" (confirm()
+    # reads that as the default approve) nor text the model could mistake for a typed answer.
+    # The turn itself is not interrupted.
+    assert result == [None]
     assert interrupted == []
+
+
+def test_interactive_tui_ctrl_d_on_an_empty_approval_cancels_instead_of_approving(monkeypatch):
+    # EOF on an empty approval line used to submit "", which confirm() reads as the default
+    # approve -- the same trap Ctrl-C fell into. It must cancel; with text typed it still submits.
+    result = []
+    app = TuiApp()
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        for typed in ("", "too risky"):
+            approval = threading.Thread(target=lambda: result.append(app.request_input("Approve? ")), daemon=True)
+            approval.start()
+            wait_until(lambda: app.input_mode == "approval")
+            if typed:
+                pipe_input.send_text(typed)
+                wait_until(lambda text=typed: app.input_buffer.text == text)
+            pipe_input.send_text("\x04")
+            approval.join(timeout=1)
+            assert not approval.is_alive()
+            wait_until(lambda: app.input_mode == "chat")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert result == [None, "too risky"]
+
+
+def test_interactive_tui_exit_while_an_approval_is_pending_cancels_it(monkeypatch):
+    # Shutting the app down unblocks the parked agent thread, but must not do so with "" -- that
+    # would have confirm() grant the pending call on the way out.
+    result = []
+    app = TuiApp()
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        approval = threading.Thread(target=lambda: result.append(app.request_input("Approve? ")), daemon=True)
+        approval.start()
+        wait_until(lambda: app.input_mode == "approval")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+        approval.join(timeout=1)
+        assert not approval.is_alive()
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert result == [None]
 
 
 def test_interactive_tui_ctrl_c_closes_modal_and_restores_input_focus(monkeypatch):

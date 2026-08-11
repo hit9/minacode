@@ -691,9 +691,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             if promote:
                 self.with_status_paused(lambda: tui.write_to_scrollback(lambda: self.emit_agent_output(promote)))
 
-    def tool_input(self, prompt: str = "") -> str:
+    def tool_input(self, prompt: str = "") -> str | None:
         # Under the TUI, route agent approvals through TuiApp's input widget instead of a separate
-        # pt Application (pt does not nest).
+        # pt Application (pt does not nest). None propagates the TUI's cancel signal; the headless
+        # `input` path can only return a string.
         if self.tui is not None:
             return self.tui.request_input(prompt)
 
