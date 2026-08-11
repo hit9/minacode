@@ -1415,20 +1415,26 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
     # Approve is first because it is the default; Refuse is last because Escape already refuses in
     # one key, while every Tab spent reaching View order is a key the user actually presses.
     send = DelegateTool(parent, [{"action": "send", "order": "o"}])
-    assert runner.declare_approval_form(send, True) == [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]
+    send_actions = runner.approval_actions(send, True)
+    assert send_actions == [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]
+    assert runner.declare_approval_form(send_actions) is True
 
     # No order means nothing to view, so the action is not offered rather than opening an empty one.
     orderless = DelegateTool(parent, [{"action": "send", "order": ""}])
-    assert runner.declare_approval_form(orderless, True) == [("Approve", ""), ("Worker config", "c"), ("Refuse", "n")]
+    orderless_actions = runner.approval_actions(orderless, True)
+    assert orderless_actions == [("Approve", ""), ("Worker config", "c"), ("Refuse", "n")]
+    assert runner.declare_approval_form(orderless_actions) is True
 
     # Every other tool gets approve/refuse: `c` and `v` are Delegate actions, Bash has no equivalent.
     bash = TOOL_REGISTRY["Bash"](parent, ["rm -rf build"])
-    assert runner.declare_approval_form(bash, False) == [("Approve", ""), ("Refuse", "n")]
+    bash_actions = runner.approval_actions(bash, False)
+    assert bash_actions == [("Approve", ""), ("Refuse", "n")]
+    assert runner.declare_approval_form(bash_actions) is True
     assert [len(actions) for actions in declared] == [4, 3, 2]
 
     # Headless: nothing is wired, so nothing is claimed and the typed protocol is what is offered.
     runner.approval_form = None
-    assert runner.declare_approval_form(send, True) == []
+    assert runner.declare_approval_form(send_actions) is False
     assert runner.approval_prompt(True, []) == "Approve delegation? [Y/n/c] "
     assert runner.approval_prompt(False, []) == "Approve? [Y/n or reason] "
     assert runner.approval_prompt(False, [("Approve", "")]) == "reason › "
@@ -1460,11 +1466,29 @@ def test_delegate_legend_prints_only_without_an_action_row(tmp_path):
 
     # With a live action row the legend would be a stale duplicate, so the brief ends at its rows —
     # and the last one has to take over the closing edge.
-    form = runner.declare_approval_form(tool, True) or [("Approve", "")]
-    children = runner.delegate_approval_children(tool, form)
-    assert all(runner.DELEGATE_LEGEND not in (line.text or "") for line in children)
+    actions = runner.approval_actions(tool, True)
+    children = runner.delegate_approval_children(tool, actions, actions)
+    assert all("Y/Enter approve" not in (line.text or "") for line in children)
     assert children[-1].edge is LogEdge.END
     assert children[0].edge is LogEdge.BRANCH
+
+
+def test_delegate_legend_offers_only_the_actions_the_call_has(tmp_path):
+    """The action row already hid `View order` when the send carries no order, but the legend -- the
+    only guidance a headless run gets -- still advertised it, and typing `v` then re-asked in silence
+    with nothing viewed. Both are built from one list of actions, so they cannot disagree."""
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
+    orderless = DelegateTool(parent, [{"action": "send"}])
+
+    legend = runner.delegate_approval_children(orderless)[-1].text or ""
+    assert "v view order" not in legend
+    assert "c worker config" in legend  # the actions it does have are untouched
+    assert legend == runner.delegate_legend(runner.approval_actions(orderless, True))
 
 
 def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):

@@ -599,15 +599,16 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
-        # Declared before the brief is drawn, because the brief only prints the typed legend when
-        # there is no form to show it live.
-        form = self.declare_approval_form(tool, always_option)
+        # Decided before the brief is drawn: the brief needs the actions either way -- live in the
+        # form, or spelled out in the typed legend when there is no form to show them.
+        actions = self.approval_actions(tool, always_option)
+        form = actions if self.declare_approval_form(actions) else []
         # Printed once, outside the loop. The `c` and `v` actions come back here to ask again, and
         # a second copy of the brief in the transcript is noise: the first one is still on screen,
         # and what those actions changed (or showed) they report themselves.
-        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, form=form))
+        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, form=form, actions=actions))
         while True:
-            self.declare_approval_form(tool, always_option)  # the TUI drops the form when a prompt resolves
+            self.declare_approval_form(actions)  # the TUI drops the form when a prompt resolves
             reply = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + self.approval_prompt(always_option, form))
             if reply is None:
                 # The TUI cancelled the prompt (Ctrl-C, Ctrl-D on an empty line, app shutdown).
@@ -631,10 +632,11 @@ class ToolRunner:
                 return True, ""
             return False, "" if lower in {"n", "no"} else answer
 
-    def declare_approval_form(self, tool: Tool, always_option: bool) -> list[tuple[str, str]]:
-        """Offer this prompt's actions to the TUI as a selectable row, and return the ones it took.
+    def approval_actions(self, tool: Tool, always_option: bool) -> list[tuple[str, str]]:
+        """What this prompt can do, as (label, answer) pairs with the default first.
 
-        Ordered by how often they are wanted, because reaching the nth costs n-1 Tabs. Refusing
+        The one answer to the question, so the action row and the typed legend cannot disagree about
+        it. Ordered by how often they are wanted, because reaching the nth costs n-1 Tabs. Refusing
         sits last despite being common: Escape already refuses in one key. Every action's answer is
         the whole line the user could have typed, so the typed protocol underneath is untouched and
         a headless run loses the row, not the actions."""
@@ -644,7 +646,12 @@ class ToolRunner:
                 actions.append(("View order", "v"))  # nothing to view without an order, so do not offer it
             actions.append(("Worker config", "c"))
         actions.append(("Refuse", "n"))
-        return actions if self.approval_form is not None and self.approval_form(actions) else []
+        return actions
+
+    def declare_approval_form(self, actions: list[tuple[str, str]]) -> bool:
+        """Offer the actions to the TUI as a selectable row; report whether it took them. False
+        (headless, piped stdin) sends the brief back to printing the typed legend."""
+        return self.approval_form is not None and self.approval_form(actions)
 
     @staticmethod
     def approval_prompt(always_option: bool, form: list[tuple[str, str]]) -> str:
@@ -757,12 +764,13 @@ class ToolRunner:
         batch_suffix: str = "",
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
         form: list[tuple[str, str]] | None = None,
+        actions: list[tuple[str, str]] | None = None,
     ) -> LogBlock:
         role = LogRole.TOOL if status == "confirm" else LogRole.AUTO
         root = self.log_root(self.short_call(call), role, batch_suffix, call)
         children = []
         if isinstance(tool, DelegateTool) and tool.always_confirms():
-            children.extend(self.delegate_approval_children(tool, form or []))
+            children.extend(self.delegate_approval_children(tool, form or [], actions))
         elif tool.NAME == "Edit":
             preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
             preview_lines = preview.rstrip().splitlines()
@@ -772,9 +780,24 @@ class ToolRunner:
         return LogBlock.hierarchy(root, children)
 
     # The typed protocol, spelled out for runs with no action row to show it: headless, piped stdin.
-    DELEGATE_LEGEND: ClassVar[str] = "Y/Enter approve · n refuse · c worker config · v view order · else reason"
+    # Keyed by the action's answer so the legend can be built from the offered actions and cannot
+    # advertise one the call has no use for; ordered here rather than by the row, which leads with
+    # what is reached most often while a legend reads best with the two answers first.
+    DELEGATE_LEGEND_SEGMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("", "Y/Enter approve"),
+        ("n", "n refuse"),
+        ("c", "c worker config"),
+        ("v", "v view order"),
+    )
 
-    def delegate_approval_children(self, tool: DelegateTool, form: list[tuple[str, str]] | None = None) -> list[LogLine]:
+    @classmethod
+    def delegate_legend(cls, actions: list[tuple[str, str]]) -> str:
+        offered = {answer for _label, answer in actions}
+        return " · ".join(text for answer, text in cls.DELEGATE_LEGEND_SEGMENTS if answer in offered) + " · else reason"
+
+    def delegate_approval_children(
+        self, tool: DelegateTool, form: list[tuple[str, str]] | None = None, actions: list[tuple[str, str]] | None = None
+    ) -> list[LogLine]:
         """Approval brief for a Delegate send: title, a one-line order excerpt, explicit send
         parameters, and the worker configuration the send will run under. FIELD-role rows render
         cyan left-aligned labels (padded to one column, CJK-safe) with default-foreground values;
@@ -796,7 +819,7 @@ class ToolRunner:
             (label, value, LogRole.FIELD) for label, value in self._field_pairs(self._delegate_header_rows(payload, order_row))
         ]
         if not form:
-            rows.append(("", self.DELEGATE_LEGEND, LogRole.META))
+            rows.append(("", self.delegate_legend(actions if actions is not None else self.approval_actions(tool, True)), LogRole.META))
         last = len(rows) - 1
         return [
             LogLine(label, value, role, LogEdge.END if index == last else LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
