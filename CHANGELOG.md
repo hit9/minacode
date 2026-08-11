@@ -44,6 +44,12 @@
   full-screen viewer of the complete delegation order before approving (Esc/q closes back to
   the prompt). The approval brief still shows only a one-line excerpt; the viewer is for reading
   the whole spec. Headless/no-TUI falls back to printing the full order.
+- A tool result too large for the context budget is now materialized to a file alongside its
+  truncated marker. The `<bounded_output>` marker carries the file's absolute path under
+  `file="..."`, so the model can `Read`, `Search`, or `grep` the full output instead of paging
+  through `Recall` slices - which are themselves re-truncated and can't show the whole thing at
+  once. The file lives in the session's `.assets` directory and is cleaned up with it; only outputs
+  over the budget are written, and a read-only or full disk leaves truncation itself untouched.
 
 ### Fixed
 - The `Ask` tool's free-text input no longer opens with a stray `^J`. The blank line above the

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Hashable
 from typing import ClassVar, TypeVar
@@ -468,8 +469,28 @@ class ContextManager:
         if not stable_marker:
             note += f' estimated_tokens="{estimated}" omitted_tokens="{omitted_tokens}"'
         note += f' recall="{key}"' if key else ""
+        if key:
+            path = self.materialize_output(key, text)
+            if path:
+                note += f' file="{path}"'
         note += "/>"
         return "\n".join(part for part in (head.rstrip(), note, tail.lstrip()) if part)
+
+    def materialize_output(self, key: str, text: str) -> str:
+        """Write the full tool output next to the truncated marker as a navigable artifact.
+
+        Derived cache only: session.tool_results and the jsonl stay the source of truth. Failures
+        are swallowed so a read-only or full disk cannot break truncation itself.
+        """
+        try:
+            directory = self.session.images.assets_dir()
+            path = os.path.join(directory, key + ".txt")
+            os.makedirs(directory, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as file:
+                file.write(text)
+            return path
+        except OSError:
+            return ""
 
     @staticmethod
     def head_excerpt(text: str, limit: int) -> str:

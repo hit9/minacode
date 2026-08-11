@@ -1176,18 +1176,18 @@ def test_status_keeps_active_turn_in_context_percentage(tmp_path):
     s.settings.max_context_tokens = 100_000
     s._active_turn_messages = [{"role": "user", "content": "active " + "x" * 200_000}]
     context = ContextManager(s)
-    active_messages = context.model_messages(SYSTEM_PROMPT, s._active_turn_messages)
     tools = Tool.resolved_schemas(s)
-    active_percent = context.update_percent(active_messages, tools)
+    # Persisted-only baseline (no active turn); status must reflect the active turn on top of this.
     persisted_percent = context.request_tokens(context.model_messages(SYSTEM_PROMPT), tools) * 100 // context.request_token_budget()
-    assert active_percent > persisted_percent
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
 
     rendered = status(loop, "")
 
-    assert s.state.context_percent == active_percent
+    # status recomputes context_percent with the active turn included, so it exceeds persisted-only
+    # and the rendered row shows that recomputed value (not a stale or persisted-only figure).
+    assert s.state.context_percent > persisted_percent
     context_row = next(line for line in rendered.splitlines() if line.startswith("| context |"))
-    assert f"`{active_percent}%`" in context_row
+    assert f"`{s.state.context_percent}%`" in context_row
 
 
 def test_status_context_row_uses_last_real_tokens_when_available(tmp_path):

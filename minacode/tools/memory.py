@@ -14,7 +14,7 @@ from minacode.tools.base import Tool
 class RecallTool(Tool):
     NAME = "Recall"
     _KEY_RE: ClassVar[re.Pattern] = re.compile(r"tr\.\d+")
-    DESCRIPTION = "Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context."
+    DESCRIPTION = 'Recall stored non-Recall tool results by tr.N key; ranges slice output lines to control context. Outputs truncated to the context budget are also materialized to a file: the <bounded_output> marker carries its absolute path under file="...", navigable with Read/Search/Bash; use ranges for in-context slices.'
     STORES_RESULT = False
 
     @classmethod

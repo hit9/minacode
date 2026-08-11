@@ -1,6 +1,7 @@
 """Context projection and compaction: what a request carries, what compaction keeps, and the
 history index it leaves behind."""
 
+import os
 import platform
 import shutil
 from dataclasses import replace
@@ -226,6 +227,45 @@ def test_bounded_output_marks_recall_key(tmp_path):
     assert "tail" in bounded
     assert "<bounded_output" in bounded
     assert 'recall="tr.large"' in bounded
+
+
+def test_bounded_output_materializes_full_output_to_asset_file(tmp_path):
+    s = session(tmp_path)
+    context = ContextManager(s)
+    large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
+    bounded = context.bound_output(large, "tr.1")
+
+    path = os.path.join(s.images.assets_dir(), "tr.1.txt")
+    assert 'recall="tr.1"' in bounded
+    assert f'file="{path}"' in bounded
+    with open(path, encoding="utf-8") as file:
+        assert file.read() == large
+
+
+def test_bounded_output_small_or_keyless_never_writes_asset_file(tmp_path):
+    s = session(tmp_path)
+    context = ContextManager(s)
+
+    small = context.bound_output("small output", "tr.1")
+    assert 'file="' not in small
+
+    large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
+    keyless = context.bound_output(large, "")
+    assert 'recall="' not in keyless
+    assert 'file="' not in keyless
+
+
+def test_bounded_output_survives_asset_write_failure(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    context = ContextManager(s)
+    large = "head\n" + "\n".join(f"line {index}" for index in range(20000)) + "\ntail\n"
+    # A regular file where the assets dir would go: makedirs raises OSError.
+    (tmp_path / "blocked.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(s.images, "assets_dir", lambda: str(tmp_path / "blocked.txt" / "sub"))
+
+    bounded = context.bound_output(large, "tr.1")
+    assert 'recall="tr.1"' in bounded
+    assert 'file="' not in bounded
 
 
 def test_read_tool_message_inlines_bounded_output(tmp_path):
