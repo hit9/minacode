@@ -54,6 +54,7 @@ SetHandler = tuple[str, str, Callable[[str], int | float | None] | None]
 SET_HANDLERS: dict[str, SetHandler] = {
     "provider.temperature": ("provider", "temperature", lambda v: None if v == "off" else float(v)),
     "provider.max_tokens": ("provider", "max_tokens", lambda v: max(0, int(v))),
+    "provider.max_context_tokens": ("provider", "max_context_tokens", lambda v: max(0, int(v))),
     "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
     "provider.response_timeout": ("provider", "response_timeout", lambda v: max(0, int(v))),
     "provider.stream": ("provider", "stream", lambda v: v == "on"),
@@ -375,6 +376,9 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.chat_reasoning: {provider.chat_reasoning}",
             f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
             f"provider.max_tokens: {provider.max_tokens or '(server default)'}",
+            # Show the effective limit either way: the whole point of the key is which number the
+            # compaction budget is measured against, and "(inherit)" alone does not answer that.
+            f"provider.max_context_tokens: {provider.max_context_tokens or f'(inherit) {loop.session.settings.max_context_tokens}'}",
             f"provider.strict_tools: {provider.strict_tools} (active {resolved.strict_tools_active})",
             f"provider.extra_body: {json.dumps(provider.extra_body, ensure_ascii=False, sort_keys=True) if provider.extra_body else '(off)'}",
             f"provider.builtin_tools: {configured_builtin_tools}",

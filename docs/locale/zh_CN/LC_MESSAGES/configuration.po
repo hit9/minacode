@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-10 23:40-0700\n"
+"POT-Creation-Date: 2026-08-10 23:47-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -229,6 +229,19 @@ msgstr ""
 "16K 给输出，与 `max_context_tokens` 一比一此消彼长"
 
 #: ../../configuration.md
+msgid "`max_context_tokens`"
+msgstr "`max_context_tokens`"
+
+#: ../../configuration.md
+msgid ""
+"How much of *this* entry's model window to use; `0` inherits "
+"`runtime.max_context_tokens`. Set it per entry when entries point at "
+"models with different windows"
+msgstr ""
+"使用**该条目**模型窗口的多少；`0` 表示继承 "
+"`runtime.max_context_tokens`。当各条目指向窗口大小不同的模型时，按条目分别设置。"
+
+#: ../../configuration.md
 msgid "`timeout`"
 msgstr "`timeout`"
 
@@ -305,7 +318,7 @@ msgstr "`chat_reasoning`"
 msgid "Provider-specific Chat reasoning format; normally leave on `auto`"
 msgstr "Provider 特有的 Chat reasoning 格式；通常保留为 `auto`"
 
-#: ../../configuration.md:68
+#: ../../configuration.md:69
 msgid ""
 "Streaming is enabled by default for all three protocols. If a compatible "
 "endpoint does not support it, set `stream = false` in that provider "
@@ -314,7 +327,7 @@ msgstr ""
 "三种协议默认都启用流式输出。如果兼容 endpoint 不支持，可在对应 provider 配置中设置 `stream = false`，或在当前"
 " session 中执行 `/set provider.stream off`。"
 
-#: ../../configuration.md:72
+#: ../../configuration.md:73
 msgid ""
 "`timeout` detects a connection that stops delivering data. Streaming "
 "reasoning can keep that timer active indefinitely, so `response_timeout` "
@@ -326,7 +339,7 @@ msgstr ""
 "`response_timeout` "
 "会单独限制完整模型响应，默认十分钟。达到总时限后会取消请求且不自动重试；只有在明确需要允许无限时长生成时，才将其设为 `0`。"
 
-#: ../../configuration.md:77
+#: ../../configuration.md:78
 msgid ""
 "For provider/model combinations with documented reasoning constraints, "
 "minacode maps the selected effort to the nearest accepted value. Unknown "
@@ -341,11 +354,11 @@ msgstr ""
 "allowlist；如果自动选择不正确，请显式设置 `api` 和 `chat_reasoning`。`/config` 会显示解析后的 "
 "reasoning effort，`/status` 会显示当前模型以及 provider 报告的缓存使用情况。"
 
-#: ../../configuration.md:83
+#: ../../configuration.md:84
 msgid "Provider-side tools"
 msgstr "Provider 侧工具"
 
-#: ../../configuration.md:85
+#: ../../configuration.md:86
 msgid ""
 "Some providers can run web search themselves; see [Provider-side "
 "tools](tools.md#provider-side-tools) for what that looks like in a "
@@ -421,7 +434,7 @@ msgstr ""
 "`{ type = \"openrouter:web_search\" }`；还有 "
 "`openrouter:web_fetch`、`openrouter:datetime`"
 
-#: ../../configuration.md:106
+#: ../../configuration.md:107
 msgid ""
 "One provider configures search elsewhere, through [`extra_body"
 "`](#optional-provider-settings): Qwen's Chat Completions endpoint takes "
@@ -430,7 +443,7 @@ msgstr ""
 "有一个 Provider 在别处配置搜索，通过 [`extra_body`](#optional-provider-settings)：Qwen "
 "的 Chat Completions endpoint 使用 `enable_search`。DeepSeek 没有联网搜索。"
 
-#: ../../configuration.md:109
+#: ../../configuration.md:110
 msgid ""
 "Builtin tools only work with the APIs shown in the table. If you switch "
 "to another API, minacode keeps the setting but does not send those tools;"
@@ -442,7 +455,7 @@ msgstr ""
 "会保留配置，但不会发送这些工具；切换回来后会重新启用。使用 `/config` 检查工具是否生效。如果 minacode "
 "报告条目不受支持，请对照对应 Provider 的示例检查。"
 
-#: ../../configuration.md:114
+#: ../../configuration.md:115
 msgid ""
 "With `image_input = \"auto\"`, minacode sends attached images using the "
 "selected standard API. A successful image request is remembered for that "
@@ -456,11 +469,11 @@ msgstr ""
 "session 中为该 provider 和模型记住其支持识图；只有明确表示不支持图片的响应才会禁用后续图片提交。如果已经知道 endpoint "
 "的能力，可设为 `on` 或 `off`。切换到禁用图片输入的 provider 或模型后，历史图片仍会以可读文本标签保留。"
 
-#: ../../configuration.md:120
+#: ../../configuration.md:121
 msgid "Runtime"
 msgstr "Runtime"
 
-#: ../../configuration.md:122
+#: ../../configuration.md:123
 msgid "Optional; the defaults shown are used when omitted."
 msgstr "以下设置均可省略，表中列出其默认值。"
 
@@ -481,19 +494,18 @@ msgid "Let the model offer selectable next-step chips; toggle with `/hints`"
 msgstr "允许模型提供可选择的下一步 chip；可用 `/hints` 切换"
 
 #: ../../configuration.md
-msgid "`max_context_tokens`"
-msgstr "`max_context_tokens`"
-
-#: ../../configuration.md
 msgid "`262144` (256K)"
 msgstr "`262144`（256K）"
 
 #: ../../configuration.md
 msgid ""
-"How much of the model's context window to use, which sets the automatic-"
-"compaction budget. It is a budget, not the window's size: raise it for a "
-"1M-window model, lower it for a smaller one"
-msgstr "打算使用模型上下文窗口的多少，它决定自动压缩的预算。这是一个预算，而不是窗口本身的大小：1M 窗口的模型应调高它，窗口更小的模型应调低它"
+"Default for every provider entry that does not set its own "
+"`max_context_tokens`. How much of the model's context window to use, "
+"which sets the automatic-compaction budget — a budget, not the window's "
+"size: raise it for a 1M-window model, lower it for a smaller one"
+msgstr ""
+"所有未自行设置 `max_context_tokens` 的 provider 条目的默认值。表示使用模型上下文窗口的多少，它决定了自动压缩的预算"
+" —— 这是预算，不是窗口本身的大小：1M 窗口的模型可以调高，更小的模型则调低。"
 
 #: ../../configuration.md
 msgid "`max_agent_steps`"
@@ -604,17 +616,17 @@ msgstr ""
 "将项目的 `AGENTS.md`（找不到时回退 `CLAUDE.md`）注入到每次请求，作为 Environment "
 "块中一个有边界的「Project instructions」段落"
 
-#: ../../configuration.md:139
+#: ../../configuration.md:140
 msgid ""
 "Selected tuning values can be changed for the current session with `/set`"
 " (Tab completion lists the supported keys). `/yolo` toggles `yolo`."
 msgstr "部分配置可以用 `/set` 在当前 session 中修改，按 Tab 可补全支持的 key。`/yolo` 用于切换 `yolo`。"
 
-#: ../../configuration.md:142
+#: ../../configuration.md:143
 msgid "Worker delegation"
 msgstr "Worker 委派"
 
-#: ../../configuration.md:144
+#: ../../configuration.md:145
 msgid ""
 "The `Delegate` tool and `/worker` command hand bounded tasks to a second "
 "in-process session. Concepts, quick start, and what you see in the "
@@ -623,7 +635,7 @@ msgstr ""
 "`Delegate` 工具和 `/worker` 命令把有边界的任务交给同一进程内的第二个会话。概念、快速上手和终端里的实际表现：[Worker "
 "委派](worker.md)。"
 
-#: ../../configuration.md:147
+#: ../../configuration.md:148
 msgid "Worker keys inherit the `[worker]` provider entry by default:"
 msgstr "worker 键默认继承 `[worker]` provider 条目："
 
@@ -663,17 +675,17 @@ msgstr "`[worker] api`"
 msgid "Override the entry's wire protocol; empty inherits"
 msgstr "覆盖条目的线上协议；留空则继承"
 
-#: ../../configuration.md:156
+#: ../../configuration.md:157
 msgid ""
 "`[runtime] worker` and `[runtime] language` are in the "
 "[Runtime](#runtime) table above."
 msgstr "`[runtime] worker` 和 `[runtime] language` 见上方[运行时](#runtime)表格。"
 
-#: ../../configuration.md:158
+#: ../../configuration.md:159
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:165
+#: ../../configuration.md:166
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -684,7 +696,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:169
+#: ../../configuration.md:170
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -694,7 +706,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:173
+#: ../../configuration.md:174
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "

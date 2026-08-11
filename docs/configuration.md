@@ -57,6 +57,7 @@ Most users can leave these unset.
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
 | `max_tokens` | `0` | Output-token cap per model request, reasoning included; `0` leaves it to the provider (Anthropic sends a conservative 8K). 16K is still reserved from the input budget for the answer, trading against `max_context_tokens` one for one |
+| `max_context_tokens` | `0` | How much of *this* entry's model window to use; `0` inherits `runtime.max_context_tokens`. Set it per entry when entries point at models with different windows |
 | `timeout` | `120` | Transport inactivity timeout in seconds |
 | `response_timeout` | `600` | Total generation limit in seconds; `0` disables it |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
@@ -125,7 +126,7 @@ Optional; the defaults shown are used when omitted.
 |---|---|---|
 | `yolo` | `false` | Start without confirmation prompts |
 | `quick_hints` | `true` | Let the model offer selectable next-step chips; toggle with `/hints` |
-| `max_context_tokens` | `262144` (256K) | How much of the model's context window to use, which sets the automatic-compaction budget. It is a budget, not the window's size: raise it for a 1M-window model, lower it for a smaller one |
+| `max_context_tokens` | `262144` (256K) | Default for every provider entry that does not set its own `max_context_tokens`. How much of the model's context window to use, which sets the automatic-compaction budget — a budget, not the window's size: raise it for a 1M-window model, lower it for a smaller one |
 | `max_agent_steps` | `400` | Maximum tool steps in one turn |
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |
 | `bash_wait_timeout` | `10` | Foreground wait before a running command becomes a background job; `0` disables promotion |

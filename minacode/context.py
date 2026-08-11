@@ -154,9 +154,10 @@ class ContextManager:
         return self.session.skills.index() if self.session.skills else ""
 
     def request_token_budget(self) -> int:
+        provider = self.session.config.provider
         return request_budget_for(
-            self.session.settings.max_context_tokens,
-            self.session.config.provider.output_token_budget(),
+            provider.context_token_limit(self.session.settings.max_context_tokens),
+            provider.output_token_budget(),
         )
 
     def request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:

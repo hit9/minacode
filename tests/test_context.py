@@ -267,6 +267,59 @@ def test_working_context_does_not_repeat_durable_tool_errors(tmp_path):
     assert "error 5" not in context
 
 
+def test_provider_context_limit_overrides_the_runtime_default(tmp_path):
+    # Provider entries are effectively per-model, so a 1M-window model should not have to share one
+    # global number with a 128K one. Unset (0) inherits, and the budget is resolved per call so
+    # switching the active entry moves it.
+    from minacode.config import Config, request_budget_for
+
+    config = Config.from_dict(
+        {
+            "provider": {
+                "active": "big",
+                "big": {"model": "wide", "max_context_tokens": 1_048_576},
+                "small": {"model": "narrow", "max_context_tokens": 131_072},
+                "plain": {"model": "default"},
+            },
+            "runtime": {"max_context_tokens": 262_144},
+        }
+    )
+    runtime_default = 262_144
+    assert config.providers["big"].context_token_limit(runtime_default) == 1_048_576
+    assert config.providers["small"].context_token_limit(runtime_default) == 131_072
+    assert config.providers["plain"].context_token_limit(runtime_default) == runtime_default  # 0 inherits
+
+    s = session(tmp_path)
+    s.config = config
+    s.settings.max_context_tokens = runtime_default
+    context = ContextManager(s)
+    wide = context.request_token_budget()
+
+    s.config.active_provider = "small"  # what /provider does
+    narrow = context.request_token_budget()
+
+    assert wide > narrow, "the budget must follow the active provider entry"
+    assert wide == request_budget_for(1_048_576, config.providers["big"].output_token_budget())
+    assert narrow == request_budget_for(131_072, config.providers["small"].output_token_budget())
+
+
+def test_provider_context_limit_shares_one_denominator_with_usage(tmp_path):
+    # The compaction trigger and the status-bar fill must be measured against the same number, or
+    # the bar reads 60% while the context manager is already compacting.
+    from types import SimpleNamespace
+
+    from minacode.config import Config, request_budget_for
+    from minacode.model import ModelClient
+
+    s = session(tmp_path)
+    s.config = Config.from_dict({"provider": {"active": "big", "big": {"model": "wide", "max_context_tokens": 1_048_576}}})
+    s.settings.max_context_tokens = 262_144
+    ModelClient._record_usage(SimpleNamespace(session=s), SimpleNamespace(prompt_tokens=10, completion_tokens=1))
+
+    assert s.usage.last_prompt_budget == ContextManager(s).request_token_budget()
+    assert s.usage.last_prompt_budget > request_budget_for(262_144, 16_384), "the runtime default was used, not the entry's"
+
+
 def test_compaction_uses_configured_context_budget(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1

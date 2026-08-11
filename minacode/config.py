@@ -115,6 +115,10 @@ class ProviderConfig:
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
     max_tokens: int = DEFAULT_MAX_TOKENS
+    # How much of *this* entry's model window to use; 0 inherits runtime.max_context_tokens. Entries
+    # are effectively per-model, so a 1M-window model and a 128K one no longer have to share one
+    # number -- see context_token_limit.
+    max_context_tokens: int = 0
     strict_tools: bool = False
     reasoning: str = "medium"
     chat_reasoning: str = "auto"
@@ -149,6 +153,7 @@ class ProviderConfig:
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
             max_tokens=max(0, Config.int(data, "max_tokens", DEFAULT_MAX_TOKENS)),
+            max_context_tokens=max(0, Config.int(data, "max_context_tokens", 0)),
             strict_tools=Config.bool(data, "strict_tools", False),
             reasoning=reasoning,
             chat_reasoning=chat_reasoning,
@@ -220,6 +225,12 @@ class ProviderConfig:
 
     def output_token_budget(self) -> int:
         return self.max_tokens or DEFAULT_OUTPUT_RESERVE_TOKENS
+
+    def context_token_limit(self, fallback: int) -> int:
+        """How much context this entry may use: its own `max_context_tokens`, else the runtime
+        default. Resolved per call, never cached, so `/provider` moves the budget with the entry —
+        and so a worker on a small model stops borrowing the parent model's window."""
+        return self.max_context_tokens or fallback
 
     def anthropic_output_cap(self) -> int:
         """The `max_tokens` sent on the Anthropic wire: the configured cap, or a conservative default
@@ -446,6 +457,10 @@ model = ""
 # stream = true
 # image_input = "auto"         # auto | on | off
 # reasoning = "medium"
+# max_context_tokens = 0       # how much of THIS model's window to use; 0 inherits runtime.max_context_tokens.
+                               # Set it per entry when models differ: 1048576 for a 1M-window model,
+                               # 131072 for a 128K one. Fewer compactions on the big one, no overflow
+                               # on the small one.
 # max_tokens = 0               # output cap per request, reasoning included; 0 leaves it to the provider
                                # (Anthropic sends a conservative 8K). 16K is still reserved from the
                                # input budget, trading against runtime.max_context_tokens one for one

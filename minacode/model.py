@@ -527,9 +527,10 @@ class ModelClient:
     def _record_usage(self, usage: Any) -> None:
         """Add a completed request to session usage, keeping the budget it was prepared against so the
         status fill uses the request-time denominator instead of today's configuration."""
+        provider = self.session.config.provider
         self.session.usage.add(
             usage,
-            request_budget_for(self.session.settings.max_context_tokens, self.session.config.provider.output_token_budget()),
+            request_budget_for(provider.context_token_limit(self.session.settings.max_context_tokens), provider.output_token_budget()),
         )
 
     def chat_request(

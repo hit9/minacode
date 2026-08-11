@@ -4,6 +4,12 @@
 ## Unreleased
 
 ### Added
+- `[provider.NAME] max_context_tokens` overrides `runtime.max_context_tokens` for that entry, so a
+  1M-window model and a 128K one no longer have to share one global number — the big one compacts
+  far less often without risking overflow on the small one. `0` (the default) inherits. The budget
+  resolves per request, so `/provider` moves it with the entry and a worker on its own entry stops
+  borrowing the parent model's window. `/status` shows the effective limit, and `/set
+  provider.max_context_tokens` changes it for the session.
 - The project's `AGENTS.md` (or `CLAUDE.md` fallback) is now injected into every request as a
   bounded "Project instructions" section of the Environment block, so repo-specific conventions
   ride the cache-stable prefix. Controlled by `[runtime] agents_md` (default on); `/status` and
