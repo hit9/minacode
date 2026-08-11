@@ -63,9 +63,10 @@
   the model was left with a marker announcing that nearly everything was omitted and no content on
   either side of it. Snapping is now abandoned when it would cost more than half the budget, so such
   a result keeps a real head and tail, and `Recall` over it returns real content too.
-- The `Ask` tool's free-text input no longer opens with a stray `^J`. The blank line above the
-  question was a leading newline in the prompt, and the input's single-line prefix renders a literal
-  newline as the `^J` control character rather than a line break; it is now a layout gap.
+- An `Ask` free-text question no longer renders its line breaks as stray `^J` control characters.
+  The prompt reaches the input row through a single-line prefix, which draws a literal newline as
+  `^J` rather than breaking the line - so the blank line above the question, and every line break in
+  a multi-line question, arrived as `^J`. Each line but the last is now its own row above the input.
 - `Job(action="wait")` can no longer hold the agent indefinitely. Waiting with no timeout blocked
   until the process exited, which is exactly what a model does right after a slow `Bash` is
   backgrounded — so backgrounding handed control back and the very next call gave it away again,

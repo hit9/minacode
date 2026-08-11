@@ -216,8 +216,9 @@ class TuiApp:
         self.input_mode = "chat"  # chat | dispatch | running | approval
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
         self.input_prompt = UiPrinter.PROMPT_PREFIX
-        # True while an approval prompt asked for a blank line above it (Ask free-text).
-        self._input_leading_blank = False
+        # Every line of the prompt except the last. The input row's prefix is a single-line
+        # processor, so these are rendered as their own rows above it. See _set_mode.
+        self._input_prompt_above: list[str] = []
         self._input_pending: threading.Event | None = None
         # None is the cancellation signal, distinct from every string the user can submit (including
         # ""). See request_input: callers must not read a cancel as an answer.
@@ -250,16 +251,11 @@ class TuiApp:
         with self.modal_lock:
             pass
         event = threading.Event()
-        previous_mode, previous_prompt = self.input_mode, self.input_prompt
+        previous_mode, previous_prompt = self.input_mode, self.full_input_prompt()
         previous_document: Document | None = None
         previous_images = self.input_images
         self._input_pending = event
         self._input_result = None
-        # A leading "\n" (Ask free-text) means "blank line above the prompt". BeforeInput is a
-        # single-line prefix and BufferControl does not split processor output on "\n", so a literal
-        # newline would render as "^J". Carry it as a layout-gap flag instead.
-        self._input_leading_blank = prompt.startswith("\n")
-        prompt = prompt.removeprefix("\n") if self._input_leading_blank else prompt
 
         def switch(document: Document, mode: str, prompt_text: str, done: threading.Event) -> None:
             nonlocal previous_document
@@ -331,10 +327,16 @@ class TuiApp:
 
     def _set_mode(self, mode: str, prompt: str) -> None:
         self.input_mode = mode
-        self.input_prompt = prompt
+        # The prompt reaches the input row through BeforeInput, a single-line processor, and
+        # BufferControl does not split processor output on "\n" the way FormattedTextControl does --
+        # a literal newline would reach the screen as the "^J" control character. Only the last line
+        # can be a prefix; the rest are rows of their own above the input. A prompt that opens with
+        # "\n" (Ask free-text asking for a blank line above the question) is just the empty-first-line
+        # case of this, and multi-line questions are the common one.
+        above, separator, last = prompt.rpartition("\n")
+        self._input_prompt_above = above.split("\n") if separator else []
+        self.input_prompt = last
         self.quick_hint_focus = -1
-        if mode != "approval":
-            self._input_leading_blank = False
         if mode not in {"chat", "running"}:
             self.input_error = ""
         self.invalidate()
@@ -642,6 +644,18 @@ class TuiApp:
             return [*prompt, ("class:approval.wait", frame + " ")]
         return [("class:prompt", self.input_prompt)]
 
+    def full_input_prompt(self) -> str:
+        """The prompt as the caller passed it, rejoined from the rows it was split across."""
+        return "\n".join([*self._input_prompt_above, self.input_prompt])
+
+    def input_prompt_above_fragments(self) -> StyleAndTextTuples:
+        """The prompt's leading lines, rendered as their own rows above the input. Unlike the input
+        row's prefix this is a FormattedTextControl, which does split its text on "\n"."""
+        if not self._input_prompt_above:
+            return []
+        style = "class:approval" if self.input_mode == "approval" else "class:prompt"
+        return [(style, "\n".join(self._input_prompt_above))]
+
     def input_error_fragments(self) -> StyleAndTextTuples:
         error = self.input_error
         if not error and self.input_images and self.input_mode in {"chat", "running"} and self.images.support() is False:
@@ -715,9 +729,9 @@ class TuiApp:
             Window(height=1, dont_extend_height=True),
             filter=running,
         )
-        approval_blank = ConditionalContainer(
-            Window(height=1, dont_extend_height=True),
-            filter=Condition(lambda: self.input_mode == "approval" and self._input_leading_blank),
+        prompt_above = ConditionalContainer(
+            Window(FormattedTextControl(self.input_prompt_above_fragments), wrap_lines=True, dont_extend_height=True),
+            filter=Condition(lambda: bool(self._input_prompt_above)),
         )
         self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
         modal_active = Condition(lambda: self.modal is not None)
@@ -735,7 +749,7 @@ class TuiApp:
                     running_gap_above,
                     activity,
                     running_gap_below,
-                    approval_blank,
+                    prompt_above,
                     input_error,
                     approval_form,
                     self.input_window,

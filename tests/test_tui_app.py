@@ -1133,6 +1133,37 @@ def test_interactive_tui_modal_survives_repeated_resize(monkeypatch, exclusive):
     assert result == [None]
 
 
+def test_interactive_tui_renders_a_multi_line_question_as_rows_not_control_characters(monkeypatch):
+    """The whole point of the split, on a real screen: every line of a multi-line Ask question is
+    visible and no "^J" is drawn."""
+    app = TuiApp()
+    output = ResizableOutput(rows=12, columns=60)
+    frames = []
+    rendered = threading.Event()
+
+    def after_render(application):
+        text = rendered_screen_text(application, output)
+        if "B) bar" in text:
+            frames.append(text)
+            rendered.set()
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        asking = threading.Thread(target=lambda: app.request_input("\nWhich one?\nA) foo\nB) bar"), daemon=True)
+        asking.start()
+        wait_until(lambda: app.input_mode == "approval")
+        assert rendered.wait(timeout=1)
+        pipe_input.send_text("x\r")
+        asking.join(timeout=1)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, output=output, after_render=after_render)
+
+    assert "^J" not in frames[-1]
+    for line in ("Which one?", "A) foo", "B) bar"):
+        assert line in frames[-1]
+
+
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_interactive_tui_modal_presentation_matches_legacy_scope(monkeypatch, exclusive):
     app = TuiApp(status_fragments_fn=lambda: [("", "status marker")])
@@ -1246,26 +1277,36 @@ def test_tui_approval_restores_half_typed_draft():
     assert app.input_buffer.text == "unfinished draft"
 
 
-def test_tui_approval_prompt_moves_leading_newline_into_a_blank_gap():
-    """Ask free-text passes "\n" + question so the prompt has a blank line above it. BeforeInput is a
-    single-line prefix and BufferControl does not split processor output on "\n", so a literal newline
-    would render as "^J". The newline is stripped from the prompt and carried as a layout-gap flag."""
+@pytest.mark.parametrize(
+    ("prompt", "expected_above", "expected_prefix"),
+    [
+        ("\nPick?", [""], "Pick?"),  # Ask free-text: a blank line above the question
+        ("Which one?\nA) foo\nB) bar", ["Which one?", "A) foo"], "B) bar"),  # a multi-line question
+        ("\n\nStarts with its own newline", ["", ""], "Starts with its own newline"),
+        ("[Y/n or reason] ", [], "[Y/n or reason] "),  # an ordinary tool approval is untouched
+    ],
+)
+def test_tui_approval_prompt_never_renders_a_newline_as_a_control_character(prompt, expected_above, expected_prefix):
+    """The input row's prefix is a single-line BeforeInput processor, and BufferControl does not
+    split processor output on "\n" the way FormattedTextControl does -- a literal newline reaches
+    the screen as "^J". Every line but the last is rendered as its own row above the input."""
     app = TuiApp()
     result = []
-    thread = threading.Thread(target=lambda: result.append(app.request_input("\nPick?")), daemon=True)
+    thread = threading.Thread(target=lambda: result.append(app.request_input(prompt)), daemon=True)
     thread.start()
     wait_until(lambda: app.input_mode == "approval")
 
-    assert app.input_prompt == "Pick?"  # the leading "\n" is gone, not rendered as "^J"
-    assert app._input_leading_blank is True
+    assert app.input_prompt == expected_prefix
+    assert app._input_prompt_above == expected_above
     assert all("\n" not in text for _style, text in app.status_fragments())
+    assert app.full_input_prompt() == prompt  # nothing is dropped, only relocated
 
     app.input_buffer.insert_text("typed")
     app.input_buffer.validate_and_handle()
     thread.join(timeout=1)
 
     assert result == ["typed"]
-    assert app._input_leading_blank is False
+    assert app._input_prompt_above == []  # the rows belong to one prompt, not the restored mode
 
 
 def test_interactive_tui_ctrl_c_cancels_approval_without_interrupting_turn(monkeypatch):
