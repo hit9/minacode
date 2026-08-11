@@ -1378,6 +1378,59 @@ def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
     assert runner.confirm(call, TOOL_REGISTRY["Bash"](parent, ["echo hi"])) == (False, "")
 
 
+def test_approval_hotkeys_offered_per_tool_and_only_where_they_work(tmp_path):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    declared = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
+    runner.approval_hotkeys = lambda keys: bool(declared.append(dict(keys))) or True
+
+    send = DelegateTool(parent, [{"action": "send", "order": "o"}])
+    assert runner.declare_approval_hotkeys(send, True) == {"escape": "n", "s-tab": "c", "tab": "v"}
+
+    # No order means nothing to view, so the view key stays unbound rather than opening an empty one.
+    orderless = DelegateTool(parent, [{"action": "send", "order": ""}])
+    assert runner.declare_approval_hotkeys(orderless, True) == {"escape": "n", "s-tab": "c"}
+
+    # Every other tool gets refuse only: `c`/`v` are Delegate actions, and Bash has no equivalent.
+    bash = TOOL_REGISTRY["Bash"](parent, ["rm -rf build"])
+    assert runner.declare_approval_hotkeys(bash, False) == {"escape": "n"}
+    assert [set(keys) for keys in declared] == [{"escape", "s-tab", "tab"}, {"escape", "s-tab"}, {"escape"}]
+
+    # Headless: nothing is wired, so nothing is claimed and the typed protocol is what is offered.
+    runner.approval_hotkeys = None
+    assert runner.declare_approval_hotkeys(send, True) == {}
+    assert runner.approval_prompt(True, {}) == "Approve delegation? [Y/n/c] "
+    assert runner.approval_prompt(False, {}) == "Approve? [Y/n or reason] "
+    assert "Esc" in runner.approval_prompt(False, {"escape": "n"})
+
+    # The hotkeys are a shortcut for the typed answers, so a plain tool still refuses on "n".
+    typed = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "n", output_fn=lambda text: None)
+    assert typed.confirm(ToolCall("bash-1", "Bash", ["rm -rf build"]), bash) == (False, "")
+
+
+def test_delegate_legend_names_only_the_keys_that_are_bound(tmp_path):
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
+    tool = DelegateTool(parent, [{"action": "send", "order": "o"}])
+
+    # Headless keeps the typed legend: those words plus Enter are all that path has.
+    assert runner.delegate_approval_children(tool)[-1].text == "Y/Enter approve · n refuse · c worker config · v view order · else reason"
+
+    hotkeys = {"escape": "n", "s-tab": "c", "tab": "v"}
+    assert runner.delegate_legend(hotkeys) == "Enter approve · Esc refuse · Tab view order · S-Tab worker config · else reason"
+    # An orderless send does not bind the view key, so the legend must not promise it.
+    assert "Tab view order" not in runner.delegate_legend({"escape": "n", "s-tab": "c"})
+
+
 def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     # A CJK order is two terminal cells per character. Wrapping by character count (textwrap) makes
     # every row twice as wide as the terminal, and the modal window does not wrap, so the overflow

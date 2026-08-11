@@ -895,6 +895,52 @@ def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
     assert app.input_buffer.text == "ac"
 
 
+def test_tui_approval_hotkeys_submit_the_answer_the_user_would_have_typed():
+    # A hotkey is a shortcut for the typed protocol, not a second protocol: it submits the same
+    # whole line ("n", "v", "c") the approval loop already understands.
+    app = TuiApp()
+    event = type("Event", (), {})()
+
+    def active(key):
+        return [binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (key,) and binding.filter()]
+
+    for key, expected in ((Keys.Escape, "n"), (Keys.Tab, "v"), (Keys.BackTab, "c")):
+        pending = threading.Event()
+        app._input_pending = pending
+        app.input_mode = "approval"
+        app.input_buffer.reset(Document(""))
+        assert app.set_approval_hotkeys({"escape": "n", "tab": "v", "s-tab": "c"}) is True
+
+        active(key)[0].handler(event)
+
+        assert (app._input_result, pending.is_set()) == (expected, True)
+
+
+def test_tui_approval_hotkeys_stay_out_of_the_way_of_a_typed_reason():
+    # The approval row is an ordinary input line, so a hotkey may never eat a keystroke once a
+    # refusal reason is being typed, nor apply to a prompt that did not offer it.
+    app = TuiApp()
+    app._input_pending = threading.Event()
+    app.input_mode = "approval"
+
+    def live(key):
+        return [binding for binding in app.make_bindings().bindings if binding.keys == (key,) and binding.filter()]
+
+    app.set_approval_hotkeys({"escape": "n", "tab": "v"})
+    app.input_buffer.reset(Document(""))
+    assert len(live(Keys.Escape)) == 1  # bare Escape is bound only as a hotkey
+    assert len(live(Keys.Tab)) == 2  # the hotkey, layered over Tab's usual completion
+
+    app.input_buffer.reset(Document("cost too high"))
+    assert live(Keys.Escape) == []  # mid-reason: Escape is a meta prefix again
+    assert len(live(Keys.Tab)) == 1  # ... and Tab completes, as everywhere else
+
+    app.input_buffer.reset(Document(""))
+    app.set_approval_hotkeys({})  # a prompt that offers nothing binds nothing
+    assert live(Keys.Escape) == []
+    assert len(live(Keys.Tab)) == 1
+
+
 def test_tui_ctrl_d_submits_multiline_approval_input():
     app = TuiApp()
     pending = threading.Event()

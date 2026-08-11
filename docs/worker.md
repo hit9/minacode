@@ -81,10 +81,23 @@ cache ratio.
 Every `Delegate send` asks for approval, even under `yolo` — the confirmation prints the title, a
 one-line excerpt of the order, any explicit `language` or `max_steps`, and the effective worker
 provider/model/effort/api, with `(inherit)` marking a field that inherits the provider entry's
-value. `c` opens a small loop that adjusts those worker settings before you decide; a refused
-send feeds your reason back to the model.
+value. A refused send feeds your reason back to the model.
 
-<div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a key legend row."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span class="fs-dim">  Y/Enter approve · n refuse · c worker config · else reason</span></div>
+The prompt is an ordinary input line — whatever you type there becomes the refusal reason — so the
+actions have keys that cannot start a sentence, each one press with nothing to confirm:
+
+| Key | Action |
+| --- | --- |
+| `Enter` | approve |
+| `Esc` | refuse, no reason |
+| `Tab` | open the full order in a read-only viewer |
+| `Shift-Tab` | adjust the worker's provider/model/effort/api before deciding |
+| anything else | refuse, with what you typed as the reason |
+
+`Esc` refuses at every tool's approval prompt, not just this one. Without a TUI (piped input, a
+headless run) the same actions are typed out instead: `y`, `n`, `v`, `c`, each followed by Enter.
+
+<div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a key legend row naming the Enter, Esc, Tab and Shift-Tab actions."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span class="fs-dim">  Enter approve · Esc refuse · Tab view order · S-Tab worker config · else reason</span></div>
 
 ## Semantics
 

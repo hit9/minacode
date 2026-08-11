@@ -220,6 +220,9 @@ class TuiApp:
         # None is the cancellation signal, distinct from every string the user can submit (including
         # ""). See request_input: callers must not read a cancel as an answer.
         self._input_result: str | None = None
+        # key name -> the whole-line answer that key submits at the current approval prompt. See
+        # set_approval_hotkeys.
+        self._input_hotkeys: dict[str, str] = {}
         self.status_label: str = ""
         self.modal: TuiModal | None = None
         self.modal_lock = threading.Lock()
@@ -266,10 +269,25 @@ class TuiApp:
             event.wait()
         finally:
             self._input_pending = None
+            self._input_hotkeys = {}  # hotkeys belong to one prompt; the next one declares its own
             restored = threading.Event()
             self._schedule(switch, previous_document or Document(""), previous_mode, previous_prompt, restored)
             restored.wait()
         return self._input_result
+
+    def set_approval_hotkeys(self, hotkeys: dict[str, str]) -> bool:
+        """Declare single keys the *next* approval prompt accepts as a whole-line answer, e.g.
+        {"escape": "n"} to refuse without typing. Returns whether they were installed, so the
+        caller can render a legend that matches the keys that actually work.
+
+        The approval row is a normal input line -- anything typed there is a refusal reason -- so a
+        hotkey may only be a key that cannot start prose. Escape and Tab qualify; letters do not,
+        because "cost too high" starts with a perfectly good `c`. The binding only fires while the
+        line is still empty, so it never eats a key mid-reason.
+
+        Cleared when the prompt resolves. Set it before every prompt that wants it."""
+        self._input_hotkeys = dict(hotkeys)
+        return True
 
     def set_running(self, label: str) -> None:
         self.status_label = label
@@ -742,6 +760,25 @@ class TuiApp:
         bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
         for key, reverse in (("tab", False), ("s-tab", True)):
             bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.tab_or_complete(event.current_buffer, reverse=reverse))
+
+        def approval_hotkey(key: str) -> Condition:
+            # Live only while this prompt offered the key and the line is still empty, so a hotkey
+            # never intercepts a keystroke that belongs to a refusal reason being typed. When it is
+            # not live the key keeps its ordinary binding (Tab completes, Escape is a meta prefix).
+            return Condition(
+                lambda: self.input_mode == "approval" and self._input_pending is not None and not self.input_buffer.text and key in self._input_hotkeys
+            )
+
+        def submit_hotkey(key: str) -> None:
+            if self._input_pending is not None:
+                self._input_result = self._input_hotkeys[key]
+                self._input_pending.set()
+
+        for key in ("tab", "s-tab"):
+            bindings.add(key, filter=~modal & approval_hotkey(key), eager=True)(lambda _, key=key: submit_hotkey(key))
+        # Not eager: an arrow key is an escape sequence, so Escape has to stay ambiguous long enough
+        # for the parser to see whether more bytes follow.
+        bindings.add("escape", filter=~modal & approval_hotkey("escape"))(lambda _: submit_hotkey("escape"))
 
         def paste(event):
             event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))

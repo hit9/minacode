@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.20\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-05 01:37-0700\n"
+"POT-Creation-Date: 2026-08-10 21:21-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -44,7 +44,9 @@ msgid ""
 "model orchestrates as the parent, while the worker — whose tasks are "
 "bounded and spec'd — runs on a small, cheap one, so the tokens a "
 "delegation burns cost a fraction of the parent's rate."
-msgstr "这一设计的主要初衷是按成本搭配模型：一个大而强的模型作为父级负责编排，而任务有界、有 spec 的 worker 跑在一个小而便宜的模型上——一次委派所烧的 token 只相当于父级费率的一小部分。"
+msgstr ""
+"这一设计的主要初衷是按成本搭配模型：一个大而强的模型作为父级负责编排，而任务有界、有 spec 的 worker "
+"跑在一个小而便宜的模型上——一次委派所烧的 token 只相当于父级费率的一小部分。"
 
 #: ../../worker.md:15
 msgid "Quick start"
@@ -58,9 +60,9 @@ msgid ""
 "cross-validate the parent's. Point `[worker] provider` at that entry and "
 "turn on `[runtime] worker`:"
 msgstr ""
-"父级负责编排，所以通常跑更大的模型；worker 跑有界任务，一个更快、更便宜的条目就"
-"够用——最好与 `provider.active` 来自**不同厂商**，这样它的审查能与父级互相验证。把 "
-"`[worker] provider` 指向该条目并打开 `[runtime] worker`："
+"父级负责编排，所以通常跑更大的模型；worker 跑有界任务，一个更快、更便宜的条目就够用——最好与 `provider.active` "
+"来自**不同厂商**，这样它的审查能与父级互相验证。把 `[worker] provider` 指向该条目并打开 `[runtime] "
+"worker`："
 
 #: ../../worker.md:47
 msgid ""
@@ -136,20 +138,84 @@ msgid ""
 "confirmation prints the title, a one-line excerpt of the order, any "
 "explicit `language` or `max_steps`, and the effective worker "
 "provider/model/effort/api, with `(inherit)` marking a field that inherits"
-" the provider entry's value. `c` opens a small loop that adjusts those "
-"worker settings before you decide; a refused send feeds your reason back "
-"to the model."
+" the provider entry's value. A refused send feeds your reason back to the"
+" model."
 msgstr ""
 "每次 `Delegate send` 都需要审批，即使在 `yolo` 下也一样——确认会打印标题、order 的单行摘录、任何显式的 "
 "`language` 或 `max_steps`，以及生效的 worker "
-"provider/model/effort/api，`(inherit)` 标记表示该字段继承 provider 条目的值。`c` "
-"打开一个小循环，在决定前调整这些 worker 设置；被拒绝的发送会把你的理由反馈给模型。"
+"provider/model/effort/api，`(inherit)` 标记表示该字段继承 provider 条目的值。被拒绝的发送会把你的理由反馈给模型。"
 
-#: ../../worker.md:89
+#: ../../worker.md:86
+msgid ""
+"The prompt is an ordinary input line — whatever you type there becomes "
+"the refusal reason — so the actions have keys that cannot start a "
+"sentence, each one press with nothing to confirm:"
+msgstr ""
+"确认提示就是一行普通输入——你在那里打的任何内容都会变成拒绝理由——因此这些动作用的都是不"
+"可能作为句子开头的按键，每个都按一下即生效，无需再确认："
+
+#: ../../worker.md
+msgid "Key"
+msgstr "按键"
+
+#: ../../worker.md
+msgid "Action"
+msgstr "动作"
+
+#: ../../worker.md
+msgid "`Enter`"
+msgstr "`Enter`"
+
+#: ../../worker.md
+msgid "approve"
+msgstr "批准"
+
+#: ../../worker.md
+msgid "`Esc`"
+msgstr "`Esc`"
+
+#: ../../worker.md
+msgid "refuse, no reason"
+msgstr "拒绝，不带理由"
+
+#: ../../worker.md
+msgid "`Tab`"
+msgstr "`Tab`"
+
+#: ../../worker.md
+msgid "open the full order in a read-only viewer"
+msgstr "在只读查看器中打开完整 order"
+
+#: ../../worker.md
+msgid "`Shift-Tab`"
+msgstr "`Shift-Tab`"
+
+#: ../../worker.md
+msgid "adjust the worker's provider/model/effort/api before deciding"
+msgstr "决定前先调整 worker 的 provider/model/effort/api"
+
+#: ../../worker.md
+msgid "anything else"
+msgstr "其他任何输入"
+
+#: ../../worker.md
+msgid "refuse, with what you typed as the reason"
+msgstr "拒绝，并以你输入的内容作为理由"
+
+#: ../../worker.md:97
+msgid ""
+"`Esc` refuses at every tool's approval prompt, not just this one. Without"
+" a TUI (piped input, a headless run) the same actions are typed out "
+"instead: `y`, `n`, `v`, `c`, each followed by Enter."
+msgstr ""
+"`Esc` 在每个工具的审批提示下都表示拒绝，不只是这一个。没有 TUI 时（管道输入、无界面运"
+"行），同样的动作改为完整输入：`y`、`n`、`v`、`c`，每个后面加 Enter。"
+
+#: ../../worker.md:102
 msgid "Semantics"
 msgstr "语义"
 
-#: ../../worker.md:91
+#: ../../worker.md:104
 msgid ""
 "**Reset drops the conversation, not the work.** The worker owns only its "
 "conversation; `/worker reset` (or a `Delegate reset` call) clears that "
@@ -159,7 +225,7 @@ msgstr ""
 "**重置丢弃的是对话，不是成果。** worker 只拥有它的对话；`/worker reset`（或一次 `Delegate reset` "
 "调用）刻意清空这段对话——连同它可能积累的错误认知——而文件改动和已合并的 diff 始终保留。"
 
-#: ../../worker.md:94
+#: ../../worker.md:107
 msgid ""
 "**Snapshots belong to the parent.** A worker's session id is the parent's"
 " with a `.w` suffix; worker snapshots are never listed in `/sessions`, "
@@ -169,7 +235,7 @@ msgstr ""
 "**快照从属于父级。** worker 的会话 id 是父级 id 加 `.w` 后缀；worker 快照永远不会出现在 `/sessions` "
 "列表里，当父级快照过期时，孤儿的 worker 也随之一并过期。"
 
-#: ../../worker.md:97
+#: ../../worker.md:110
 msgid ""
 "**The tool block is frozen at session start.** The `Delegate` tool block "
 "is fixed from `[worker] provider` when the session begins, protecting the"
@@ -180,14 +246,14 @@ msgstr ""
 "**工具块在会话开始时冻结。** `Delegate` 工具块在会话开始时由 `[worker] provider` 固定，以保护 prompt "
 "缓存的作用域：运行中切换 provider 只会调优已启用的委派，而从头启用委派（开始时未设置 provider）需要重启后才会生效。"
 
-#: ../../worker.md:101
+#: ../../worker.md:114
 msgid ""
 "**Sends are confirmed even under `yolo`.** The order is a spec the model "
 "wrote for itself, and the approval brief is the one cheap check on it — "
 "every send asks."
 msgstr "**即使在 `yolo` 下也会确认发送。** order 是模型为自己写的规格，审批简报是对它的唯一廉价检查——每次发送都会询问。"
 
-#: ../../worker.md:103
+#: ../../worker.md:116
 msgid ""
 "**The worker inherits your environment.** It shares the parent's cwd, "
 "skills, MCP servers, and language setting; only files and the repository "
