@@ -24,7 +24,7 @@ from minacode.base import (
     ToolArgs,
     UpdateStatus,
 )
-from minacode.config import Config, ConfigFile, RuntimeSettings, SystemInfo
+from minacode.config import Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
 from minacode.session.store import (
@@ -447,6 +447,18 @@ class Session:
             return os.path.commonpath([os.path.realpath(self.cwd), os.path.realpath(path)]) == os.path.realpath(self.cwd)
         except ValueError:
             return False
+
+    def request_token_budget(self) -> int:
+        """The input budget one request is measured against, under this session's *current* config.
+
+        The single definition of the denominator. Cheap (no message projection), so renderers can
+        call it per frame instead of reusing `usage.last_prompt_budget` -- that one is the budget a
+        past request was prepared against, which is the right question for the overdue-by-usage
+        guard and the wrong one for "how full am I now": it goes stale the moment the limit changes
+        and is restored verbatim from a snapshot on resume.
+        """
+        provider = self.config.provider
+        return request_budget_for(provider.context_token_limit(self.settings.max_context_tokens), provider.output_token_budget())
 
     def data_path(self, *parts: str) -> str:
         root = os.path.expanduser(self.config.data_dir)

@@ -1033,6 +1033,9 @@ class StatusBar:
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;
             # the estimate (state.context_percent) stays as the fallback before any request exists.
+            # The pair describes one real request, so raising a context limit moves this only once the
+            # next request has been sent against the new budget -- mixing a measured numerator with
+            # today's denominator would re-score a request that already happened.
             # This only renders; compaction keeps triggering on the estimate (see DESIGN.md, context.py).
             ctx_percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget)
         else:

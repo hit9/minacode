@@ -45,7 +45,6 @@ from minacode.base import (
 )
 from minacode.config import (
     ProviderConfig,
-    request_budget_for,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model_catalog import THINKING_BUDGETS
@@ -527,11 +526,7 @@ class ModelClient:
     def _record_usage(self, usage: Any) -> None:
         """Add a completed request to session usage, keeping the budget it was prepared against so the
         status fill uses the request-time denominator instead of today's configuration."""
-        provider = self.session.config.provider
-        self.session.usage.add(
-            usage,
-            request_budget_for(provider.context_token_limit(self.session.settings.max_context_tokens), provider.output_token_budget()),
-        )
+        self.session.usage.add(usage, self.session.request_token_budget())
 
     def chat_request(
         self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True, response_timeout: float | None = None

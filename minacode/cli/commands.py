@@ -208,7 +208,9 @@ def status(loop: CommandLoop, args: str) -> str:
     context_budget = loop.agent.context.request_token_budget()
     if usage.last_prompt_tokens and usage.last_prompt_budget:
         # Display the provider-reported tokens and the budget of the last request; the estimate
-        # (state.context_percent) stays the fallback before any request exists.
+        # (state.context_percent) stays the fallback before any request exists. The pair describes
+        # one real request, so a changed max_context_tokens shows up here after the next request
+        # rather than re-scoring the last one. `/config` reports the configured value immediately.
         context_tokens = usage.last_prompt_tokens
         context_budget = usage.last_prompt_budget
         context_percent = min(100, context_tokens * 100 // context_budget)

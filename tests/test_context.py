@@ -303,6 +303,54 @@ def test_provider_context_limit_overrides_the_runtime_default(tmp_path):
     assert narrow == request_budget_for(131_072, config.providers["small"].output_token_budget())
 
 
+def test_the_context_budget_has_exactly_one_definition():
+    """Every consumer must derive the budget from Session.request_token_budget().
+
+    This is the regression guard, not a style rule. The budget is read by compaction, the usage
+    recorder, and two renderers; each one that computes it itself is a place the provider override
+    can silently stop applying, which is exactly how `runtime.max_context_tokens` used to leak back
+    in. `request_budget_for` is pure and takes a plain int, so a new call site that passes
+    `settings.max_context_tokens` type-checks, passes its own tests, and quietly ignores the entry's
+    limit. Keep the call sites at one; route new readers through the session.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "minacode"
+    callers = sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.py")
+        if "request_budget_for(" in path.read_text(encoding="utf-8") and path.name != "config.py"  # config.py defines it
+    )
+    assert callers == ["session/__init__.py"], (
+        f"the context budget is computed in {callers}; call Session.request_token_budget() instead so the "
+        "per-provider max_context_tokens override cannot be bypassed"
+    )
+
+
+def test_provider_context_limit_reaches_every_budget_reader(tmp_path):
+    # End to end, through the real Agent: a provider-level limit must drive the compaction budget and
+    # the budget recorded for the status row, with no path still reading the runtime default.
+    from minacode.config import Config, request_budget_for
+
+    s = session(tmp_path)
+    s.config = Config.from_dict({"provider": {"active": "wide", "wide": {"model": "m", "max_context_tokens": 1_048_576}}})
+    s.settings.max_context_tokens = 262_144  # the runtime default, deliberately much smaller
+    expected = request_budget_for(1_048_576, s.config.provider.output_token_budget())
+    runtime_only = request_budget_for(262_144, s.config.provider.output_token_budget())
+    assert expected != runtime_only
+
+    agent = Agent(s, output_fn=lambda text: None)
+    assert s.request_token_budget() == expected
+    assert agent.context.request_token_budget() == expected
+
+    # The recorded budget is what /status and the status bar divide by, so it has to agree.
+    type(agent.model)._record_usage(agent.model, SimpleNamespace(prompt_tokens=1_000, completion_tokens=1))
+    assert s.usage.last_prompt_budget == expected
+
+    # And the fill really is measured against the wide window, not the runtime default.
+    assert s.usage.last_prompt_tokens * 100 // s.usage.last_prompt_budget == 1_000 * 100 // expected
+
+
 def test_provider_context_limit_shares_one_denominator_with_usage(tmp_path):
     # The compaction trigger and the status-bar fill must be measured against the same number, or
     # the bar reads 60% while the context manager is already compacting.

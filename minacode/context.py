@@ -17,9 +17,6 @@ from minacode.base import (
     Json,
     Text,
 )
-from minacode.config import (
-    request_budget_for,
-)
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model import ModelClient
 from minacode.prompts import (
@@ -154,11 +151,7 @@ class ContextManager:
         return self.session.skills.index() if self.session.skills else ""
 
     def request_token_budget(self) -> int:
-        provider = self.session.config.provider
-        return request_budget_for(
-            provider.context_token_limit(self.session.settings.max_context_tokens),
-            provider.output_token_budget(),
-        )
+        return self.session.request_token_budget()
 
     def request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         if self.model is not None:
