@@ -462,7 +462,7 @@ class ContextManager:
     OMITTED_OUTPUT_HINT = "file holds this output in full; Search it for the part you need, or Bash grep/jq -- cheaper than paging the text back with Recall"
     OMITTED_OUTPUT_RECALL_HINT = "Recall this key with ranges to page the omitted lines back"
 
-    def bound_output(self, text: str, key: str = "", *, stable_marker: bool = False) -> str:
+    def bound_output(self, text: str, key: str = "") -> str:
         estimated = self.estimated_text_tokens(text)
         if estimated <= MAX_TOOL_OUTPUT_TOKENS:
             return text
@@ -473,8 +473,7 @@ class ContextManager:
         tail = self.tail_excerpt(text, tail_limit)
         omitted_tokens = max(0, estimated - self.estimated_text_tokens(head) - self.estimated_text_tokens(tail))
         note = f'<bounded_output omitted="middle" max_tokens="{MAX_TOOL_OUTPUT_TOKENS}"'
-        if not stable_marker:
-            note += f' estimated_tokens="{estimated}" omitted_tokens="{omitted_tokens}"'
+        note += f' estimated_tokens="{estimated}" omitted_tokens="{omitted_tokens}"'
         note += f' recall="{key}"' if key else ""
         if key:
             path = self.materialize_output(key, text)
