@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.23.0 - 2026-08-11
 
 ### Added
 - `[provider.NAME] max_context_tokens` overrides `runtime.max_context_tokens` for that entry, so a
