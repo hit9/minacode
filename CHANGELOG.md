@@ -8,6 +8,10 @@
   bounded "Project instructions" section of the Environment block, so repo-specific conventions
   ride the cache-stable prefix. Controlled by `[runtime] agents_md` (default on); `/status` and
   `/config` show whether it is loaded.
+- The Delegate send confirmation prompt now accepts `v` (or `view`) to open a read-only,
+  full-screen viewer of the complete delegation order before approving (Esc/q closes back to
+  the prompt). The approval brief still shows only a one-line excerpt; the viewer is for reading
+  the whole spec. Headless/no-TUI falls back to printing the full order.
 
 ### Fixed
 - `Job(action="wait")` can no longer hold the agent indefinitely. Waiting with no timeout blocked
