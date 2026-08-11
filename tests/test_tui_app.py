@@ -1246,6 +1246,28 @@ def test_tui_approval_restores_half_typed_draft():
     assert app.input_buffer.text == "unfinished draft"
 
 
+def test_tui_approval_prompt_moves_leading_newline_into_a_blank_gap():
+    """Ask free-text passes "\n" + question so the prompt has a blank line above it. BeforeInput is a
+    single-line prefix and BufferControl does not split processor output on "\n", so a literal newline
+    would render as "^J". The newline is stripped from the prompt and carried as a layout-gap flag."""
+    app = TuiApp()
+    result = []
+    thread = threading.Thread(target=lambda: result.append(app.request_input("\nPick?")), daemon=True)
+    thread.start()
+    wait_until(lambda: app.input_mode == "approval")
+
+    assert app.input_prompt == "Pick?"  # the leading "\n" is gone, not rendered as "^J"
+    assert app._input_leading_blank is True
+    assert all("\n" not in text for _style, text in app.status_fragments())
+
+    app.input_buffer.insert_text("typed")
+    app.input_buffer.validate_and_handle()
+    thread.join(timeout=1)
+
+    assert result == ["typed"]
+    assert app._input_leading_blank is False
+
+
 def test_interactive_tui_ctrl_c_cancels_approval_without_interrupting_turn(monkeypatch):
     interrupted = []
     result = []

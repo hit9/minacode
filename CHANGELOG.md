@@ -46,6 +46,9 @@
   the whole spec. Headless/no-TUI falls back to printing the full order.
 
 ### Fixed
+- The `Ask` tool's free-text input no longer opens with a stray `^J`. The blank line above the
+  question was a leading newline in the prompt, and the input's single-line prefix renders a literal
+  newline as the `^J` control character rather than a line break; it is now a layout gap.
 - `Job(action="wait")` can no longer hold the agent indefinitely. Waiting with no timeout blocked
   until the process exited, which is exactly what a model does right after a slow `Bash` is
   backgrounded — so backgrounding handed control back and the very next call gave it away again,

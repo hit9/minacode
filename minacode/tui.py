@@ -216,6 +216,8 @@ class TuiApp:
         self.input_mode = "chat"  # chat | dispatch | running | approval
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
         self.input_prompt = UiPrinter.PROMPT_PREFIX
+        # True while an approval prompt asked for a blank line above it (Ask free-text).
+        self._input_leading_blank = False
         self._input_pending: threading.Event | None = None
         # None is the cancellation signal, distinct from every string the user can submit (including
         # ""). See request_input: callers must not read a cancel as an answer.
@@ -253,6 +255,11 @@ class TuiApp:
         previous_images = self.input_images
         self._input_pending = event
         self._input_result = None
+        # A leading "\n" (Ask free-text) means "blank line above the prompt". BeforeInput is a
+        # single-line prefix and BufferControl does not split processor output on "\n", so a literal
+        # newline would render as "^J". Carry it as a layout-gap flag instead.
+        self._input_leading_blank = prompt.startswith("\n")
+        prompt = prompt.removeprefix("\n") if self._input_leading_blank else prompt
 
         def switch(document: Document, mode: str, prompt_text: str, done: threading.Event) -> None:
             nonlocal previous_document
@@ -326,6 +333,8 @@ class TuiApp:
         self.input_mode = mode
         self.input_prompt = prompt
         self.quick_hint_focus = -1
+        if mode != "approval":
+            self._input_leading_blank = False
         if mode not in {"chat", "running"}:
             self.input_error = ""
         self.invalidate()
@@ -706,6 +715,10 @@ class TuiApp:
             Window(height=1, dont_extend_height=True),
             filter=running,
         )
+        approval_blank = ConditionalContainer(
+            Window(height=1, dont_extend_height=True),
+            filter=Condition(lambda: self.input_mode == "approval" and self._input_leading_blank),
+        )
         self.modal_window = Window(FormattedTextControl(self.modal_fragments, focusable=True), wrap_lines=False, dont_extend_height=True)
         modal_active = Condition(lambda: self.modal is not None)
         exclusive_active = Condition(lambda: self.modal is not None and self.modal.exclusive)
@@ -722,6 +735,7 @@ class TuiApp:
                     running_gap_above,
                     activity,
                     running_gap_below,
+                    approval_blank,
                     input_error,
                     approval_form,
                     self.input_window,
