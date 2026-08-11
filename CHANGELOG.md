@@ -15,6 +15,11 @@
   refusal reason, and because no letter is a shortcut, a reason can start with any word at all.
   Each action submits exactly the line you could have typed, so the protocol underneath is
   unchanged and headless runs keep `y`/`n`/`v`/`c` verbatim.
+- A rejected `Note` no longer prints its whole body in grey. An argument rejection is meant to be a
+  quiet one-line summary, but it reused the tool's display, and `Note` keeps the entire rendered
+  note there so a successful call can print it — so a rejected update dimmed thirty lines and left
+  the reason hanging off the end of the last one. The rejection line is one line now, and a failed
+  call's red root is collapsed the same way; a successful `Note` still prints in full.
 - A tool approval no longer reprints its whole brief every time you come back to it. Viewing a
   Delegate order or editing the worker config re-asked by redrawing the entire brief, stacking a
   copy in the transcript per visit; the brief is printed once and the config cycle now reports the

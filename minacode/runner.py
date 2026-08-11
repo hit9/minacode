@@ -539,8 +539,14 @@ class ToolRunner:
         # Argument/usage rejections are usually self-corrected on retry, so show a quiet one-liner
         # (rendered dim by UiPrinter) instead of the full red failed block. The model still receives
         # the complete error so it can correct the call.
+        #
+        # One line has to be enforced here, not assumed: a display is whatever the tool's short_args
+        # produced, and Note's is the whole rendered note so that a successful call can print it.
+        # Left alone, a rejected Note dims its entire body and hides the reason at the end of the
+        # last line -- the reason for the rejection is the only part of a rejection worth reading.
         reason = self.oneline(output.removeprefix("ToolError:").strip(), 60)
-        return LogBlock.hierarchy(self.log_root((d.display or self.short_call(call)) + " · rejected: " + reason, LogRole.MUTED, d.batch_suffix, call), [])
+        display = self.oneline(d.display or self.short_call(call), 120)
+        return LogBlock.hierarchy(self.log_root(display + " · rejected: " + reason, LogRole.MUTED, d.batch_suffix, call), [])
 
     def finish(
         self,
@@ -812,7 +818,11 @@ class ToolRunner:
             return self.with_batch_suffix(d.display.removeprefix("Note ").strip(), d.batch_suffix)
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
         tree = d.nested_display or call.name in ("Bash", "Delegate")
-        root = self.log_root(d.display or self.short_call(call), LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
+        # A failed call explains itself in the error child below, so its root only has to identify
+        # the call -- collapsed to one line, or a multi-line display (Note keeps the whole rendered
+        # note there) paints its entire body red under the tag.
+        label = d.display or self.short_call(call)
+        root = self.log_root(self.oneline(label, 120) if failed else label, LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
         is_reset = call.name == "Delegate" and not failed and 'action="reset"' in output
         if call.name == "Delegate" and not failed and not is_reset:
             # The delegation bracket: the start marker opens with the yellow full-width rule; the
