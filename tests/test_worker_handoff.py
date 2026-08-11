@@ -1260,10 +1260,11 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     entry = worker.config.providers["alt"]
     assert (entry.model, entry.reasoning, entry.api) == ("worker-m", "off", "responses")
     assert worker.config.providers is not parent.config.providers
-    # The config block printed, and the approval brief was redrawn after the picker returned.
-    assert any("worker config" in str(out) for out in outputs if isinstance(out, LogBlock))
+    # The prompt re-asked, and the config block printed the values the picker left behind. The
+    # brief is NOT redrawn: the first copy is still on screen, and a second is transcript noise.
     assert sum(1 for prompt in prompts if "Approve delegation? [Y/n/c] " in prompt) == 2
-    assert len([out for out in outputs if isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk())]) == 2
+    assert any("worker config" in str(out) for out in outputs if isinstance(out, LogBlock))
+    assert len([out for out in outputs if isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk())]) == 1
 
     # Without an injected picker (headless / non-CommandLoop) the `c` key prints the config block
     # and re-asks without crashing.
@@ -1378,7 +1379,29 @@ def test_confirm_cancelled_input_refuses_without_a_reason(tmp_path):
     assert runner.confirm(call, TOOL_REGISTRY["Bash"](parent, ["echo hi"])) == (False, "")
 
 
-def test_approval_hotkeys_offered_per_tool_and_only_where_they_work(tmp_path):
+def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
+    # `v` and `c` come back to the same prompt, and each redraw used to stack another full copy of
+    # the brief in the transcript. It is printed once; the side trips report themselves.
+    from minacode.base import LogBlock, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    args = {"action": "send", "order": "line one\nline two", "title": "fix things"}
+    answers = iter(["v", "c", "v", "y"])
+    outputs, prompts = [], []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
+    runner.order_viewer = lambda order_text, header_rows: None
+    confirmed, _reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+
+    assert confirmed is True
+    assert len(prompts) == 4  # every side trip re-asked
+    briefs = [out for out in outputs if isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk())]
+    assert len(briefs) == 1
+
+
+def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_path):
     from minacode.base import ToolCall
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
@@ -1387,33 +1410,41 @@ def test_approval_hotkeys_offered_per_tool_and_only_where_they_work(tmp_path):
     parent = _delegate_session(tmp_path)
     declared = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
-    runner.approval_hotkeys = lambda keys: bool(declared.append(dict(keys))) or True
+    runner.approval_form = lambda actions: bool(declared.append(list(actions))) or True
 
+    # Approve is first because it is the default; Refuse is last because Escape already refuses in
+    # one key, while every Tab spent reaching View order is a key the user actually presses.
     send = DelegateTool(parent, [{"action": "send", "order": "o"}])
-    assert runner.declare_approval_hotkeys(send, True) == {"escape": "n", "s-tab": "c", "tab": "v"}
+    assert runner.declare_approval_form(send, True) == [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]
 
-    # No order means nothing to view, so the view key stays unbound rather than opening an empty one.
+    # No order means nothing to view, so the action is not offered rather than opening an empty one.
     orderless = DelegateTool(parent, [{"action": "send", "order": ""}])
-    assert runner.declare_approval_hotkeys(orderless, True) == {"escape": "n", "s-tab": "c"}
+    assert runner.declare_approval_form(orderless, True) == [("Approve", ""), ("Worker config", "c"), ("Refuse", "n")]
 
-    # Every other tool gets refuse only: `c`/`v` are Delegate actions, and Bash has no equivalent.
+    # Every other tool gets approve/refuse: `c` and `v` are Delegate actions, Bash has no equivalent.
     bash = TOOL_REGISTRY["Bash"](parent, ["rm -rf build"])
-    assert runner.declare_approval_hotkeys(bash, False) == {"escape": "n"}
-    assert [set(keys) for keys in declared] == [{"escape", "s-tab", "tab"}, {"escape", "s-tab"}, {"escape"}]
+    assert runner.declare_approval_form(bash, False) == [("Approve", ""), ("Refuse", "n")]
+    assert [len(actions) for actions in declared] == [4, 3, 2]
 
     # Headless: nothing is wired, so nothing is claimed and the typed protocol is what is offered.
-    runner.approval_hotkeys = None
-    assert runner.declare_approval_hotkeys(send, True) == {}
-    assert runner.approval_prompt(True, {}) == "Approve delegation? [Y/n/c] "
-    assert runner.approval_prompt(False, {}) == "Approve? [Y/n or reason] "
-    assert "Esc" in runner.approval_prompt(False, {"escape": "n"})
+    runner.approval_form = None
+    assert runner.declare_approval_form(send, True) == []
+    assert runner.approval_prompt(True, []) == "Approve delegation? [Y/n/c] "
+    assert runner.approval_prompt(False, []) == "Approve? [Y/n or reason] "
+    assert runner.approval_prompt(False, [("Approve", "")]) == "reason › "
 
-    # The hotkeys are a shortcut for the typed answers, so a plain tool still refuses on "n".
-    typed = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "n", output_fn=lambda text: None)
-    assert typed.confirm(ToolCall("bash-1", "Bash", ["rm -rf build"]), bash) == (False, "")
+    # Every action's answer is a line confirm() already understands, so the two paths cannot drift.
+    for _label, answer in [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]:
+        typed = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt, a=answer: a, output_fn=lambda text: None)
+        typed.order_viewer = lambda order_text, header_rows: None
+        typed.worker_config_picker = lambda: None
+        if answer in {"v", "c"}:
+            continue  # these re-ask forever against a constant input_fn; covered by the side-trip test
+        assert typed.confirm(ToolCall("bash-1", "Bash", ["rm -rf build"]), bash) == ((True, "") if answer == "" else (False, ""))
 
 
-def test_delegate_legend_names_only_the_keys_that_are_bound(tmp_path):
+def test_delegate_legend_prints_only_without_an_action_row(tmp_path):
+    from minacode.base import LogEdge
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.tools.delegate import DelegateTool
@@ -1423,12 +1454,17 @@ def test_delegate_legend_names_only_the_keys_that_are_bound(tmp_path):
     tool = DelegateTool(parent, [{"action": "send", "order": "o"}])
 
     # Headless keeps the typed legend: those words plus Enter are all that path has.
-    assert runner.delegate_approval_children(tool)[-1].text == "Y/Enter approve · n refuse · c worker config · v view order · else reason"
+    headless = runner.delegate_approval_children(tool)
+    assert headless[-1].text == "Y/Enter approve · n refuse · c worker config · v view order · else reason"
+    assert headless[-1].edge is LogEdge.END
 
-    hotkeys = {"escape": "n", "s-tab": "c", "tab": "v"}
-    assert runner.delegate_legend(hotkeys) == "Enter approve · Esc refuse · Tab view order · S-Tab worker config · else reason"
-    # An orderless send does not bind the view key, so the legend must not promise it.
-    assert "Tab view order" not in runner.delegate_legend({"escape": "n", "s-tab": "c"})
+    # With a live action row the legend would be a stale duplicate, so the brief ends at its rows —
+    # and the last one has to take over the closing edge.
+    form = runner.declare_approval_form(tool, True) or [("Approve", "")]
+    children = runner.delegate_approval_children(tool, form)
+    assert all(runner.DELEGATE_LEGEND not in (line.text or "") for line in children)
+    assert children[-1].edge is LogEdge.END
+    assert children[0].edge is LogEdge.BRANCH
 
 
 def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):

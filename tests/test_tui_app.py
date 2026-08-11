@@ -895,50 +895,100 @@ def test_tui_ctrl_d_deletes_at_cursor_when_input_is_nonempty(mode):
     assert app.input_buffer.text == "ac"
 
 
-def test_tui_approval_hotkeys_submit_the_answer_the_user_would_have_typed():
-    # A hotkey is a shortcut for the typed protocol, not a second protocol: it submits the same
-    # whole line ("n", "v", "c") the approval loop already understands.
-    app = TuiApp()
-    event = type("Event", (), {})()
-
-    def active(key):
-        return [binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (key,) and binding.filter()]
-
-    for key, expected in ((Keys.Escape, "n"), (Keys.Tab, "v"), (Keys.BackTab, "c")):
-        pending = threading.Event()
-        app._input_pending = pending
-        app.input_mode = "approval"
-        app.input_buffer.reset(Document(""))
-        assert app.set_approval_hotkeys({"escape": "n", "tab": "v", "s-tab": "c"}) is True
-
-        active(key)[0].handler(event)
-
-        assert (app._input_result, pending.is_set()) == (expected, True)
+ACTIONS = [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]
 
 
-def test_tui_approval_hotkeys_stay_out_of_the_way_of_a_typed_reason():
-    # The approval row is an ordinary input line, so a hotkey may never eat a keystroke once a
-    # refusal reason is being typed, nor apply to a prompt that did not offer it.
+def _approval_app():
     app = TuiApp()
     app._input_pending = threading.Event()
     app.input_mode = "approval"
+    assert app.set_approval_form(ACTIONS) is True
+    return app
+
+
+def _active(app, key):
+    return [binding for binding in reversed(app.make_bindings().bindings) if binding.keys == (key,) and binding.filter()]
+
+
+def test_tui_approval_form_fires_the_focused_action_on_enter():
+    # Enter submits the focused action's answer -- the same whole line ("", "v", "c", "n") the
+    # approval loop already understands, so the form is a renderer, not a second protocol.
+    for steps, expected in ((0, ""), (1, "v"), (2, "c"), (3, "n"), (4, "")):  # 4 wraps back to Approve
+        app = _approval_app()
+        for _ in range(steps):
+            _active(app, Keys.Tab)[0].handler(type("Event", (), {})())
+        app._accept(app.input_buffer)
+        assert (app._input_result, app._input_pending.is_set()) == (expected, True)
+
+    app = _approval_app()  # Shift-Tab from the default wraps backwards to the last action
+    _active(app, Keys.BackTab)[0].handler(type("Event", (), {})())
+    app._accept(app.input_buffer)
+    assert app._input_result == "n"
+
+
+def test_tui_approval_form_yields_the_keyboard_once_a_reason_is_typed():
+    # The whole point of selecting actions instead of binding letters: nothing a reason might
+    # contain is spent on a shortcut, so navigation keys go back to editing the moment there is text.
+    app = _approval_app()
 
     def live(key):
         return [binding for binding in app.make_bindings().bindings if binding.keys == (key,) and binding.filter()]
 
-    app.set_approval_hotkeys({"escape": "n", "tab": "v"})
-    app.input_buffer.reset(Document(""))
-    assert len(live(Keys.Escape)) == 1  # bare Escape is bound only as a hotkey
-    assert len(live(Keys.Tab)) == 2  # the hotkey, layered over Tab's usual completion
+    assert len(live(Keys.Tab)) == 2  # the action row, layered over Tab's usual completion
+    assert len(live(Keys.Escape)) == 1
+    assert len(live(Keys.Right)) == 1
 
     app.input_buffer.reset(Document("cost too high"))
-    assert live(Keys.Escape) == []  # mid-reason: Escape is a meta prefix again
-    assert len(live(Keys.Tab)) == 1  # ... and Tab completes, as everywhere else
+    assert len(live(Keys.Tab)) == 1  # Tab completes again
+    assert live(Keys.Right) == []  # ... and the arrows move the cursor
+    assert len(live(Keys.Escape)) == 1  # Escape stays bound, but now clears back to the row
 
-    app.input_buffer.reset(Document(""))
-    app.set_approval_hotkeys({})  # a prompt that offers nothing binds nothing
-    assert live(Keys.Escape) == []
-    assert len(live(Keys.Tab)) == 1
+    app._accept(app.input_buffer)  # Enter sends the reason rather than firing an action
+    assert app._input_result == "cost too high"
+
+
+def test_tui_approval_form_escape_takes_back_a_reason_then_refuses():
+    # Escape always undoes the current thing: with a reason typed it clears back to the action row,
+    # and with nothing to take back it cancels -- which confirm() reads as a refusal with no reason.
+    app = _approval_app()
+    escape = _active(app, Keys.Escape)[0].handler
+    app.input_buffer.reset(Document("cost too high"))
+
+    escape(type("Event", (), {})())
+    assert app.input_buffer.text == ""
+    assert not app._input_pending.is_set()  # taken back, not submitted
+
+    escape(type("Event", (), {})())
+    assert (app._input_result, app._input_pending.is_set()) == (None, True)
+
+    # A prompt with no form binds none of it.
+    plain = TuiApp()
+    plain._input_pending = threading.Event()
+    plain.input_mode = "approval"
+    assert [binding for binding in plain.make_bindings().bindings if binding.keys == (Keys.Escape,) and binding.filter()] == []
+
+
+def test_tui_approval_form_row_shows_focus_and_dims_while_typing():
+    app = _approval_app()
+
+    def row():
+        return "".join(text for _style, text in app.approval_form_fragments())
+
+    def styles():
+        return [style for style, _text in app.approval_form_fragments()]
+
+    assert all(label in row() for label, _answer in ACTIONS)  # every action is visible, none memorized
+    assert "class:approval.action.focused" in styles()
+    assert "Tab to move" in row()
+
+    _active(app, Keys.Tab)[0].handler(type("Event", (), {})())
+    focused = [text for style, text in app.approval_form_fragments() if style == "class:approval.action.focused"]
+    assert focused == [" View order "]
+
+    # Typing disarms the row: Enter no longer fires the focused action, so it must stop looking armed.
+    app.input_buffer.reset(Document("cost too high"))
+    assert "class:approval.action.focused" not in styles()
+    assert "Enter send · Esc back" in row()
 
 
 def test_tui_ctrl_d_submits_multiline_approval_input():

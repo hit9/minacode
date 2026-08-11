@@ -266,10 +266,10 @@ class ToolRunner:
         # confirm-time `v`/`view` key (see cli.modals.delegate_order_viewer). None degrades the
         # `v` key to printing the whole order (headless / non-CommandLoop runners).
         self.order_viewer: Callable[[str, list[tuple[str, str]]], None] | None = None
-        # Injected by CommandLoop: declares the single keys the next approval prompt accepts as a
-        # whole-line answer, and reports whether they took (see TuiApp.set_approval_hotkeys). None,
-        # or a False return, means the answer has to be typed out -- headless runs, piped stdin.
-        self.approval_hotkeys: Callable[[dict[str, str]], bool] | None = None
+        # Injected by CommandLoop: offers the next approval prompt's actions as a selectable row,
+        # and reports whether it took (see TuiApp.set_approval_form). None, or a False return, means
+        # the answer has to be typed out -- headless runs, piped stdin.
+        self.approval_form: Callable[[list[tuple[str, str]]], bool] | None = None
         # Injected by CommandLoop for the Delegate worker: ModelClient only streams when on_stream
         # is set, so an unwired worker would run unstreamed and its thinking would stay invisible.
         self.model_stream: Callable[[str, str], None] | None = None
@@ -593,12 +593,16 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
+        # Declared before the brief is drawn, because the brief only prints the typed legend when
+        # there is no form to show it live.
+        form = self.declare_approval_form(tool, always_option)
+        # Printed once, outside the loop. The `c` and `v` actions come back here to ask again, and
+        # a second copy of the brief in the transcript is noise: the first one is still on screen,
+        # and what those actions changed (or showed) they report themselves.
+        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, form=form))
         while True:
-            # Declared before the brief is drawn, because the brief's legend has to name the keys
-            # that actually work: without a TUI the same actions are still reachable, just typed.
-            hotkeys = self.declare_approval_hotkeys(tool, always_option)
-            self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, hotkeys=hotkeys))
-            reply = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + self.approval_prompt(always_option, hotkeys))
+            self.declare_approval_form(tool, always_option)  # the TUI drops the form when a prompt resolves
+            reply = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + self.approval_prompt(always_option, form))
             if reply is None:
                 # The TUI cancelled the prompt (Ctrl-C, Ctrl-D on an empty line, app shutdown).
                 # A cancel is a plain refusal: never the default approve, and never a reason —
@@ -610,56 +614,54 @@ class ToolRunner:
                 # The whole-line `c`/`config` opens the worker configuration loop; anything else
                 # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
                 self.delegate_config_cycle()
-                continue  # redraw the approval brief and re-ask
+                continue  # re-ask; the config cycle printed what it changed
             if always_option and lower in {"v", "view"}:
                 # Same whole-line exact-match rule as `c`: `v`/`view` opens the read-only order
                 # viewer; anything else (e.g. "cost too high") is an ordinary refusal reason.
                 # `always_option` already established that this is a DelegateTool.
                 self.delegate_order_view(cast(DelegateTool, tool))
-                continue  # redraw the approval brief and re-ask
+                continue  # re-ask; viewing changed nothing, so there is nothing to redraw
             if lower in {"", "y", "yes"}:
                 return True, ""
             return False, "" if lower in {"n", "no"} else answer
 
-    # Approval hotkeys, by the key the TUI binds. Only keys that cannot begin a refusal reason are
-    # eligible: the approval row is an ordinary input line, and "cost too high" is a legitimate
-    # reason that starts with the very letter the `c` action uses. Escape and Tab cannot start prose.
-    REFUSE_KEY: ClassVar[str] = "escape"
-    VIEW_KEY: ClassVar[str] = "tab"
-    CONFIG_KEY: ClassVar[str] = "s-tab"
-    HOTKEY_NAMES: ClassVar[dict[str, str]] = {REFUSE_KEY: "Esc", VIEW_KEY: "Tab", CONFIG_KEY: "S-Tab"}
+    def declare_approval_form(self, tool: Tool, always_option: bool) -> list[tuple[str, str]]:
+        """Offer this prompt's actions to the TUI as a selectable row, and return the ones it took.
 
-    def declare_approval_hotkeys(self, tool: Tool, always_option: bool) -> dict[str, str]:
-        """Tell the TUI which single keys this prompt answers with, and return the ones it took.
-
-        Each hotkey submits the same whole line the user could have typed, so the typed protocol
-        stays the single source of truth and headless runs lose nothing but the shortcut. Refusing
-        is offered for every tool; the Delegate-only actions ride along on the same mechanism."""
-        hotkeys = {self.REFUSE_KEY: "n"}
+        Ordered by how often they are wanted, because reaching the nth costs n-1 Tabs. Refusing
+        sits last despite being common: Escape already refuses in one key. Every action's answer is
+        the whole line the user could have typed, so the typed protocol underneath is untouched and
+        a headless run loses the row, not the actions."""
+        actions = [("Approve", "")]
         if always_option:
-            hotkeys[self.CONFIG_KEY] = "c"
             if self._delegate_payload(cast(DelegateTool, tool)).get("order"):
-                hotkeys[self.VIEW_KEY] = "v"  # nothing to view without an order, so do not bind it
-        return hotkeys if self.approval_hotkeys is not None and self.approval_hotkeys(hotkeys) else {}
+                actions.append(("View order", "v"))  # nothing to view without an order, so do not offer it
+            actions.append(("Worker config", "c"))
+        actions.append(("Refuse", "n"))
+        return actions if self.approval_form is not None and self.approval_form(actions) else []
 
     @staticmethod
-    def approval_prompt(always_option: bool, hotkeys: dict[str, str]) -> str:
-        """The one-line prompt after the brief. With hotkeys live the brief's legend already names
-        every action, so the prompt only has to show the default; without them it carries the
-        typed protocol, which is all a headless run has."""
-        if not hotkeys:
-            return "Approve delegation? [Y/n/c] " if always_option else "Approve? [Y/n or reason] "
-        return "Approve delegation? [Enter] " if always_option else "Approve? [Enter approve · Esc refuse · or a reason] "
+    def approval_prompt(always_option: bool, form: list[tuple[str, str]]) -> str:
+        """The one-line prompt after the brief. The form renders its own labels above the input row,
+        so it only needs the field name; without one the prompt carries the typed protocol, which is
+        all a headless run has."""
+        if form:
+            return "reason › "
+        return "Approve delegation? [Y/n/c] " if always_option else "Approve? [Y/n or reason] "
 
     def delegate_config_cycle(self) -> None:
-        """The `c` action of a Delegate send prompt: show the worker's provider/model/effort/api,
-        then hand the interactive editing to the injected picker loop (CommandLoop.run_worker_config),
-        which reuses the shared choice selector and writes back through the /worker pickers. Without
-        an injected picker (headless, or a runner outside CommandLoop) this only prints the current
-        values; the confirmation prompt re-asks either way."""
-        self.output_fn(self.worker_config_block())
+        """The `c` action of a Delegate send prompt: hand the interactive editing to the injected
+        picker loop (CommandLoop.run_worker_config), which reuses the shared choice selector and
+        writes back through the /worker pickers, then print the worker's provider/model/effort/api.
+
+        Printed after the picker, not before: the picker already shows each current value as the
+        preselected option, so what is worth logging is the config the send would now run under.
+        The approval brief above keeps its original rows, so the two together read as a change.
+        Without an injected picker (headless, or a runner outside CommandLoop) this just prints the
+        current values; the confirmation prompt re-asks either way."""
         if self.worker_config_picker is not None:
             self.worker_config_picker()
+        self.output_fn(self.worker_config_block())
 
     def delegate_order_view(self, tool: DelegateTool) -> None:
         """The `v` action of a Delegate send prompt: open a read-only viewer with the full,
@@ -748,13 +750,13 @@ class ToolRunner:
         status: str,
         batch_suffix: str = "",
         planned_edit: EditBatchPlan.PlannedEdit | None = None,
-        hotkeys: dict[str, str] | None = None,
+        form: list[tuple[str, str]] | None = None,
     ) -> LogBlock:
         role = LogRole.TOOL if status == "confirm" else LogRole.AUTO
         root = self.log_root(self.short_call(call), role, batch_suffix, call)
         children = []
         if isinstance(tool, DelegateTool) and tool.always_confirms():
-            children.extend(self.delegate_approval_children(tool, hotkeys or {}))
+            children.extend(self.delegate_approval_children(tool, form or []))
         elif tool.NAME == "Edit":
             preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
             preview_lines = preview.rstrip().splitlines()
@@ -763,12 +765,18 @@ class ToolRunner:
                 children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
         return LogBlock.hierarchy(root, children)
 
-    def delegate_approval_children(self, tool: DelegateTool, hotkeys: dict[str, str] | None = None) -> list[LogLine]:
+    # The typed protocol, spelled out for runs with no action row to show it: headless, piped stdin.
+    DELEGATE_LEGEND: ClassVar[str] = "Y/Enter approve · n refuse · c worker config · v view order · else reason"
+
+    def delegate_approval_children(self, tool: DelegateTool, form: list[tuple[str, str]] | None = None) -> list[LogLine]:
         """Approval brief for a Delegate send: title, a one-line order excerpt, explicit send
-        parameters, and the worker configuration the send will run under, followed by a key
-        legend. FIELD-role rows render cyan left-aligned labels (padded to one column, CJK-safe)
-        with default-foreground values; everything is derived from the call and the session
-        config, never from mutable worker state."""
+        parameters, and the worker configuration the send will run under. FIELD-role rows render
+        cyan left-aligned labels (padded to one column, CJK-safe) with default-foreground values;
+        everything is derived from the call and the session config, never from mutable worker state.
+
+        The key legend closes the brief only when there is no action row: with one, the same
+        choices sit live above the input line, and a copy frozen into the transcript would go stale
+        the moment the worker config is edited."""
         payload = self._delegate_payload(tool)
         order = payload.get("order")
         order_row = None
@@ -778,22 +786,16 @@ class ToolRunner:
             if len(lines) > 1:
                 text += f"  (… {len(lines) - 1} more lines)"
             order_row = ("order", text)
-        rows = self._delegate_header_rows(payload, order_row)
-        children = [
-            LogLine(label, value, LogRole.FIELD, LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
-            for index, (label, value) in enumerate(self._field_pairs(rows))
+        rows: list[tuple[str, str, LogRole]] = [
+            (label, value, LogRole.FIELD) for label, value in self._field_pairs(self._delegate_header_rows(payload, order_row))
         ]
-        children.append(LogLine("", self.delegate_legend(hotkeys or {}), LogRole.META, LogEdge.END))
-        return children
-
-    def delegate_legend(self, hotkeys: dict[str, str]) -> str:
-        """The Delegate key legend, naming the keys that are actually bound. With TUI hotkeys every
-        action is one press; without them (headless, piped stdin) each is a word plus Enter."""
-        if not hotkeys:
-            return "Y/Enter approve · n refuse · c worker config · v view order · else reason"
-        actions = [("Enter", "approve"), ("Esc", "refuse"), ("Tab", "view order"), ("S-Tab", "worker config")]
-        bound = {"Enter", *(self.HOTKEY_NAMES[key] for key in hotkeys)}
-        return " · ".join(f"{key} {label}" for key, label in actions if key in bound) + " · else reason"
+        if not form:
+            rows.append(("", self.DELEGATE_LEGEND, LogRole.META))
+        last = len(rows) - 1
+        return [
+            LogLine(label, value, role, LogEdge.END if index == last else LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
+            for index, (label, value, role) in enumerate(rows)
+        ]
 
     def finish_display(
         self,

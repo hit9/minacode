@@ -83,21 +83,25 @@ one-line excerpt of the order, any explicit `language` or `max_steps`, and the e
 provider/model/effort/api, with `(inherit)` marking a field that inherits the provider entry's
 value. A refused send feeds your reason back to the model.
 
-The prompt is an ordinary input line — whatever you type there becomes the refusal reason — so the
-actions have keys that cannot start a sentence, each one press with nothing to confirm:
+The actions sit in a row above the input line, with `Approve` selected. `Tab` and the arrows move
+along it, `Enter` fires what is selected:
 
 | Key | Action |
 | --- | --- |
-| `Enter` | approve |
-| `Esc` | refuse, no reason |
-| `Tab` | open the full order in a read-only viewer |
-| `Shift-Tab` | adjust the worker's provider/model/effort/api before deciding |
-| anything else | refuse, with what you typed as the reason |
+| `Enter` | do the selected action — `Approve` unless you moved |
+| `Tab` / `→` / `Shift-Tab` / `←` | move along the row |
+| `Esc` | refuse without a reason |
+| anything printable | start writing a refusal reason |
 
-`Esc` refuses at every tool's approval prompt, not just this one. Without a TUI (piped input, a
-headless run) the same actions are typed out instead: `y`, `n`, `v`, `c`, each followed by Enter.
+Typing always goes to the reason, so no letter is ever a shortcut and no reason is unwritable. While
+you are typing, the row dims and `Enter` sends the reason instead; `Esc` takes the reason back and
+returns to the row, and refuses only once there is nothing left to take back.
 
-<div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a key legend row naming the Enter, Esc, Tab and Shift-Tab actions."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span class="fs-dim">  Enter approve · Esc refuse · Tab view order · S-Tab worker config · else reason</span></div>
+Every tool's approval works this way — non-`Delegate` ones simply offer `Approve` and `Refuse`.
+Without a TUI (piped input, a headless run) the row is gone and the same actions are typed out:
+`y`, `n`, `v`, `c`, each followed by Enter.
+
+<div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a live action row with Approve selected, followed by the reason input line."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span><span class="fs-i fs-sel"> Approve </span><span class="fs-dim">   View order    Worker config    Refuse     Tab to move</span></span><span class="fs-dim">  reason › </span></div>
 
 ## Semantics
 

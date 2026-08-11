@@ -220,9 +220,10 @@ class TuiApp:
         # None is the cancellation signal, distinct from every string the user can submit (including
         # ""). See request_input: callers must not read a cancel as an answer.
         self._input_result: str | None = None
-        # key name -> the whole-line answer that key submits at the current approval prompt. See
-        # set_approval_hotkeys.
-        self._input_hotkeys: dict[str, str] = {}
+        # (label, answer) actions of the current approval prompt, and which one is focused. See
+        # set_approval_form.
+        self._approval_actions: list[tuple[str, str]] = []
+        self._approval_focus = 0
         self.status_label: str = ""
         self.modal: TuiModal | None = None
         self.modal_lock = threading.Lock()
@@ -269,25 +270,46 @@ class TuiApp:
             event.wait()
         finally:
             self._input_pending = None
-            self._input_hotkeys = {}  # hotkeys belong to one prompt; the next one declares its own
+            self._approval_actions = []  # the form belongs to one prompt; the next one declares its own
             restored = threading.Event()
             self._schedule(switch, previous_document or Document(""), previous_mode, previous_prompt, restored)
             restored.wait()
         return self._input_result
 
-    def set_approval_hotkeys(self, hotkeys: dict[str, str]) -> bool:
-        """Declare single keys the *next* approval prompt accepts as a whole-line answer, e.g.
-        {"escape": "n"} to refuse without typing. Returns whether they were installed, so the
-        caller can render a legend that matches the keys that actually work.
+    def set_approval_form(self, actions: list[tuple[str, str]]) -> bool:
+        """Give the *next* approval prompt a row of selectable actions, as (label, answer) pairs
+        with the default first. Returns whether the form was installed, so the caller can fall back
+        to a typed legend when there is no TUI.
 
-        The approval row is a normal input line -- anything typed there is a refusal reason -- so a
-        hotkey may only be a key that cannot start prose. Escape and Tab qualify; letters do not,
-        because "cost too high" starts with a perfectly good `c`. The binding only fires while the
-        line is still empty, so it never eats a key mid-reason.
+        The row is navigated with Tab/arrows and fired with Enter, which submits that action's
+        `answer` -- the same whole line the user could have typed, so the typed protocol underneath
+        is untouched. Typing anything moves to the reason field instead: no letter is ever a
+        shortcut, so no reason is unwritable and there is nothing to memorize.
 
         Cleared when the prompt resolves. Set it before every prompt that wants it."""
-        self._input_hotkeys = dict(hotkeys)
+        self._approval_actions = list(actions)
+        self._approval_focus = 0
         return True
+
+    def approval_form_fragments(self) -> StyleAndTextTuples:
+        """The live action row. Dimmed whole once a reason is being typed, because Enter then sends
+        the reason rather than firing the focused action -- the row has to stop looking armed."""
+        if not self._approval_actions or self.input_mode != "approval":
+            return []
+        typing = bool(self.input_buffer.text)
+        parts: StyleAndTextTuples = [("ansibrightblack", LogBlock.prefix(2, LogEdge.CONTINUE))]
+        for index, (label, _answer) in enumerate(self._approval_actions):
+            focused = index == self._approval_focus and not typing
+            style = "class:approval.action.focused" if focused else "class:approval.action.dim" if typing else "class:approval.action"
+            parts.append((style, f" {label} "))
+            parts.append(("", "  "))
+        parts.append(("class:approval.action.dim", "  Enter send · Esc back" if typing else "  Tab to move"))
+        return parts
+
+    def move_approval_focus(self, delta: int) -> None:
+        if self._approval_actions:
+            self._approval_focus = (self._approval_focus + delta) % len(self._approval_actions)
+            self.invalidate()
 
     def set_running(self, label: str) -> None:
         self.status_label = label
@@ -384,7 +406,9 @@ class TuiApp:
             return True
         text = buffer.text
         if self.input_mode == "approval" and self._input_pending is not None:
-            self._input_result = text
+            # Enter fires the focused action while the line is empty, and sends the reason once
+            # there is one. Both submit a plain string, so the approval loop reads one protocol.
+            self._input_result = self._approval_actions[self._approval_focus][1] if not text and self._approval_actions else text
             self._input_pending.set()
             return False
         if self.input_mode == "running":
@@ -664,6 +688,10 @@ class TuiApp:
             Window(FormattedTextControl(self.input_error_fragments), dont_extend_height=True, wrap_lines=True),
             filter=Condition(lambda: bool(self.input_error_fragments())),
         )
+        approval_form = ConditionalContainer(
+            Window(FormattedTextControl(self.approval_form_fragments), dont_extend_height=True, wrap_lines=True),
+            filter=Condition(lambda: bool(self._approval_actions) and self.input_mode == "approval"),
+        )
         self.activity_window = Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True)
         running = Condition(lambda: self.input_mode == "running")
         activity = ConditionalContainer(
@@ -695,6 +723,7 @@ class TuiApp:
                     activity,
                     running_gap_below,
                     input_error,
+                    approval_form,
                     self.input_window,
                     quick_hints_gap,
                     quick_hints_row,
@@ -761,24 +790,26 @@ class TuiApp:
         for key, reverse in (("tab", False), ("s-tab", True)):
             bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.tab_or_complete(event.current_buffer, reverse=reverse))
 
-        def approval_hotkey(key: str) -> Condition:
-            # Live only while this prompt offered the key and the line is still empty, so a hotkey
-            # never intercepts a keystroke that belongs to a refusal reason being typed. When it is
-            # not live the key keeps its ordinary binding (Tab completes, Escape is a meta prefix).
-            return Condition(
-                lambda: self.input_mode == "approval" and self._input_pending is not None and not self.input_buffer.text and key in self._input_hotkeys
-            )
+        # The approval action row is live only while the line is empty: the moment a reason is being
+        # typed, Tab completes and the arrows move the cursor, exactly as everywhere else. That is
+        # the whole reason actions are selected rather than bound to letters -- no key a reason
+        # might start with is ever spent on a shortcut.
+        picking = Condition(lambda: self.input_mode == "approval" and bool(self._approval_actions) and not self.input_buffer.text)
+        for key, delta in (("tab", 1), ("right", 1), ("s-tab", -1), ("left", -1)):
+            bindings.add(key, filter=~modal & picking, eager=True)(lambda _, delta=delta: self.move_approval_focus(delta))
 
-        def submit_hotkey(key: str) -> None:
-            if self._input_pending is not None:
-                self._input_result = self._input_hotkeys[key]
+        # Not eager: an arrow key is an escape sequence, so Escape has to stay ambiguous long enough
+        # for the parser to see whether more bytes follow. With a reason typed it clears back to the
+        # action row; on an empty line there is nothing to take back, so it cancels the approval,
+        # which `confirm` reads as a refusal with no reason.
+        def escape(event):  # pragma: no cover — interactive path
+            if self.input_buffer.text:
+                self.input_buffer.reset(Document(""))
+            elif self._input_pending is not None:
+                self._input_result = None
                 self._input_pending.set()
 
-        for key in ("tab", "s-tab"):
-            bindings.add(key, filter=~modal & approval_hotkey(key), eager=True)(lambda _, key=key: submit_hotkey(key))
-        # Not eager: an arrow key is an escape sequence, so Escape has to stay ambiguous long enough
-        # for the parser to see whether more bytes follow.
-        bindings.add("escape", filter=~modal & approval_hotkey("escape"))(lambda _: submit_hotkey("escape"))
+        bindings.add("escape", filter=~modal & Condition(lambda: self.input_mode == "approval" and bool(self._approval_actions)))(escape)
 
         def paste(event):
             event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))

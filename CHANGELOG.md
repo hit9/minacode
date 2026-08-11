@@ -8,12 +8,17 @@
   bounded "Project instructions" section of the Environment block, so repo-specific conventions
   ride the cache-stable prefix. Controlled by `[runtime] agents_md` (default on); `/status` and
   `/config` show whether it is loaded.
-- Tool approvals answer to single keys. The prompt is an ordinary input line — what you type is
-  the refusal reason — so the actions use keys that cannot start a sentence and fire only while
-  the line is still empty: `Esc` refuses at any tool's approval, and a Delegate send adds `Tab`
-  to view the order and `Shift-Tab` to adjust the worker config, none of them needing Enter.
-  Each key submits exactly the line you could have typed, so the typed protocol is unchanged and
-  headless runs keep `y`/`n`/`v`/`c` verbatim.
+- Tool approvals are a small form instead of a line to type at. The actions sit in a row above the
+  input line with `Approve` selected — `Tab` and the arrows move along it, `Enter` fires what is
+  selected, `Esc` refuses — so nothing has to be memorized and, for a Delegate send, viewing the
+  order or editing the worker config no longer takes a letter plus Enter. Typing still goes to the
+  refusal reason, and because no letter is a shortcut, a reason can start with any word at all.
+  Each action submits exactly the line you could have typed, so the protocol underneath is
+  unchanged and headless runs keep `y`/`n`/`v`/`c` verbatim.
+- A tool approval no longer reprints its whole brief every time you come back to it. Viewing a
+  Delegate order or editing the worker config re-asked by redrawing the entire brief, stacking a
+  copy in the transcript per visit; the brief is printed once and the config cycle now reports the
+  values the picker left behind rather than the ones it started from.
 - The Delegate send confirmation prompt now accepts `v` (or `view`) to open a read-only,
   full-screen viewer of the complete delegation order before approving (Esc/q closes back to
   the prompt). The approval brief still shows only a one-line excerpt; the viewer is for reading

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.20\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-10 21:21-0700\n"
+"POT-Creation-Date: 2026-08-10 22:58-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -143,16 +143,14 @@ msgid ""
 msgstr ""
 "每次 `Delegate send` 都需要审批，即使在 `yolo` 下也一样——确认会打印标题、order 的单行摘录、任何显式的 "
 "`language` 或 `max_steps`，以及生效的 worker "
-"provider/model/effort/api，`(inherit)` 标记表示该字段继承 provider 条目的值。被拒绝的发送会把你的理由反馈给模型。"
+"provider/model/effort/api，`(inherit)` 标记表示该字段继承 provider "
+"条目的值。被拒绝的发送会把你的理由反馈给模型。"
 
 #: ../../worker.md:86
 msgid ""
-"The prompt is an ordinary input line — whatever you type there becomes "
-"the refusal reason — so the actions have keys that cannot start a "
-"sentence, each one press with nothing to confirm:"
-msgstr ""
-"确认提示就是一行普通输入——你在那里打的任何内容都会变成拒绝理由——因此这些动作用的都是不"
-"可能作为句子开头的按键，每个都按一下即生效，无需再确认："
+"The actions sit in a row above the input line, with `Approve` selected. "
+"`Tab` and the arrows move along it, `Enter` fires what is selected:"
+msgstr "动作排成一行显示在输入行上方，默认选中 `Approve`。`Tab` 和方向键在行内移动，`Enter` 执行当前选中的动作："
 
 #: ../../worker.md
 msgid "Key"
@@ -167,55 +165,58 @@ msgid "`Enter`"
 msgstr "`Enter`"
 
 #: ../../worker.md
-msgid "approve"
-msgstr "批准"
+msgid "do the selected action — `Approve` unless you moved"
+msgstr "执行当前选中的动作 —— 没有移动过就是 `Approve`"
+
+#: ../../worker.md
+msgid "`Tab` / `→` / `Shift-Tab` / `←`"
+msgstr "`Tab` / `→` / `Shift-Tab` / `←`"
+
+#: ../../worker.md
+msgid "move along the row"
+msgstr "在行内移动"
 
 #: ../../worker.md
 msgid "`Esc`"
 msgstr "`Esc`"
 
 #: ../../worker.md
-msgid "refuse, no reason"
+msgid "refuse without a reason"
 msgstr "拒绝，不带理由"
 
 #: ../../worker.md
-msgid "`Tab`"
-msgstr "`Tab`"
+msgid "anything printable"
+msgstr "任何可打印字符"
 
 #: ../../worker.md
-msgid "open the full order in a read-only viewer"
-msgstr "在只读查看器中打开完整 order"
+msgid "start writing a refusal reason"
+msgstr "开始写拒绝理由"
 
-#: ../../worker.md
-msgid "`Shift-Tab`"
-msgstr "`Shift-Tab`"
-
-#: ../../worker.md
-msgid "adjust the worker's provider/model/effort/api before deciding"
-msgstr "决定前先调整 worker 的 provider/model/effort/api"
-
-#: ../../worker.md
-msgid "anything else"
-msgstr "其他任何输入"
-
-#: ../../worker.md
-msgid "refuse, with what you typed as the reason"
-msgstr "拒绝，并以你输入的内容作为理由"
-
-#: ../../worker.md:97
+#: ../../worker.md:96
 msgid ""
-"`Esc` refuses at every tool's approval prompt, not just this one. Without"
-" a TUI (piped input, a headless run) the same actions are typed out "
-"instead: `y`, `n`, `v`, `c`, each followed by Enter."
+"Typing always goes to the reason, so no letter is ever a shortcut and no "
+"reason is unwritable. While you are typing, the row dims and `Enter` "
+"sends the reason instead; `Esc` takes the reason back and returns to the "
+"row, and refuses only once there is nothing left to take back."
 msgstr ""
-"`Esc` 在每个工具的审批提示下都表示拒绝，不只是这一个。没有 TUI 时（管道输入、无界面运"
-"行），同样的动作改为完整输入：`y`、`n`、`v`、`c`，每个后面加 Enter。"
+"输入永远进入理由，因此没有任何字母被占作快捷键，也就没有写不出的理由。正在输入时，动作行变暗、`Enter` 改为发送理由；`Esc` "
+"先收回理由退回动作行，只有在没有东西可收回时才表示拒绝。"
 
-#: ../../worker.md:102
+#: ../../worker.md:100
+msgid ""
+"Every tool's approval works this way — non-`Delegate` ones simply offer "
+"`Approve` and `Refuse`. Without a TUI (piped input, a headless run) the "
+"row is gone and the same actions are typed out: `y`, `n`, `v`, `c`, each "
+"followed by Enter."
+msgstr ""
+"每个工具的确认都是这套交互 —— 非 `Delegate` 的只是少几个动作，只有 `Approve` 和 `Refuse`。没有 TUI "
+"时（管道输入、无界面运行）没有这一行，同样的动作改为完整输入：`y`、`n`、`v`、`c`，每个后面加 Enter。"
+
+#: ../../worker.md:106
 msgid "Semantics"
 msgstr "语义"
 
-#: ../../worker.md:104
+#: ../../worker.md:108
 msgid ""
 "**Reset drops the conversation, not the work.** The worker owns only its "
 "conversation; `/worker reset` (or a `Delegate reset` call) clears that "
@@ -225,7 +226,7 @@ msgstr ""
 "**重置丢弃的是对话，不是成果。** worker 只拥有它的对话；`/worker reset`（或一次 `Delegate reset` "
 "调用）刻意清空这段对话——连同它可能积累的错误认知——而文件改动和已合并的 diff 始终保留。"
 
-#: ../../worker.md:107
+#: ../../worker.md:111
 msgid ""
 "**Snapshots belong to the parent.** A worker's session id is the parent's"
 " with a `.w` suffix; worker snapshots are never listed in `/sessions`, "
@@ -235,7 +236,7 @@ msgstr ""
 "**快照从属于父级。** worker 的会话 id 是父级 id 加 `.w` 后缀；worker 快照永远不会出现在 `/sessions` "
 "列表里，当父级快照过期时，孤儿的 worker 也随之一并过期。"
 
-#: ../../worker.md:110
+#: ../../worker.md:114
 msgid ""
 "**The tool block is frozen at session start.** The `Delegate` tool block "
 "is fixed from `[worker] provider` when the session begins, protecting the"
@@ -246,17 +247,44 @@ msgstr ""
 "**工具块在会话开始时冻结。** `Delegate` 工具块在会话开始时由 `[worker] provider` 固定，以保护 prompt "
 "缓存的作用域：运行中切换 provider 只会调优已启用的委派，而从头启用委派（开始时未设置 provider）需要重启后才会生效。"
 
-#: ../../worker.md:114
+#: ../../worker.md:118
 msgid ""
 "**Sends are confirmed even under `yolo`.** The order is a spec the model "
 "wrote for itself, and the approval brief is the one cheap check on it — "
 "every send asks."
 msgstr "**即使在 `yolo` 下也会确认发送。** order 是模型为自己写的规格，审批简报是对它的唯一廉价检查——每次发送都会询问。"
 
-#: ../../worker.md:116
+#: ../../worker.md:120
 msgid ""
 "**The worker inherits your environment.** It shares the parent's cwd, "
 "skills, MCP servers, and language setting; only files and the repository "
 "truly belong to both."
 msgstr "**worker 继承你的环境。** 它共享父级的 cwd、技能、MCP 服务器和语言设置；只有文件和仓库真正属于双方。"
+
+#~ msgid ""
+#~ "The prompt is an ordinary input "
+#~ "line — whatever you type there "
+#~ "becomes the refusal reason — so "
+#~ "the actions have keys that cannot "
+#~ "start a sentence, each one press "
+#~ "with nothing to confirm:"
+#~ msgstr "确认提示就是一行普通输入——你在那里打的任何内容都会变成拒绝理由——因此这些动作用的都是不可能作为句子开头的按键，每个都按一下即生效，无需再确认："
+
+#~ msgid "approve"
+#~ msgstr "批准"
+
+#~ msgid "`Tab`"
+#~ msgstr "`Tab`"
+
+#~ msgid "open the full order in a read-only viewer"
+#~ msgstr "在只读查看器中打开完整 order"
+
+#~ msgid "`Shift-Tab`"
+#~ msgstr "`Shift-Tab`"
+
+#~ msgid "adjust the worker's provider/model/effort/api before deciding"
+#~ msgstr "决定前先调整 worker 的 provider/model/effort/api"
+
+#~ msgid "refuse, with what you typed as the reason"
+#~ msgstr "拒绝，并以你输入的内容作为理由"
 

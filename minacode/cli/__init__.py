@@ -224,7 +224,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
         self.agent.tools.worker_config_picker = commands.WorkerFlow(self).run_worker_config
         self.agent.tools.order_viewer = lambda order, header_rows: delegate_order_viewer(self, order, header_rows)
-        self.agent.tools.approval_hotkeys = self.set_approval_hotkeys
+        self.agent.tools.approval_form = self.set_approval_form
         # Worker agent lifecycle callbacks: delegate.py wires these onto the worker agent when set,
         # so a worker's retry backoff, provider-side builtin calls, and compaction show in this TUI.
         self.agent.tools.retry_wait = self.model_retry_wait_status
@@ -692,10 +692,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             if promote:
                 self.with_status_paused(lambda: tui.write_to_scrollback(lambda: self.emit_agent_output(promote)))
 
-    def set_approval_hotkeys(self, hotkeys: dict[str, str]) -> bool:
-        # Single-key approval answers exist only in the TUI's input row. Headless and piped runs
-        # report False so the approval brief keeps advertising the typed protocol they do have.
-        return self.tui is not None and self.tui.set_approval_hotkeys(hotkeys)
+    def set_approval_form(self, actions: list[tuple[str, str]]) -> bool:
+        # The selectable action row exists only in the TUI. Headless and piped runs report False so
+        # the approval brief keeps advertising the typed protocol they do have.
+        return self.tui is not None and self.tui.set_approval_form(actions)
 
     def tool_input(self, prompt: str = "") -> str | None:
         # Under the TUI, route agent approvals through TuiApp's input widget instead of a separate
