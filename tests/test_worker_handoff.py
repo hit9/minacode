@@ -1577,6 +1577,96 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     assert handle_key("c-o", "") is None
 
 
+def test_delegate_order_viewer_renders_markdown(monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from minacode.cli.modals import delegate_order_viewer
+
+    size = os.terminal_size((120, 40))
+    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+
+    captured = {}
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    order = "## Section\n\n- item one\n- item two\n\n```python\nprint(1)\n```"
+    delegate_order_viewer(loop, order, [("title", "fix things")], markdown=True)
+
+    rendered = "".join(text for _style, text in captured["fragments_fn"]())
+    assert "Section" in rendered
+    assert "##" not in rendered  # heading marker consumed by the markdown renderer
+    assert "```" not in rendered  # code fence consumed too
+    assert "item one" in rendered
+    assert "item two" in rendered
+    assert "print(1)" in rendered
+
+
+def test_delegate_order_viewer_field_header_alignment(monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from prompt_toolkit.utils import get_cwidth
+
+    from minacode.cli.modals import delegate_order_viewer
+
+    size = os.terminal_size((120, 40))
+    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+
+    captured = {}
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    delegate_order_viewer(loop, "order", [("title", "fix"), ("lang", "python"), ("max_steps", "3")], markdown=True)
+
+    fragments = captured["fragments_fn"]()
+    cyan = {text for style, text in fragments if style == "ansicyan" and text.strip() in {"title", "lang", "max_steps"}}
+    assert len(cyan) == 3
+    assert {get_cwidth(text) for text in cyan} == {9}  # every label padded to the widest one
+
+
+def test_delegate_order_viewer_header_separator(monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from prompt_toolkit.utils import get_cwidth
+
+    from minacode.cli.modals import delegate_order_viewer
+
+    size = os.terminal_size((120, 40))
+    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+
+    captured = {}
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    delegate_order_viewer(loop, "order", [("title", "fix things")], markdown=True)
+
+    lines = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
+    separators = [line for line in lines if line.strip() and set(line) <= {"─", " "}]
+    assert separators
+    assert all(get_cwidth(line) == 118 for line in separators)  # content width: 120 minus the two-space margins
+    order_row = [index for index, line in enumerate(lines) if line.strip() == "order"]
+    assert order_row
+    assert lines.index(separators[0]) < order_row[0]  # separator sits after the fields, before the body
+
+
+def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from prompt_toolkit.utils import get_cwidth
+
+    from minacode.cli.modals import delegate_order_viewer
+
+    size = os.terminal_size((60, 40))
+    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+
+    captured = {}
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    order = '## 标题\n\n- 把这段中文说明加进审批流程并补充测试\n\n```python\nprint("中文")\n```'
+    delegate_order_viewer(loop, order, [("title", "中文标题" * 10)], markdown=True)
+
+    rendered = "".join(text for _style, text in captured["fragments_fn"]())
+    rows = rendered.splitlines()
+    assert rows, "the viewer rendered nothing"
+    assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
+
+
 def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatch):
     from minacode.base import ToolCall
     from minacode.context import ContextManager

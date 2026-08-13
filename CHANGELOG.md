@@ -1,6 +1,13 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+
+- The Delegate order viewer renders the order as markdown and aligns its field header.
+
+
 ## 0.23.0 - 2026-08-11
 
 ### Added

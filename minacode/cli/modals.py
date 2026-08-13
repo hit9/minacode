@@ -11,12 +11,15 @@ from __future__ import annotations
 import shutil
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.utils import get_cwidth
+from rich.console import Console
+from rich.markdown import Markdown
 
 from minacode.base import DISMISSED, SELECTION_BACK, Text, ToolCall
+from minacode.render import UiPrinter
 from minacode.tools import AskSpec
 from minacode.tui import (
     ASK_DONE,
@@ -277,37 +280,71 @@ def bash_output_viewer(loop: CommandLoop) -> None:
     loop.tui.show_modal(fragments, handle_key)
 
 
-def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple[str, str]]) -> None:
+def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple[str, str]], *, markdown: bool = False) -> None:
     """Read-only viewer for the Delegate `v` key: header rows plus the complete, soft-wrapped
-    order text. Esc/q closes back to the approval prompt; nothing here edits anything."""
+    order text, rendered as markdown when `markdown` is set. Esc/q closes back to the approval
+    prompt; nothing here edits anything."""
     if loop.tui is None:
         return
     margin = "  "
-    wrapped: dict[int, list[str]] = {}
+    wrapped: dict[int, list[StyleAndTextTuples]] = {}
 
-    def wrap(text: str, width: int, continuation: str) -> list[str]:
+    def wrap(text: str, width: int, continuation: str) -> list[StyleAndTextTuples]:
         """One source line as display rows. Text.wrap_styled measures in terminal cells, so a CJK
         order (two cells per character) wraps where it actually reaches the right edge instead of
         overflowing at twice the width; `continuation` re-indents the rows after the first so
         indented code in an order keeps its shape."""
-        rows = Text.wrap_styled([("", margin)], [("", margin + continuation)], [("", text)], width)
-        return ["".join(chunk for _style, chunk in row) for row in rows]
+        return cast(list[StyleAndTextTuples], Text.wrap_styled([("", margin)], [("", margin + continuation)], [("", text)], width))
 
-    def layout(width: int) -> list[str]:
-        """Header rows then the whole order, wrapped for `width`. Cached per width: the wrap has to
-        be redone when the terminal is resized, but not on every keypress."""
+    def markdown_rows(text: str, width: int) -> list[StyleAndTextTuples]:
+        """Render `text` as markdown through the same Rich capture pipeline the scrollback
+        renderer uses, then split the styled ANSI into display rows. The console width is the
+        modal content width (terminal width minus the two-space margins); Rich measures wide
+        characters itself, so CJK orders wrap at the real right edge."""
+        content_width = max(1, width - 4)
+        console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=content_width)
+        with console.capture() as capture:
+            console.print(Markdown(text, hyperlinks=False))
+        cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
+        rows: list[StyleAndTextTuples] = [[]]
+        for style, fragment in cast(list[tuple[str, str]], list(to_formatted_text(ANSI(cleaned)))):
+            for index, part in enumerate(fragment.split("\n")):
+                if index:
+                    rows.append([])
+                if part:
+                    rows[-1].append((style, part))
+        return [[("", margin), *row] for row in rows]
+
+    def layout(width: int) -> list[StyleAndTextTuples]:
+        """Field header rows, a separator, then the whole order, wrapped for `width`. Cached per
+        width: the wrap has to be redone when the terminal is resized, but not on every keypress."""
         if width in wrapped:
             return wrapped[width]
-        lines: list[str] = []
+        lines: list[StyleAndTextTuples] = []
+        label_width = max((get_cwidth(label) for label, _value in header_rows), default=0)
         for label, value in header_rows:
-            lines.extend(wrap(f"{label}  {value}", width, " " * (get_cwidth(label) + 2)))
-        lines.append("")
-        for raw in order.splitlines():
-            if not raw.strip():
-                lines.append("")
-                continue
-            indent = raw[: len(raw) - len(raw.lstrip())]
-            lines.extend(wrap(raw, width, indent[: max(0, width // 4)]))
+            padded = label + " " * max(0, label_width - get_cwidth(label))
+            lines.extend(
+                cast(
+                    list[StyleAndTextTuples],
+                    Text.wrap_styled(
+                        [("", margin), ("ansicyan", padded), ("", "  ")],
+                        [("", margin + " " * (label_width + 2))],
+                        [("fg:default", value)],
+                        width,
+                    ),
+                )
+            )
+        lines.append([("", margin), ("ansibrightblack", "─" * max(0, width - 4))])
+        if markdown:
+            lines.extend(markdown_rows(order, width))
+        else:
+            for raw in order.splitlines():
+                if not raw.strip():
+                    lines.append([])
+                    continue
+                indent = raw[: len(raw) - len(raw.lstrip())]
+                lines.extend(wrap(raw, width, indent[: max(0, width // 4)]))
         wrapped[width] = lines
         return lines
 
@@ -331,7 +368,9 @@ def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple
         if get_cwidth(legend) > width:
             legend = "  ↑/↓ · Ctrl-U/D · g/G · Esc/q close"
         parts: StyleAndTextTuples = [("class:choice.disabled", "  Delegate order · read-only\n")]
-        parts.extend(("", f"{line}\n") for line in lines[scroll : scroll + height])
+        for line in lines[scroll : scroll + height]:
+            parts.extend(line)
+            parts.append(("", "\n"))
         parts.append(("class:choice.disabled", Text.clip_width(legend, width) + "\n"))
         return parts
 

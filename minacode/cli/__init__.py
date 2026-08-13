@@ -223,7 +223,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.question_fn = lambda specs: question_interaction(self, specs)
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
         self.agent.tools.worker_config_picker = commands.WorkerFlow(self).run_worker_config
-        self.agent.tools.order_viewer = lambda order, header_rows: delegate_order_viewer(self, order, header_rows)
+        self.agent.tools.order_viewer = lambda order, header_rows: delegate_order_viewer(self, order, header_rows, markdown=True)
         self.agent.tools.approval_form = self.set_approval_form
         # Worker agent lifecycle callbacks: delegate.py wires these onto the worker agent when set,
         # so a worker's retry backoff, provider-side builtin calls, and compaction show in this TUI.

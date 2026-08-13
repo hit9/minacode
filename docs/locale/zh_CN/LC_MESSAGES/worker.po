@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.20\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-10 22:58-0700\n"
+"POT-Creation-Date: 2026-08-12 22:46-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -213,10 +213,17 @@ msgstr ""
 "时（管道输入、无界面运行）没有这一行，同样的动作改为完整输入：`y`、`n`、`v`、`c`，每个后面加 Enter。"
 
 #: ../../worker.md:106
+msgid ""
+"`View order` opens the order in a read-only viewer that renders it as "
+"markdown, with the field header aligned and highlighted."
+msgstr ""
+"`View order` 在只读查看器中打开 order：正文按 markdown 渲染，字段表头对齐并高亮。"
+
+#: ../../worker.md:109
 msgid "Semantics"
 msgstr "语义"
 
-#: ../../worker.md:108
+#: ../../worker.md:111
 msgid ""
 "**Reset drops the conversation, not the work.** The worker owns only its "
 "conversation; `/worker reset` (or a `Delegate reset` call) clears that "
@@ -226,7 +233,7 @@ msgstr ""
 "**重置丢弃的是对话，不是成果。** worker 只拥有它的对话；`/worker reset`（或一次 `Delegate reset` "
 "调用）刻意清空这段对话——连同它可能积累的错误认知——而文件改动和已合并的 diff 始终保留。"
 
-#: ../../worker.md:111
+#: ../../worker.md:114
 msgid ""
 "**Snapshots belong to the parent.** A worker's session id is the parent's"
 " with a `.w` suffix; worker snapshots are never listed in `/sessions`, "
@@ -236,7 +243,7 @@ msgstr ""
 "**快照从属于父级。** worker 的会话 id 是父级 id 加 `.w` 后缀；worker 快照永远不会出现在 `/sessions` "
 "列表里，当父级快照过期时，孤儿的 worker 也随之一并过期。"
 
-#: ../../worker.md:114
+#: ../../worker.md:117
 msgid ""
 "**The tool block is frozen at session start.** The `Delegate` tool block "
 "is fixed from `[worker] provider` when the session begins, protecting the"
@@ -247,14 +254,14 @@ msgstr ""
 "**工具块在会话开始时冻结。** `Delegate` 工具块在会话开始时由 `[worker] provider` 固定，以保护 prompt "
 "缓存的作用域：运行中切换 provider 只会调优已启用的委派，而从头启用委派（开始时未设置 provider）需要重启后才会生效。"
 
-#: ../../worker.md:118
+#: ../../worker.md:121
 msgid ""
 "**Sends are confirmed even under `yolo`.** The order is a spec the model "
 "wrote for itself, and the approval brief is the one cheap check on it — "
 "every send asks."
 msgstr "**即使在 `yolo` 下也会确认发送。** order 是模型为自己写的规格，审批简报是对它的唯一廉价检查——每次发送都会询问。"
 
-#: ../../worker.md:120
+#: ../../worker.md:123
 msgid ""
 "**The worker inherits your environment.** It shares the parent's cwd, "
 "skills, MCP servers, and language setting; only files and the repository "

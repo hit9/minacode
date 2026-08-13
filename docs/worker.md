@@ -103,6 +103,9 @@ Without a TUI (piped input, a headless run) the row is gone and the same actions
 
 <div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a live action row with Approve selected, followed by the reason input line."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span><span class="fs-i fs-sel"> Approve </span><span class="fs-dim">   View order    Worker config    Refuse     Tab to move</span></span><span class="fs-dim">  reason › </span></div>
 
+`View order` opens the order in a read-only viewer that renders it as markdown, with the
+field header aligned and highlighted.
+
 ## Semantics
 
 - **Reset drops the conversation, not the work.** The worker owns only its conversation;
