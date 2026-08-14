@@ -97,7 +97,8 @@ session, or configure runtime behavior on the fly. See the
 
 ## Mentions
 
-Two inline references, both Tab-completed as you type:
+Two inline references. Typing either symbol opens its list right away, and it narrows as you
+keep typing:
 
 - `@server` or `@server.tool` — connect to an [MCP](mcp.md) server on demand and point the
   agent at that server or tool. <span class="marker">The connection remains active until you

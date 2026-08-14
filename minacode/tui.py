@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -534,6 +535,19 @@ class TuiApp:
         self._last_input_text = text
         if delta.inserted and delta.inserted[-1].isspace() and self.input_mode in {"chat", "running"}:
             self._recognize_input()
+        self._offer_mention_completions(buffer, delta)
+
+    # `@server` and `$skill` exist only to name something the completer knows, so the list opens as
+    # the mention is typed. Completion stays off for everything else (Buffer.complete_while_typing
+    # is False): the rest of this prompt is prose, where a menu on every keystroke is noise, and
+    # history search wants the flag off anyway.
+    MENTION_RE: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|(?<=[^A-Za-z0-9_]))[@$][A-Za-z0-9_.-]*$")
+
+    def _offer_mention_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
+        if self.input_mode not in {"chat", "running"} or not delta.inserted or buffer.complete_state is not None:
+            return
+        if self.MENTION_RE.search(buffer.document.text_before_cursor):
+            buffer.start_completion(select_first=False)
 
     def _sync_input_images(self, old: str, delta: _EditDelta) -> None:
         """Drop image markers that an edit removed from the input text."""

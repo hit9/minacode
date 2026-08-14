@@ -1565,3 +1565,41 @@ def test_model_retry_wait_status_labels_live_phase(tmp_path):
     command_loop.agent.model.on_retry_wait(True)
     command_loop.agent.model.on_retry_wait(False)
     assert transitions == ["retrying", "working"]
+
+def test_mention_opens_completions_while_typing(monkeypatch):
+    """`@` and `$` name something the completer knows, so the list opens as they are typed —
+    everything else in this prompt is prose and waits for Tab."""
+    app = TuiApp(completer=CommandCompleter(mcp_servers=lambda: ("github", "playwright"), skills=lambda: ("release",)))
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+
+        pipe_input.send_text("use @gi")
+        wait_until(lambda: app.input_buffer.complete_state is not None)
+        assert [c.text for c in app.input_buffer.complete_state.completions] == ["github"]
+
+        pipe_input.send_text(" and $")
+        wait_until(lambda: app.input_buffer.complete_state is not None and app.input_buffer.text.endswith("$"))
+        assert [c.text for c in app.input_buffer.complete_state.completions] == ["release"]
+
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
+def test_prose_and_email_do_not_open_completions(monkeypatch):
+    """A menu on every keystroke would be noise: only a mention at the cursor opens one, and an
+    address is not a mention because the `@` follows a word character."""
+    app = TuiApp(completer=CommandCompleter(mcp_servers=lambda: ("github",)))
+    seen = []
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("mail me at hit9@icloud")
+        wait_until(lambda: app.input_buffer.text == "mail me at hit9@icloud")
+        seen.append(app.input_buffer.complete_state)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert seen == [None]

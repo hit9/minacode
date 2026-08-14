@@ -38,6 +38,10 @@
 
 ### Changed
 
+- Typing `@` or `$` opens the completion list as you type, instead of waiting for `Tab`. Both
+  symbols exist only to name an MCP server or a skill, so the list belongs on the keystroke that
+  declares one; prose, `/` commands, and everything else still complete on `Tab`.
+
 - Provider `429` responses whose error body carries account/billing wording (e.g. OpenAI
   `insufficient_quota`, Kimi `exceeded_current_quota_error`, z.ai "Insufficient balance ...") are
   treated as permanent quota/billing failures: the request fails immediately instead of retrying
