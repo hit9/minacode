@@ -1,6 +1,18 @@
 # Changelog
 
 
+## Unreleased
+
+### Fixed
+
+- Compaction no longer evicts the request a turn is executing when the runtime appended a message
+  of its own behind it: an `@server` or `$skill` mention expansion, or the protocol correction sent
+  after a model prints a tool call as text. Those are session events now, not user turns, so the
+  boundary compaction never crosses stays the request itself. A worker delegation is where this
+  cost the most — the order is the entire spec, the worker cannot see the parent's history, and
+  nothing re-sends it — but a long parent turn could lose its own request the same way.
+
+
 ## 0.24.0 - 2026-08-14
 
 ### Added

@@ -10,6 +10,7 @@ from collections.abc import Callable
 from minacode.base import (
     PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
+    SESSION_EVENT_KEY,
     Json,
     MalformedToolCallError,
     ModelError,
@@ -94,14 +95,18 @@ class Agent:
         user_text = self.session.images.label_text(user_message)
         turn_messages: list[Json] = [user_message]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
+        # Marked as session events, like every other runtime-generated user message: they are
+        # expansions of what the request mentioned, not a request of their own. The mark is what
+        # keeps latest_user_index pointing at the request itself, so compaction never summarizes
+        # away the message that started the turn just because an expansion follows it.
         if self.session.mcp is not None:
             mentions = self.session.mcp.resolve_mentions(user_text)
             if mentions:
-                turn_messages.append({"role": "user", "content": mentions})
+                turn_messages.append({"role": "user", "content": mentions, SESSION_EVENT_KEY: "mcp_mentions"})
         if self.session.skills is not None:
             skill_mentions = self.session.skills.resolve_mentions(user_text)
             if skill_mentions:
-                turn_messages.append({"role": "user", "content": skill_mentions})
+                turn_messages.append({"role": "user", "content": skill_mentions, SESSION_EVENT_KEY: "skill_mentions"})
         self.checkpoint_turn(turn_messages, transcript_messages)
         try:
             for step in range(self.session.settings.max_steps):
@@ -208,7 +213,7 @@ class Agent:
         corrections: list[Json] = []
         while not tool_calls and (textual_tool := self.textual_tool_call(content, tools)):
             self.start_textual_tool_correction(names, textual_tool)
-            correction: Json = {"role": "user", "content": self.tool_call_correction(textual_tool)}
+            correction: Json = {"role": "user", "content": self.tool_call_correction(textual_tool), SESSION_EVENT_KEY: "tool_call_correction"}
             corrections.append(correction)
             turn_messages.append(correction)
             self.checkpoint_turn(turn_messages, transcript_messages)

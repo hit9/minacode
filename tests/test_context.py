@@ -15,6 +15,7 @@ import minacode.context as context_module
 from minacode.base import (
     MAX_AGENTS_MD_TOKENS,
     MAX_TOOL_OUTPUT_TOKENS,
+    SESSION_EVENT_KEY,
     ModelError,
 )
 from minacode.cli import CommandLoop
@@ -25,6 +26,7 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
+from minacode.model import ModelClient
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session
@@ -1411,3 +1413,105 @@ def test_compaction_override_does_not_change_request_budget(tmp_path):
     context = ContextManager(s)
     assert context.request_token_budget() == request_budget_for(1_048_576, DEFAULT_OUTPUT_RESERVE_TOKENS)
     assert context.request_token_budget() > request_budget_for(16_384, DEFAULT_OUTPUT_RESERVE_TOKENS)
+
+
+# The request that opened a turn survives compaction because latest_user_index protects the last
+# plain user message. Every user message the runtime generates on its own -- a mention expansion, a
+# protocol correction -- therefore has to be marked as a session event, or it takes that protection
+# for itself and the request it was expanding gets summarized away mid-turn. The worker is where
+# this bites hardest: that message is the entire order (docs/worker.md), the worker cannot see the
+# parent's history, and nothing re-sends it.
+RUNTIME_GENERATED_EVENTS = ("mcp_mentions", "skill_mentions", "tool_call_correction")
+
+
+@pytest.mark.parametrize("event", RUNTIME_GENERATED_EVENTS)
+def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, event):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    context = ContextManager(s)
+    turn = [
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "runtime expansion", SESSION_EVENT_KEY: event},
+        *({"role": "assistant", "content": f"step {index}"} for index in range(20)),
+    ]
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "summary"}
+
+    messages = context.prepare_messages(FakeModel(), "system", turn)
+
+    assert turn[0]["content"] == "the whole order"
+    assert any(message.get("content") == "the whole order" for message in messages)
+    # Kept verbatim instead of summarized: the segment holds the steps, never the order itself.
+    assert "the whole order" not in s.history[-1].text
+    assert "step 0" in s.history[-1].text
+
+
+def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path):
+    s = session(tmp_path)
+    s.messages = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "runtime expansion", SESSION_EVENT_KEY: "skill_mentions"},
+        {"role": "assistant", "content": "working"},
+    ]
+
+    compacted, keep = ContextManager(s).compaction_parts()
+
+    assert [message["content"] for message in compacted] == ["old", "old answer"]
+    assert [message["content"] for message in keep] == ["the whole order", "runtime expansion", "working"]
+
+
+def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
+    """Compaction is a cache break, and where it breaks is what it costs. Keeping the request in
+    place puts the break behind it rather than on it, so the whole stable head -- system,
+    environment, the request itself -- is still reused by the request that follows a compaction.
+    The summary lands immediately after the request, so the expansion is what moves."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    context = ContextManager(s)
+    turn = [
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "runtime expansion", SESSION_EVENT_KEY: "skill_mentions"},
+        *({"role": "assistant", "content": f"step {index}"} for index in range(20)),
+    ]
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "summary"}
+
+    client = ModelClient(s)
+    before = client.chat_messages(context.model_messages("system", turn))
+    after = client.chat_messages(context.prepare_messages(FakeModel(), "system", turn))
+    shared = 0
+    for old, new in zip(before, after):
+        if old != new:
+            break
+        shared += 1
+
+    # The break falls after the request: everything through it, the request included, is reused.
+    assert before[shared - 1].get("content") == "the whole order"
+    assert after[shared].get("content", "").startswith(COMPACTION_SUMMARY_TITLE)
+
+
+def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
+    """The engine half of the same rule: what run() appends around the request is not a request."""
+    folder = os.path.join(tmp_path, ".minacode", "skills", "triage")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
+        handle.write("---\nname: triage\ndescription: triage a bug\n---\nReproduce first.\n")
+    s = session(tmp_path)  # discovers the skill written above
+    s.mcp = SimpleNamespace(resolve_mentions=lambda text: "--- MCP MENTIONS ---", render_tools_index=lambda: "", tools={}, resources={})
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def request(self, messages, tools=None):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+    assert agent.run("please $triage this") == "done"
+
+    assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", None]
+    assert ContextManager(s).latest_user_index(s.messages) == 0
