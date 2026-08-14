@@ -454,14 +454,11 @@ class FilePick:
 class FzfPicker:
     """Isolated one-process interactive fzf adapter; matching stays inside fzf."""
 
-    REQUIRED_HELP = ("--read0", "--print0", "--scheme", "--query", "--no-multi-line")
-
     def __init__(self, mentions: FileMentions, executable: str = "fzf") -> None:
         self.mentions = mentions
         self.name = executable
         self._executable: str | None = None
         self._resolved = False
-        self._probed = False
         self._failed = False
 
     def available(self) -> bool:
@@ -473,7 +470,7 @@ class FzfPicker:
         return self._executable is not None
 
     def pick(self, query: str) -> FilePick:
-        if not self.available() or not self._probe():
+        if not self.available():
             return FilePick(unavailable=True)
         environment = os.environ.copy()
         for name in ("FZF_DEFAULT_COMMAND", "FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE"):
@@ -489,6 +486,8 @@ class FzfPicker:
             "--height=~60%",
             "--border",
             "--prompt=files> ",
+            "--header=Ctrl-N/P or ↑/↓ move · Enter select · Esc close",
+            "--bind=ctrl-n:down,ctrl-p:up",
             "--query",
             query,
         ]
@@ -553,19 +552,6 @@ class FzfPicker:
         if not self.mentions.session.in_cwd(path) or not os.path.isfile(path):
             return FilePick()
         return FilePick(selected)
-
-    def _probe(self) -> bool:
-        if self._probed:
-            return not self._failed
-        self._probed = True
-        try:
-            result = subprocess.run([self._executable or self.name, "--help"], capture_output=True, text=True, timeout=2, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            self._failed = True
-            return False
-        help_text = result.stdout + result.stderr
-        self._failed = result.returncode != 0 or any(option not in help_text for option in self.REQUIRED_HELP)
-        return not self._failed
 
 
 def _ignored_by_scopes(rel: str, is_dir: bool, scopes) -> bool:

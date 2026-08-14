@@ -7,9 +7,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 
 Mentioning `@file:path` in your input points the agent at a file, but it is not a substitute
 for `Read` or `Search`: only a bounded excerpt is inlined, and the agent still reads and
-searches the rest of the project with its tools. A short pause while typing `@file:<query>` opens
-a real fzf picker when available; `Tab` opens it immediately, and an unavailable fzf uses a
-non-blocking literal fallback. Ignored paths and `.git` are never offered.
+searches the rest of the project with its tools. Typing or selecting `@file:` opens fzf immediately;
+`Tab` does the same from an active file mention. An unavailable fzf uses a non-blocking literal
+fallback. Ignored paths and `.git` are never offered.
 
 ## Built-in tools
 

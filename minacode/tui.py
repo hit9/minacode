@@ -160,9 +160,8 @@ class TuiApp:
     ANIMATION_INTERVAL: ClassVar[float] = 1 / 30
     # Idle refresh: no animation runs on the idle screen, only the 0.2s index and MCP spinners.
     IDLE_REFRESH_INTERVAL: ClassVar[float] = 0.2
-    # Let a namespace selection settle before handing it to its second-stage completion UI. This
-    # keeps rapid typing and cycling in the first-stage menu responsive without requiring another
-    # key press to open the file picker or the MCP/skill candidate list.
+    # Debounce inline second-stage candidate refreshes while the user is still typing. The external
+    # file picker overrides this with a zero-delay handoff at the namespace boundary.
     MENTION_TRANSITION_DELAY: ClassVar[float] = 0.12
 
     def __init__(
@@ -629,7 +628,7 @@ class TuiApp:
         if timer is not None:
             timer.cancel()
 
-    def _schedule_mention_transition(self, buffer: Buffer, callback: Callable[[Buffer], None]) -> None:
+    def _schedule_mention_transition(self, buffer: Buffer, callback: Callable[[Buffer], None], *, delay: float | None = None) -> None:
         app = self.app
         if app is None or not app.is_running:
             return
@@ -643,7 +642,7 @@ class TuiApp:
 
         loop = app.loop
         assert loop is not None
-        self._mention_transition_timer = loop.call_later(self.MENTION_TRANSITION_DELAY, transition)
+        self._mention_transition_timer = loop.call_later(self.MENTION_TRANSITION_DELAY if delay is None else delay, transition)
 
     def _schedule_name_completions(self, buffer: Buffer) -> None:
         def show(current: Buffer) -> None:
@@ -667,7 +666,7 @@ class TuiApp:
             current.complete_state = None
             self._start_file_picker(current, *target)
 
-        self._schedule_mention_transition(buffer, open_picker)
+        self._schedule_mention_transition(buffer, open_picker, delay=0)
 
     @staticmethod
     def _file_mention_at_cursor(buffer: Buffer) -> tuple[MentionSpan, int] | None:
@@ -712,7 +711,9 @@ class TuiApp:
 
         async def pick() -> None:
             try:
-                result = await run_in_terminal(lambda: self.file_picker_fn(span.payload), in_executor=True)
+                # The app is suspended while fzf owns the terminal. Launch it inline so there is no
+                # executor gap between erasing the prompt and the child drawing its first frame.
+                result = await run_in_terminal(lambda: self.file_picker_fn(span.payload))
                 if result.unavailable:
                     self._refresh_file_completions(buffer)
                     return

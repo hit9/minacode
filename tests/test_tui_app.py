@@ -1791,13 +1791,13 @@ def test_file_picker_opens_after_typing_without_tab(monkeypatch):
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
-        pipe_input.send_text("inspect @file:tui")
+        pipe_input.send_text("inspect @file:")
         wait_until(lambda: app.input_buffer.text == "inspect @file:minacode/tui.py")
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
 
-    assert queries == ["tui"]
+    assert queries == [""]
 
 
 def test_file_picker_cancel_keeps_buffer(monkeypatch):

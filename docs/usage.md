@@ -112,8 +112,8 @@ narrows as you keep typing:
   the current turn.
 
 Typing `@` lists the three kinds. Selecting one opens its candidates, which narrow as you type.
-Files stay out of this first list: pausing in `@file:<query>` opens fzf with the query prefilled;
-`Tab` opens it immediately. Without fzf, a bounded literal fallback runs in the background.
+Files stay out of this first list: typing or selecting `@file:` opens fzf immediately; `Tab` does
+the same from an active file mention. Without fzf, a bounded literal fallback runs in the background.
 
 File candidates include hidden, tracked, and untracked files, but exclude every `.git` directory
 and paths ignored by Git. In a non-Git directory, the fallback honors nested `.gitignore` files

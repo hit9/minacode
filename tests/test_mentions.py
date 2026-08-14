@@ -271,10 +271,7 @@ def fake_fzf(tmp_path, body):
     path = tmp_path / "fake-fzf"
     path.write_text(
         "#!/usr/bin/env python3\n"
-        "import os, sys\n"
-        "if '--help' in sys.argv:\n"
-        "    print('--read0 --print0 --scheme --query --no-multi-line')\n"
-        "    raise SystemExit(0)\n" + body,
+        "import os, sys\n" + body,
         encoding="utf-8",
     )
     path.chmod(0o755)
@@ -289,6 +286,8 @@ def test_fzf_picker_uses_nul_path_scheme_query_and_isolated_environment(monkeypa
         tmp_path,
         "assert not any(name in os.environ for name in ('FZF_DEFAULT_COMMAND', 'FZF_DEFAULT_OPTS', 'FZF_DEFAULT_OPTS_FILE'))\n"
         "assert '--read0' in sys.argv and '--print0' in sys.argv and '--scheme=path' in sys.argv\n"
+        "assert '--header=Ctrl-N/P or ↑/↓ move · Enter select · Esc close' in sys.argv\n"
+        "assert '--bind=ctrl-n:down,ctrl-p:up' in sys.argv\n"
         "assert sys.argv[sys.argv.index('--query') + 1] == 'notes'\n"
         "items = sys.stdin.buffer.read().split(b'\\0')\n"
         f"assert {selected!r}.encode() in items\n"

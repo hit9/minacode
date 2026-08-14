@@ -38,8 +38,8 @@ The following are settled decisions for this implementation:
 * The fuzzy backend is the external `fzf` executable, used as one long-lived interactive
   process per picker session. It is not invoked once per keystroke and is not used through
   repeated `fzf --filter` calls.
-* Opening the picker is automatic after 120 ms without an input edit while the cursor is inside an
-  unfinished `@file:` mention. Tab remains an immediate accelerator; it is not required.
+* Completing the `@file:` namespace opens the picker on the next event-loop tick. Tab remains an
+  immediate accelerator from any active file mention.
 * fzf receives the existing text after `@file:` as its initial query and owns subsequent
   fuzzy matching, input handling, result rendering, and selection for that picker session.
 * RapidFuzz is not added. It is a fast compiled matcher, but it would still leave Python in
@@ -52,7 +52,7 @@ The following are settled decisions for this implementation:
   matching.
 * fzf is optional and is never downloaded, installed, or upgraded automatically.
 * Actual file rows are not inserted into the generic bare-`@` menu. The bare menu advertises
-  the `@file:` namespace; selecting it transitions to the picker after the same short delay.
+  the `@file:` namespace; selecting it transitions directly to the picker.
 * File names requiring quoting use a JSON string after `@file:`. Regex-only parsing is
   replaced by a scanner.
 * Ignore behavior follows Git semantics, including nested `.gitignore` files, negation rules,
@@ -125,30 +125,35 @@ completion it behaves as follows:
   matches. It does not enumerate repository files.
 * Selecting any namespace immediately transitions from the namespace menu to that namespace's
   candidates. MCP and skill candidates remain inline and refresh as the query changes.
-* Selecting the file namespace inserts exactly `@file:` and opens the picker after 120 ms without
-  an edit. Typing an `@file:<query>` manually behaves the same way and seeds that query into fzf.
+* Selecting or typing the file namespace inserts exactly `@file:` and opens the picker as soon as
+  the buffer edit settles.
 * Pressing Tab while the cursor is in `@file:<query>` opens the file picker immediately.
 * Pressing Tab elsewhere retains the existing quick-hint/completion behavior.
 * Pasting or manually typing a complete `@file:` mention remains supported; the picker is
   an aid, not a required input path.
 
-Each edit resets the transition timer, so continuous typing is not interrupted. Escape leaves the
-buffer unchanged and does not reopen the picker until a later edit. Pasting a complete mention,
-history navigation, and programmatic buffer updates do not trigger the automatic transition.
+Escape leaves the buffer unchanged and does not reopen the picker until a later edit. Pasting a
+complete mention, history navigation, and programmatic buffer updates do not trigger the automatic
+transition.
 
 4.2 Picker session
 
 When fzf is available:
 
 1. Capture the complete input buffer, cursor position, and the active mention span.
-2. Suspend prompt-toolkit with the existing `run_in_terminal(..., in_executor=True)` pattern.
-3. Start one fzf process and stream candidates to its stdin once.
+2. Suspend prompt-toolkit with `run_in_terminal` and launch fzf inline so no executor scheduling
+   gap exists between erasing the prompt and drawing the picker.
+3. Start one fzf process and stream candidates to its stdin once. This real invocation is also the
+   capability check; no preliminary `fzf --help` process runs.
 4. Seed fzf with the current text after `@file:` using `--query`.
 5. Let fzf own all keys until Enter, Escape, EOF, or failure.
 6. On Enter, replace only the captured mention span with the encoded selected path. Preserve
    all text before and after the span and place the cursor after the replacement.
 7. On Escape, no match, or EOF, restore the original buffer unchanged.
 8. Restore prompt-toolkit and redraw even when the child process fails.
+
+The picker header reads `Ctrl-N/P or ↑/↓ move · Enter select · Esc close`; Ctrl-N/P are explicitly
+bound to down/up rather than relying on user defaults.
 
 The picker has no preview pane, file icons, content reads, syntax highlighting, or metadata
 columns. The only candidate payload is the workspace-relative path. This keeps startup and
@@ -324,10 +329,12 @@ The implementation requires support for:
 * path scoring scheme;
 * initial query;
 * single selection;
+* a static header and explicit key bindings;
 * height or otherwise safely restorable terminal rendering.
 
-Prefer a small behavioral probe or option-compatible invocation over parsing version strings.
-An unsupported-option exit marks fzf unavailable and routes future sessions to the fallback.
+The option-compatible picker invocation is the capability check. An unsupported-option exit marks
+fzf unavailable for the process lifetime and routes future sessions to the fallback. Do not add a
+preliminary version or `--help` subprocess to the terminal handoff.
 
 7.2 Invocation
 
@@ -343,6 +350,8 @@ The baseline invocation is equivalent to:
       --height=~60%
       --border
       --prompt=files>
+      --header='Ctrl-N/P or ↑/↓ move · Enter select · Esc close'
+      --bind=ctrl-n:down,ctrl-p:up
       --query <current-query>
 
 Option spellings may vary by supported fzf version, but behavior must not. There is no preview
@@ -574,7 +583,7 @@ Add a separate optional integration/benchmark test for the real supported fzf ex
 
 Use the existing TUI harness plus a PTY-level integration where needed. Cover:
 
-* pausing after an edit opens the picker only inside an active `@file:` span, without Tab;
+* typing or selecting `@file:` opens the picker without Tab;
 * Tab still opens that picker immediately;
 * selecting `@mcp:` or `@skill:` replaces the namespace menu with its candidate list, and later
   typing refreshes that list;
