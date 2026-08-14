@@ -9,9 +9,9 @@ The worker has its own provider, its own system prompt, and a reduced tool set, 
 context across delegations until you reset it. It never calls back into the parent: a delegation
 is a detour that ends by returning its result.
 
-The design's main motivation is pairing models by cost: a large, capable model orchestrates as
-the parent, while the worker — whose tasks are bounded and spec'd — runs on a small, cheap one,
-so the tokens a delegation burns cost a fraction of the parent's rate.
+The point is pairing models by cost. A large model orchestrates as the parent; the worker's tasks
+arrive already bounded and spec'd, so a small cheap model handles them at a fraction of the
+parent's rate.
 
 ## Quick start
 
@@ -45,17 +45,13 @@ api = ""                 # optional: override the entry's wire protocol (inherit
 worker = true            # or /worker on
 ```
 
-On the first run you will see the model call `Delegate` with an `order` it wrote itself, you
-approve the send, and the worker takes over: a yellow bracket opens in the terminal, its
-progress replaces the parent's row in the status bar, and its final answer comes back to the
-parent model, which decides what to do next. The worker also inherits the session's language
-setting (`[runtime] language` or `/language`) on every send.
+The model decides when to delegate. When it does, it writes the `order` itself and asks you to
+approve the send; the worker then takes over the terminal until it answers, and its answer goes
+back to the parent, which decides what to do next.
 
-`/worker` shows the worker's status, `/worker on` and `/worker off` toggle delegation for the
-session, and `/worker reset` clears the worker's context. `/worker provider NAME`,
-`/worker model MODEL`, `/worker reason EFFORT`, and `/worker api API` re-target a live worker
-immediately and future spawns, mirroring the parent's `/provider` `/model` `/reason` `/api`
-switches; `default` clears an override back to inheriting the provider entry. See
+Four commands cover normal use — `/worker` for status, `/worker on` and `/worker off` for the
+session, and `/worker reset` to clear the worker's context. `/worker provider|model|reason|api`
+re-target it the way `/provider` and friends re-target the parent, live and for later spawns; see
 [Commands](commands.md) for the full syntax.
 
 ## What you see
@@ -104,22 +100,33 @@ Without a TUI (piped input, a headless run) the row is gone and the same actions
 
 <div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a live action row with Approve selected, followed by the reason input line."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span><span class="fs-i fs-sel"> Approve </span><span class="fs-dim">   View order    Worker config    Refuse     Tab to move</span></span><span class="fs-dim">  reason › </span></div>
 
-`View order` opens the order in a read-only viewer that renders it as markdown, with the
-field header aligned and highlighted.
+`View order` opens the full order in a read-only viewer, rendered as markdown.
 
-## Semantics
+## When nothing delegates
 
-- **Reset drops the conversation, not the work.** The worker owns only its conversation;
-  `/worker reset` (or a `Delegate reset` call) clears that conversation — and the wrong beliefs
-  it may have accumulated — on purpose, while file changes and merged diffs always survive.
-- **Snapshots belong to the parent.** A worker's session id is the parent's with a `.w` suffix;
-  worker snapshots are never listed in `/sessions`, and when the parent's snapshot expires its
-  orphaned workers expire with it.
-- **The tool block is frozen at session start.** The `Delegate` tool block is fixed from
-  `[worker] provider` when the session begins, protecting the prompt-cache scope: changing the
-  provider mid-session tunes an already-enabled delegation, but enabling delegation from scratch
-  (provider unset at start) takes effect after a restart.
-- **Sends are confirmed even under `yolo`.** The order is a spec the model wrote for itself, and
-  the approval brief is the one cheap check on it — every send asks.
-- **The worker inherits your environment.** It shares the parent's cwd, skills, MCP servers, and
-  language setting; only files and the repository truly belong to both.
+Delegation is the model's call, not a command you run — there is no way to force one. If a session
+never delegates, check in this order:
+
+1. `/worker` — it reports the configured entry, or `worker: no active session` with the
+   `[worker] provider` it would use.
+2. `[worker] provider` and `[runtime] worker` in your config, or `/worker on` for this session.
+3. **Whether delegation was available when the session started.** If `[worker] provider` was unset
+   at startup, the model was never offered the tool, and turning it on now applies to the next
+   session. Changing the provider mid-session is fine — that only re-targets a delegation the
+   model already has.
+
+Otherwise the model simply saw no task worth handing over, which is the normal case for short work.
+
+## Good to know
+
+- **Reset drops the conversation, not the work.** `/worker reset` clears the worker's context —
+  along with any wrong beliefs it picked up — while file changes and merged diffs survive.
+- **Every send asks, even under `yolo`.** The order is a spec the model wrote for itself, so the
+  approval brief is the one cheap check on it.
+- **The worker inherits your environment.** Same directory, skills, MCP servers, and language
+  setting; the files and the repository are what both actually share.
+- **Its tokens are its own.** The worker bills to its own entry and keeps its own context, and
+  `/status` gives it separate rows — provider and model, context fill with round count, and cache
+  ratio — so a delegation never blurs into the parent's numbers.
+- **Its sessions are not yours to manage.** Worker snapshots ride along with the parent's and
+  never appear in `/sessions`; when the parent's snapshot expires, the worker's goes with it.

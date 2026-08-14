@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.20\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-14 00:31-0700\n"
+"POT-Creation-Date: 2026-08-14 00:46-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -29,8 +29,8 @@ msgid ""
 " review, a refactor, a second opinion — it hands the task over with the "
 "`Delegate` tool."
 msgstr ""
-"**worker** 是运行在同一个进程里的第二个 minacode 会话。当模型遇到一个值得独立看一眼"
-"的有界任务——评审、重构、第二意见——它会用 `Delegate` 工具把这个任务交出去。"
+"**worker** 是运行在同一个进程里的第二个 minacode "
+"会话。当模型遇到一个值得独立看一眼的有界任务——评审、重构、第二意见——它会用 `Delegate` 工具把这个任务交出去。"
 
 #: ../../worker.md:8
 msgid ""
@@ -39,18 +39,17 @@ msgid ""
 " never calls back into the parent: a delegation is a detour that ends by "
 "returning its result."
 msgstr ""
-"worker 有自己的 provider、自己的系统提示词和一套精简的工具，并且在你重置它之前会一"
-"直保留上下文。它从不回调父会话：一次委派就是一段绕行，结束时把结果带回来。"
+"worker 有自己的 "
+"provider、自己的系统提示词和一套精简的工具，并且在你重置它之前会一直保留上下文。它从不回调父会话：一次委派就是一段绕行，结束时把结果带回来。"
 
 #: ../../worker.md:12
 msgid ""
-"The design's main motivation is pairing models by cost: a large, capable "
-"model orchestrates as the parent, while the worker — whose tasks are "
-"bounded and spec'd — runs on a small, cheap one, so the tokens a "
-"delegation burns cost a fraction of the parent's rate."
+"The point is pairing models by cost. A large model orchestrates as the "
+"parent; the worker's tasks arrive already bounded and spec'd, so a small "
+"cheap model handles them at a fraction of the parent's rate."
 msgstr ""
-"这一设计的主要初衷是按成本搭配模型：一个大而强的模型作为父级负责编排，而任务有界、有 spec 的 worker "
-"跑在一个小而便宜的模型上——一次委派所烧的 token 只相当于父级费率的一小部分。"
+"它的意义在于按成本搭配模型。大模型作为父会话负责调度；交给 worker 的任务本身已经有"
+"边界、有规格，因此小而便宜的模型就能完成，花费只是父会话费率的一小部分。"
 
 #: ../../worker.md:16
 msgid "Quick start"
@@ -70,44 +69,36 @@ msgstr ""
 
 #: ../../worker.md:48
 msgid ""
-"On the first run you will see the model call `Delegate` with an `order` "
-"it wrote itself, you approve the send, and the worker takes over: a "
-"yellow bracket opens in the terminal, its progress replaces the parent's "
-"row in the status bar, and its final answer comes back to the parent "
-"model, which decides what to do next. The worker also inherits the "
-"session's language setting (`[runtime] language` or `/language`) on every"
-" send."
+"The model decides when to delegate. When it does, it writes the `order` "
+"itself and asks you to approve the send; the worker then takes over the "
+"terminal until it answers, and its answer goes back to the parent, which "
+"decides what to do next."
 msgstr ""
-"首次运行你会看到模型调用 `Delegate`，携带它自己写的 `order`；你批准发送后 worker "
-"接管：终端里出现一条黄色的分界规则，状态栏里它的进度取代父级那一行，最终答案交还给父模型，由它决定下一步。worker "
-"还会在每次发送时继承会话的语言设置（`[runtime] language` 或 `/language`）。"
+"何时委派由模型决定。当它决定委派时，会自己写下 `order` 并请你批准这次发送；随后 "
+"worker 接管终端直到给出回答，回答再回到父会话，由它决定下一步。"
 
-#: ../../worker.md:54
+#: ../../worker.md:52
 msgid ""
-"`/worker` shows the worker's status, `/worker on` and `/worker off` "
-"toggle delegation for the session, and `/worker reset` clears the "
-"worker's context. `/worker provider NAME`, `/worker model MODEL`, "
-"`/worker reason EFFORT`, and `/worker api API` re-target a live worker "
-"immediately and future spawns, mirroring the parent's `/provider` "
-"`/model` `/reason` `/api` switches; `default` clears an override back to "
-"inheriting the provider entry. See [Commands](commands.md) for the full "
-"syntax."
+"Four commands cover normal use — `/worker` for status, `/worker on` and "
+"`/worker off` for the session, and `/worker reset` to clear the worker's "
+"context. `/worker provider|model|reason|api` re-target it the way "
+"`/provider` and friends re-target the parent, live and for later spawns; "
+"see [Commands](commands.md) for the full syntax."
 msgstr ""
-"`/worker` 显示 worker 的状态，`/worker on` 和 `/worker off` 切换本次会话的委派，`/worker "
-"reset` 清空 worker 的上下文。`/worker provider NAME`、`/worker model "
-"MODEL`、`/worker reason EFFORT` 和 `/worker api API` 会立即重新定向当前存活的 worker "
-"并影响之后的生成，对应父级的 `/provider` `/model` `/reason` `/api` 临时切换；`default` "
-"清除覆盖，恢复继承 provider 条目。完整语法见[命令](commands.md)。"
+"日常使用四个命令就够了——`/worker` 查看状态，`/worker on` 与 `/worker off` 控制本次"
+"会话，`/worker reset` 清空 worker 的上下文。`/worker provider|model|reason|api` 重新"
+"指定它，方式与 `/provider` 那一组重新指定父会话一样，对当前和之后生成的 worker 都生"
+"效；完整语法见 [命令](commands.md)。"
 
-#: ../../worker.md:61
+#: ../../worker.md:57
 msgid "What you see"
 msgstr "你会看到什么"
 
-#: ../../worker.md:63
+#: ../../worker.md:59
 msgid "The delegation bracket"
 msgstr "委派分界规则"
 
-#: ../../worker.md:65
+#: ../../worker.md:61
 msgid ""
 "Two full-width rules bracket a delegation: a yellow `worker start` rule "
 "with the worker's live provider and model plus the order's title (or "
@@ -119,11 +110,11 @@ msgstr ""
 "标题（或首行）；接着是 worker 的流式输出行；最后是一条黄色的 `worker done` 规则，带步骤数、耗时、输入输出 token "
 "数和它改动的文件。"
 
-#: ../../worker.md:72
+#: ../../worker.md:68
 msgid "Status bar while delegating"
 msgstr "委派期间的状态栏"
 
-#: ../../worker.md:74
+#: ../../worker.md:70
 msgid ""
 "While the worker runs, the status bar swaps the parent's row for the "
 "worker's: a `[worker]` marker, then the worker's provider and model, its "
@@ -132,11 +123,11 @@ msgstr ""
 "worker 运行时，状态栏把父级那一行换成 worker 的：一个 `[worker]` 标记，然后是 worker 的 provider "
 "与模型、它的推理力度，以及它的上下文占用与缓存比例。"
 
-#: ../../worker.md:80
+#: ../../worker.md:76
 msgid "The send approval brief"
 msgstr "发送审批简报"
 
-#: ../../worker.md:82
+#: ../../worker.md:78
 msgid ""
 "Every `Delegate send` asks for approval, even under `yolo` — the "
 "confirmation prints the title, a one-line excerpt of the order, any "
@@ -150,7 +141,7 @@ msgstr ""
 "provider/model/effort/api，`(inherit)` 标记表示该字段继承 provider "
 "条目的值。被拒绝的发送会把你的理由反馈给模型。"
 
-#: ../../worker.md:87
+#: ../../worker.md:83
 msgid ""
 "The actions sit in a row above the input line, with `Approve` selected. "
 "`Tab` and the arrows move along it, `Enter` fires what is selected:"
@@ -196,7 +187,7 @@ msgstr "任何可打印字符"
 msgid "start writing a refusal reason"
 msgstr "开始写拒绝理由"
 
-#: ../../worker.md:97
+#: ../../worker.md:93
 msgid ""
 "Typing always goes to the reason, so no letter is ever a shortcut and no "
 "reason is unwritable. While you are typing, the row dims and `Enter` "
@@ -206,7 +197,7 @@ msgstr ""
 "输入永远进入理由，因此没有任何字母被占作快捷键，也就没有写不出的理由。正在输入时，动作行变暗、`Enter` 改为发送理由；`Esc` "
 "先收回理由退回动作行，只有在没有东西可收回时才表示拒绝。"
 
-#: ../../worker.md:101
+#: ../../worker.md:97
 msgid ""
 "Every tool's approval works this way — non-`Delegate` ones simply offer "
 "`Approve` and `Refuse`. Without a TUI (piped input, a headless run) the "
@@ -216,60 +207,110 @@ msgstr ""
 "每个工具的确认都是这套交互 —— 非 `Delegate` 的只是少几个动作，只有 `Approve` 和 `Refuse`。没有 TUI "
 "时（管道输入、无界面运行）没有这一行，同样的动作改为完整输入：`y`、`n`、`v`、`c`，每个后面加 Enter。"
 
+#: ../../worker.md:103
+msgid ""
+"`View order` opens the full order in a read-only viewer, rendered as "
+"markdown."
+msgstr ""
+"`View order` 会在一个只读查看器里打开完整的 order，按 markdown 渲染。"
+
+#: ../../worker.md:105
+msgid "When nothing delegates"
+msgstr ""
+"当什么都没有被委派时"
+
 #: ../../worker.md:107
 msgid ""
-"`View order` opens the order in a read-only viewer that renders it as "
-"markdown, with the field header aligned and highlighted."
-msgstr "`View order` 在只读查看器中打开 order：正文按 markdown 渲染，字段表头对齐并高亮。"
+"Delegation is the model's call, not a command you run — there is no way "
+"to force one. If a session never delegates, check in this order:"
+msgstr ""
+"委派由模型决定，不是你运行的命令——没有办法强制发起一次。如果一个会话始终没有委派，"
+"按以下顺序检查："
 
 #: ../../worker.md:110
-msgid "Semantics"
-msgstr "语义"
+msgid ""
+"`/worker` — it reports the configured entry, or `worker: no active "
+"session` with the `[worker] provider` it would use."
+msgstr ""
+"`/worker` —— 它会报告配置的条目，或者在没有 worker 时显示 `worker: no active session` 以及它将会使用的 `[worker] provider`。"
 
 #: ../../worker.md:112
 msgid ""
-"**Reset drops the conversation, not the work.** The worker owns only its "
-"conversation; `/worker reset` (or a `Delegate reset` call) clears that "
-"conversation — and the wrong beliefs it may have accumulated — on "
-"purpose, while file changes and merged diffs always survive."
+"`[worker] provider` and `[runtime] worker` in your config, or `/worker "
+"on` for this session."
 msgstr ""
-"**重置丢弃的是对话，不是成果。** worker 只拥有它的对话；`/worker reset`（或一次 `Delegate reset` "
-"调用）刻意清空这段对话——连同它可能积累的错误认知——而文件改动和已合并的 diff 始终保留。"
+"配置里的 `[worker] provider` 与 `[runtime] worker`，或者用 `/worker on` 打开本次会"
+"话的委派。"
 
-#: ../../worker.md:115
+#: ../../worker.md:113
 msgid ""
-"**Snapshots belong to the parent.** A worker's session id is the parent's"
-" with a `.w` suffix; worker snapshots are never listed in `/sessions`, "
-"and when the parent's snapshot expires its orphaned workers expire with "
-"it."
+"**Whether delegation was available when the session started.** If "
+"`[worker] provider` was unset at startup, the model was never offered the"
+" tool, and turning it on now applies to the next session. Changing the "
+"provider mid-session is fine — that only re-targets a delegation the "
+"model already has."
 msgstr ""
-"**快照从属于父级。** worker 的会话 id 是父级 id 加 `.w` 后缀；worker 快照永远不会出现在 `/sessions` "
-"列表里，当父级快照过期时，孤儿的 worker 也随之一并过期。"
+"**会话启动时委派是否可用。** 如果启动时 `[worker] provider` 是空的，模型从一开始就"
+"没有拿到这个工具，现在打开要到下一个会话才生效。会话中途更换 provider 没有问题——那"
+"只是把模型已经拥有的委派重新指向别处。"
 
 #: ../../worker.md:118
 msgid ""
-"**The tool block is frozen at session start.** The `Delegate` tool block "
-"is fixed from `[worker] provider` when the session begins, protecting the"
-" prompt-cache scope: changing the provider mid-session tunes an already-"
-"enabled delegation, but enabling delegation from scratch (provider unset "
-"at start) takes effect after a restart."
+"Otherwise the model simply saw no task worth handing over, which is the "
+"normal case for short work."
 msgstr ""
-"**工具块在会话开始时冻结。** `Delegate` 工具块在会话开始时由 `[worker] provider` 固定，以保护 prompt "
-"缓存的作用域：运行中切换 provider 只会调优已启用的委派，而从头启用委派（开始时未设置 provider）需要重启后才会生效。"
+"否则就只是模型没有看到值得交出去的任务，这在短任务里很正常。"
+
+#: ../../worker.md:120
+msgid "Good to know"
+msgstr ""
+"值得知道的几点"
 
 #: ../../worker.md:122
 msgid ""
-"**Sends are confirmed even under `yolo`.** The order is a spec the model "
-"wrote for itself, and the approval brief is the one cheap check on it — "
-"every send asks."
-msgstr "**即使在 `yolo` 下也会确认发送。** order 是模型为自己写的规格，审批简报是对它的唯一廉价检查——每次发送都会询问。"
+"**Reset drops the conversation, not the work.** `/worker reset` clears "
+"the worker's context — along with any wrong beliefs it picked up — while "
+"file changes and merged diffs survive."
+msgstr ""
+"**重置丢掉的是对话，不是工作成果。** `/worker reset` 会清空 worker 的上下文——连同它"
+"可能积累的错误认知——而文件改动和已合并的 diff 都会保留。"
 
 #: ../../worker.md:124
 msgid ""
-"**The worker inherits your environment.** It shares the parent's cwd, "
-"skills, MCP servers, and language setting; only files and the repository "
-"truly belong to both."
-msgstr "**worker 继承你的环境。** 它共享父级的 cwd、技能、MCP 服务器和语言设置；只有文件和仓库真正属于双方。"
+"**Every send asks, even under `yolo`.** The order is a spec the model "
+"wrote for itself, so the approval brief is the one cheap check on it."
+msgstr ""
+"**每一次发送都会询问，即使在 `yolo` 下也一样。** order 是模型给自己写的规格，因此这"
+"份审批简报是对它唯一的低成本检查。"
+
+#: ../../worker.md:126
+msgid ""
+"**The worker inherits your environment.** Same directory, skills, MCP "
+"servers, and language setting; the files and the repository are what both"
+" actually share."
+msgstr ""
+"**worker 继承你的环境。** 同一个目录、skills、MCP 服务器和语言设置；真正由双方共享"
+"的是文件和这个仓库。"
+
+#: ../../worker.md:128
+msgid ""
+"**Its tokens are its own.** The worker bills to its own entry and keeps "
+"its own context, and `/status` gives it separate rows — provider and "
+"model, context fill with round count, and cache ratio — so a delegation "
+"never blurs into the parent's numbers."
+msgstr ""
+"**它的 token 是它自己的。** worker 按自己的条目计费、保有自己的上下文，`/status` 也"
+"会给它单独的几行——provider 与模型、上下文占用与轮数、缓存命中率——因此一次委派不会"
+"和父会话的数字混在一起。"
+
+#: ../../worker.md:131
+msgid ""
+"**Its sessions are not yours to manage.** Worker snapshots ride along "
+"with the parent's and never appear in `/sessions`; when the parent's "
+"snapshot expires, the worker's goes with it."
+msgstr ""
+"**它的会话不需要你管理。** worker 的快照随父会话一起保存，不会出现在 `/sessions` "
+"里；父会话的快照过期时，它的也一起过期。"
 
 #~ msgid ""
 #~ "The prompt is an ordinary input "
@@ -297,4 +338,44 @@ msgstr "**worker 继承你的环境。** 它共享父级的 cwd、技能、MCP �
 
 #~ msgid "refuse, with what you typed as the reason"
 #~ msgstr "拒绝，并以你输入的内容作为理由"
+
+#~ msgid ""
+#~ "On the first run you will see "
+#~ "the model call `Delegate` with an "
+#~ "`order` it wrote itself, you approve "
+#~ "the send, and the worker takes "
+#~ "over: a yellow bracket opens in "
+#~ "the terminal, its progress replaces the"
+#~ " parent's row in the status bar, "
+#~ "and its final answer comes back to"
+#~ " the parent model, which decides what"
+#~ " to do next. The worker also "
+#~ "inherits the session's language setting "
+#~ "(`[runtime] language` or `/language`) on "
+#~ "every send."
+#~ msgstr ""
+#~ "首次运行你会看到模型调用 `Delegate`，携带它自己写的 `order`；你批准发送后 "
+#~ "worker "
+#~ "接管：终端里出现一条黄色的分界规则，状态栏里它的进度取代父级那一行，最终答案交还给父模型，由它决定下一步。worker "
+#~ "还会在每次发送时继承会话的语言设置（`[runtime] language` 或 "
+#~ "`/language`）。"
+
+#~ msgid "Semantics"
+#~ msgstr "语义"
+
+#~ msgid ""
+#~ "**The tool block is frozen at "
+#~ "session start.** The `Delegate` tool "
+#~ "block is fixed from `[worker] provider`"
+#~ " when the session begins, protecting "
+#~ "the prompt-cache scope: changing the "
+#~ "provider mid-session tunes an "
+#~ "already-enabled delegation, but enabling "
+#~ "delegation from scratch (provider unset "
+#~ "at start) takes effect after a "
+#~ "restart."
+#~ msgstr ""
+#~ "**工具块在会话开始时冻结。** `Delegate` 工具块在会话开始时由 `[worker] "
+#~ "provider` 固定，以保护 prompt 缓存的作用域：运行中切换 provider"
+#~ " 只会调优已启用的委派，而从头启用委派（开始时未设置 provider）需要重启后才会生效。"
 
