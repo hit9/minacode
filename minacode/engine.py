@@ -93,24 +93,8 @@ class Agent:
         malformed_tool_names: list[str] = []
         user_message = self.session.images.message(user_input)
         user_text = self.session.images.label_text(user_message)
-        turn_messages: list[Json] = [user_message]
+        turn_messages = [user_message, *self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
-        # Marked as session events, like every other runtime-generated user message: they are
-        # expansions of what the request mentioned, not a request of their own. The mark is what
-        # keeps latest_user_index pointing at the request itself, so compaction never summarizes
-        # away the message that started the turn just because an expansion follows it.
-        if self.session.mcp is not None:
-            mentions = self.session.mcp.resolve_mentions(user_text)
-            if mentions:
-                turn_messages.append({"role": "user", "content": mentions, SESSION_EVENT_KEY: "mcp_mentions"})
-        if self.session.skills is not None:
-            skill_mentions = self.session.skills.resolve_mentions(user_text)
-            if skill_mentions:
-                turn_messages.append({"role": "user", "content": skill_mentions, SESSION_EVENT_KEY: "skill_mentions"})
-        if self.session.mentions is not None:
-            file_mentions = self.session.mentions.resolve_mentions(user_text)
-            if file_mentions:
-                turn_messages.append({"role": "user", "content": file_mentions, SESSION_EVENT_KEY: "file_mentions"})
         self.checkpoint_turn(turn_messages, transcript_messages)
         try:
             for step in range(self.session.settings.max_steps):
@@ -334,12 +318,32 @@ class Agent:
         # Without a queued follow-up this must be the real active-turn list: current-turn compaction
         # rewrites it in place, and a throwaway copy would make the next step compact the same prefix
         # again. Pending input stays transactional in a copy until the provider accepts it.
-        request_turn = turn_messages if not pending else [*turn_messages, *(item.message(LIVE_FOLLOWUP_PREFIX) for item in pending)]
+        request_turn = turn_messages
+        if pending:
+            request_turn = [*turn_messages]
+            for item in pending:
+                request_turn.append(item.message(LIVE_FOLLOWUP_PREFIX))
+                request_turn.extend(self.mention_messages(item.text))
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending, request_turn)
+
+    def mention_messages(self, text: str) -> list[Json]:
+        """Session-event context blocks attached after one user message, initial or queued."""
+        blocks: list[Json] = []
+        for event, resolver in (
+            ("mcp_mentions", self.session.mcp.resolve_mentions if self.session.mcp is not None else None),
+            ("skill_mentions", self.session.skills.resolve_mentions if self.session.skills is not None else None),
+            ("file_mentions", self.session.mentions.resolve_mentions if self.session.mentions is not None else None),
+        ):
+            content = resolver(text) if resolver is not None else ""
+            if content:
+                # Expansions are not new requests. Marking them keeps compaction's latest-user
+                # boundary on the raw message that caused them, including queued follow-ups.
+                blocks.append({"role": "user", "content": content, SESSION_EVENT_KEY: event})
+        return blocks
 
     @classmethod
     def textual_tool_call(cls, content: str, tools: list[Json]) -> str | None:
@@ -415,7 +419,9 @@ class Agent:
         # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.
         messages = [item.message(LIVE_FOLLOWUP_PREFIX) for item in pending]
         if prepared_turn_messages is None:
-            turn_messages.extend(messages)
+            for item, message in zip(pending, messages, strict=True):
+                turn_messages.append(message)
+                turn_messages.extend(self.mention_messages(item.text))
         else:
             turn_messages[:] = prepared_turn_messages
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(messages))

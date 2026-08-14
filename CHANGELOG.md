@@ -5,14 +5,15 @@
 
 ### Added
 
-- `@file:path` mentions point the agent at a file in the project. Typing `@` opens one menu
-  over files, MCP servers, and skills, and completing always inserts the canonical `@file:`,
-  `@mcp:`, and `@skill:` forms (the legacy `@server` and `$skill` forms still resolve). File
-  completion is a case-insensitive substring over the project's git-tracked and untracked
-  files, cached per session and refreshed when it goes stale. A mentioned file becomes a FILE
-  MENTIONS block appended to the turn: small in-workspace files are inlined, large files and
-  files outside the workspace become pointers that tell the agent to Read them, missing paths
-  report themselves, and at most ten files are inlined per turn.
+- `@file:path` mentions point the agent at a file in the project. `@` lists the bounded
+  namespaces, MCP servers, and skills without scanning repository files; `Tab` inside
+  `@file:<query>` opens one real fzf session when supported, with a non-blocking literal fallback
+  otherwise. Candidates include tracked, untracked, and non-ignored hidden files while excluding
+  `.git` and every Git-ignored path. Quoted mentions round-trip spaces, Unicode, and punctuation.
+  The canonical `@mcp:` and `@skill:` forms and legacy `@server` and `$skill` forms still resolve.
+  Mentioned files become a bounded FILE MENTIONS block in initial and queued messages: small text
+  files are inlined, while large, binary, outside-workspace, missing, or excess files degrade to
+  explicit pointers or diagnostics.
 - Quick-hint chips can be picked into the input one by one and combined before sending: Enter
   on a focused chip fills the input (again unpicks it), Tab keeps cycling the chips, and a
   manual edit hands the input back to normal editing.
@@ -21,6 +22,9 @@
 
 - Quick-hint acceptance now uses one immutable hint snapshot and clears stale focus/picks after
   the hints or input change, avoiding crashes and selecting the wrong suggestion during refreshes.
+- File, MCP, and skill mentions now share one scanner, so reserved namespaces do not collide with
+  legacy MCP syntax and email-like text is left alone. File aliases deduplicate by canonical path,
+  per-file read failures no longer abort the turn, and unterminated final lines are counted.
 
 
 ## 0.24.1 - 2026-08-14

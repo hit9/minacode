@@ -1421,7 +1421,7 @@ def test_compaction_override_does_not_change_request_budget(tmp_path):
 # for itself and the request it was expanding gets summarized away mid-turn. The worker is where
 # this bites hardest: that message is the entire order (docs/worker.md), the worker cannot see the
 # parent's history, and nothing re-sends it.
-RUNTIME_GENERATED_EVENTS = ("mcp_mentions", "skill_mentions", "tool_call_correction")
+RUNTIME_GENERATED_EVENTS = ("mcp_mentions", "skill_mentions", "file_mentions", "tool_call_correction")
 
 
 @pytest.mark.parametrize("event", RUNTIME_GENERATED_EVENTS)
@@ -1502,6 +1502,8 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
         handle.write("---\nname: triage\ndescription: triage a bug\n---\nReproduce first.\n")
+    with open(os.path.join(tmp_path, "issue.py"), "w", encoding="utf-8") as handle:
+        handle.write("raise RuntimeError\n")
     s = session(tmp_path)  # discovers the skill written above
     s.mcp = SimpleNamespace(resolve_mentions=lambda text: "--- MCP MENTIONS ---", render_tools_index=lambda: "", tools={}, resources={})
     agent = Agent(s, output_fn=lambda text: None)
@@ -1511,9 +1513,9 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent.model = FakeModel()
-    assert agent.run("please $triage this") == "done"
+    assert agent.run("please $triage @file:issue.py") == "done"
 
-    assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", None]
+    assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", "file_mentions", None]
     assert ContextManager(s).latest_user_index(s.messages) == 0
 
 

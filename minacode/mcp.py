@@ -19,6 +19,7 @@ from minacode.base import Json, Text, ToolError
 from minacode.config import (
     Config,
 )
+from minacode.mentions import scan_mentions
 from minacode.session import Session
 
 if TYPE_CHECKING:
@@ -1098,8 +1099,7 @@ class MCPManager:
             return "connected; no tools or resources advertised"
         return "not connected"
 
-    # Optional "mcp:" prefix names the namespaced form; the bare @server form stays valid.
-    MENTION_PATTERN = re.compile(r"@(?:mcp:)?([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")
+    MAX_MENTION_BLOCKS = 50
 
     def resolve_mentions(self, text: str) -> str:
         configs = {config.name: config for config in self.parse_configs()}
@@ -1108,7 +1108,10 @@ class MCPManager:
         lower = {name.lower(): name for name in configs}
         seen: set[tuple[str, str]] = set()
         blocks: list[str] = []
-        for raw_server, raw_tool in self.MENTION_PATTERN.findall(text):
+        for span in scan_mentions(text):
+            if span.kind not in {"bare", "mcp"} or not span.complete or not span.payload:
+                continue
+            raw_server, _, raw_tool = span.payload.partition(".")
             name = raw_server if raw_server in configs else lower.get(raw_server.lower())
             if name is None:  # not a configured server — leave the literal @token alone
                 continue
@@ -1117,6 +1120,8 @@ class MCPManager:
                 continue
             seen.add(key)
             blocks.append(self._mention_block(name, raw_tool))
+            if len(blocks) >= self.MAX_MENTION_BLOCKS:
+                break
         if not blocks:
             return ""
         header = [

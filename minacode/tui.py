@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import re
 import shlex
 import subprocess
 import tempfile
@@ -48,6 +47,7 @@ from minacode.base import (
     MinacodeError,
 )
 from minacode.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
+from minacode.mentions import FilePick, MentionSpan, active_mention, encode_file_mention, scan_mentions
 from minacode.render import UiPrinter
 from minacode.tools.ask import AskSpec
 
@@ -176,6 +176,9 @@ class TuiApp:
         activity_fragments_fn: Callable[[], StyleAndTextTuples] | None = None,
         input_hint_fn: Callable[[], str] | None = None,
         quick_hints_fn: Callable[[], tuple[str, ...]] | None = None,
+        file_picker_available_fn: Callable[[], bool] | None = None,
+        file_picker_fn: Callable[[str], FilePick] | None = None,
+        file_complete_fn: Callable[[str, Callable[[], None]], None] | None = None,
         editor_context_fn: Callable[[], str] | None = None,
         images: ImageInputs | None = None,
         image_cwd: str = "",
@@ -194,6 +197,9 @@ class TuiApp:
         self.activity_fragments_fn: Callable[[], StyleAndTextTuples] = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.quick_hints_fn: Callable[[], tuple[str, ...]] = quick_hints_fn or (lambda: ())
+        self.file_picker_available_fn = file_picker_available_fn or (lambda: False)
+        self.file_picker_fn = file_picker_fn or (lambda _query: FilePick(unavailable=True))
+        self.file_complete_fn = file_complete_fn or (lambda _query, ready: ready())
         self.editor_context_fn = editor_context_fn or (lambda: "")
         self.images = images if images is not None else ImageInputs(cwd=image_cwd)
         self.input_images: tuple[ImageRef, ...] = ()
@@ -218,6 +224,7 @@ class TuiApp:
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
         self.quick_hint_picked: list[str] = []  # chips picked into the input, in pick order
         self._last_quick_hints: tuple[str, ...] | None = None  # hints seen by the last quick_hints() call
+        self._file_picker_active = False
         self.input_prompt = UiPrinter.PROMPT_PREFIX
         # Every line of the prompt except the last. The input row's prefix is a single-line
         # processor, so these are rendered as their own rows above it. See _set_mode.
@@ -537,6 +544,13 @@ class TuiApp:
         if self.input_mode == "chat" and buffer.text == "\n".join(self.quick_hint_picked) and buffer.complete_state is None and self.quick_hints():
             self.cycle_quick_hint_focus(reverse=reverse)
             return
+        target = self._file_mention_at_cursor(buffer)
+        if not reverse and buffer.complete_state is None and target is not None:
+            span, end = target
+            if self.file_picker_available_fn() and self.app is not None:
+                self._start_file_picker(buffer, span, end)
+                return
+            self._refresh_file_completions(buffer)
         self.complete_input(buffer, reverse=reverse)
 
     def placeholder_text(self) -> str:
@@ -569,18 +583,74 @@ class TuiApp:
             self._recognize_input()
         self._offer_mention_completions(buffer, delta)
 
-    # `@file:`/`@mcp:`/`@skill:`, `@server`, and `$skill` exist only to name something the
-    # completer knows, so the list opens as the mention is typed (the bare `kind:` form too, since
-    # accepting a kind completion replaces the "@" with "kind:"). Completion stays off for
-    # everything else (Buffer.complete_while_typing is False): the rest of this prompt is prose,
-    # where a menu on every keystroke is noise, and history search wants the flag off anyway.
-    MENTION_RE: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|(?<=[^A-Za-z0-9_]))(?:[@$][A-Za-z0-9_./:-]*|(?:file|mcp|skill):[A-Za-z0-9_./:-]*)$")
-
     def _offer_mention_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
-        if self.input_mode not in {"chat", "running"} or not delta.inserted or buffer.complete_state is not None:
+        if self.input_mode not in {"chat", "running"} or not delta.inserted:
             return
-        if self.MENTION_RE.search(buffer.document.text_before_cursor):
-            buffer.start_completion(select_first=False)
+        span = active_mention(buffer.document.text_before_cursor)
+        if span is None:
+            return
+        if span.kind == "file":
+            if not self.file_picker_available_fn():
+                self._refresh_file_completions(buffer)
+            return
+        if buffer.complete_state is not None:
+            buffer.cancel_completion()
+        buffer.start_completion(select_first=False)
+
+    @staticmethod
+    def _file_mention_at_cursor(buffer: Buffer) -> tuple[MentionSpan, int] | None:
+        cursor = buffer.cursor_position
+        partial = active_mention(buffer.text[:cursor])
+        if partial is None or partial.kind != "file":
+            return None
+        full = next((span for span in scan_mentions(buffer.text) if span.kind == "file" and span.start == partial.start and span.end >= cursor), None)
+        return partial, full.end if full is not None else cursor
+
+    def _refresh_file_completions(self, buffer: Buffer) -> None:
+        text, cursor = buffer.text, buffer.cursor_position
+        target = self._file_mention_at_cursor(buffer)
+        if target is None:
+            return
+        query = target[0].payload
+
+        def ready() -> None:
+            if self.app is None:
+                return
+
+            def show() -> None:
+                if buffer.text == text and buffer.cursor_position == cursor and self._file_mention_at_cursor(buffer) is not None:
+                    if buffer.complete_state is not None:
+                        buffer.cancel_completion()
+                    buffer.start_completion(select_first=False)
+                    self.invalidate()
+
+            self._schedule(show)
+
+        self.file_complete_fn(query, ready)
+
+    def _start_file_picker(self, buffer: Buffer, span: MentionSpan, end: int) -> None:
+        if self._file_picker_active or self.app is None:
+            return
+        self._file_picker_active = True
+        document = buffer.document
+
+        async def pick() -> None:
+            try:
+                result = await run_in_terminal(lambda: self.file_picker_fn(span.payload), in_executor=True)
+                if result.unavailable:
+                    self._refresh_file_completions(buffer)
+                    return
+                if result.selection is None or buffer.text != document.text or buffer.cursor_position != document.cursor_position:
+                    return
+                mention = encode_file_mention(result.selection)
+                text = document.text[: span.start] + mention + document.text[end:]
+                position = span.start + len(mention)
+                self._reset_input(UserInput(text, self.input_images), cursor_position=position)
+                self.invalidate()
+            finally:
+                self._file_picker_active = False
+
+        self.app.create_background_task(pick())
 
     def _sync_input_images(self, old: str, delta: _EditDelta) -> None:
         """Drop image markers that an edit removed from the input text."""

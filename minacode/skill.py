@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from minacode.mentions import scan_mentions
+
 if TYPE_CHECKING:
     from minacode.session import Session
 
@@ -30,9 +32,7 @@ class SkillLibrary:
 
     FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
     META_LINE = re.compile(r"^([A-Za-z0-9_-]+):[ \t]*(.*)$", re.MULTILINE)
-    # Both legacy $name and canonical @skill:name forms name a skill; $ keeps its existing
-    # negative lookbehind, @skill: the same word-boundary rule as every other mention.
-    MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(?:\$|@skill:)([A-Za-z0-9_-]+)")
+    MAX_MENTION_BLOCKS = 50
 
     def __init__(self, skills: dict[str, Skill]):
         self.skills = skills
@@ -107,12 +107,17 @@ class SkillLibrary:
     def resolve_mentions(self, text: str) -> str:
         seen: set[str] = set()
         blocks: list[str] = []
-        for raw in self.MENTION_PATTERN.findall(text):
+        for span in scan_mentions(text):
+            if span.kind != "skill" or not span.complete or not span.payload:
+                continue
+            raw = span.payload
             skill = self.get(raw)
             if skill is None or skill.name in seen:
                 continue
             seen.add(skill.name)
             blocks.append(f"[{skill.name}] {skill.description}\n{self.expand(skill)}")
+            if len(blocks) >= self.MAX_MENTION_BLOCKS:
+                break
         if not blocks:
             return ""
         header = ["--- SKILL MENTIONS ---", "The user explicitly referenced these skills; follow their instructions unless clearly irrelevant.", ""]

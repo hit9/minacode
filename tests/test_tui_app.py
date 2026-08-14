@@ -32,6 +32,7 @@ from minacode.config import (
 )
 from minacode.engine import Agent
 from minacode.hints import HintPicker
+from minacode.mentions import FilePick, active_mention
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
@@ -1694,10 +1695,10 @@ def test_mention_opens_completions_while_typing(monkeypatch):
         wait_until(lambda: completions() == ["@mcp:github"])  # the list narrows as typing continues
 
         pipe_input.send_text(" and @")
-        wait_until(lambda: completions() == ["file:", "mcp:", "skill:"])
+        wait_until(lambda: completions() == ["@file:", "@mcp:", "@skill:"])
 
         pipe_input.send_text("fi")
-        wait_until(lambda: completions() == ["file:"])  # kinds stay while they prefix-match
+        wait_until(lambda: completions() == ["@file:"])  # kinds stay while they prefix-match
 
         pipe_input.send_text("le:tu")
         wait_until(lambda: completions() == ["@file:minacode/tui.py"])
@@ -1728,19 +1729,43 @@ def test_prose_and_email_do_not_open_completions(monkeypatch):
     assert seen == [None]
 
 
-def test_mention_trigger_matches_bare_kind_after_insertion():
-    """SPEC 4.4: accepting a kind replaces the "@" with "kind:", so the trigger must also match
-    the bare kind prefix to keep the menu open on that kind's source while its value is typed."""
-    app = TuiApp()
+def test_mention_trigger_uses_canonical_scanner_spans():
     for text in (
         "use @file:tu",
-        "use file:tu",
         "use @",
-        "use file:",
         "use @skill:rel",
-        "use mcp:git",
+        "use @mcp:git",
     ):
-        assert app.MENTION_RE.search(text), text
-    assert not app.MENTION_RE.search("mail me at hit9@icloud")
-    assert not app.MENTION_RE.search("use file:notes here")  # a space ends the mention
-    assert not app.MENTION_RE.search("profile:x")  # "file" inside a word is not a mention
+        assert active_mention(text) is not None, text
+    assert active_mention("mail me at hit9@icloud") is None
+    assert active_mention("use file:notes here") is None
+    assert active_mention("profile:x") is None
+
+
+def test_file_picker_tab_replaces_only_active_span(monkeypatch):
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda query: FilePick("docs/中文 notes.txt") if query == "not" else FilePick())
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("inspect @file:not please")
+        for _ in range(len(" please")):
+            pipe_input.send_text("\x1b[D")
+        pipe_input.send_text("\t")
+        wait_until(lambda: app.input_buffer.text == 'inspect @file:"docs/中文 notes.txt" please')
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
+def test_file_picker_cancel_keeps_buffer(monkeypatch):
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda _query: FilePick())
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("@file:keep")
+        pipe_input.send_text("\t")
+        time.sleep(0.05)
+        assert app.input_buffer.text == "@file:keep"
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)

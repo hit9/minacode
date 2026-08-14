@@ -210,7 +210,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             ),
             mcp_tools=lambda server: tuple(tool.name for tool in self.session.mcp.tools.get(server, [])) if self.session.mcp else (),
             skills=lambda: tuple(skill.name for skill in self.session.skills.all()) if self.session.skills else (),
-            files=lambda: tuple(self.session.mentions.paths()) if self.session.mentions else (),
+            file_matches=self.session.mentions.cached_matches if self.session.mentions else None,
         )
         self.agent.output_fn = self.agent_output
         self.agent.model.on_stream = self.model_stream_output

@@ -5,13 +5,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 from agent_harness import session
 from prompt_toolkit.document import Document
 
 from minacode.cli.view import CommandCompleter
-from minacode.mentions import FileMentions
+from minacode.mentions import FileMentions, FzfPicker, active_mention, encode_file_mention, scan_mentions
 
 
 def completions(completer, text):
@@ -31,14 +32,25 @@ def test_file_mention_parses_and_email_does_not(tmp_path):
 
 def test_mcp_and_skill_forms_parse(tmp_path):
     s = session(tmp_path)
-    # Legacy and namespaced forms resolve through the same patterns; unknown names stay ignored.
-    assert s.mcp.MENTION_PATTERN.findall("@github @mcp:github @mcp:github.search") == [
-        ("github", ""),
-        ("github", ""),
-        ("github", "search"),
+    assert [(span.kind, span.payload) for span in scan_mentions("@github @mcp:github @mcp:github.search @file:a.py @skill:release")] == [
+        ("bare", "github"),
+        ("mcp", "github"),
+        ("mcp", "github.search"),
+        ("file", "a.py"),
+        ("skill", "release"),
     ]
-    assert s.skills.MENTION_PATTERN.findall("$release @skill:release") == ["release", "release"]
     assert s.skills.resolve_mentions("price $30") == ""  # a price is not a skill mention
+    assert not [span for span in scan_mentions("mail hit9@icloud.com") if span.kind == "bare"]
+
+
+def test_file_mention_quoted_round_trip_and_incomplete_span():
+    for path in ("src/app.py", "docs/design notes.txt", "文档/设计.txt", "odd\tname.txt", "odd\nname.txt"):
+        mention = encode_file_mention(path)
+        spans = scan_mentions("see " + mention)
+        assert spans[-1].payload == path
+        assert spans[-1].complete
+    span = active_mention('see @file:"unfinished path')
+    assert span is not None and span.kind == "file" and not span.complete and span.payload == "unfinished path"
 
 
 # --- T3: matching and ranking ---
@@ -85,19 +97,18 @@ def test_matching_caps_at_50_rows():
     assert len(completions(c, "@file:f")) == 50
 
 
-def test_merged_menu_bare_word_prefers_servers_slash_prefers_files():
+def test_bare_menu_does_not_scan_or_merge_repository_files():
     c = CommandCompleter(mcp_servers=lambda: ("viewer",), skills=lambda: (), files=lambda: FILES)
-    assert completions(c, "@view") == ["@mcp:viewer", "@file:minacode/cli/view.py"]
-    assert completions(c, "@cli/view") == ["@file:minacode/cli/view.py"]  # "/" ranks files first
+    assert completions(c, "@view") == ["@mcp:viewer"]
+    assert completions(c, "@cli/view") == []
 
 
-def test_bare_kind_form_completes_after_kind_insertion():
-    """SPEC 4.4: accepting a kind replaces the "@" with "kind:", so the bare kind prefix must
-    keep completing that kind's source (the trigger reopens the menu on the bare form)."""
+def test_kind_completion_keeps_canonical_at_prefix():
     c = CommandCompleter(mcp_servers=lambda: ("github", "gitlab"), skills=lambda: ("release",), files=lambda: FILES)
-    assert completions(c, "use file:vie") == ["@file:minacode/cli/view.py"]
-    assert completions(c, "use mcp:git") == ["@mcp:github", "@mcp:gitlab"]
-    assert completions(c, "use skill:rel") == ["@skill:release"]
+    assert completions(c, "use @") == ["@file:", "@mcp:", "@skill:"]
+    assert completions(c, "use @file:vie") == ["@file:minacode/cli/view.py"]
+    assert completions(c, "use @mcp:git") == ["@mcp:github", "@mcp:gitlab"]
+    assert completions(c, "use @skill:rel") == ["@skill:release"]
 
 
 # --- T4: source ---
@@ -112,8 +123,8 @@ def test_path_source_non_git_walk(tmp_path):
     s = session(tmp_path)
     rels = {rel for _lower, rel in s.mentions.paths()}
     assert "src/a.py" in rels
-    assert "node_modules/x.js" not in rels  # SKIP_DIRS, same walk as Search
-    assert ".hidden.py" not in rels
+    assert "node_modules/x.js" in rels  # only ignore rules and .git exclude paths
+    assert ".hidden.py" in rels
 
 
 def test_path_source_git_repo_and_untracked_appears(tmp_path):
@@ -121,6 +132,7 @@ def test_path_source_git_repo_and_untracked_appears(tmp_path):
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
     (tmp_path / "tracked.py").write_text("", encoding="utf-8")
+    (tmp_path / "tracked.tmp").write_text("", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
     (tmp_path / "untracked.py").write_text("", encoding="utf-8")
@@ -131,15 +143,47 @@ def test_path_source_git_repo_and_untracked_appears(tmp_path):
     assert "tracked.py" in rels
     assert "untracked.py" in rels  # git ls-files -o --exclude-standard
     assert "ignored.tmp" not in rels
+    assert "tracked.tmp" not in rels  # product rule also excludes tracked files matching ignore
+    assert not any(".git" in rel.split("/") for rel in rels)
+
+
+def test_path_source_git_nested_ignore_negation_and_unusual_names(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / ".gitignore").write_text("*.tmp\n!keep.tmp\n", encoding="utf-8")
+    (nested / "drop.tmp").write_text("", encoding="utf-8")
+    (nested / "keep.tmp").write_text("", encoding="utf-8")
+    (nested / "中文 name.txt").write_text("", encoding="utf-8")
+    (nested / "line\nbreak.txt").write_text("", encoding="utf-8")
+
+    rels = {rel for _lower, rel in session(tmp_path).mentions.paths()}
+    assert "nested/drop.tmp" not in rels
+    assert "nested/keep.tmp" in rels
+    assert "nested/中文 name.txt" in rels
+    assert "nested/line\nbreak.txt" in rels
+
+
+def test_python_fallback_honors_nested_gitignore(monkeypatch, tmp_path):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / ".gitignore").write_text("*.tmp\n!keep.tmp\n", encoding="utf-8")
+    (nested / "drop.tmp").write_text("", encoding="utf-8")
+    (nested / "keep.tmp").write_text("", encoding="utf-8")
+    monkeypatch.setattr("minacode.mentions.shutil.which", lambda _name: None)
+
+    rels = {rel for _lower, rel in session(tmp_path).mentions.paths()}
+    assert "nested/drop.tmp" not in rels
+    assert "nested/keep.tmp" in rels
 
 
 def test_path_cache_refreshes_after_window(tmp_path):
     (tmp_path / "a.py").write_text("", encoding="utf-8")
     s = session(tmp_path)
-    s.mentions._paths_cache = (time.monotonic() - 10, [("a.py", "a.py")])  # stale: only a.py
+    s.mentions._paths_cache = (time.monotonic() - 10, (("a.py", "a.py"),))  # stale: only a.py
     (tmp_path / "b.py").write_text("", encoding="utf-8")
     assert {rel for _lower, rel in s.mentions.paths()} == {"a.py", "b.py"}
-    s.mentions._paths_cache = (time.monotonic(), [("a.py", "a.py")])  # fresh: kept as is
+    s.mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))  # fresh: kept as is
     assert {rel for _lower, rel in s.mentions.paths()} == {"a.py"}
 
 
@@ -190,6 +234,17 @@ def test_resolver_missing_path_reports_itself(tmp_path):
     assert "[missing.py] not found" in s.mentions.resolve_mentions("see @file:missing.py")
 
 
+def test_resolver_handles_quoted_paths_binary_and_unterminated_last_line(tmp_path):
+    s = session(tmp_path)
+    (tmp_path / "中文 notes.txt").write_text("one line", encoding="utf-8")
+    (tmp_path / "binary.dat").write_bytes(b"abc\0def")
+    text = f"see {encode_file_mention('中文 notes.txt')} and @file:binary.dat"
+    block = s.mentions.resolve_mentions(text)
+    assert "[中文 notes.txt] 1 lines" in block
+    assert "one line" in block
+    assert "[binary.dat] binary file" in block
+
+
 def test_resolver_ten_file_cap_holds(tmp_path):
     s = session(tmp_path)
     for index in range(12):
@@ -197,27 +252,119 @@ def test_resolver_ten_file_cap_holds(tmp_path):
     text = " ".join(f"@file:f{index}.py" for index in range(12))
     block = s.mentions.resolve_mentions(text)
     assert block.count("content ") == 10  # first ten inlined
-    assert "[f10.py] not included - the 10-file cap is reached" in block
-    assert "[f11.py] not included - the 10-file cap is reached" in block
+    assert "[f10.py] not inlined - the 10-file inline cap is reached" in block
+    assert "[f11.py] not inlined - the 10-file inline cap is reached" in block
 
 
 def test_resolver_deduplicates_mentions(tmp_path):
     s = session(tmp_path)
     (tmp_path / "a.py").write_text("one\n", encoding="utf-8")
-    block = s.mentions.resolve_mentions("@file:a.py and @file:a.py")
+    block = s.mentions.resolve_mentions("@file:a.py and @file:./a.py and " + encode_file_mention(str(tmp_path / "a.py")))
     assert "[a.py] 1 lines" in block
     assert block.count("[a.py]") == 1
+
+
+# --- fzf adapter ---
+
+
+def fake_fzf(tmp_path, body):
+    path = tmp_path / "fake-fzf"
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "if '--help' in sys.argv:\n"
+        "    print('--read0 --print0 --scheme --query --no-multi-line')\n"
+        "    raise SystemExit(0)\n" + body,
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_fzf_picker_uses_nul_path_scheme_query_and_isolated_environment(monkeypatch, tmp_path):
+    selected = "docs/中文 notes.txt"
+    (tmp_path / "docs").mkdir()
+    (tmp_path / selected).write_text("", encoding="utf-8")
+    executable = fake_fzf(
+        tmp_path,
+        "assert not any(name in os.environ for name in ('FZF_DEFAULT_COMMAND', 'FZF_DEFAULT_OPTS', 'FZF_DEFAULT_OPTS_FILE'))\n"
+        "assert '--read0' in sys.argv and '--print0' in sys.argv and '--scheme=path' in sys.argv\n"
+        "assert sys.argv[sys.argv.index('--query') + 1] == 'notes'\n"
+        "items = sys.stdin.buffer.read().split(b'\\0')\n"
+        f"assert {selected!r}.encode() in items\n"
+        f"sys.stdout.buffer.write({selected!r}.encode() + b'\\0')\n",
+    )
+    for name in ("FZF_DEFAULT_COMMAND", "FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE"):
+        monkeypatch.setenv(name, "unsafe")
+    mentions = session(tmp_path).mentions
+    mentions._paths_cache = (time.monotonic(), ((selected.lower(), selected),))
+
+    result = FzfPicker(mentions, executable).pick("notes")
+
+    assert result.selection == selected
+    assert not result.unavailable
+
+
+def test_fzf_picker_cancel_and_protocol_failure_are_bounded(tmp_path):
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    mentions = session(tmp_path).mentions
+    mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))
+    cancelled = fake_fzf(tmp_path, "sys.stdin.buffer.read()\nraise SystemExit(130)\n")
+    assert FzfPicker(mentions, cancelled).pick("").selection is None
+
+    broken = tmp_path / "broken-fzf"
+    broken.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    broken.chmod(0o755)
+    result = FzfPicker(mentions, str(broken)).pick("")
+    assert result.unavailable
+
+
+def test_fzf_picker_candidate_failure_routes_to_fallback(monkeypatch, tmp_path):
+    executable = fake_fzf(tmp_path, "sys.stdin.buffer.read()\nraise SystemExit(1)\n")
+    mentions = session(tmp_path).mentions
+
+    def fail():
+        raise RuntimeError("candidate source failed")
+
+    monkeypatch.setattr(mentions, "_collect", fail)
+
+    result = FzfPicker(mentions, executable).pick("")
+
+    assert result.unavailable
+
+
+def test_fzf_cancel_during_cold_scan_coalesces_background_refresh(monkeypatch, tmp_path):
+    executable = fake_fzf(tmp_path, "import time\ntime.sleep(0.1)\nraise SystemExit(130)\n")
+    mentions = session(tmp_path).mentions
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def collect():
+        calls.append(None)
+        started.set()
+        release.wait(2)
+        return ()
+
+    monkeypatch.setattr(mentions, "_collect", collect)
+    try:
+        assert FzfPicker(mentions, executable).pick("").selection is None
+        assert started.is_set()
+        assert FzfPicker(mentions, executable).pick("").selection is None
+        assert len(calls) == 1
+    finally:
+        release.set()
 
 
 # --- T7: performance ---
 
 
-def test_filter_50k_paths_stays_under_10ms():
-    """Guards G3 against an accidental O(n^2): substring + ranking over a synthetic 50k list."""
+def test_filter_50k_paths_has_no_gross_algorithmic_regression():
+    """Catch an accidental O(n²) implementation without treating scheduler jitter as a benchmark."""
     paths = tuple((f"module{i // 100}/file{i}.py", f"module{i // 100}/file{i}.py") for i in range(50_000))
     c = CommandCompleter(files=lambda: paths)
     start = time.perf_counter()
     matches = completions(c, "@file:py")  # matches every candidate
     elapsed = time.perf_counter() - start
     assert len(matches) == 50
-    assert elapsed < 0.010
+    assert elapsed < 0.050

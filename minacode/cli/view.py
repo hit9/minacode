@@ -8,7 +8,6 @@ its `loop` reference; it renders, it does not own behavior.
 from __future__ import annotations
 
 import heapq
-import re
 import shutil
 import time
 from collections.abc import Callable, Iterator
@@ -27,6 +26,7 @@ from minacode.config import (
 )
 from minacode.hints import Context as HintContext
 from minacode.hints import HintPicker
+from minacode.mentions import MentionSpan, active_mention, encode_file_mention
 from minacode.render import Theme, UiPrinter
 from minacode.session import QueuedInput
 from minacode.tui import TuiApp
@@ -37,13 +37,6 @@ if TYPE_CHECKING:
 
 class CommandCompleter(Completer):
     """Prompt-toolkit completer for slash commands, their arguments, and @/$ mentions."""
-
-    # A mention is `@`, `$`, or `@kind:` at the cursor. The bare `kind:` form is matched too:
-    # accepting a kind completion replaces the "@" with "file:"/"mcp:"/"skill:", and the menu
-    # must stay open on that kind's source while the value is typed.
-    MENTION_RE: ClassVar[re.Pattern] = re.compile(r"(?:^|(?<=[^A-Za-z0-9_]))@([A-Za-z0-9_./:-]*)$")
-    KIND_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"(?:^|(?<=[^A-Za-z0-9_]))((?:file|mcp|skill):[A-Za-z0-9_./:-]*)$")
-    SKILL_MENTION_RE: ClassVar[re.Pattern] = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]*)$")
 
     # The three kinds offered on a bare "@", each with its one-line meta (SPEC 4.2).
     KINDS: ClassVar[tuple[tuple[str, str], ...]] = (
@@ -63,6 +56,7 @@ class CommandCompleter(Completer):
         mcp_tools: Callable[[str], tuple[str, ...]] = lambda _server: (),
         skills: Callable[[], tuple[str, ...]] = tuple,
         files: Callable[[], tuple[tuple[str, str], ...]] = tuple,
+        file_matches: Callable[[str], tuple[str, ...]] | None = None,
     ):
         self.providers = providers
         self.models = models
@@ -73,6 +67,7 @@ class CommandCompleter(Completer):
         self.skills = skills
         # (lowercase, original) workspace-relative paths from the session's cached path list.
         self.files = files
+        self.file_matches = file_matches
 
     def get_completions(self, document, complete_event):
         del complete_event
@@ -133,21 +128,9 @@ class CommandCompleter(Completer):
                 yield from self.matches(self.mcp_connected_servers(), value)
                 return
 
-        at_match = CommandCompleter.MENTION_RE.search(text)
-        if at_match:
-            # start_position replaces from the "@", so accepting a value swaps in the canonical
-            # mention no matter how much of it the user already typed (SPEC 4.4).
-            yield from self._mention_completions(at_match.group(1), -len(at_match.group(0)))
-            return
-
-        kind_match = CommandCompleter.KIND_MENTION_RE.search(text)
-        if kind_match:
-            yield from self._mention_completions(kind_match.group(1), -len(kind_match.group(0)))
-            return
-
-        skill_match = CommandCompleter.SKILL_MENTION_RE.search(text)
-        if skill_match:
-            yield from self._skill_completions(skill_match.group(1), -len(skill_match.group(0)))
+        span = active_mention(text)
+        if span is not None:
+            yield from self._mention_completions(span, span.start - len(text))
             return
 
         if text.startswith("/") and " " not in text:
@@ -161,31 +144,31 @@ class CommandCompleter(Completer):
     def matches(values, prefix: str):
         return (Completion(value, start_position=-len(prefix)) for value in values if value.startswith(prefix))
 
-    def _mention_completions(self, raw: str, start: int) -> Iterator[Completion]:
-        """Complete after an "@" or a bare kind prefix: dispatch on the kind, merge otherwise."""
-        if raw.startswith("file:"):
-            yield from self._file_completions(raw[len("file:") :], start)
-        elif raw.startswith("mcp:"):
-            yield from self._mcp_completions(raw[len("mcp:") :], start)
-        elif raw.startswith("skill:"):
-            yield from self._skill_completions(raw[len("skill:") :], start)
+    def _mention_completions(self, span: MentionSpan, start: int) -> Iterator[Completion]:
+        """Complete one scanner-owned span and always insert canonical namespace forms."""
+        if span.kind == "file":
+            yield from self._file_completions(span.payload, start)
+        elif span.kind == "mcp":
+            yield from self._mcp_completions(span.payload, start)
+        elif span.kind == "skill":
+            yield from self._skill_completions(span.payload, start)
         else:
-            yield from self._merged_completions(raw, start)
+            yield from self._merged_completions(span.payload, start)
 
     def _merged_completions(self, raw: str, start: int) -> Iterator[Completion]:
         """The bare "@" menu: kinds while they prefix-match, then all three sources (SPEC 4.2).
 
-        A query with "/" or "." ranks files first, a bare word ranks servers and skills first
-        (SPEC R2); the legacy `server.` form expands to that server's tools, as before.
+        Repository files deliberately stay out of this menu: selecting @file: opens the dedicated
+        picker without scanning the repository merely because the user typed "@".
         """
         if not raw:
             for kind, meta in self.KINDS:
-                yield Completion(kind, start_position=start, display_meta=meta)
+                yield Completion("@" + kind, start_position=start, display_meta=meta)
             return
         lower = raw.lower()
         for kind, meta in self.KINDS:
             if kind.startswith(lower):
-                yield Completion(kind, start_position=start, display_meta=meta)
+                yield Completion("@" + kind, start_position=start, display_meta=meta)
 
         server_part, dot, tool_part = raw.partition(".")
         if dot:
@@ -201,34 +184,34 @@ class CommandCompleter(Completer):
         else:
             mcp_items = [Completion(f"@mcp:{name}", start_position=start, display_meta="mcp") for name in self._matching_names(self.mcp_servers(), raw)]
         skill_items = [Completion(f"@skill:{name}", start_position=start, display_meta="skill") for name in self._matching_names(self.skills(), raw)]
-        file_items = [Completion(f"@file:{path}", start_position=start, display_meta="file") for path in self._matching_files(raw)]
-        if "/" in raw or "." in raw:
-            yield from [*file_items, *mcp_items, *skill_items][: self.MAX_ROWS]
-        else:
-            yield from [*mcp_items, *skill_items, *file_items][: self.MAX_ROWS]
+        yield from [*mcp_items, *skill_items][: self.MAX_ROWS]
 
     def _file_completions(self, query: str, start: int) -> Iterator[Completion]:
         for path in self._matching_files(query):
-            yield Completion(f"@file:{path}", start_position=start)
+            yield Completion(encode_file_mention(path), start_position=start)
 
     def _matching_files(self, query: str) -> list[str]:
         """Case-insensitive substring over the whole workspace-relative path (SPEC M3), ranked
         by prefix of basename, then substring of basename, then substring of path (R1); ties by
         shorter path, then alphabetical (R3). Deterministic - no recency, no MRU."""
+        if self.file_matches is not None:
+            return list(self.file_matches(query))
         q = query.lower()
-        ranked: list[tuple[int, int, str, str]] = []  # (score, path length, lowercase, original)
-        for lower, path in self.files():
-            if q not in lower:
-                continue
-            base = lower.rsplit("/", 1)[-1]
-            if base.startswith(q):
-                score = 0
-            elif q in base:
-                score = 1
-            else:
-                score = 2
-            ranked.append((score, len(lower), lower, path))
-        return [path for _score, _length, _lower, path in heapq.nsmallest(self.MAX_ROWS, ranked)]
+
+        def ranked():
+            for lower, path in self.files():
+                if q not in lower:
+                    continue
+                base = lower.rsplit("/", 1)[-1]
+                if base.startswith(q):
+                    score = 0
+                elif q in base:
+                    score = 1
+                else:
+                    score = 2
+                yield score, len(lower), lower, path
+
+        return [path for _score, _length, _lower, path in heapq.nsmallest(self.MAX_ROWS, ranked())]
 
     def _mcp_completions(self, query: str, start: int) -> Iterator[Completion]:
         """After "@mcp:": servers, then "server." expands to that server's tools."""
@@ -257,7 +240,7 @@ class CommandCompleter(Completer):
                 prefix.append(name)
             elif q in low:
                 substring.append(name)
-        return [*sorted(prefix), *sorted(substring)]
+        return [*sorted(prefix), *sorted(substring)][: CommandCompleter.MAX_ROWS]
 
     def _known_server(self, name: str) -> str | None:
         for candidate in self.mcp_servers():

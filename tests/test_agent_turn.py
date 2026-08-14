@@ -720,6 +720,31 @@ def test_agent_injects_pending_user_input_once(tmp_path):
     assert s.pending_user_inputs == []
 
 
+def test_agent_expands_file_mentions_in_queued_input_before_sending(tmp_path):
+    (tmp_path / "queued.txt").write_text("queued context\n", encoding="utf-8")
+    s = session(tmp_path)
+    queue(s, "inspect @file:queued.txt")
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            del tools
+            self.messages.append(messages)
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+    assert agent.run("initial request") == "done"
+
+    sent = agent.model.messages[0]
+    assert any(message.get("content") == LIVE_FOLLOWUP_PREFIX + "inspect @file:queued.txt" for message in sent)
+    assert any("--- FILE MENTIONS ---" in str(message.get("content") or "") and "queued context" in str(message.get("content") or "") for message in sent)
+    assert sum("--- FILE MENTIONS ---" in str(message.get("content") or "") for message in s.messages) == 1
+    assert not any("--- FILE MENTIONS ---" in str(message.get("content") or "") for message in s.transcript_messages)
+
+
 def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
     """A live follow-up may not change the shape of a request. The tool list is part of the cached
     prefix, so a tools-only response is accepted as-is: the batch runs, the turn continues, and no

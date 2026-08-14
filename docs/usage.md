@@ -98,8 +98,8 @@ session, or configure runtime behavior on the fly. See the
 
 ## Mentions
 
-Three inline references. Typing a mention symbol opens its list right away, and it narrows
-as you keep typing:
+Three inline references. Typing `@` or `$` opens a bounded namespace, MCP, and skill list that
+narrows as you keep typing:
 
 - `@file:path` — point the agent at a file in the project. Small in-workspace files are
   inlined into the turn as a FILE MENTIONS block; large files and anything outside the
@@ -111,8 +111,17 @@ as you keep typing:
 - `@skill:name` (`$name` also works) — inject a [skill](skills.md)'s full instructions into
   the current turn.
 
-Typing `@` alone lists the three kinds; the menu merges files, MCP servers, and skills as you
-type, and completing always inserts the namespaced form.
+Typing `@` alone lists the three kinds and completing inserts the namespaced form. Repository
+files are deliberately not merged into that menu. Put the cursor in `@file:<query>` and press
+`Tab`: when `fzf` is installed, minacode opens one real fzf session with the query prefilled. If
+fzf is unavailable or incompatible, a bounded case-insensitive substring menu is computed in the
+background instead, so scanning a large repository never blocks typing.
+
+File candidates include hidden, tracked, and untracked files, but exclude every `.git` directory
+and paths ignored by Git. In a non-Git directory, the fallback honors nested `.gitignore` files
+and negation rules. Selecting a path with spaces, Unicode, or ambiguous punctuation inserts a
+quoted, round-trippable form such as `@file:"docs/design notes/中文.txt"`. File references are also
+expanded in follow-ups queued while the agent is working.
 
 ## Keys and input editing
 
