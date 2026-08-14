@@ -103,12 +103,14 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     Pressing `Esc` declines the question; typing instead of choosing answers in free text.
 * - **`NextHints`**
   - Offers 2–3 short next-step prompts the model suggests after its answer. They appear as
-    selectable chips at the idle prompt; `Tab` cycles focus, `Enter` submits, and `/hints`
-    toggles them off. An all-`NextHints` batch ends the turn in a single model call.
+    selectable chips at the idle prompt; `Tab` cycles focus and `/hints` toggles them off. An
+    all-`NextHints` batch ends the turn in a single model call.
 
     <div class="term-shot" role="img" aria-label="A terminal at the idle prompt after a NextHints call: the answer text above, then an empty prompt with a caret, a gap line, and one horizontal row of three cyan suggestion chips separated by grey bars with the middle chip highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
 
-    `Tab` moves the highlight; `Enter` submits the focused chip as your next message.
+    `Tab` moves the highlight. `Enter` fills the focused chip into the input, where you can edit
+    it first; a second `Enter` sends it. The prompt says so while a chip is focused:
+    `Tab cycles suggestions · Enter fills the input, second Enter sends`.
 * - **`Skill`**
   - Loads an installed skill's full instructions when needed. It appears only when skills are
     installed; see [Skills](skills.md).

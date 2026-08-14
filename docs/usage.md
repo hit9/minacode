@@ -107,7 +107,8 @@ Two inline references, both Tab-completed as you type:
 - `Ctrl-C` — clear the current input; with the input empty while running, interrupt the turn (retracting it if the agent has not answered yet)
 - `Ctrl-U` — clear the whole input line, in the idle prompt and the follow-up editor alike
 - `Ctrl-D` — exit from an empty prompt
-- `Ctrl-R` — reverse-search your history
+- `Ctrl-R` — reverse-search your history; `Enter` puts the match in the input to edit, a second
+  `Enter` sends it
 - `Ctrl-O` — browse the ten most recent completed Bash output previews; press it again to close
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to
   vim), as a temporary Markdown file
