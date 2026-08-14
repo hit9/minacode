@@ -588,8 +588,14 @@ class ModelClient:
 
     def _record_usage(self, usage: Any) -> None:
         """Add a completed request to session usage, keeping the budget it was prepared against so the
-        status fill uses the request-time denominator instead of today's configuration."""
-        self.session.usage.add(usage, self.session.request_token_budget())
+        status fill uses the request-time denominator instead of today's configuration.
+
+        A summary request goes to its own counter, told apart by the label compact() publishes for
+        the length of that request: it can be billed to a different account at a different price,
+        and it is a fresh prefix that never hits the conversation's cache, so blending the two
+        leaves neither number meaning anything."""
+        counter = self.session.compaction_usage if self.session.state.compaction_entry else self.session.usage
+        counter.add(usage, self.session.request_token_budget())
 
     def chat_request(
         self,

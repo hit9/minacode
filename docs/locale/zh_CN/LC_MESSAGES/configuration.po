@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-13 23:51-0700\n"
+"POT-Creation-Date: 2026-08-14 00:05-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -737,16 +737,21 @@ msgstr ""
 msgid ""
 "`/compact log` records which model produced each stored segment, "
 "`/config` shows the effective `compaction.*` values, and the status bar "
-"names the entry while a summary is in flight."
+"names the entry while a summary is in flight. Summary tokens are counted "
+"apart from the conversation: `/status` reports them on their own "
+"`compaction usage` row, so each row can be read against one model's "
+"price."
 msgstr ""
 "`/compact log` 记录每个已存段由哪个模型生成，`/config` 显示生效的 `compaction.*` 值，"
-"摘要进行中时状态栏会显示正在服务它的条目。"
+"摘要进行中时状态栏会显示正在服务它的条目。摘要消耗的 token 与对话分开统计："
+"`/status` 会单独用一行 `compaction usage` 报告，这样每一行都可以按各自模型的价格来"
+"读。"
 
-#: ../../configuration.md:190
+#: ../../configuration.md:192
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:197
+#: ../../configuration.md:199
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -757,7 +762,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:201
+#: ../../configuration.md:203
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -767,7 +772,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:205
+#: ../../configuration.md:207
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "

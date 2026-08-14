@@ -384,6 +384,10 @@ class Session:
     jobs: dict[str, BackgroundJob] = field(default_factory=dict)
     job_counter: int = 0
     usage: ModelUsage = field(default_factory=ModelUsage)
+    # Summary requests are counted apart from the conversation: they can run on another provider
+    # entry entirely, and one blended total cannot be multiplied by any single price. A worker's
+    # spending is already separate by virtue of its own Session; this gives compaction the same.
+    compaction_usage: ModelUsage = field(default_factory=ModelUsage)
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
     skills: SkillLibrary | None = None

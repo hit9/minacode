@@ -185,7 +185,9 @@ model = "claude-..."
 ```
 
 `/compact log` records which model produced each stored segment, `/config` shows the effective
-`compaction.*` values, and the status bar names the entry while a summary is in flight.
+`compaction.*` values, and the status bar names the entry while a summary is in flight. Summary
+tokens are counted apart from the conversation: `/status` reports them on their own
+`compaction usage` row, so each row can be read against one model's price.
 
 ## Data location
 

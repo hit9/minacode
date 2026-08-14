@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import code_symbol_index as csi
 import pytest
+from model_harness import _MockClientFactory
 
 import minacode.__main__ as cli
 import minacode.update as update_module
@@ -35,7 +36,7 @@ from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner
-from minacode.session import Session, SessionSnapshotStore
+from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore
 from minacode.tools import TOOL_REGISTRY, CodeIndex, Tool
 from minacode.update import UpdateChecker
 
@@ -1671,3 +1672,62 @@ def test_provider_entry_reports_its_own_missing_fields(tmp_path):
 
     assert config.providers["p"].missing_fields() == ["url", "model"]
     assert s.missing_config() == ["provider.url", "provider.model"]
+
+
+def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkeypatch):
+    """A summary can be billed to another account at another price, and is a fresh prefix that
+    never hits the conversation's cache. One blended total can be multiplied by neither price."""
+    config = Config.from_dict(
+        {
+            "provider": {
+                "active": "main",
+                "main": {"url": "http://test", "key": "k", "model": "big"},
+                "cheap": {"url": "http://test", "key": "k", "model": "small"},
+            },
+            "compaction": {"provider": "cheap", "model": "small-flash"},
+        }
+    )
+    s = Session(cwd=str(tmp_path), config=config)
+    s.config.data_dir = str(tmp_path / "data")
+    s.usage.add({"prompt_tokens": 120_000, "completion_tokens": 900, "total_tokens": 120_900}, 200_000)
+    model = ModelClient(s)
+    monkeypatch.setattr(
+        model,
+        "client",
+        _MockClientFactory(
+            [
+                (
+                    200,
+                    {
+                        "id": "c",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "small-flash",
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"summary":"s"}'}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 95_000, "completion_tokens": 700, "total_tokens": 95_700},
+                    },
+                )
+            ]
+        ),
+    )
+
+    model.compact("long context")
+
+    assert (s.usage.calls, s.usage.total_tokens) == (1, 120_900)  # the conversation's row is untouched
+    assert (s.compaction_usage.calls, s.compaction_usage.total_tokens) == (1, 95_700)
+
+
+def test_compaction_usage_survives_a_resume(tmp_path):
+    config = Config.from_dict({"provider": {"active": "p", "p": {"url": "http://test", "key": "k", "model": "m"}}})
+    config.data_dir = str(tmp_path / "data")
+    s = Session(cwd=str(tmp_path), config=config)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.compaction_usage.add({"prompt_tokens": 95_000, "completion_tokens": 700, "total_tokens": 95_700}, 200_000)
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=config, cwd=str(tmp_path))
+
+    assert restored.compaction_usage.total_tokens == 95_700
+    assert restored.compaction_usage.calls == 1
+    # A snapshot written before the field existed decodes to zeros, not an error.
+    assert SessionSnapshotCodec.model_usage({}).total_tokens == 0

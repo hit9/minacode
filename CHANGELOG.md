@@ -25,7 +25,10 @@
   entry serving it, `[compaction] entry/model effort`, the way it already names an in-flight
   worker; a compaction that resolves to the row's own entry leaves the row alone. An incomplete
   compaction entry is refused by name before the request, instead of reaching the provider SDK and
-  coming back as a credentials error that names nothing.
+  coming back as a credentials error that names nothing. Summary tokens are counted apart from the
+  conversation and reported on their own `/status` row: they can be billed to another account at
+  another price, and a summary is a fresh prefix that never hits the conversation's cache, so one
+  blended total could be read against neither model.
 - Each provider entry can nest its own `[provider.NAME.compaction]` table with the same
   `model`/`reasoning`/`api` keys, so a provider can route summaries to a cheap model per entry
   instead of one global choice. Per field the most specific value wins: the entry's nested table,

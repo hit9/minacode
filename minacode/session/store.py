@@ -302,6 +302,7 @@ class SessionSnapshotCodec:
             "active_transcript_messages": cls.active_transcript_messages(session), "transcript_sync": TRANSCRIPT_SYNC_VERSION,
             "pending_user_inputs": [item.to_json() for item in session.pending_user_inputs],
             "state": cls.state(session.state), "usage": cls.usage(session.usage), "tool_counter": session.tool_counter,
+            "compaction_usage": cls.usage(session.compaction_usage),
             "tool_records": [cls.tool_record(record) for record in session.tool_records], "tool_errors": [cls.tool_error(error) for error in session.tool_errors],
             "turn_diffs": [cls.turn_diff(diff, blobs) for diff in session.turn_diffs],
             "transcript_turn_diffs": [cls.transcript_turn_diff(diff) for diff in session.transcript_turn_diffs],
@@ -314,6 +315,7 @@ class SessionSnapshotCodec:
         delta: Json = {
             "tool_counter": session.tool_counter,
             "usage": cls.usage(session.usage),
+            "compaction_usage": cls.usage(session.compaction_usage),
             "state": cls.state(session.state),
             "created_at": session.created_at,
             "context_layout_version": session.context_layout_version,
@@ -424,6 +426,8 @@ class SessionSnapshotCodec:
             data["tool_counter"] = delta["tool_counter"]
         if "usage" in delta:
             data["usage"] = delta["usage"]
+        if "compaction_usage" in delta:
+            data["compaction_usage"] = delta["compaction_usage"]
         if "state" in delta:
             data["state"] = delta["state"]
         if "pending_user_inputs" in delta:
@@ -838,6 +842,7 @@ class SessionSnapshotStore:
             transcript_messages=transcript_messages,
             state=AgentState(**data.get("state", {})),
             usage=SessionSnapshotCodec.model_usage(data.get("usage", {})),
+            compaction_usage=SessionSnapshotCodec.model_usage(data.get("compaction_usage", {})),
             tool_counter=data.get("tool_counter", 0),
             tool_results={record.key: record.output for record in tool_records},
             tool_records=tool_records,

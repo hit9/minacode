@@ -257,6 +257,18 @@ def status(loop: CommandLoop, args: str) -> str:
         rows.append(("activity", "; ".join(f"{name} `{value}`" for name, value in visible_activity)))
     if usage.calls:
         rows.append(("usage", f"calls `{usage.calls}`; total `{Text.abbreviate_count(usage.total_tokens)}`"))
+    # Summaries are counted apart from the conversation, so each row can be multiplied by one
+    # price: the entry they run on may be another account entirely. The row names the model for
+    # the same reason, and stays hidden until a summary has actually run.
+    compaction_usage = loop.session.compaction_usage
+    if compaction_usage.calls:
+        compaction_model = compaction_provider_config(loop.session.config).model or "(no model)"
+        rows.append(
+            (
+                "compaction usage",
+                f"calls `{compaction_usage.calls}`; total `{Text.abbreviate_count(compaction_usage.total_tokens)}`; `{compaction_model}`",
+            )
+        )
 
     worker = loop.session.worker
     if worker is None:
