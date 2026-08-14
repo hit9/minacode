@@ -209,6 +209,7 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-sel { color: #56b6c2; }
 .fs-tab-on { color: #282c34; background: #56b6c2; }
 .fs-tab-off { color: #56b6c2; }
+.fs-output { color: #5c6370; }  /* tool output: LogRole.OUTPUT renders bright black, like .fs-dim */
 .fs-goal { color: #c678dd; }
 .fs-doing { color: #e5c07b; }
 .fs-worker { color: #fbbf24; } /* worker identity color, mirroring render.py Theme.DARK status.worker */

@@ -69,6 +69,25 @@ confirmation (unless you pass `--yolo`). You can keep typing while it works; see
 
 Exit with `/exit`, `/quit`, or `Ctrl-D`.
 
+## Your first turn
+
+A turn starts with your request and ends with an answer. In between the agent reads what it
+needs, asks before it changes anything, and shows you what it did.
+
+<div class="term-shot" role="img" aria-label="One complete turn: the user's request, two read-only tool lines, a proposed edit shown as a diff with an Approve or Refuse action row, the applied edit and a test run storing its output, then the agent's answer and the idle prompt."><span class="fs-user">• fix the tokenizer crash on empty input</span><span class="fs-divider">──── working (4s) ──────────────────────────</span><span class="fs-tool">  Read minacode/parser.py</span><span class="fs-tool">  Search def tokenize minacode/</span><span> </span><span class="fs-tool">  Edit minacode/parser.py</span><span class="fs-del">    - 12 |     first = text[0]</span><span class="fs-add">    + 12 |     if not text:</span><span class="fs-add">    + 13 |         return []</span><span><span class="fs-i fs-sel"> Approve </span><span class="fs-dim">   Refuse     Tab to move</span></span><span> </span><span class="fs-tool">  Bash uv run pytest -q</span><span class="fs-dim">    └ stored tr.3</span><span class="fs-output">      41 passed in 2.10s</span><span> </span><span>Empty input returned the first character before the length check. Guarded it and the suite passes.</span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span></div>
+
+1. **You ask.** Plain language; no special syntax. `Enter` sends.
+2. **It works.** Read-only steps — reading, searching, listing — happen without asking. The
+   divider counts the elapsed time, and the status bar below shows the model and context fill.
+3. **It asks before changing anything.** An edit arrives as a diff with an action row: `Enter`
+   approves, `Tab` moves to `Refuse`, and typing anything writes a reason the agent will read.
+   Commands work the same way.
+4. **It reports.** The answer lands in your scrollback, and the prompt returns.
+
+From here: `/diff` reviews everything changed so far, `/status` shows where the context stands,
+and `/help` lists every command. Your work is saved as you go — close the terminal and
+`minacode -c` picks the session back up.
+
 ## Command-line flags
 
 | Flag | Effect |
