@@ -212,6 +212,11 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-output { color: #5c6370; }  /* tool output: LogRole.OUTPUT renders bright black, like .fs-dim */
 /* Diff rows, mirroring Theme.DARK diff.added/removed in minacode/render.py: the row carries a
    background and the text keeps the default foreground; only the +/- marker is colored. */
+/* Working divider, mirroring cli/view.py: the label is ansimagenta bold, the rule is
+   divider.rule, and the comet head fades from divider.glow into it. */
+.fs-working { color: #c678dd; font-weight: 600; }
+.fs-rule { color: #4b5563; }
+.fs-glow { color: #67e8f9; }
 .fs-diff-add { background: #003b00; }
 .fs-diff-del { background: #520000; }
 .fs-goal { color: #c678dd; }
