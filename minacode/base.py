@@ -174,6 +174,16 @@ class Text:
         return "just now"
 
     @staticmethod
+    def abbreviate_count(value: int) -> str:
+        """A count in the coarsest unit that still says something: 1.0M, 1.5K, or the bare number.
+        Shared so `/status`, the status bar, and a worker's usage line all abbreviate alike."""
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K"
+        return str(value)
+
+    @staticmethod
     def clip_width(text: str, width: int) -> str:
         width = max(0, width)
         if get_cwidth(text) <= width:

@@ -18,7 +18,8 @@ from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
 
 from minacode.base import Text
-from minacode.cli.commands import SET_KEYS, SET_VALUES, WORKER_SUBCOMMANDS
+from minacode.cli.commands import SET_KEYS, SET_VALUES
+from minacode.cli.worker import WORKER_SUBCOMMANDS
 from minacode.config import (
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,

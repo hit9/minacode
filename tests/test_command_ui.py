@@ -18,9 +18,9 @@ from minacode.base import (
     ModelError,
 )
 from minacode.cli import COMMANDS, CommandCompleter, CommandLoop
+from minacode.cli import worker as worker_mod
 from minacode.cli.commands import (
     SET_KEYS,
-    WorkerFlow,
     api,
     config,
     language_command,
@@ -31,9 +31,9 @@ from minacode.cli.commands import (
     set_model,
     set_value,
     strict,
-    worker_command,
 )
 from minacode.cli.modals import bash_output_viewer, choice_application, diff_viewer, select_choice
+from minacode.cli.worker import WorkerFlow, worker_command
 from minacode.config import (
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
@@ -768,7 +768,7 @@ def test_worker_api_picker_sets_and_clears_like_the_typed_form(tmp_path, monkeyp
         calls.append((title, choices, kwargs))
         return next(picks)
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", select)
 
     assert worker_command(command_loop, "api") == "Set worker.api = chat"
     assert command_loop.session.config.worker_api == "chat"
@@ -799,7 +799,7 @@ def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
         calls.append((title, choices, kwargs))
         return next(picks)
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", select)
     monkeypatch.setattr(WorkerFlow, "_worker_provider_picker", lambda self: driven.append("provider"))
     monkeypatch.setattr(WorkerFlow, "_worker_model_picker", lambda self: driven.append("model"))
     monkeypatch.setattr(WorkerFlow, "_worker_reason_picker", lambda self: driven.append("effort"))
@@ -816,7 +816,7 @@ def test_run_worker_config_drives_pickers_until_done(tmp_path, monkeypatch):
 
     # Esc (SELECTION_BACK) and a non-interactive select (None) both exit without driving pickers.
     for value in (SELECTION_BACK, None):
-        monkeypatch.setattr(commands_mod, "select_choice", lambda *a, value=value, **k: value)
+        monkeypatch.setattr(worker_mod, "select_choice", lambda *a, value=value, **k: value)
         WorkerFlow(command_loop).run_worker_config()
     assert driven == ["provider", "api"]
 
@@ -836,7 +836,7 @@ def test_worker_provider_picker_sets_and_clears_like_the_typed_form(tmp_path, mo
         calls.append((title, choices, kwargs))
         return next(picks)
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", select)
 
     first = worker_command(command_loop, "provider")
     assert calls[0][0] == "Worker provider"
@@ -872,7 +872,7 @@ def test_worker_model_picker_sets_the_override_without_the_model_chain(tmp_path,
         assert "default" in choices and "m-c" in choices and "m-a" in choices
         return next(picks)
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", select)
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, entry: discovered.append(entry.model) or ("m-remote",))
 
     result = worker_command(command_loop, "model")
@@ -893,7 +893,7 @@ def test_worker_reason_picker_covers_efforts_and_default(tmp_path, monkeypatch):
         assert kwargs["labels"] == {"default": "default - inherit the provider entry's reasoning", "high": "high (current)"}
         return next(picks)
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", select)
     result = worker_command(command_loop, "reason")
     assert command_loop.session.config.worker_reasoning == "low"
     assert result == "Set worker.reasoning = low"
@@ -906,7 +906,7 @@ def test_worker_pickers_return_no_change_on_back(tmp_path, monkeypatch):
     command_loop.session.config.worker_provider = "alt"
     command_loop.session.config.worker_model = "m-x"
     command_loop.session.config.worker_reasoning = "high"
-    monkeypatch.setattr(commands_mod, "select_choice", lambda *_args, **_kwargs: SELECTION_BACK)
+    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: SELECTION_BACK)
     assert worker_command(command_loop, "provider") == "No change"
     assert worker_command(command_loop, "model") == "No change"
     assert worker_command(command_loop, "reason") == "No change"
@@ -921,7 +921,7 @@ def test_worker_model_and_reason_pickers_clear_via_default(tmp_path, monkeypatch
     command_loop.session.config.worker_model = "m-x"
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["default", "default"])
-    monkeypatch.setattr(commands_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
+    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
     assert worker_command(command_loop, "model") == "worker model: (inherit)"
     assert worker_command(command_loop, "reason") == "worker reasoning: (inherit)"
     assert command_loop.session.config.worker_model == ""
@@ -945,7 +945,7 @@ def test_worker_provider_picker_cascades_into_model_and_reasoning(tmp_path, monk
         titles.append(title)
         return next(picks)
 
-    monkeypatch.setattr(commands_mod, "select_choice", select)
+    monkeypatch.setattr(worker_mod, "select_choice", select)
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, entry: discovered.append(entry.model) or ("remote-mini",))
 
     result = worker_command(command_loop, "provider")
@@ -971,7 +971,7 @@ def test_worker_provider_cascade_aborts_at_model_stage_keeping_earlier_stages(tm
     command_loop.session.config.worker_model = "m-x"
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["fast", SELECTION_BACK])
-    monkeypatch.setattr(commands_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
+    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _entry: ())
 
     result = worker_command(command_loop, "provider")
@@ -990,7 +990,7 @@ def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path, 
     command_loop.session.config.providers["fast"] = ProviderConfig(model="fast-model", available_models=("fast-model",))
     command_loop.session.config.worker_reasoning = "high"
     picks = iter(["fast", "fast-model", None])  # None = the picker was dismissed
-    monkeypatch.setattr(commands_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
+    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: next(picks))
     monkeypatch.setattr(commands_mod, "remote_models", lambda _loop, _entry: ())
 
     result = worker_command(command_loop, "provider")
@@ -1005,7 +1005,7 @@ def test_worker_provider_cascade_aborts_at_reason_stage_keeping_model(tmp_path, 
 def test_worker_provider_typed_form_does_not_cascade(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.session.config.providers["alt"] = ProviderConfig(model="m")
-    monkeypatch.setattr(commands_mod, "select_choice", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("the typed form opens no picker")))
+    monkeypatch.setattr(worker_mod, "select_choice", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("the typed form opens no picker")))
 
     result = worker_command(command_loop, "provider alt")
 

@@ -19,7 +19,7 @@ Modules (dependencies point downward only):
 ```
               __main__                     entry, startup ordering
                   |
-    cli/ -- tui.py -- render.py            commands (cli/commands.py, cli/modals.py),
+    cli/ -- tui.py -- render.py            commands (cli/commands.py, cli/modals.py, cli/worker.py),
         |                                    TUI runtime (cli/runtime.py), view (cli/view.py)
     engine.py                              the turn loop: commit or roll back
         |

@@ -48,6 +48,15 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     get_lexer_by_name = get_lexer_for_filename = get_style_by_name = None
 
 
+def progress_bar(value: int, total: int, width: int = 14) -> str:
+    """A fixed-width meter in eighth-block characters, clamped to [0, total]."""
+    ratio = min(1.0, max(0.0, value / total)) if total else 0.0
+    eighths = int(ratio * width * 8 + 0.5)
+    full, partial = divmod(eighths, 8)
+    partials = "▏▎▍▌▋▊▉"
+    return "[" + "█" * full + (partials[partial - 1] if partial else "") + "░" * (width - full - bool(partial)) + "]"
+
+
 def markdown_table(headers: list[str], rows: list[tuple]) -> str:
     def cell(value: object) -> str:
         return Text.clean(str(value)).replace("\n", " ").replace("|", "\\|")

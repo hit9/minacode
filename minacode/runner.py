@@ -21,6 +21,7 @@ from minacode.base import (
     LogEdge,
     LogLine,
     LogRole,
+    Text,
     ToolCall,
     ToolError,
     builtin_tool_label,
@@ -1002,8 +1003,8 @@ class ToolRunner:
         steps, elapsed, files, stopped, tokens = match.groups()
         if tokens is not None:
             in_tokens, out_tokens = tokens.split("/", 1)
-            in_tokens = self.token_count(int(in_tokens))
-            out_tokens = self.token_count(int(out_tokens))
+            in_tokens = Text.abbreviate_count(int(in_tokens))
+            out_tokens = Text.abbreviate_count(int(out_tokens))
         else:
             in_tokens = out_tokens = ""
         return steps, elapsed, files, in_tokens, out_tokens, stopped == "true"
@@ -1020,15 +1021,6 @@ class ToolRunner:
         if stopped:
             parts.append("stopped at max steps")
         return " · ".join(parts)
-
-    @staticmethod
-    def token_count(value: int) -> str:
-        """Human-readable token count, same format as /status: 1.0M, 1.5K, or the bare number."""
-        if value >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M"
-        if value >= 1_000:
-            return f"{value / 1_000:.1f}K"
-        return str(value)
 
     def delegate_answer_preview(self, output: str) -> str:
         """The worker's answer (the text between <worker> and </worker>), bounded like the Bash

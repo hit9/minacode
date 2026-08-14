@@ -23,8 +23,8 @@ Keep this file short. It is an entry point, not a second design document.
 - `minacode/config.py`, `minacode/provider_compat.py`: config-file settings and evidence-backed
   provider compatibility policy.
 - `minacode/cli/`, `minacode/tui.py`, `minacode/render.py`: commands (`cli/commands.py`,
-  `cli/modals.py`), TUI runtime (`cli/runtime.py`), view fragments (`cli/view.py`), interaction,
-  and presentation.
+  `cli/modals.py`, `/worker`'s flow in `cli/worker.py`), TUI runtime (`cli/runtime.py`), view
+  fragments (`cli/view.py`), interaction, and presentation.
 - `tests/`: behavior-oriented tests grouped by subsystem and boundary.
 
 ## Project workflow
