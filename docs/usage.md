@@ -109,7 +109,8 @@ Two inline references, both Tab-completed as you type:
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history
 - `Ctrl-O` — browse the ten most recent completed Bash output previews; press it again to close
-- `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to vim)
+- `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to
+  vim), as a temporary Markdown file
 
 ```{figure} ../snapshots/minacode-working-input-editor.png
 :alt: Editing a follow-up message in an external editor
@@ -121,7 +122,7 @@ Typing a follow-up message in an external editor.
 
 When you open the editor in reply to the agent, its most recent reply is appended below a git-style scissors line, so you can read what you are answering while you compose (the full-screen editor hides that scrollback):
 
-<div class="term-shot" role="img" aria-label="External editor view: the draft being composed on top, a git-style scissors line, then the agent's most recent reply below it for reference; everything below the scissors line is stripped before the message is sent."><span class="fs-user">yes, add the reconnect test and cap the backoff at 30s</span><span class="fs-dim">&nbsp;</span><span class="fs-divider"># ------------------------ &gt;8 ------------------------</span><span class="fs-dim"># Reference only: everything below the scissors line is stripped before your</span><span class="fs-dim"># message is sent. The agent's most recent reply follows for reference.</span><span class="fs-dim">&nbsp;</span><span class="fs-prompt">I split McpManager into StdioTransport and HttpTransport, each closing its own</span><span class="fs-prompt">client in close(). Want me to add a test for the reconnect path?</span></div>
+<div class="term-shot" role="img" aria-label="The message open in vim: the draft on the first line with the cursor at its end, a blank line, the scissors line with its unique marker, two comment lines explaining that everything below is stripped, then the agent's most recent reply, vim's filler tildes below the last line, and a status line reading INSERT with the cursor position."><span>yes, add the reconnect test and cap the backoff at 30s<span class="fs-i fs-caret">▏</span></span><span>&nbsp;</span><span class="fs-dim"># ------------------------ &gt;8 ------------------------ (4f2a9c1b77d0)</span><span class="fs-dim"># Reference only: everything below the scissors line is stripped before your</span><span class="fs-dim"># message is sent. The agent&#39;s most recent reply follows for reference.</span><span>&nbsp;</span><span>I split McpManager into StdioTransport and HttpTransport, each closing its own</span><span>client in close(). Want me to add a test for the reconnect path?</span><span class="fs-vim-fill">~</span><span class="fs-vim-fill">~</span><span class="fs-vim-fill">~</span><span class="fs-vim-status">-- INSERT --                                                  1,55          All</span></div>
 
 Everything from the scissors line down is stripped before the message is sent; a scissors line you type yourself is left untouched. Long replies are capped to their most recent lines.
 
