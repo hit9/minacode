@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "_ext"))
 
 _pyproject = tomllib.loads((Path(__file__).resolve().parent.parent / "pyproject.toml").read_text("utf-8"))
 _meta = _pyproject["project"]
@@ -21,6 +25,9 @@ version = ".".join(release.split(".")[:2])
 extensions = [
     "myst_parser",
     "sphinx_copybutton",
+    # Local: writes llms.txt and llms-full.txt beside the HTML, which Read the Docs serves at the
+    # domain root of the default version.
+    "llms_txt",
 ]
 
 source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
@@ -55,6 +62,9 @@ html_sidebars = {
     # would duplicate them.
     "**": ["globaltoc.html", "searchbox.html"],
 }
+# Read the Docs publishes the canonical URL; it makes the canonical <link> correct and gives
+# llms.txt absolute links to the pages it lists.
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
 html_title = f"{project} {release}"
 html_short_title = project
 html_static_path = ["_static"]
