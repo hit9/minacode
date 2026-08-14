@@ -113,6 +113,32 @@ class ModelClient:
 
     _RETRYABLE_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b")
     _STATUS_CODE_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b")
+
+    # 429 carries two opposite meanings and cannot be retried uniformly: transient rate limiting
+    # (retry after backoff is right) and permanent quota/billing failures (retrying just makes the
+    # user wait through the backoff for an error that will never clear). Providers express the
+    # permanent class as 429 with account/billing wording in the error body, e.g.:
+    #   - OpenAI: code "insufficient_quota", "You exceeded your current quota, please check your
+    #     plan and billing details."
+    #   - Aliyun/DashScope (OpenAI-compatible): "insufficient_quota" / "Throttling.AllocationQuota",
+    #     "CommodityNotPurchased", "PrepaidBillOverdue" / "PostpaidBillOverdue"
+    #   - Kimi/Moonshot: type "exceeded_current_quota_error", "check your account balance"
+    #   - z.ai/bigmodel: codes "1113" (Insufficient balance... recharge), "1309" (...package has
+    #     expired... renewing the subscription), "1314" (...enterprise package has expired...)
+    # This is a fail-open heuristic: unknown wording retries as before, preferring to miss a
+    # permanent error over misclassifying a transient rate limit as a billing failure.
+    _BILLING_MARKERS: ClassVar[tuple[str, ...]] = (
+        "insufficient",
+        "balance",
+        "billing",
+        "recharge",
+        "credit",
+        "quota",
+        "subscription",
+        "expired",
+        "overdue",
+        "purchased",
+    )
     _JSON_FENCE_RE: ClassVar[re.Pattern] = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
 
     def __init__(self, session: Session):
@@ -384,6 +410,11 @@ class ModelClient:
                 on_retry_wait(False)
 
     @staticmethod
+    def _billing_marker_hit(text: str) -> bool:
+        """Fail-open billing-marker scan shared by the SDK-status and text-fallback paths."""
+        return any(marker in text for marker in ModelClient._BILLING_MARKERS)
+
+    @staticmethod
     def retryable_error(error: Exception) -> bool:
         # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
         import anthropic
@@ -395,8 +426,16 @@ class ModelClient:
             return False
         cause = getattr(error, "__cause__", None)
 
-        # SDK status errors expose status_code directly.
+        # SDK status errors expose status_code directly. A 429 whose structured error text carries
+        # billing wording is a permanent quota/account failure, not a transient limit: fail at once
+        # instead of backoff-retrying. Structured text joins code/type/message/body (any may be
+        # missing) because the openai SDK unwraps body to the inner error object while the anthropic
+        # SDK keeps the full body and only surfaces error.type.
         if isinstance(cause, (openai.APIStatusError, anthropic.APIStatusError)):
+            if cause.status_code == 429 and ModelClient._billing_marker_hit(
+                " ".join(str(getattr(cause, field, "") or "") for field in ("code", "type", "message", "body")).lower()
+            ):
+                return False
             return cause.status_code in {408, 409, 425, 429} or 500 <= cause.status_code < 600
 
         # SDK connection/timeout errors are always retryable.
@@ -419,11 +458,16 @@ class ModelClient:
             return True
 
         # Fallback: parse status codes embedded in the error text or cause attributes.
+        text = str(error).lower()
+        # The same billing-marker check guards the text fallback, ahead of the status parses: a
+        # "429 insufficient balance" message must not be rescued by a status attribute or the
+        # status-code regex and retried.
+        if ModelClient._billing_marker_hit(text):
+            return False
         status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
         with contextlib.suppress(Exception):
             if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
                 return True
-        text = str(error).lower()
         if ModelClient._RETRYABLE_STATUS_RE.search(text):
             return True
         return any(

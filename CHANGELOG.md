@@ -18,6 +18,14 @@
   viewer.
 
 
+### Changed
+
+- Provider `429` responses whose error body carries account/billing wording (e.g. OpenAI
+  `insufficient_quota`, Kimi `exceeded_current_quota_error`, z.ai "Insufficient balance ...") are
+  treated as permanent quota/billing failures: the request fails immediately instead of retrying
+  through the backoff. Transient rate-limit 429s retry exactly as before.
+
+
 ## 0.23.0 - 2026-08-11
 
 ### Added

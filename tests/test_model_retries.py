@@ -6,7 +6,9 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 
+import anthropic
 import httpx
+import openai
 import pytest
 from model_harness import _MockClientFactory, _session
 
@@ -551,3 +553,98 @@ def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
     assert content == "ok"
     assert calls["n"] == 2
     assert s.state.model_retry_count == 1
+
+
+def _error_with_cause(cause: Exception) -> ModelError:
+    error = ModelError(str(cause))
+    error.__cause__ = cause
+    return error
+
+
+def _openai_429(body: dict) -> openai.RateLimitError:
+    request = httpx.Request("POST", "http://test/v1/chat/completions")
+    return openai.RateLimitError(
+        message="Error code: 429",
+        response=httpx.Response(429, request=request),
+        body=body,
+    )
+
+
+def _anthropic_429(body: dict) -> anthropic.RateLimitError:
+    request = httpx.Request("POST", "http://test/v1/messages")
+    return anthropic.RateLimitError(
+        message="Error code: 429",
+        response=httpx.Response(429, request=request),
+        body=body,
+    )
+
+
+def test_429_quota_body_not_retryable_openai_style():
+    """OpenAI insufficient_quota is a permanent billing failure: fail immediately, no backoff."""
+    cause = _openai_429(
+        {
+            "message": "You exceeded your current quota, please check your plan and billing details.",
+            "type": "insufficient_quota",
+            "code": "insufficient_quota",
+            "param": None,
+        }
+    )
+    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+
+
+def test_429_quota_body_not_retryable_kimi_style():
+    """Kimi/Moonshot exceeds-quota errors carry the same billing wording in error.type."""
+    cause = _openai_429(
+        {
+            "message": "Current quota exceeded. Please check your plan and billing details.",
+            "type": "exceeded_current_quota_error",
+            "code": "exceeded_current_quota_error",
+        }
+    )
+    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+
+
+def test_429_quota_body_not_retryable_zai_style():
+    """z.ai/bigmodel uses numeric string codes (1113) but the message carries billing wording."""
+    cause = _openai_429(
+        {
+            "message": "Insufficient balance or no resource package. Please recharge.",
+            "type": "insufficient_balance",
+            "code": "1113",
+        }
+    )
+    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+
+
+def test_429_anthropic_rate_limit_still_retryable():
+    """Anthropic 429s are transient rate limiting (billing failures arrive as 400 there), so a
+    marker hit on this body would be a false positive. Guard against misclassifying it."""
+    cause = _anthropic_429(
+        {
+            "type": "error",
+            "error": {
+                "type": "rate_limit_error",
+                "message": "This request would exceed your organization's rate limit. Retry in a few minutes.",
+            },
+        }
+    )
+    assert ModelClient.retryable_error(_error_with_cause(cause)) is True
+
+
+def test_429_openai_transient_rate_limit_still_retryable():
+    """Transient rate-limit wording must not trip the billing-marker heuristic."""
+    cause = _openai_429(
+        {
+            "message": "Rate limit reached for requests, retry after a few seconds.",
+            "type": "rate_limit_exceeded",
+            "code": "rate_limit_exceeded",
+        }
+    )
+    assert ModelClient.retryable_error(_error_with_cause(cause)) is True
+
+
+def test_429_text_fallback_with_billing_marker_not_retryable():
+    """The text fallback honors the same markers: a message combining a 429 status pattern with
+    account/billing wording must not be rescued by the status-code regex and retried."""
+    error = ModelError("Error code: 429 - insufficient balance, please recharge your account")
+    assert ModelClient.retryable_error(error) is False
