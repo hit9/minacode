@@ -45,28 +45,21 @@ for details.
 
 ## Switching models
 
-**`/provider [NAME]`** — Show or switch the active provider. Without an argument it
-lists every configured provider (see [Configuration](configuration.md#providers))
-and lets you pick one interactively. With a name it switches immediately.
+Each takes an optional value: given one it switches straight away, given none it opens a picker.
+`/provider` and `/model` chain onward, so picking a provider walks you through the model, its
+protocol, and the effort.
 
-**`/model [MODEL]`** — Show or switch the model for the current provider. Without
-an argument it opens an interactive picker with configured and discovered models.
-Changing the model also prompts you to pick a reasoning effort.
+| Command | Sets | Values |
+|---|---|---|
+| `/provider [NAME]` | The active provider entry | Any [configured provider](configuration.md#providers) |
+| `/model [MODEL]` | The model for that entry | Configured and discovered models |
+| `/reason [EFFORT]` | Reasoning effort — `/effort` is the same command | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `/api [API]` | The protocol used to reach the model | `auto`, `chat`, `responses`, `anthropic` |
 
-**`/reason [EFFORT]`** — Show or set reasoning effort; `/effort` is the same command.
-Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Minacode maps known model families to
-their nearest supported level; unrecognized providers and models keep the selected
-value. Without an argument it opens a picker.
-
-**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
-used to reach the model. `/provider` and `/model` also confirm it as a step in their selection
-chain, since the right protocol depends on the model you just picked.
-
-An endpoint that serves several model families often exposes them on different protocols, and an
-OpenAI-compatible `/models` listing says nothing about which protocol serves which model — so a
-model offered by `/model` can still be rejected as unsupported. When that happens, pick a different
-protocol with `/api` (or `auto` to re-infer from the URL and model). The reply names the wire that
-took effect, and history is protocol-neutral, so switching mid-session is safe.
+Effort is mapped to the nearest level a known model family accepts; unrecognized models keep what
+you picked. A model that `/model` offered can still come back unsupported, because one endpoint
+often serves several families over different protocols — set the right one with `/api`, or `auto`
+to re-infer it. Switching mid-session is safe either way, since the history is protocol-neutral.
 
 ```{figure} ../snapshots/minacode-demo-switching-providers-models.gif
 :alt: Switching providers and models interactively during a session
