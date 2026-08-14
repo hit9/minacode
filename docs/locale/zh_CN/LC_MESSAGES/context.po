@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-13 20:25-0700\n"
+"POT-Creation-Date: 2026-08-13 20:33-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -143,6 +143,18 @@ msgstr ""
 
 #: ../../context.md:55
 msgid ""
+"Each compaction names the span it evicted, in the same reply that "
+"produces the summary, so the title describes the work rather than "
+"whichever message happened to start the window. When no name comes back —"
+" a summarizer failure trimming the span deterministically — the title "
+"falls back to the first user message in it."
+msgstr ""
+"每次压缩都会在生成摘要的那次回复里为它丢弃的这段对话命名，因此标题描述的是这段工作"
+"本身，而不是恰好位于窗口开头的那条消息。如果没有拿到名字——例如摘要失败、只能按确"
+"定性方式裁剪——标题会回退为这段对话中的第一条用户消息。"
+
+#: ../../context.md:60
+msgid ""
 "Segment titles do not occupy every request. The agent uses "
 "`RecallContext` to list them newest first, regex-search stored titles and"
 " text, or retrieve selected `seg.N` excerpts. `Note` can view the current"
@@ -155,7 +167,7 @@ msgstr ""
 "goal、plan、facts 和 checks；在 compaction checkpoint 汇总完整当前状态之前，更新会保留在原始 "
 "tool-call history 中。"
 
-#: ../../context.md:60
+#: ../../context.md:65
 msgid ""
 "Run `/compact` to compact immediately rather than waiting for the "
 "threshold, for example before starting a large refactor. `/status` "
@@ -164,7 +176,7 @@ msgstr ""
 "运行 `/compact` 可以立即压缩，而不必等待阈值；例如可在大型重构前使用。`/status` 会显示当前 session 已执行的 "
 "compaction 次数。"
 
-#: ../../context.md:63
+#: ../../context.md:68
 msgid ""
 "`/compact log` reviews them one by one: each stored segment shows when it"
 " was compacted, whether the pass was automatic or manual, whether it "
@@ -175,24 +187,21 @@ msgid ""
 "that found nothing to evict stores no segment, so the compaction count "
 "can exceed the number of segments."
 msgstr ""
-"`/compact log` 可以逐个回顾这些片段：每个片段会显示压缩发生的时间、这一次是自动还是"
-"手动、覆盖的是先前对话还是当前回合，以及丢弃了多少内容。打开某个片段会显示压缩在当"
-"时生成的摘要——下一次压缩会把它从活动上下文里替换掉。`/compact log seg.N` 不经查看器"
-"直接打印该摘要。没有可丢弃内容的那次压缩不会存储片段，因此压缩次数可能多于片段数"
-"量。"
+"`/compact log` "
+"可以逐个回顾这些片段：每个片段会显示压缩发生的时间、这一次是自动还是手动、覆盖的是先前对话还是当前回合，以及丢弃了多少内容。打开某个片段会显示压缩在当时生成的摘要——下一次压缩会把它从活动上下文里替换掉。`/compact"
+" log seg.N` 不经查看器直接打印该摘要。没有可丢弃内容的那次压缩不会存储片段，因此压缩次数可能多于片段数量。"
 
-#: ../../context.md:70
+#: ../../context.md:75
 msgid ""
 "Neither form prints the stored excerpt of the evicted messages; that is "
 "the agent's to retrieve with `RecallContext`."
-msgstr ""
-"两种方式都不会打印已丢弃消息的逐字摘录：那是留给 agent 用 `RecallContext` 取回的。"
+msgstr "两种方式都不会打印已丢弃消息的逐字摘录：那是留给 agent 用 `RecallContext` 取回的。"
 
-#: ../../context.md:73
+#: ../../context.md:78
 msgid "Prompt caching"
 msgstr "Prompt 缓存"
 
-#: ../../context.md:75
+#: ../../context.md:80
 msgid ""
 "Prompt caching lets a provider reuse work for an unchanged beginning of a"
 " request. The next request usually begins with the same instructions, "
@@ -208,7 +217,7 @@ msgstr ""
 "事件会追加到对话中，因此不会移动更早的 breakpoint。一次 compaction 会有意开启新的 cache epoch。连接 MCP "
 "server、改变已安装的 skill、切换模型或修改前部内容，都会降低下一次请求的缓存命中。"
 
-#: ../../context.md:84
+#: ../../context.md:89
 msgid ""
 "A request is reused only up to its first difference, so a change near the"
 " beginning — connecting an MCP server, installing a skill, switching "
@@ -218,7 +227,7 @@ msgstr ""
 "请求只会复用到第一处差异为止，因此靠前的改动——连接 MCP server、安装 skill、切换模型、启用 Provider "
 "侧工具——都会缩短可复用前缀。这也是把稳定内容放在最前面的原因。"
 
-#: ../../context.md:89
+#: ../../context.md:94
 msgid ""
 "OpenAI-compatible providers may reuse matching prefixes automatically; "
 "minacode supplies a stable cache key where the provider supports one. For"
@@ -229,11 +238,11 @@ msgstr ""
 " key。对于 Anthropic，minacode 会显式将工具和 system 指令标记为临时可缓存前缀。不同 provider "
 "的支持方式和统计口径可能不同。"
 
-#: ../../context.md:93
+#: ../../context.md:98
 msgid "Checking the hit rate"
 msgstr "检查命中率"
 
-#: ../../context.md:95
+#: ../../context.md:100
 msgid ""
 "`/status` reports cache-read tokens for the whole session and latest "
 "request, plus cache-write tokens when the provider exposes them:"
@@ -241,13 +250,13 @@ msgstr ""
 "`/status` 会显示整个 session 和最近一次请求的 cache-read token；如果 provider 提供统计，还会显示 "
 "cache-write token："
 
-#: ../../context.md:100
+#: ../../context.md:105
 msgid ""
 "The latest-request ratio also shows live in the status bar, beside the "
 "context fill, updating with each response."
 msgstr "最近一次请求的命中率也会实时显示在状态栏中，紧跟上下文占用，随每次响应更新。"
 
-#: ../../context.md:103
+#: ../../context.md:108
 msgid ""
 "The ratio varies with the provider, model, prompt length, and "
 "conversation. When request prefixes line up, it <span "

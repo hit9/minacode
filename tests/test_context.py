@@ -1052,6 +1052,57 @@ def test_compaction_captures_a_history_segment(tmp_path):
     assert "looking into it" in segment.text
 
 
+def test_segment_takes_the_name_the_compactor_gave_it(tmp_path):
+    # The compaction reply already describes the span, and the model is the only party that read
+    # all of it. The deterministic name is the first user message of the window, which says little
+    # once a span starts mid-work — here, "ok".
+    s = session(tmp_path)
+    context = ContextManager(s)
+    compacted = [
+        {"role": "user", "content": "ok"},
+        {"role": "assistant", "content": "Extracted tokenize() and updated the imports."},
+    ]
+
+    context.apply_compaction({"title": "Tokenizer extraction", "summary": "s"}, [], compacted=compacted)
+
+    assert s.history[0].title == "Tokenizer extraction"
+
+
+def test_segment_title_is_flattened_and_bounded(tmp_path):
+    # Free-form model text landing in a listing, a checkpoint line, and a viewer column.
+    s = session(tmp_path)
+    context = ContextManager(s)
+
+    context.apply_compaction(
+        {"title": '  "Parser refactor\n  and its tests"  ', "summary": "s"},
+        [],
+        compacted=[{"role": "user", "content": "x"}],
+    )
+
+    assert s.history[0].title == "Parser refactor and its tests"
+
+
+def test_segment_title_falls_back_when_the_compactor_names_nothing(tmp_path):
+    s = session(tmp_path)
+    context = ContextManager(s)
+    compacted = [{"role": "user", "content": "find the parser bug"}]
+
+    for data in ({"summary": "s"}, {"title": "", "summary": "s"}, {"title": ["nope"], "summary": "s"}):
+        s.history.clear()
+        context.apply_compaction(data, [], compacted=compacted)
+        assert s.history[0].title == "find the parser bug", data
+
+
+def test_deterministic_trim_still_names_its_segment(tmp_path):
+    # No model reply at all: the summarizer failed and the span was trimmed deterministically.
+    s = session(tmp_path)
+    context = ContextManager(s)
+
+    context.apply_compaction(None, [], compacted=[{"role": "user", "content": "find the parser bug"}], fallback_note="trimmed")
+
+    assert s.history[0].title == "find the parser bug"
+
+
 def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(context_module, "MAX_TOOL_OUTPUT_TOKENS", 10)
     s = session(tmp_path)

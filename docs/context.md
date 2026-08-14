@@ -52,6 +52,11 @@ session log remain the cold source of truth, so compaction does not rewrite them
 
 <div class="term-shot" role="img" aria-label="Compaction replaces older active conversation with one checkpoint containing the summary, full working state, and a segment pointer. RecallContext can list, search, and retrieve bounded verbatim excerpts, while the append-only session log retains earlier snapshots as the cold source of truth."><span class="fs-goal">─ active context (hot) ────────────────</span><span>  checkpoint       <span class="fs-i fs-dim">summary · goal · plan · facts · checks · seg.N</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span class="fs-dim">─ recallable segments (warm) ──────────</span><span>  seg.1 · seg.2    <span class="fs-i fs-dim">listed/searched only when needed</span></span><span class="fs-dim">─ append-only session log (cold) ──────</span><span>  earlier snapshots<span class="fs-i fs-dim"> original messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(list/search/get)</span> finds an excerpt</span></div>
 
+Each compaction names the span it evicted, in the same reply that produces the summary, so the
+title describes the work rather than whichever message happened to start the window. When no name
+comes back — a summarizer failure trimming the span deterministically — the title falls back to
+the first user message in it.
+
 Segment titles do not occupy every request. The agent uses `RecallContext` to list them newest
 first, regex-search stored titles and text, or retrieve selected `seg.N` excerpts. `Note` can view
 the current goal, plan, facts, and checks; updates remain visible in their original tool-call

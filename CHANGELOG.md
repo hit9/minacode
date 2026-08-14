@@ -6,6 +6,11 @@
 ### Added
 
 - The Delegate order viewer renders the order as markdown and aligns its field header.
+- Compaction now names the span it evicts, in the same reply that produces the summary, so a
+  history segment is titled by what the work was about instead of by the first user message in the
+  window — often `ok` or `continue` once a span starts mid-work. Titles show in `/compact log` and
+  in the agent's `RecallContext` listing. A compaction that returns no name, including a
+  deterministic trim after a summarizer failure, keeps the old first-message title.
 - `/compact log` reviews what compaction kept: stored segments newest first with when each ran,
   whether it was automatic or manual, whether it covered prior conversation or the running turn,
   and how much it evicted; opening one shows the summary it produced, which the active context

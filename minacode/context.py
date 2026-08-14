@@ -361,7 +361,21 @@ class ContextManager:
     def messages_text(self, messages: list[Json]) -> str:
         return "\n\n".join(f"{message.get('role', 'message')}:\n{ImageInputs.label_text(message)}" for message in messages) or "(empty)"
 
+    def compaction_title(self, data: Json | None) -> str:
+        """The name the compactor gave this span, or "" when it gave none.
+
+        The compaction request already returns a JSON object describing the span, so naming it
+        costs a key rather than a call — and the model is the only party that read the whole span.
+        Bounded and flattened here: the key is free-form text from a model, and it lands in a
+        segment listing, a checkpoint line, and a viewer column."""
+        if not isinstance(data, dict) or not isinstance(data.get("title"), str):
+            return ""
+        return Tool.compact(" ".join(str(data["title"]).split()).strip("\"'"), 80)
+
     def history_title(self, messages: list[Json]) -> str:
+        """Deterministic fallback name: the first plain user message of the span. Used when the
+        compactor named nothing — a summarizer failure trimming the span without a model reply, or
+        a reply with no usable title."""
         for message in messages:
             if (
                 message.get("role") == "user"
@@ -433,8 +447,11 @@ class ContextManager:
             self.session.state.summary = (self.session.state.summary + "\n" + fallback_note).strip()
         if segment is not None:
             # After apply(): the summary worth keeping is the one this compaction just produced,
-            # not the one it replaced.
+            # not the one it replaced. The compactor's own name for the span replaces the
+            # deterministic one, which was only ever the first user message of the window and says
+            # little once a span starts mid-work.
             segment.summary = self.session.state.summary
+            segment.title = self.compaction_title(data) or segment.title
         summary_block = self._summary_block(segment)
         if turn_messages is None:
             self.session.messages = summary_block + keep
