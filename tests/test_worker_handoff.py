@@ -1507,16 +1507,17 @@ def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "    def nested(): " + "x = 1  " * 20])
+    order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "", "```python", "def nested():", "    x = 1", "```"])
     delegate_order_viewer(loop, order, [("title", "中文标题" * 10)])
 
     rows = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
     assert rows, "the viewer rendered nothing"
     assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
     assert any("把这个仓库里的审批快捷键" in row for row in rows)  # the CJK text is still there, just wrapped
-    # Continuation rows of an indented source line keep that indent, so code in an order stays readable.
+    # A fenced code block keeps its indentation, so code in an order stays readable.
+    assert any(row.lstrip().startswith("def nested():") for row in rows)
     nested = [row for row in rows if "x = 1" in row]
-    assert len(nested) > 1 and all(row.startswith("      ") for row in nested)
+    assert len(nested) == 1 and nested[0].startswith("       ")
 
 
 def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
@@ -1589,7 +1590,7 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "## Section\n\n- item one\n- item two\n\n```python\nprint(1)\n```"
-    delegate_order_viewer(loop, order, [("title", "fix things")], markdown=True)
+    delegate_order_viewer(loop, order, [("title", "fix things")])
 
     rendered = "".join(text for _style, text in captured["fragments_fn"]())
     assert "Section" in rendered
@@ -1598,6 +1599,27 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     assert "item one" in rendered
     assert "item two" in rendered
     assert "print(1)" in rendered
+
+
+def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
+    # An order's newlines are structural: file lists and step-per-line instructions must not be
+    # folded into one paragraph the way Markdown folds in-paragraph newlines to spaces.
+    import os
+    from types import SimpleNamespace
+
+    from minacode.cli.modals import delegate_order_viewer
+
+    size = os.terminal_size((120, 40))
+    monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
+
+    captured = {}
+    loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
+    order = "Touch these files:\nminacode/loop.py\nminacode/parser.py\nDo not touch tests."
+    delegate_order_viewer(loop, order, [("title", "fix things")])
+
+    rows = [row.strip() for row in "".join(text for _style, text in captured["fragments_fn"]()).splitlines()]
+    for source_line in order.splitlines():
+        assert source_line in rows, f"{source_line!r} was folded into another line"
 
 
 def test_delegate_order_viewer_field_header_alignment(monkeypatch):
@@ -1613,7 +1635,7 @@ def test_delegate_order_viewer_field_header_alignment(monkeypatch):
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    delegate_order_viewer(loop, "order", [("title", "fix"), ("lang", "python"), ("max_steps", "3")], markdown=True)
+    delegate_order_viewer(loop, "order", [("title", "fix"), ("lang", "python"), ("max_steps", "3")])
 
     fragments = captured["fragments_fn"]()
     cyan = {text for style, text in fragments if style == "ansicyan" and text.strip() in {"title", "lang", "max_steps"}}
@@ -1634,7 +1656,7 @@ def test_delegate_order_viewer_header_separator(monkeypatch):
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    delegate_order_viewer(loop, "order", [("title", "fix things")], markdown=True)
+    delegate_order_viewer(loop, "order", [("title", "fix things")])
 
     lines = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
     separators = [line for line in lines if line.strip() and set(line) <= {"─", " "}]
@@ -1659,7 +1681,7 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = '## 标题\n\n- 把这段中文说明加进审批流程并补充测试\n\n```python\nprint("中文")\n```'
-    delegate_order_viewer(loop, order, [("title", "中文标题" * 10)], markdown=True)
+    delegate_order_viewer(loop, order, [("title", "中文标题" * 10)])
 
     rendered = "".join(text for _style, text in captured["fragments_fn"]())
     rows = rendered.splitlines()

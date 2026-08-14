@@ -280,31 +280,29 @@ def bash_output_viewer(loop: CommandLoop) -> None:
     loop.tui.show_modal(fragments, handle_key)
 
 
-def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple[str, str]], *, markdown: bool = False) -> None:
-    """Read-only viewer for the Delegate `v` key: header rows plus the complete, soft-wrapped
-    order text, rendered as markdown when `markdown` is set. Esc/q closes back to the approval
-    prompt; nothing here edits anything."""
+def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple[str, str]]) -> None:
+    """Read-only viewer for the Delegate `v` key: header rows plus the complete order text
+    rendered as markdown. Esc/q closes back to the approval prompt; nothing here edits
+    anything."""
     if loop.tui is None:
         return
     margin = "  "
     wrapped: dict[int, list[StyleAndTextTuples]] = {}
 
-    def wrap(text: str, width: int, continuation: str) -> list[StyleAndTextTuples]:
-        """One source line as display rows. Text.wrap_styled measures in terminal cells, so a CJK
-        order (two cells per character) wraps where it actually reaches the right edge instead of
-        overflowing at twice the width; `continuation` re-indents the rows after the first so
-        indented code in an order keeps its shape."""
-        return cast(list[StyleAndTextTuples], Text.wrap_styled([("", margin)], [("", margin + continuation)], [("", text)], width))
-
     def markdown_rows(text: str, width: int) -> list[StyleAndTextTuples]:
         """Render `text` as markdown through the same Rich capture pipeline the scrollback
         renderer uses, then split the styled ANSI into display rows. The console width is the
         modal content width (terminal width minus the two-space margins); Rich measures wide
-        characters itself, so CJK orders wrap at the real right edge."""
+        characters itself, so CJK orders wrap at the real right edge.
+
+        Every source line gets a hard line break first: an order's newlines are structural (file
+        lists, steps, plain-text instructions), and Markdown otherwise folds in-paragraph newlines
+        to spaces, running them together into one block the approver has to re-read."""
+        hard_breaks = "\n".join(line.rstrip() + "  " for line in text.split("\n"))
         content_width = max(1, width - 4)
         console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=content_width)
         with console.capture() as capture:
-            console.print(Markdown(text, hyperlinks=False))
+            console.print(Markdown(hard_breaks, hyperlinks=False))
         cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
         rows: list[StyleAndTextTuples] = [[]]
         for style, fragment in cast(list[tuple[str, str]], list(to_formatted_text(ANSI(cleaned)))):
@@ -336,15 +334,7 @@ def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple
                 )
             )
         lines.append([("", margin), ("ansibrightblack", "─" * max(0, width - 4))])
-        if markdown:
-            lines.extend(markdown_rows(order, width))
-        else:
-            for raw in order.splitlines():
-                if not raw.strip():
-                    lines.append([])
-                    continue
-                indent = raw[: len(raw) - len(raw.lstrip())]
-                lines.extend(wrap(raw, width, indent[: max(0, width // 4)]))
+        lines.extend(markdown_rows(order, width))
         wrapped[width] = lines
         return lines
 
