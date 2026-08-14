@@ -21,7 +21,9 @@
   field (empty inherits the entry's value), mirroring `[worker]`. The summary request runs on the
   resolved entry — including its `response_timeout` — while the context budget still measures the
   active provider's window; `/compact log` records which model produced each segment and `/status`
-  shows the effective `compaction.*` values.
+  shows the effective `compaction.*` values. While a summary is in flight the status bar names the
+  entry serving it, `[compaction] entry/model effort`, the way it already names an in-flight
+  worker; a compaction that resolves to the row's own entry leaves the row alone.
 - Each provider entry can nest its own `[provider.NAME.compaction]` table with the same
   `model`/`reasoning`/`api` keys, so a provider can route summaries to a cheap model per entry
   instead of one global choice. Per field the most specific value wins: the entry's nested table,

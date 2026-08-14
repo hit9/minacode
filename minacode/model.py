@@ -1088,12 +1088,17 @@ class ModelClient:
         # summary is worth the user's configured wait, and the deterministic trim fallback still
         # catches whatever the provider rejects.
         response_timeout = provider.response_timeout
+        # The status bar reads this to name the entry actually serving the summary; cleared in the
+        # finally so a timeout, a cancel, or a provider error leaves no stale row behind.
+        self.session.state.compaction_entry = f"{self.session.config.compaction_provider or self.session.config.active_provider}/{provider.model}"
         try:
             _, _, content = self.api_request(messages, None, allow_stream=False, response_timeout=response_timeout, provider=provider)
         except ModelResponseTimeout:
             raise ModelResponseTimeout(
                 f"compaction summary exceeded provider.response_timeout={response_timeout:g}s; set it to 0 to disable the total-generation limit"
             ) from None
+        finally:
+            self.session.state.compaction_entry = ""
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")

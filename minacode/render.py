@@ -32,6 +32,7 @@ from minacode.base import (
     Text,
     __version__,
 )
+from minacode.config import Config, compaction_provider_config
 from minacode.session import Session
 from minacode.tools import CodeIndex
 
@@ -1008,6 +1009,18 @@ class StatusBar:
             return self.clip_fragments(self.styled_fragments(entries), columns - 1)
         return self.sweep_fragments(text) if sweep else self.styled_fragments(entries)
 
+    @staticmethod
+    def compaction_lead(source: Session, config: Config) -> list[tuple[str, str]] | None:
+        """The `[compaction] entry/model effort` segments while a summary runs on an entry other
+        than the row's own, or None to leave the row alone. The reasoning comes from the resolved
+        entry, and falls back to the row's when the named entry is gone from the config."""
+        entry = source.state.compaction_entry
+        if not entry or entry == config.active_provider + "/" + config.provider.model:
+            return None
+        name, _, entry_model = entry.rpartition("/")
+        reasoning = compaction_provider_config(config).reasoning if name in config.providers else config.provider.reasoning
+        return [("[compaction]", "ctx"), (name + "/" + (entry_model or "(no model)"), "warn"), (reasoning, "reason")]
+
     def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
         worker = self.session.worker
         # The worker display is scoped to an in-flight delegation: the engine clears
@@ -1015,18 +1028,23 @@ class StatusBar:
         # to the parent's provider/model/usage exactly as if no worker existed. An idle worker no
         # longer shadows the parent's row.
         inflight = worker if worker is not None and bool(worker._active_turn_messages) else None
-        if inflight is not None:
-            config = inflight.config
-            lead_role = "warn"
-        else:
-            config = self.session.config
-            lead_role = "provider"
+        source = inflight if inflight is not None else self.session
+        config = source.config
+        lead_role = "warn" if inflight is not None else "provider"
         provider = config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         parts: list[tuple[str, str]] = []
         if inflight is not None:
             parts.append(("[worker]", "worker"))
-        parts += [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
+        # A summary running on its own provider entry is the same situation as an in-flight worker:
+        # the request on the wire is not this row's model, so name the one that is. Read off the
+        # displayed session, so a worker compacting its own context shows on the worker's row. Only
+        # when it differs -- with no [compaction] overrides the resolved entry is this one, and
+        # flashing an identical row for the length of one request says nothing the spinner does not.
+        if (compacting := self.compaction_lead(source, config)) is not None:
+            parts += compacting
+        else:
+            parts += [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
 
         mcp_status = self.mcp_status()
         if mcp_status:
@@ -1037,7 +1055,6 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        source = inflight if inflight is not None else self.session
         usage = source.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;

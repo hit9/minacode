@@ -1580,3 +1580,62 @@ def test_compaction_provider_config_per_provider_follows_base_entry():
     assert config.providers["fast"].compaction_model == "fast-per"
     assert config.providers["default"].compaction_model == "active-per"  # untouched
     assert entry is not config.providers["fast"]
+
+
+def _compaction_bar_session(tmp_path, **compaction):
+    config = Config.from_dict(
+        {
+            "compaction": compaction,
+            "provider": {
+                "active": "default",
+                "default": {"model": "big-model", "url": "http://test", "key": "k", "reasoning": "high"},
+                "cheap": {"model": "small-model", "url": "http://test", "key": "k"},
+            },
+        }
+    )
+    s = Session(cwd=str(tmp_path), config=config)
+    s.config.data_dir = str(tmp_path / "data")
+    return s
+
+
+def test_status_bar_names_the_entry_a_summary_runs_on(tmp_path):
+    """A summary on its own provider entry is the same situation as an in-flight worker: the
+    request on the wire is not the row's model, so the bar names the one that is."""
+    s = _compaction_bar_session(tmp_path, provider="cheap", model="haiku", reasoning="off")
+    bar = StatusBar(s)
+
+    assert " | ".join(text for text, _ in bar.entries(show_elapsed=False)).startswith("default/big-model | high")
+
+    s.state.compaction_entry = "cheap/haiku"
+    entries = bar.entries(show_elapsed=False)
+    assert entries[:3] == [("[compaction]", "ctx"), ("cheap/haiku", "warn"), ("off", "reason")]
+
+    # Cleared when the request ends: the row goes back to the conversation's own model.
+    s.state.compaction_entry = ""
+    assert bar.entries(show_elapsed=False)[0] == ("default/big-model", "provider")
+
+
+def test_status_bar_leaves_the_row_alone_when_compaction_runs_on_it(tmp_path):
+    """With no [compaction] overrides the resolved entry is the active one, and flashing an
+    identical row for the length of one request says nothing the spinner does not."""
+    s = _compaction_bar_session(tmp_path)
+    s.state.compaction_entry = "default/big-model"
+
+    assert StatusBar(s).entries(show_elapsed=False)[0] == ("default/big-model", "provider")
+
+
+def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatch):
+    """The label is live display state: a timeout, a cancel, or a provider error must not leave a
+    stale row naming a request that is no longer running."""
+    s = _compaction_bar_session(tmp_path, provider="cheap", model="haiku")
+    model = ModelClient(s)
+
+    def explode(*_args, **_kwargs):
+        assert s.state.compaction_entry == "cheap/haiku"  # set while the request is in flight
+        raise ModelError("provider said no")
+
+    monkeypatch.setattr(model, "api_request", explode)
+
+    with pytest.raises(ModelError):
+        model.compact("context")
+    assert s.state.compaction_entry == ""

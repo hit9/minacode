@@ -108,6 +108,10 @@ class AgentState:
     model_retry_reason: str = ""
     model_retry_until: float = 0.0  # monotonic deadline of the current retry wait; 0 when idle
     compaction_count: int = 0
+    # `entry/model` of the provider entry a summary request is running on right now, "" when none
+    # is. Live display state, like the retry and index fields above: set around the request in
+    # ModelClient.compact and never persisted.
+    compaction_entry: str = ""
 
     def __post_init__(self) -> None:
         self.plan = cast(list[PlanItem | Json | str], self.plan_items(self.plan))
