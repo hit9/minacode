@@ -76,7 +76,6 @@ _ResultT = TypeVar("_ResultT")
 # Retry-wait granularity: sleeping in ~0.1s slices lets the wait observe the UI-thread cancel flag
 # instead of relying on a signal interrupting one long sleep.
 _RETRY_SLEEP_SLICE = 0.1
-_COMPACTION_RESPONSE_TIMEOUT = 60.0
 
 
 @dataclass(frozen=True)
@@ -1040,9 +1039,16 @@ class ModelClient:
     def compact(self, context: str) -> Json:
         self.cancel_requested.clear()
         messages = [{"role": "system", "content": COMPACTION_PROMPT}, {"role": "user", "content": Text.clean(context)}]
-        configured_timeout = self.session.config.provider.response_timeout
-        response_timeout = min(configured_timeout, _COMPACTION_RESPONSE_TIMEOUT) if configured_timeout else _COMPACTION_RESPONSE_TIMEOUT
-        _, _, content = self.api_request(messages, None, allow_stream=False, response_timeout=response_timeout)
+        # Compaction honors the configured total-generation limit instead of a hidden cap: a
+        # summary is worth the user's configured wait, and the deterministic trim fallback still
+        # catches whatever the provider rejects.
+        response_timeout = self.session.config.provider.response_timeout
+        try:
+            _, _, content = self.api_request(messages, None, allow_stream=False, response_timeout=response_timeout)
+        except ModelResponseTimeout:
+            raise ModelResponseTimeout(
+                f"compaction summary exceeded provider.response_timeout={response_timeout:g}s; set it to 0 to disable the total-generation limit"
+            ) from None
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")

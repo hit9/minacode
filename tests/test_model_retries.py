@@ -251,8 +251,10 @@ def test_zero_response_timeout_does_not_start_deadline_timer(tmp_path, monkeypat
     assert client.closed is True
 
 
-@pytest.mark.parametrize(("configured", "expected"), [(600, 60.0), (30, 30.0), (0, 60.0)])
-def test_compaction_has_a_bounded_response_deadline(tmp_path, monkeypatch, configured, expected):
+@pytest.mark.parametrize(("configured", "expected"), [(600, 600), (30, 30), (0, 0)])
+def test_compaction_follows_the_configured_response_deadline(tmp_path, monkeypatch, configured, expected):
+    """No hidden cap: the summary call gets exactly the configured total-generation limit, and 0
+    disables the deadline for it like for every other request."""
     s = _session(tmp_path)
     s.config.provider.response_timeout = configured
     model = ModelClient(s)
@@ -266,6 +268,21 @@ def test_compaction_has_a_bounded_response_deadline(tmp_path, monkeypatch, confi
 
     assert model.compact("long context") == {"summary": "short"}
     assert seen == [{"allow_stream": False, "response_timeout": expected}]
+
+
+def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch):
+    """The fallback log must say the summary timed out, not echo the generic request wording."""
+    s = _session(tmp_path)
+    s.config.provider.response_timeout = 600
+    model = ModelClient(s)
+
+    def api_request(_messages, _tools, **kwargs):
+        raise ModelResponseTimeout("Model response exceeded provider.response_timeout=600s")
+
+    monkeypatch.setattr(model, "api_request", api_request)
+
+    with pytest.raises(ModelResponseTimeout, match="compaction summary exceeded provider.response_timeout=600s"):
+        model.compact("long context")
 
 
 def _retry_wait_recorder(monkeypatch, factory):
