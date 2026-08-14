@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-14 01:41-0700\n"
+"POT-Creation-Date: 2026-08-14 01:45-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -23,8 +23,8 @@ msgid "Changelog"
 msgstr "变更日志"
 
 #: ../../../CHANGELOG.md:5
-msgid "Unreleased"
-msgstr "未发布"
+msgid "0.24.0 - 2026-08-14"
+msgstr "0.24.0 - 2026-08-14"
 
 #: ../../../CHANGELOG.md:7 ../../../CHANGELOG.md:59 ../../../CHANGELOG.md:250
 #: ../../../CHANGELOG.md:350 ../../../CHANGELOG.md:513
@@ -170,9 +170,8 @@ msgid ""
 "skill, so the list belongs on the keystroke that declares one; prose, `/`"
 " commands, and everything else still complete on `Tab`."
 msgstr ""
-"输入 `@` 或 `$` 时会立刻弹出补全列表，而不再需要先按 `Tab`。这两个符号的唯一用途就是"
-"指名一个 MCP 服务器或 skill，所以列表应该出现在你敲下它们的那一刻；普通文字、`/` 命"
-"令以及其他内容仍然按 `Tab` 补全。"
+"输入 `@` 或 `$` 时会立刻弹出补全列表，而不再需要先按 `Tab`。这两个符号的唯一用途就是指名一个 MCP 服务器或 "
+"skill，所以列表应该出现在你敲下它们的那一刻；普通文字、`/` 命令以及其他内容仍然按 `Tab` 补全。"
 
 #: ../../../CHANGELOG.md:46
 msgid ""
@@ -5721,4 +5720,7 @@ msgstr "让无界的工具结果日志在磁盘上可用,同时有界结果保�
 #~ "用于回顾压缩丢弃了什么：按时间倒序列出已存储的片段及其时间、范围与触发方式；打开某个片段可看到当时生成的摘要，以及它所替换掉的那段对话，按这些消息在"
 #~ " transcript 中的样子渲染。`/compact log seg.N` "
 #~ "则直接完整打印某个片段。"
+
+#~ msgid "Unreleased"
+#~ msgstr "未发布"
 
