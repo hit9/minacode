@@ -53,9 +53,7 @@ session log remain the cold source of truth, so compaction does not rewrite them
 <div class="term-shot" role="img" aria-label="Compaction replaces older active conversation with one checkpoint containing the summary, full working state, and a segment pointer. RecallContext can list, search, and retrieve bounded verbatim excerpts, while the append-only session log retains earlier snapshots as the cold source of truth."><span class="fs-goal">─ active context (hot) ────────────────</span><span>  checkpoint       <span class="fs-i fs-dim">summary · goal · plan · facts · checks · seg.N</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span class="fs-dim">─ recallable segments (warm) ──────────</span><span>  seg.1 · seg.2    <span class="fs-i fs-dim">listed/searched only when needed</span></span><span class="fs-dim">─ append-only session log (cold) ──────</span><span>  earlier snapshots<span class="fs-i fs-dim"> original messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(list/search/get)</span> finds an excerpt</span></div>
 
 Each compaction names the span it evicted, in the same reply that produces the summary, so the
-title describes the work rather than whichever message happened to start the window. When no name
-comes back — a summarizer failure trimming the span deterministically — the title falls back to
-the first user message in it.
+title describes the work rather than whichever message happened to start the window.
 
 Segment titles do not occupy every request. The agent uses `RecallContext` to list them newest
 first, regex-search stored titles and text, or retrieve selected `seg.N` excerpts. `Note` can view
@@ -74,6 +72,34 @@ the compaction count can exceed the number of segments.
 
 Neither form prints the stored excerpt of the evicted messages; that is the agent's to retrieve
 with `RecallContext`.
+
+While a summary is running, the status bar names the entry doing it — `[compaction]`, then that
+entry's model and effort — the same way it names an in-flight [worker](worker.md). The row goes
+back to the conversation's own model when the summary lands, and does not change at all when
+compaction runs on the model already shown.
+
+<div class="term-shot" role="img" aria-label="The status bar while a summary runs: a yellow [compaction] marker, then the entry and model serving the summary, its reasoning effort, and the conversation's context fill with cache ratio."><span><span class="fs-i fs-dim">compacting </span><span class="fs-i sb-ctx">[compaction]</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-warn">deepseek/deepseek-v4-flash</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">off</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 41% · cache 95%</span></span></div>
+
+### When a summary does not arrive
+
+Compaction always makes room, even when the summary request fails: the same messages leave the
+context, with no summary written in their place. Work is not lost — the segment is still stored
+and the agent can still recall it — but the checkpoint carries less, so tell minacode what matters
+if a long task continues past one.
+
+`/compact log` marks such a pass `no summary`, and `/compact` reports the reason on the spot. The
+usual causes are a summarizer that cannot fit the span, one slower than its `response_timeout`, and
+a `[compaction]` entry missing its url, key, or model — that last one is refused by name before
+the request, so the message tells you which entry to fix. See
+[Compaction model](configuration.md#compaction-model) for choosing an entry that avoids all three.
+
+### Sessions started before these features
+
+Resuming a session older than a given feature shows blanks rather than errors. Segments compacted
+by an earlier version have no recorded time, scope, or model, so `/compact log` lists them with
+`—` and says the summary predates the log; summary tokens spent back then stayed in the overall
+`usage` total, so `/status` shows no `compaction usage` row until this session compacts again.
+Everything recorded from now on fills in normally.
 
 ## Prompt caching
 

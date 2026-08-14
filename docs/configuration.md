@@ -184,10 +184,44 @@ model = "claude-..."
   model = "claude-haiku-..."
 ```
 
-`/compact log` records which model produced each stored segment, `/config` shows the effective
-`compaction.*` values, and the status bar names the entry while a summary is in flight. Summary
-tokens are counted apart from the conversation: `/status` reports them on their own
-`compaction usage` row, so each row can be read against one model's price.
+Write the nested table under a *named* entry, as above. In the short single-provider form, where
+`[provider]` holds `url` and `key` directly, `[provider.compaction]` reads as a provider named
+`compaction` and the config is rejected with `provider.active does not exist`.
+
+Summaries can also run on a different vendor entirely — the entry supplies its own url, key, and
+wire protocol, so the conversation stays on one host while summaries go to another:
+
+```toml
+[provider]
+active = "anthropic"
+
+[provider.anthropic]
+url = "https://api.anthropic.com/v1"
+key = "sk-ant-..."
+model = "claude-..."
+
+[provider.deepseek]
+url = "https://api.deepseek.com/v1"
+key = "sk-..."
+model = "deepseek-..."
+
+[compaction]
+provider = "deepseek"
+model = "deepseek-...-flash"
+reasoning = "off"
+```
+
+Two things to check when picking a summarizer. It has to **read the whole span being compacted**,
+so its context window should be comparable to the one you are compacting — a small-window model
+asked to summarize a large conversation fails every time, and the context is trimmed without a
+summary instead. And its own `response_timeout` applies to the summary, so a slow summarizer can
+hold up a turn for that long before giving up; lower it on that entry if you would rather trim
+early than wait.
+
+`/config` shows the effective `compaction.*` values, the status bar names the entry while a
+summary is in flight, and `/compact log` records which model produced each stored segment. Summary
+tokens are counted apart from the conversation, on their own `compaction usage` row in `/status`,
+so each row can be read against one model's price.
 
 ## Data location
 

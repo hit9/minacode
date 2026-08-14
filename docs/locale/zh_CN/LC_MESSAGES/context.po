@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-13 20:33-0700\n"
+"POT-Creation-Date: 2026-08-14 00:18-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -145,15 +145,12 @@ msgstr ""
 msgid ""
 "Each compaction names the span it evicted, in the same reply that "
 "produces the summary, so the title describes the work rather than "
-"whichever message happened to start the window. When no name comes back —"
-" a summarizer failure trimming the span deterministically — the title "
-"falls back to the first user message in it."
+"whichever message happened to start the window."
 msgstr ""
 "每次压缩都会在生成摘要的那次回复里为它丢弃的这段对话命名，因此标题描述的是这段工作"
-"本身，而不是恰好位于窗口开头的那条消息。如果没有拿到名字——例如摘要失败、只能按确"
-"定性方式裁剪——标题会回退为这段对话中的第一条用户消息。"
+"本身，而不是恰好位于窗口开头的那条消息。"
 
-#: ../../context.md:60
+#: ../../context.md:58
 msgid ""
 "Segment titles do not occupy every request. The agent uses "
 "`RecallContext` to list them newest first, regex-search stored titles and"
@@ -167,7 +164,7 @@ msgstr ""
 "goal、plan、facts 和 checks；在 compaction checkpoint 汇总完整当前状态之前，更新会保留在原始 "
 "tool-call history 中。"
 
-#: ../../context.md:65
+#: ../../context.md:63
 msgid ""
 "Run `/compact` to compact immediately rather than waiting for the "
 "threshold, for example before starting a large refactor. `/status` "
@@ -176,7 +173,7 @@ msgstr ""
 "运行 `/compact` 可以立即压缩，而不必等待阈值；例如可在大型重构前使用。`/status` 会显示当前 session 已执行的 "
 "compaction 次数。"
 
-#: ../../context.md:68
+#: ../../context.md:66
 msgid ""
 "`/compact log` reviews them one by one: each stored segment shows when it"
 " was compacted, whether the pass was automatic or manual, whether it "
@@ -191,17 +188,82 @@ msgstr ""
 "可以逐个回顾这些片段：每个片段会显示压缩发生的时间、这一次是自动还是手动、覆盖的是先前对话还是当前回合，以及丢弃了多少内容。打开某个片段会显示压缩在当时生成的摘要——下一次压缩会把它从活动上下文里替换掉。`/compact"
 " log seg.N` 不经查看器直接打印该摘要。没有可丢弃内容的那次压缩不会存储片段，因此压缩次数可能多于片段数量。"
 
-#: ../../context.md:75
+#: ../../context.md:73
 msgid ""
 "Neither form prints the stored excerpt of the evicted messages; that is "
 "the agent's to retrieve with `RecallContext`."
 msgstr "两种方式都不会打印已丢弃消息的逐字摘录：那是留给 agent 用 `RecallContext` 取回的。"
 
-#: ../../context.md:78
+#: ../../context.md:76
+msgid ""
+"While a summary is running, the status bar names the entry doing it — "
+"`[compaction]`, then that entry's model and effort — the same way it "
+"names an in-flight [worker](worker.md). The row goes back to the "
+"conversation's own model when the summary lands, and does not change at "
+"all when compaction runs on the model already shown."
+msgstr ""
+"摘要运行期间，状态栏会显示正在执行它的条目——先是 `[compaction]`，然后是该条目的模"
+"型与推理强度——就像它显示进行中的 [worker](worker.md) 一样。摘要完成后，这一行会回"
+"到对话本身的模型；如果压缩就运行在已经显示的那个模型上，这一行不会有任何变化。"
+
+#: ../../context.md:83
+msgid "When a summary does not arrive"
+msgstr ""
+"摘要没有拿到时"
+
+#: ../../context.md:85
+msgid ""
+"Compaction always makes room, even when the summary request fails: the "
+"same messages leave the context, with no summary written in their place. "
+"Work is not lost — the segment is still stored and the agent can still "
+"recall it — but the checkpoint carries less, so tell minacode what "
+"matters if a long task continues past one."
+msgstr ""
+"即使摘要请求失败，压缩也一定会腾出空间：同样的消息会离开上下文，只是没有写下摘要。"
+"工作本身不会丢失——片段仍然存储着，agent 仍然可以取回——但检查点承载的信息更少，所"
+"以如果一个长任务要继续跨过它，请把要紧的事情再告诉 minacode 一次。"
+
+#: ../../context.md:90
+msgid ""
+"`/compact log` marks such a pass `no summary`, and `/compact` reports the"
+" reason on the spot. The usual causes are a summarizer that cannot fit "
+"the span, one slower than its `response_timeout`, and a `[compaction]` "
+"entry missing its url, key, or model — that last one is refused by name "
+"before the request, so the message tells you which entry to fix. See "
+"[Compaction model](configuration.md#compaction-model) for choosing an "
+"entry that avoids all three."
+msgstr ""
+"`/compact log` 会把这样的一次压缩标记为 `no summary`，`/compact` 则会当场报告原因。"
+"常见原因有三种：摘要模型放不下这段对话、比它的 `response_timeout` 还慢，以及 "
+"`[compaction]` 条目缺少 url、key 或 model——最后这种会在请求发出前就按名字拒绝，消"
+"息会告诉你要修哪个条目。如何选一个能避开这三种情况的条目，见"
+"[压缩模型](configuration.md#compaction-model)。"
+
+#: ../../context.md:96
+msgid "Sessions started before these features"
+msgstr ""
+"在这些功能之前开始的会话"
+
+#: ../../context.md:98
+msgid ""
+"Resuming a session older than a given feature shows blanks rather than "
+"errors. Segments compacted by an earlier version have no recorded time, "
+"scope, or model, so `/compact log` lists them with `—` and says the "
+"summary predates the log; summary tokens spent back then stayed in the "
+"overall `usage` total, so `/status` shows no `compaction usage` row until"
+" this session compacts again. Everything recorded from now on fills in "
+"normally."
+msgstr ""
+"恢复一个早于某项功能的会话时，看到的是空白而不是报错。由更早版本压缩出的片段没有记"
+"录时间、范围和模型，所以 `/compact log` 会以 `—` 列出它们，并说明摘要早于这份日"
+"志；那时花掉的摘要 token 留在总的 `usage` 里，因此在本次会话再次压缩之前，`/status` "
+"不会出现 `compaction usage` 这一行。从现在起记录的一切都会正常填入。"
+
+#: ../../context.md:104
 msgid "Prompt caching"
 msgstr "Prompt 缓存"
 
-#: ../../context.md:80
+#: ../../context.md:106
 msgid ""
 "Prompt caching lets a provider reuse work for an unchanged beginning of a"
 " request. The next request usually begins with the same instructions, "
@@ -217,7 +279,7 @@ msgstr ""
 "事件会追加到对话中，因此不会移动更早的 breakpoint。一次 compaction 会有意开启新的 cache epoch。连接 MCP "
 "server、改变已安装的 skill、切换模型或修改前部内容，都会降低下一次请求的缓存命中。"
 
-#: ../../context.md:89
+#: ../../context.md:115
 msgid ""
 "A request is reused only up to its first difference, so a change near the"
 " beginning — connecting an MCP server, installing a skill, switching "
@@ -227,7 +289,7 @@ msgstr ""
 "请求只会复用到第一处差异为止，因此靠前的改动——连接 MCP server、安装 skill、切换模型、启用 Provider "
 "侧工具——都会缩短可复用前缀。这也是把稳定内容放在最前面的原因。"
 
-#: ../../context.md:94
+#: ../../context.md:120
 msgid ""
 "OpenAI-compatible providers may reuse matching prefixes automatically; "
 "minacode supplies a stable cache key where the provider supports one. For"
@@ -238,11 +300,11 @@ msgstr ""
 " key。对于 Anthropic，minacode 会显式将工具和 system 指令标记为临时可缓存前缀。不同 provider "
 "的支持方式和统计口径可能不同。"
 
-#: ../../context.md:98
+#: ../../context.md:124
 msgid "Checking the hit rate"
 msgstr "检查命中率"
 
-#: ../../context.md:100
+#: ../../context.md:126
 msgid ""
 "`/status` reports cache-read tokens for the whole session and latest "
 "request, plus cache-write tokens when the provider exposes them:"
@@ -250,13 +312,13 @@ msgstr ""
 "`/status` 会显示整个 session 和最近一次请求的 cache-read token；如果 provider 提供统计，还会显示 "
 "cache-write token："
 
-#: ../../context.md:105
+#: ../../context.md:131
 msgid ""
 "The latest-request ratio also shows live in the status bar, beside the "
 "context fill, updating with each response."
 msgstr "最近一次请求的命中率也会实时显示在状态栏中，紧跟上下文占用，随每次响应更新。"
 
-#: ../../context.md:108
+#: ../../context.md:134
 msgid ""
 "The ratio varies with the provider, model, prompt length, and "
 "conversation. When request prefixes line up, it <span "
