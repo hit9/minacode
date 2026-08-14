@@ -29,6 +29,11 @@ COMMENT_RE = re.compile(r"^\s*<!--.*?-->\s*$", re.MULTILINE | re.DOTALL)
 INCLUDE_RE = re.compile(r"^```\{include\}\s*(?P<path>\S+)\s*\n```\s*$", re.MULTILINE)
 INLINE_TAG_RE = re.compile(r"</?(?:span|em|strong|br|sup|sub)\b[^>]*>")
 ANCHOR_RE = re.compile(r"^\(\S+\)=\s*$", re.MULTILINE)
+# Kept out of the single-file copy: the changelog is release history, not documentation, and it is
+# 65% of the bytes — a model reading llms-full.txt to learn how minacode works would spend most of
+# its context on versions it will never be asked about. It stays listed in llms.txt, one fetch away
+# for the questions it does answer.
+FULL_TEXT_SKIP = frozenset({"changelog"})
 
 
 def _page_order(app) -> list[str]:
@@ -99,13 +104,19 @@ def _generate(app, exception) -> None:
         title = app.env.titles[name].astext() if name in app.env.titles else name
         summary = _summary(text)
         index.append(f"- [{title}]({url(name)})" + (f": {summary}" if summary else ""))
-    index += ["", "## Optional", "", f"- [Full documentation as one file]({url('llms-full', '.txt')})", ""]
-    _write(app, "llms.txt", "\n".join(index))
-
     full = [f"# {app.config.project} {app.config.release} — full documentation", ""]
     for name, text in pages:
+        if name in FULL_TEXT_SKIP:
+            continue
         full += [f"<!-- source: {name}.md · {url(name)} -->", "", text, ""]
-    _write(app, "llms-full.txt", "\n".join(full))
+    body = "\n".join(full)
+
+    # The size is part of the offer: a consumer deciding whether to fetch the single file should
+    # not have to fetch it to find out what it costs.
+    tokens = round(len(body) / 4 / 1000)
+    index += ["", "## Optional", "", f"- [Every page except the changelog, as one file]({url('llms-full', '.txt')}): ~{tokens}K tokens", ""]
+    _write(app, "llms.txt", "\n".join(index))
+    _write(app, "llms-full.txt", body)
 
 
 def setup(app):
