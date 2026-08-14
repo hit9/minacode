@@ -46,6 +46,10 @@ describes the work rather than whichever message happened to start the window. T
 segments through `RecallContext` — listing, searching, or retrieving one — and none of them take
 up room in a request until it does.
 
+Only the newest 50 segments stay recallable; a session that compacts more often drops its oldest
+spans. `seg.N` keys keep counting, so the agent is told a segment is gone rather than handed a
+different one.
+
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.
 
