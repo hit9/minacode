@@ -47,6 +47,7 @@ __all__ = [
 if TYPE_CHECKING:
     from minacode.engine import Agent
     from minacode.mcp import MCPManager
+    from minacode.mentions import FileMentions
     from minacode.skill import SkillLibrary
 
 
@@ -391,6 +392,7 @@ class Session:
     update: UpdateStatus = field(default_factory=UpdateStatus)
     mcp: MCPManager | None = None
     skills: SkillLibrary | None = None
+    mentions: FileMentions | None = None  # runtime handle; holds the cached @file: path list
     images: ImageInputs = field(init=False, repr=False)
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
     uid: str = ""
@@ -423,6 +425,10 @@ class Session:
             from minacode.skill import SkillLibrary  # local import: skill is built on top of session
 
             self.skills = SkillLibrary.load(self)
+        if self.mentions is None:
+            from minacode.mentions import FileMentions  # local import: mentions is built on top of session
+
+            self.mentions = FileMentions(self)
         # The Delegate registration gate is frozen per session: computed once from the config this
         # session was constructed with, so a runtime /worker provider switch tunes an already-
         # enabled delegation and prepares the next session without flipping the tool block (and

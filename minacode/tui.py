@@ -537,11 +537,12 @@ class TuiApp:
             self._recognize_input()
         self._offer_mention_completions(buffer, delta)
 
-    # `@server` and `$skill` exist only to name something the completer knows, so the list opens as
-    # the mention is typed. Completion stays off for everything else (Buffer.complete_while_typing
-    # is False): the rest of this prompt is prose, where a menu on every keystroke is noise, and
-    # history search wants the flag off anyway.
-    MENTION_RE: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|(?<=[^A-Za-z0-9_]))[@$][A-Za-z0-9_.-]*$")
+    # `@file:`/`@mcp:`/`@skill:`, `@server`, and `$skill` exist only to name something the
+    # completer knows, so the list opens as the mention is typed (the bare `kind:` form too, since
+    # accepting a kind completion replaces the "@" with "kind:"). Completion stays off for
+    # everything else (Buffer.complete_while_typing is False): the rest of this prompt is prose,
+    # where a menu on every keystroke is noise, and history search wants the flag off anyway.
+    MENTION_RE: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|(?<=[^A-Za-z0-9_]))(?:[@$][A-Za-z0-9_./:-]*|(?:file|mcp|skill):[A-Za-z0-9_./:-]*)$")
 
     def _offer_mention_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
         if self.input_mode not in {"chat", "running"} or not delta.inserted or buffer.complete_state is not None:

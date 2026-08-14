@@ -1567,24 +1567,46 @@ def test_model_retry_wait_status_labels_live_phase(tmp_path):
     assert transitions == ["retrying", "working"]
 
 def test_mention_opens_completions_while_typing(monkeypatch):
-    """`@` and `$` name something the completer knows, so the list opens as they are typed —
-    everything else in this prompt is prose and waits for Tab."""
-    app = TuiApp(completer=CommandCompleter(mcp_servers=lambda: ("github", "playwright"), skills=lambda: ("release",)))
+    """`@`, `@kind:`, and `$` name something the completer knows, so the list opens as they are
+    typed and narrows as more characters arrive - everything else in this prompt is prose and
+    waits for Tab."""
+    app = TuiApp(
+        completer=CommandCompleter(
+            mcp_servers=lambda: ("github", "gitlab", "playwright"),
+            skills=lambda: ("release",),
+            files=lambda: (("minacode/tui.py", "minacode/tui.py"), ("minacode/hints.py", "minacode/hints.py")),
+        )
+    )
+
+    def completions():
+        state = app.input_buffer.complete_state
+        return None if state is None else [c.text for c in state.completions]
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
 
         pipe_input.send_text("use @gi")
-        wait_until(lambda: app.input_buffer.complete_state is not None)
-        assert [c.text for c in app.input_buffer.complete_state.completions] == ["github"]
+        wait_until(lambda: completions() == ["@mcp:github", "@mcp:gitlab"])
+
+        pipe_input.send_text("th")
+        wait_until(lambda: completions() == ["@mcp:github"])  # the list narrows as typing continues
+
+        pipe_input.send_text(" and @")
+        wait_until(lambda: completions() == ["file:", "mcp:", "skill:"])
+
+        pipe_input.send_text("fi")
+        wait_until(lambda: completions() == ["file:"])  # kinds stay while they prefix-match
+
+        pipe_input.send_text("le:tu")
+        wait_until(lambda: completions() == ["@file:minacode/tui.py"])
 
         pipe_input.send_text(" and $")
-        wait_until(lambda: app.input_buffer.complete_state is not None and app.input_buffer.text.endswith("$"))
-        assert [c.text for c in app.input_buffer.complete_state.completions] == ["release"]
+        wait_until(lambda: completions() == ["@skill:release"])
 
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
+
 
 
 def test_prose_and_email_do_not_open_completions(monkeypatch):
@@ -1603,3 +1625,21 @@ def test_prose_and_email_do_not_open_completions(monkeypatch):
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert seen == [None]
+
+
+def test_mention_trigger_matches_bare_kind_after_insertion():
+    """SPEC 4.4: accepting a kind replaces the "@" with "kind:", so the trigger must also match
+    the bare kind prefix to keep the menu open on that kind's source while its value is typed."""
+    app = TuiApp()
+    for text in (
+        "use @file:tu",
+        "use file:tu",
+        "use @",
+        "use file:",
+        "use @skill:rel",
+        "use mcp:git",
+    ):
+        assert app.MENTION_RE.search(text), text
+    assert not app.MENTION_RE.search("mail me at hit9@icloud")
+    assert not app.MENTION_RE.search("use file:notes here")  # a space ends the mention
+    assert not app.MENTION_RE.search("profile:x")  # "file" inside a word is not a mention

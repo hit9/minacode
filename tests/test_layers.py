@@ -48,6 +48,7 @@ LAYERS = {
     "minacode.tools": 6,
     "minacode.mcp": 6,
     "minacode.skill": 6,
+    "minacode.mentions": 6,
     "minacode.builtin_skills": 6,
     "minacode.session": 7,
     "minacode.image": 8,

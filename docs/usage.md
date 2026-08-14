@@ -97,13 +97,21 @@ session, or configure runtime behavior on the fly. See the
 
 ## Mentions
 
-Two inline references. Typing either symbol opens its list right away, and it narrows as you
-keep typing:
+Three inline references. Typing a mention symbol opens its list right away, and it narrows
+as you keep typing:
 
-- `@server` or `@server.tool` — connect to an [MCP](mcp.md) server on demand and point the
-  agent at that server or tool. <span class="marker">The connection remains active until you
-  disconnect it.</span>
-- `$skill` — inject a [skill](skills.md)'s full instructions into the current turn.
+- `@file:path` — point the agent at a file in the project. Small in-workspace files are
+  inlined into the turn as a FILE MENTIONS block; large files and anything outside the
+  workspace become a pointer that tells the agent to Read it. A missing path reports itself
+  instead of being silently dropped.
+- `@mcp:server` or `@mcp:server.tool` (`@server` / `@server.tool` also work) — connect to an
+  [MCP](mcp.md) server on demand and point the agent at that server or tool.
+  <span class="marker">The connection remains active until you disconnect it.</span>
+- `@skill:name` (`$name` also works) — inject a [skill](skills.md)'s full instructions into
+  the current turn.
+
+Typing `@` alone lists the three kinds; the menu merges files, MCP servers, and skills as you
+type, and completing always inserts the namespaced form.
 
 ## Keys and input editing
 

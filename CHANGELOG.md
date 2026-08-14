@@ -1,6 +1,20 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+
+- `@file:path` mentions point the agent at a file in the project. Typing `@` opens one menu
+  over files, MCP servers, and skills, and completing always inserts the canonical `@file:`,
+  `@mcp:`, and `@skill:` forms (the legacy `@server` and `$skill` forms still resolve). File
+  completion is a case-insensitive substring over the project's git-tracked and untracked
+  files, cached per session and refreshed when it goes stale. A mentioned file becomes a FILE
+  MENTIONS block appended to the turn: small in-workspace files are inlined, large files and
+  files outside the workspace become pointers that tell the agent to Read them, missing paths
+  report themselves, and at most ten files are inlined per turn.
+
+
 ## 0.24.1 - 2026-08-14
 
 ### Changed
@@ -19,8 +33,6 @@
   boundary compaction never crosses stays the request itself. A worker delegation is where this
   cost the most — the order is the entire spec, the worker cannot see the parent's history, and
   nothing re-sends it — but a long parent turn could lose its own request the same way.
-
-
 ## 0.24.0 - 2026-08-14
 
 ### Added

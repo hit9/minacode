@@ -1098,7 +1098,8 @@ class MCPManager:
             return "connected; no tools or resources advertised"
         return "not connected"
 
-    MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")
+    # Optional "mcp:" prefix names the namespaced form; the bare @server form stays valid.
+    MENTION_PATTERN = re.compile(r"@(?:mcp:)?([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?")
 
     def resolve_mentions(self, text: str) -> str:
         configs = {config.name: config for config in self.parse_configs()}

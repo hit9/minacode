@@ -166,6 +166,32 @@ def test_agent_runs_tool_loop_and_stops_at_max_steps(tmp_path):
     assert limited.messages[-1]["content"] == answer
 
 
+def test_file_mentions_land_as_their_own_user_message(tmp_path):
+    """The FILE MENTIONS block is appended as its own user message after the user's text, which
+    is never rewritten."""
+    (tmp_path / "small.py").write_text("print(1)\n", encoding="utf-8")
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+    assert agent.run("fix @file:small.py") == "done"
+    user_messages = [message for message in agent.model.requests[0] if message["role"] == "user"]
+    contents = [str(message.get("content") or "") for message in user_messages]
+    assert "fix @file:small.py" in contents  # the user's text is present and never rewritten
+    mentions = [content for content in contents if "--- FILE MENTIONS ---" in content]
+    assert len(mentions) == 1
+    assert "[small.py] 1 lines" in mentions[0]
+
+
 def test_agent_persists_responses_output_on_final_assistant_message(tmp_path):
     s = session(tmp_path)
     s.skills = SkillLibrary({})

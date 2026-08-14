@@ -25,11 +25,14 @@ class SkillLibrary:
 
     Each skill is a Markdown file with `name`/`description` frontmatter; the index (name + description)
     rides the cache-stable prefix so the model knows what exists, and the full body is pulled into the
-    conversation only when the model calls Skill(name) or the user references it with `$name`."""
+    conversation only when the model calls Skill(name) or the user references it with `$name` or
+    `@skill:name`."""
 
     FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
     META_LINE = re.compile(r"^([A-Za-z0-9_-]+):[ \t]*(.*)$", re.MULTILINE)
-    MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])\$([A-Za-z0-9_-]+)")
+    # Both legacy $name and canonical @skill:name forms name a skill; $ keeps its existing
+    # negative lookbehind, @skill: the same word-boundary rule as every other mention.
+    MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(?:\$|@skill:)([A-Za-z0-9_-]+)")
 
     def __init__(self, skills: dict[str, Skill]):
         self.skills = skills

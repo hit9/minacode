@@ -107,6 +107,10 @@ class Agent:
             skill_mentions = self.session.skills.resolve_mentions(user_text)
             if skill_mentions:
                 turn_messages.append({"role": "user", "content": skill_mentions, SESSION_EVENT_KEY: "skill_mentions"})
+        if self.session.mentions is not None:
+            file_mentions = self.session.mentions.resolve_mentions(user_text)
+            if file_mentions:
+                turn_messages.append({"role": "user", "content": file_mentions, SESSION_EVENT_KEY: "file_mentions"})
         self.checkpoint_turn(turn_messages, transcript_messages)
         try:
             for step in range(self.session.settings.max_steps):
