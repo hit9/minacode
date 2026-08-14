@@ -13,6 +13,9 @@
   MENTIONS block appended to the turn: small in-workspace files are inlined, large files and
   files outside the workspace become pointers that tell the agent to Read them, missing paths
   report themselves, and at most ten files are inlined per turn.
+- Quick-hint chips can be picked into the input one by one and combined before sending: Enter
+  on a focused chip fills the input (again unpicks it), Tab keeps cycling the chips, and a
+  manual edit hands the input back to normal editing.
 
 
 ## 0.24.1 - 2026-08-14

@@ -1069,6 +1069,7 @@ def test_tui_running_recall_with_draft_walks_history_when_nothing_queued(monkeyp
     assert cursor_up == []
     assert app.input_buffer.text == "draft text"
 
+
 def test_interactive_tui_modal_uses_real_j_and_enter_keys(monkeypatch):
     app = TuiApp()
     selected = {"index": 0}
@@ -1517,6 +1518,9 @@ def test_quick_hint_enter_fills_input_without_submitting():
     assert app._accept(app.input_buffer) is True
     assert submitted == []
     assert app.input_buffer.text == "show the diff"
+    assert app.quick_hint_focus == 1  # focus stays on the chip after picking
+    app.tab_or_complete(app.input_buffer, reverse=False)  # 1 -> 2
+    app.tab_or_complete(app.input_buffer, reverse=False)  # 2 -> -1 (wrap)
     assert app.quick_hint_focus == -1
     app._accept(app.input_buffer)
     assert [str(value) for value in submitted] == ["show the diff"]
@@ -1528,6 +1532,73 @@ def test_quick_hint_enter_on_empty_unfocused_input_does_nothing():
     assert submitted == []
 
 
+def test_quick_hint_enter_combines_multiple_chips():
+    app, submitted = quick_hint_app()
+    app.quick_hint_focus = 0
+    assert app._accept(app.input_buffer) is True
+    app.quick_hint_focus = 2
+    assert app._accept(app.input_buffer) is True
+    assert app.input_buffer.text == "run the tests\ncommit"
+    assert app.quick_hint_picked == ["run the tests", "commit"]
+    assert submitted == []
+
+
+def test_quick_hint_enter_again_unpicks_chip():
+    app, _ = quick_hint_app()
+    app.quick_hint_focus = 0
+    app._accept(app.input_buffer)
+    assert app.input_buffer.text == "run the tests"
+    app._accept(app.input_buffer)  # focus stays on the chip: Enter toggles it off
+    assert app.quick_hint_picked == []
+    assert app.input_buffer.text == ""
+
+
+def test_quick_hint_tab_cycles_while_picked():
+    app, _ = quick_hint_app()
+    app.quick_hint_focus = 0
+    app._accept(app.input_buffer)  # pick -> buffer holds the joined picked text
+    app.quick_hint_focus = -1
+    for expected in (0, 1, 2, -1):
+        app.tab_or_complete(app.input_buffer, reverse=False)
+        assert app.quick_hint_focus == expected
+
+
+def test_quick_hint_manual_edit_drops_picked_and_sends_edited_text():
+    app, submitted = quick_hint_app()
+    app.quick_hint_focus = 0
+    app._accept(app.input_buffer)  # pick -> buffer = "run the tests"
+    app.input_buffer.insert_text("!")
+    assert app.quick_hint_picked == []
+    assert app.quick_hint_focus == -1
+    assert app.input_buffer.text == "run the tests!"
+    app._accept(app.input_buffer)
+    assert [str(value) for value in submitted] == ["run the tests!"]
+
+
+def test_quick_hint_hints_change_resets_picked_keeps_text():
+    hints = ["run the tests", "show the diff"]
+    submitted = []
+    app = TuiApp(on_chat_submit=submitted.append, quick_hints_fn=lambda: tuple(hints))
+    app.set_idle()
+    app.quick_hint_focus = 0
+    app._accept(app.input_buffer)  # pick -> buffer = "run the tests"
+    assert app.quick_hint_picked == ["run the tests"]
+    hints[:] = ["commit", "push"]
+    app.quick_hints()  # lazy comparison resets the picked state
+    assert app.quick_hint_picked == []
+    assert app.input_buffer.text == "run the tests"
+
+
+def test_quick_hint_fragments_mark_picked_chips():
+    app, _ = quick_hint_app(("a", "b"))
+    app.quick_hint_focus = 0
+    app._accept(app.input_buffer)  # pick "a", focus stays on the chip
+    app.quick_hint_focus = -1
+    fragments = app.quick_hint_fragments()
+    assert ("class:quickhint", " \u2713 a ") in fragments
+    assert ("class:quickhint", " b ") in fragments
+
+
 def test_quick_hint_fragments_highlight_focused_chip():
     app, _ = quick_hint_app(("a", "b"))
     assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint.sep", " │ "), ("class:quickhint", " b ")]
@@ -1537,7 +1608,7 @@ def test_quick_hint_fragments_highlight_focused_chip():
 
 def test_quick_hint_placeholder_hints_keys_until_focused():
     app, _ = quick_hint_app()
-    assert app.placeholder_text() == "Tab cycles suggestions \u00b7 Enter fills the input, second Enter sends"
+    assert app.placeholder_text() == "Tab cycles suggestions \u00b7 Enter picks into the input (again unpicks) \u00b7 Enter on the input line sends"
     app.quick_hint_focus = 0
     assert app.placeholder_text() == ""
 
@@ -1547,11 +1618,13 @@ def test_quick_hint_placeholder_falls_back_without_hints():
     assert app.placeholder_text() == app.input_hint_fn()
 
 
-def test_quick_hint_mode_change_resets_focus():
+def test_quick_hint_mode_change_resets_focus_and_picked():
     app, _ = quick_hint_app()
     app.quick_hint_focus = 2
+    app.quick_hint_picked = ["run the tests"]
     app.set_running("working")
     assert app.quick_hint_focus == -1
+    assert app.quick_hint_picked == []
 
 
 def test_model_retry_wait_status_labels_live_phase(tmp_path):
@@ -1565,6 +1638,7 @@ def test_model_retry_wait_status_labels_live_phase(tmp_path):
     command_loop.agent.model.on_retry_wait(True)
     command_loop.agent.model.on_retry_wait(False)
     assert transitions == ["retrying", "working"]
+
 
 def test_mention_opens_completions_while_typing(monkeypatch):
     """`@`, `@kind:`, and `$` name something the completer knows, so the list opens as they are
@@ -1606,7 +1680,6 @@ def test_mention_opens_completions_while_typing(monkeypatch):
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
-
 
 
 def test_prose_and_email_do_not_open_completions(monkeypatch):

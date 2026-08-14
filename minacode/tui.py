@@ -216,6 +216,8 @@ class TuiApp:
         self.ready = threading.Event()
         self.input_mode = "chat"  # chat | dispatch | running | approval
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
+        self.quick_hint_picked: list[str] = []  # chips picked into the input, in pick order
+        self._last_quick_hints: tuple[str, ...] | None = None  # hints seen by the last quick_hints() call
         self.input_prompt = UiPrinter.PROMPT_PREFIX
         # Every line of the prompt except the last. The input row's prefix is a single-line
         # processor, so these are rendered as their own rows above it. See _set_mode.
@@ -338,6 +340,7 @@ class TuiApp:
         self._input_prompt_above = above.split("\n") if separator else []
         self.input_prompt = last
         self.quick_hint_focus = -1
+        self.quick_hint_picked = []
         if mode not in {"chat", "running"}:
             self.input_error = ""
         self.invalidate()
@@ -412,9 +415,16 @@ class TuiApp:
         self._schedule(close)
 
     def _accept(self, buffer: Buffer) -> bool:
-        if self.input_mode == "chat" and not buffer.text.strip() and 0 <= self.quick_hint_focus < len(self.quick_hints()):
-            self._reset_input(self.quick_hints()[self.quick_hint_focus])
-            self.quick_hint_focus = -1
+        if self.input_mode == "chat" and buffer.text == "\n".join(self.quick_hint_picked) and 0 <= self.quick_hint_focus < len(self.quick_hints()):
+            # Enter toggles the focused chip into (or out of) the picked set. Focus stays on the
+            # chip, so Tab keeps cycling and a later Enter can unpick; the input holds exactly the
+            # joined picked text until the user edits it or sends.
+            hint = self.quick_hints()[self.quick_hint_focus]
+            if hint in self.quick_hint_picked:
+                self.quick_hint_picked.remove(hint)
+            else:
+                self.quick_hint_picked.append(hint)
+            self._reset_input("\n".join(self.quick_hint_picked))
             return True
         text = buffer.text
         if self.input_mode == "approval" and self._input_pending is not None:
@@ -484,7 +494,13 @@ class TuiApp:
         self._reset_input(self._search_start_text)
 
     def quick_hints(self) -> tuple[str, ...]:
-        return self.quick_hints_fn()
+        hints = self.quick_hints_fn()
+        if hints != self._last_quick_hints:
+            self._last_quick_hints = hints
+            self.quick_hint_picked = []
+            if self.quick_hint_focus >= len(hints):
+                self.quick_hint_focus = -1
+        return hints
 
     def quick_hint_fragments(self) -> StyleAndTextTuples:
         hints = self.quick_hints()
@@ -495,7 +511,7 @@ class TuiApp:
             if index:
                 parts.append(("class:quickhint.sep", " │ "))
             style = "class:quickhint.focused" if index == self.quick_hint_focus else "class:quickhint"
-            parts.append((style, f" {hint} "))
+            parts.append((style, f" ✓ {hint} " if hint in self.quick_hint_picked else f" {hint} "))
         return parts
 
     def cycle_quick_hint_focus(self, reverse: bool = False) -> None:
@@ -509,15 +525,20 @@ class TuiApp:
         self.invalidate()
 
     def tab_or_complete(self, buffer: Buffer, *, reverse: bool) -> None:
-        # On an empty idle prompt Tab/Shift-Tab cycle the offered quick inputs; anywhere else they complete.
-        if self.input_mode == "chat" and not buffer.text and buffer.complete_state is None and self.quick_hints():
+        # On an idle prompt whose text is only picked suggestions Tab/Shift-Tab cycle the quick
+        # inputs; anywhere else they complete.
+        if self.input_mode == "chat" and buffer.text == "\n".join(self.quick_hint_picked) and buffer.complete_state is None and self.quick_hints():
             self.cycle_quick_hint_focus(reverse=reverse)
             return
         self.complete_input(buffer, reverse=reverse)
 
     def placeholder_text(self) -> str:
         if self.input_mode == "chat" and self.quick_hints():
-            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter fills the input, second Enter sends"
+            return (
+                ""
+                if self.quick_hint_focus >= 0
+                else "Tab cycles suggestions \u00b7 Enter picks into the input (again unpicks) \u00b7 Enter on the input line sends"
+            )
         return self.input_hint_fn()
 
     def _on_input_text_changed(self, buffer: Buffer) -> None:
@@ -529,6 +550,11 @@ class TuiApp:
         old = self._last_input_text
         if old == text:
             return
+        if self.quick_hint_picked and text != "\n".join(self.quick_hint_picked):
+            # A manual edit leaves the picked-chip agreement: drop the picks so Tab stops cycling
+            # chips and the edited text is what sends.
+            self.quick_hint_picked = []
+            self.quick_hint_focus = -1
         self.input_error = ""
         delta = _edit_delta(old, text)
         self._sync_input_images(old, delta)
