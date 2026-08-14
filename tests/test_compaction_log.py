@@ -142,7 +142,7 @@ def test_compact_log_lists_stored_segments(tmp_path):
     assert "3 compactions · 2 stored segments" in text  # a pass with nothing to evict stores none
     assert text.index("seg.2") < text.index("seg.1")  # newest first, like RecallContext(list)
     assert "08-13 13:12" in text
-    assert "manual · turn" in text
+    assert "manual · this turn" in text  # the reader's words, not the stored scope/trigger
     assert "first task" in text and "second task" in text
 
 
@@ -227,6 +227,54 @@ def test_viewer_opens_a_segment_and_scrolls_back_to_the_list(tmp_path):
     modal.key("escape", "")
     assert "[list]" in modal.text()
     assert "summary 2" not in modal.text()
+
+
+def open_first(tmp_path, **fields):
+    s = session(tmp_path)
+    s.state.compaction_count = 1
+    store(s, **fields)
+    lp = loop(s)
+    modal = Modal()
+    lp.tui = modal
+    compaction_log_viewer(lp)
+    modal.key("enter", "")
+    return modal.text()
+
+
+def test_viewer_detail_says_what_happened_in_plain_words(tmp_path):
+    text = open_first(tmp_path, messages=96, summary="reviewed the approval flow")
+
+    assert "Compacted automatically, dropping earlier conversation · 96 messages" in text
+    assert "What the agent kept" in text
+    assert "The conversation it replaced" in text
+    # The stored words are for the code, not the reader.
+    for jargon in ("evicted", "verbatim", "scope", "trigger"):
+        assert jargon not in text
+
+
+def test_viewer_detail_warns_when_the_summarizer_failed(tmp_path):
+    text = open_first(tmp_path, fallback=True, summary="")
+
+    assert "Summarizing failed" in text
+    assert "the excerpt below is all that was kept" in text
+    assert "(none recorded)" in text
+
+
+def test_viewer_detail_explains_a_segment_older_than_the_log(tmp_path):
+    text = open_first(tmp_path, created_at="", scope="", trigger="", messages=0, summary="")
+
+    # Missing detail is the record's age, not a failure of this compaction.
+    assert "Compacted before minacode kept these details" in text
+    assert "predates the log" in text
+
+
+def test_viewer_detail_only_mentions_a_missing_middle_when_there_is_one(tmp_path):
+    whole = open_first(tmp_path, text="user: short request")
+    assert "saved as written" in whole
+    assert "too long to keep whole" not in whole
+
+    bounded = open_first(tmp_path, text='head\n<bounded_output omitted="middle" max_tokens="8000" />\ntail')
+    assert "too long to keep whole, the middle is marked below" in bounded
 
 
 def test_viewer_closes_from_the_list(tmp_path):

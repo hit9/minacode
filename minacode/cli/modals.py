@@ -61,17 +61,44 @@ def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndText
     return rows
 
 
+# The stored scope/trigger are internal words; these are what the reader sees. The list gets the
+# short form, the opened segment gets the sentence — same fact, room for plain language.
+SEGMENT_SCOPE_WORDS = {"history": ("earlier", "earlier conversation"), "turn": ("this turn", "the turn that was running")}
+SEGMENT_TRIGGER_WORDS = {"auto": ("automatic", "Compacted automatically"), "manual": ("manual", "Compacted by /compact")}
+
+
 def segment_columns(segment: HistorySegment) -> tuple[str, str, str, str]:
     """One segment as (when, kind, messages, size) display columns. Older snapshots predate the
     metadata, so every field falls back to a dash rather than inventing a value."""
     stamp = segment.created_at
     when = f"{stamp[5:10]} {stamp[11:16]}" if len(stamp) >= 16 else "—"
-    kind = " · ".join(part for part in (segment.trigger, segment.scope) if part) or "—"
+    trigger = SEGMENT_TRIGGER_WORDS.get(segment.trigger, (segment.trigger, ""))[0]
+    scope = SEGMENT_SCOPE_WORDS.get(segment.scope, (segment.scope, ""))[0]
+    kind = " · ".join(part for part in (trigger, scope) if part) or "—"
     if segment.fallback:
-        kind += " · fallback"
+        kind += " · no summary"
     messages = f"{segment.messages} msgs" if segment.messages else "—"
     size = len(segment.text)
-    return when, kind, messages, f"{size / 1000:.1f}k" if size >= 1000 else str(size)
+    return when, kind, messages, (f"{size / 1000:.1f}k chars" if size >= 1000 else f"{size} chars")
+
+
+def segment_story(segment: HistorySegment) -> tuple[str, str]:
+    """(what this compaction was, what to know about it) as sentences for the opened segment.
+
+    The reader is looking at conversation that is no longer in context and wants to know why it
+    left and how much to trust what replaced it — not the internal words for the code path."""
+    trigger = SEGMENT_TRIGGER_WORDS.get(segment.trigger, ("", ""))[1]
+    scope = SEGMENT_SCOPE_WORDS.get(segment.scope, ("", ""))[1]
+    if not trigger:
+        # Recorded by a build that kept only the text: say that, so the missing detail below does
+        # not read as something that went wrong here.
+        return "Compacted before minacode kept these details", ""
+    headline = f"{trigger} to free room in the context" if not scope else f"{trigger}, dropping {scope}"
+    if segment.messages:
+        headline += f" · {segment.messages} messages"
+    if segment.fallback:
+        return headline, "Summarizing failed, so this was trimmed without a summary — the excerpt below is all that was kept."
+    return headline, ""
 
 
 def mcp_manager(loop: CommandLoop) -> None:
@@ -556,19 +583,38 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
         return rows
 
     def detail_rows(segment: HistorySegment, width: int) -> list[StyleAndTextTuples]:
-        when, kind, messages, text = segment_columns(segment)
+        when, _kind, _messages, size = segment_columns(segment)
+        headline, caveat = segment_story(segment)
         rule: StyleAndTextTuples = [("", "  "), ("ansibrightblack", "─" * max(0, width - 4))]
+        missing_summary = "(none recorded)" if segment.trigger else "(not recorded — this segment predates the log)"
         rows: list[StyleAndTextTuples] = [
-            [("ansicyan", f"  {segment.key}"), ("class:choice.disabled", f"  {when} · {kind} · {messages} · {text}")],
+            [("ansicyan", f"  {segment.key}"), ("class:choice.disabled", f"  {when}")],
             *wrapped_rows(segment.title, width),
             [],
-            [("", "  "), ("ansicyan", "summary at this compaction")],
-            *wrapped_rows(segment.summary or "(not recorded)", width),
-            [],
-            [("", "  "), ("ansicyan", "evicted messages"), ("class:choice.disabled", " · bounded verbatim excerpt")],
-            rule,
+            [("", "  "), ("class:choice.disabled", Text.clip_width(headline, width - 2))],
         ]
-        rows.extend(wrapped_rows(segment.text or "(excerpt unavailable)", width))
+        if caveat:
+            rows.extend(wrapped_rows(caveat, width))
+        rows.extend(
+            [
+                [],
+                [("", "  "), ("ansicyan", "What the agent kept")],
+                *wrapped_rows(segment.summary or missing_summary, width),
+                [],
+                [("", "  "), ("ansicyan", "The conversation it replaced")],
+                # Only claim the middle is missing when it actually is: the excerpt carries the
+                # marker bound_output leaves behind when a span was too large to keep whole.
+                [
+                    ("", "  "),
+                    (
+                        "class:choice.disabled",
+                        f"saved as written · {size}" + (" · too long to keep whole, the middle is marked below" if "<bounded_output" in segment.text else ""),
+                    ),
+                ],
+                rule,
+            ]
+        )
+        rows.extend(wrapped_rows(segment.text or "(nothing was saved)", width))
         return rows
 
     def body(width: int, height: int) -> list[StyleAndTextTuples]:
