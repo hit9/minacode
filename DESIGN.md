@@ -367,7 +367,10 @@ tool/diff replay metadata, even when the active turn is compacted.
 
 - Compact prior history first; the active turn only if the rebuilt request is still too large.
 - Keep the latest user boundary and a recent tail; never split assistant tool calls from their
-  results.
+  results. That boundary is what protects the request a turn is executing, so a user message the
+  runtime generates itself — a mention expansion, a protocol correction — is marked as a session
+  event and does not become the boundary; otherwise it inherits the protection and the request it
+  was appended to is summarized away mid-turn.
 - Feed the previous summary and structured goal/plan/known/checks to the compactor explicitly; an
   old summary is not ordinary conversation to summarize again; each evicted span is captured once.
 - Store a bounded verbatim excerpt as a `seg.N` segment; replace the evicted prefix with one

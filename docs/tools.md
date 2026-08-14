@@ -86,7 +86,8 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
   - Lists stored compacted segments newest first, retrieves an excerpt by its `seg.N` key, or
     searches titles and text with a case-insensitive regex such as `cache prefix|task memory`.
     Listing supports pagination; search results are capped matching lines. Segment titles are
-    loaded only on demand instead of occupying every request.
+    loaded only on demand instead of occupying every request. A key older than the
+    [retained window](context.md#compaction) says so.
 * - **`Note`**
   - Views or updates the task's goal, plan, success check, and learned facts. Updates are durable
     conversation history, so they preserve append-only prompt-cache prefixes and do not edit files.

@@ -1,6 +1,26 @@
 # Changelog
 
 
+## Unreleased
+
+### Changed
+
+- Compaction keeps the newest 50 history segments instead of every span a session ever evicted.
+  `seg.N` keys keep counting past the bound, so a key is never reused for different content, and
+  `RecallContext` answers a key below the window with what happened to it and where the retained
+  ones start rather than a bare `missing`. `/compact log` already showed compactions and stored
+  segments separately, so a capped session reads as what it is.
+
+### Fixed
+
+- Compaction no longer evicts the request a turn is executing when the runtime appended a message
+  of its own behind it: an `@server` or `$skill` mention expansion, or the protocol correction sent
+  after a model prints a tool call as text. Those are session events now, not user turns, so the
+  boundary compaction never crosses stays the request itself. A worker delegation is where this
+  cost the most — the order is the entire spec, the worker cannot see the parent's history, and
+  nothing re-sends it — but a long parent turn could lose its own request the same way.
+
+
 ## 0.24.0 - 2026-08-14
 
 ### Added

@@ -941,6 +941,19 @@ def test_note_empty_goal_and_check_explicitly_clear_state(tmp_path):
     assert s.state.check == ""
 
 
+def test_recall_context_distinguishes_a_dropped_segment_from_an_unknown_one(tmp_path):
+    """Only the newest segments are retained, so a key below the window is gone for good. Saying
+    that, with what is still reachable, is what stops the model from retrying the same key."""
+    s = session(tmp_path)
+    s.history.extend(HistorySegment(key=f"seg.{number}", title=f"span {number}", text="body") for number in range(7, 10))
+
+    result = RecallContextTool(s, [{"action": "get", "keys": ["seg.3", "seg.99", "seg.8"]}]).call()
+
+    assert "* seg.3: dropped; only the newest 3 segments are kept, from seg.7" in result
+    assert "* seg.99: missing" in result
+    assert '<Segment key="seg.8" title="span 8">' in result
+
+
 def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
     s = session(tmp_path)
     s.history.append(HistorySegment(key="seg.1", title="cache", text="needle"))

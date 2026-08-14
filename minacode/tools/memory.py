@@ -131,7 +131,7 @@ class RecallContextTool(Tool):
         for key in keys:
             segment = segments.get(key)
             if segment is None:
-                chunks.append(f"* {key}: missing")
+                chunks.append(f"* {key}: {self.missing_reason(key)}")
                 continue
             chunks.append(f"<Segment key={json.dumps(key)} title={json.dumps(segment.title)}>")
             chunks.append(segment.text.rstrip())
@@ -211,6 +211,16 @@ class RecallContextTool(Tool):
             "limit": limit,
             "before": before,
         }
+
+    def missing_reason(self, key: str) -> str:
+        """Why a key resolved to nothing: dropped by the retention bound, or never issued.
+
+        Only the retained window is recallable, so a key older than it is gone for good. Saying so
+        stops the retry that "missing" invites, and points at what is still there instead."""
+        oldest = self.session.history[0].key if self.session.history else ""
+        if oldest and int(key.split(".", 1)[1]) < int(oldest.split(".", 1)[1]):
+            return f"dropped; only the newest {len(self.session.history)} segments are kept, from {oldest}"
+        return "missing"
 
     def list_segments(self, request: Json) -> str:
         segments = list(reversed(self.session.history))

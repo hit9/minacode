@@ -15,6 +15,7 @@ import minacode.context as context_module
 from minacode.base import (
     MAX_AGENTS_MD_TOKENS,
     MAX_TOOL_OUTPUT_TOKENS,
+    SESSION_EVENT_KEY,
     ModelError,
 )
 from minacode.cli import CommandLoop
@@ -25,6 +26,7 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
+from minacode.model import ModelClient
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session
@@ -1411,3 +1413,188 @@ def test_compaction_override_does_not_change_request_budget(tmp_path):
     context = ContextManager(s)
     assert context.request_token_budget() == request_budget_for(1_048_576, DEFAULT_OUTPUT_RESERVE_TOKENS)
     assert context.request_token_budget() > request_budget_for(16_384, DEFAULT_OUTPUT_RESERVE_TOKENS)
+
+
+# The request that opened a turn survives compaction because latest_user_index protects the last
+# plain user message. Every user message the runtime generates on its own -- a mention expansion, a
+# protocol correction -- therefore has to be marked as a session event, or it takes that protection
+# for itself and the request it was expanding gets summarized away mid-turn. The worker is where
+# this bites hardest: that message is the entire order (docs/worker.md), the worker cannot see the
+# parent's history, and nothing re-sends it.
+RUNTIME_GENERATED_EVENTS = ("mcp_mentions", "skill_mentions", "tool_call_correction")
+
+
+@pytest.mark.parametrize("event", RUNTIME_GENERATED_EVENTS)
+def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, event):
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    context = ContextManager(s)
+    turn = [
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "runtime expansion", SESSION_EVENT_KEY: event},
+        *({"role": "assistant", "content": f"step {index}"} for index in range(20)),
+    ]
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "summary"}
+
+    messages = context.prepare_messages(FakeModel(), "system", turn)
+
+    assert turn[0]["content"] == "the whole order"
+    assert any(message.get("content") == "the whole order" for message in messages)
+    # Kept verbatim instead of summarized: the segment holds the steps, never the order itself.
+    assert "the whole order" not in s.history[-1].text
+    assert "step 0" in s.history[-1].text
+
+
+def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path):
+    s = session(tmp_path)
+    s.messages = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "runtime expansion", SESSION_EVENT_KEY: "skill_mentions"},
+        {"role": "assistant", "content": "working"},
+    ]
+
+    compacted, keep = ContextManager(s).compaction_parts()
+
+    assert [message["content"] for message in compacted] == ["old", "old answer"]
+    assert [message["content"] for message in keep] == ["the whole order", "runtime expansion", "working"]
+
+
+def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
+    """Compaction is a cache break, and where it breaks is what it costs. Keeping the request in
+    place puts the break behind it rather than on it, so the whole stable head -- system,
+    environment, the request itself -- is still reused by the request that follows a compaction.
+    The summary lands immediately after the request, so the expansion is what moves."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 1
+    context = ContextManager(s)
+    turn = [
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "runtime expansion", SESSION_EVENT_KEY: "skill_mentions"},
+        *({"role": "assistant", "content": f"step {index}"} for index in range(20)),
+    ]
+
+    class FakeModel:
+        def compact(self, text):
+            return {"summary": "summary"}
+
+    client = ModelClient(s)
+    before = client.chat_messages(context.model_messages("system", turn))
+    after = client.chat_messages(context.prepare_messages(FakeModel(), "system", turn))
+    shared = 0
+    for old, new in zip(before, after):
+        if old != new:
+            break
+        shared += 1
+
+    # The break falls after the request: everything through it, the request included, is reused.
+    assert before[shared - 1].get("content") == "the whole order"
+    assert after[shared].get("content", "").startswith(COMPACTION_SUMMARY_TITLE)
+
+
+def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
+    """The engine half of the same rule: what run() appends around the request is not a request."""
+    folder = os.path.join(tmp_path, ".minacode", "skills", "triage")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
+        handle.write("---\nname: triage\ndescription: triage a bug\n---\nReproduce first.\n")
+    s = session(tmp_path)  # discovers the skill written above
+    s.mcp = SimpleNamespace(resolve_mentions=lambda text: "--- MCP MENTIONS ---", render_tools_index=lambda: "", tools={}, resources={})
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def request(self, messages, tools=None):
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = FakeModel()
+    assert agent.run("please $triage this") == "done"
+
+    assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", None]
+    assert ContextManager(s).latest_user_index(s.messages) == 0
+
+
+def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
+    """Surviving one pass is not the same as surviving four. Each pass re-reads what the previous
+    one left, so a request kept by accident (a second copy, a stale checkpoint it hides behind)
+    would drift round by round: the invariant is one verbatim request, one checkpoint, and a
+    message stream where every tool result still answers a call that is still there."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 12000
+    context = ContextManager(s)
+
+    def steps(tag, count=8):
+        messages = []
+        for index in range(count):
+            key = f"{tag}{index}"
+            call_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": key, "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+            }
+            messages.extend((call_message, {"role": "tool", "tool_call_id": key, "content": f"tr.{key} " + "filler " * 900}))
+        return messages
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def compact(self, text):
+            self.calls += 1
+            return {"summary": f"summary {self.calls}"}
+
+    model = FakeModel()
+    turn = [
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "--- SKILL MENTIONS ---\nbody", SESSION_EVENT_KEY: "skill_mentions"},
+        {"role": "user", "content": "[Runtime protocol correction] ...", SESSION_EVENT_KEY: "tool_call_correction"},
+        *steps("a"),
+    ]
+    for round_index in range(4):
+        messages = context.prepare_messages(model, "system", turn)
+
+        assert [message.get("content") for message in messages].count("the whole order") == 1
+        assert turn[0]["content"] == "the whole order"
+        assert sum(1 for message in turn if str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE)) == 1
+        called = [raw["id"] for message in messages for raw in message.get("tool_calls") or []]
+        answered = [message.get("tool_call_id") for message in messages if message.get("role") == "tool"]
+        assert sorted(called) == sorted(answered), f"round {round_index} split a tool call from its result"
+        turn.extend(steps(f"b{round_index}", 6))
+
+    assert model.calls == 4  # one pass per round, never a compaction loop
+    assert [segment.key for segment in s.history] == ["seg.1", "seg.2", "seg.3", "seg.4"]
+
+
+def test_history_segments_keep_only_the_newest_window(tmp_path):
+    """Every compaction stores a span and nothing used to drop one, so a long session carried each
+    one it ever evicted. Keys keep counting past the bound: reusing a number the model has already
+    seen would answer a stale recall with a different span instead of saying it is gone."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+    limit = ContextManager.MAX_HISTORY_SEGMENTS
+
+    for index in range(limit + 5):
+        context.store_history_segment([{"role": "user", "content": f"span {index}"}], scope="history", trigger="auto", fallback=False)
+
+    assert len(s.history) == limit
+    assert [segment.key for segment in s.history] == [f"seg.{number}" for number in range(6, limit + 6)]
+    # The sixth span is the oldest one still retained; the five before it are gone with their text.
+    assert [segment.text for segment in s.history] == [f"user:\nspan {index}" for index in range(5, limit + 5)]
+
+
+def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
+    """The snapshot writes segments as an append-only delta while the list only grows; pruning
+    shortens it, and the digest guard has to notice and rewrite the whole list instead."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+    for index in range(ContextManager.MAX_HISTORY_SEGMENTS + 3):
+        context.store_history_segment([{"role": "user", "content": f"span {index}"}], scope="history", trigger="auto", fallback=False)
+        s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+
+    assert [segment.key for segment in restored.history] == [segment.key for segment in s.history]
+    assert [segment.text for segment in restored.history] == [segment.text for segment in s.history]

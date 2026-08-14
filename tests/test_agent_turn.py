@@ -11,6 +11,7 @@ from agent_harness import call, queue, session
 
 import minacode.engine as engine_module
 from minacode.base import (
+    SESSION_EVENT_KEY,
     LogBlock,
     MalformedToolCallError,
     ModelError,
@@ -29,6 +30,14 @@ from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotCodec
 from minacode.skill import SkillLibrary
 from minacode.tools import BashTool, ReadTool, Tool
+
+
+def _correction(name):
+    """A protocol correction exactly as the engine commits it.
+
+    Marked as a session event: it is runtime-generated, not a user turn, so compaction's
+    latest-user-message protection keeps pointing at the request that started the turn."""
+    return {"role": "user", "content": Agent.tool_call_correction(name), SESSION_EVENT_KEY: "tool_call_correction"}
 
 
 def _runner(tmp_path, input_reply=""):
@@ -494,7 +503,7 @@ def test_agent_recovers_after_five_textual_tool_corrections_that_stack_in_histor
     assert agent.run("continue") == "done"
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     base_messages = agent.model.requests[0]
-    corrections = [{"role": "user", "content": Agent.tool_call_correction(name)} for name in names]
+    corrections = [_correction(name) for name in names]
     for index, name in enumerate(names, start=1):
         correction_request = agent.model.requests[index]
         # Corrections stack instead of replacing each other: nothing already sent is withdrawn.
@@ -535,11 +544,15 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
     # The turn aborts, but the corrections it already sent survive: history is append-only.
     assert s.messages == [
         {"role": "user", "content": "continue"},
-        *[{"role": "user", "content": Agent.tool_call_correction("Bash")}] * engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS,
+        *[_correction("Bash")] * engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS,
     ]
     assert s._active_turn_messages == []
     restored = Session.load_snapshot(s.uid, config=s.config)
-    restored_messages = [message for message in restored.messages if not SessionSnapshotCodec.is_internal_message(message)]
+    # Drop only what the load itself appended: the corrections are session events too, and they are
+    # exactly what this asserts survived.
+    restored_messages = [
+        message for message in restored.messages if message.get(SESSION_EVENT_KEY) != "resumed" and not SessionSnapshotCodec.is_legacy_internal_message(message)
+    ]
     assert restored_messages == s.messages
 
 
@@ -795,7 +808,7 @@ def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
     queue(s, "live follow-up")
     agent = Agent(s, output_fn=lambda text: None)
     pseudo = '<invoke name="Bash"><parameter name="command">should-not-run</parameter></invoke>'
-    correction = {"role": "user", "content": Agent.tool_call_correction("Bash")}
+    correction = _correction("Bash")
 
     class FakeModel:
         def __init__(self):
