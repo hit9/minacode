@@ -49,10 +49,15 @@ The model decides when to delegate. When it does, it writes the `order` itself a
 approve the send; the worker then takes over the terminal until it answers, and its answer goes
 back to the parent, which decides what to do next.
 
-Four commands cover normal use — `/worker` for status, `/worker on` and `/worker off` for the
-session, and `/worker reset` to clear the worker's context. `/worker provider|model|reason|api`
-re-target it the way `/provider` and friends re-target the parent, live and for later spawns; see
-[Commands](commands.md) for the full syntax.
+| Command | Effect |
+|---|---|
+| `/worker` | Show its provider, model, state, and rounds |
+| `/worker on` · `/worker off` | Allow or stop delegation for this session |
+| `/worker reset` | Clear the worker's context |
+| `/worker provider NAME` | Point it at another provider entry |
+| `/worker model` · `reason` · `api` | Override one field of that entry; `default` restores it |
+
+[Commands](commands.md) has the full syntax.
 
 ## What you see
 
