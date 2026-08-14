@@ -1,7 +1,10 @@
 """`/compact log`: the compaction record, its persistence, and the two ways to review it."""
 
+import os
+from unittest import mock
+
 from minacode.base import LogBlock
-from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop
+from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, modals
 from minacode.cli.commands import compact
 from minacode.cli.modals import compaction_log_viewer
 from minacode.config import Config
@@ -230,15 +233,17 @@ def test_viewer_opens_a_segment_and_scrolls_back_to_the_list(tmp_path):
 
 
 def open_first(tmp_path, **fields):
+    """The opened first segment, rendered on a terminal tall enough to hold the whole detail."""
     s = session(tmp_path)
     s.state.compaction_count = 1
     store(s, **fields)
     lp = loop(s)
     modal = Modal()
     lp.tui = modal
-    compaction_log_viewer(lp)
-    modal.key("enter", "")
-    return modal.text()
+    with mock.patch.object(modals.shutil, "get_terminal_size", lambda *args: os.terminal_size((120, 200))):
+        compaction_log_viewer(lp)
+        modal.key("enter", "")
+        return modal.text()
 
 
 def test_viewer_detail_says_what_happened_in_plain_words(tmp_path):
@@ -275,6 +280,46 @@ def test_viewer_detail_only_mentions_a_missing_middle_when_there_is_one(tmp_path
 
     bounded = open_first(tmp_path, text='head\n<bounded_output omitted="middle" max_tokens="8000" />\ntail')
     assert "too long to keep whole, the middle is marked below" in bounded
+
+
+EXCERPT = (
+    "user:\nrefactor the parser\n\n"
+    "assistant:\nI'll start with the tokenizer.\n\n- extract `tokenize()`\n\n"
+    "tool:\ntr.1 Read parser.py\n  1 def parse(<Config> text):\n  2     return text\n"
+)
+
+
+def test_viewer_renders_the_excerpt_the_way_the_transcript_did(tmp_path):
+    modal_text = open_first(tmp_path, text=EXCERPT)
+    rows = [row.strip() for row in modal_text.splitlines()]
+
+    # User text carries the transcript's own user prefix instead of a bare `user:` label.
+    assert "user:" not in modal_text
+    assert any(row.endswith("refactor the parser") and row != "refactor the parser" for row in rows)
+    # Assistant text is markdown, as it was live: the list marker is rendered, not printed raw.
+    assert "- extract" not in modal_text
+    assert "tokenize()" in modal_text
+    assert "`" not in modal_text
+
+
+def test_viewer_leaves_tool_output_exactly_as_it_was_stored(tmp_path):
+    modal_text = open_first(tmp_path, text=EXCERPT)
+    rows = [row.strip() for row in modal_text.splitlines()]
+
+    # Tool blocks are command and file output, not prose: markdown would fold the line breaks and
+    # swallow the angle brackets, so they stay literal under a dim label.
+    assert "tool:" in rows
+    assert "tr.1 Read parser.py" in rows
+    assert "1 def parse(<Config> text):" in rows
+    assert "2     return text" in rows
+
+
+def test_viewer_falls_back_to_plain_text_for_an_unrecognized_excerpt(tmp_path):
+    modal_text = open_first(tmp_path, text="Touch these files:\nminacode/loop.py\n<Config> stays")
+    rows = [row.strip() for row in modal_text.splitlines()]
+
+    for line in ("Touch these files:", "minacode/loop.py", "<Config> stays"):
+        assert line in rows
 
 
 def test_viewer_closes_from_the_list(tmp_path):

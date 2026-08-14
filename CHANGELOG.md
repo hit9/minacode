@@ -7,8 +7,9 @@
 
 - The Delegate order viewer renders the order as markdown and aligns its field header.
 - `/compact log` reviews what compaction evicted: stored segments newest first with their time,
-  scope, and trigger, and the summary plus verbatim excerpt of the one opened. `/compact log seg.N`
-  prints one segment in full.
+  scope, and trigger, and for the one opened, the summary it produced plus the conversation it
+  replaced, rendered the way those messages looked in the transcript. `/compact log seg.N` prints
+  one segment in full.
 
 
 ## 0.23.0 - 2026-08-11

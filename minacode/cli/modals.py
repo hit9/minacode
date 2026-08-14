@@ -8,6 +8,7 @@ without a CommandLoop instance.
 
 from __future__ import annotations
 
+import re
 import shutil
 import threading
 from collections.abc import Callable
@@ -59,6 +60,50 @@ def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndText
             )
         )
     return rows
+
+
+# A stored excerpt is `role:` lines followed by that message's text (ContextManager.messages_text).
+SEGMENT_ROLE_LINE = re.compile(r"^(user|assistant|tool|system|message):$", re.MULTILINE)
+
+
+def segment_message_rows(ui: UiPrinter, text: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:
+    """The stored excerpt as display rows, rendered the way those messages looked when they were
+    live: user and assistant text through the same UiPrinter.render_message the scrollback uses,
+    captured at the modal's width instead of printed.
+
+    Only those two roles go through the message renderer. A tool block is raw command and file
+    output — markdown would fold its line breaks and eat its angle brackets — so it keeps a dim
+    role label and its text exactly as stored, which is also the fallback for an excerpt whose
+    shape this does not recognize (a legacy segment, or a bounded-output marker between blocks)."""
+    blocks: list[tuple[str, str]] = []
+    matches = list(SEGMENT_ROLE_LINE.finditer(text))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        if index == 0 and match.start():
+            blocks.append(("", text[: match.start()]))  # anything before the first role line
+        blocks.append((match.group(1), text[match.end() : end]))
+    if not blocks:
+        return wrapped_rows(text, width, margin)
+    rows: list[StyleAndTextTuples] = []
+    for role, content in blocks:
+        body = content.strip("\n")
+        if role in {"user", "assistant"} and body:
+            rows.extend(rendered_message_rows(ui, body, role, width, margin))
+            continue
+        if role:
+            rows.append([("", margin), ("class:choice.disabled", role + ":")])
+        rows.extend(wrapped_rows(body, width, margin) if body else [[]])
+    return rows
+
+
+def rendered_message_rows(ui: UiPrinter, text: str, role: str, width: int, margin: str) -> list[StyleAndTextTuples]:
+    """One message through the scrollback's own renderer, captured as rows. Same Rich capture as
+    UiPrinter.emit_answer, at the modal's content width so the markdown wraps to this viewport."""
+    console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(1, width - len(margin) * 2))
+    with console.capture() as capture:
+        ui.render_message(console, text, role, rule=False, indent=0)
+    cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
+    return [[("", margin), *row] for row in AskViewState._ansi_lines(cleaned)]
 
 
 # The stored scope/trigger are internal words; these are what the reader sees. The list gets the
@@ -614,7 +659,10 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
                 rule,
             ]
         )
-        rows.extend(wrapped_rows(segment.text or "(nothing was saved)", width))
+        if segment.text:
+            rows.extend(segment_message_rows(loop.ui, segment.text, width))
+        else:
+            rows.extend(wrapped_rows("(nothing was saved)", width))
         return rows
 
     def body(width: int, height: int) -> list[StyleAndTextTuples]:
