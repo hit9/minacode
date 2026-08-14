@@ -8,7 +8,6 @@ without a CommandLoop instance.
 
 from __future__ import annotations
 
-import re
 import shutil
 import threading
 from collections.abc import Callable
@@ -62,59 +61,15 @@ def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndText
     return rows
 
 
-# A stored excerpt is `role:` lines followed by that message's text (ContextManager.messages_text).
-SEGMENT_ROLE_LINE = re.compile(r"^(user|assistant|tool|system|message):$", re.MULTILINE)
-
-
-def segment_message_rows(ui: UiPrinter, text: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:
-    """The stored excerpt as display rows, rendered the way those messages looked when they were
-    live: user and assistant text through the same UiPrinter.render_message the scrollback uses,
-    captured at the modal's width instead of printed.
-
-    Only those two roles go through the message renderer. A tool block is raw command and file
-    output — markdown would fold its line breaks and eat its angle brackets — so it keeps a dim
-    role label and its text exactly as stored, which is also the fallback for an excerpt whose
-    shape this does not recognize (a legacy segment, or a bounded-output marker between blocks)."""
-    blocks: list[tuple[str, str]] = []
-    matches = list(SEGMENT_ROLE_LINE.finditer(text))
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        if index == 0 and match.start():
-            blocks.append(("", text[: match.start()]))  # anything before the first role line
-        blocks.append((match.group(1), text[match.end() : end]))
-    if not blocks:
-        return wrapped_rows(text, width, margin)
-    rows: list[StyleAndTextTuples] = []
-    for role, content in blocks:
-        body = content.strip("\n")
-        if role in {"user", "assistant"} and body:
-            rows.extend(rendered_message_rows(ui, body, role, width, margin))
-            continue
-        if role:
-            rows.append([("", margin), ("class:choice.disabled", role + ":")])
-        rows.extend(wrapped_rows(body, width, margin) if body else [[]])
-    return rows
-
-
-def rendered_message_rows(ui: UiPrinter, text: str, role: str, width: int, margin: str) -> list[StyleAndTextTuples]:
-    """One message through the scrollback's own renderer, captured as rows. Same Rich capture as
-    UiPrinter.emit_answer, at the modal's content width so the markdown wraps to this viewport."""
-    console = Console(force_terminal=True, color_system="truecolor", no_color=False, width=max(1, width - len(margin) * 2))
-    with console.capture() as capture:
-        ui.render_message(console, text, role, rule=False, indent=0)
-    cleaned = UiPrinter.strip_unknown_escapes(UiPrinter.strip_trailing_pad(capture.get()))
-    return [[("", margin), *row] for row in AskViewState._ansi_lines(cleaned)]
-
-
 # The stored scope/trigger are internal words; these are what the reader sees. The list gets the
 # short form, the opened segment gets the sentence — same fact, room for plain language.
 SEGMENT_SCOPE_WORDS = {"history": ("earlier", "earlier conversation"), "turn": ("this turn", "the turn that was running")}
 SEGMENT_TRIGGER_WORDS = {"auto": ("automatic", "Compacted automatically"), "manual": ("manual", "Compacted by /compact")}
 
 
-def segment_columns(segment: HistorySegment) -> tuple[str, str, str, str]:
-    """One segment as (when, kind, messages, size) display columns. Older snapshots predate the
-    metadata, so every field falls back to a dash rather than inventing a value."""
+def segment_columns(segment: HistorySegment) -> tuple[str, str, str]:
+    """One segment as (when, kind, messages) display columns. Older snapshots predate the metadata,
+    so every field falls back to a dash rather than inventing a value."""
     stamp = segment.created_at
     when = f"{stamp[5:10]} {stamp[11:16]}" if len(stamp) >= 16 else "—"
     trigger = SEGMENT_TRIGGER_WORDS.get(segment.trigger, (segment.trigger, ""))[0]
@@ -122,9 +77,12 @@ def segment_columns(segment: HistorySegment) -> tuple[str, str, str, str]:
     kind = " · ".join(part for part in (trigger, scope) if part) or "—"
     if segment.fallback:
         kind += " · no summary"
-    messages = f"{segment.messages} msgs" if segment.messages else "—"
-    size = len(segment.text)
-    return when, kind, messages, (f"{size / 1000:.1f}k chars" if size >= 1000 else f"{size} chars")
+    return when, kind, f"{segment.messages} msgs" if segment.messages else "—"
+
+
+def missing_summary_note(segment: HistorySegment) -> str:
+    """Stand-in for a segment with no summary, saying which of the two reasons it is."""
+    return "(none recorded)" if segment.trigger else "(not recorded — this segment predates the log)"
 
 
 def segment_story(segment: HistorySegment) -> tuple[str, str]:
@@ -142,7 +100,7 @@ def segment_story(segment: HistorySegment) -> tuple[str, str]:
     if segment.messages:
         headline += f" · {segment.messages} messages"
     if segment.fallback:
-        return headline, "Summarizing failed, so this was trimmed without a summary — the excerpt below is all that was kept."
+        return headline, "Summarizing failed, so this was trimmed without a summary — what it dropped survives only in the excerpt the agent can recall."
     return headline, ""
 
 
@@ -613,25 +571,25 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
     def list_rows(width: int) -> list[StyleAndTextTuples]:
         columns = [segment_columns(segment) for segment in segments]
         key_width = max((get_cwidth(segment.key) for segment in segments), default=0)
-        when_width = max((get_cwidth(when) for when, _kind, _messages, _size in columns), default=0)
-        kind_width = max((get_cwidth(kind) for _when, kind, _messages, _size in columns), default=0)
-        messages_width = max((get_cwidth(messages) for _when, _kind, messages, _size in columns), default=0)
-        size_width = max((get_cwidth(text) for _when, _kind, _messages, text in columns), default=0)
+        when_width = max((get_cwidth(when) for when, _kind, _messages in columns), default=0)
+        kind_width = max((get_cwidth(kind) for _when, kind, _messages in columns), default=0)
+        messages_width = max((get_cwidth(messages) for _when, _kind, messages in columns), default=0)
         rows: list[StyleAndTextTuples] = []
-        for index, (segment, (when, kind, messages, text)) in enumerate(zip(segments, columns)):
+        for index, (segment, (when, kind, messages)) in enumerate(zip(segments, columns)):
             selected = index == state.selected
             style = "ansicyan" if selected else "class:choice.disabled"
             lead = f"{'> ' if selected else '  '}{segment.key:<{key_width}}  {when:<{when_width}}  {kind:<{kind_width}}  "
-            lead += f"{messages:>{messages_width}}  {text:>{size_width}}  "
+            lead += f"{messages:>{messages_width}}  "
             title = Text.clip_width(segment.title, max(8, width - get_cwidth(lead)))
             rows.append([(style, lead), ("fg:default" if selected else "class:choice.disabled", title)])
         return rows
 
     def detail_rows(segment: HistorySegment, width: int) -> list[StyleAndTextTuples]:
-        when, _kind, _messages, size = segment_columns(segment)
+        """What the compaction was, then what it kept. The stored excerpt stays in the segment for
+        the model's RecallContext, but it is the raw conversation the summary already stands for —
+        showing it here buried the one thing worth reading."""
+        when, _kind, _messages = segment_columns(segment)
         headline, caveat = segment_story(segment)
-        rule: StyleAndTextTuples = [("", "  "), ("ansibrightblack", "─" * max(0, width - 4))]
-        missing_summary = "(none recorded)" if segment.trigger else "(not recorded — this segment predates the log)"
         rows: list[StyleAndTextTuples] = [
             [("ansicyan", f"  {segment.key}"), ("class:choice.disabled", f"  {when}")],
             *wrapped_rows(segment.title, width),
@@ -640,29 +598,8 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
         ]
         if caveat:
             rows.extend(wrapped_rows(caveat, width))
-        rows.extend(
-            [
-                [],
-                [("", "  "), ("ansicyan", "What the agent kept")],
-                *wrapped_rows(segment.summary or missing_summary, width),
-                [],
-                [("", "  "), ("ansicyan", "The conversation it replaced")],
-                # Only claim the middle is missing when it actually is: the excerpt carries the
-                # marker bound_output leaves behind when a span was too large to keep whole.
-                [
-                    ("", "  "),
-                    (
-                        "class:choice.disabled",
-                        f"saved as written · {size}" + (" · too long to keep whole, the middle is marked below" if "<bounded_output" in segment.text else ""),
-                    ),
-                ],
-                rule,
-            ]
-        )
-        if segment.text:
-            rows.extend(segment_message_rows(loop.ui, segment.text, width))
-        else:
-            rows.extend(wrapped_rows("(nothing was saved)", width))
+        rows.append([])
+        rows.extend(wrapped_rows(segment.summary or missing_summary_note(segment), width))
         return rows
 
     def body(width: int, height: int) -> list[StyleAndTextTuples]:

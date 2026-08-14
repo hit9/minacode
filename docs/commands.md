@@ -76,9 +76,9 @@ See [Switching sessions](usage.md#switching-sessions).
 **`/compact`** — Summarize and shrink the conversation immediately. minacode keeps
 long sessions within budget on its own, but `/compact` trims on demand.
 
-**`/compact log [seg.N]`** — Review what compaction has evicted: the stored segments
-newest first, and the summary plus verbatim excerpt of the one you open. Naming a
-segment prints it in full instead. See
+**`/compact log [seg.N]`** — Review what compaction kept: the stored segments newest
+first, and the summary of the one you open. Naming a segment prints its summary
+without the viewer. See
 [Keeping context manageable](context.md#keeping-context-manageable).
 
 **`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before turning

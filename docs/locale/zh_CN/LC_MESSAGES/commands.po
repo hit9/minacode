@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.16\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-13 19:57-0700\n"
+"POT-Creation-Date: 2026-08-13 20:25-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -174,13 +174,13 @@ msgstr "**`/compact`** — 立即总结并缩短对话。minacode 会自动控�
 
 #: ../../commands.md:79
 msgid ""
-"**`/compact log [seg.N]`** — Review what compaction has evicted: the "
-"stored segments newest first, and the summary plus verbatim excerpt of "
-"the one you open. Naming a segment prints it in full instead. See "
-"[Keeping context manageable](context.md#keeping-context-manageable)."
+"**`/compact log [seg.N]`** — Review what compaction kept: the stored "
+"segments newest first, and the summary of the one you open. Naming a "
+"segment prints its summary without the viewer. See [Keeping context "
+"manageable](context.md#keeping-context-manageable)."
 msgstr ""
-"**`/compact log [seg.N]`** — 回顾压缩丢弃了什么：按时间倒序列出已存储的片段，打开其"
-"中一个可看到摘要与逐字摘录；指定片段则直接完整打印。参见"
+"**`/compact log [seg.N]`** — 回顾压缩保留了什么：按时间倒序列出已存储的片段，并显示"
+"打开的那个片段的摘要；指定片段则不经查看器直接打印其摘要。参见"
 "[让上下文保持可控](context.md#keeping-context-manageable)。"
 
 #: ../../commands.md:84

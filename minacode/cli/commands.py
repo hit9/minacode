@@ -33,6 +33,7 @@ from minacode.cli.modals import (
     compaction_log_viewer,
     diff_viewer,
     mcp_manager,
+    missing_summary_note,
     segment_columns,
     select_choice,
 )
@@ -488,22 +489,28 @@ def language_command(loop: CommandLoop, args: str) -> str:
 
 
 def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
-    """`/compact log [seg.N]`: review what compaction has evicted. The viewer is the interactive
-    form; a headless run (piped input, no color, no alternate screen) gets the same segments as
-    log lines, and naming one segment always prints it in full so it can be piped."""
+    """`/compact log [seg.N]`: review what compaction kept. The viewer is the interactive form; a
+    headless run (piped input, no color, no alternate screen) gets the same segments as log lines,
+    and naming one segment prints its whole summary, which the list can only show a title of.
+
+    Neither form prints the stored excerpt. It is the raw conversation the summary already stands
+    for, kept for the model to reach through RecallContext; paging it past a reader hides the one
+    line they came for."""
     key = args.strip()
     segments = loop.session.history
     if key:
         segment = next((item for item in segments if item.key == key), None)
         if segment is None:
             return f"No stored segment {key}" if key.startswith("seg.") else "Usage: /compact log [seg.N]"
-        when, kind, messages, size = segment_columns(segment)
+        when, kind, messages = segment_columns(segment)
         return LogBlock(
             [
                 LogLine(segment.key, segment.title, LogRole.FIELD, LogEdge.BRANCH),
-                LogLine("compaction", f"{when} · {kind} · {messages} · {size}", LogRole.FIELD, LogEdge.CONTINUE),
-                LogLine("summary", segment.summary or "(not recorded)", LogRole.FIELD, LogEdge.CONTINUE),
-                *(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in (segment.text or "(excerpt unavailable)").splitlines()),
+                LogLine("compaction", f"{when} · {kind} · {messages}", LogRole.FIELD, LogEdge.CONTINUE),
+                *(
+                    LogLine("summary" if index == 0 else "", line, LogRole.FIELD, LogEdge.CONTINUE)
+                    for index, line in enumerate((segment.summary or missing_summary_note(segment)).splitlines())
+                ),
             ]
         )
     if not segments:

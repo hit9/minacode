@@ -6,10 +6,11 @@
 ### Added
 
 - The Delegate order viewer renders the order as markdown and aligns its field header.
-- `/compact log` reviews what compaction evicted: stored segments newest first with their time,
-  scope, and trigger, and for the one opened, the summary it produced plus the conversation it
-  replaced, rendered the way those messages looked in the transcript. `/compact log seg.N` prints
-  one segment in full.
+- `/compact log` reviews what compaction kept: stored segments newest first with when each ran,
+  whether it was automatic or manual, whether it covered prior conversation or the running turn,
+  and how much it evicted; opening one shows the summary it produced, which the active context
+  keeps only until the next compaction. `/compact log seg.N` prints that summary without the
+  viewer.
 
 
 ## 0.23.0 - 2026-08-11

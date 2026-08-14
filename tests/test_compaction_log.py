@@ -149,14 +149,16 @@ def test_compact_log_lists_stored_segments(tmp_path):
     assert "first task" in text and "second task" in text
 
 
-def test_compact_log_dumps_one_segment_in_full(tmp_path):
+def test_compact_log_prints_one_segments_whole_summary(tmp_path):
     s = session(tmp_path)
-    store(s, text="user: line one\nassistant: line two", summary="what survived")
+    store(s, text="user: line one\nassistant: line two", summary="what survived\nand the next step")
 
     text = block_text(compact(loop(s), "log seg.1"))
 
     assert "what survived" in text
-    assert "line one" in text and "line two" in text  # every line, nothing folded or clipped
+    assert "and the next step" in text  # a multi-line summary is not clipped to its first line
+    # The stored excerpt is for the model's RecallContext, not for paging past a reader here.
+    assert "line one" not in text
 
 
 def test_compact_log_rejects_an_unknown_segment(tmp_path):
@@ -225,7 +227,7 @@ def test_viewer_opens_a_segment_and_scrolls_back_to_the_list(tmp_path):
     detail = modal.text()
     assert "[detail]" in detail
     assert "summary 2" in detail
-    assert "request 2" in detail  # the verbatim excerpt, not just the summary
+    assert "request 2" not in detail  # the summary, not the conversation it stands for
 
     modal.key("escape", "")
     assert "[list]" in modal.text()
@@ -250,8 +252,7 @@ def test_viewer_detail_says_what_happened_in_plain_words(tmp_path):
     text = open_first(tmp_path, messages=96, summary="reviewed the approval flow")
 
     assert "Compacted automatically, dropping earlier conversation · 96 messages" in text
-    assert "What the agent kept" in text
-    assert "The conversation it replaced" in text
+    assert "reviewed the approval flow" in text
     # The stored words are for the code, not the reader.
     for jargon in ("evicted", "verbatim", "scope", "trigger"):
         assert jargon not in text
@@ -261,7 +262,6 @@ def test_viewer_detail_warns_when_the_summarizer_failed(tmp_path):
     text = open_first(tmp_path, fallback=True, summary="")
 
     assert "Summarizing failed" in text
-    assert "the excerpt below is all that was kept" in text
     assert "(none recorded)" in text
 
 
@@ -273,75 +273,11 @@ def test_viewer_detail_explains_a_segment_older_than_the_log(tmp_path):
     assert "predates the log" in text
 
 
-def test_viewer_detail_only_mentions_a_missing_middle_when_there_is_one(tmp_path):
-    whole = open_first(tmp_path, text="user: short request")
-    assert "saved as written" in whole
-    assert "too long to keep whole" not in whole
-
-    bounded = open_first(tmp_path, text='head\n<bounded_output omitted="middle" max_tokens="8000" />\ntail')
-    assert "too long to keep whole, the middle is marked below" in bounded
-
-
-EXCERPT = (
-    "user:\nrefactor the parser\n\n"
-    "assistant:\nI'll start with the tokenizer.\n\n- extract `tokenize()`\n\n"
-    "tool:\ntr.1 Read parser.py\n  1 def parse(<Config> text):\n  2     return text\n"
-)
-
-
-def test_viewer_renders_the_excerpt_the_way_the_transcript_did(tmp_path):
-    modal_text = open_first(tmp_path, text=EXCERPT)
-    rows = [row.strip() for row in modal_text.splitlines()]
-
-    # User text carries the transcript's own user prefix instead of a bare `user:` label.
-    assert "user:" not in modal_text
-    assert any(row.endswith("refactor the parser") and row != "refactor the parser" for row in rows)
-    # Assistant text is markdown, as it was live: the list marker is rendered, not printed raw.
-    assert "- extract" not in modal_text
-    assert "tokenize()" in modal_text
-    assert "`" not in modal_text
-
-
-def test_viewer_leaves_tool_output_exactly_as_it_was_stored(tmp_path):
-    modal_text = open_first(tmp_path, text=EXCERPT)
-    rows = [row.strip() for row in modal_text.splitlines()]
-
-    # Tool blocks are command and file output, not prose: markdown would fold the line breaks and
-    # swallow the angle brackets, so they stay literal under a dim label.
-    assert "tool:" in rows
-    assert "tr.1 Read parser.py" in rows
-    assert "1 def parse(<Config> text):" in rows
-    assert "2     return text" in rows
-
-
-def test_viewer_falls_back_to_plain_text_for_an_unrecognized_excerpt(tmp_path):
-    modal_text = open_first(tmp_path, text="Touch these files:\nminacode/loop.py\n<Config> stays")
-    rows = [row.strip() for row in modal_text.splitlines()]
-
-    for line in ("Touch these files:", "minacode/loop.py", "<Config> stays"):
-        assert line in rows
-
-
 def test_viewer_closes_from_the_list(tmp_path):
     modal = viewer(tmp_path)
 
     assert modal.key("escape", "") is None
     assert modal.key("q", "") is None
-
-
-def test_viewer_detail_keeps_the_evicted_text_line_for_line(tmp_path):
-    s = session(tmp_path)
-    s.state.compaction_count = 1
-    store(s, text="Touch these files:\nminacode/loop.py\n<Config> stays\n\n    indented line")
-    lp = loop(s)
-    modal = Modal()
-    lp.tui = modal
-    compaction_log_viewer(lp)
-
-    modal.key("enter", "")
-    rows = [row.strip() for row in modal.text().splitlines()]
-    for line in ("Touch these files:", "minacode/loop.py", "<Config> stays", "indented line"):
-        assert line in rows, f"{line!r} did not survive the viewer"
 
 
 def test_viewer_reports_an_empty_store(tmp_path):

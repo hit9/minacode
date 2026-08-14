@@ -62,11 +62,13 @@ starting a large refactor. `/status` reports how many compactions a session has 
 
 `/compact log` reviews them one by one: each stored segment shows when it was compacted, whether
 the pass was automatic or manual, whether it covered prior conversation or the running turn, and
-how much it evicted. Opening one shows the summary that compaction produced at that point — the
-active context keeps only the newest — followed by the conversation it replaced, rendered the way
-those messages looked in the transcript; tool output stays exactly as it was stored.
-`/compact log seg.N` prints one segment in full without the viewer. A pass that found nothing to
-evict stores no segment, so the compaction count can exceed the number of segments.
+how much it evicted. Opening one shows the summary that compaction produced at that point, which
+the active context no longer keeps once a later compaction replaces it. `/compact log seg.N`
+prints that summary without the viewer. A pass that found nothing to evict stores no segment, so
+the compaction count can exceed the number of segments.
+
+Neither form prints the stored excerpt of the evicted messages; that is the agent's to retrieve
+with `RecallContext`.
 
 ## Prompt caching
 
