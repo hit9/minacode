@@ -34,7 +34,9 @@
 - Provider `429` responses whose error body carries account/billing wording (e.g. OpenAI
   `insufficient_quota`, Kimi `exceeded_current_quota_error`, z.ai "Insufficient balance ...") are
   treated as permanent quota/billing failures: the request fails immediately instead of retrying
-  through the backoff. Transient rate-limit 429s retry exactly as before.
+  through the backoff. Transient rate-limit 429s retry exactly as before, including the ones
+  phrased with the same vocabulary — Google/Vertex `Quota exceeded for quota metric …` and
+  DashScope `Throttling.RateQuota` are per-minute limits, not billing failures.
 - Compaction's summary request honors `provider.response_timeout` instead of an undocumented 60s
   cap, which also made the timeout's "set it to 0 to disable" advice a no-op for compaction. A
   summary that hits the limit now says so in the fallback error.

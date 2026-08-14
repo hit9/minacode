@@ -673,6 +673,30 @@ def test_429_text_fallback_with_billing_marker_not_retryable():
     assert ModelClient.retryable_error(error) is False
 
 
+def test_429_rate_limits_phrased_as_quota_still_retry():
+    """Google/Vertex and DashScope phrase per-minute limits with the same nouns a billing failure
+    uses. These clear on their own, so failing them at once is the outcome the rule exists to
+    prevent — the markers have to be specific enough to tell the two apart."""
+    vertex = _openai_429({"message": "Quota exceeded for quota metric 'Generate requests per minute'.", "code": 429})
+    dashscope = _openai_429({"message": "Requests throttling triggered.", "code": "Throttling.RateQuota"})
+
+    assert ModelClient.retryable_error(_error_with_cause(vertex)) is True
+    assert ModelClient.retryable_error(_error_with_cause(dashscope)) is True
+
+
+def test_429_allocated_quota_exhaustion_is_still_permanent():
+    """DashScope's allocation quota is the permanent half of the same vocabulary."""
+    cause = _openai_429({"message": "Free allocated quota exceeded.", "code": "Throttling.AllocationQuota"})
+    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+
+
+def test_billing_wording_outside_a_429_still_retries():
+    """The billing rule is about 429 only. A 5xx is transient whatever its text mentions: an
+    expired certificate or a failing credit service upstream says nothing about the account."""
+    assert ModelClient.retryable_error(ModelError("Error code: 503 - upstream TLS certificate expired")) is True
+    assert ModelClient.retryable_error(ModelError("Error code: 500 - internal error in credit service")) is True
+
+
 def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
     """[compaction] overrides reach the summary request: model/reasoning/api come from the resolved
     entry, never the shared parent object, and an empty [compaction] inherits the active entry."""

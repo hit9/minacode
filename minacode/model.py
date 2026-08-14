@@ -127,17 +127,31 @@ class ModelClient:
     #     expired... renewing the subscription), "1314" (...enterprise package has expired...)
     # This is a fail-open heuristic: unknown wording retries as before, preferring to miss a
     # permanent error over misclassifying a transient rate limit as a billing failure.
+    #
+    # The markers are phrases, not words, because the vocabulary overlaps: a transient limit is
+    # commonly phrased with the same nouns the permanent class uses. "Quota exceeded for quota
+    # metric ... per minute" (Google/Vertex) and "Throttling.RateQuota" (DashScope) are per-minute
+    # limits that clear on their own, so a bare "quota" marker would fail them at once — the exact
+    # outcome this rule exists to prevent. Same for bare "expired" and "credit", which appear in
+    # transient infrastructure errors that have nothing to do with an account.
     _BILLING_MARKERS: ClassVar[tuple[str, ...]] = (
-        "insufficient",
-        "balance",
+        "insufficient_quota",
+        "insufficient balance",
+        "insufficient credit",
+        "exceeded_current_quota",
+        "exceeded your current quota",
+        "check your plan",
         "billing",
         "recharge",
-        "credit",
-        "quota",
-        "subscription",
-        "expired",
         "overdue",
-        "purchased",
+        "arrears",
+        "not purchased",
+        "notpurchased",
+        "allocationquota",
+        "account balance",
+        "no resource package",
+        "package has expired",
+        "subscription has expired",
     )
     _JSON_FENCE_RE: ClassVar[re.Pattern] = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
 
@@ -462,16 +476,18 @@ class ModelClient:
 
         # Fallback: parse status codes embedded in the error text or cause attributes.
         text = str(error).lower()
-        # The same billing-marker check guards the text fallback, ahead of the status parses: a
-        # "429 insufficient balance" message must not be rescued by a status attribute or the
-        # status-code regex and retried.
-        if ModelClient._billing_marker_hit(text):
-            return False
         status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
+        status_match = ModelClient._RETRYABLE_STATUS_RE.search(text)
+        # The same permanent-429 rule as the SDK branch above, gated on the status the same way:
+        # only a 429 can be a billing failure. It runs ahead of the status parses so a "429
+        # insufficient balance" message is not rescued by them and retried, but a 5xx that happens
+        # to mention an expired certificate stays transient.
+        if (str(status) == "429" or (status_match is not None and status_match.group(1) == "429")) and ModelClient._billing_marker_hit(text):
+            return False
         with contextlib.suppress(Exception):
             if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
                 return True
-        if ModelClient._RETRYABLE_STATUS_RE.search(text):
+        if status_match:
             return True
         return any(
             part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
