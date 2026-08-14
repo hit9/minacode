@@ -78,5 +78,10 @@ per-file-ignores = { "minacode/__init__.py" = ["F401"] }
 
 [tool.pyright]
 include = ["minacode"]
+# `uv build` leaves a full copy of the package under build/lib. An editor that analyzes any file in
+# the workspace type-checks that copy as a second definition of every class, so an assignment there
+# reports a mismatch between two same-named types (`ToolRunner* is not assignable to ToolRunner`).
+# `include` alone does not stop it, because the file is analyzed when opened.
+exclude = ["build", "dist", "**/__pycache__", "**/.venv"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
