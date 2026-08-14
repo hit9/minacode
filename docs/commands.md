@@ -58,6 +58,16 @@ Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Minacode maps
 their nearest supported level; unrecognized providers and models keep the selected
 value. Without an argument it opens a picker.
 
+**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
+used to reach the model. `/provider` and `/model` also confirm it as a step in their selection
+chain, since the right protocol depends on the model you just picked.
+
+An endpoint that serves several model families often exposes them on different protocols, and an
+OpenAI-compatible `/models` listing says nothing about which protocol serves which model — so a
+model offered by `/model` can still be rejected as unsupported. When that happens, pick a different
+protocol with `/api` (or `auto` to re-infer from the URL and model). The reply names the wire that
+took effect, and history is protocol-neutral, so switching mid-session is safe.
+
 ```{figure} ../snapshots/minacode-demo-switching-providers-models.gif
 :alt: Switching providers and models interactively during a session
 :width: 600px
@@ -81,59 +91,47 @@ first, and the summary of the one you open. Naming a segment prints its summary
 without the viewer. See
 [Keeping context manageable](context.md#keeping-context-manageable).
 
-**`/yolo`** — Toggle confirmation prompts. See [Safety](safety.md) before turning
-this off permanently.
+**`/worker [SUBCOMMAND]`** — Inspect or control the worker session. Tab completion offers the
+subcommands and their values; see [Worker delegation](worker.md#worker-delegation) for what a
+worker is.
 
-**`/hints`** — Toggle the model's suggested next-step chips at the idle prompt (the
-`NextHints` tool). See [Tools](tools.md).
+| Subcommand | Effect |
+|---|---|
+| `status` (default) | provider/model, reasoning, state, rounds, and context percent — or `worker: no active session` with the configured `[worker] provider` |
+| `on` · `off` | Toggle the `runtime.worker` setting |
+| `reset` | Clear the worker's context; file changes and merged diffs survive |
+| `provider` | Pick an entry, then flow on into the model and reasoning pickers, mirroring `/provider`'s chain; backing out of a stage keeps the earlier ones |
+| `provider NAME` · `provider off` | Re-target or clear the entry immediately, without the picker chain |
+| `model` · `reason` · `api` | Pick from that entry's models, reasoning efforts, and wire protocols (`auto`, `chat`, `responses`, `anthropic`); `default` restores inheritance |
 
-**`/strict`** — Toggle strict tool-call schemas (OpenAI / DeepSeek).
+Changes apply to a live worker and to later spawns alike. The `Delegate` tool block itself is
+fixed when the session starts, so a worker turned on mid-session takes effect next time.
 
-**`/worker [status|reset|on|off|provider|model|reason|api]`** — Inspect or control the worker session:
-`status` (default) reports readable lines — provider/model, reasoning, state, rounds, context
-percent — or `worker: no active session` plus the configured `[worker] provider` when no worker
-exists; `on`/`off` toggle the `runtime.worker` setting, and `reset` clears the worker's context
-(file changes and merged diffs survive). `provider` opens a picker over the provider entries —
-with `off` at the end to clear — and choosing one flows on into the worker model and then the
-reasoning pickers, mirroring `/provider`'s chain (backing out of any stage keeps the earlier
-stages already set); `provider NAME` re-targets the worker immediately and for future spawns
-without the cascade, while `provider off` clears the entry. `model`, `reason`, and `api` pick
-from the worker's entry models, reasoning efforts, and wire protocols (`auto`, `chat`,
-`responses`, `anthropic`), with `default` clearing an override back to inheriting the
-provider entry's value; tab completion offers the subcommands and their values. The `Delegate`
-tool block is fixed when the session starts — see [Worker
-delegation](worker.md#worker-delegation).
+Every `Delegate send` asks for approval, even under `yolo` — the order is a spec the model wrote
+for itself, so the brief is the one cheap check on it. A refusal carries your reason back to the
+model.
 
-A `Delegate send` is confirmed even under `yolo` — the approval brief is the one cheap check on a
-spec the model wrote for itself; see [Worker delegation](worker.md#worker-delegation). Every
-send asks, and a refused send feeds your reason back to the model.
+**`/language [NAME]`** — Show or force the session's reply language. `auto`, the default,
+follows the language you write in; a name like `Chinese` fixes it. The setting lives in the
+session rather than the config file, and workers inherit it.
 
-**`/language [NAME]`** — Show or force the session's reply language. Without an argument it
-prints the current value (`auto` by default). With a name like `Chinese` it appends one fixed
-`LANGUAGE OVERRIDE` block to the tail of the system prompt, so the cacheable prompt prefix
-stays unchanged; `auto` follows your messages and injects nothing. The setting is per-session —
-it is not written back to the configuration file — and workers inherit it from the parent on
-every `Delegate` send.
-
-**`/api [API]`** — Select or set the request protocol (`auto`, `chat`, `responses`, `anthropic`)
-used to reach the model. `/provider` and `/model` also confirm it as a step in their selection
-chain, since the right protocol depends on the model you just picked.
-
-An endpoint that serves several model families often exposes them on different protocols, and an
-OpenAI-compatible `/models` listing says nothing about which protocol serves which model — so a
-model offered by `/model` can still be rejected as unsupported. When that happens, pick a different
-protocol with `/api` (or `auto` to re-infer from the URL and model). The reply names the wire that
-took effect, and history is protocol-neutral, so switching mid-session is safe.
+## Settings and toggles
 
 **`/set KEY VALUE`** — Set `provider.*` or `runtime.*` for the session; tab-completes both keys
 and, where the values are a fixed set, the values. Example: `/set provider.response_timeout 900`.
 
-**`/resend`** — Cancel and re-send the in-flight model request without restarting the
-turn. Type it while a model request is waiting; it has no effect while the agent is
-running a tool or otherwise between model calls. The divider briefly reports the retry,
-keeps its elapsed timer and waiting pulse, then returns to `working` for the replacement
-request. Automatic retries also show their attempt and concise reason, such as
-`retrying 2/6 · timeout`, followed by `working · attempt 2/6` while that request continues:
+| Command | Effect |
+|---|---|
+| `/yolo` | Toggle confirmation prompts — read [Safety](safety.md) before leaving them off |
+| `/hints` | Toggle the model's next-step chips at the idle prompt (the `NextHints` tool) |
+| `/strict` | Toggle strict tool-call schemas (OpenAI / DeepSeek) |
+
+## While a turn runs
+
+**`/resend`** — Cancel and re-send the model request in flight, without restarting the turn.
+Use it when a response stalls. It only applies while a request is waiting, not while the agent
+runs a tool. The divider reports the retry and returns to `working`; automatic retries look the
+same, with their attempt and reason, such as `retrying 2/6 · timeout`:
 
 <div class="term-shot" role="img" aria-label="The running divider briefly changes from working to retrying while preserving its green waiting pulse and elapsed timer, then returns to working as the replacement model request continues."><span><span class="fs-i fs-rule">--</span><span class="fs-i fs-glow">-</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-add">●</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-working">working (11s)</span><span class="fs-i fs-rule"> ------------------------------</span></span><span class="fs-prompt">+&gt; /resend</span><span><span class="fs-i fs-rule">--</span><span class="fs-i fs-glow">-</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-add">●</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-working">retrying (12s)</span><span class="fs-i fs-rule"> ------------------------------</span></span><span><span class="fs-i fs-rule">--</span><span class="fs-i fs-glow">-</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-add">●</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-working">working (14s)</span><span class="fs-i fs-rule"> ------------------------------</span></span></div>
 
