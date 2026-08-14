@@ -63,9 +63,16 @@ class ContextManager:
     # the budget while all of them sit inside the kept tail -- and then every request is over budget
     # with an empty compactable head. Never zero: the latest exchange has to survive.
     COMPACT_MINIMUM_RECENT: ClassVar[int] = 2
+    # How many evicted spans stay recallable. Every compaction adds one and nothing removed them, so
+    # a long session carried every span it ever evicted -- each holding a bounded excerpt -- in
+    # memory and in the segment list rewritten into later snapshot deltas. The newest spans are what
+    # recall reaches for; the oldest describe work that is long done. Same bound as tool records,
+    # smaller because a segment is a whole conversation span rather than one tool result.
+    MAX_HISTORY_SEGMENTS: ClassVar[int] = 50
     MCP_DESCRIBE_BLOCK: ClassVar[re.Pattern] = re.compile(r"<MCPDescribe server=(\".*?\") tool=(\".*?\")>.*?</MCPDescribe>", re.DOTALL)
     SKILL_BLOCK: ClassVar[re.Pattern] = re.compile(r"<Skill name=(\".*?\")>.*?</Skill>", re.DOTALL)
     TOOL_RECORD_KEY: ClassVar[re.Pattern] = re.compile(r"\btr\.\d+\b")
+    SEGMENT_KEY: ClassVar[re.Pattern] = re.compile(r"seg\.(\d+)")
 
     def __init__(self, session: Session, model: ModelClient | None = None):
         self.session = session
@@ -387,8 +394,17 @@ class ContextManager:
                 return Tool.compact(str(message.get("content") or ""), 80)
         return Tool.compact(self.messages_text(messages[:1]), 80) or "compacted context"
 
+    def next_segment_key(self) -> str:
+        """The next `seg.N`, counting from the highest key ever issued rather than the list length.
+
+        Dropping the oldest segments shortens the list, so a length-derived key would hand a number
+        the model has already seen to different content — and a stale `RecallContext seg.7` would
+        silently answer with someone else's span instead of saying it is gone."""
+        numbers = [int(match.group(1)) for segment in self.session.history if (match := self.SEGMENT_KEY.fullmatch(segment.key))]
+        return f"seg.{max(numbers, default=len(self.session.history)) + 1}"
+
     def store_history_segment(self, compacted: list[Json], *, scope: str, trigger: str, fallback: bool, model: str = "") -> HistorySegment:
-        key = f"seg.{len(self.session.history) + 1}"
+        key = self.next_segment_key()
         text = self.bound_output(self.messages_text(compacted))
         segment = HistorySegment(
             key=key,
@@ -402,6 +418,7 @@ class ContextManager:
             model=model,
         )
         self.session.history.append(segment)
+        del self.session.history[: -self.MAX_HISTORY_SEGMENTS]  # newest kept; a shorter list is left alone
         return segment
 
     def _summary_block(self, segment: HistorySegment | None) -> list[Json]:

@@ -1566,3 +1566,35 @@ def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
 
     assert model.calls == 4  # one pass per round, never a compaction loop
     assert [segment.key for segment in s.history] == ["seg.1", "seg.2", "seg.3", "seg.4"]
+
+
+def test_history_segments_keep_only_the_newest_window(tmp_path):
+    """Every compaction stores a span and nothing used to drop one, so a long session carried each
+    one it ever evicted. Keys keep counting past the bound: reusing a number the model has already
+    seen would answer a stale recall with a different span instead of saying it is gone."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+    limit = ContextManager.MAX_HISTORY_SEGMENTS
+
+    for index in range(limit + 5):
+        context.store_history_segment([{"role": "user", "content": f"span {index}"}], scope="history", trigger="auto", fallback=False)
+
+    assert len(s.history) == limit
+    assert [segment.key for segment in s.history] == [f"seg.{number}" for number in range(6, limit + 6)]
+    # The sixth span is the oldest one still retained; the five before it are gone with their text.
+    assert [segment.text for segment in s.history] == [f"user:\nspan {index}" for index in range(5, limit + 5)]
+
+
+def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
+    """The snapshot writes segments as an append-only delta while the list only grows; pruning
+    shortens it, and the digest guard has to notice and rewrite the whole list instead."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+    for index in range(ContextManager.MAX_HISTORY_SEGMENTS + 3):
+        context.store_history_segment([{"role": "user", "content": f"span {index}"}], scope="history", trigger="auto", fallback=False)
+        s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+
+    assert [segment.key for segment in restored.history] == [segment.key for segment in s.history]
+    assert [segment.text for segment in restored.history] == [segment.text for segment in s.history]
