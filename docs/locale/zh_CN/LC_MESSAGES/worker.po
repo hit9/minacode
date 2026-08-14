@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.20\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-14 00:49-0700\n"
+"POT-Creation-Date: 2026-08-14 01:12-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -79,68 +79,55 @@ msgstr ""
 
 #: ../../worker.md
 msgid "Command"
-msgstr ""
-"命令"
+msgstr "命令"
 
 #: ../../worker.md
 msgid "Effect"
-msgstr ""
-"作用"
+msgstr "作用"
 
 #: ../../worker.md
 msgid "`/worker`"
-msgstr ""
-"`/worker`"
+msgstr "`/worker`"
 
 #: ../../worker.md
 msgid "Show its provider, model, state, and rounds"
-msgstr ""
-"显示它的 provider、模型、状态与轮数"
+msgstr "显示它的 provider、模型、状态与轮数"
 
 #: ../../worker.md
 msgid "`/worker on` · `/worker off`"
-msgstr ""
-"`/worker on` · `/worker off`"
+msgstr "`/worker on` · `/worker off`"
 
 #: ../../worker.md
 msgid "Allow or stop delegation for this session"
-msgstr ""
-"允许或停止本次会话的委派"
+msgstr "允许或停止本次会话的委派"
 
 #: ../../worker.md
 msgid "`/worker reset`"
-msgstr ""
-"`/worker reset`"
+msgstr "`/worker reset`"
 
 #: ../../worker.md
 msgid "Clear the worker's context"
-msgstr ""
-"清空 worker 的上下文"
+msgstr "清空 worker 的上下文"
 
 #: ../../worker.md
 msgid "`/worker provider NAME`"
-msgstr ""
-"`/worker provider NAME`"
+msgstr "`/worker provider NAME`"
 
 #: ../../worker.md
 msgid "Point it at another provider entry"
-msgstr ""
-"把它指向另一个 provider 条目"
+msgstr "把它指向另一个 provider 条目"
 
 #: ../../worker.md
 msgid "`/worker model` · `reason` · `api`"
-msgstr ""
-"`/worker model` · `reason` · `api`"
+msgstr "`/worker model` · `reason` · `api`"
 
 #: ../../worker.md
 msgid "Override one field of that entry; `default` restores it"
-msgstr ""
-"覆盖该条目的某一个字段；`default` 恢复继承"
+msgstr "覆盖该条目的某一个字段；`default` 恢复继承"
 
 #: ../../worker.md:60
 msgid "[Commands](commands.md) has the full syntax."
-msgstr ""
-"[命令](commands.md)里有完整语法。"
+msgstr "[命令](commands.md)里有完整语法。"
 
 #: ../../worker.md:62
 msgid "What you see"
@@ -261,21 +248,24 @@ msgstr ""
 
 #: ../../worker.md:108
 msgid ""
-"`View order` opens the full order in a read-only viewer, rendered as "
-"markdown."
-msgstr "`View order` 会在一个只读查看器里打开完整的 order，按 markdown 渲染。"
+"`View order` opens the full order in a read-only viewer — the same field "
+"rows, then the order itself rendered as markdown. Scroll it, then `Esc` "
+"back to the actions."
+msgstr ""
+"`View order` 会在只读查看器里打开完整的 order —— 同样的字段行，然后是按 markdown 渲"
+"染的 order 本身。可以滚动查看，`Esc` 返回操作行。"
 
-#: ../../worker.md:110
+#: ../../worker.md:113
 msgid "When nothing delegates"
 msgstr "当什么都没有被委派时"
 
-#: ../../worker.md:112
+#: ../../worker.md:115
 msgid ""
 "Delegation is the model's call, not a command you run — there is no way "
 "to force one. If a session never delegates, check in this order:"
 msgstr "委派由模型决定，不是你运行的命令——没有办法强制发起一次。如果一个会话始终没有委派，按以下顺序检查："
 
-#: ../../worker.md:115
+#: ../../worker.md:118
 msgid ""
 "`/worker` — it reports the configured entry, or `worker: no active "
 "session` with the `[worker] provider` it would use."
@@ -283,13 +273,13 @@ msgstr ""
 "`/worker` —— 它会报告配置的条目，或者在没有 worker 时显示 `worker: no active session` "
 "以及它将会使用的 `[worker] provider`。"
 
-#: ../../worker.md:117
+#: ../../worker.md:120
 msgid ""
 "`[worker] provider` and `[runtime] worker` in your config, or `/worker "
 "on` for this session."
 msgstr "配置里的 `[worker] provider` 与 `[runtime] worker`，或者用 `/worker on` 打开本次会话的委派。"
 
-#: ../../worker.md:118
+#: ../../worker.md:121
 msgid ""
 "**Whether delegation was available when the session started.** If "
 "`[worker] provider` was unset at startup, the model was never offered the"
@@ -301,17 +291,17 @@ msgstr ""
 "是空的，模型从一开始就没有拿到这个工具，现在打开要到下一个会话才生效。会话中途更换 provider "
 "没有问题——那只是把模型已经拥有的委派重新指向别处。"
 
-#: ../../worker.md:123
+#: ../../worker.md:126
 msgid ""
 "Otherwise the model simply saw no task worth handing over, which is the "
 "normal case for short work."
 msgstr "否则就只是模型没有看到值得交出去的任务，这在短任务里很正常。"
 
-#: ../../worker.md:125
+#: ../../worker.md:128
 msgid "Good to know"
 msgstr "值得知道的几点"
 
-#: ../../worker.md:127
+#: ../../worker.md:130
 msgid ""
 "**Reset drops the conversation, not the work.** `/worker reset` clears "
 "the worker's context — along with any wrong beliefs it picked up — while "
@@ -320,20 +310,20 @@ msgstr ""
 "**重置丢掉的是对话，不是工作成果。** `/worker reset` 会清空 worker "
 "的上下文——连同它可能积累的错误认知——而文件改动和已合并的 diff 都会保留。"
 
-#: ../../worker.md:129
+#: ../../worker.md:132
 msgid ""
 "**Every send asks, even under `yolo`.** The order is a spec the model "
 "wrote for itself, so the approval brief is the one cheap check on it."
 msgstr "**每一次发送都会询问，即使在 `yolo` 下也一样。** order 是模型给自己写的规格，因此这份审批简报是对它唯一的低成本检查。"
 
-#: ../../worker.md:131
+#: ../../worker.md:134
 msgid ""
 "**The worker inherits your environment.** Same directory, skills, MCP "
 "servers, and language setting; the files and the repository are what both"
 " actually share."
 msgstr "**worker 继承你的环境。** 同一个目录、skills、MCP 服务器和语言设置；真正由双方共享的是文件和这个仓库。"
 
-#: ../../worker.md:133
+#: ../../worker.md:136
 msgid ""
 "**Its tokens are its own.** The worker bills to its own entry and keeps "
 "its own context, and `/status` gives it separate rows — provider and "
@@ -343,7 +333,7 @@ msgstr ""
 "**它的 token 是它自己的。** worker 按自己的条目计费、保有自己的上下文，`/status` "
 "也会给它单独的几行——provider 与模型、上下文占用与轮数、缓存命中率——因此一次委派不会和父会话的数字混在一起。"
 
-#: ../../worker.md:136
+#: ../../worker.md:139
 msgid ""
 "**Its sessions are not yours to manage.** Worker snapshots ride along "
 "with the parent's and never appear in `/sessions`; when the parent's "
