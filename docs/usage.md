@@ -111,11 +111,9 @@ narrows as you keep typing:
 - `@skill:name` (`$name` also works) — inject a [skill](skills.md)'s full instructions into
   the current turn.
 
-Typing `@` alone lists the three kinds and completing inserts the namespaced form. Repository
-files are deliberately not merged into that menu. Put the cursor in `@file:<query>` and press
-`Tab`: when `fzf` is installed, minacode opens one real fzf session with the query prefilled. If
-fzf is unavailable or incompatible, a bounded case-insensitive substring menu is computed in the
-background instead, so scanning a large repository never blocks typing.
+Typing `@` lists the three kinds. Selecting one opens its candidates, which narrow as you type.
+Files stay out of this first list: pausing in `@file:<query>` opens fzf with the query prefilled;
+`Tab` opens it immediately. Without fzf, a bounded literal fallback runs in the background.
 
 File candidates include hidden, tracked, and untracked files, but exclude every `.git` directory
 and paths ignored by Git. In a non-Git directory, the fallback honors nested `.gitignore` files

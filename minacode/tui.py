@@ -160,6 +160,10 @@ class TuiApp:
     ANIMATION_INTERVAL: ClassVar[float] = 1 / 30
     # Idle refresh: no animation runs on the idle screen, only the 0.2s index and MCP spinners.
     IDLE_REFRESH_INTERVAL: ClassVar[float] = 0.2
+    # Let a namespace selection settle before handing it to its second-stage completion UI. This
+    # keeps rapid typing and cycling in the first-stage menu responsive without requiring another
+    # key press to open the file picker or the MCP/skill candidate list.
+    MENTION_TRANSITION_DELAY: ClassVar[float] = 0.12
 
     def __init__(
         self,
@@ -225,6 +229,7 @@ class TuiApp:
         self.quick_hint_picked: list[str] = []  # chips picked into the input, in pick order
         self._last_quick_hints: tuple[str, ...] | None = None  # hints seen by the last quick_hints() call
         self._file_picker_active = False
+        self._mention_transition_timer: asyncio.TimerHandle | None = None
         self.input_prompt = UiPrinter.PROMPT_PREFIX
         # Every line of the prompt except the last. The input row's prefix is a single-line
         # processor, so these are rendered as their own rows above it. See _set_mode.
@@ -545,12 +550,16 @@ class TuiApp:
             self.cycle_quick_hint_focus(reverse=reverse)
             return
         target = self._file_mention_at_cursor(buffer)
-        if not reverse and buffer.complete_state is None and target is not None:
+        if not reverse and target is not None:
             span, end = target
             if self.file_picker_available_fn() and self.app is not None:
+                # Commit a visible @file: preview before the picker snapshots the buffer. This also
+                # makes Tab an immediate accelerator during the namespace transition delay.
+                buffer.complete_state = None
                 self._start_file_picker(buffer, span, end)
                 return
-            self._refresh_file_completions(buffer)
+            if buffer.complete_state is None:
+                self._refresh_file_completions(buffer)
         self.complete_input(buffer, reverse=reverse)
 
     def placeholder_text(self) -> str:
@@ -584,18 +593,81 @@ class TuiApp:
         self._offer_mention_completions(buffer, delta)
 
     def _offer_mention_completions(self, buffer: Buffer, delta: _EditDelta) -> None:
+        self._cancel_mention_transition()
         if self.input_mode not in {"chat", "running"} or not delta.inserted:
             return
         span = active_mention(buffer.document.text_before_cursor)
         if span is None:
             return
+        selected_namespace = delta.inserted in {"file:", "mcp:", "skill:"} and delta.prefix > 0 and buffer.text[delta.prefix - 1] == "@"
+        interactive_transition = len(delta.inserted) == 1 or selected_namespace
         if span.kind == "file":
-            if not self.file_picker_available_fn():
+            picker_available = self.file_picker_available_fn()
+            if picker_available and self.app is not None and interactive_transition:
+                self._schedule_file_picker(buffer)
+            elif not picker_available:
                 self._refresh_file_completions(buffer)
             return
-        if buffer.complete_state is not None:
-            buffer.cancel_completion()
+        if span.kind in {"mcp", "skill"}:
+            if not interactive_transition:
+                return
+            # Completion selection updates the document before prompt-toolkit publishes the newly
+            # selected row in complete_state. Always defer this namespace transition so it observes
+            # the settled state; continued typing cancels and reschedules it with the latest query.
+            self._schedule_name_completions(buffer)
+            return
+        state = buffer.complete_state
+        if state is not None:
+            # No row is selected, so preserving the current document while dropping the stale
+            # completion state is safe. cancel_completion() would restore its older document.
+            buffer.complete_state = None
         buffer.start_completion(select_first=False)
+
+    def _cancel_mention_transition(self) -> None:
+        timer = self._mention_transition_timer
+        self._mention_transition_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_mention_transition(self, buffer: Buffer, callback: Callable[[Buffer], None]) -> None:
+        app = self.app
+        if app is None or not app.is_running:
+            return
+        text, cursor = buffer.text, buffer.cursor_position
+
+        def transition() -> None:
+            self._mention_transition_timer = None
+            if self.input_mode not in {"chat", "running"} or buffer.text != text or buffer.cursor_position != cursor:
+                return
+            callback(buffer)
+
+        loop = app.loop
+        assert loop is not None
+        self._mention_transition_timer = loop.call_later(self.MENTION_TRANSITION_DELAY, transition)
+
+    def _schedule_name_completions(self, buffer: Buffer) -> None:
+        def show(current: Buffer) -> None:
+            span = active_mention(current.document.text_before_cursor)
+            if span is None or span.kind not in {"mcp", "skill"}:
+                return
+            # Keep the selected namespace as real input instead of restoring the first-stage
+            # document, then replace that menu with the namespace's own candidates.
+            current.complete_state = None
+            current.start_completion(select_first=False)
+
+        self._schedule_mention_transition(buffer, show)
+
+    def _schedule_file_picker(self, buffer: Buffer) -> None:
+        def open_picker(current: Buffer) -> None:
+            target = self._file_mention_at_cursor(current)
+            if target is None or self._file_picker_active:
+                return
+            # A namespace chosen from the first-stage menu is still a preview until its completion
+            # state is discarded. Commit it before fzf takes over so Escape returns to @file:.
+            current.complete_state = None
+            self._start_file_picker(current, *target)
+
+        self._schedule_mention_transition(buffer, open_picker)
 
     @staticmethod
     def _file_mention_at_cursor(buffer: Buffer) -> tuple[MentionSpan, int] | None:
@@ -620,7 +692,10 @@ class TuiApp:
             def show() -> None:
                 if buffer.text == text and buffer.cursor_position == cursor and self._file_mention_at_cursor(buffer) is not None:
                     if buffer.complete_state is not None:
-                        buffer.cancel_completion()
+                        # Preserve a namespace or path currently previewed in the input. Restoring
+                        # the completion state's original document would jump back to the parent
+                        # menu just as the file candidates become ready.
+                        buffer.complete_state = None
                     buffer.start_completion(select_first=False)
                     self.invalidate()
 
@@ -629,6 +704,7 @@ class TuiApp:
         self.file_complete_fn(query, ready)
 
     def _start_file_picker(self, buffer: Buffer, span: MentionSpan, end: int) -> None:
+        self._cancel_mention_transition()
         if self._file_picker_active or self.app is None:
             return
         self._file_picker_active = True

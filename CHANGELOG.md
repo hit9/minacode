@@ -6,10 +6,10 @@
 ### Added
 
 - `@file:path` mentions point the agent at a file in the project. `@` lists the bounded
-  namespaces, MCP servers, and skills without scanning repository files; `Tab` inside
-  `@file:<query>` opens one real fzf session when supported, with a non-blocking literal fallback
-  otherwise. Candidates include tracked, untracked, and non-ignored hidden files while excluding
-  `.git` and every Git-ignored path. Quoted mentions round-trip spaces, Unicode, and punctuation.
+  namespaces without scanning repository files; selecting one opens its candidates. Pausing in
+  `@file:<query>` opens fzf when supported (`Tab` opens it immediately), with a non-blocking literal
+  fallback otherwise. Candidates exclude `.git` and every Git-ignored path. Quoted mentions
+  round-trip spaces, Unicode, and punctuation.
   The canonical `@mcp:` and `@skill:` forms and legacy `@server` and `$skill` forms still resolve.
   Mentioned files become a bounded FILE MENTIONS block in initial and queued messages: small text
   files are inlined, while large, binary, outside-workspace, missing, or excess files degrade to

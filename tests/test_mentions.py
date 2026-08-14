@@ -319,6 +319,17 @@ def test_fzf_picker_cancel_and_protocol_failure_are_bounded(tmp_path):
     assert result.unavailable
 
 
+def test_fzf_picker_caches_missing_executable(monkeypatch, tmp_path):
+    mentions = session(tmp_path).mentions
+    calls = []
+    monkeypatch.setattr("minacode.mentions.shutil.which", lambda name: calls.append(name))
+    picker = FzfPicker(mentions)
+
+    assert not picker.available()
+    assert not picker.available()
+    assert calls == ["fzf"]
+
+
 def test_fzf_picker_candidate_failure_routes_to_fallback(monkeypatch, tmp_path):
     executable = fake_fzf(tmp_path, "sys.stdin.buffer.read()\nraise SystemExit(1)\n")
     mentions = session(tmp_path).mentions

@@ -460,14 +460,16 @@ class FzfPicker:
         self.mentions = mentions
         self.name = executable
         self._executable: str | None = None
+        self._resolved = False
         self._probed = False
         self._failed = False
 
     def available(self) -> bool:
         if self._failed:
             return False
-        if self._executable is None:
+        if not self._resolved:
             self._executable = shutil.which(self.name)
+            self._resolved = True
         return self._executable is not None
 
     def pick(self, query: str) -> FilePick:

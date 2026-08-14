@@ -1697,15 +1697,40 @@ def test_mention_opens_completions_while_typing(monkeypatch):
         pipe_input.send_text(" and @")
         wait_until(lambda: completions() == ["@file:", "@mcp:", "@skill:"])
 
-        pipe_input.send_text("fi")
-        wait_until(lambda: completions() == ["@file:"])  # kinds stay while they prefix-match
+        pipe_input.send_text("mcp:")
+        wait_until(lambda: completions() == ["@mcp:github", "@mcp:gitlab", "@mcp:playwright"])
 
-        pipe_input.send_text("le:tu")
+        pipe_input.send_text("gi")
+        wait_until(lambda: completions() == ["@mcp:github", "@mcp:gitlab"])
+
+        pipe_input.send_text(" and @file:tu")
         wait_until(lambda: completions() == ["@file:minacode/tui.py"])
 
         pipe_input.send_text(" and $")
         wait_until(lambda: completions() == ["@skill:release"])
 
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
+def test_selecting_mention_kind_opens_its_candidate_list(monkeypatch):
+    app = TuiApp(completer=CommandCompleter(skills=lambda: ("release", "review")))
+
+    def completions():
+        state = app.input_buffer.complete_state
+        return None if state is None else [c.text for c in state.completions]
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("@")
+        wait_until(lambda: completions() == ["@file:", "@mcp:", "@skill:"])
+
+        # Shift-Tab selects the last namespace row. Once that selection settles, its own candidates
+        # replace the parent namespace menu without another key press.
+        pipe_input.send_text("\x1b[Z")
+        wait_until(lambda: app.input_buffer.text == "@skill:")
+        wait_until(lambda: completions() == ["@skill:release", "@skill:review"])
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
@@ -1757,15 +1782,35 @@ def test_file_picker_tab_replaces_only_active_span(monkeypatch):
     run_interactive_tui(monkeypatch, app, drive=drive)
 
 
+def test_file_picker_opens_after_typing_without_tab(monkeypatch):
+    queries = []
+    app = TuiApp(
+        file_picker_available_fn=lambda: True,
+        file_picker_fn=lambda query: (queries.append(query), FilePick("minacode/tui.py"))[1],
+    )
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("inspect @file:tui")
+        wait_until(lambda: app.input_buffer.text == "inspect @file:minacode/tui.py")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert queries == ["tui"]
+
+
 def test_file_picker_cancel_keeps_buffer(monkeypatch):
-    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda _query: FilePick())
+    queries = []
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda query: (queries.append(query), FilePick())[1])
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
         pipe_input.send_text("@file:keep")
-        pipe_input.send_text("\t")
-        time.sleep(0.05)
+        wait_until(lambda: queries == ["keep"] and not app._file_picker_active)
+        time.sleep(app.MENTION_TRANSITION_DELAY * 2)
         assert app.input_buffer.text == "@file:keep"
+        assert queries == ["keep"]  # Cancel does not reopen until the input changes again.
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)

@@ -38,8 +38,8 @@ The following are settled decisions for this implementation:
 * The fuzzy backend is the external `fzf` executable, used as one long-lived interactive
   process per picker session. It is not invoked once per keystroke and is not used through
   repeated `fzf --filter` calls.
-* Opening the picker is explicit: press Tab while the cursor is inside an unfinished
-  `@file:` mention. Merely typing `@file:` does not take over the terminal.
+* Opening the picker is automatic after 120 ms without an input edit while the cursor is inside an
+  unfinished `@file:` mention. Tab remains an immediate accelerator; it is not required.
 * fzf receives the existing text after `@file:` as its initial query and owns subsequent
   fuzzy matching, input handling, result rendering, and selection for that picker session.
 * RapidFuzz is not added. It is a fast compiled matcher, but it would still leave Python in
@@ -52,7 +52,7 @@ The following are settled decisions for this implementation:
   matching.
 * fzf is optional and is never downloaded, installed, or upgraded automatically.
 * Actual file rows are not inserted into the generic bare-`@` menu. The bare menu advertises
-  the `@file:` namespace; file discovery begins only when the file picker is requested.
+  the `@file:` namespace; selecting it transitions to the picker after the same short delay.
 * File names requiring quoting use a JSON string after `@file:`. Regex-only parsing is
   replaced by a scanner.
 * Ignore behavior follows Git semantics, including nested `.gitignore` files, negation rules,
@@ -123,15 +123,18 @@ completion it behaves as follows:
 
 * Typing `@` may show `@file:`, `@mcp:`, and `@skill:` namespace rows, plus bounded MCP/skill
   matches. It does not enumerate repository files.
-* Selecting the file namespace inserts exactly `@file:` and leaves the cursor after the
-  colon.
-* Pressing Tab while the cursor is in `@file:<query>` opens the file picker.
+* Selecting any namespace immediately transitions from the namespace menu to that namespace's
+  candidates. MCP and skill candidates remain inline and refresh as the query changes.
+* Selecting the file namespace inserts exactly `@file:` and opens the picker after 120 ms without
+  an edit. Typing an `@file:<query>` manually behaves the same way and seeds that query into fzf.
+* Pressing Tab while the cursor is in `@file:<query>` opens the file picker immediately.
 * Pressing Tab elsewhere retains the existing quick-hint/completion behavior.
 * Pasting or manually typing a complete `@file:` mention remains supported; the picker is
   an aid, not a required input path.
 
-The explicit Tab trigger is important. It avoids surprising terminal takeover during paste,
-history navigation, editing, or programmatic buffer updates.
+Each edit resets the transition timer, so continuous typing is not interrupted. Escape leaves the
+buffer unchanged and does not reopen the picker until a later edit. Pasting a complete mention,
+history navigation, and programmatic buffer updates do not trigger the automatic transition.
 
 4.2 Picker session
 
@@ -153,7 +156,8 @@ rendering costs predictable.
 
 4.3 Non-fzf fallback
 
-When fzf is unavailable or unsupported, Tab still performs file completion:
+When fzf is unavailable or unsupported, the same automatic transition and optional Tab shortcut
+perform inline file completion:
 
 * Candidate discovery and filtering run outside the prompt-toolkit input thread.
 * Matching is case-insensitive literal substring matching over normalized display paths.
@@ -437,9 +441,9 @@ Use these ownership boundaries; exact private class names may follow local namin
     fzf, or perform full-repository ranking.
 
 `minacode/tui.py`
-    Detects Tab in an active file mention, snapshots the buffer/span, suspends the terminal
-    through `run_in_terminal`, invokes the picker adapter, and atomically applies a validated
-    result. It owns redraw and buffer restoration.
+    Detects a settled active file mention or an immediate Tab shortcut, snapshots the buffer/span,
+    suspends the terminal through `run_in_terminal`, invokes the picker adapter, and atomically
+    applies a validated result. It owns namespace transitions, redraw, and buffer restoration.
 
 `minacode/engine.py`
     Calls the shared semantic mention-expansion boundary for every accepted user message,
@@ -461,8 +465,8 @@ ownership pattern, extend it rather than creating parallel abstractions with ide
   and final buffer replacement.
 * Git, ripgrep, Python traversal, candidate filtering, and fzf waiting run outside the input
   thread.
-* Only one picker may own the terminal at a time. A second Tab while a picker is active is
-  ignored.
+* Only one picker may own the terminal at a time. Automatic or Tab triggers while a picker is
+  active are ignored.
 * Cancellation is idempotent. It must not leave a child process, producer thread, pipe, or
   terminal mode behind.
 * Producer writes must handle a consumer that exits early without surfacing broken-pipe noise
@@ -570,7 +574,10 @@ Add a separate optional integration/benchmark test for the real supported fzf ex
 
 Use the existing TUI harness plus a PTY-level integration where needed. Cover:
 
-* Tab opens the picker only inside an active `@file:` span;
+* pausing after an edit opens the picker only inside an active `@file:` span, without Tab;
+* Tab still opens that picker immediately;
+* selecting `@mcp:` or `@skill:` replaces the namespace menu with its candidate list, and later
+  typing refreshes that list;
 * the current query is seeded correctly;
 * selection replaces only that span in a multi-mention/multi-line buffer;
 * Escape and no-match preserve text and cursor;
