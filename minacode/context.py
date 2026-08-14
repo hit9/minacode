@@ -265,6 +265,7 @@ class ContextManager:
                 turn_messages=turn_messages,
                 fallback_note=fallback_note if data is None else "",
                 compacted=compacted,
+                model=getattr(model, "last_compaction_model", ""),
             )
         finally:
             if on_compaction is not None:
@@ -386,7 +387,7 @@ class ContextManager:
                 return Tool.compact(str(message.get("content") or ""), 80)
         return Tool.compact(self.messages_text(messages[:1]), 80) or "compacted context"
 
-    def store_history_segment(self, compacted: list[Json], *, scope: str, trigger: str, fallback: bool) -> HistorySegment:
+    def store_history_segment(self, compacted: list[Json], *, scope: str, trigger: str, fallback: bool, model: str = "") -> HistorySegment:
         key = f"seg.{len(self.session.history) + 1}"
         text = self.bound_output(self.messages_text(compacted))
         segment = HistorySegment(
@@ -398,6 +399,7 @@ class ContextManager:
             trigger=trigger,
             fallback=fallback,
             messages=len(compacted),
+            model=model,
         )
         self.session.history.append(segment)
         return segment
@@ -426,6 +428,7 @@ class ContextManager:
         fallback_note: str = "",
         compacted: list[Json] | None = None,
         trigger: str = "auto",
+        model: str = "",
     ) -> None:
         self.session.state.compaction_count += 1
         # What this compaction was: the turn scope is the only caller that rewrites `turn_messages`,
@@ -437,6 +440,7 @@ class ContextManager:
                 scope="turn" if turn_messages is not None else "history",
                 trigger=trigger,
                 fallback=data is None,
+                model=model,
             )
             if compacted
             else None

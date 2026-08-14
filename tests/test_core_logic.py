@@ -1126,7 +1126,7 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
     client = ModelClient(s)
     calls = []
 
-    def fail(_messages, _tools):
+    def fail(_messages, _tools, **_kwargs):
         calls.append(1)
         raise ModelError("Error code: 500 - provider failed")
 
@@ -1446,4 +1446,61 @@ def test_retry_status_renders_countdown_from_model_retry_until(tmp_path, monkeyp
 
     # Notice window expires: nothing at all.
     monkeypatch.setattr(time, "monotonic", lambda: 200.0)
+    # Notice window expires: nothing at all.
+    monkeypatch.setattr(time, "monotonic", lambda: 200.0)
     assert bar.retry_status() == ""
+
+
+def test_compaction_config_fields_parse_and_default_empty():
+    config = Config.from_dict(
+        {
+            "compaction": {"provider": "fast", "model": "m-x", "reasoning": "high", "api": "responses"},
+            "provider": {"active": "default", "default": {"model": "d"}, "fast": {"model": "m"}},
+        }
+    )
+    assert config.compaction_provider == "fast"
+    assert config.compaction_model == "m-x"
+    assert config.compaction_reasoning == "high"
+    assert config.compaction_api == "responses"
+
+    # Defaults: no [compaction] fields means "inherit the active provider entry" at call time.
+    plain = Config.from_dict({"provider": {"default": {"model": "d"}}})
+    assert plain.compaction_provider == ""
+    assert plain.compaction_model == ""
+    assert plain.compaction_reasoning == ""
+    assert plain.compaction_api == ""
+
+
+def test_compaction_config_rejects_invalid_values():
+    with pytest.raises(ConfigError, match="compaction.provider"):
+        Config.from_dict({"compaction": {"provider": "nope"}, "provider": {"default": {}}})
+    with pytest.raises(ConfigError, match="compaction.reasoning"):
+        Config.from_dict({"compaction": {"reasoning": "turbo"}, "provider": {"default": {}}})
+    with pytest.raises(ConfigError, match="compaction.api"):
+        Config.from_dict({"compaction": {"api": "oai"}, "provider": {"default": {}}})
+
+
+def test_compaction_provider_config_folds_overrides_without_sharing():
+    from minacode.config import compaction_provider_config
+
+    config = Config.from_dict(
+        {
+            "compaction": {"provider": "fast", "model": "m-x", "reasoning": "off", "api": "chat"},
+            "provider": {"active": "default", "default": {"model": "d"}, "fast": {"model": "m", "reasoning": "high", "api": "anthropic"}},
+        }
+    )
+    entry = compaction_provider_config(config)
+    assert entry.model == "m-x"
+    assert entry.reasoning == "off"
+    assert entry.api == "chat"
+    assert entry is not config.providers["fast"]
+    assert config.providers["fast"].model == "m"  # the base entry is untouched
+
+    config.compaction_model = ""
+    entry = compaction_provider_config(config)
+    assert entry.model == "m"  # empty override inherits the entry's model
+
+    config.compaction_provider = ""
+    entry = compaction_provider_config(config)
+    assert entry.model == "d"  # empty provider = the active entry
+    assert entry is not config.provider

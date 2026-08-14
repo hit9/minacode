@@ -402,7 +402,7 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
         yield {"type": "response.completed", "response": terminal}
 
     responses = SimpleNamespace(create=lambda **_params: events())
-    monkeypatch.setattr(command_loop.agent.model, "client", lambda: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(command_loop.agent.model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     real_emit = command_loop.emit_agent_output
 
     def emit_promoted(text):
@@ -481,7 +481,7 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
         {"type": "response.completed", "response": terminal},
     ]
     responses = SimpleNamespace(create=lambda **_params: iter(events))
-    monkeypatch.setattr(command_loop.agent.model, "client", lambda: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(command_loop.agent.model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 
@@ -522,7 +522,7 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
         {"type": "response.completed", "response": terminal},
     ]
     responses = SimpleNamespace(create=lambda **_params: iter(events))
-    monkeypatch.setattr(command_loop.agent.model, "client", lambda: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(command_loop.agent.model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 

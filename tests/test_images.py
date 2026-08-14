@@ -482,7 +482,7 @@ def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatc
         return response
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)), close=lambda: None)
-    monkeypatch.setattr(ModelClient, "client", lambda _self: client)
+    monkeypatch.setattr(ModelClient, "client", lambda _self, **kwargs: client)
 
     ModelClient(s).chat_request([message], None)
 

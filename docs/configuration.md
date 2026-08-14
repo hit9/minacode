@@ -156,6 +156,24 @@ Worker keys inherit the `[worker]` provider entry by default:
 
 `[runtime] worker` and `[runtime] language` are in the [Runtime](#runtime) table above.
 
+## Compaction model
+
+Context compaction (the summary request that makes room in the context window) runs on the active
+provider by default. A `[compaction]` section overrides it per field, mirroring `[worker]`: an
+empty `provider` means the active provider entry, and each empty override inherits that entry's
+value. The context budget is unaffected — requests are still prepared against the active
+provider's window; only the summary request itself uses this entry.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `[compaction] provider` | inherit | Base provider entry key; empty = the active provider |
+| `[compaction] model` | inherit | Override the entry's model; empty inherits |
+| `[compaction] reasoning` | inherit | Override the entry's reasoning effort; empty inherits |
+| `[compaction] api` | inherit | Override the entry's wire protocol; empty inherits |
+
+`/compact log` records which model produced each stored segment, and `/status` shows the effective
+`compaction.*` values.
+
 ## Data location
 
 ```toml

@@ -45,6 +45,7 @@ from minacode.base import (
 )
 from minacode.config import (
     ProviderConfig,
+    compaction_provider_config,
 )
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model_catalog import THINKING_BUDGETS
@@ -154,16 +155,19 @@ class ModelClient:
         # progress, False in a finally block. Lets the orchestration label the phase without model
         # depending on a renderer.
         self.on_retry_wait: Callable[[bool], None] | None = None
+        # The effective model the last compaction summary ran on; "" when the last compaction fell
+        # back to deterministic trimming or never ran. Recorded on the HistorySegment by callers.
+        self.last_compaction_model = ""
 
     def cancel(self) -> None:
         self.cancel_requested.set()
         with contextlib.suppress(Exception):
             self.active_client.apply(lambda client: client.close())
 
-    def chat_messages(self, messages: list[Json]) -> list[Json]:
+    def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None) -> list[Json]:
         """Build Chat Completions history using the provider's documented replay contract."""
 
-        provider = self.session.config.provider
+        provider = provider if provider is not None else self.session.config.provider
         resolved = provider.resolve()
         history = resolved.chat_reasoning_history
         thinking = provider.extra_body.get("thinking")
@@ -572,10 +576,16 @@ class ModelClient:
         self.session.usage.add(usage, self.session.request_token_budget())
 
     def chat_request(
-        self, messages: list[Json], tools: list[Json] | None = None, *, allow_stream: bool = True, response_timeout: float | None = None
+        self,
+        messages: list[Json],
+        tools: list[Json] | None = None,
+        *,
+        allow_stream: bool = True,
+        response_timeout: float | None = None,
+        provider: ProviderConfig | None = None,
     ) -> tuple[Json, list[ToolCall], str]:
-        messages = self.chat_messages(messages)
-        provider = self.session.config.provider
+        provider = provider if provider is not None else self.session.config.provider
+        messages = self.chat_messages(messages, provider=provider)
         resolved = provider.resolve()
         stream = allow_stream and provider.stream and self.on_stream is not None
         params: Json = {"model": provider.model, "messages": messages, "stream": stream}
@@ -591,7 +601,7 @@ class ModelClient:
         self.apply_provider_params(params, provider, resolved)
         if stream:
             params["stream_options"] = {"include_usage": True}
-        client = self.client()
+        client = self.client(provider=provider)
         if stream:
             message, usage, finish_reason = self.call_client(client, lambda: self._chat_stream(client, params), response_timeout=response_timeout)
         else:
@@ -734,9 +744,16 @@ class ModelClient:
         return message, usage, finish_reason
 
     def api_request(
-        self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True, response_timeout: float | None = None
+        self,
+        messages: list[Json],
+        tools: list[Json] | None,
+        *,
+        allow_stream: bool = True,
+        response_timeout: float | None = None,
+        provider: ProviderConfig | None = None,
     ) -> tuple[Json, list[ToolCall], str]:
-        api = self.session.config.provider.resolve().api
+        provider = provider if provider is not None else self.session.config.provider
+        api = provider.resolve().api
         if api == "anthropic":
             request = self.anthropic_request
         elif api == "responses":
@@ -744,13 +761,19 @@ class ModelClient:
         else:
             request = self.chat_request
         if allow_stream and response_timeout is None:
-            return request(messages, tools)
-        return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout)
+            return request(messages, tools, provider=provider)
+        return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout, provider=provider)
 
     def responses_request(
-        self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True, response_timeout: float | None = None
+        self,
+        messages: list[Json],
+        tools: list[Json] | None,
+        *,
+        allow_stream: bool = True,
+        response_timeout: float | None = None,
+        provider: ProviderConfig | None = None,
     ) -> tuple[Json, list[ToolCall], str]:
-        provider = self.session.config.provider
+        provider = provider if provider is not None else self.session.config.provider
         resolved = provider.resolve()
         stream = allow_stream and provider.stream and self.on_stream is not None
         params: Json = {
@@ -779,7 +802,7 @@ class ModelClient:
             params["temperature"] = provider.temperature
         if provider.extra_body:
             params["extra_body"] = provider.extra_body
-        client = self.client()
+        client = self.client(provider=provider)
         if stream:
             result = self.call_client(client, lambda: self._responses_stream(client, params), response_timeout=response_timeout)
             streamed = True
@@ -1038,13 +1061,19 @@ class ModelClient:
 
     def compact(self, context: str) -> Json:
         self.cancel_requested.clear()
+        # The summary request runs on the [compaction]-resolved provider entry (empty [compaction]
+        # = the active provider), resolved per call so a runtime /provider switch applies next
+        # time. The context budget is untouched: compaction still measures against the main
+        # provider's window, only the summary request itself uses this entry.
+        provider = compaction_provider_config(self.session.config)
+        self.last_compaction_model = ""
         messages = [{"role": "system", "content": COMPACTION_PROMPT}, {"role": "user", "content": Text.clean(context)}]
         # Compaction honors the configured total-generation limit instead of a hidden cap: a
         # summary is worth the user's configured wait, and the deterministic trim fallback still
         # catches whatever the provider rejects.
-        response_timeout = self.session.config.provider.response_timeout
+        response_timeout = provider.response_timeout
         try:
-            _, _, content = self.api_request(messages, None, allow_stream=False, response_timeout=response_timeout)
+            _, _, content = self.api_request(messages, None, allow_stream=False, response_timeout=response_timeout, provider=provider)
         except ModelResponseTimeout:
             raise ModelResponseTimeout(
                 f"compaction summary exceeded provider.response_timeout={response_timeout:g}s; set it to 0 to disable the total-generation limit"
@@ -1052,6 +1081,7 @@ class ModelClient:
         data = self.parse_json_object(content)
         if not isinstance(data, dict):
             raise ModelError("compactor returned non-object JSON")
+        self.last_compaction_model = provider.model
         return data
 
     @classmethod
@@ -1072,8 +1102,8 @@ class ModelClient:
         match = ModelClient._JSON_FENCE_RE.match(text)
         return (match.group(1) if match else text).strip()
 
-    def client(self) -> OpenAI:
-        provider = self.session.config.provider
+    def client(self, provider: ProviderConfig | None = None) -> OpenAI:
+        provider = provider if provider is not None else self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
@@ -1083,8 +1113,8 @@ class ModelClient:
             api_key=provider.key, base_url=provider.resolve().base_url, timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
         )
 
-    def anthropic_client(self) -> Anthropic:
-        provider = self.session.config.provider
+    def anthropic_client(self, provider: ProviderConfig | None = None) -> Anthropic:
+        provider = provider if provider is not None else self.session.config.provider
         if missing := self.session.missing_config():
             raise ModelError("missing config: " + ", ".join(missing))
         url = provider.resolve().base_url.rstrip("/")
@@ -1191,12 +1221,19 @@ class ModelClient:
         return "minacode-" + digest[:24]
 
     def anthropic_request(
-        self, messages: list[Json], tools: list[Json] | None, *, allow_stream: bool = True, response_timeout: float | None = None
+        self,
+        messages: list[Json],
+        tools: list[Json] | None,
+        *,
+        allow_stream: bool = True,
+        response_timeout: float | None = None,
+        provider: ProviderConfig | None = None,
     ) -> tuple[Json, list[ToolCall], str]:
+        provider = provider if provider is not None else self.session.config.provider
         messages = Text.value(messages)
-        params = self.anthropic_params(messages, tools)
-        client = self.anthropic_client()
-        stream = allow_stream and self.session.config.provider.stream and self.on_stream is not None
+        params = self.anthropic_params(messages, tools, provider=provider)
+        client = self.anthropic_client(provider=provider)
+        stream = allow_stream and provider.stream and self.on_stream is not None
         if stream:
             result = self.call_client(client, lambda: self._anthropic_stream(client, params), response_timeout=response_timeout)
             streamed = True
@@ -1296,8 +1333,8 @@ class ModelClient:
         finally:
             self._emit_stream("", "")
 
-    def anthropic_params(self, messages: list[Json], tools: list[Json] | None) -> Json:
-        provider = self.session.config.provider
+    def anthropic_params(self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None) -> Json:
+        provider = provider if provider is not None else self.session.config.provider
         resolved = provider.resolve()
         system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
         # Anthropic prompt caching is a prefix match that only takes effect at explicit

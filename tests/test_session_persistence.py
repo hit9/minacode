@@ -1478,3 +1478,34 @@ def test_search_widens_only_after_a_miss(tmp_path, monkeypatch):
     calls.clear()
     assert SessionSnapshotStore.search_sessions("local", config.data_dir, str(tmp_path / "elsewhere"))
     assert calls == [False, True]
+
+
+def test_history_segment_persists_effective_model(tmp_path):
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hello"})
+    s.history.append(HistorySegment(key="seg.1", title="earlier task", text="user:\nfind the bug", model="compactor-x"))
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config, cwd=str(tmp_path))
+
+    assert restored.history[0].model == "compactor-x"
+
+
+def test_history_segment_missing_model_field_restores_empty():
+    """Snapshots written before the model field existed decode with an empty model, not a crash."""
+    data = [
+        {
+            "key": "seg.1",
+            "title": "old",
+            "blob": "",
+            "created_at": "",
+            "scope": "history",
+            "trigger": "auto",
+            "fallback": False,
+            "messages": 2,
+            "summary": "",
+        }
+    ]
+    segments = SessionSnapshotCodec.history(data, {})
+    assert segments[0].model == ""
+    assert segments[0].key == "seg.1"

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-10 23:47-0700\n"
+"POT-Creation-Date: 2026-08-13 21:57-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -682,10 +682,52 @@ msgid ""
 msgstr "`[runtime] worker` 和 `[runtime] language` 见上方[运行时](#runtime)表格。"
 
 #: ../../configuration.md:159
+msgid "Compaction model"
+msgstr "压缩模型"
+
+#: ../../configuration.md:161
+msgid ""
+"Context compaction (the summary request that makes room in the context "
+"window) runs on the active provider by default. A `[compaction]` section "
+"overrides it per field, mirroring `[worker]`: an empty `provider` means "
+"the active provider entry, and each empty override inherits that entry's "
+"value. The context budget is unaffected — requests are still prepared "
+"against the active provider's window; only the summary request itself "
+"uses this entry."
+msgstr ""
+"默认情况下，上下文压缩（为上下文窗口腾出空间的摘要请求）使用当前激活的 provider。`[compaction]` 节可以逐字段覆盖它，镜像 `[worker]`：空的 `provider` 表示当前激活的 provider 条目，每个空的覆盖值继承该条目的值。上下文预算不受影响——请求仍按激活 provider 的窗口准备；只有摘要请求本身使用这个条目。"
+
+#: ../../configuration.md
+msgid "`[compaction] provider`"
+msgstr "`[compaction] provider`"
+
+#: ../../configuration.md
+msgid "Base provider entry key; empty = the active provider"
+msgstr "基础 provider 条目键；留空 = 当前激活的 provider"
+
+#: ../../configuration.md
+msgid "`[compaction] model`"
+msgstr "`[compaction] model`"
+
+#: ../../configuration.md
+msgid "`[compaction] reasoning`"
+msgstr "`[compaction] reasoning`"
+
+#: ../../configuration.md
+msgid "`[compaction] api`"
+msgstr "`[compaction] api`"
+
+#: ../../configuration.md:174
+msgid ""
+"`/compact log` records which model produced each stored segment, and "
+"`/status` shows the effective `compaction.*` values."
+msgstr "`/compact log` 记录每个已存段由哪个模型生成，`/status` 显示生效的 `compaction.*` 值。"
+
+#: ../../configuration.md:177
 msgid "Data location"
 msgstr "数据目录"
 
-#: ../../configuration.md:166
+#: ../../configuration.md:184
 msgid ""
 "Sessions live under `<data_dir>/projects/<project>/`, one directory per "
 "working directory. Each holds that project's session logs and a `latest` "
@@ -696,7 +738,7 @@ msgstr ""
 "session 日志和 `latest` 指针，因此恢复操作始终限定在所属项目内。当某个项目的最后一个 session "
 "过期后，对应目录会被一并删除。"
 
-#: ../../configuration.md:170
+#: ../../configuration.md:188
 msgid ""
 "Beside each log sits a small `<uid>.meta.json` holding what the session "
 "picker shows — name, opening line, round count. The log stays the source "
@@ -706,7 +748,7 @@ msgstr ""
 "每份日志旁还有一个很小的 `<uid>.meta.json`，保存 session "
 "选择器所展示的内容——名称、开场行、轮数。日志始终是事实来源；删掉这个文件只会让该 session 在列表中失去标签。"
 
-#: ../../configuration.md:174
+#: ../../configuration.md:192
 msgid ""
 "`<data_dir>/history.txt` holds the input history that Up and Ctrl-P "
 "recall, across every project. It is capped at 512 KB, keeping the most "

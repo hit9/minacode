@@ -52,7 +52,7 @@ class _StreamClientFactory:
         self.base_url = base_url
         self.failures = failures
 
-    def __call__(self) -> OpenAI:
+    def __call__(self, **kwargs) -> OpenAI:
         def respond(request: httpx.Request) -> httpx.Response:
             self.calls.append(request)
             if self.failures:
@@ -85,7 +85,7 @@ class _AnthropicStreamClientFactory:
         self.calls: list[httpx.Request] = []
         self.base_url = base_url
 
-    def __call__(self) -> Anthropic:
+    def __call__(self, **kwargs) -> Anthropic:
         def respond(request: httpx.Request) -> httpx.Response:
             self.calls.append(request)
             body = "".join(f"event: {name}\ndata: {json.dumps(event)}\n\n" for name, event in self.events)

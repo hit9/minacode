@@ -1234,6 +1234,8 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     loop.tui = SimpleNamespace(set_running=transitions.append, set_dispatching=lambda: transitions.append("dispatch"))
 
     class FakeModel:
+        last_compaction_model = ""
+
         def compact(self, text):
             assert transitions == ["compacting context"]
             return {"summary": "summary", "plan": ["next"], "known": ["fact"]}
@@ -1388,3 +1390,24 @@ def test_apply_compaction_clears_last_usage_but_keeps_cumulative(tmp_path):
     assert s.usage.prompt_tokens == 9999
     assert s.usage.calls == 7
     assert context._overdue_by_usage() is False
+
+
+def test_compaction_override_does_not_change_request_budget(tmp_path):
+    """The [compaction] entry never feeds the context budget: even pointing at a small-window entry,
+    requests are still prepared against the active provider's window."""
+    from minacode.config import Config, request_budget_for
+
+    s = session(tmp_path)
+    s.config = Config.from_dict(
+        {
+            "compaction": {"provider": "small"},
+            "provider": {
+                "active": "wide",
+                "wide": {"model": "wide", "max_context_tokens": 1_048_576},
+                "small": {"model": "small", "max_context_tokens": 16_384},
+            },
+        }
+    )
+    context = ContextManager(s)
+    assert context.request_token_budget() == request_budget_for(1_048_576, DEFAULT_OUTPUT_RESERVE_TOKENS)
+    assert context.request_token_budget() > request_budget_for(16_384, DEFAULT_OUTPUT_RESERVE_TOKENS)

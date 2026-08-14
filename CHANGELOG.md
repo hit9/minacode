@@ -16,6 +16,12 @@
   and how much it evicted; opening one shows the summary it produced, which the active context
   keeps only until the next compaction. `/compact log seg.N` prints that summary without the
   viewer.
+- A `[compaction]` config section gives context compaction its own provider entry: `provider`
+  names a base entry (empty = the active provider), and `model`/`reasoning`/`api` override it per
+  field (empty inherits the entry's value), mirroring `[worker]`. The summary request runs on the
+  resolved entry — including its `response_timeout` — while the context budget still measures the
+  active provider's window; `/compact log` records which model produced each segment and `/status`
+  shows the effective `compaction.*` values.
 
 
 ### Changed

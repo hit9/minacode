@@ -155,6 +155,7 @@ class SessionSnapshotCodec:
             "fallback": segment.fallback,
             "messages": segment.messages,
             "summary": segment.summary,
+            "model": segment.model,
         }
 
     @staticmethod
@@ -172,6 +173,7 @@ class SessionSnapshotCodec:
                 fallback=bool(d.get("fallback", False)),
                 messages=int(d.get("messages", 0) or 0),
                 summary=str(d.get("summary", "") or ""),
+                model=str(d.get("model", "") or ""),
             )
             for d in data
         ]

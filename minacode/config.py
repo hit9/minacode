@@ -7,7 +7,7 @@ import platform
 import shutil
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import ClassVar
 from urllib.parse import urlparse
 
@@ -317,6 +317,16 @@ class Config:
     worker_reasoning: str = ""
     worker_api: str = ""
 
+    # The provider entry compaction summaries run on, mirroring [worker]: compaction_provider names
+    # a base provider entry (empty = the active provider), and compaction_model/reasoning/api
+    # override that entry per field (empty = inherit the entry's value). Resolved per call by
+    # compaction_provider_config, never cached, so a runtime /provider switch is picked up by the
+    # next compaction.
+    compaction_provider: str = ""
+    compaction_model: str = ""
+    compaction_reasoning: str = ""
+    compaction_api: str = ""
+
     # Backward compatibility: the data dir moved from ~/.nanocode to ~/.minacode.
     LEGACY_DATA_DIR: ClassVar[str] = "~/.nanocode"
 
@@ -355,6 +365,16 @@ class Config:
         worker_api = cls.str(worker_root, "api", "")
         if worker_api and worker_api not in PROVIDER_API_CHOICES:
             raise ConfigError("worker.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
+        compaction_root = cls.table(data, "compaction")
+        compaction_provider = cls.str(compaction_root, "provider", "")
+        if compaction_provider and compaction_provider not in providers:
+            raise ConfigError(f"compaction.provider `{compaction_provider}` does not exist")
+        compaction_reasoning = cls.str(compaction_root, "reasoning", "")
+        if compaction_reasoning and compaction_reasoning not in REASONING_CHOICES:
+            raise ConfigError("compaction.reasoning must be one of " + ", ".join(REASONING_CHOICES))
+        compaction_api = cls.str(compaction_root, "api", "")
+        if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
+            raise ConfigError("compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
         return cls(
             active_provider=active,
             providers=providers,
@@ -364,6 +384,10 @@ class Config:
             worker_model=cls.str(worker_root, "model", ""),
             worker_reasoning=worker_reasoning,
             worker_api=worker_api,
+            compaction_provider=compaction_provider,
+            compaction_model=cls.str(compaction_root, "model", ""),
+            compaction_reasoning=compaction_reasoning,
+            compaction_api=compaction_api,
         )
 
     @staticmethod
@@ -530,3 +554,23 @@ model = ""
         except tomllib.TOMLDecodeError as error:
             raise ConfigError(f"invalid config {config_path}: {error}") from error
         return data if isinstance(data, dict) else {}
+
+
+def compaction_provider_config(config: Config) -> ProviderConfig:
+    """The provider entry compaction summaries run on, with [compaction] overrides applied.
+
+    Base entry is `config.compaction_provider` or the active provider when unset; non-empty
+    compaction_model/reasoning/api fold over it. Never shares or mutates the base entry object:
+    dataclasses.replace is shallow, so folding onto a shared object would leak compaction-only
+    overrides into the main provider (same reasoning as worker_provider_config in tools/delegate.py).
+    Resolved per call, never cached, so a runtime /provider switch is picked up by the next
+    compaction.
+    """
+    provider = replace(config.providers[config.compaction_provider or config.active_provider])
+    if config.compaction_model:
+        provider.model = config.compaction_model
+    if config.compaction_reasoning:
+        provider.reasoning = config.compaction_reasoning
+    if config.compaction_api:
+        provider.api = config.compaction_api
+    return provider

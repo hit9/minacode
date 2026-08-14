@@ -214,6 +214,7 @@ class HistorySegment:
     fallback: bool = False  # the summarizer failed and the span was trimmed deterministically
     messages: int = 0  # evicted message count
     summary: str = ""
+    model: str = ""  # effective model the summary ran on; empty = fell back to trimming
 
 
 @dataclass

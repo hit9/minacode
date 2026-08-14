@@ -383,6 +383,10 @@ def config(loop: CommandLoop, args: str) -> str:
             f"worker.model: {loop.session.config.worker_model or '(inherit)'}",
             f"worker.reasoning: {loop.session.config.worker_reasoning or '(inherit)'}",
             f"worker.api: {loop.session.config.worker_api or '(inherit)'}",
+            f"compaction.provider: {loop.session.config.compaction_provider or '(inherit)'}",
+            f"compaction.model: {loop.session.config.compaction_model or '(inherit)'}",
+            f"compaction.reasoning: {loop.session.config.compaction_reasoning or '(inherit)'}",
+            f"compaction.api: {loop.session.config.compaction_api or '(inherit)'}",
         ]
     )
 
@@ -473,10 +477,11 @@ def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
         if segment is None:
             return f"No stored segment {key}" if key.startswith("seg.") else "Usage: /compact log [seg.N]"
         when, kind, messages = segment_columns(segment)
+        model = f" · model {segment.model}" if segment.model else ""
         return LogBlock(
             [
                 LogLine(segment.key, segment.title, LogRole.FIELD, LogEdge.BRANCH),
-                LogLine("compaction", f"{when} · {kind} · {messages}", LogRole.FIELD, LogEdge.CONTINUE),
+                LogLine("compaction", f"{when} · {kind} · {messages}{model}", LogRole.FIELD, LogEdge.CONTINUE),
                 *(
                     LogLine("summary" if index == 0 else "", line, LogRole.FIELD, LogEdge.CONTINUE)
                     for index, line in enumerate((segment.summary or missing_summary_note(segment)).splitlines())
@@ -494,7 +499,15 @@ def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
     return LogBlock(
         [
             LogLine("compaction log", f"{count} compactions · {len(segments)} stored segments", LogRole.FIELD, LogEdge.BRANCH),
-            *(LogLine(segment.key, " · ".join((*segment_columns(segment), segment.title)), LogRole.FIELD, LogEdge.CONTINUE) for segment in reversed(segments)),
+            *(
+                LogLine(
+                    segment.key,
+                    " · ".join((*segment_columns(segment), *((f"model {segment.model}",) if segment.model else ()), segment.title)),
+                    LogRole.FIELD,
+                    LogEdge.CONTINUE,
+                )
+                for segment in reversed(segments)
+            ),
         ]
     )
 
@@ -533,7 +546,7 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
         else:
             loop.status_bar.stop()
     if data is not None:
-        loop.agent.context.apply_compaction(data, keep, compacted=compacted, trigger="manual")
+        loop.agent.context.apply_compaction(data, keep, compacted=compacted, trigger="manual", model=loop.agent.model.last_compaction_model)
     loop.agent.context.update_current_tokens(loop.agent.session.system_prompt)
     # Compaction rewrites the history in place. Persist it now: leaving the session without
     # running another turn would otherwise resume from the log's pre-compaction state.

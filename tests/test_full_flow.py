@@ -75,7 +75,7 @@ def _session(tmp_path, *, api: str = "chat", model: str = "gpt-5.6", reasoning: 
 def test_append_only_turns_reuse_implicit_cache_for_both_openai_protocols(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(["first answer", "second answer"])
-    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
     assert agent.run("first request") == "first answer"
@@ -105,7 +105,7 @@ def test_note_tool_history_advances_the_longest_implicit_breakpoint(tmp_path, mo
             "continued",
         ]
     )
-    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
     assert agent.run("remember the cache goal") == "noted"
@@ -135,7 +135,7 @@ def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, m
             "after checkpoint",
         ]
     )
-    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
     assert agent.run("archive request " + "x" * 8_000) == "archived answer"
@@ -164,7 +164,7 @@ def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, m
 def test_resume_event_keeps_old_breakpoint_and_becomes_part_of_the_next_one(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(["before resume", "resumed answer", "next answer"])
-    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
 
     assert Agent(session, output_fn=lambda _text: None).run("first request") == "before resume"
     session.save_snapshot()
@@ -187,7 +187,7 @@ def test_resume_event_keeps_old_breakpoint_and_becomes_part_of_the_next_one(tmp_
 def test_model_cache_scope_change_misses_once_then_warms(tmp_path, monkeypatch, api):
     session = _session(tmp_path, api=api)
     server = OpenAIMockServer(["first", "after switch", "warm again"])
-    monkeypatch.setattr(ModelClient, "client", lambda self: server.client())
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
     agent = Agent(session, output_fn=lambda _text: None)
 
     assert agent.run("first request") == "first"
@@ -208,7 +208,7 @@ def test_full_flow_edit_then_answer(tmp_path, monkeypatch):
     session = _session(tmp_path)
     edit_args = {"path": "hello.txt", "edits": [{"op": "create", "content": "hi\n"}]}
     factory = _MockClientFactory([_tool_call_response("call_1", "Edit", edit_args), _answer_response("Created hello.txt.")])
-    monkeypatch.setattr(ModelClient, "client", lambda self: factory())
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: factory())
 
     answer = Agent(session, output_fn=lambda text: None).run("create hello.txt containing hi")
 
@@ -265,7 +265,7 @@ def test_full_flow_anthropic_tool_then_answer(tmp_path, monkeypatch):
             ),
         ]
     )
-    monkeypatch.setattr(ModelClient, "anthropic_client", lambda self: factory())
+    monkeypatch.setattr(ModelClient, "anthropic_client", lambda self, **kwargs: factory())
 
     answer = Agent(session, output_fn=lambda _text: None).run("create claude.txt")
 
@@ -302,7 +302,7 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
 
     compacted_state = json.dumps({"summary": "Archived work was completed.", "goal": "continue", "plan": [], "known": ["durable fact"], "check": "tests"})
     factory = _MockClientFactory([_answer_response(compacted_state), _answer_response("Continued successfully.")])
-    monkeypatch.setattr(ModelClient, "client", lambda self: factory())
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: factory())
 
     answer = Agent(session, output_fn=lambda text: None).run("continue")
 

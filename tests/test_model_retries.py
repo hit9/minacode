@@ -22,6 +22,9 @@ from minacode.base import (
     ModelRequestRetry,
     ModelResponseTimeout,
 )
+from minacode.config import (
+    Config,
+)
 from minacode.model import ModelClient
 
 
@@ -267,7 +270,10 @@ def test_compaction_follows_the_configured_response_deadline(tmp_path, monkeypat
     monkeypatch.setattr(model, "api_request", api_request)
 
     assert model.compact("long context") == {"summary": "short"}
-    assert seen == [{"allow_stream": False, "response_timeout": expected}]
+    assert len(seen) == 1
+    assert seen[0]["allow_stream"] is False
+    assert seen[0]["response_timeout"] == expected
+    assert seen[0]["provider"].response_timeout == configured
 
 
 def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch):
@@ -665,3 +671,93 @@ def test_429_text_fallback_with_billing_marker_not_retryable():
     account/billing wording must not be rescued by the status-code regex and retried."""
     error = ModelError("Error code: 429 - insufficient balance, please recharge your account")
     assert ModelClient.retryable_error(error) is False
+
+
+def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
+    """[compaction] overrides reach the summary request: model/reasoning/api come from the resolved
+    entry, never the shared parent object, and an empty [compaction] inherits the active entry."""
+    s = _session(tmp_path)
+    s.config = Config.from_dict(
+        {
+            "compaction": {"model": "compactor-1", "reasoning": "off", "api": "chat"},
+            "provider": {"active": "default", "default": {"model": "main-1", "url": "http://test", "key": "sk-test"}},
+        }
+    )
+    model = ModelClient(s)
+    calls = []
+
+    def api_request(_messages, _tools, **kwargs):
+        calls.append(kwargs.get("provider"))
+        return {}, [], '{"summary":"short"}'
+
+    monkeypatch.setattr(model, "api_request", api_request)
+
+    assert model.compact("long context") == {"summary": "short"}
+    provider = calls[0]
+    assert provider.model == "compactor-1"
+    assert provider.reasoning == "off"
+    assert provider.api == "chat"
+    assert provider is not s.config.provider
+    assert provider is not s.config.providers["default"]
+    assert model.last_compaction_model == "compactor-1"
+
+
+def test_compaction_response_timeout_follows_base_entry(tmp_path, monkeypatch):
+    """The summary's total-generation deadline comes from the compaction base entry, not the active
+    provider: base 30, active 600 -> the summary call carries 30."""
+    s = _session(tmp_path)
+    s.config = Config.from_dict(
+        {
+            "compaction": {"provider": "base"},
+            "provider": {
+                "active": "default",
+                "default": {"model": "main-1", "url": "http://test", "key": "sk-test", "response_timeout": 600},
+                "base": {"model": "base-1", "url": "http://test", "key": "sk-test", "response_timeout": 30},
+            },
+        }
+    )
+    model = ModelClient(s)
+    seen = []
+
+    def api_request(_messages, _tools, **kwargs):
+        seen.append(kwargs)
+        return {}, [], '{"summary":"short"}'
+
+    monkeypatch.setattr(model, "api_request", api_request)
+
+    model.compact("long context")
+    assert seen[0]["response_timeout"] == 30
+    assert seen[0]["provider"].model == "base-1"
+
+
+def test_compaction_override_reaches_wire_params(tmp_path, monkeypatch):
+    """The resolved entry drives the wire: the summary request body carries the [compaction] model."""
+    s = _session(tmp_path)
+    s.config = Config.from_dict(
+        {
+            "compaction": {"model": "compactor-2"},
+            "provider": {"active": "default", "default": {"model": "main-2", "url": "http://test", "key": "sk-test"}},
+        }
+    )
+    model = ModelClient(s)
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "compactor-2",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"summary":"short"}'}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(model, "client", factory)
+
+    assert model.compact("long context") == {"summary": "short"}
+    body = json.loads(factory.calls[0].content)
+    assert body["model"] == "compactor-2"
+    assert model.last_compaction_model == "compactor-2"

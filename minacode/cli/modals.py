@@ -99,6 +99,8 @@ def segment_story(segment: HistorySegment) -> tuple[str, str]:
     headline = f"{trigger} to free room in the context" if not scope else f"{trigger}, dropping {scope}"
     if segment.messages:
         headline += f" · {segment.messages} messages"
+    if segment.model:
+        headline += f" · model {segment.model}"
     if segment.fallback:
         return headline, "Summarizing failed, so this was trimmed without a summary — what it dropped survives only in the excerpt the agent can recall."
     return headline, ""

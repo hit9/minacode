@@ -608,6 +608,9 @@ def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
     class Client:
         chat = SimpleNamespace(completions=Completions())
 
+        def __init__(self, provider=None):
+            pass
+
         def close(self):
             closed.set()
 

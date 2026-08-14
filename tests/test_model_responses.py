@@ -227,7 +227,7 @@ def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(t
         yield {"type": "response.completed", "response": terminal}
 
     responses = SimpleNamespace(create=lambda **_params: events())
-    monkeypatch.setattr(model, "client", lambda: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
     _assistant, calls, content = model.request([{"role": "user", "content": "make the change"}], None)
@@ -268,7 +268,7 @@ def test_responses_stream_promotes_completed_text_across_provider_call(tmp_path,
         yield {"type": "response.completed", "response": terminal}
 
     responses = SimpleNamespace(create=lambda **_params: events())
-    monkeypatch.setattr(model, "client", lambda: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
 
@@ -310,7 +310,7 @@ def test_responses_stream_promotes_when_output_item_added_is_missing(tmp_path, m
     ]
     timeline = []
     responses = SimpleNamespace(create=lambda **_params: iter(events))
-    monkeypatch.setattr(model, "client", lambda: SimpleNamespace(responses=responses))
+    monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
     _assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
