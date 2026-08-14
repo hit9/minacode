@@ -17,6 +17,11 @@
   on a focused chip fills the input (again unpicks it), Tab keeps cycling the chips, and a
   manual edit hands the input back to normal editing.
 
+### Fixed
+
+- Quick-hint acceptance now uses one immutable hint snapshot and clears stale focus/picks after
+  the hints or input change, avoiding crashes and selecting the wrong suggestion during refreshes.
+
 
 ## 0.24.1 - 2026-08-14
 

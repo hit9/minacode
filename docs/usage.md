@@ -85,9 +85,10 @@ suggestions, not commands: ignore them and keep typing, or take one.
 
 <div class="term-shot" role="img" aria-label="The idle prompt after an answer: the answer text, an empty prompt with a caret, and one row of three suggestion chips separated by grey bars, the middle one highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
 
-`Tab` cycles the highlight, `Enter` puts the highlighted chip in the input where you can edit it,
-and a second `Enter` sends it. `/hints` turns them off for the session, `[runtime] quick_hints`
-for good.
+`Tab` cycles between the input and the chips. `Enter` on a chip toggles it into or out of the
+input, so several suggestions can be combined; return focus to the input and press `Enter` to
+send. Editing the text normally clears the chip selection state. `/hints` turns suggestions off
+for the session, `[runtime] quick_hints` for good.
 
 ## Commands
 

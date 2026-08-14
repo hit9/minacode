@@ -1553,6 +1553,16 @@ def test_quick_hint_enter_again_unpicks_chip():
     assert app.input_buffer.text == ""
 
 
+def test_quick_hint_enter_uses_one_hint_snapshot():
+    states = iter((("old hint",), ()))
+    app = TuiApp(quick_hints_fn=lambda: next(states))
+    app.set_idle()
+    app.quick_hint_focus = 0
+
+    assert app._accept(app.input_buffer) is True
+    assert app.input_buffer.text == "old hint"
+
+
 def test_quick_hint_tab_cycles_while_picked():
     app, _ = quick_hint_app()
     app.quick_hint_focus = 0
@@ -1586,7 +1596,25 @@ def test_quick_hint_hints_change_resets_picked_keeps_text():
     hints[:] = ["commit", "push"]
     app.quick_hints()  # lazy comparison resets the picked state
     assert app.quick_hint_picked == []
+    assert app.quick_hint_focus == -1
     assert app.input_buffer.text == "run the tests"
+
+
+def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
+    app, _ = quick_hint_app()
+    app.quick_hint_focus = 0
+    app._accept(app.input_buffer)
+
+    async def edit_in_terminal(callback, *, in_executor):
+        del callback, in_executor
+        return "edited text"
+
+    monkeypatch.setattr("minacode.tui.run_in_terminal", edit_in_terminal)
+    asyncio.run(app._run_input_editor())
+
+    assert app.input_buffer.text == "edited text"
+    assert app.quick_hint_picked == []
+    assert app.quick_hint_focus == -1
 
 
 def test_quick_hint_fragments_mark_picked_chips():
