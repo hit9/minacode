@@ -22,6 +22,11 @@
   resolved entry — including its `response_timeout` — while the context budget still measures the
   active provider's window; `/compact log` records which model produced each segment and `/status`
   shows the effective `compaction.*` values.
+- Each provider entry can nest its own `[provider.NAME.compaction]` table with the same
+  `model`/`reasoning`/`api` keys, so a provider can route summaries to a cheap model per entry
+  instead of one global choice. Per field the most specific value wins: the entry's nested table,
+  then the global `[compaction]` section, then the entry's own value; `/status` shows the resolved
+  effective values.
 
 
 ### Changed

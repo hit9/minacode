@@ -1504,3 +1504,79 @@ def test_compaction_provider_config_folds_overrides_without_sharing():
     entry = compaction_provider_config(config)
     assert entry.model == "d"  # empty provider = the active entry
     assert entry is not config.provider
+
+
+def test_provider_compaction_fields_parse_and_default_empty():
+    config = Config.from_dict(
+        {
+            "provider": {
+                "active": "default",
+                "default": {"model": "d"},
+                "fast": {"model": "m", "compaction": {"model": "m-x", "reasoning": "off", "api": "chat"}},
+            }
+        }
+    )
+    nested = config.providers["fast"]
+    assert nested.compaction_model == "m-x"
+    assert nested.compaction_reasoning == "off"
+    assert nested.compaction_api == "chat"
+    # No nested table: all three stay empty (inherit), and the entry parses unchanged.
+    assert config.providers["default"].compaction_model == ""
+    assert config.providers["default"].compaction_reasoning == ""
+    assert config.providers["default"].compaction_api == ""
+
+
+def test_provider_compaction_rejects_invalid_values():
+    with pytest.raises(ConfigError, match="provider.compaction.reasoning"):
+        Config.from_dict({"provider": {"default": {"compaction": {"reasoning": "turbo"}}}})
+    with pytest.raises(ConfigError, match="provider.compaction.api"):
+        Config.from_dict({"provider": {"default": {"compaction": {"api": "oai"}}}})
+
+
+def test_compaction_provider_config_per_provider_wins_over_global():
+    from minacode.config import compaction_provider_config
+
+    config = Config.from_dict(
+        {
+            "compaction": {"model": "global-m", "reasoning": "high", "api": "responses"},
+            "provider": {
+                "active": "default",
+                "default": {"model": "d", "compaction": {"model": "per-m"}},
+                "fast": {"model": "f"},
+            },
+        }
+    )
+    # Per-provider (default) wins per field; unset per fields inherit the global section.
+    entry = compaction_provider_config(config)
+    assert entry.model == "per-m"
+    assert entry.reasoning == "high"
+    assert entry.api == "responses"
+
+    # Per-provider empty: the global value applies; both empty: the entry's own value.
+    config.providers["default"].compaction_model = ""
+    config.compaction_model = ""
+    entry = compaction_provider_config(config)
+    assert entry.model == "d"
+    assert entry.reasoning == "high"
+    assert entry.api == "responses"
+
+
+def test_compaction_provider_config_per_provider_follows_base_entry():
+    from minacode.config import compaction_provider_config
+
+    config = Config.from_dict(
+        {
+            "compaction": {"provider": "fast"},
+            "provider": {
+                "active": "default",
+                "default": {"model": "d", "compaction": {"model": "active-per"}},
+                "fast": {"model": "f", "compaction": {"model": "fast-per"}},
+            },
+        }
+    )
+    # The base entry is "fast": its nested table wins, not the active entry's.
+    entry = compaction_provider_config(config)
+    assert entry.model == "fast-per"
+    assert config.providers["fast"].compaction_model == "fast-per"
+    assert config.providers["default"].compaction_model == "active-per"  # untouched
+    assert entry is not config.providers["fast"]

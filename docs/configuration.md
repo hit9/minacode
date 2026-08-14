@@ -171,6 +171,19 @@ provider's window; only the summary request itself uses this entry.
 | `[compaction] reasoning` | inherit | Override the entry's reasoning effort; empty inherits |
 | `[compaction] api` | inherit | Override the entry's wire protocol; empty inherits |
 
+Each provider entry can also nest its own `compaction` table (`[provider.NAME.compaction]`) with
+the same `model`/`reasoning`/`api` keys — there is no `provider` key there, the base entry comes
+only from the global `[compaction] provider`. Per field the most specific value wins: the base
+entry's nested table, then the global `[compaction]` section, then the entry's own value.
+
+```toml
+[provider.anthropic]
+model = "claude-..."
+
+  [provider.anthropic.compaction]
+  model = "claude-haiku-..."
+```
+
 `/compact log` records which model produced each stored segment, and `/status` shows the effective
 `compaction.*` values.
 

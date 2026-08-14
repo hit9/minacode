@@ -43,6 +43,7 @@ from minacode.config import (
     Config,
     ProviderConfig,
     RuntimeSettings,
+    compaction_provider_config,
 )
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED
 from minacode.provider_compat import builtin_tools_issue
@@ -331,6 +332,7 @@ def diff_command(loop: CommandLoop, args: str) -> str | None:
 def config(loop: CommandLoop, args: str) -> str:
     provider = loop.session.config.provider
     resolved = provider.resolve()
+    compaction_effective = compaction_provider_config(loop.session.config)
     configured_builtin_tools = ", ".join(str(entry.get("type") or "?") for entry in provider.builtin_tools) or "(off)"
     builtin_issue = builtin_tools_issue(resolved, provider.builtin_tools)
     if not provider.builtin_tools:
@@ -383,10 +385,10 @@ def config(loop: CommandLoop, args: str) -> str:
             f"worker.model: {loop.session.config.worker_model or '(inherit)'}",
             f"worker.reasoning: {loop.session.config.worker_reasoning or '(inherit)'}",
             f"worker.api: {loop.session.config.worker_api or '(inherit)'}",
-            f"compaction.provider: {loop.session.config.compaction_provider or '(inherit)'}",
-            f"compaction.model: {loop.session.config.compaction_model or '(inherit)'}",
-            f"compaction.reasoning: {loop.session.config.compaction_reasoning or '(inherit)'}",
-            f"compaction.api: {loop.session.config.compaction_api or '(inherit)'}",
+            f"compaction.provider: {loop.session.config.compaction_provider or loop.session.config.active_provider}",
+            f"compaction.model: {compaction_effective.model}",
+            f"compaction.reasoning: {compaction_effective.reasoning}",
+            f"compaction.api: {compaction_effective.api}",
         ]
     )
 

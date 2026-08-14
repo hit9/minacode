@@ -126,6 +126,12 @@ class ProviderConfig:
     response_timeout: int = 600
     extra_body: Json = field(default_factory=dict)
     builtin_tools: tuple[Json, ...] = ()
+    # Per-provider compaction overrides ([provider.X.compaction] model/reasoning/api), folded on
+    # top of the global [compaction] section by compaction_provider_config: the per-provider value
+    # wins, empty inherits the global value, and a fully empty pair leaves the entry's own value.
+    compaction_model: str = ""
+    compaction_reasoning: str = ""
+    compaction_api: str = ""
 
     @classmethod
     def from_dict(cls, data: Json) -> ProviderConfig:
@@ -142,6 +148,13 @@ class ProviderConfig:
         ):
             if value not in choices:
                 raise ConfigError("provider." + key + " must be one of " + ", ".join(choices))
+        compaction_root = Config.table(data, "compaction")
+        compaction_reasoning = Config.str(compaction_root, "reasoning", "")
+        if compaction_reasoning and compaction_reasoning not in REASONING_CHOICES:
+            raise ConfigError("provider.compaction.reasoning must be one of " + ", ".join(REASONING_CHOICES))
+        compaction_api = Config.str(compaction_root, "api", "")
+        if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
+            raise ConfigError("provider.compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
         return cls(
             url=Config.str(data, "url"),
             key=Config.str(data, "key"),
@@ -161,6 +174,9 @@ class ProviderConfig:
             response_timeout=max(0, Config.int(data, "response_timeout", 600)),
             extra_body=Config.table(data, "extra_body"),
             builtin_tools=Config.table_tuple(data, "builtin_tools"),
+            compaction_model=Config.str(compaction_root, "model", ""),
+            compaction_reasoning=compaction_reasoning,
+            compaction_api=compaction_api,
         )
 
     def builtin_function_names(self) -> tuple[str, ...]:
@@ -557,20 +573,25 @@ model = ""
 
 
 def compaction_provider_config(config: Config) -> ProviderConfig:
-    """The provider entry compaction summaries run on, with [compaction] overrides applied.
+    """The provider entry compaction summaries run on, with two override layers applied.
 
-    Base entry is `config.compaction_provider` or the active provider when unset; non-empty
-    compaction_model/reasoning/api fold over it. Never shares or mutates the base entry object:
+    Base entry is `config.compaction_provider` or the active provider when unset. Per field,
+    precedence is: the base entry's own `[provider.X.compaction]` nested table, then the global
+    `[compaction]` section, then the base entry's own value — per-provider wins over global, and a
+    fully empty pair leaves the entry's value. Never shares or mutates the base entry object:
     dataclasses.replace is shallow, so folding onto a shared object would leak compaction-only
     overrides into the main provider (same reasoning as worker_provider_config in tools/delegate.py).
     Resolved per call, never cached, so a runtime /provider switch is picked up by the next
     compaction.
     """
-    provider = replace(config.providers[config.compaction_provider or config.active_provider])
-    if config.compaction_model:
-        provider.model = config.compaction_model
-    if config.compaction_reasoning:
-        provider.reasoning = config.compaction_reasoning
-    if config.compaction_api:
-        provider.api = config.compaction_api
+    base = config.providers[config.compaction_provider or config.active_provider]
+    provider = replace(base)
+    for attr, per_value, global_value in (
+        ("model", base.compaction_model, config.compaction_model),
+        ("reasoning", base.compaction_reasoning, config.compaction_reasoning),
+        ("api", base.compaction_api, config.compaction_api),
+    ):
+        value = per_value or global_value
+        if value:
+            setattr(provider, attr, value)
     return provider
