@@ -1515,3 +1515,54 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
 
     assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", None]
     assert ContextManager(s).latest_user_index(s.messages) == 0
+
+
+def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
+    """Surviving one pass is not the same as surviving four. Each pass re-reads what the previous
+    one left, so a request kept by accident (a second copy, a stale checkpoint it hides behind)
+    would drift round by round: the invariant is one verbatim request, one checkpoint, and a
+    message stream where every tool result still answers a call that is still there."""
+    s = session(tmp_path)
+    s.settings.max_context_tokens = 12000
+    context = ContextManager(s)
+
+    def steps(tag, count=8):
+        messages = []
+        for index in range(count):
+            key = f"{tag}{index}"
+            call_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": key, "type": "function", "function": {"name": "Read", "arguments": "{}"}}],
+            }
+            messages.extend((call_message, {"role": "tool", "tool_call_id": key, "content": f"tr.{key} " + "filler " * 900}))
+        return messages
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def compact(self, text):
+            self.calls += 1
+            return {"summary": f"summary {self.calls}"}
+
+    model = FakeModel()
+    turn = [
+        {"role": "user", "content": "the whole order"},
+        {"role": "user", "content": "--- SKILL MENTIONS ---\nbody", SESSION_EVENT_KEY: "skill_mentions"},
+        {"role": "user", "content": "[Runtime protocol correction] ...", SESSION_EVENT_KEY: "tool_call_correction"},
+        *steps("a"),
+    ]
+    for round_index in range(4):
+        messages = context.prepare_messages(model, "system", turn)
+
+        assert [message.get("content") for message in messages].count("the whole order") == 1
+        assert turn[0]["content"] == "the whole order"
+        assert sum(1 for message in turn if str(message.get("content") or "").startswith(COMPACTION_SUMMARY_TITLE)) == 1
+        called = [raw["id"] for message in messages for raw in message.get("tool_calls") or []]
+        answered = [message.get("tool_call_id") for message in messages if message.get("role") == "tool"]
+        assert sorted(called) == sorted(answered), f"round {round_index} split a tool call from its result"
+        turn.extend(steps(f"b{round_index}", 6))
+
+    assert model.calls == 4  # one pass per round, never a compaction loop
+    assert [segment.key for segment in s.history] == ["seg.1", "seg.2", "seg.3", "seg.4"]
