@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.20\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-14 01:12-0700\n"
+"POT-Creation-Date: 2026-08-14 01:23-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -182,9 +182,12 @@ msgstr ""
 
 #: ../../worker.md:88
 msgid ""
-"The actions sit in a row above the input line, with `Approve` selected. "
-"`Tab` and the arrows move along it, `Enter` fires what is selected:"
-msgstr "动作排成一行显示在输入行上方，默认选中 `Approve`。`Tab` 和方向键在行内移动，`Enter` 执行当前选中的动作："
+"The actions sit in a row above the input line, `Approve` selected to "
+"begin with. `Tab` and the arrows move the highlight — above, two presses "
+"have landed on `View order` — and `Enter` fires whatever is highlighted:"
+msgstr ""
+"这些操作排成一行位于输入行上方，初始选中 `Approve`。`Tab` 和方向键移动高亮——上图中"
+"按了两次 Tab，落在 `View order` 上——`Enter` 执行当前高亮的操作："
 
 #: ../../worker.md
 msgid "Key"
@@ -226,7 +229,7 @@ msgstr "任何可打印字符"
 msgid "start writing a refusal reason"
 msgstr "开始写拒绝理由"
 
-#: ../../worker.md:98
+#: ../../worker.md:99
 msgid ""
 "Typing always goes to the reason, so no letter is ever a shortcut and no "
 "reason is unwritable. While you are typing, the row dims and `Enter` "
@@ -236,7 +239,7 @@ msgstr ""
 "输入永远进入理由，因此没有任何字母被占作快捷键，也就没有写不出的理由。正在输入时，动作行变暗、`Enter` 改为发送理由；`Esc` "
 "先收回理由退回动作行，只有在没有东西可收回时才表示拒绝。"
 
-#: ../../worker.md:102
+#: ../../worker.md:103
 msgid ""
 "Every tool's approval works this way — non-`Delegate` ones simply offer "
 "`Approve` and `Refuse`. Without a TUI (piped input, a headless run) the "
@@ -246,26 +249,26 @@ msgstr ""
 "每个工具的确认都是这套交互 —— 非 `Delegate` 的只是少几个动作，只有 `Approve` 和 `Refuse`。没有 TUI "
 "时（管道输入、无界面运行）没有这一行，同样的动作改为完整输入：`y`、`n`、`v`、`c`，每个后面加 Enter。"
 
-#: ../../worker.md:108
+#: ../../worker.md:109
 msgid ""
 "`View order` opens the full order in a read-only viewer — the same field "
 "rows, then the order itself rendered as markdown. Scroll it, then `Esc` "
 "back to the actions."
 msgstr ""
-"`View order` 会在只读查看器里打开完整的 order —— 同样的字段行，然后是按 markdown 渲"
-"染的 order 本身。可以滚动查看，`Esc` 返回操作行。"
+"`View order` 会在只读查看器里打开完整的 order —— 同样的字段行，然后是按 markdown 渲染的 order "
+"本身。可以滚动查看，`Esc` 返回操作行。"
 
-#: ../../worker.md:113
+#: ../../worker.md:114
 msgid "When nothing delegates"
 msgstr "当什么都没有被委派时"
 
-#: ../../worker.md:115
+#: ../../worker.md:116
 msgid ""
 "Delegation is the model's call, not a command you run — there is no way "
 "to force one. If a session never delegates, check in this order:"
 msgstr "委派由模型决定，不是你运行的命令——没有办法强制发起一次。如果一个会话始终没有委派，按以下顺序检查："
 
-#: ../../worker.md:118
+#: ../../worker.md:119
 msgid ""
 "`/worker` — it reports the configured entry, or `worker: no active "
 "session` with the `[worker] provider` it would use."
@@ -273,13 +276,13 @@ msgstr ""
 "`/worker` —— 它会报告配置的条目，或者在没有 worker 时显示 `worker: no active session` "
 "以及它将会使用的 `[worker] provider`。"
 
-#: ../../worker.md:120
+#: ../../worker.md:121
 msgid ""
 "`[worker] provider` and `[runtime] worker` in your config, or `/worker "
 "on` for this session."
 msgstr "配置里的 `[worker] provider` 与 `[runtime] worker`，或者用 `/worker on` 打开本次会话的委派。"
 
-#: ../../worker.md:121
+#: ../../worker.md:122
 msgid ""
 "**Whether delegation was available when the session started.** If "
 "`[worker] provider` was unset at startup, the model was never offered the"
@@ -291,17 +294,17 @@ msgstr ""
 "是空的，模型从一开始就没有拿到这个工具，现在打开要到下一个会话才生效。会话中途更换 provider "
 "没有问题——那只是把模型已经拥有的委派重新指向别处。"
 
-#: ../../worker.md:126
+#: ../../worker.md:127
 msgid ""
 "Otherwise the model simply saw no task worth handing over, which is the "
 "normal case for short work."
 msgstr "否则就只是模型没有看到值得交出去的任务，这在短任务里很正常。"
 
-#: ../../worker.md:128
+#: ../../worker.md:129
 msgid "Good to know"
 msgstr "值得知道的几点"
 
-#: ../../worker.md:130
+#: ../../worker.md:131
 msgid ""
 "**Reset drops the conversation, not the work.** `/worker reset` clears "
 "the worker's context — along with any wrong beliefs it picked up — while "
@@ -310,20 +313,20 @@ msgstr ""
 "**重置丢掉的是对话，不是工作成果。** `/worker reset` 会清空 worker "
 "的上下文——连同它可能积累的错误认知——而文件改动和已合并的 diff 都会保留。"
 
-#: ../../worker.md:132
+#: ../../worker.md:133
 msgid ""
 "**Every send asks, even under `yolo`.** The order is a spec the model "
 "wrote for itself, so the approval brief is the one cheap check on it."
 msgstr "**每一次发送都会询问，即使在 `yolo` 下也一样。** order 是模型给自己写的规格，因此这份审批简报是对它唯一的低成本检查。"
 
-#: ../../worker.md:134
+#: ../../worker.md:135
 msgid ""
 "**The worker inherits your environment.** Same directory, skills, MCP "
 "servers, and language setting; the files and the repository are what both"
 " actually share."
 msgstr "**worker 继承你的环境。** 同一个目录、skills、MCP 服务器和语言设置；真正由双方共享的是文件和这个仓库。"
 
-#: ../../worker.md:136
+#: ../../worker.md:137
 msgid ""
 "**Its tokens are its own.** The worker bills to its own entry and keeps "
 "its own context, and `/status` gives it separate rows — provider and "
@@ -333,7 +336,7 @@ msgstr ""
 "**它的 token 是它自己的。** worker 按自己的条目计费、保有自己的上下文，`/status` "
 "也会给它单独的几行——provider 与模型、上下文占用与轮数、缓存命中率——因此一次委派不会和父会话的数字混在一起。"
 
-#: ../../worker.md:139
+#: ../../worker.md:140
 msgid ""
 "**Its sessions are not yours to manage.** Worker snapshots ride along "
 "with the parent's and never appear in `/sessions`; when the parent's "

@@ -85,8 +85,9 @@ one-line excerpt of the order, any explicit `language` or `max_steps`, and the e
 provider/model/effort/api, with `(inherit)` marking a field that inherits the provider entry's
 value. A refused send feeds your reason back to the model.
 
-The actions sit in a row above the input line, with `Approve` selected. `Tab` and the arrows move
-along it, `Enter` fires what is selected:
+The actions sit in a row above the input line, `Approve` selected to begin with. `Tab` and the
+arrows move the highlight — above, two presses have landed on `View order` — and `Enter` fires
+whatever is highlighted:
 
 | Key | Action |
 | --- | --- |
@@ -103,7 +104,7 @@ Every tool's approval works this way — non-`Delegate` ones simply offer `Appro
 Without a TUI (piped input, a headless run) the row is gone and the same actions are typed out:
 `y`, `n`, `v`, `c`, each followed by Enter.
 
-<div class="term-shot" role="img" aria-label="The Delegate send approval brief: FIELD rows for the title, an order excerpt, and the worker's effective provider, model, effort, and api with inherit markers, then a live action row with Approve selected, followed by the reason input line."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span><span class="fs-i fs-sel"> Approve </span><span class="fs-i fs-dim">   View order    Worker config    Refuse     Tab to move</span></span><span class="fs-dim">  reason › </span></div>
+<div class="term-shot" role="img" aria-label="The Delegate send approval brief: field rows for the title, an order excerpt, and the worker's effective provider, model, effort and api with inherit markers, then the action row in yellow with View order highlighted in reverse after two presses of Tab, and the reason input line below it."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span><span class="fs-i fs-dim">    │ </span><span class="fs-i fs-approve"> Approve </span><span class="fs-i fs-dim">  </span><span class="fs-i fs-approve-on"> View order </span><span class="fs-i fs-dim">  </span><span class="fs-i fs-approve"> Worker config </span><span class="fs-i fs-dim">  </span><span class="fs-i fs-approve"> Refuse </span><span class="fs-i fs-dim">    Tab to move</span></span><span class="fs-dim">  reason › </span></div>
 
 `View order` opens the full order in a read-only viewer — the same field rows, then the order
 itself rendered as markdown. Scroll it, then `Esc` back to the actions.

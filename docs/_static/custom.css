@@ -212,8 +212,12 @@ table.docutils th { background: var(--nc-surface); color: var(--nc-fg-strong); }
 .fs-output { color: #5c6370; }  /* tool output: LogRole.OUTPUT renders bright black, like .fs-dim */
 /* Diff rows, mirroring Theme.DARK diff.added/removed in minacode/render.py: the row carries a
    background and the text keeps the default foreground; only the +/- marker is colored. */
+/* Approval action row, mirroring cli/view.py: actions are ansiyellow, the focused one reversed. */
+.fs-approve { color: #e5c07b; }
+.fs-approve-on { color: #282c34; background: #e5c07b; }
 /* Markdown rendered inside a viewer, mirroring Rich's output: headings magenta underlined,
    inline code cyan on a dark band. */
+.fs-md-b { font-weight: 700; }
 .fs-md-h { color: #c678dd; text-decoration: underline; }
 .fs-md-code { color: #56b6c2; background: #1c1f24; font-weight: 600; }
 /* External editor (Ctrl-X Ctrl-E): vim's filler tildes and status line. */

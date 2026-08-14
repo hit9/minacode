@@ -8,25 +8,17 @@ providers exact earlier user and tool boundaries to reuse.
 
 <div class="term-shot" role="img" aria-label="The message context from first to last: system instructions, project environment with session start time, optional skills and MCP indexes, then an append-only conversation containing user messages, assistant replies, tool results, Note state changes, resume events, and occasional compaction checkpoints."><span class="fs-goal">─ stable session prefix ─────────────────────────────</span><span>  system instructions      <span class="fs-i fs-dim">how the agent should operate</span></span><span>  project environment      <span class="fs-i fs-dim">directory · local start time · OS · shell</span></span><span>  skills and MCP indexes   <span class="fs-i fs-dim">only when available</span></span><span class="fs-goal">─ append-only conversation ──────────────────────────</span><span>  user · assistant · tools <span class="fs-i fs-dim">normal turn history</span></span><span>  Note calls and results   <span class="fs-i fs-dim">goal · plan · facts · checks</span></span><span>  lifecycle events         <span class="fs-i fs-dim">resume time in the user's local zone</span></span><span>  current turn             <span class="fs-i fs-dim">always appended last</span></span></div>
 
-The environment records the session's start time once as a local ISO timestamp with its numeric
-offset, such as `2026-07-30T20:34:56+08:00`. Resuming appends a user-role lifecycle event with the
-new local time. These timestamps are directly readable by both the user and model; no UTC
-conversion is required, and there is no changing date block inserted into later requests.
+Times are local, written once when the session starts and again when it resumes, so both you and
+the model read them without converting anything.
 
-Tool definitions are sent beside this message stack: built-in tools, `Skill` when skills are
-installed, and MCP tools and resources from <span class="marker">currently connected servers</span>.
-Configured but disconnected servers do not consume context.
+Tool definitions are sent beside this stack: built-in tools, `Skill` when skills are installed,
+and the tools of <span class="marker">currently connected</span> MCP servers. Configured but
+disconnected servers cost nothing. Reasoning the model returns is kept and replayed only where the
+active provider expects it.
 
-When a model exposes reasoning, minacode keeps the returned protocol data in the session but only
-replays what the active provider expects. Some APIs require preserved reasoning across turns;
-others ignore old reasoning unless a preserved-thinking option is enabled, while still needing it
-inside a multi-step tool call. Opaque signatures and encrypted reasoning are returned unchanged
-when their protocol requires them, but are not shown as model-readable text.
-
-When [provider-side search](tools.md#provider-side-tools) is enabled, the pages it reads are added
-to the context by the provider rather than by minacode, so they are not shortened and the context
-fill cannot predict them: a turn that searches arrives larger than one that does not, and most
-providers charge for the search on top of the tokens.
+[Provider-side search](tools.md#provider-side-tools) is the exception to all of this: the pages it
+reads are added by the provider, so they are neither shortened nor counted in the context fill, and
+most providers bill the search on top of the tokens.
 
 ## Keeping context manageable
 
@@ -40,26 +32,19 @@ As a request approaches `runtime.max_context_tokens`, minacode **compacts**: the
 conversation is replaced by a short summary, and the most recent messages are kept as they are.
 The session continues in the same turn, so a long task does not have to stop.
 
-The threshold accounts for what the next request will carry besides the conversation — the reply
-the model may write, and the tool definitions — so compaction happens before the window is
-actually full.
+The threshold leaves room for what the next request carries besides the conversation — the reply
+the model may write, and the tool definitions — so compaction happens before the window is full.
+The fill shown in the status bar measures the last request; compaction looks ahead to the next.
 
-The context fill shown in the status bar and `/status` is the provider-reported token count of the
-last request; compaction still triggers on the estimate, which projects the next request.
-
-The checkpoint summary in the active context is lossy, but each compaction also captures a bounded verbatim
-excerpt of the evicted messages as a **history segment**. Earlier snapshots in the append-only
-session log remain the cold source of truth, so compaction does not rewrite them.
+The summary is lossy, so each compaction also stores a verbatim excerpt of the messages it
+evicted, as a **history segment**. The session log keeps the originals either way.
 
 <div class="term-shot" role="img" aria-label="Compaction replaces older active conversation with one checkpoint containing the summary, full working state, and a segment pointer. RecallContext can list, search, and retrieve bounded verbatim excerpts, while the append-only session log retains earlier snapshots as the cold source of truth."><span class="fs-goal">─ active context (hot) ────────────────</span><span>  checkpoint       <span class="fs-i fs-dim">summary · goal · plan · facts · checks · seg.N</span></span><span>  recent messages  <span class="fs-i fs-dim">kept as they are</span></span><span class="fs-dim">─ recallable segments (warm) ──────────</span><span>  seg.1 · seg.2    <span class="fs-i fs-dim">listed/searched only when needed</span></span><span class="fs-dim">─ append-only session log (cold) ──────</span><span>  earlier snapshots<span class="fs-i fs-dim"> original messages</span></span><span> </span><span class="fs-dim"><span class="fs-i fs-goal">RecallContext(list/search/get)</span> finds an excerpt</span></div>
 
-Each compaction names the span it evicted, in the same reply that produces the summary, so the
-title describes the work rather than whichever message happened to start the window.
-
-Segment titles do not occupy every request. The agent uses `RecallContext` to list them newest
-first, regex-search stored titles and text, or retrieve selected `seg.N` excerpts. `Note` can view
-the current goal, plan, facts, and checks; updates remain visible in their original tool-call
-history until a compaction checkpoint consolidates the complete current state.
+Each compaction names the span it evicted, in the same reply that writes the summary, so the title
+describes the work rather than whichever message happened to start the window. The agent reaches
+segments through `RecallContext` — listing, searching, or retrieving one — and none of them take
+up room in a request until it does.
 
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.
@@ -69,11 +54,8 @@ automatic or manual, whether it covered prior conversation or the running turn, 
 evicted. Opening one shows the summary written at that point — the active context keeps only the
 newest — and `/compact log seg.N` prints that summary without the viewer.
 
-A pass that finds nothing to evict stores no segment, so the compaction count can exceed the
-number of segments.
-
-Neither form prints the stored excerpt of the evicted messages; that is the agent's to retrieve
-with `RecallContext`.
+Neither form prints the stored excerpt — that is the agent's to retrieve — and a pass that finds
+nothing to evict stores no segment at all, so the compaction count can exceed the segment count.
 
 While a summary is running, the status bar names the entry doing it — `[compaction]`, then that
 entry's model and effort — the same way it names an in-flight [worker](worker.md). The row goes
@@ -122,23 +104,20 @@ own rows.
 
 ## Prompt caching
 
-Prompt caching lets a provider reuse work for an unchanged beginning of a request. The next request
-usually begins with the same instructions, environment, tools, and earlier conversation, so only
-the new tail needs to be processed. Note updates and resume events append to the conversation and
-therefore do not move an earlier breakpoint. A compaction intentionally starts one new cache epoch.
-Connecting an MCP server, changing installed skills, switching models, or otherwise changing an
-early section can reduce the next request's cache hit.
+Prompt caching lets a provider reuse work for an unchanged beginning of a request. Each request
+usually starts with the same instructions, environment, tools, and earlier conversation, so only
+the new tail needs processing.
 
 <div class="term-shot" role="img" aria-label="Two request bars. Both start with the same long shaded prefix, which the provider reuses; only the shorter tail of each request is processed again."><span>previous  <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░</span></span><span>next      <span class="fs-i fs-goal">████████████████████████</span><span class="fs-i fs-dim">░░░░░░░░░░</span></span><span> </span><span class="fs-dim">          <span class="fs-i fs-goal">█</span> reused prefix    ░ processed again</span></div>
 
-A request is reused only up to its first difference, so a change near the beginning — connecting
-an MCP server, installing a skill, switching models, enabling a provider-side tool — shortens the
-reusable prefix. That is why
-the stable sections are placed first.
+A request is reused only up to its first difference, which is why the stable sections come first.
+Anything that changes an early one — connecting an MCP server, installing a skill, switching
+models, enabling a provider-side tool — shortens the reusable prefix; a compaction deliberately
+starts a new one. Appending to the conversation, including Note updates and resume events, does
+not.
 
-OpenAI-compatible providers may reuse matching prefixes automatically; minacode supplies a stable
-cache key where the provider supports one. For Anthropic, minacode explicitly marks the tools and
-system instructions as an ephemeral cacheable prefix. Provider support and accounting differ.
+Support differs by provider: OpenAI-compatible endpoints may match prefixes on their own, and
+minacode marks the cacheable prefix explicitly for Anthropic.
 
 ### Checking the hit rate
 

@@ -131,17 +131,10 @@ Some providers can <span class="marker">search the web themselves</span>, as par
 The model searches, reads the pages, and answers with sources, without minacode running anything.
 This is off by default; turn it on with [`builtin_tools`](configuration.md#provider-side-tools).
 
-You see a line for each search, a `web search` phase in the status while it runs, and the sources
-under the answer:
+You see a line for each search, `web search` as the working phase while it runs, and the pages it
+read listed under the answer:
 
-```text
-  ├ web search httpx timeout configuration
-The client accepts a `timeout` argument taking either a float or a `Timeout` object.
-
-**Sources**
-
-1. [Timeouts — HTTPX](https://example.com/httpx/timeouts)
-```
+<div class="term-shot" role="img" aria-label="A provider-side search inside one answer: a green web search line naming the query, the working divider labelled web search, then the rendered answer with inline code, and a bold Sources heading above a numbered list of the pages the provider reported."><span><span class="fs-i fs-dim">  ├ </span><span class="fs-i fs-tool">web search</span><span class="fs-i"> httpx timeout configuration</span></span><span> </span><span><span class="fs-i fs-rule">--</span><span class="fs-i fs-glow">-</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-add">●</span><span class="fs-i fs-rule"> </span><span class="fs-i fs-working">web search (3s)</span><span class="fs-i fs-rule"> ------------------------------</span></span><span> </span><span>The client accepts a <span class="fs-i fs-md-code">timeout</span> argument taking either a float</span><span>or a <span class="fs-i fs-md-code">Timeout</span> object.</span><span> </span><span><span class="fs-i fs-md-b">Sources</span></span><span> </span><span>1. example.com/httpx/timeouts</span></div>
 
 Sources appear when the provider reports them; not all of them do.
 
