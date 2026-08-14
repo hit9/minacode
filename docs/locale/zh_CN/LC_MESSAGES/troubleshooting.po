@@ -1,0 +1,250 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) hit9
+# This file is distributed under the same license as the minacode package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: minacode 0.23\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-14 00:31-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../troubleshooting.md:1
+msgid "Troubleshooting"
+msgstr ""
+"排查"
+
+#: ../../troubleshooting.md:3
+msgid "What each symptom means, and what to do about it."
+msgstr ""
+"每个现象意味着什么，以及该怎么处理。"
+
+#: ../../troubleshooting.md:5
+msgid "It will not start"
+msgstr ""
+"启动不起来"
+
+#: ../../troubleshooting.md:7
+msgid ""
+"**`missing config: provider.url, provider.key, provider.model`** — the "
+"active provider entry is incomplete. Open `~/.minacode/config.toml` and "
+"fill in the three required keys, or run `minacode --init-config` to write"
+" a fresh starter file. `/config` shows which entry is active."
+msgstr ""
+"**`missing config: provider.url, provider.key, provider.model`** —— 当前激活的 "
+"provider 条目不完整。打开 `~/.minacode/config.toml` 补上这三个必填键，或运行 "
+"`minacode --init-config` 写一份新的起始配置。`/config` 会显示当前激活的是哪个条"
+"目。"
+
+#: ../../troubleshooting.md:11
+msgid ""
+"**Requests fail with an authentication error** — the key is wrong for the"
+" url, or the entry belongs to a different vendor than the model name "
+"suggests. Check that `url`, `key`, and `model` in the active entry come "
+"from the same provider."
+msgstr ""
+"**请求返回鉴权错误** —— key 与 url 不匹配，或者这个条目其实属于另一家厂商，而不是模"
+"型名看起来的那家。确认激活条目里的 `url`、`key`、`model` 来自同一个服务商。"
+
+#: ../../troubleshooting.md:15
+msgid ""
+"**`compaction provider ... is missing key, model`** — the `[compaction]` "
+"entry is incomplete. That entry needs its own url, key, and model, "
+"exactly like a provider you converse with. See [Compaction "
+"model](configuration.md#compaction-model)."
+msgstr ""
+"**`compaction provider ... is missing key, model`** —— `[compaction]` 条目不完整。"
+"这个条目也需要自己的 url、key 和 model，和你直接对话的 provider 一样。见"
+"[压缩模型](configuration.md#compaction-model)。"
+
+#: ../../troubleshooting.md:19
+msgid "The model call fails"
+msgstr ""
+"模型调用失败"
+
+#: ../../troubleshooting.md:21
+msgid ""
+"**It failed instantly instead of retrying.** Rate limits, timeouts, and "
+"server errors are retried automatically, with the attempt shown as "
+"`retrying 2/6` on the divider. Two kinds of failure never retry, because "
+"a second attempt would fail the same way: <span class=\"marker\">quota "
+"and billing errors</span> — an exhausted balance, an expired plan — and a"
+" response that hit the model's output cap. Read the error text: it comes "
+"from your provider and names the account problem."
+msgstr ""
+"**它没有重试，直接就失败了。** 限流、超时和服务端错误会自动重试，重试次数会以 "
+"`retrying 2/6` 显示在分隔线上。有两类失败从不重试，因为再试一次结果一样：<span class=\"marker\">额度与账单错误</span>——余额耗尽、套餐过期——以及触到模型输出上限的"
+"响应。看错误正文：它来自你的 provider，会指出账号上的问题。"
+
+#: ../../troubleshooting.md:28
+msgid ""
+"**`Model response exceeded provider.response_timeout=600s`** — one "
+"response took longer than the total-generation limit. Raise "
+"`response_timeout` for that provider entry, or set it to `0` to wait "
+"indefinitely. See [Optional provider settings](configuration.md#optional-"
+"provider-settings)."
+msgstr ""
+"**`Model response exceeded provider.response_timeout=600s`** —— 一次响应超过了总生"
+"成时限。调大该 provider 条目的 `response_timeout`，或设为 `0` 表示无限等待。见"
+"[可选的 provider 设置](configuration.md#optional-provider-settings)。"
+
+#: ../../troubleshooting.md:32
+msgid ""
+"**The reply mentions a model or parameter the provider does not know.** "
+"Set `api` explicitly on that entry rather than leaving it to be detected,"
+" and check the model name against the provider's own list. `/config` "
+"shows the protocol and reasoning effort actually in use."
+msgstr ""
+"**回复里出现了 provider 不认识的模型或参数。** 给该条目显式设置 `api`，不要交给自动"
+"识别，并对照 provider 自己的列表核对模型名。`/config` 会显示实际生效的协议与推理强"
+"度。"
+
+#: ../../troubleshooting.md:36
+msgid "Context and summaries"
+msgstr ""
+"上下文与摘要"
+
+#: ../../troubleshooting.md:38
+msgid ""
+"**The context was trimmed but no summary appeared.** The summary request "
+"failed and minacode made room anyway. `/compact log` marks that pass `no "
+"summary`. See [When a summary does not arrive](context.md#when-a-summary-"
+"does-not-arrive)."
+msgstr ""
+"**上下文被裁剪了，但没有出现摘要。** 摘要请求失败了，minacode 仍然腾出了空间。"
+"`/compact log` 会把那次压缩标记为 `no summary`。见"
+"[摘要没有拿到时](context.md#when-a-summary-does-not-arrive)。"
+
+#: ../../troubleshooting.md:42
+msgid ""
+"**`context is over budget and nothing is left to compact`** — the latest "
+"exchange alone exceeds the window, so there is nothing older to "
+"summarize. It is usually one enormous tool result. Start a fresh session "
+"for the next task, or raise `runtime.max_context_tokens` if the model's "
+"window allows."
+msgstr ""
+"**`context is over budget and nothing is left to compact`** —— 仅最近这一次交互就已"
+"经超出窗口，没有更早的内容可以摘要了。通常是某个特别大的工具结果。为下一个任务开一"
+"个新会话，或者在模型窗口允许时调大 `runtime.max_context_tokens`。"
+
+#: ../../troubleshooting.md:47
+msgid ""
+"**`/compact` says there is nothing to compact.** Everything left is "
+"recent enough that compaction may not drop it. Nothing is wrong — the "
+"context is already as small as it gets."
+msgstr ""
+"**`/compact` 说没有可压缩的内容。** 剩下的都足够新，压缩不允许丢弃它们。这不是故"
+"障——上下文已经小到不能再小了。"
+
+#: ../../troubleshooting.md:50
+msgid "Cache and cost"
+msgstr ""
+"缓存与花费"
+
+#: ../../troubleshooting.md:52
+msgid ""
+"**The cache ratio sits near zero.** A provider reuses a request only up "
+"to its first difference, so anything that changes the beginning of a "
+"request — switching models, connecting an MCP server, installing a skill "
+"— starts a fresh prefix. It recovers over the following turns if you "
+"leave those alone. Not every provider caches, and each reports it "
+"differently; see [Prompt caching](context.md#prompt-caching)."
+msgstr ""
+"**缓存命中率一直接近零。** provider 只会复用请求中第一处差异之前的部分，所以任何改"
+"变请求开头的动作——切换模型、连接 MCP 服务器、安装 skill——都会让前缀重新开始。只要"
+"不再动它们，接下来的几个回合就会恢复。并非所有 provider 都做缓存，各家的统计口径也"
+"不同；见[提示词缓存](context.md#prompt-caching)。"
+
+#: ../../troubleshooting.md:58
+msgid ""
+"**Tokens are climbing faster than expected.** `/status` breaks the "
+"session into conversation and summary usage. [Spending less](context.md"
+"#spending-less) lists what each lever does."
+msgstr ""
+"**token 涨得比预期快。** `/status` 会把会话拆成对话用量和摘要用量两行。"
+"[更省钱](context.md#spending-less)列出了每个杠杆的作用。"
+
+#: ../../troubleshooting.md:61
+msgid "Editing and tools"
+msgstr ""
+"编辑与工具"
+
+#: ../../troubleshooting.md:63
+msgid ""
+"**`stale anchor ...`** — the file changed after the agent read it, so the"
+" edit was refused rather than applied to the wrong lines. This is the "
+"guardrail working. Ask the agent to re-read the file and try again."
+msgstr ""
+"**`stale anchor ...`** —— 文件在 agent 读过之后发生了变化，因此这次编辑被拒绝，而不"
+"是落到错误的行上。这是防护在起作用。让 agent 重新读一次文件再试。"
+
+#: ../../troubleshooting.md:67
+msgid ""
+"**A tool asks for confirmation every time.** That is the default for "
+"anything that writes files or runs commands. `/yolo` turns confirmations "
+"off for the session; read [Safety](safety.md) first."
+msgstr ""
+"**每次都要确认某个工具。** 凡是写文件或执行命令的操作，默认都要确认。`/yolo` 可以在"
+"本次会话关闭确认；先读一读[安全](safety.md)。"
+
+#: ../../troubleshooting.md:70
+msgid ""
+"**The code index says `stale` or `?`.** Run `/index` to rebuild it. "
+"Search and navigation still work without it — they fall back to scanning "
+"— but symbol lookups are slower and less precise."
+msgstr ""
+"**代码索引显示 `stale` 或 `?`。** 运行 `/index` 重建。没有索引搜索和导航依然可"
+"用——它们会退回到扫描——只是符号查找更慢、更不精确。"
+
+#: ../../troubleshooting.md:73
+msgid "Sessions"
+msgstr ""
+"会话"
+
+#: ../../troubleshooting.md:75
+msgid ""
+"**`Session snapshot not found`** — the id does not exist under this data "
+"directory, or it was swept. Run `/sessions all` to list everything saved,"
+" across projects."
+msgstr ""
+"**`Session snapshot not found`** —— 这个 id 在当前数据目录下不存在，或者已经被清"
+"理。运行 `/sessions all` 可以列出所有项目里保存的全部会话。"
+
+#: ../../troubleshooting.md:78
+msgid ""
+"**A session I expected is gone.** Sessions untouched for seven days are "
+"removed at startup. Resuming one resets its clock; "
+"`runtime.session_retention_days = 0` keeps them indefinitely. See "
+"[Sessions](usage.md#sessions)."
+msgstr ""
+"**我以为还在的会话不见了。** 七天没有动过的会话会在启动时被清理。恢复一个会话会重"
+"置它的计时；`runtime.session_retention_days = 0` 则永久保留。见"
+"[会话](usage.md#sessions)。"
+
+#: ../../troubleshooting.md:82
+msgid ""
+"**Resuming shows blanks where I expect details.** A session started "
+"before a feature existed has nothing recorded for it. See [Sessions "
+"started before these features](context.md#sessions-started-before-these-"
+"features)."
+msgstr ""
+"**恢复后本该有细节的地方是空的。** 在某项功能存在之前开始的会话，没有为它记录任何"
+"东西。见[在这些功能之前开始的会话](context.md#sessions-started-before-these-features)。"
+
+#: ../../troubleshooting.md:86
+msgid ""
+"**`/sessions` refuses to switch.** Switching mid-turn would abandon a "
+"request already in flight. Press `Ctrl-C` first, then run it again."
+msgstr ""
+"**`/sessions` 不肯切换。** 在回合进行中切换会丢弃一个已经发出的请求。先按 "
+"`Ctrl-C`，再运行一次。"
+

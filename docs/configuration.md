@@ -211,12 +211,12 @@ model = "deepseek-...-flash"
 reasoning = "off"
 ```
 
-Two things to check when picking a summarizer. It has to **read the whole span being compacted**,
-so its context window should be comparable to the one you are compacting — a small-window model
-asked to summarize a large conversation fails every time, and the context is trimmed without a
-summary instead. And its own `response_timeout` applies to the summary, so a slow summarizer can
-hold up a turn for that long before giving up; lower it on that entry if you would rather trim
-early than wait.
+Two things to check when picking a summarizer:
+
+- **Its window must fit the span being compacted.** A small-window model asked to summarize a
+  large conversation fails every time, and the context is then trimmed without a summary.
+- **Its `response_timeout` applies to the summary.** A slow summarizer holds up the turn for that
+  long before giving up. Lower it on that entry if you would rather trim early than wait.
 
 `/config` shows the effective `compaction.*` values, the status bar names the entry while a
 summary is in flight, and `/compact log` records which model produced each stored segment. Summary

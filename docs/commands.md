@@ -53,8 +53,8 @@ and lets you pick one interactively. With a name it switches immediately.
 an argument it opens an interactive picker with configured and discovered models.
 Changing the model also prompts you to pick a reasoning effort.
 
-**`/reason [EFFORT]`** — Show or set reasoning effort. Values: `off`, `minimal`,
-`low`, `medium`, `high`, `xhigh`, `max`. Minacode maps known model families to
+**`/reason [EFFORT]`** — Show or set reasoning effort; `/effort` is the same command.
+Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Minacode maps known model families to
 their nearest supported level; unrecognized providers and models keep the selected
 value. Without an argument it opens a picker.
 

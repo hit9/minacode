@@ -36,12 +36,13 @@ with references to their first full copy instead of being sent in full again.
 
 ### Compaction
 
-As the estimated request approaches `runtime.max_context_tokens`, minacode **compacts**: the older
-part of the conversation is replaced by a short summary, and the most recent messages are kept as
-they are. The estimate uses the effective Chat, Responses, or Anthropic request, so reasoning that
-the provider will discard does not cause early compaction. The trigger reserves the configured
-provider output cap (16K when unspecified), tool schemas, and a safety margin of at least 4K. The
-session continues in the same turn, so a long task does not have to stop.
+As a request approaches `runtime.max_context_tokens`, minacode **compacts**: the older part of the
+conversation is replaced by a short summary, and the most recent messages are kept as they are.
+The session continues in the same turn, so a long task does not have to stop.
+
+The threshold accounts for what the next request will carry besides the conversation — the reply
+the model may write, and the tool definitions — so compaction happens before the window is
+actually full.
 
 The context fill shown in the status bar and `/status` is the provider-reported token count of the
 last request; compaction still triggers on the estimate, which projects the next request.
@@ -63,12 +64,13 @@ history until a compaction checkpoint consolidates the complete current state.
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.
 
-`/compact log` reviews them one by one: each stored segment shows when it was compacted, whether
-the pass was automatic or manual, whether it covered prior conversation or the running turn, and
-how much it evicted. Opening one shows the summary that compaction produced at that point, which
-the active context no longer keeps once a later compaction replaces it. `/compact log seg.N`
-prints that summary without the viewer. A pass that found nothing to evict stores no segment, so
-the compaction count can exceed the number of segments.
+`/compact log` reviews them one by one. Each row shows when the pass ran, whether it was
+automatic or manual, whether it covered prior conversation or the running turn, and how much it
+evicted. Opening one shows the summary written at that point — the active context keeps only the
+newest — and `/compact log seg.N` prints that summary without the viewer.
+
+A pass that finds nothing to evict stores no segment, so the compaction count can exceed the
+number of segments.
 
 Neither form prints the stored excerpt of the evicted messages; that is the agent's to retrieve
 with `RecallContext`.
@@ -101,6 +103,23 @@ by an earlier version have no recorded time, scope, or model, so `/compact log` 
 `usage` total, so `/status` shows no `compaction usage` row until this session compacts again.
 Everything recorded from now on fills in normally.
 
+## Spending less
+
+Four levers, in the order they usually pay off:
+
+- **Keep the cache prefix stable.** Switching models or connecting a server mid-session restarts
+  the reusable prefix; leaving them alone lets it grow. See [Prompt caching](#prompt-caching).
+- **Give summaries a cheap model.** Compaction re-reads a large span every time it runs, and a
+  small model summarizes it as well as a large one. See
+  [Compaction model](configuration.md#compaction-model).
+- **Delegate bounded work to a cheap [worker](worker.md).** Its tokens are billed at the worker
+  entry's rate, and its context never enters the parent's.
+- **Size `runtime.max_context_tokens` to the work.** A larger window means fewer compactions but a
+  more expensive request every turn.
+
+`/status` shows what each is doing: cache ratio, conversation usage, and summary usage on their
+own rows.
+
 ## Prompt caching
 
 Prompt caching lets a provider reuse work for an unchanged beginning of a request. The next request
@@ -123,10 +142,10 @@ system instructions as an ephemeral cacheable prefix. Provider support and accou
 
 ### Checking the hit rate
 
-`/status` reports cache-read tokens for the whole session and latest request, plus cache-write
+`/status` reports the ratio for the latest request and for the whole session, with cache-write
 tokens when the provider exposes them:
 
-<div class="term-shot" role="img" aria-label="The usage row of /status, showing call count, total tokens, cached tokens for the whole session, and cached tokens for the latest request."><span><span class="fs-i fs-dim">usage</span>  calls 14; total 182304; cached <span class="fs-i fs-add">148992/162880</span> (<span class="fs-i fs-add">91.5%</span>); last <span class="fs-i fs-sel">21120/22016</span> (<span class="fs-i fs-sel">95.9%</span>)</span><span class="fs-dim">                                  └─ whole session ─┘        └─ latest request ─┘</span></div>
+<div class="term-shot" role="img" aria-label="Two rows of /status: a cache row with a fill meter, the latest request's hit ratio and the session's, then a usage row with the call count and total tokens."><span><span class="fs-i fs-dim">cache</span>  <span class="fs-i fs-add">[████████████▊░]</span> last <span class="fs-i fs-sel">95.9%</span>; session <span class="fs-i fs-add">91.5%</span></span><span><span class="fs-i fs-dim">usage</span>  calls 14; total 182.3K</span></div>
 
 The latest-request ratio also shows live in the status bar, beside the context fill,
 updating with each response.

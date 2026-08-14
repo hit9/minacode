@@ -1,12 +1,13 @@
 (worker-delegation)=
 # Worker delegation
 
-A **worker** is a second minacode session running **in the same process**. When the model
-recognizes a bounded task that deserves an independent look — a review, a refactor, a second
-opinion — it hands the task to the worker with the `Delegate` tool. The worker runs on its own
-configured provider, with its own system prompt and a reduced tool set, and keeps its context
-across delegations until you reset it. It never calls back into the parent: every delegation is
-a serial detour whose result comes back to the parent model.
+A **worker** is a second minacode session running in the same process. When the model meets a
+bounded task that deserves an independent look — a review, a refactor, a second opinion — it hands
+the task over with the `Delegate` tool.
+
+The worker has its own provider, its own system prompt, and a reduced tool set, and keeps its
+context across delegations until you reset it. It never calls back into the parent: a delegation
+is a detour that ends by returning its result.
 
 The design's main motivation is pairing models by cost: a large, capable model orchestrates as
 the parent, while the worker — whose tasks are bounded and spec'd — runs on a small, cheap one,

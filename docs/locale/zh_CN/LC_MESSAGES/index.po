@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-05 01:11-0700\n"
+"POT-Creation-Date: 2026-08-14 00:31-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -18,11 +18,11 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: ../../index.md:59
+#: ../../index.md:62
 msgid "Guide"
 msgstr "指南"
 
-#: ../../index.md:69
+#: ../../index.md:73
 msgid "Reference"
 msgstr "参考"
 
@@ -172,3 +172,36 @@ msgstr "**[配置](configuration.md)**"
 #: ../../index.md:40
 msgid "Providers, runtime settings, and data location."
 msgstr "Provider、runtime 设置和数据目录。"
+
+#: ../../index.md:40
+msgid "**[Context](context.md)**"
+msgstr ""
+"**[上下文](context.md)**"
+
+#: ../../index.md:40
+msgid ""
+"How the window is filled, summarized when it fills up, and reused by the "
+"provider's cache."
+msgstr ""
+"窗口里装了什么、装满时如何被摘要，以及 provider 的缓存如何复用它。"
+
+#: ../../index.md:40
+msgid "**[Safety](safety.md)**"
+msgstr ""
+"**[安全](safety.md)**"
+
+#: ../../index.md:40
+msgid "What minacode can reach, and how to keep that bounded."
+msgstr ""
+"minacode 能碰到什么，以及如何把它限制住。"
+
+#: ../../index.md:40
+msgid "**[Troubleshooting](troubleshooting.md)**"
+msgstr ""
+"**[排查](troubleshooting.md)**"
+
+#: ../../index.md:40
+msgid "What a symptom means and what to do about it."
+msgstr ""
+"某个现象意味着什么，以及该怎么处理。"
+
