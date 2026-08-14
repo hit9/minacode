@@ -1639,3 +1639,35 @@ def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatc
     with pytest.raises(ModelError):
         model.compact("context")
     assert s.state.compaction_entry == ""
+
+
+def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
+    """The client's own gate checks the active provider, which is the wrong entry when a summary
+    runs elsewhere. Without this the SDK reports "Missing credentials", naming nothing the user
+    can act on, and compaction silently degrades to trimming on every pass."""
+    config = Config.from_dict(
+        {
+            "provider": {
+                "active": "main",
+                "main": {"url": "http://test", "key": "k", "model": "big"},
+                "cheap": {"url": "http://test"},  # no key, no model
+            },
+            "compaction": {"provider": "cheap"},
+        }
+    )
+    s = Session(cwd=str(tmp_path), config=config)
+    s.config.data_dir = str(tmp_path / "data")
+
+    assert s.missing_config() == []  # the active entry is complete; only the compaction one is not
+    with pytest.raises(ModelError, match=r"compaction provider `cheap` is missing key, model"):
+        ModelClient(s).compact("context")
+    assert s.state.compaction_entry == ""  # refused before the request, so no stale status row
+
+
+def test_provider_entry_reports_its_own_missing_fields(tmp_path):
+    """One definition of a usable entry, shared by the active-provider gate and compaction."""
+    config = Config.from_dict({"provider": {"active": "p", "p": {"url": "", "key": "k", "model": ""}}})
+    s = Session(cwd=str(tmp_path), config=config)
+
+    assert config.providers["p"].missing_fields() == ["url", "model"]
+    assert s.missing_config() == ["provider.url", "provider.model"]

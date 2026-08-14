@@ -184,8 +184,8 @@ model = "claude-..."
   model = "claude-haiku-..."
 ```
 
-`/compact log` records which model produced each stored segment, and `/status` shows the effective
-`compaction.*` values.
+`/compact log` records which model produced each stored segment, `/config` shows the effective
+`compaction.*` values, and the status bar names the entry while a summary is in flight.
 
 ## Data location
 

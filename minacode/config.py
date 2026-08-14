@@ -179,6 +179,12 @@ class ProviderConfig:
             compaction_api=compaction_api,
         )
 
+    def missing_fields(self) -> list[str]:
+        """The required fields this entry leaves empty. An entry missing any of them cannot serve a
+        request, whichever role it is filling — the active provider, or the one `[compaction]`
+        points at."""
+        return [name for name in ("url", "key", "model") if not getattr(self, name)]
+
     def builtin_function_names(self) -> tuple[str, ...]:
         """Declared builtin functions, which the runner answers instead of rejecting as unknown.
         Evidence: https://platform.kimi.ai/docs/guide/use-web-search"""

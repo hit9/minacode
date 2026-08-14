@@ -497,8 +497,7 @@ class Session:
         return [job for job in self.jobs.values() if job.status == "running"]
 
     def missing_config(self) -> list[str]:
-        provider = self.config.provider
-        return [key for key, value in (("provider.url", provider.url), ("provider.key", provider.key), ("provider.model", provider.model)) if not value]
+        return ["provider." + name for name in self.config.provider.missing_fields()]
 
     def store_tool_result(self, name: str, args: ToolArgs, output: str, note: str = "") -> str:
         self.tool_counter += 1

@@ -1082,6 +1082,13 @@ class ModelClient:
         # time. The context budget is untouched: compaction still measures against the main
         # provider's window, only the summary request itself uses this entry.
         provider = compaction_provider_config(self.session.config)
+        entry_name = self.session.config.compaction_provider or self.session.config.active_provider
+        # The client's own gate checks the active provider, which is the wrong entry when a
+        # summary runs elsewhere: an incomplete [compaction] entry would otherwise reach the SDK
+        # and come back as "Missing credentials", naming nothing the user can act on. Compaction
+        # still degrades to deterministic trimming -- this only makes the fallback say why.
+        if missing := provider.missing_fields():
+            raise ModelError(f"compaction provider `{entry_name}` is missing {', '.join(missing)}; check [compaction] and [provider.{entry_name}]")
         self.last_compaction_model = ""
         messages = [{"role": "system", "content": COMPACTION_PROMPT}, {"role": "user", "content": Text.clean(context)}]
         # Compaction honors the configured total-generation limit instead of a hidden cap: a

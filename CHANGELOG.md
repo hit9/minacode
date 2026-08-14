@@ -20,14 +20,16 @@
   names a base entry (empty = the active provider), and `model`/`reasoning`/`api` override it per
   field (empty inherits the entry's value), mirroring `[worker]`. The summary request runs on the
   resolved entry — including its `response_timeout` — while the context budget still measures the
-  active provider's window; `/compact log` records which model produced each segment and `/status`
+  active provider's window; `/compact log` records which model produced each segment and `/config`
   shows the effective `compaction.*` values. While a summary is in flight the status bar names the
   entry serving it, `[compaction] entry/model effort`, the way it already names an in-flight
-  worker; a compaction that resolves to the row's own entry leaves the row alone.
+  worker; a compaction that resolves to the row's own entry leaves the row alone. An incomplete
+  compaction entry is refused by name before the request, instead of reaching the provider SDK and
+  coming back as a credentials error that names nothing.
 - Each provider entry can nest its own `[provider.NAME.compaction]` table with the same
   `model`/`reasoning`/`api` keys, so a provider can route summaries to a cheap model per entry
   instead of one global choice. Per field the most specific value wins: the entry's nested table,
-  then the global `[compaction]` section, then the entry's own value; `/status` shows the resolved
+  then the global `[compaction]` section, then the entry's own value; `/config` shows the resolved
   effective values.
 
 
