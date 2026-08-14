@@ -116,7 +116,6 @@ msgstr ""
 "每个命令都接受一个可选的值：给出值就直接切换，不给则打开选择器。`/provider` 与 `/model` 会继续往下走，因此选好 provider 后会依次带你选择模型、协议与推理强度。"
 
 #: ../../commands.md:14 ../../commands.md:64
-#, fuzzy
 msgid "Command"
 msgstr "命令"
 
