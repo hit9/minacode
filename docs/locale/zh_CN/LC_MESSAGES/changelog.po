@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-14 03:40-0700\n"
+"POT-Creation-Date: 2026-08-14 03:43-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -23,8 +23,8 @@ msgid "Changelog"
 msgstr "变更日志"
 
 #: ../../../CHANGELOG.md:5
-msgid "Unreleased"
-msgstr "未发布"
+msgid "0.24.1 - 2026-08-14"
+msgstr "0.24.1 - 2026-08-14"
 
 #: ../../../CHANGELOG.md:7 ../../../CHANGELOG.md:60 ../../../CHANGELOG.md:173
 #: ../../../CHANGELOG.md:193 ../../../CHANGELOG.md:208
