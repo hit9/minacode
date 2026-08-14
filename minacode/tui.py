@@ -1188,6 +1188,66 @@ class DiffViewState:
 
 
 @dataclass
+class SegmentLogViewState:
+    """List/detail state for the compaction log (`/compact log`). Same shape as DiffViewState
+    without tabs or refresh: the stored segments are a closed set while the viewer is open, since
+    only a compaction appends one and none can run during a modal."""
+
+    class Mode(Enum):
+        LIST = auto()
+        DETAIL = auto()
+
+    mode: Mode = Mode.LIST
+    selected: int = 0
+    scroll: int = 0
+
+    def move(self, delta: int, count: int) -> None:
+        if count:
+            self.selected = (self.selected + delta) % count
+
+    def open(self, count: int) -> None:
+        if self.mode is self.Mode.LIST and count:
+            self.mode = self.Mode.DETAIL
+            self.scroll = 0
+
+    def close(self) -> None:
+        if self.mode is self.Mode.DETAIL:
+            self.mode = self.Mode.LIST
+            self.scroll = 0
+
+    def visible(self, lines: list[ViewLine], height: int) -> list[ViewLine]:
+        self.scroll = min(max(0, self.scroll), max(0, len(lines) - height))
+        return lines[self.scroll : self.scroll + height]
+
+    def handle_key(self, key: str, count: int, viewport: int) -> Any:
+        if key in {"q", "c-c"}:
+            return None
+        if key == "escape":
+            if self.mode is self.Mode.LIST:
+                return None
+            self.close()
+        elif key in {"down", "j", "up", "k"}:
+            delta = 1 if key in {"down", "j"} else -1
+            if self.mode is self.Mode.LIST:
+                self.move(delta, count)
+            else:
+                self.scroll = max(0, self.scroll + delta)
+        elif key in {"enter", "right", "l"} and self.mode is self.Mode.LIST:
+            self.open(count)
+        elif key in {"left", "h"}:
+            self.close()
+        elif self.mode is self.Mode.DETAIL and key in {"pagedown", "pageup", "c-d", "c-u"}:
+            distance = max(1, viewport if key in {"pagedown", "pageup"} else viewport // 2)
+            self.scroll = max(0, self.scroll + (distance if key in {"pagedown", "c-d"} else -distance))
+        elif key in {"g", "G"}:  # less-style: g→top, G→bottom
+            if self.mode is self.Mode.LIST:
+                self.selected = 0 if key == "g" else max(0, count - 1)
+            else:
+                self.scroll = 0 if key == "g" else 10**9  # clamped to the last page on render
+        return TUI_MODAL_PENDING
+
+
+@dataclass
 class ChoiceViewState:
     FREE_TEXT: ClassVar[str] = "\x00free_text"
 

@@ -28,11 +28,50 @@ from minacode.tui import (
     AskViewState,
     ChoiceViewState,
     DiffViewState,
+    SegmentLogViewState,
     TabbedViewState,
 )
 
 if TYPE_CHECKING:
     from minacode.cli import CommandLoop
+    from minacode.session import HistorySegment
+
+
+def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:
+    """Source text as display rows, one logical line at a time. Text.wrap_styled measures in
+    terminal cells, so CJK text (two cells per character) wraps where it actually reaches the right
+    edge instead of overflowing at twice the width, and each continuation row re-indents to its
+    source line's own indent so indented code keeps its shape.
+
+    This is the plain path on purpose: rendering conversation text as markdown would fold the
+    structural newlines and drop anything that looks like an HTML tag, and a viewer whose whole
+    job is showing what was evicted may not quietly edit it."""
+    rows: list[StyleAndTextTuples] = []
+    for raw in text.splitlines():
+        if not raw.strip():
+            rows.append([])
+            continue
+        indent = raw[: len(raw) - len(raw.lstrip())][: max(0, width // 4)]
+        rows.extend(
+            cast(
+                list[StyleAndTextTuples],
+                Text.wrap_styled([("", margin)], [("", margin + indent)], [("", raw)], width),
+            )
+        )
+    return rows
+
+
+def segment_columns(segment: HistorySegment) -> tuple[str, str, str, str]:
+    """One segment as (when, kind, messages, size) display columns. Older snapshots predate the
+    metadata, so every field falls back to a dash rather than inventing a value."""
+    stamp = segment.created_at
+    when = f"{stamp[5:10]} {stamp[11:16]}" if len(stamp) >= 16 else "—"
+    kind = " · ".join(part for part in (segment.trigger, segment.scope) if part) or "—"
+    if segment.fallback:
+        kind += " · fallback"
+    messages = f"{segment.messages} msgs" if segment.messages else "—"
+    size = len(segment.text)
+    return when, kind, messages, f"{size / 1000:.1f}k" if size >= 1000 else str(size)
 
 
 def mcp_manager(loop: CommandLoop) -> None:
@@ -470,5 +509,98 @@ def diff_viewer(loop: CommandLoop) -> None:
             model = build_model()
             return TUI_MODAL_PENDING
         return result
+
+    loop.tui.show_modal(fragments, modal_key, exclusive=True)
+
+
+def compaction_log_viewer(loop: CommandLoop) -> None:
+    """Read-only viewer for `/compact log`: the stored compaction segments newest first, and the
+    summary plus verbatim excerpt of the one opened with Enter. This is the user's half of what
+    `RecallContext` gives the model — same segments, nothing here writes.
+
+    List mode: ↑/↓ or j/k move, Enter/→ opens, g/G first/last, Esc/q closes.
+    Detail mode: ↑/↓ scroll one line, Ctrl-U/D half a page, PgUp/PgDn a page, Esc/← back, q closes.
+    """
+    if loop.tui is None:
+        return
+    segments = list(reversed(loop.session.history))  # newest first, like RecallContext(list)
+    state = SegmentLogViewState()
+    detail: dict[tuple[str, int], list[StyleAndTextTuples]] = {}
+
+    def size() -> tuple[int, int]:
+        columns, rows = shutil.get_terminal_size((120, 24))
+        return max(20, columns), max(3, rows - 7)
+
+    def header() -> StyleAndTextTuples:
+        """Segments are what compaction stored, `compaction_count` is what it ran: a pass with
+        nothing evictable stores none, so report both rather than implying they always match."""
+        count = loop.session.state.compaction_count
+        stored = f"{len(segments)} stored segment{'' if len(segments) == 1 else 's'}"
+        return [("class:choice.disabled", f"  Compaction log · {count} compaction{'' if count == 1 else 's'} · {stored}\n\n")]
+
+    def list_rows(width: int) -> list[StyleAndTextTuples]:
+        columns = [segment_columns(segment) for segment in segments]
+        key_width = max((get_cwidth(segment.key) for segment in segments), default=0)
+        when_width = max((get_cwidth(when) for when, _kind, _messages, _size in columns), default=0)
+        kind_width = max((get_cwidth(kind) for _when, kind, _messages, _size in columns), default=0)
+        messages_width = max((get_cwidth(messages) for _when, _kind, messages, _size in columns), default=0)
+        size_width = max((get_cwidth(text) for _when, _kind, _messages, text in columns), default=0)
+        rows: list[StyleAndTextTuples] = []
+        for index, (segment, (when, kind, messages, text)) in enumerate(zip(segments, columns)):
+            selected = index == state.selected
+            style = "ansicyan" if selected else "class:choice.disabled"
+            lead = f"{'> ' if selected else '  '}{segment.key:<{key_width}}  {when:<{when_width}}  {kind:<{kind_width}}  "
+            lead += f"{messages:>{messages_width}}  {text:>{size_width}}  "
+            title = Text.clip_width(segment.title, max(8, width - get_cwidth(lead)))
+            rows.append([(style, lead), ("fg:default" if selected else "class:choice.disabled", title)])
+        return rows
+
+    def detail_rows(segment: HistorySegment, width: int) -> list[StyleAndTextTuples]:
+        when, kind, messages, text = segment_columns(segment)
+        rule: StyleAndTextTuples = [("", "  "), ("ansibrightblack", "─" * max(0, width - 4))]
+        rows: list[StyleAndTextTuples] = [
+            [("ansicyan", f"  {segment.key}"), ("class:choice.disabled", f"  {when} · {kind} · {messages} · {text}")],
+            *wrapped_rows(segment.title, width),
+            [],
+            [("", "  "), ("ansicyan", "summary at this compaction")],
+            *wrapped_rows(segment.summary or "(not recorded)", width),
+            [],
+            [("", "  "), ("ansicyan", "evicted messages"), ("class:choice.disabled", " · bounded verbatim excerpt")],
+            rule,
+        ]
+        rows.extend(wrapped_rows(segment.text or "(excerpt unavailable)", width))
+        return rows
+
+    def body(width: int, height: int) -> list[StyleAndTextTuples]:
+        if state.mode is SegmentLogViewState.Mode.LIST:
+            return list_rows(width)
+        segment = segments[state.selected]
+        cached = detail.get((segment.key, width))
+        if cached is None:
+            cached = detail_rows(segment, width)
+            detail[(segment.key, width)] = cached
+        return state.visible(cached, height)
+
+    def fragments() -> StyleAndTextTuples:
+        width, height = size()
+        parts: StyleAndTextTuples = [("", "\n")]
+        parts.extend(header())
+        if not segments:
+            parts.append(("class:choice.disabled", "  No compaction has stored a segment yet\n"))
+        else:
+            state.selected = state.selected % len(segments)
+            for row in body(width, height):
+                parts.extend(row)
+                parts.append(("", "\n"))
+        if state.mode is SegmentLogViewState.Mode.LIST:
+            hint = "  [list] ↑/↓ or j/k move · Enter open · g/G first/last · Esc/q close"
+        else:
+            hint = "  [detail] ↑/↓ scroll · Ctrl-U/D half-page · PgUp/PgDn page · Esc/← back · q close"
+        position = f" [{state.selected + 1 if segments else 0}/{len(segments)}]"
+        parts.append(("class:choice.disabled", "\n" + Text.clip_width(hint + position, width) + "\n"))
+        return parts
+
+    def modal_key(key: str, _data: str) -> Any:
+        return state.handle_key(key, len(segments), size()[1])
 
     loop.tui.show_modal(fragments, modal_key, exclusive=True)

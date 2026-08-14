@@ -197,11 +197,23 @@ class HistorySegment:
     """One compacted span of conversation, retained for later recall. The evicted messages are
     captured once at compaction time (never re-summarized), so repeated compaction cannot compound
     loss; a bounded verbatim excerpt is stored as a content-addressed blob, and `RecallContext`
-    lists, searches, or retrieves it on demand."""
+    lists, searches, or retrieves it on demand.
+
+    The fields after `text` describe the compaction that produced the segment, for `/compact log`:
+    the model never sees them (RecallContext returns key/title/text), and they are what makes an
+    eviction reviewable afterwards. `summary` is the checkpoint summary as it stood at this
+    compaction — the live checkpoint carries only the newest one, so without this copy every
+    earlier summary would be unreachable once the next compaction replaced it."""
 
     key: str
     title: str
     text: str = ""
+    created_at: str = ""
+    scope: str = ""  # "history" (prior conversation) | "turn" (the running turn)
+    trigger: str = ""  # "auto" (over budget) | "manual" (/compact)
+    fallback: bool = False  # the summarizer failed and the span was trimmed deterministically
+    messages: int = 0  # evicted message count
+    summary: str = ""
 
 
 @dataclass

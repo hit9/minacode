@@ -50,7 +50,9 @@ from minacode.update import UpdateChecker
 @dataclass(frozen=True)
 class Command:
     name: str  # "/status"
-    handler: Callable[[CommandLoop, str], str | None]
+    # A LogBlock result is the structured form of `render="plain"`: it goes to the log renderer as
+    # tool output does, so a handler with rows to show does not have to pre-format them as text.
+    handler: Callable[[CommandLoop, str], str | LogBlock | None]
     aliases: tuple[str, ...] = ()
     queue_safe: bool = False  # may run from the follow-up input while a turn works
     render: str = "plain"  # "plain" | "answer" | "compact"
@@ -92,7 +94,7 @@ class CommandLoop:
 - `/diff` — Show latest edits and overall session diff.
 - `/skills` — List installed skills (load with `Skill(name)` or reference inline with `$name`).
 - `/config` — Show active config.
-- `/compact` — Compact context now.
+- `/compact` — Compact context now; `/compact log [seg.N]` reviews what compaction evicted.
 - `/name [TEXT]` — Name this session for later, or show the current name.
 - `/sessions [all]` — Browse saved sessions and re-enter one (alias: `/resume`; `all` widens
   past this project).
@@ -765,7 +767,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         output = entry.handler(self, args.strip()) if entry else f"Unknown command: {name}"
         # None means the handler already rendered its own UI (e.g. /diff's viewer).
         if output is not None:
-            if entry is not None and entry.render == "compact":
+            if isinstance(output, LogBlock):
+                self.emit(output)
+            elif entry is not None and entry.render == "compact":
                 self.ui.emit_answer(output, rule=False, compact=True)
             elif entry is not None and entry.render == "answer":
                 self.ui.emit_answer(output)

@@ -30,7 +30,7 @@ from minacode.prompts import (
 from minacode.prompts import (
     compaction_input as format_compaction_input,
 )
-from minacode.session import HistorySegment, Session
+from minacode.session import HistorySegment, Session, local_timestamp
 from minacode.tools import (
     Tool,
 )
@@ -372,10 +372,19 @@ class ContextManager:
                 return Tool.compact(str(message.get("content") or ""), 80)
         return Tool.compact(self.messages_text(messages[:1]), 80) or "compacted context"
 
-    def store_history_segment(self, compacted: list[Json]) -> HistorySegment:
+    def store_history_segment(self, compacted: list[Json], *, scope: str, trigger: str, fallback: bool) -> HistorySegment:
         key = f"seg.{len(self.session.history) + 1}"
         text = self.bound_output(self.messages_text(compacted))
-        segment = HistorySegment(key=key, title=self.history_title(compacted), text=text)
+        segment = HistorySegment(
+            key=key,
+            title=self.history_title(compacted),
+            text=text,
+            created_at=local_timestamp(),
+            scope=scope,
+            trigger=trigger,
+            fallback=fallback,
+            messages=len(compacted),
+        )
         self.session.history.append(segment)
         return segment
 
@@ -402,13 +411,30 @@ class ContextManager:
         turn_messages: list[Json] | None = None,
         fallback_note: str = "",
         compacted: list[Json] | None = None,
+        trigger: str = "auto",
     ) -> None:
         self.session.state.compaction_count += 1
-        segment = self.store_history_segment(compacted) if compacted else None
+        # What this compaction was: the turn scope is the only caller that rewrites `turn_messages`,
+        # and no summary data means the model call failed and `keep` is all that survives. Recorded
+        # on the segment so `/compact log` can say which evictions were lossier than the rest.
+        segment = (
+            self.store_history_segment(
+                compacted,
+                scope="turn" if turn_messages is not None else "history",
+                trigger=trigger,
+                fallback=data is None,
+            )
+            if compacted
+            else None
+        )
         if data is not None:
             self.session.state.apply(data)
         if fallback_note:
             self.session.state.summary = (self.session.state.summary + "\n" + fallback_note).strip()
+        if segment is not None:
+            # After apply(): the summary worth keeping is the one this compaction just produced,
+            # not the one it replaced.
+            segment.summary = self.session.state.summary
         summary_block = self._summary_block(segment)
         if turn_messages is None:
             self.session.messages = summary_block + keep

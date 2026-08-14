@@ -142,14 +142,39 @@ class SessionSnapshotCodec:
     @classmethod
     def history_segment(cls, segment: HistorySegment, blobs: dict[str, str]) -> Json:
         """The evicted-message text is a content-addressed blob, written once per unique content,
-        so appending a segment never re-serializes prior ones."""
-        return {"key": segment.key, "title": segment.title, "blob": cls.blob_ref(segment.text, blobs)}
+        so appending a segment never re-serializes prior ones. The compaction metadata is small and
+        stays inline; a snapshot written before it existed decodes with the defaults, and every
+        reader treats an empty field as "not recorded" rather than a value."""
+        return {
+            "key": segment.key,
+            "title": segment.title,
+            "blob": cls.blob_ref(segment.text, blobs),
+            "created_at": segment.created_at,
+            "scope": segment.scope,
+            "trigger": segment.trigger,
+            "fallback": segment.fallback,
+            "messages": segment.messages,
+            "summary": segment.summary,
+        }
 
     @staticmethod
     def history(data: list[Json], blobs: dict[str, str]) -> list[HistorySegment]:
         from minacode.session import HistorySegment
 
-        return [HistorySegment(key=d["key"], title=d.get("title", ""), text=blobs.get(d.get("blob", ""), "")) for d in data]
+        return [
+            HistorySegment(
+                key=d["key"],
+                title=d.get("title", ""),
+                text=blobs.get(d.get("blob", ""), ""),
+                created_at=str(d.get("created_at", "") or ""),
+                scope=str(d.get("scope", "") or ""),
+                trigger=str(d.get("trigger", "") or ""),
+                fallback=bool(d.get("fallback", False)),
+                messages=int(d.get("messages", 0) or 0),
+                summary=str(d.get("summary", "") or ""),
+            )
+            for d in data
+        ]
 
     @classmethod
     def has_content(cls, session: Session) -> bool:

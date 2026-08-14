@@ -93,6 +93,7 @@ class CommandCompleter(Completer):
             ("/effort ", lambda: REASONING_CHOICES),
             ("/api ", lambda: PROVIDER_API_CHOICES),
             ("/strict ", lambda: ("on", "off")),
+            ("/compact ", lambda: ("log",)),
         ):
             if text.startswith(command):
                 yield from self.matches(values(), text[len(command) :])

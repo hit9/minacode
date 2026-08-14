@@ -60,6 +60,13 @@ history until a compaction checkpoint consolidates the complete current state.
 Run `/compact` to compact immediately rather than waiting for the threshold, for example before
 starting a large refactor. `/status` reports how many compactions a session has done.
 
+`/compact log` reviews them one by one: each stored segment shows when it was compacted, whether
+the pass was automatic or manual, whether it covered prior conversation or the running turn, and
+how much it evicted. Opening one shows the summary that compaction produced at that point — the
+active context keeps only the newest — followed by the verbatim excerpt, exactly as it was stored.
+`/compact log seg.N` prints one segment in full without the viewer. A pass that found nothing to
+evict stores no segment, so the compaction count can exceed the number of segments.
+
 ## Prompt caching
 
 Prompt caching lets a provider reuse work for an unchanged beginning of a request. The next request

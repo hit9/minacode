@@ -21,10 +21,21 @@ from minacode.base import (
     SELECTION_BACK,
     SESSION_EVENT_KEY,
     ConfigError,
+    LogBlock,
+    LogEdge,
+    LogLine,
+    LogRole,
     ModelUsage,
     Text,
 )
-from minacode.cli.modals import choice_application, diff_viewer, mcp_manager, select_choice
+from minacode.cli.modals import (
+    choice_application,
+    compaction_log_viewer,
+    diff_viewer,
+    mcp_manager,
+    segment_columns,
+    select_choice,
+)
 from minacode.config import (
     IMAGE_INPUT_CHOICES,
     PROVIDER_API_CHOICES,
@@ -476,9 +487,47 @@ def language_command(loop: CommandLoop, args: str) -> str:
     return f"Reply language set: {language}"
 
 
-def compact(loop: CommandLoop, args: str) -> str:
+def compaction_log(loop: CommandLoop, args: str) -> str | LogBlock | None:
+    """`/compact log [seg.N]`: review what compaction has evicted. The viewer is the interactive
+    form; a headless run (piped input, no color, no alternate screen) gets the same segments as
+    log lines, and naming one segment always prints it in full so it can be piped."""
+    key = args.strip()
+    segments = loop.session.history
+    if key:
+        segment = next((item for item in segments if item.key == key), None)
+        if segment is None:
+            return f"No stored segment {key}" if key.startswith("seg.") else "Usage: /compact log [seg.N]"
+        when, kind, messages, size = segment_columns(segment)
+        return LogBlock(
+            [
+                LogLine(segment.key, segment.title, LogRole.FIELD, LogEdge.BRANCH),
+                LogLine("compaction", f"{when} · {kind} · {messages} · {size}", LogRole.FIELD, LogEdge.CONTINUE),
+                LogLine("summary", segment.summary or "(not recorded)", LogRole.FIELD, LogEdge.CONTINUE),
+                *(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in (segment.text or "(excerpt unavailable)").splitlines()),
+            ]
+        )
+    if not segments:
+        return "No compaction has stored a segment yet"
+    # A TUI is required, not just assumed from interactive input: without one the viewer would
+    # render nothing at all, and the log lines below say the same thing without a screen.
+    if loop.interactive_input and loop.ui.color and loop.tui is not None and loop.tui.alternate_screen_available():
+        compaction_log_viewer(loop)
+        return None
+    count = loop.session.state.compaction_count
+    return LogBlock(
+        [
+            LogLine("compaction log", f"{count} compactions · {len(segments)} stored segments", LogRole.FIELD, LogEdge.BRANCH),
+            *(LogLine(segment.key, " · ".join((*segment_columns(segment), segment.title)), LogRole.FIELD, LogEdge.CONTINUE) for segment in reversed(segments)),
+        ]
+    )
+
+
+def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
+    sub, _, rest = args.strip().partition(" ")
+    if sub == "log":
+        return compaction_log(loop, rest)
     if args.strip():
-        return "Usage: /compact"
+        return "Usage: /compact [log [seg.N]]"
     before = len(loop.session.messages)
     compacted, keep = loop.agent.context.compaction_parts()
     if not compacted:
@@ -496,7 +545,7 @@ def compact(loop: CommandLoop, args: str) -> str:
     except KeyboardInterrupt:
         return "Cancelled"
     except Exception as error:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.
-        loop.agent.context.apply_compaction(None, keep, fallback_note=PREVIOUS_CONTEXT_TRIMMED, compacted=compacted)
+        loop.agent.context.apply_compaction(None, keep, fallback_note=PREVIOUS_CONTEXT_TRIMMED, compacted=compacted, trigger="manual")
         fallback = True
         fallback_error = Text.clip_width(" ".join(str(error).split()) or type(error).__name__, 220)
         data = None
@@ -507,7 +556,7 @@ def compact(loop: CommandLoop, args: str) -> str:
         else:
             loop.status_bar.stop()
     if data is not None:
-        loop.agent.context.apply_compaction(data, keep, compacted=compacted)
+        loop.agent.context.apply_compaction(data, keep, compacted=compacted, trigger="manual")
     loop.agent.context.update_current_tokens(loop.agent.session.system_prompt)
     # Compaction rewrites the history in place. Persist it now: leaving the session without
     # running another turn would otherwise resume from the log's pre-compaction state.
