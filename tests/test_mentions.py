@@ -164,6 +164,19 @@ def test_path_source_git_nested_ignore_negation_and_unusual_names(tmp_path):
     assert "nested/line\nbreak.txt" in rels
 
 
+def test_git_candidate_queries_run_concurrently(monkeypatch, tmp_path):
+    mentions = session(tmp_path).mentions
+    started = threading.Barrier(2)
+
+    def git_ls_files(flags):
+        started.wait(timeout=5)
+        return ["a.py"] if "--others" in flags else []
+
+    monkeypatch.setattr(mentions, "_git_ls_files", git_ls_files)
+
+    assert mentions._git_paths() == ["a.py"]
+
+
 def test_python_fallback_honors_nested_gitignore(monkeypatch, tmp_path):
     nested = tmp_path / "nested"
     nested.mkdir()
@@ -364,6 +377,26 @@ def test_fzf_cancel_during_cold_scan_coalesces_background_refresh(monkeypatch, t
         assert len(calls) == 1
     finally:
         release.set()
+
+
+def test_fzf_picker_uses_stale_snapshot_while_refreshing(monkeypatch, tmp_path):
+    selected = "a.py"
+    (tmp_path / selected).write_text("", encoding="utf-8")
+    mentions = session(tmp_path).mentions
+    mentions._paths_cache = (0, ((selected, selected),))
+    refresh_callbacks = []
+    monkeypatch.setattr(mentions, "refresh_async", lambda callback=None: refresh_callbacks.append(callback))
+    executable = fake_fzf(
+        tmp_path,
+        "items = sys.stdin.buffer.read().split(b'\\0')\n"
+        f"assert {selected!r}.encode() in items\n"
+        f"sys.stdout.buffer.write({selected!r}.encode() + b'\\0')\n",
+    )
+
+    result = FzfPicker(mentions, executable).pick("")
+
+    assert result.selection == selected
+    assert refresh_callbacks == [None]
 
 
 # --- T7: performance ---

@@ -277,11 +277,16 @@ class FileMentions:
 
     def _git_paths(self) -> list[str] | None:
         """Git-authoritative candidates, including the tracked-but-ignored subtraction."""
-        included = self._git_ls_files(["--cached", "--others", "--exclude-standard"])
-        if included is None:
-            return None
-        ignored = self._git_ls_files(["--cached", "--ignored", "--exclude-standard"])
-        if ignored is None:
+        # These queries only share Git's read-only index. Running them together removes one full
+        # process latency from cold picker preparation in large parent worktrees.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="file-git") as pool:
+            included_future = pool.submit(self._git_ls_files, ["--cached", "--others", "--exclude-standard"])
+            ignored_future = pool.submit(self._git_ls_files, ["--cached", "--ignored", "--exclude-standard"])
+            included = included_future.result()
+            ignored = ignored_future.result()
+        if included is None or ignored is None:
             return None
         excluded = set(ignored)
         return [path for path in included if path not in excluded]
@@ -503,15 +508,21 @@ class FzfPicker:
         def feed() -> None:
             assert process.stdin is not None
             try:
-                ready = threading.Event()
-                self.mentions.refresh_async(ready.set)
-                while not ready.wait(0.05):
-                    if process.poll() is not None:
-                        return
                 snapshot = self.mentions.cached_paths()
                 if snapshot is None:
-                    feed_failed.set()
-                    return
+                    ready = threading.Event()
+                    self.mentions.refresh_async(ready.set)
+                    while not ready.wait(0.05):
+                        if process.poll() is not None:
+                            return
+                    snapshot = self.mentions.cached_paths()
+                    if snapshot is None:
+                        feed_failed.set()
+                        return
+                else:
+                    # A stale snapshot is still safe to display: the selected path is revalidated
+                    # below. Refresh it for the next picker without delaying this one's first row.
+                    self.mentions.refresh_async()
                 candidates.append(snapshot)
                 for _lower, path in snapshot:
                     process.stdin.write(os.fsencode(path) + b"\0")

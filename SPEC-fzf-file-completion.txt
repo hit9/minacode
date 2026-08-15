@@ -261,9 +261,10 @@ Build the tracked-but-ignored exclusion set from the NUL-delimited equivalent of
 
     git ls-files -z --cached --ignored --exclude-standard -- <workspace-pathspec>
 
-Subtract the second set from the first stream. This extra subtraction is intentional: normal
-Git commands continue to report tracked files even if a later ignore rule matches them, while
-this product explicitly requires all ignored paths to be absent.
+Run these independent, read-only queries concurrently, then subtract the second set from the
+first stream. This extra subtraction is intentional: normal Git commands continue to report
+tracked files even if a later ignore rule matches them, while this product explicitly requires
+all ignored paths to be absent.
 
 The implementation must use argv arrays, never a shell string. It must handle a workspace
 equal to the repository root and a workspace located in a subdirectory. It must not expose
@@ -299,7 +300,9 @@ that workspace. Do not weaken the ignore invariant to preserve partial completio
 Candidate state is runtime-only and is never persisted in session snapshots.
 
 Maintain one immutable candidate snapshot per workspace plus a generation number. A picker
-may stream a cold source immediately; subsequent sessions may reuse the completed snapshot.
+may stream a cold source immediately. Start a background warm-up only after the TUI prompt is
+live. A picker with an existing snapshot must display it immediately and refresh in the
+background; the selected path is revalidated before insertion.
 
 Invalidate lazily when any of these change:
 

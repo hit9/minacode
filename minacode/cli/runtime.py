@@ -234,6 +234,10 @@ class TuiRuntime:
             # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
             # so the primary-screen application places them in native terminal/tmux scrollback.
             self.loop.start_session()
+            if self.loop.session.mentions is not None:
+                # Git discovery can cost hundreds of milliseconds in a large worktree. Warm its
+                # runtime-only snapshot after the prompt is live so the first picker need not wait.
+                self.loop.session.mentions.refresh_async()
             self.submit_next(self.loop.take_pending_inputs())
             self.run_agent_loop()
         finally:

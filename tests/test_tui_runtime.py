@@ -119,6 +119,35 @@ def test_tui_runtime_strips_input_before_command_dispatch(tmp_path, entered):
     assert dispatched == [entered.strip()]
 
 
+def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
+    command_loop = loop(tmp_path)
+    runtime = TuiRuntime(command_loop)
+    warmed = []
+    done = threading.Event()
+
+    class FakeTui:
+        ready = threading.Event()
+
+        def run(self, style=None):
+            del style
+            self.ready.set()
+            done.wait(1)
+
+        def exit(self):
+            done.set()
+
+    fake_tui = FakeTui()
+    monkeypatch.setattr(runtime, "build_tui", lambda: fake_tui)
+    monkeypatch.setattr(runtime, "run_agent_loop", lambda: None)
+    monkeypatch.setattr(command_loop, "start_session", lambda: None)
+    monkeypatch.setattr(command_loop, "take_pending_inputs", lambda: [])
+    monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
+    monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: warmed.append(callback))
+
+    assert runtime.run() == 0
+    assert warmed == [None]
+
+
 def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()

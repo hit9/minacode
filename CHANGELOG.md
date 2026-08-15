@@ -20,6 +20,9 @@
 
 ### Fixed
 
+- Warm file-picker candidates after the prompt appears, reuse an existing snapshot while it
+  refreshes, and overlap the two read-only Git queries. Opening `@file:` no longer waits on a
+  fresh full-worktree scan in large repositories.
 - Quick-hint acceptance now uses one immutable hint snapshot and clears stale focus/picks after
   the hints or input change, avoiding crashes and selecting the wrong suggestion during refreshes.
 - File, MCP, and skill mentions now share one scanner, so reserved namespaces do not collide with
