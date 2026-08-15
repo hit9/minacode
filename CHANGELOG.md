@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.24.2 - 2026-08-15
+
 ### Added
 
 - `@file:path` mentions point the agent at a file in the project. `@` lists the bounded
