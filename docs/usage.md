@@ -98,28 +98,29 @@ session, or configure runtime behavior on the fly. See the
 
 ## Mentions
 
-Three inline references. Typing `@` or `$` opens a bounded namespace, MCP, and skill list that
-narrows as you keep typing:
+Mentions pull something into the turn. Type `@` at the prompt for a list of the three kinds;
+picking one opens its candidates, which narrow as you keep typing.
 
-- `@file:path` — point the agent at a file in the project. Small in-workspace files are
-  inlined into the turn as a FILE MENTIONS block; large files and anything outside the
-  workspace become a pointer that tells the agent to Read it. A missing path reports itself
-  instead of being silently dropped.
-- `@mcp:server` or `@mcp:server.tool` (`@server` / `@server.tool` also work) — connect to an
-  [MCP](mcp.md) server on demand and point the agent at that server or tool.
-  <span class="marker">The connection remains active until you disconnect it.</span>
-- `@skill:name` (`$name` also works) — inject a [skill](skills.md)'s full instructions into
-  the current turn.
+<div class="term-shot" role="img" aria-label="The mention menu in two moments. After typing an at sign the prompt lists the three kinds with a one-line description each, the first highlighted. After choosing at-file the file picker opens between two rules, with its own query line, a match counter, a key hint, and two ranked file paths, the first one pointed at."><span class="fs-prompt">&gt; add tests for @<span class="fs-caret">▏</span></span><span><span class="fs-i">                </span><span class="fs-i fs-sel"> @file:   </span><span class="fs-i fs-sel"> files in this repo </span></span><span><span class="fs-i">                </span><span class="fs-i"> @mcp:    </span><span class="fs-i fs-dim"> MCP servers and tools </span></span><span><span class="fs-i">                </span><span class="fs-i"> @skill:  </span><span class="fs-i fs-dim"> installed skills </span></span><span> </span><span class="fs-prompt">&gt; add tests for @file:<span class="fs-caret">▏</span></span><span class="fs-divider">  ──── file picker ─────────────────────────────────</span><span><span class="fs-i fs-sel">  files&gt; </span><span class="fs-i">mention</span><span class="fs-i fs-caret">▏</span></span><span class="fs-dim">      3/812</span><span class="fs-dim">      Ctrl-N/P or ↑/↓ move · Enter select · Esc close</span><span class="fs-sel">  &gt;   tests/test_mentions.py</span><span>      minacode/mentions.py</span><span class="fs-divider">  ──────────────────────────────────────────────────</span></div>
 
-Typing `@` lists the three kinds. Selecting one opens its candidates, which narrow as you type.
-Files stay out of this first list: typing or selecting `@file:` opens fzf immediately; `Tab` does
-the same from an active file mention. Without fzf, a bounded literal fallback runs in the background.
+| Mention | Also written | Effect |
+|---|---|---|
+| `@file:path` | — | Points the agent at a file in the project |
+| `@mcp:server`, `@mcp:server.tool` | `@server`, `@server.tool` | Connects an [MCP](mcp.md) server on demand and points the agent at that server or tool. <span class="marker">The connection remains active until you disconnect it.</span> |
+| `@skill:name` | `$name` | Injects a [skill](skills.md)'s full instructions into the current turn |
 
-File candidates include hidden, tracked, and untracked files, but exclude every `.git` directory
-and paths ignored by Git. In a non-Git directory, the fallback honors nested `.gitignore` files
-and negation rules. Selecting a path with spaces, Unicode, or ambiguous punctuation inserts a
-quoted, round-trippable form such as `@file:"docs/design notes/中文.txt"`. File references are also
-expanded in follow-ups queued while the agent is working.
+**Files.** Small in-workspace files are inlined as a FILE MENTIONS block; large ones and anything
+outside the workspace become a pointer telling the agent to Read it. A missing path reports itself
+instead of being silently dropped.
+
+**Picking files.** Files stay out of the first `@` list: typing or selecting `@file:` opens fzf
+immediately, and `Tab` does the same from an active file mention. Without fzf, a bounded literal
+fallback runs in the background. Candidates include hidden, tracked, and untracked files, but never
+`.git` directories or paths ignored by Git; in a non-Git directory, nested `.gitignore` files and
+negation rules are honored. A path with spaces, Unicode, or ambiguous punctuation is inserted in a
+quoted, round-trippable form such as `@file:"docs/design notes/中文.txt"`.
+
+Mentions are expanded in follow-ups queued while the agent is working, too.
 
 ## Keys and input editing
 
