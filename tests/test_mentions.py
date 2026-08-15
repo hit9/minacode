@@ -97,6 +97,17 @@ def test_matching_caps_at_50_rows():
     assert len(completions(c, "@file:f")) == 50
 
 
+def test_merged_menu_counts_kind_row_toward_50_row_cap():
+    servers = tuple(f"f{index:02}" for index in range(60))
+    c = CommandCompleter(mcp_servers=lambda: servers)
+
+    rows = completions(c, "@f")
+
+    assert len(rows) == 50
+    assert rows[0] == "@file:"
+    assert rows[-1] == "@mcp:f48"
+
+
 def test_bare_menu_does_not_scan_or_merge_repository_files():
     c = CommandCompleter(mcp_servers=lambda: ("viewer",), skills=lambda: (), files=lambda: FILES)
     assert completions(c, "@view") == ["@mcp:viewer"]

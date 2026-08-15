@@ -545,7 +545,8 @@ class TuiApp:
     def tab_or_complete(self, buffer: Buffer, *, reverse: bool) -> None:
         # On an idle prompt whose text is only picked suggestions Tab/Shift-Tab cycle the quick
         # inputs; anywhere else they complete.
-        if self.input_mode == "chat" and buffer.text == "\n".join(self.quick_hint_picked) and buffer.complete_state is None and self.quick_hints():
+        hints = self.quick_hints() if self.input_mode == "chat" else ()
+        if hints and buffer.text == "\n".join(self.quick_hint_picked) and buffer.complete_state is None:
             self.cycle_quick_hint_focus(reverse=reverse)
             return
         target = self._file_mention_at_cursor(buffer)
@@ -598,7 +599,16 @@ class TuiApp:
         span = active_mention(buffer.document.text_before_cursor)
         if span is None:
             return
-        selected_namespace = delta.inserted in {"file:", "mcp:", "skill:"} and delta.prefix > 0 and buffer.text[delta.prefix - 1] == "@"
+        old_text = buffer.text[: delta.prefix] + delta.removed + buffer.text[delta.prefix + len(delta.inserted) :]
+        old_cursor = delta.prefix + len(delta.removed)
+        old_span = active_mention(old_text[:old_cursor])
+        selected_namespace = (
+            not span.payload
+            and old_span is not None
+            and old_span.kind == "bare"
+            and old_span.start == span.start
+            and span.kind.startswith(old_span.payload.lower())
+        )
         interactive_transition = len(delta.inserted) == 1 or selected_namespace
         if span.kind == "file":
             picker_available = self.file_picker_available_fn()

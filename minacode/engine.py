@@ -410,7 +410,7 @@ class Agent:
         turn_messages: list[Json],
         transcript_messages: list[Json],
         pending: list[QueuedInput],
-        prepared_turn_messages: list[Json] | None = None,
+        prepared_turn_messages: list[Json],
     ) -> None:
         if not pending:
             return
@@ -418,12 +418,7 @@ class Agent:
         # Committed with the marker the provider was sent, not the bare text: dropping it here would
         # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.
         messages = [item.message(LIVE_FOLLOWUP_PREFIX) for item in pending]
-        if prepared_turn_messages is None:
-            for item, message in zip(pending, messages, strict=True):
-                turn_messages.append(message)
-                turn_messages.extend(self.mention_messages(item.text))
-        else:
-            turn_messages[:] = prepared_turn_messages
+        turn_messages[:] = prepared_turn_messages
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(messages))
         self.session.acknowledge_user_inputs(pending)
         if self.on_queue_flush:

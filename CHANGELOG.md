@@ -20,6 +20,8 @@
 
 ### Fixed
 
+- Selecting a partially typed mention namespace now opens its second-stage candidates, and the
+  merged mention menu keeps its 50-row bound.
 - Warm file-picker candidates after the prompt appears, reuse an existing snapshot while it
   refreshes, and overlap the two read-only Git queries. Opening `@file:` no longer waits on a
   fresh full-worktree scan in large repositories.
@@ -48,6 +50,8 @@
   boundary compaction never crosses stays the request itself. A worker delegation is where this
   cost the most — the order is the entire spec, the worker cannot see the parent's history, and
   nothing re-sends it — but a long parent turn could lose its own request the same way.
+
+
 ## 0.24.0 - 2026-08-14
 
 ### Added

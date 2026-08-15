@@ -1601,6 +1601,21 @@ def test_quick_hint_hints_change_resets_picked_keeps_text():
     assert app.input_buffer.text == "run the tests"
 
 
+def test_quick_hint_tab_refreshes_hints_before_deciding_to_cycle():
+    hints = ["old hint"]
+    app, _ = quick_hint_app(tuple(hints))
+    app.quick_hint_focus = 0
+    app._accept(app.input_buffer)
+    app.quick_hints_fn = lambda: tuple(hints)
+    hints[:] = ["new hint"]
+
+    app.tab_or_complete(app.input_buffer, reverse=False)
+
+    assert app.quick_hint_picked == []
+    assert app.quick_hint_focus == -1
+    assert app.input_buffer.text == "old hint"
+
+
 def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
     app, _ = quick_hint_app()
     app.quick_hint_focus = 0
@@ -1736,6 +1751,32 @@ def test_selecting_mention_kind_opens_its_candidate_list(monkeypatch):
     run_interactive_tui(monkeypatch, app, drive=drive)
 
 
+@pytest.mark.parametrize(
+    ("typed", "namespace", "expected"),
+    [
+        ("@m", "@mcp:", ["@mcp:github", "@mcp:gitlab"]),
+        ("@sk", "@skill:", ["@skill:release", "@skill:review"]),
+    ],
+)
+def test_selecting_partially_typed_name_kind_opens_its_candidate_list(monkeypatch, typed, namespace, expected):
+    app = TuiApp(completer=CommandCompleter(mcp_servers=lambda: ("github", "gitlab"), skills=lambda: ("release", "review")))
+
+    def completions():
+        state = app.input_buffer.complete_state
+        return None if state is None else [c.text for c in state.completions]
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text(typed)
+        wait_until(lambda: completions() == [namespace])
+        pipe_input.send_text("\t")
+        wait_until(lambda: app.input_buffer.text == namespace)
+        wait_until(lambda: completions() == expected)
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
 def test_prose_and_email_do_not_open_completions(monkeypatch):
     """A menu on every keystroke would be noise: only a mention at the cursor opens one, and an
     address is not a mention because the `@` follows a word character."""
@@ -1798,6 +1839,42 @@ def test_file_picker_opens_after_typing_without_tab(monkeypatch):
     run_interactive_tui(monkeypatch, app, drive=drive)
 
     assert queries == [""]
+
+
+@pytest.mark.parametrize("typed", ["@f", "@fi"])
+def test_selecting_partially_typed_file_kind_opens_picker(monkeypatch, typed):
+    queries = []
+    app = TuiApp(
+        completer=CommandCompleter(),
+        file_picker_available_fn=lambda: True,
+        file_picker_fn=lambda query: (queries.append(query), FilePick())[1],
+    )
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text(typed)
+        wait_until(lambda: app.input_buffer.complete_state is not None)
+        pipe_input.send_text("\t")
+        wait_until(lambda: queries == [""] and not app._file_picker_active)
+        assert app.input_buffer.text == "@file:"
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
+def test_pasting_file_namespace_does_not_open_picker(monkeypatch):
+    queries = []
+    app = TuiApp(file_picker_available_fn=lambda: True, file_picker_fn=lambda query: (queries.append(query), FilePick())[1])
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("\x1b[200~@file:\x1b[201~")
+        wait_until(lambda: app.input_buffer.text == "@file:")
+        time.sleep(app.MENTION_TRANSITION_DELAY * 2)
+        assert queries == []
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
 
 
 def test_file_picker_cancel_keeps_buffer(monkeypatch):

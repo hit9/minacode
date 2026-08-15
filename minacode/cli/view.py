@@ -166,9 +166,7 @@ class CommandCompleter(Completer):
                 yield Completion("@" + kind, start_position=start, display_meta=meta)
             return
         lower = raw.lower()
-        for kind, meta in self.KINDS:
-            if kind.startswith(lower):
-                yield Completion("@" + kind, start_position=start, display_meta=meta)
+        kind_items = [Completion("@" + kind, start_position=start, display_meta=meta) for kind, meta in self.KINDS if kind.startswith(lower)]
 
         server_part, dot, tool_part = raw.partition(".")
         if dot:
@@ -184,7 +182,7 @@ class CommandCompleter(Completer):
         else:
             mcp_items = [Completion(f"@mcp:{name}", start_position=start, display_meta="mcp") for name in self._matching_names(self.mcp_servers(), raw)]
         skill_items = [Completion(f"@skill:{name}", start_position=start, display_meta="skill") for name in self._matching_names(self.skills(), raw)]
-        yield from [*mcp_items, *skill_items][: self.MAX_ROWS]
+        yield from [*kind_items, *mcp_items, *skill_items][: self.MAX_ROWS]
 
     def _file_completions(self, query: str, start: int) -> Iterator[Completion]:
         for path in self._matching_files(query):
