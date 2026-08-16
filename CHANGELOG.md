@@ -3,15 +3,19 @@
 
 ## Unreleased
 
+
+## 0.24.3 - 2026-08-16
+
 ### Fixed
 
 - Assistant turns now record which endpoint, model, and credential produced their provider echo,
-  and the echo is replayed only back to that issuer. Switching between two hosts that share a protocol — one
-  Responses endpoint to another, or a Claude gateway to the first-party API — no longer replays
+  and the echo is replayed only back to that issuer. Switching between two hosts that share a
+  protocol — one Responses endpoint to another, or a Claude gateway to the first-party API — or
+  between two entries on one host holding different credentials, no longer replays
   encrypted reasoning or a thinking signature that the new host cannot verify; those turns are
   rebuilt from their text and tool calls instead. Sessions recorded before this release carry no
   origin and keep replaying as before.
-- DeepSeek's tool-call reasoning-replay rule now follows the model rather than the endpoint, so a
+- DeepSeek's tool-call reasoning-replay rule now follows the model as well as the endpoint, so a
   gateway serving DeepSeek stops sending reasoning on turns the model ignores it on.
 - `extra_body` fields that live inside an object minacode also manages are merged into it instead
   of replacing it on the Responses path. Configuring `extra_body.reasoning.context` no longer takes
