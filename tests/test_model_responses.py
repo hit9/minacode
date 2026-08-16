@@ -834,3 +834,110 @@ def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkey
     input_types = [item.get("type", "message") for item in second_body["input"]]
     assert "function_call" in input_types
     assert "function_call_output" in input_types
+
+
+def test_another_hosts_encrypted_reasoning_is_not_replayed(tmp_path):
+    """Two Responses hosts share a protocol but not a key: only the issuer can verify its own
+    ciphertext, so a turn recorded elsewhere is rebuilt from text and calls instead of echoed."""
+    issuer = ModelClient(_session(tmp_path, api="responses", url="https://api.openai.com/v1", model="gpt-5.6"))
+    model = ModelClient(_session(tmp_path, api="responses", url="https://openrouter.ai/api/v1", model="vendor/model"))
+    history = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "from openai",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}],
+            "_responses_output": [
+                {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
+                {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "Bash", "arguments": "{}"},
+            ],
+            "_provider_origin": issuer.provider_origin(),
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+
+    replayed = model.responses_input(history)
+
+    assert not any(item.get("type") == "reasoning" for item in replayed)
+    assert [item.get("type", "message") for item in replayed] == ["message", "message", "function_call", "function_call_output"]
+    # The tool pairing survives the downgrade: dropping the echo must not orphan a call result.
+    assert [item["call_id"] for item in replayed if item.get("type") in ("function_call", "function_call_output")] == ["call_1", "call_1"]
+
+    # The same history on the host that issued it replays untouched.
+    assert any(item.get("encrypted_content") == "opaque" for item in issuer.responses_input(history))
+
+
+def test_unmarked_history_stays_replayable(tmp_path):
+    """Sessions recorded before origins were stamped carry no identity; refusing them would drop
+    thinking blocks in the middle of a resumed tool loop."""
+    s = _session(tmp_path, api="responses", url="https://api.openai.com/v1", model="gpt-5.6")
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "old", "_responses_output": [{"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"}]},
+    ]
+
+    assert any(item.get("encrypted_content") == "opaque" for item in ModelClient(s).responses_input(history))
+
+
+def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, monkeypatch):
+    """`extra_body` is merged over the body, so a whole `reasoning` object configured there used to
+    take the resolved effort down with it. Documented extras stay reachable; `/reason` still wins."""
+    s = _session(
+        tmp_path,
+        api="responses",
+        url="https://api.openai.com/v1",
+        model="gpt-5.6",
+        reasoning="high",
+        stream=False,
+        extra_body={"reasoning": {"context": "current_turn", "effort": "low"}, "safety_identifier": "u1"},
+    )
+    model = ModelClient(s)
+    factory = _MockClientFactory(
+        [(200, {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-5.6", "output": []})],
+        base_url="https://api.openai.com/v1",
+    )
+    monkeypatch.setattr(model, "client", factory)
+
+    model.responses_request([{"role": "user", "content": "hi"}], None)
+
+    body = json.loads(factory.calls[0].content)
+    assert body["reasoning"] == {"effort": "high", "context": "current_turn"}
+    assert body["safety_identifier"] == "u1"
+
+
+def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monkeypatch):
+    """Nothing to fold into on a non-reasoning model: the configured object passes through whole."""
+    s = _session(
+        tmp_path,
+        api="responses",
+        url="https://api.openai.com/v1",
+        model="gpt-4.1",
+        stream=False,
+        extra_body={"reasoning": {"context": "all_turns"}},
+    )
+    model = ModelClient(s)
+    factory = _MockClientFactory(
+        [(200, {"id": "r", "object": "response", "created_at": 1, "status": "completed", "model": "gpt-4.1", "output": []})],
+        base_url="https://api.openai.com/v1",
+    )
+    monkeypatch.setattr(model, "client", factory)
+
+    model.responses_request([{"role": "user", "content": "hi"}], None)
+
+    assert json.loads(factory.calls[0].content)["reasoning"] == {"context": "all_turns"}
+
+
+def test_provider_origin_separates_issuers_a_hostname_cannot(tmp_path):
+    """Whoever can verify the ciphertext is decided by the whole endpoint and the credential, not
+    by the domain: same-host entries on different ports, paths, or organization keys are distinct."""
+    def origin(**kwargs) -> str:
+        base = {"url": "http://localhost:8000/v1", "model": "gpt-oss", "key": "sk-a"}
+        return ModelClient(_session(tmp_path, **(base | kwargs))).provider_origin()
+
+    assert origin() != origin(url="http://localhost:9000/v1")
+    assert origin() != origin(url="http://localhost:8000/upstream-b/v1")
+    assert origin() != origin(key="sk-b")
+    assert origin() != origin(model="gpt-oss-mini")
+    assert origin() == origin()
+    # A credential is fingerprinted, never carried into a session snapshot verbatim.
+    assert "sk-a" not in origin()

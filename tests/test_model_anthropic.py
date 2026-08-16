@@ -35,7 +35,12 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     assistant, calls, content = model.anthropic_request([{"role": "user", "content": "hi"}], None)
 
     assert content == "hello from claude"
-    assert assistant == {"role": "assistant", "content": "hello from claude", "_anthropic_content": [{"type": "text", "text": "hello from claude"}]}
+    assert assistant == {
+        "role": "assistant",
+        "content": "hello from claude",
+        "_anthropic_content": [{"type": "text", "text": "hello from claude"}],
+        "_provider_origin": model.provider_origin(),
+    }
     assert calls == []
     assert s.usage.prompt_tokens == 8
     assert s.usage.completion_tokens == 4
@@ -289,3 +294,26 @@ def test_anthropic_max_tokens_stop_reason_names_the_cap_only_when_nothing_was_ge
 
     assert content == "half a sen"
     assert calls == []
+
+
+def test_another_hosts_thinking_signature_is_not_replayed(tmp_path):
+    """A gateway and the first-party endpoint both speak Messages, but a thinking block is verified
+    against the key that signed it, so an echo from elsewhere is rebuilt rather than replayed."""
+    issuer = ModelClient(_session(tmp_path, api="anthropic", url="https://api.anthropic.com/v1", model="claude-x"))
+    model = ModelClient(_session(tmp_path, api="anthropic", url="https://opencode.ai/zen/v1", model="claude-x"))
+    history = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "answer",
+            "_anthropic_content": [{"type": "thinking", "thinking": "why", "signature": "sig"}, {"type": "text", "text": "answer"}],
+            "_provider_origin": issuer.provider_origin(),
+        },
+    ]
+
+    rebuilt = model.anthropic_messages(history)
+
+    assert rebuilt[1]["content"] == [{"type": "text", "text": "answer"}]
+
+    echoed = issuer.anthropic_messages(history)
+    assert echoed[1]["content"][0] == {"type": "thinking", "thinking": "why", "signature": "sig"}

@@ -372,6 +372,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.resolved_reasoning_effort: {resolved.reasoning_effort or '(off)'}",
             f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
             f"provider.chat_reasoning: {provider.chat_reasoning}",
+            f"provider.resolved_chat_reasoning_history: {resolved.chat_reasoning_history}",
             f"provider.temperature: {provider.temperature if provider.temperature is not None else '(off)'}",
             f"provider.max_tokens: {provider.max_tokens or '(server default)'}",
             # Show the effective limit either way: the whole point of the key is which number the

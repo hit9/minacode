@@ -68,7 +68,12 @@ SEARCH_SOURCES_KEY = "_search_sources"
 # Set when the provider ended a response without ending the turn, having paused a long server-side
 # tool run. The message must be sent back unchanged to resume, so this travels with it as metadata.
 PAUSED_TURN_KEY = "_paused_turn"
-PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY, SEARCH_SOURCES_KEY, PAUSED_TURN_KEY)
+# Which endpoint and model produced the echo keys above, as "host/model". The opaque halves of an
+# echo — Responses `encrypted_content`, Anthropic thinking `signature` — are verified by their
+# issuer, so replaying one to a different host or model is rejected rather than ignored. Protocol
+# alone cannot tell them apart: `/provider` can move between two Responses hosts.
+PROVIDER_ORIGIN_KEY = "_provider_origin"
+PROVIDER_ECHO_KEYS = (RESPONSES_OUTPUT_KEY, ANTHROPIC_CONTENT_KEY, SEARCH_SOURCES_KEY, PAUSED_TURN_KEY, PROVIDER_ORIGIN_KEY)
 
 
 def builtin_function_names(entries: Iterable[Json]) -> tuple[str, ...]:

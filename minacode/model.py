@@ -25,6 +25,7 @@ from minacode.base import (
     MODEL_REQUEST_RETRIES,
     PAUSED_TURN_KEY,
     PROVIDER_ECHO_KEYS,
+    PROVIDER_ORIGIN_KEY,
     RESPONSES_OUTPUT_KEY,
     RETRY_BASE_DELAY,
     RETRY_MAX_DELAY,
@@ -177,6 +178,32 @@ class ModelClient:
         self.cancel_requested.set()
         with contextlib.suppress(Exception):
             self.active_client.apply(lambda client: client.close())
+
+    def provider_origin(self, provider: ProviderConfig | None = None) -> str:
+        """Identity of the endpoint that issues — and alone can verify — a provider echo.
+
+        Everything that decides who can verify the ciphertext belongs here. A hostname alone does
+        not: two local gateways separated only by port, or two entries on one host holding keys for
+        different organizations, would share an identity and defeat the check. The full base URL
+        covers scheme, port, and path routing; the key is reduced to a fingerprint so a credential
+        never reaches a session snapshot. Rotating a key costs one turn of reasoning continuity.
+        """
+        provider = provider if provider is not None else self.session.config.provider
+        credential = hashlib.sha256(provider.key.encode("utf-8")).hexdigest()[:12] if provider.key else "-"
+        return f"{provider.resolve().base_url}/{provider.model.lower()}#{credential}"
+
+    @staticmethod
+    def replayable_echo(message: Json, origin: str) -> bool:
+        """Whether this turn's provider echo may be replayed to the endpoint now in use.
+
+        Sending another issuer's ciphertext back is a verification failure, not a silent drop, so a
+        mismatch falls through to rebuilding the turn from its normalized text and tool calls — the
+        same degradation a protocol switch already takes. Turns recorded before origins were stamped
+        carry no identity and stay replayable: an unmarked session is almost always still on the
+        provider that wrote it, and dropping thinking blocks mid tool loop would break it outright.
+        """
+        saved = message.get(PROVIDER_ORIGIN_KEY)
+        return not isinstance(saved, str) or not saved or saved == origin
 
     def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None) -> list[Json]:
         """Build Chat Completions history using the provider's documented replay contract."""
@@ -800,7 +827,7 @@ class ModelClient:
         stream = allow_stream and provider.stream and self.on_stream is not None
         params: Json = {
             "model": provider.model,
-            "input": self.responses_input(Text.value(messages)),
+            "input": self.responses_input(Text.value(messages), self.provider_origin(provider)),
             "stream": stream,
             "store": False,
         }
@@ -822,8 +849,8 @@ class ModelClient:
                 raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
         if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
-        if provider.extra_body:
-            params["extra_body"] = provider.extra_body
+        if provider.extra_body and (extra_body := self.responses_extra_body(provider.extra_body, params)):
+            params["extra_body"] = extra_body
         client = self.client(provider=provider)
         if stream:
             result = self.call_client(client, lambda: self._responses_stream(client, params), response_timeout=response_timeout)
@@ -832,7 +859,29 @@ class ModelClient:
             result = self.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
             streamed = False
         self._record_usage(self.message_field(result, "usage"))
-        return self.responses_result(result, streamed)
+        assistant, calls, text = self.responses_result(result, streamed)
+        assistant[PROVIDER_ORIGIN_KEY] = self.provider_origin(provider)
+        return assistant, calls, text
+
+    @staticmethod
+    def responses_extra_body(extra_body: Json, params: Json) -> Json:
+        """Fold configured `reasoning` fields into the managed object instead of replacing it.
+
+        `extra_body` is merged over the request body, so a whole object configured there would drop
+        the fields minacode manages inside it — settling `reasoning.context` would silently take the
+        resolved `effort` with it. Merging per field keeps a documented extra reachable while
+        `/reason` stays authoritative, mirroring how the Chat path folds `thinking`.
+        """
+        merged = dict(extra_body)
+        configured = merged.pop("reasoning", None)
+        managed = params.get("reasoning")
+        if isinstance(configured, dict):
+            params["reasoning"] = {**configured, **managed} if isinstance(managed, dict) else configured
+        elif configured is not None:
+            # Nothing to merge field by field: a scalar keeps the plain override an unknown host may
+            # want, rather than being second-guessed here.
+            merged["reasoning"] = configured
+        return merged
 
     def _responses_stream(self, client: OpenAI, params: Json) -> Any:
         """Consume a Responses stream, promoting completed text before tool arguments finish.
@@ -922,13 +971,14 @@ class ModelClient:
         if self.on_stream is not None:
             self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
 
-    def responses_input(self, messages: list[Json]) -> list[Json]:
+    def responses_input(self, messages: list[Json], origin: str = "") -> list[Json]:
+        origin = origin or self.provider_origin()
         converted: list[Json] = []
         seen_output_ids: set[str] = set()
         for message in messages:
             role = str(message.get("role") or "")
             content = message.get("content")
-            saved_output = message.get(RESPONSES_OUTPUT_KEY)
+            saved_output = message.get(RESPONSES_OUTPUT_KEY) if self.replayable_echo(message, origin) else None
             if role == "assistant" and isinstance(saved_output, list):
                 for item in saved_output:
                     if not isinstance(item, dict) or not self.replayable_output_item(item):
@@ -1276,6 +1326,7 @@ class ModelClient:
             streamed = False
         self._record_usage(self.message_field(result, "usage"))
         assistant, calls, content = self.anthropic_result(result, streamed)
+        assistant[PROVIDER_ORIGIN_KEY] = self.provider_origin(provider)
         return assistant, calls, content
 
     def _anthropic_stream(self, client: Anthropic, params: Json) -> Any:
@@ -1379,7 +1430,7 @@ class ModelClient:
         params: Json = {
             "model": provider.model,
             "system": system,
-            "messages": self.anthropic_messages(messages),
+            "messages": self.anthropic_messages(messages, self.provider_origin(provider)),
             "max_tokens": provider.anthropic_output_cap(),
         }
         # Thinking pins temperature to its default; sending any other value is rejected.
@@ -1415,7 +1466,8 @@ class ModelClient:
         budget = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
         return max(1024, min(max_tokens - 1024, budget))
 
-    def anthropic_messages(self, messages: list[Json]) -> list[Json]:
+    def anthropic_messages(self, messages: list[Json], origin: str = "") -> list[Json]:
+        origin = origin or self.provider_origin()
         converted: list[Json] = []
         for message in messages:
             role = message.get("role")
@@ -1424,7 +1476,7 @@ class ModelClient:
             if role == "user":
                 self.append_anthropic_message(converted, "user", self.session.images.anthropic_content(message))
             elif role == "assistant":
-                blocks = self.anthropic_assistant_blocks(message)
+                blocks = self.anthropic_assistant_blocks(message, origin)
                 if blocks:
                     self.append_anthropic_message(converted, "assistant", blocks)
             elif role == "tool":
@@ -1451,10 +1503,10 @@ class ModelClient:
                 return
         messages.append({"role": role, "content": content})
 
-    def anthropic_assistant_blocks(self, message: Json) -> list[Json]:
+    def anthropic_assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
         # The API verifies that thinking blocks come back exactly as it produced them, signature
         # included, so a turn it produced is echoed rather than rebuilt from text and tool calls.
-        saved = message.get(ANTHROPIC_CONTENT_KEY)
+        saved = message.get(ANTHROPIC_CONTENT_KEY) if self.replayable_echo(message, origin or self.provider_origin()) else None
         if isinstance(saved, list) and saved:
             return [block for block in saved if isinstance(block, dict) and (message.get("content") is not None or block.get("type") != "text")]
         blocks: list[Json] = []

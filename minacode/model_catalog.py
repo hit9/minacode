@@ -129,10 +129,13 @@ OPENAI_EFFORT_CAPABILITY: CompatibilityData = {
 MODEL_CAPABILITIES: dict[str, CompatibilityData] = {
     "openai_effort": OPENAI_EFFORT_CAPABILITY,
     # DeepSeek V4 uses thinking.type and accepts low/high/max plus xhigh as a model-specific
-    # compatibility level.
+    # compatibility level. Its tool-call replay rule travels with the model, not the endpoint: a
+    # gateway serving the same model still requires reasoning on tool-call messages and ignores it
+    # everywhere else.
     # Evidence: https://api-docs.deepseek.com/guides/thinking_mode/
     "deepseek_v4": {
         "chat_reasoning_rules": ({"value": "thinking", "prefixes": ("deepseek-v4-",)},),
+        "chat_reasoning_history_rules": ({"value": "tool_calls", "prefixes": ("deepseek-v4-",)},),
         "reasoning_effort_level_rules": ({"levels": ("low", "high", "xhigh", "max"), "prefixes": ("deepseek-v4-",)},),
     },
     # K3 uses normalized effort, K2.5/K2.6 use thinking.type, and K2.7 is always-thinking. K3 and

@@ -62,7 +62,7 @@ Most users can leave these unset.
 | `response_timeout` | `600` | Total generation limit in seconds; `0` disables it |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
 | `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
-| `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body |
+| `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body. Fields inside an object minacode also manages are merged rather than replacing it, so `extra_body.reasoning.context` reaches a Responses host without dropping the resolved effort |
 | `builtin_tools` | `[]` | Tools the provider runs itself, passed through verbatim; see below |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
 

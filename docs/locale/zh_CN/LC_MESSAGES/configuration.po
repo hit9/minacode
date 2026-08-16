@@ -295,8 +295,15 @@ msgid "`{}`"
 msgstr "`{}`"
 
 #: ../../configuration.md
-msgid "Extra fields for an OpenAI-compatible request body"
-msgstr "添加到 OpenAI-compatible request body 的额外字段"
+msgid ""
+"Extra fields for an OpenAI-compatible request body. Fields inside an "
+"object minacode also manages are merged rather than replacing it, so "
+"`extra_body.reasoning.context` reaches a Responses host without dropping "
+"the resolved effort"
+msgstr ""
+"添加到 OpenAI-compatible request body 的额外字段。若某个对象 minacode 自己也在"
+"管理，则按字段合并而不是整体替换，因此 `extra_body.reasoning.context` 可以送达"
+" Responses Host，且不会连带丢掉解析出的 effort"
 
 #: ../../configuration.md
 msgid "`builtin_tools`"

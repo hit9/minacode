@@ -1731,3 +1731,16 @@ def test_compaction_usage_survives_a_resume(tmp_path):
     assert restored.compaction_usage.calls == 1
     # A snapshot written before the field existed decodes to zeros, not an error.
     assert SessionSnapshotCodec.model_usage({}).total_tokens == 0
+
+
+def test_deepseek_tool_call_replay_travels_with_the_model_not_the_endpoint():
+    """DeepSeek returns 400 when a tool-call turn comes back without its reasoning, and ignores it
+    everywhere else. That is a property of the model, so a gateway serving it inherits both halves."""
+    direct = ProviderConfig.from_dict({"url": "https://api.deepseek.com/v1", "model": "deepseek-v4-chat"})
+    gateway = ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "deepseek-v4-chat"})
+
+    assert direct.resolve().chat_reasoning_history == "tool_calls"
+    assert gateway.resolve().chat_reasoning_history == "tool_calls"
+    # A model the gateway does not document keeps the generic full-replay default.
+    assert ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "vendor/model"}).resolve().chat_reasoning_history == "all"
+
