@@ -3,6 +3,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- GLM-5.2 reasoning effort is folded to the two levels it documents. The model resolves anything
+  that is not `high` to `max`, so `/reason low` and `/reason medium` were buying its most expensive
+  setting for a request that asked for its cheapest. Levels at or below `high` now send `high` —
+  the model's low end — and `xhigh` folds up to `max`.
+- Qwen3.8-Max reasoning effort is folded to the levels it documents (`low`, `medium`, `xhigh`).
+  `/reason high` and `/reason max` were sending spellings the model does not accept; both now fold
+  to `xhigh`. Disabling reasoning still sends `none`.
+
 
 ## 0.24.3 - 2026-08-16
 

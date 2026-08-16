@@ -152,12 +152,16 @@ MODEL_CAPABILITIES: dict[str, CompatibilityData] = {
         "reasoning_effort_off_rules": ({"value": "low", "prefixes": ("kimi-k3",)},),
     },
     # The standard Z.AI APIs use thinking.type for GLM-4.5+ and reasoning_effort for GLM-5.2+.
+    # GLM-5.2 documents two effort levels and resolves anything other than "high" to max, so an
+    # unfolded "low" buys the most expensive setting rather than the cheapest: its low end is high.
     # Evidence: https://docs.z.ai/guides/capabilities/thinking-mode
+    #           https://docs.z.ai/guides/overview/migrate-to-glm-new
     "zai_standard": {
         "chat_reasoning_rules": (
             {"value": "thinking_effort", "prefixes": ("glm-5.2",)},
             {"value": "thinking_toggle", "prefixes": ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5")},
         ),
+        "reasoning_effort_level_rules": ({"levels": ("high", "max"), "prefixes": ("glm-5.2",)},),
     },
     # OpenCode currently exposes the same controls for its documented GLM-5 families.
     # Evidence: https://opencode.ai/docs/zen
@@ -166,11 +170,14 @@ MODEL_CAPABILITIES: dict[str, CompatibilityData] = {
             {"value": "thinking_effort", "prefixes": ("glm-5.2",)},
             {"value": "thinking_toggle", "prefixes": ("glm-5",)},
         ),
+        "reasoning_effort_level_rules": ({"levels": ("high", "max"), "prefixes": ("glm-5.2",)},),
     },
-    # Qwen3.8 Chat uses top-level reasoning_effort, including none to disable thinking.
+    # Qwen3.8 Chat uses top-level reasoning_effort, including none to disable thinking. Its Max
+    # models document low/medium/xhigh only: high and max are not accepted spellings there.
     # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat
     "qwen3_8": {
         "chat_reasoning_rules": ({"value": "reasoning_effort", "prefixes": ("qwen3.8-",)},),
+        "reasoning_effort_level_rules": ({"levels": ("low", "medium", "xhigh"), "prefixes": ("qwen3.8-",)},),
         "reasoning_effort_off_rules": ({"value": "none", "prefixes": ("qwen3.8-",)},),
     },
     # Kimi Code has distinct model IDs and K3 off semantics from the open platform.

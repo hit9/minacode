@@ -100,6 +100,18 @@ PROVIDER_CONTRACTS = (
         expected_body={"reasoning_effort": "none", "temperature": 0.4},
     ),
     ProviderContract(
+        id="qwen-chat-effort",
+        provider="qwen",
+        url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="qwen3.8-max-preview",
+        # Qwen3.8-Max documents low/medium/xhigh: high has no spelling there and folds to xhigh.
+        reasoning="high",
+        temperature=0.4,
+        expected_api="chat",
+        expected_path="/compatible-mode/v1/chat/completions",
+        expected_body={"reasoning_effort": "xhigh", "temperature": 0.4},
+    ),
+    ProviderContract(
         id="kimi-open-chat",
         provider="kimi_open",
         url="https://api.moonshot.ai/v1",
@@ -127,11 +139,12 @@ PROVIDER_CONTRACTS = (
         provider="zai",
         url="https://api.z.ai/api/paas/v4",
         model="glm-5.2",
+        # xhigh has no GLM spelling; it folds up to max, the only level above the model's high.
         reasoning="xhigh",
         temperature=0.6,
         expected_api="chat",
         expected_path="/api/paas/v4/chat/completions",
-        expected_body={"reasoning_effort": "xhigh", "thinking": {"type": "enabled"}, "temperature": 0.6},
+        expected_body={"reasoning_effort": "max", "thinking": {"type": "enabled"}, "temperature": 0.6},
         absent_body_keys=("prompt_cache_key",),
     ),
     ProviderContract(

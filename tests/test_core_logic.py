@@ -701,7 +701,7 @@ def test_opencode_routes_grok_through_responses_without_allowlisting_effort():
     ("model", "reasoning", "chat_reasoning", "effort"),
     (
         ("deepseek-v4-flash", "medium", "thinking", "high"),
-        ("glm-5.2", "xhigh", "thinking_effort", "xhigh"),
+        ("glm-5.2", "xhigh", "thinking_effort", "max"),
         ("kimi-k3", "medium", "reasoning_effort", "high"),
     ),
 )
@@ -748,11 +748,20 @@ def test_qwen_token_plan_compatibility_uses_reasoning_effort(tmp_path):
     assert provider.resolve().chat_reasoning == "reasoning_effort"
     assert provider.resolve().chat_reasoning_history == "current_turn"
 
-    for reasoning in ("minimal", "low", "medium", "high", "xhigh", "max"):
+    # Qwen3.8-Max documents low/medium/xhigh; the two levels it has no spelling for fold to the
+    # nearest one it does, which for both is xhigh.
+    for reasoning, expected in (
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "xhigh"),
+        ("xhigh", "xhigh"),
+        ("max", "xhigh"),
+    ):
         provider.reasoning = reasoning
         params = {}
         client.apply_provider_params(params, provider)
-        assert params == {"reasoning_effort": reasoning}
+        assert params == {"reasoning_effort": expected}
 
     provider.reasoning = "off"
     params = {}
@@ -839,8 +848,14 @@ def test_kimi_code_compatibility_is_distinct_from_open_platform(tmp_path):
 
 
 @pytest.mark.parametrize("url", ("https://api.z.ai/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"))
-@pytest.mark.parametrize("reasoning", ("xhigh", "max"))
-def test_zai_regional_endpoints_share_documented_reasoning_effort(url, reasoning, tmp_path):
+# GLM-5.2 documents high and max only, and resolves anything that is not "high" to max. Sending an
+# unfolded level would buy the most expensive setting for a request that asked for the cheapest, so
+# everything at or below high folds to high — its low end — and the rest folds up to max.
+@pytest.mark.parametrize(
+    ("reasoning", "expected"),
+    (("minimal", "high"), ("low", "high"), ("medium", "high"), ("high", "high"), ("xhigh", "max"), ("max", "max")),
+)
+def test_zai_regional_endpoints_share_documented_reasoning_effort(url, reasoning, expected, tmp_path):
     client = ModelClient(session(tmp_path))
     provider = ProviderConfig(url=url, model="glm-5.2", reasoning=reasoning, temperature=0.6)
     resolved = provider.resolve()
@@ -853,7 +868,7 @@ def test_zai_regional_endpoints_share_documented_reasoning_effort(url, reasoning
     client.apply_provider_params(params, provider)
     assert params == {
         "temperature": 0.6,
-        "reasoning_effort": reasoning,
+        "reasoning_effort": expected,
         "extra_body": {"thinking": {"type": "enabled"}},
     }
 
