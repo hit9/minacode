@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.24.4 - 2026-08-16
+
 ### Fixed
 
 - GLM-5.2 reasoning effort is folded to the two levels it documents. The model resolves anything
