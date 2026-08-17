@@ -8,6 +8,7 @@ from mcp_harness import mcp_cfg, mcp_tool_info
 from minacode.base import LogEdge, LogRole, ToolCall, ToolError
 from minacode.config import Config
 from minacode.context import ContextManager
+from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session
 from minacode.tools import MCPTool, ReadTool, Tool, ToolScript
@@ -578,6 +579,19 @@ class TestScriptLogShape:
         assert roots and all(line.edge is LogEdge.CONTINUE for line in roots)
         excerpt = [line for block in blocks for line, _ in block.walk() if line.role in (LogRole.CODE, LogRole.META)]
         assert not any(line.edge is LogEdge.END for line in excerpt[: len(excerpt) - 1])
+
+    def test_the_rail_survives_a_nested_call_that_logs_children(self, tmp_path):
+        """The rail used to stop at the nested root, so a call with a block under it (a Bash
+        preview, an Edit diff, an error) punched a hole in the bracket exactly where it was
+        tallest. Every rendered row of the nested region carries it now, in one column."""
+        s = _mcp_session(tmp_path)
+        blocks = self._blocks(s, 'print(call("Bash", {"command": "printf one; printf two"}))\n')
+        rows = [row for block in blocks for row in "".join(text for _style, text in UiPrinter(output_fn=lambda _text: None).log_segments(block)).splitlines()]
+        start = next(index for index, row in enumerate(rows) if row.endswith("Bash printf one; printf two"))
+        end = next(index for index, row in enumerate(rows) if "calls 1" in row)  # the script's own result line closes the region
+        nested = rows[start:end]
+        assert len(nested) > 1, nested  # the call plus the block it logged under itself
+        assert all(row.startswith("    │ ") for row in nested), nested
 
     def test_nesting_depth_is_restored_after_a_failed_script(self, tmp_path):
         """A script that raises must not leave the rest of the session permanently indented."""

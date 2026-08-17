@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-17 01:30-0700\n"
+"POT-Creation-Date: 2026-08-17 01:47-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -408,20 +408,23 @@ msgstr "查看器中的行号与脚本失败时 traceback 里的行号一致(`Fi
 
 #: ../../mcp.md:164
 msgid ""
-"Calls the script makes are logged indented under it and carry the tree's "
-"`│` continuation, so the script, the calls it made, and the result it "
-"returned read as one unbroken bracket rather than as calls the model made"
-" itself. The closing line reports how many nested calls ran and the first"
-" lines of what the script printed."
+"Calls the script makes are logged indented under it, on a `│` rail that "
+"runs unbroken from the script through every call it made — including "
+"whatever each of those calls logged below itself, a diff or a command's "
+"output — down to the result line. The batch therefore reads as work the "
+"script did rather than as calls the model made itself, and the closing "
+"line reports how many nested calls ran and the first lines of what the "
+"script printed."
 msgstr ""
-"脚本发起的调用会缩进记录在它下面,并带上树形结构的 `│` 延续线,于是脚本、它发起的调用、以及它返回的结果 "
-"读起来是一个不断开的整体,而不是模型自己发起的调用。收尾行会报告嵌套调用的数量,以及脚本打印内容的开头几行。"
+"脚本发起的调用会缩进记录在它下面,并落在一条 `│` 竖线上:这条线从脚本一路不断开地穿过它发起的每一次调用 "
+"——包括每次调用自己在下方记录的内容,比如一段 diff 或一条命令的输出——直到结果行为止。"
+"于是这一批读起来是脚本做的事,而不是模型自己发起的调用;收尾行会报告嵌套调用的数量,以及脚本打印内容的开头几行。"
 
-#: ../../mcp.md:169
+#: ../../mcp.md:170
 msgid "Authentication"
 msgstr "认证"
 
-#: ../../mcp.md:171
+#: ../../mcp.md:172
 msgid ""
 "**Bearer token** — set `bearer_token_env_var` (or a custom header via "
 "`env_http_headers`)."
@@ -429,17 +432,17 @@ msgstr ""
 "**Bearer token** — 设置 `bearer_token_env_var`，或通过 `env_http_headers` 设置自定义"
 " header。"
 
-#: ../../mcp.md:172
+#: ../../mcp.md:173
 msgid ""
 "**OAuth** — set `auth = \"oauth\"`. Connecting runs the authorization "
 "flow; disconnecting clears the saved login."
 msgstr "**OAuth** — 设置 `auth = \"oauth\"`。连接时执行授权流程；断开连接会清除已保存的登录信息。"
 
-#: ../../mcp.md:175
+#: ../../mcp.md:176
 msgid "Trust"
 msgstr "信任边界"
 
-#: ../../mcp.md:177
+#: ../../mcp.md:178
 msgid ""
 "Local (stdio) servers run programs on your machine, and remote servers "
 "receive whatever the agent sends them. Only connect servers you trust."

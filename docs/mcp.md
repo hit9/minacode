@@ -161,10 +161,11 @@ it then goes on to do. The whole body is one keypress away:
 Line numbers in the viewer match the ones in a failed script's traceback
 (`File "<toolscript>", line N`).
 
-Calls the script makes are logged indented under it and carry the tree's `│` continuation, so the
-script, the calls it made, and the result it returned read as one unbroken bracket rather than as
-calls the model made itself. The closing line reports how many nested calls ran and the first lines
-of what the script printed.
+Calls the script makes are logged indented under it, on a `│` rail that runs unbroken from the
+script through every call it made — including whatever each of those calls logged below itself, a
+diff or a command's output — down to the result line. The batch therefore reads as work the script
+did rather than as calls the model made itself, and the closing line reports how many nested calls
+ran and the first lines of what the script printed.
 
 ### Authentication
 

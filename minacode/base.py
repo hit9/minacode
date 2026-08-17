@@ -417,7 +417,15 @@ class LogLine:
 @dataclass
 class LogBlock:
     INDENT: ClassVar[str] = "  "
+    # The indent unit of a nested region, drawn instead of blank spacing so the call that opened
+    # the region stays connected to everything logged inside it. Exactly as wide as INDENT: a rail
+    # replaces spacing, never adds a column, so turning one on cannot shift the tree.
+    RAIL: ClassVar[str] = "│ "
     items: list[LogLine | LogBlock]
+    # True on a wrapper whose whole subtree was logged by an enclosing tool call (a ToolScript's
+    # nested calls). Every line below the region's own root lines then carries the rail; see
+    # margin_units and ToolRunner.emit.
+    gutter: bool = False
 
     @classmethod
     def hierarchy(cls, root: LogLine | None, children: list[LogLine]) -> LogBlock:
@@ -438,19 +446,40 @@ class LogBlock:
     def prefix(cls, level: int, edge: LogEdge = LogEdge.NONE) -> str:
         return cls.margin(level) + ((edge.value + " ") if edge is not LogEdge.NONE else "")
 
+    @classmethod
+    def margin_units(cls, level: int, rails: tuple[int, ...] = ()) -> list[tuple[bool, str]]:
+        """A line's indent, unit by unit, each flagged as a rail or as plain spacing.
+
+        A nested region's rail sits at the unit its own root lines draw an edge in, so the root's
+        `│` and the rail below it land in one column and the region reads as a single bracket. The
+        root lines themselves are shorter than that unit and are unaffected."""
+        return [(index in rails, cls.RAIL if index in rails else cls.INDENT) for index in range(level)]
+
     def walk(self, parent_level: int = 0):
+        for line, level, _rails in self.walk_rows(parent_level):
+            yield line, level
+
+    def walk_rows(self, parent_level: int = 0, rails: tuple[int, ...] = ()):
+        """Every line with its depth and the rail units its margin carries.
+
+        A gutter block claims the unit one past its own items' level: that is where the lines it
+        contains draw their edges, so deeper lines rail in the same column instead of floating free
+        under them."""
         level = parent_level + 1
+        if self.gutter:
+            rails = (*rails, level + 1)
         for item in self.items:
             if isinstance(item, LogLine):
-                yield item, level
+                yield item, level, rails
             else:
-                yield from item.walk(level)
+                yield from item.walk_rows(level, rails)
 
     def __str__(self) -> str:
         rows = []
-        for line, level in self.walk():
-            prefix = self.margin(level) + line.text_prefix()
-            continuation = self.margin(level) + " " * get_cwidth(line.text_prefix())
+        for line, level, rails in self.walk_rows():
+            margin = "".join(text for _rail, text in self.margin_units(level, rails))
+            prefix = margin + line.text_prefix()
+            continuation = margin + " " * get_cwidth(line.text_prefix())
             rows.extend(Text.wrap_styled([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
         return "\n".join("".join(text for _style, text in row) for row in rows)
 

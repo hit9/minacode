@@ -24,9 +24,10 @@
 
 ### Changed
 
-- Calls a ToolScript makes are logged indented under the script and carry the tree's `|`
-  continuation, so the script, the calls it made, and the result it returned read as one unbroken
-  bracket rather than as calls the model made itself. The closing line reports how many nested
+- Calls a ToolScript makes are logged indented under the script, on a `|` rail that runs unbroken
+  from the script through every call it made - including whatever each of those calls logged below
+  itself, a diff or a command's output - down to the result line, so the batch reads as work the
+  script did rather than as calls the model made itself. The closing line reports how many nested
   calls ran plus the first lines of what the script printed. The call line now names the
   script's size instead of echoing its first line, which was usually setup.
 

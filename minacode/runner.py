@@ -318,20 +318,21 @@ class ToolRunner:
         strings (a tool display that renders itself, e.g. Note) carry no tree to indent."""
         if isinstance(block, LogBlock):
             for _ in range(self.nesting):
-                block = self.gutter(LogBlock([block]))
+                block = LogBlock([self.rooted(block)], gutter=True)
         self.output_fn(block)
 
     @classmethod
-    def gutter(cls, block: LogBlock) -> LogBlock:
-        """Give every root line in a nested block the tree's continuation edge.
+    def rooted(cls, block: LogBlock) -> LogBlock:
+        """Give a nested block's root lines the tree's continuation edge.
 
         Indent alone leaves a nested call looking like an ordinary one that happens to sit further
-        right. The `│` continues the line the enclosing call already drew down its own children, so
-        the script, the calls it made, and the result it returned read as one unbroken bracket.
-        Lines that already carry an edge are a block's own children and keep it."""
+        right. The edge here and the rail the gutter draws under it are the same column, so the
+        script, each call it made -- including everything that call logged below itself -- and the
+        result it returned read as one unbroken bracket. Lines that already carry an edge are a
+        block's own children and keep it."""
         return LogBlock(
             [
-                cls.gutter(item) if isinstance(item, LogBlock) else replace(item, edge=LogEdge.CONTINUE) if item.edge is LogEdge.NONE else item
+                cls.rooted(item) if isinstance(item, LogBlock) else replace(item, edge=LogEdge.CONTINUE) if item.edge is LogEdge.NONE else item
                 for item in block.items
             ]
         )
@@ -813,6 +814,9 @@ class ToolRunner:
     # the viewer (`v`, or Ctrl-O afterwards), and a script long enough to overflow this is exactly
     # the one whose full body in the transcript would bury everything it then goes on to do.
     VIEW_EXCERPT_LINES: ClassVar[int] = 10
+    # Slack before clipping is worth it: the `… +N more lines` line costs a row of its own, so
+    # hiding one or two lines buys nothing and merely sends the reader to the viewer for them.
+    VIEW_EXCERPT_SLACK: ClassVar[int] = 2
 
     def view_excerpt_children(self, view: ApprovalView, status: str, form: list[tuple[str, str]], actions: list[tuple[str, str]]) -> list[LogLine]:
         """The opening lines of an approval view, syntax-highlighted, under a header naming what is
@@ -821,7 +825,8 @@ class ToolRunner:
         lines = view.text.rstrip().splitlines()
         if not lines:
             return []
-        shown, hidden = lines[: self.VIEW_EXCERPT_LINES], max(0, len(lines) - self.VIEW_EXCERPT_LINES)
+        kept = len(lines) if len(lines) <= self.VIEW_EXCERPT_LINES + self.VIEW_EXCERPT_SLACK else self.VIEW_EXCERPT_LINES
+        shown, hidden = lines[:kept], len(lines) - kept
         children = [
             LogLine(view.label, "", LogRole.META, LogEdge.BRANCH),
             *(LogLine("", line, LogRole.CODE, LogEdge.CONTINUE, syntax=view.lexer) for line in shown),
