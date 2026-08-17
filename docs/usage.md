@@ -53,14 +53,17 @@ While Bash runs, its live output stays above the `working` divider. When the com
 finishes, up to three lines from each stream stay in the transcript, and the complete result
 is stored under its `tr.N` key.
 
-Press `Ctrl-O` to browse the ten most recent Bash outputs in full, newest first: `j`/`k` or the
-arrows select, `Enter` opens, `Esc` goes back to the list, and `Ctrl-O` or `q` closes.
+Press `Ctrl-O` to browse the ten most recent results, newest first: `j`/`k` or the arrows
+select, `Enter` opens, and `Ctrl-O` or `q` closes. Opening one shows what was run above what it
+returned, in a read-only scrolling viewer — a Bash command with both its streams, or a
+`ToolScript` with its complete script and result. For a script this is the only way to read it
+under `--yolo`, where no confirmation prompt stops to offer `v`.
 
-`ToolScript` calls are listed here too. Selecting one opens its complete script in a scrolling,
-syntax-highlighted viewer — the only way to read a script under `--yolo`, where no confirmation
-prompt stops to offer `v`.
+Very large results are bounded rather than rendered whole: the viewer keeps the head and tail of
+a long result and clips individual lines past ~1000 characters, and the header says so whenever
+it did. Nothing is lost — the complete result stays under its `tr.N` key.
 
-<div class="term-shot" role="img" aria-label="A completed Bash command with bounded output, followed by the Ctrl-O list of recent Bash commands and one larger output preview, each separated from scrollback by a labeled rule."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O for more</span><span class="fs-dim">    │ stdout:</span><span class="fs-output">    │   708 passed in 14.84s</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-divider">──── Tool output · latest 3 ────────────────</span><span class="fs-sel">&gt;  1. tr.18  Bash pytest -q</span><span class="fs-dim">   2. tr.17  Bash git diff --check</span><span class="fs-dim">   3. tr.16  Bash git status --short</span><span> </span><span class="fs-divider">──── Bash output · tr.18 ──────────────────</span><span class="fs-dim">  Bash pytest -q</span><span class="fs-dim"> </span><span class="fs-dim">  stdout:</span><span class="fs-dim">    708 passed in 14.84s</span><span class="fs-dim"> </span><span class="fs-dim">  Esc / ← back · Ctrl-O / q closes</span></div>
+<div class="term-shot" role="img" aria-label="A completed Bash command with bounded output, followed by the Ctrl-O list of recent results and the read-only viewer one of them opens, showing the command above its output."><span class="fs-tool">  Bash  pytest -q</span><span class="fs-dim">    ├ output · 14.7s Ctrl-O for more</span><span class="fs-dim">    │ stdout:</span><span class="fs-output">    │   708 passed in 14.84s</span><span class="fs-dim">    └ stored tr.18</span><span> </span><span class="fs-divider">──── Tool output · latest 3 ────────────────</span><span class="fs-sel">&gt;  1. tr.18  Bash pytest -q</span><span class="fs-dim">   2. tr.17  Bash git diff --check</span><span class="fs-dim">   3. tr.16  Bash git status --short</span><span> </span><span class="fs-divider">  Output · tr.18 · read-only</span><span class="fs-dim">  key   tr.18</span><span class="fs-dim">  exit  0</span><span class="fs-divider">  ──────────────────────────────────────────</span><span class="fs-output">  1  pytest -q</span><span class="fs-divider">  ── result ─────────────────────────────────</span><span class="fs-dim">  stdout:</span><span class="fs-dim">    708 passed in 14.84s</span><span class="fs-dim"> </span><span class="fs-dim">  ↑/↓ scroll · g/G top/bottom · Esc/q close</span></div>
 
 ## Status bar
 
@@ -142,7 +145,7 @@ Mentions are expanded in follow-ups queued while the agent is working, too.
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history; `Enter` puts the match in the input to edit, a second
   `Enter` sends it
-- `Ctrl-O` — browse recent Bash output previews and ToolScript scripts; press it again to close
+- `Ctrl-O` — browse recent Bash outputs and ToolScript scripts in full; press it again to close
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to
   vim), as a temporary Markdown file
 

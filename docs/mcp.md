@@ -156,9 +156,10 @@ it then goes on to do. The whole body is one keypress away:
 - **`v` at the confirmation prompt** opens a read-only, scrolling viewer with the complete script,
   numbered and highlighted. `Esc`/`q` returns to the prompt; nothing is approved by viewing.
 - **`Ctrl-O` afterwards** lists recent `Bash` and `ToolScript` calls; selecting a script opens the
-  same viewer, with the result it returned below the source — the printed output in full, or the
-  whole traceback when the script failed. This is how a script is read under `--yolo`, where no
-  prompt ever stops to offer `v`.
+  same viewer, with the result it returned below the source — the printed output, or the whole
+  traceback when the script failed. This is how a script is read under `--yolo`, where no prompt
+  ever stops to offer `v`. A very large result is bounded there (head and tail, long lines
+  clipped) and the header says when it was.
 
 Line numbers in the viewer match the ones in a failed script's traceback
 (`File "<toolscript>", line N`).

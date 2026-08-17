@@ -1000,13 +1000,62 @@ class ToolRunner:
         meta = ("  " + batch_suffix) if batch_suffix else ""
         return LogLine(name, args, role, meta=meta, syntax=syntax)
 
-    def bash_result_preview(self, output: str, line_limit: int | None = None) -> str:
+    def bash_result_preview(self, output: str, line_limit: int | None = None, char_limit: int | None = None) -> str:
         sections = []
         for name in ("stdout", "stderr"):
             text = self.tagged_output(output, name).strip()
             if text:
-                sections.extend([name + ":", *("  " + line for line in self.preview_lines(text, line_limit))])
+                sections.extend([name + ":", *("  " + line for line in self.preview_lines(text, line_limit, char_limit))])
         return "\n".join(sections)
+
+    # What a scrolling viewer renders: generous next to the three-line transcript preview, but not
+    # unbounded. Stored output has no cap of its own, and the text wrapper costs time quadratic in
+    # the length of a single line, so one minified-JSON line would freeze the modal until it gave
+    # up. Whatever these drop is still whole under the result's own tr.N key.
+    VIEWER_LINES: ClassVar[int] = 2000
+    VIEWER_LINE_CHARS: ClassVar[int] = 1000
+
+    # The marker preview_lines writes where it elided; read back to describe the bound, so the note
+    # in the viewer's header cannot drift from the text under it.
+    OMITTED_RE: ClassVar[re.Pattern] = re.compile(r"\.\.\. (\d+) lines? omitted \.\.\.")
+
+    def viewer_text(self, text: str) -> tuple[str, str]:
+        """Arbitrary result text bounded for a scrolling viewer, with a note saying what the bound
+        dropped. The same head/tail elision the transcript preview uses, at a size meant to be read
+        rather than glanced at."""
+        bounded = "\n".join(self.preview_lines(text, self.VIEWER_LINES, self.VIEWER_LINE_CHARS))
+        return bounded, self.viewer_note(len(text.splitlines()), bounded)
+
+    def bash_viewer_output(self, output: str) -> tuple[str, str]:
+        """A Bash result's streams, labeled and bounded for a scrolling viewer, with the same note.
+
+        Counted against the streams rather than the stored envelope: the envelope's tag lines are
+        not output, and a note that counts them reads as nonsense on a one-line result."""
+        bounded = self.bash_result_preview(output, self.VIEWER_LINES, self.VIEWER_LINE_CHARS)
+        streams = sum(len(self.tagged_output(output, name).strip().splitlines()) for name in ("stdout", "stderr"))
+        return bounded, self.viewer_note(streams, bounded)
+
+    def viewer_note(self, total_lines: int, bounded: str) -> str:
+        """What the viewer's bound dropped, as a header phrase -- empty when it dropped nothing.
+
+        Silence is the dangerous half: a reader who cannot tell an elided result from a complete
+        one has to distrust every result, so the note is stated whenever anything was cut."""
+        omitted = sum(int(match.group(1)) for match in self.OMITTED_RE.finditer(bounded))
+        clipped = any(line.endswith("...") and len(line.strip()) >= self.VIEWER_LINE_CHARS for line in bounded.splitlines())
+        parts = []
+        if omitted:
+            parts.append(f"{total_lines - omitted} shown of {total_lines}")
+        if clipped:
+            parts.append(f"long lines clipped at {self.VIEWER_LINE_CHARS}")
+        return " · ".join(parts)
+
+    @staticmethod
+    def bash_exit_code(output: str) -> str:
+        """The exit code the envelope recorded, or "" when the output is not one."""
+        for line in output.splitlines():
+            if line.startswith("* exit_code: "):
+                return line.removeprefix("* exit_code: ").strip()
+        return ""
 
     @staticmethod
     def tagged_output(output: str, name: str) -> str:
@@ -1044,9 +1093,9 @@ class ToolRunner:
                 stdout.append(line)
         return match.group(1) if match else "0", "\n".join(stdout)
 
-    def preview_lines(self, text: str, line_limit: int | None = None) -> list[str]:
+    def preview_lines(self, text: str, line_limit: int | None = None, char_limit: int | None = None) -> list[str]:
         line_limit = self.BASH_PREVIEW_LINES if line_limit is None else line_limit
-        lines = [self.clip_preview_line(line) for line in text.splitlines()]
+        lines = [self.clip_preview_line(line, char_limit) for line in text.splitlines()]
         if len(lines) <= line_limit:
             return lines
         head = line_limit // 2
@@ -1055,9 +1104,10 @@ class ToolRunner:
         noun = "line" if omitted == 1 else "lines"
         return [*lines[:head], f"... {omitted} {noun} omitted ...", *lines[-tail:]]
 
-    def clip_preview_line(self, line: str) -> str:
+    def clip_preview_line(self, line: str, char_limit: int | None = None) -> str:
+        limit = self.BASH_PREVIEW_LINE_LIMIT if char_limit is None else char_limit
         line = line.rstrip()
-        return line if len(line) <= self.BASH_PREVIEW_LINE_LIMIT else line[: self.BASH_PREVIEW_LINE_LIMIT - 3].rstrip() + "..."
+        return line if len(line) <= limit else line[: limit - 3].rstrip() + "..."
 
     def mcp_result_summary(self, call: ToolCall, output: str, elapsed: float | None) -> str:
         if str((call.args[0] if call.args and isinstance(call.args[0], dict) else {}).get("action")) != "call":

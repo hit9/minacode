@@ -42,6 +42,7 @@ from minacode.config import (
 )
 from minacode.engine import Agent
 from minacode.model import ModelClient
+from minacode.runner import ToolRunner
 from minacode.session import Session
 from minacode.tools import Tool
 from minacode.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
@@ -87,14 +88,14 @@ class ModalHarness:
         return None
 
 
-def test_tool_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkeypatch):
+def test_tool_output_viewer_browses_latest_ten_and_opens_full_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     for index in range(12):
         stdout = "\n".join(f"line {line}" for line in range(40)) if index == 10 else f"output {index}"
         stderr = "detail stderr" if index == 10 else ""
         command_loop.session.store_tool_result("Bash", [f"printf command-{index}"], Tool.process_result("BashToolResult", 0, stdout, stderr))
     command_loop.session.store_tool_result("Bash", ["true"], Tool.process_result("BashToolResult", 0, "", ""))
-    modal = ModalHarness(["j", "enter", "escape", "G", "enter", "c-o"])
+    modal = ModalHarness(["j", "enter", "G"])  # second entry, then scroll the viewer to the bottom
     command_loop.tui = modal
 
     # ``shutil`` is a shared module object also used by pytest's terminal reporter. Restore the
@@ -108,17 +109,72 @@ def test_tool_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     assert get_cwidth(listing.splitlines()[1]) == 48
     assert "command-11" in listing and "command-2" in listing
     assert "Bash printf command-1\n" not in listing and "Bash printf command-0\n" not in listing and "Bash true" not in listing
-    second_detail = "".join(value for _style, value in modal.frames[2])
-    assert second_detail.startswith("\n──── Bash output · tr.11 ")
-    assert get_cwidth(second_detail.splitlines()[1]) == 48
-    assert "command-10" in second_detail
-    assert "line 0" in second_detail and "line 39" in second_detail
-    assert "... 16 lines omitted ..." in second_detail
-    assert "detail stderr" in second_detail
-    assert "──── Tool output · latest 10 " in "".join(value for _style, value in modal.frames[3])
-    oldest_detail = "".join(value for _style, value in modal.frames[5])
-    assert "command-2" in oldest_detail and "output 2" in oldest_detail
-    assert modal.exclusive == [False]
+    # The second entry opens in the scrolling viewer: the command as its body, the streams below.
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    viewer = [frame for frame in frames if "read-only" in frame]
+    assert "Output · tr.11 · read-only" in viewer[0]
+    assert "1  printf command-10" in viewer[0]
+    assert "── result " in viewer[0]
+    assert "stdout:" in viewer[0] and "line 0" in viewer[0]
+    assert "stderr:" in viewer[-1] and "detail stderr" in viewer[-1]  # both streams, a scroll away
+    assert modal.exclusive == [False, True]  # the list shares the screen; the viewer takes it
+
+
+def test_tool_output_viewer_shows_the_whole_output_not_the_transcript_preview(tmp_path):
+    """The transcript keeps three lines. The point of opening an entry is the other thirty-seven."""
+    command_loop = loop(tmp_path)
+    stdout = "\n".join(f"line {line}" for line in range(40))
+    command_loop.session.store_tool_result("Bash", ["seq 40"], Tool.process_result("BashToolResult", 0, stdout, ""))
+    modal = ModalHarness(["enter", "G"])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    viewer = [frame for frame in frames if "read-only" in frame]
+    assert "line 0" in viewer[0]
+    assert "line 39" in viewer[-1]  # reachable by scrolling, not elided
+    assert "lines omitted" not in "".join(viewer)
+
+
+def test_tool_output_viewer_bounds_a_huge_result_and_says_so(tmp_path):
+    """Stored output has no cap and the wrapper is quadratic in one line's length, so the viewer
+    bounds what it renders -- and says how much it is showing, because a reader who cannot tell an
+    elided result from a complete one has to distrust every result."""
+    command_loop = loop(tmp_path)
+    stdout = "\n".join(f"line {line}" for line in range(ToolRunner.VIEWER_LINES * 2))
+    command_loop.session.store_tool_result("Bash", ["seq huge"], Tool.process_result("BashToolResult", 0, stdout, ""))
+    command_loop.session.store_tool_result("Bash", ["one long line"], Tool.process_result("BashToolResult", 0, "x" * (ToolRunner.VIEWER_LINE_CHARS * 3), ""))
+    modal = ModalHarness(["enter"])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    viewer = next(frame for frame in frames if "read-only" in frame)
+    # The newest entry is the one long line; the header says the clip happened rather than
+    # presenting a truncated line as the whole of it.
+    assert f"long lines clipped at {ToolRunner.VIEWER_LINE_CHARS}" in viewer
+    rendered = [row for row in viewer.splitlines() if row.strip().startswith("x")]
+    assert rendered and all(len(row) <= ToolRunner.VIEWER_LINE_CHARS + 10 for row in rendered)
+
+
+def test_tool_output_viewer_bounds_a_result_with_too_many_lines(tmp_path):
+    """The line bound counts against the streams, not the stored envelope, so the note it prints
+    is a fact about the output rather than about the tags wrapped around it."""
+    command_loop = loop(tmp_path)
+    stdout = "\n".join(f"line {line}" for line in range(ToolRunner.VIEWER_LINES * 2))
+    command_loop.session.store_tool_result("Bash", ["seq huge"], Tool.process_result("BashToolResult", 0, stdout, ""))
+    modal = ModalHarness(["enter"])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    viewer = next(frame for frame in ("".join(v for _s, v in f) for f in modal.frames) if "read-only" in frame)
+    assert f"{ToolRunner.VIEWER_LINES} shown of {ToolRunner.VIEWER_LINES * 2}" in viewer
+    # The elision is marked in the text too, where it happens -- the header note is derived from it.
+    bounded, note = command_loop.agent.tools.bash_viewer_output(command_loop.session.tool_records[-1].output)
+    assert "lines omitted" in bounded and note.startswith(f"{ToolRunner.VIEWER_LINES} shown of ")
 
 
 def test_tool_output_viewer_is_noop_without_stored_bash_output(tmp_path):
@@ -142,8 +198,8 @@ def test_tool_output_viewer_reads_resumed_history(tmp_path):
 
     tool_output_viewer(command_loop)
 
-    detail = "".join(value for _style, value in modal.frames[1])
-    assert "Bash printf persisted" in detail
+    detail = next(frame for frame in ("".join(value for _style, value in f) for f in modal.frames) if "read-only" in frame)
+    assert "printf persisted" in detail
     assert "persisted output" in detail
 
 

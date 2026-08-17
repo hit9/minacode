@@ -304,51 +304,73 @@ def script_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
     # the transcript only kept the first lines of it. A failed script keeps its whole traceback
     # here too, which is the one place the clipped error line in the log can be resolved against
     # the numbered source right above it.
-    return ApprovalView(f"script · {record.key}", code, "python", rows, record.output)
+    result, note = loop.agent.tools.viewer_text(record.output)
+    if note:
+        rows.append(("shown", note))
+    return ApprovalView(f"script · {record.key}", code, "python", rows, result)
+
+
+def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
+    """The stored Bash call as a viewable command: what was run, plus the streams it produced.
+
+    Same two halves as a script -- what was asked, and what came back -- so both kinds of entry
+    open the one viewer. The output is bounded (see ToolRunner.VIEWER_LINES): stored Bash output
+    has no cap, and a viewer that hangs on the one command that printed a megabyte is worse than
+    one that says how much it is showing."""
+    command = loop.agent.tools.short_call(ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
+    streams, note = loop.agent.tools.bash_viewer_output(record.output)
+    if not streams:
+        # A command that printed nothing has nothing here the transcript does not already show. A
+        # script is different: its source is worth reading whether or not it printed anything.
+        return None
+    rows = [("key", record.key)]
+    if code := loop.agent.tools.bash_exit_code(record.output):
+        rows.append(("exit", code))
+    if note:
+        rows.append(("shown", note))
+    return ApprovalView(f"output · {record.key}", command, "bash", rows, streams)
 
 
 def tool_output_viewer(loop: CommandLoop) -> None:
-    """Browse what recent calls produced without copying it into scrollback: a Bash call's output
-    preview inline, a ToolScript call's whole script in the scrolling viewer.
+    """Browse what recent calls produced without copying it into scrollback.
 
-    ToolScript is here because yolo has no other door to it. A Bash preview is a bounded excerpt
-    that fits under the list, but a script has to be readable in full or the entry is pointless, so
-    selecting one closes the list and hands off to the scrolling viewer."""
+    Every entry -- a Bash command with its output, a ToolScript with its script and result --
+    opens the same read-only scrolling viewer. ToolScript is here because yolo has no other door
+    to it; Bash is here because a bounded excerpt under the list was never the whole answer."""
     if loop.tui is None:
         return
-    records: list[tuple[ToolResultRecord, str]] = []
+    records: list[ToolResultRecord] = []
     for record in reversed(loop.session.tool_records):
-        if record.name == "Bash":
-            preview = loop.agent.tools.bash_result_preview(record.output)
-            if preview:
-                records.append((record, preview))
-        elif record.name == "ToolScript" and script_view(loop, record) is not None:
-            records.append((record, ""))
+        if record_view(loop, record) is not None:
+            records.append(record)
         if len(records) == 10:
             break
     if not records:
         return
     picked = _tool_output_list(loop, records)
-    view = script_view(loop, picked) if picked is not None else None
+    view = record_view(loop, picked) if picked is not None else None
     if view is not None:
         approval_text_viewer(loop, view)
 
 
-def _tool_output_list(loop: CommandLoop, records: list[tuple[ToolResultRecord, str]]) -> ToolResultRecord | None:
-    """The list modal itself. Returns the ToolScript record to open in the scrolling viewer, or
-    None when the user closed it -- a Bash entry is shown inline and never returns anything."""
+def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
+    """The viewable form of a stored result, or None for a record this browser does not show."""
+    if record.name == "Bash":
+        return bash_view(loop, record)
+    if record.name == "ToolScript":
+        return script_view(loop, record)
+    return None
+
+
+def _tool_output_list(loop: CommandLoop, records: list[ToolResultRecord]) -> ToolResultRecord | None:
+    """The list modal itself: pick one, and it closes returning the record to open."""
     assert loop.tui is not None
     width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
-    labels = {}
-    calls = {}
-    for index, (record, _preview) in enumerate(records):
-        call = loop.agent.tools.short_call(ToolCall("", record.name, record.args))
-        choice = str(index)
-        calls[choice] = call
-        labels[choice] = Text.clip_width(f"{record.key}  {call}", width)
-    choices = tuple(labels)
-    state = ChoiceViewState(choices, labels, set())
-    opened: str | None = None
+    labels = {
+        str(index): Text.clip_width(f"{record.key}  {loop.agent.tools.short_call(ToolCall('', record.name, record.args))}", width)
+        for index, record in enumerate(records)
+    }
+    state = ChoiceViewState(tuple(labels), labels, set())
 
     def rule(label: str) -> StyleAndTextTuples:
         cols = shutil.get_terminal_size((80, 20)).columns
@@ -358,33 +380,16 @@ def _tool_output_list(loop: CommandLoop, records: list[tuple[ToolResultRecord, s
         return [("", "\n"), ("class:choice.disabled", lead + label + trail + "\n")]
 
     def fragments() -> StyleAndTextTuples:
-        if opened is None:
-            list_fragments = state.fragments("")
-            return [*rule(f"Tool output · latest {len(records)}"), *list_fragments[1:]]
-        record, preview = records[int(opened)]
-        detail_width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
-        parts: StyleAndTextTuples = [*rule(f"Bash output · {record.key}"), ("ansibrightblack", f"  {Text.clip_width(calls[opened], detail_width)}\n\n")]
-        parts.extend(("ansibrightblack", f"  {Text.clip_width(line, detail_width)}\n") for line in preview.splitlines())
-        parts.append(("class:choice.disabled", "\n  Esc / ← back · Ctrl-O / q closes\n"))
-        return parts
+        list_fragments = state.fragments("")
+        return [*rule(f"Tool output · latest {len(records)}"), *list_fragments[1:]]
 
     def handle_key(key: str, data: str) -> Any:
-        nonlocal opened
         if key in {"c-o", "q"}:
             return None
-        if opened is not None:
-            if key in {"escape", "left", "h"}:
-                opened = None
-            return TUI_MODAL_PENDING
         result = state.handle_key(key, data)
         if result is SELECTION_BACK:
             return None
-        if isinstance(result, str):
-            record, _preview = records[int(result)]
-            if record.name == "ToolScript":
-                return record  # closes this modal; the caller opens the scrolling script viewer
-            opened = result
-        return TUI_MODAL_PENDING
+        return records[int(result)] if isinstance(result, str) else TUI_MODAL_PENDING
 
     picked = loop.tui.show_modal(fragments, handle_key)
     return picked if isinstance(picked, ToolResultRecord) else None

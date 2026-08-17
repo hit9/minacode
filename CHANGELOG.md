@@ -20,9 +20,12 @@
   syntax-highlighted and numbered, `v` at the confirmation prompt opens the whole script in a
   read-only scrolling viewer, and `Ctrl-O` reopens it afterwards from the recent-calls list - which
   is the only way to read a script under `--yolo`, where nothing stops to ask. `Ctrl-O` now lists
-  ToolScript calls alongside Bash outputs, and shows what the script returned below its source:
-  the printed output in full, or the whole traceback when the script failed, against the numbered
-  line the traceback names.
+  ToolScript calls alongside Bash outputs. Every entry now opens the same read-only scrolling
+  viewer, showing what was run above what it returned: a Bash command with both its streams, or a
+  script with its result - the printed output, or the whole traceback when it failed, against the
+  numbered line the traceback names. Large results are bounded there (head and tail kept, lines
+  over 1000 characters clipped) because stored output has no cap of its own; the header says
+  whenever anything was cut, and the complete result stays under its `tr.N` key.
 
 ### Changed
 
