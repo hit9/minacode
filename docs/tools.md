@@ -5,9 +5,6 @@ the agent chooses the tools. Tool calls are shown in the terminal as they run. T
 from the `/` commands you type yourself. Read-only tools may run concurrently; actions that can
 change your system ask for confirmation unless `--yolo` or `/yolo` is active.
 
-Mentioning `@file:path` points the agent at a file; it is not a substitute for `Read` or
-`Search`, and only a bounded excerpt is inlined. See [Mentions](usage.md#mentions) for how
-picking files works.
 
 ## Built-in tools
 
