@@ -76,7 +76,6 @@ troubleshooting
 
 commands
 tools
-toolscript
 configuration
 worker
 mcp

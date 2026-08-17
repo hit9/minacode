@@ -82,7 +82,7 @@ read-only run without a prompt; anything that may change state asks for
 When the agent expects several <span class="marker">same-shape MCP calls</span> — the same tool
 with a handful of different arguments — it can write one Python script instead of emitting each
 call separately, and only what the script prints returns to the conversation. See
-[ToolScript](toolscript.md), which covers scripting built-in tools as well.
+[ToolScript](tools.md#toolscript), which covers scripting built-in tools as well.
 
 ### Authentication
 
