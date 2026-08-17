@@ -11,9 +11,11 @@ from minacode.tools.memory import NextHintsTool, NoteTool, RecallContextTool, Re
 from minacode.tools.search import CodeIndex, InspectCodeTool, SearchTool
 from minacode.tools.shell import BashTool, JobTool
 from minacode.tools.skill import SkillTool
+from minacode.tools.toolscript import ToolScript
 
 TOOLS: tuple[type[Tool], ...] = (
     MCPTool,
+    ToolScript,
     SkillTool,
     ReadTool,
     ViewImageTool,
@@ -54,5 +56,6 @@ __all__ = [
     "SearchTool",
     "SkillTool",
     "Tool",
+    "ToolScript",
     "ViewImageTool",
 ]

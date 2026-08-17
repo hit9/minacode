@@ -1,6 +1,5 @@
 # Changelog
 
-
 ## Unreleased
 
 ### Added
@@ -8,6 +7,13 @@
 - `Edit` gains a `replace_unique` operation: like `replace_all`, but the old text must occur
   exactly once - zero or multiple matches are rejected with the hit lines and leave the file
   untouched.
+- New `ToolScript` tool for batches of same-shape MCP calls. `action="describe"` batch-reports
+  each tool's call shape and a json gate ("yes" when the server declared an `outputSchema`,
+  "unknown" otherwise); `action="call"` runs a Python script whose `call("MCP", {...})` performs
+  nested MCP invocations with the usual confirmation, logging, and `tr.N` retention - only printed
+  output returns to the context. Nested calls never add tool messages, a refused nested call aborts
+  the script while the rest of the batch proceeds, and `format="json"` prefers the declared
+  `structuredContent` payload over parsing rendered text. Built-in tools are not scriptable yet.
 
 ### Changed
 

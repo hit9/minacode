@@ -66,7 +66,14 @@ class Tool:
     def resolved_schemas(session: Session) -> list[Json]:
         """Return the tool schemas available for this session and provider."""
 
-        from minacode.tools import TOOL_REGISTRY, DelegateTool, MCPTool, NextHintsTool, SkillTool  # local import: the registry is built on top of every tool
+        from minacode.tools import (  # local import: the registry is built on top of every tool
+            TOOL_REGISTRY,
+            DelegateTool,
+            MCPTool,
+            NextHintsTool,
+            SkillTool,
+            ToolScript,
+        )
 
         strict = session.config.provider.resolve().strict_tools_active
         # Optional tool families stay out of the model prefix until they have usable session state.
@@ -79,6 +86,7 @@ class Tool:
             and (tool is not SkillTool or has_skills)
             and (tool is not MCPTool or has_mcp)
             and (tool is not NextHintsTool or session.settings.quick_hints)
+            and (tool is not ToolScript or has_mcp)
             and (tool is not DelegateTool or (session.worker_tool_enabled and session.settings.worker))
         ]
 

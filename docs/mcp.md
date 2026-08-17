@@ -77,6 +77,69 @@ Once a server is connected, minacode can use its tools like any other. Tools the
 read-only run without a prompt; anything that may change state asks for
 {ref}`confirmation <built-in-guardrails>` first.
 
+## Scripting tool calls
+
+When the agent expects several <span class="marker">same-shape MCP calls</span> — the same tool
+with a handful of different arguments — the `ToolScript` tool lets it write one Python script
+instead of emitting each call separately. Only what the script prints returns to the
+conversation, so a batch of calls collapses into a single result. Like `MCP`, it appears only
+after a server is connected.
+
+### Describing shapes in bulk
+
+`ToolScript(action="describe", tools=["server.tool", ...])` batch-reports each tool's call
+shape, return shape, and a json gate:
+
+- `json: yes` — the server declared an `outputSchema`, so `format="json"` below can rely on it.
+- `json: unknown` — no declared schema; `format="json"` will try to parse the returned text and
+  may fail.
+
+The rendering matches `MCP(action="describe")` with the gate line added, so a shape learned here
+is what a scripted call will actually receive.
+
+### Running a script
+
+`ToolScript(action="call", code="...")` runs the code as Python. Inside it, `call()` invokes an
+MCP tool:
+
+```python
+rows = []
+for lang in ("zh", "en", "ja"):
+    d = call("MCP", {"server": "orionTemplate", "tool": "get_template_detail",
+                     "arguments": {"template_key": KEY, "language": lang}},
+             format="json")
+    rows.append((lang, d["title"]))
+print(rows)  # only this line returns to the conversation
+```
+
+- `call(name, args, format="text")` — `name` must be `"MCP"`; built-in tools answer
+  `not scriptable yet`. `format="text"` returns the rendered result; `format="json"` returns a
+  parsed dict.
+- Nested calls go through the <span class="marker">same confirmation, live logging, and `tr.N`
+  retention as top-level calls</span>, and they never add extra tool messages — the agent still
+  sees exactly one result per call it emitted.
+- The result envelope lists the nested `tr.N` keys, so a shortened output can still be recalled.
+- Refusing a nested call aborts the script; the rest of the outer batch continues.
+- A script that fails returns with a traceback (source lines included) so the agent can correct
+  itself.
+- Pure script execution is budgeted at about 60 seconds, excluding time spent inside nested
+  calls.
+
+### The json gate in practice
+
+`format="json"` prefers the server's declared `structuredContent`. Two errors are possible:
+
+- The tool declared an `outputSchema` but the call returned no `structuredContent` — reported as
+  `server declared outputSchema but no structuredContent`.
+- No schema was declared and the returned text is not JSON — reported as
+  `MCP returned text that is not JSON`.
+
+### Safety
+
+The script is <span class="marker">not sandboxed</span>: it runs with the same privileges as
+`Bash`. `ToolScript` asks for confirmation on every `action="call"` and the prompt shows the
+script; `--yolo` skips that confirmation exactly as it does for `Bash`.
+
 ### Authentication
 
 - **Bearer token** — set `bearer_token_env_var` (or a custom header via `env_http_headers`).

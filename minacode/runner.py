@@ -40,6 +40,7 @@ from minacode.tools import (
     JobTool,
     ReadTool,
     Tool,
+    ToolScript,
 )
 
 if TYPE_CHECKING:
@@ -301,6 +302,9 @@ class ToolRunner:
         if isinstance(tool, DelegateTool):
             tool.runner = self
             return tool.call()
+        if isinstance(tool, ToolScript):
+            tool.runner = self
+            return tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
                 return tool.call()
@@ -407,7 +411,7 @@ class ToolRunner:
         if (
             tool_class is None
             or call.name in ("Delegate", "Edit", "NextHints")
-            or tool_class in (BashTool, JobTool, AskTool)
+            or tool_class in (BashTool, JobTool, AskTool, ToolScript)
             or tool_class.PRODUCES_MODEL_OBSERVATION
         ):
             return False
@@ -787,6 +791,12 @@ class ToolRunner:
         elif tool.NAME == "Edit":
             preview = planned_edit.preview(tool) if planned_edit and isinstance(tool, EditTool) else tool.preview()
             preview_lines = preview.rstrip().splitlines()
+            if preview_lines:
+                children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
+                children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
+        elif isinstance(tool, ToolScript):
+            # The script is what the user is approving: show it (bounded by preview()) in the block.
+            preview_lines = tool.preview().rstrip().splitlines()
             if preview_lines:
                 children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
                 children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)

@@ -797,15 +797,43 @@ class MCPManager:
             raise ToolError(f"MCP server '{server}' is not connected; run /mcp connect {server}")
 
     def call_tool(self, server: str, tool_name: str, arguments: Json) -> str:
-        config, headers = self._resolve_server(server)
-
-        try:
-            result = self.run_async(self._call_tool(config, headers, tool_name, arguments))
-        except Exception as e:  # noqa: BLE001 - normalize arbitrary MCP transport errors as ToolError.
-            raise ToolError("MCP call failed: " + self.error_text(e))
+        result = self._call_result(server, tool_name, arguments)
 
         text = self.normalize_result(result)
         return f"<MCPCall server={json.dumps(server)} tool={json.dumps(tool_name)}>\n{text}\n</MCPCall>"
+
+    def _call_result(self, server: str, tool_name: str, arguments: Json) -> Any:
+        """Shared transport path for call_tool and call_tool_structured: resolve, run, normalize errors."""
+        config, headers = self._resolve_server(server)
+        try:
+            return self.run_async(self._call_tool(config, headers, tool_name, arguments))
+        except Exception as e:
+            raise ToolError("MCP call failed: " + self.error_text(e)) from e
+
+    def call_tool_structured(self, server: str, tool_name: str, arguments: Json) -> Json:
+        """Call an MCP tool and return its payload as a parsed JSON value.
+
+        When the tool declared an outputSchema the structuredContent payload is authoritative: it is
+        returned as-is, and a declared-but-missing payload is an error, never a silent downgrade to
+        text. Without a declared schema the call's text body is parsed as JSON; a non-JSON body is
+        an error so the caller can decide whether to fall back to text.
+        """
+        result = self._call_result(server, tool_name, arguments)
+
+        info = self.tool_info(server, tool_name)
+        if info is not None and info.output_schema:
+            structured = self._structured_content(result)
+            if structured:
+                return json.loads(structured)
+            raise ToolError(f'server declared outputSchema but no structuredContent for tool "{tool_name}"')
+
+        # No declared schema: parse the call's text body (the same text call_tool wraps in
+        # <MCPCall>, i.e. what runner.MCP_CALL_RE unwraps before its own json.loads).
+        text = self.normalize_result(result)
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            raise ToolError(f'MCP returned text that is not JSON for tool "{tool_name}"')
 
     def list_resources(self, server: str) -> str:
         self._resolve_server(server)
@@ -988,6 +1016,20 @@ class MCPManager:
             raise ToolError(f"MCP tool '{tool_name}' not found on server '{server}'")
 
         return self._render_describe(server, info)
+
+    def describe_tool_block(self, server: str, tool_name: str) -> tuple[str, MCPToolInfo]:
+        """Public variant of describe_tool that also hands back the tool info, so callers
+        (ToolScript) can append their own gate line after the shared _render_describe
+        rendering. Same checks and rendering as describe_tool; only the return differs."""
+        if self.find_config(server) is None:
+            raise ToolError(f"MCP server '{server}' not found")
+        self._require_available(server)
+
+        info = self.tool_info(server, tool_name)
+        if info is None:
+            raise ToolError(f"MCP tool '{tool_name}' not found on server '{server}'")
+
+        return self._render_describe(server, info), info
 
     def _render_describe(self, server: str, info: MCPToolInfo) -> str:
         from minacode.tools import Tool  # local import: tools is built on top of mcp
