@@ -15,7 +15,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from minacode.base import MEMORY_PREFIXES, Json, LogBlock, LogLine, LogRole, ToolError
+from minacode.base import MEMORY_PREFIXES, ApprovalView, Json, LogBlock, LogLine, LogRole, ToolError
 from minacode.prompts import WORKER_PROMPT
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools.base import Tool
@@ -184,14 +184,62 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         to delegate at all. Seeing the order before it goes is the only cheap check on that; a bad
         one costs a whole worker round to discover. Editing files under yolo fails visibly and at
         once, which is what that flag actually buys."""
-        payload = self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
+        payload = self.payload_dict()
         return str(payload.get("action") or "").strip() == "send"
 
     def short_args(self) -> list[str]:
         """The root log line is just the action: `Delegate send`, never the order blob."""
-        payload = self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
+        payload = self.payload_dict()
         action = str(payload.get("action") or "").strip()
         return [action] if action else [""]
+
+    def payload_dict(self) -> Json:
+        """The single-dict argument of this call, or {} when the shape differs."""
+        return self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
+
+    def approval_view(self) -> ApprovalView | None:
+        """The whole order, as prose: what `v` opens at the send prompt and what Ctrl-O reopens
+        afterwards. No lexer -- an order is written for a reader, so it renders as markdown."""
+        payload = self.payload_dict()
+        order = payload.get("order")
+        if not isinstance(order, str) or not order.strip():
+            return None  # nothing to view
+        return ApprovalView("order", order, "", self.header_rows())
+
+    def header_rows(self, order_row: tuple[str, str] | None = None) -> list[tuple[str, str]]:
+        """(label, value) rows for a send: title, explicit send parameters, and the worker
+        configuration it runs under. The order itself is excluded, because the viewer shows it in
+        full below these rows; the approval brief passes its one-line excerpt as `order_row` and
+        this decides where it sits, so callers never have to splice a row into this list."""
+        from minacode.runner import ToolRunner  # local: runner imports minacode.tools at module level
+
+        payload = self.payload_dict()
+        rows: list[tuple[str, str]] = []
+        title = payload.get("title")
+        if isinstance(title, str) and title.strip():
+            rows.append(("title", ToolRunner.oneline(title.strip(), 120)))
+        if order_row is not None:
+            rows.append(order_row)
+        language = payload.get("language")
+        if isinstance(language, str) and language.strip():
+            rows.append(("language", ToolRunner.oneline(language.strip(), 60)))
+        if payload.get("max_steps") is not None:
+            rows.append(("max_steps", str(payload["max_steps"])))
+        rows.extend(self.worker_config_rows(self.session.config))
+        return rows
+
+    @staticmethod
+    def worker_config_rows(config: Config) -> list[tuple[str, str]]:
+        """The effective worker provider/model/effort/api as (label, value) rows; a field that
+        inherits the provider entry's own value is shown as `(inherit) <value>`."""
+        provider_name = config.worker_provider or config.active_provider
+        entry = config.providers[provider_name]
+        return [
+            ("provider", config.worker_provider or f"(inherit) {provider_name}"),
+            ("model", config.worker_model or f"(inherit) {entry.model or '(no model)'}"),
+            ("effort", config.worker_reasoning or f"(inherit) {entry.reasoning}"),
+            ("api", config.worker_api or f"(inherit) {entry.api}"),
+        ]
 
     def call(self) -> str:
         payload = self.single_dict_arg("Delegate requires named fields")

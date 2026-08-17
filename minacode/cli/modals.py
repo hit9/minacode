@@ -18,9 +18,10 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
-from minacode.base import DISMISSED, SELECTION_BACK, Text, ToolCall
+from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError
 from minacode.render import UiPrinter
-from minacode.tools import AskSpec
+from minacode.session import ToolResultRecord
+from minacode.tools import AskSpec, BashTool, ToolScript
 from minacode.tui import (
     ASK_DONE,
     ASK_FREE_TEXT,
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     from minacode.session import HistorySegment
 
 
-def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:
+def wrapped_rows(text: str, width: int, margin: str = "  ", style: str = "") -> list[StyleAndTextTuples]:
     """Source text as display rows, one logical line at a time. Text.wrap_styled measures in
     terminal cells, so CJK text (two cells per character) wraps where it actually reaches the right
     edge instead of overflowing at twice the width, and each continuation row re-indents to its
@@ -55,7 +56,7 @@ def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndText
         rows.extend(
             cast(
                 list[StyleAndTextTuples],
-                Text.wrap_styled([("", margin)], [("", margin + indent)], [("", raw)], width),
+                Text.wrap_styled([("", margin)], [("", margin + indent)], [(style, raw)], width),
             )
         )
     return rows
@@ -288,32 +289,102 @@ def question_interaction(loop: CommandLoop, specs: list[AskSpec]) -> list[str]:
     return answers
 
 
-def bash_output_viewer(loop: CommandLoop) -> None:
-    """Browse recent completed Bash previews without copying them into scrollback."""
+def script_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
+    """The stored ToolScript call as a viewable script: the source it ran, plus what the envelope
+    says came back. Rebuilt from the record rather than kept aside, so it is readable long after
+    the call -- and under yolo, where no confirmation prompt ever offered `v`."""
+    code = ToolScript(loop.session, record.args).script()
+    if not code.strip():
+        return None
+    rows = [("key", record.key), ("lines", str(len(code.splitlines())))]
+    fields = loop.agent.tools.toolscript_result_fields(record.output)
+    if fields is not None:
+        rows.append(("calls", fields[0]))
+    # The envelope rides along: a script is a question and its printed output is the answer, and
+    # the transcript only kept the first lines of it. A failed script keeps its whole traceback
+    # here too, which is the one place the clipped error line in the log can be resolved against
+    # the numbered source right above it.
+    result, note = loop.agent.tools.viewer_text(record.output)
+    if note:
+        rows.append(("shown", note))
+    return ApprovalView(f"script · {record.key}", code, "python", rows, result)
+
+
+def bash_command(loop: CommandLoop, record: ToolResultRecord) -> str:
+    """The command as it was run. Taken from the tool rather than from its log display, which is
+    collapsed to one line and clipped at 200 characters -- fine for a transcript row, wrong for a
+    viewer whose whole job is showing the thing in full."""
+    try:
+        return BashTool(loop.session, record.args).command()
+    except ToolError:
+        return loop.agent.tools.short_call(ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
+
+
+def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
+    """The stored Bash call as a viewable command: what was run, plus the streams it produced.
+
+    Same two halves as a script -- what was asked, and what came back -- so both kinds of entry
+    open the one viewer. The output is bounded (see ToolRunner.VIEWER_LINES): stored Bash output
+    has no cap, and a viewer that hangs on the one command that printed a megabyte is worse than
+    one that says how much it is showing."""
+    command = bash_command(loop, record)
+    streams, note = loop.agent.tools.bash_viewer_output(record.output)
+    if not streams:
+        # A command that printed nothing has nothing here the transcript does not already show. A
+        # script is different: its source is worth reading whether or not it printed anything.
+        return None
+    rows = [("key", record.key)]
+    if code := loop.agent.tools.bash_exit_code(record.output):
+        rows.append(("exit", code))
+    if note:
+        rows.append(("shown", note))
+    return ApprovalView(f"output · {record.key}", command, "bash", rows, streams)
+
+
+def tool_output_viewer(loop: CommandLoop) -> None:
+    """Browse what recent calls produced without copying it into scrollback.
+
+    Every entry -- a Bash command with its output, a ToolScript with its script and result --
+    opens the same read-only scrolling viewer. ToolScript is here because yolo has no other door
+    to it; Bash is here because a bounded excerpt under the list was never the whole answer."""
     if loop.tui is None:
         return
-    records = []
+    # Built once, on the way in: a record with nothing to show is also a record with no view, so
+    # the same call decides whether to list it and what to open. Kept alongside its record rather
+    # than rebuilt on selection -- the bounding work is proportional to the stored result, and
+    # doing it twice for a multi-megabyte one would be paid on a keypress.
+    views: list[tuple[ToolResultRecord, ApprovalView]] = []
     for record in reversed(loop.session.tool_records):
-        if record.name != "Bash":
-            continue
-        preview = loop.agent.tools.bash_result_preview(record.output)
-        if preview:
-            records.append((record, preview))
-        if len(records) == 10:
+        view = record_view(loop, record)
+        if view is not None:
+            views.append((record, view))
+        if len(views) == 10:
             break
-    if not records:
+    if not views:
         return
+    picked = _tool_output_list(loop, views)
+    if picked is not None:
+        approval_text_viewer(loop, picked)
+
+
+def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
+    """The viewable form of a stored result, or None for a record this browser does not show."""
+    if record.name == "Bash":
+        return bash_view(loop, record)
+    if record.name == "ToolScript":
+        return script_view(loop, record)
+    return None
+
+
+def _tool_output_list(loop: CommandLoop, views: list[tuple[ToolResultRecord, ApprovalView]]) -> ApprovalView | None:
+    """The list modal itself: pick one, and it closes returning the view to open."""
+    assert loop.tui is not None
     width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
-    labels = {}
-    calls = {}
-    for index, (record, _preview) in enumerate(records):
-        call = loop.agent.tools.short_call(ToolCall("", "Bash", record.args))
-        choice = str(index)
-        calls[choice] = call
-        labels[choice] = Text.clip_width(f"{record.key}  {call}", width)
-    choices = tuple(labels)
-    state = ChoiceViewState(choices, labels, set())
-    opened: str | None = None
+    labels = {
+        str(index): Text.clip_width(f"{record.key}  {loop.agent.tools.short_call(ToolCall('', record.name, record.args))}", width)
+        for index, (record, _view) in enumerate(views)
+    }
+    state = ChoiceViewState(tuple(labels), labels, set())
 
     def rule(label: str) -> StyleAndTextTuples:
         cols = shutil.get_terminal_size((80, 20)).columns
@@ -323,42 +394,50 @@ def bash_output_viewer(loop: CommandLoop) -> None:
         return [("", "\n"), ("class:choice.disabled", lead + label + trail + "\n")]
 
     def fragments() -> StyleAndTextTuples:
-        if opened is None:
-            list_fragments = state.fragments("")
-            return [*rule(f"Bash outputs · latest {len(records)}"), *list_fragments[1:]]
-        record, preview = records[int(opened)]
-        detail_width = max(20, shutil.get_terminal_size((120, 20)).columns - 6)
-        parts: StyleAndTextTuples = [*rule(f"Bash output · {record.key}"), ("ansibrightblack", f"  {Text.clip_width(calls[opened], detail_width)}\n\n")]
-        parts.extend(("ansibrightblack", f"  {Text.clip_width(line, detail_width)}\n") for line in preview.splitlines())
-        parts.append(("class:choice.disabled", "\n  Esc / ← back · Ctrl-O / q closes\n"))
-        return parts
+        list_fragments = state.fragments("")
+        return [*rule(f"Tool output · latest {len(views)}"), *list_fragments[1:]]
 
     def handle_key(key: str, data: str) -> Any:
-        nonlocal opened
         if key in {"c-o", "q"}:
             return None
-        if opened is not None:
-            if key in {"escape", "left", "h"}:
-                opened = None
-            return TUI_MODAL_PENDING
         result = state.handle_key(key, data)
         if result is SELECTION_BACK:
             return None
-        if isinstance(result, str):
-            opened = result
-        return TUI_MODAL_PENDING
+        return views[int(result)][1] if isinstance(result, str) else TUI_MODAL_PENDING
 
-    loop.tui.show_modal(fragments, handle_key)
+    picked = loop.tui.show_modal(fragments, handle_key)
+    return picked if isinstance(picked, ApprovalView) else None
 
 
-def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple[str, str]]) -> None:
-    """Read-only viewer for the Delegate `v` key: header rows plus the complete order text
-    rendered as markdown. Esc/q closes back to the approval prompt; nothing here edits
-    anything."""
+def code_rows(text: str, lexer: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:
+    """Source text as display rows: a dim line-number gutter, then the line highlighted by the same
+    whole-block lexer the transcript uses, so the viewer and the approval block agree on colors.
+
+    Numbering matters more here than anywhere else: a failed script reports its traceback as
+    `File "<toolscript>", line N`, and this is where the reader goes to find line N."""
+    lines = text.splitlines() or [""]
+    highlighted = UiPrinter.code_lines(text, lexer)
+    number_width = len(str(len(lines)))
+    rows: list[StyleAndTextTuples] = []
+    for number, line in enumerate(lines, 1):
+        rendered = highlighted[number - 1] if highlighted is not None and number - 1 <= len(highlighted) - 1 else [("fg:default", line)]
+        prefix: list[tuple[str, str]] = [("", margin), ("ansibrightblack", f"{number:>{number_width}}  ")]
+        continuation: list[tuple[str, str]] = [("", margin + " " * (number_width + 2))]
+        rows.extend(cast(list[StyleAndTextTuples], Text.wrap_styled(prefix, continuation, rendered, width)))
+    return rows
+
+
+def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
+    """Read-only viewer for the text behind a confirmation: header rows plus the complete text,
+    rendered as highlighted code when the view names a lexer and as markdown when it does not (an
+    order is prose; a script is not). Esc/q closes back to the approval prompt; nothing here edits
+    anything. The same viewer is what the Ctrl-O browser opens after the fact, which is how a
+    script is read under yolo, where no prompt ever stops to offer `v`."""
     if loop.tui is None:
         return
     margin = "  "
     wrapped: dict[int, list[StyleAndTextTuples]] = {}
+    header_rows = view.rows
 
     def markdown_rows(text: str, width: int) -> list[StyleAndTextTuples]:
         """Render `text` as markdown through the same Rich capture pipeline the scrollback
@@ -384,9 +463,18 @@ def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple
                     rows[-1].append((style, part))
         return [[("", margin), *row] for row in rows]
 
+    def separator(width: int, label: str = "") -> StyleAndTextTuples:
+        """The rule between the viewer's sections, optionally naming the one it opens. Labeled or
+        not, it runs to the same right edge, so the sections read as one document."""
+        if not label:
+            return [("", margin), ("ansibrightblack", "─" * max(0, width - 4))]
+        lead = f"── {label} "
+        return [("", margin), ("ansibrightblack", lead + "─" * max(0, width - 4 - get_cwidth(lead)))]
+
     def layout(width: int) -> list[StyleAndTextTuples]:
-        """Field header rows, a separator, then the whole order, wrapped for `width`. Cached per
-        width: the wrap has to be redone when the terminal is resized, but not on every keypress."""
+        """Field header rows, a separator, the whole text, and -- when the call has already run --
+        what it returned below a second rule. Cached per width: the wrap has to be redone when the
+        terminal is resized, but not on every keypress."""
         if width in wrapped:
             return wrapped[width]
         lines: list[StyleAndTextTuples] = []
@@ -404,8 +492,13 @@ def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple
                     ),
                 )
             )
-        lines.append([("", margin), ("ansibrightblack", "─" * max(0, width - 4))])
-        lines.extend(markdown_rows(order, width))
+        lines.append(separator(width))
+        lines.extend(code_rows(view.text, view.lexer, width, margin) if view.lexer else markdown_rows(view.text, width))
+        if view.result.strip():
+            # Plain, unlexed, and whole: this is the result exactly as the model received it, and a
+            # viewer opened to check what a script did may not quietly edit or clip it.
+            lines.extend([[], separator(width, "result")])
+            lines.extend(wrapped_rows(view.result.rstrip(), width, margin, "ansibrightblack"))
         wrapped[width] = lines
         return lines
 
@@ -428,7 +521,7 @@ def delegate_order_viewer(loop: CommandLoop, order: str, header_rows: list[tuple
         legend = "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q close"
         if get_cwidth(legend) > width:
             legend = "  ↑/↓ · Ctrl-U/D · g/G · Esc/q close"
-        parts: StyleAndTextTuples = [("class:choice.disabled", "  Delegate order · read-only\n")]
+        parts: StyleAndTextTuples = [("class:choice.disabled", f"  {view.label[:1].upper() + view.label[1:]} · read-only\n")]
         for line in lines[scroll : scroll + height]:
             parts.extend(line)
             parts.append(("", "\n"))

@@ -8,7 +8,7 @@ import os
 import re
 from typing import Any, ClassVar
 
-from minacode.base import Json, ToolArgs, ToolError
+from minacode.base import ApprovalView, Json, ToolArgs, ToolError
 from minacode.session import Session, TurnDiff
 
 
@@ -66,7 +66,13 @@ class Tool:
     def resolved_schemas(session: Session) -> list[Json]:
         """Return the tool schemas available for this session and provider."""
 
-        from minacode.tools import TOOL_REGISTRY, DelegateTool, MCPTool, NextHintsTool, SkillTool  # local import: the registry is built on top of every tool
+        from minacode.tools import (  # local import: the registry is built on top of every tool
+            TOOL_REGISTRY,
+            DelegateTool,
+            MCPTool,
+            NextHintsTool,
+            SkillTool,
+        )
 
         strict = session.config.provider.resolve().strict_tools_active
         # Optional tool families stay out of the model prefix until they have usable session state.
@@ -162,6 +168,17 @@ class Tool:
         later, and whose prompt is the last chance to inspect what is being committed to, is not
         covered by that trust and opts out here."""
         return False
+
+    def approval_view(self) -> ApprovalView | None:
+        """The full text this call commits to, for the read-only viewer, or None when the log line
+        already says everything.
+
+        A tool returns one of these when what it is asking approval for does not fit on a log line
+        and clipping it would hide the part worth checking -- a Delegate order, a ToolScript body.
+        The runner renders a clipped excerpt of it inside the approval block and opens the whole
+        thing on `v`; the Ctrl-O browser opens the same view afterwards, which is the only way to
+        read it under yolo."""
+        return None
 
     def blocks_agent(self) -> bool:
         """True when this call parks the agent for a while with nothing to stream meanwhile.

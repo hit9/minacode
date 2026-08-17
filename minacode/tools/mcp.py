@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import ClassVar
 
 from minacode.base import Json, ToolError
@@ -81,6 +82,11 @@ class MCPTool(Tool):
         if action == "describe":
             return mcp.describe_tool(server, tool_name)
         if action == "call":
+            if payload.get("format") == "json":
+                # Structured path for ToolScript's nested calls; hidden from the model's own MCP
+                # schema (params_schema has no `format`), so only scripts can reach it.
+                data = mcp.call_tool_structured(server, tool_name, arguments)
+                return json.dumps(data, ensure_ascii=False, indent=2)
             prefix = mcp.auto_read_prefix(server, tool_name)
             try:
                 output = mcp.call_tool(server, tool_name, arguments)

@@ -846,3 +846,31 @@ def test_ask_view_shift_tab_cycles_backwards():
     assert state.active == 0
     assert state.handle_key("s-tab") is TUI_MODAL_PENDING
     assert state.active == 1
+
+
+class TestCodeLogLines:
+    """CODE-role lines: whole-block lexing plus a line-number gutter."""
+
+    def block(self, code: str, lexer: str = "python") -> LogBlock:
+        return LogBlock([LogLine("", line, LogRole.CODE, syntax=lexer) for line in code.splitlines()])
+
+    def rendered(self, code: str, lexer: str = "python") -> str:
+        return "".join(text for _style, text in UiPrinter().log_segments(self.block(code, lexer)))
+
+    def test_lines_are_numbered_from_one(self):
+        text = self.rendered("a = 1\nb = 2\n")
+        assert text.splitlines() == ["  1  a = 1", "  2  b = 2"]
+
+    def test_gutter_widens_with_the_line_count(self):
+        rows = self.rendered("\n".join(f"x{index} = {index}" for index in range(10))).splitlines()
+        assert rows[0].startswith("   1  ") and rows[-1].startswith("  10  ")
+
+    def test_a_multiline_string_is_lexed_as_one_block(self):
+        """The reason the whole block is lexed at once: a per-line lexer reads the closing line of a
+        triple-quoted string as code and colors it as such."""
+        segments = UiPrinter().log_segments(self.block('x = """a\nstill a string\n"""\n'))
+        styles = {text.strip(): style for style, text in segments if text.strip()}
+        assert styles["still a string"] == styles['"""a'] == styles['"""']
+
+    def test_unknown_lexer_degrades_to_plain_text(self):
+        assert self.rendered("a = 1\n", "no-such-lexer").splitlines() == ["  1  a = 1"]

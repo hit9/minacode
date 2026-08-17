@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-19 03:02-0700\n"
+"POT-Creation-Date: 2026-08-17 02:14-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -208,10 +208,228 @@ msgstr ""
 "标记为只读的工具无需确认即可运行；可能改变状态的操作会先请求{ref}`确认 <built-in-guardrails>`。"
 
 #: ../../mcp.md:80
+msgid "Scripting tool calls"
+msgstr "脚本化工具调用"
+
+#: ../../mcp.md:82
+msgid ""
+"When the agent expects several <span class=\"marker\">same-shape MCP "
+"calls</span> — the same tool with a handful of different arguments — the "
+"`ToolScript` tool lets it write one Python script instead of emitting "
+"each call separately. Only what the script prints returns to the "
+"conversation, so a batch of calls collapses into a single result. "
+"`ToolScript` is always available; the MCP entries below need a connected "
+"server."
+msgstr ""
+"当 agent 预期要发出若干次<span class=\"marker\">形状相同的 MCP "
+"调用</span>——同一工具搭配少量不同参数——`ToolScript` 工具让它写一个 Python 脚本,而不是逐个发出调用。只有脚本 "
+"print 的内容会回到对话中,于是一批调用坍缩成一个结果。`ToolScript` 始终可用;下面的 MCP 条目需要已连接的 server。"
+
+#: ../../mcp.md:88
+msgid "Describing shapes in bulk"
+msgstr "批量描述形状"
+
+#: ../../mcp.md:90
+msgid ""
+"`ToolScript(action=\"describe\", tools=[...])` batch-reports each tool's "
+"call shape and a json gate. A list entry is either a built-in tool name "
+"like `\"Read\"` or an MCP tool as `\"server.tool\"`:"
+msgstr ""
+"`ToolScript(action=\"describe\", tools=[...])` 批量报告每个工具的调用形状与 json "
+"gate。列表条目可以是内置工具名(如 `\"Read\"`)或 `\"server.tool\"` 形式的 MCP 工具:"
+
+#: ../../mcp.md:94
+msgid ""
+"`json: yes` — the server declared an `outputSchema`, so `format=\"json\"`"
+" below can rely on it."
+msgstr "`json: yes` — server 声明了 `outputSchema`,因此下面的 `format=\"json\"` 可以依赖它。"
+
+#: ../../mcp.md:95
+msgid ""
+"`json: unknown` — no declared schema; `format=\"json\"` will try to parse"
+" the returned text and may fail."
+msgstr "`json: unknown` — 未声明 schema;`format=\"json\"` 会尝试解析返回的文本,可能失败。"
+
+#: ../../mcp.md:97
+msgid ""
+"`json: no` — built-in tools: scriptable with `format=\"text\"`, but no "
+"structured return yet."
+msgstr "`json: no` — 内置工具:可用 `format=\"text\"` 脚本化,但暂无结构化返回。"
+
+#: ../../mcp.md:99
+msgid ""
+"The MCP rendering matches `MCP(action=\"describe\")` with the gate line "
+"added; built-in entries are compact one-liners with their parameter "
+"essentials. Either way, a shape learned here is what a scripted call will"
+" actually receive."
+msgstr ""
+"MCP 条目的渲染与 `MCP(action=\"describe\")` 一致,只是多了一行 "
+"gate;内置条目是带参数要点的紧凑单行。无论哪种,在这里学到的形状就是脚本化调用实际会收到的。"
+
+#: ../../mcp.md:103
+msgid "Running a script"
+msgstr "运行脚本"
+
+#: ../../mcp.md:105
+msgid ""
+"`ToolScript(action=\"call\", code=\"...\")` runs the code as Python. "
+"Inside it, `call()` invokes a tool — built-in or MCP:"
+msgstr ""
+"`ToolScript(action=\"call\", code=\"...\")` 以 Python 运行该代码。在其中,`call()` "
+"调用一个工具——内置或 MCP:"
+
+#: ../../mcp.md:118
+msgid ""
+"`call(name, args, format=\"text\")` — `name` is a built-in tool like "
+"`\"Read\"`, `\"Bash\"`, or `\"Edit\"`, or `\"MCP\"` for a server tool. "
+"`Delegate`, `Job`, and `ToolScript` itself cannot be nested. "
+"`format=\"text\"` returns the rendered result; MCP calls may use "
+"`format=\"json\"` for a parsed dict, while built-ins refuse it until they"
+" gain structured results (`<name> does not support format=\"json\"`)."
+msgstr ""
+"`call(name, args, format=\"text\")` — `name` 是内置工具名,如 "
+"`\"Read\"`、`\"Bash\"` 或 `\"Edit\"`,也可以是 `\"MCP\"` 表示 server "
+"工具。`Delegate`、`Job` 与 `ToolScript` 自身不可嵌套。`format=\"text\"` 返回渲染后的结果;MCP "
+"调用可用 `format=\"json\"` 拿到解析后的 dict,内置工具在获得结构化返回前会拒绝(`<name> does not "
+"support format=\"json\"`)。"
+
+#: ../../mcp.md:123
+msgid ""
+"Nested calls go through the <span class=\"marker\">same confirmation, "
+"live logging, and `tr.N` retention as top-level calls</span>, and they "
+"never add extra tool messages — the agent still sees exactly one result "
+"per call it emitted."
+msgstr ""
+"嵌套调用走与顶层调用<span class=\"marker\">相同的确认、实时日志与 `tr.N` 保留</span>,并且绝不会产生额外的 "
+"tool message——agent 仍然恰好为它发出的每个调用看到一条结果。"
+
+#: ../../mcp.md:126
+msgid ""
+"The result envelope lists the nested `tr.N` keys, so a shortened output "
+"can still be recalled."
+msgstr "结果信封会列出嵌套的 `tr.N` key,因此被截短的输出仍可被 Recall。"
+
+#: ../../mcp.md:127
+msgid ""
+"Refusing a nested call aborts the script; the rest of the outer batch "
+"continues."
+msgstr "拒绝一次嵌套调用会中止脚本;外层批次的其余调用继续执行。"
+
+#: ../../mcp.md:128
+msgid ""
+"A script that fails returns with a traceback (source lines included) so "
+"the agent can correct itself."
+msgstr "失败的脚本会带着 traceback(含出错行源码)返回,以便 agent 自行修正。"
+
+#: ../../mcp.md:130
+msgid ""
+"Pure script execution is budgeted at about 60 seconds, excluding time "
+"spent inside nested calls."
+msgstr "纯脚本执行约有 60 秒的预算,不包括嵌套调用内部耗时。"
+
+#: ../../mcp.md:133
+msgid "The json gate in practice"
+msgstr "json gate 的实际行为"
+
+#: ../../mcp.md:135
+msgid ""
+"Built-in tools report `json: no` and take `format=\"text\"` only: "
+"`format=\"json\"` refuses with `<name> does not support format=\"json\"`."
+" For MCP calls, `format=\"json\"` prefers the server's declared "
+"`structuredContent`. Two errors are possible:"
+msgstr ""
+"内置工具标 `json: no`,只接受 `format=\"text\"`:`format=\"json\"` 会以 `<name> does "
+"not support format=\"json\"` 拒绝。对 MCP 调用,`format=\"json\"` 优先取 server 声明的"
+" `structuredContent`。可能有两种错误:"
+
+#: ../../mcp.md:139
+msgid ""
+"The tool declared an `outputSchema` but the call returned no "
+"`structuredContent` — reported as `server declared outputSchema but no "
+"structuredContent`."
+msgstr ""
+"工具声明了 `outputSchema`,但调用没有返回 `structuredContent` — 报告为 `server declared "
+"outputSchema but no structuredContent`。"
+
+#: ../../mcp.md:141
+msgid ""
+"No schema was declared and the returned text is not JSON — reported as "
+"`MCP returned text that is not JSON`."
+msgstr "未声明 schema 且返回的文本不是 JSON — 报告为 `MCP returned text that is not JSON`。"
+
+#: ../../mcp.md:144
+msgid "Safety"
+msgstr "安全"
+
+#: ../../mcp.md:146
+msgid ""
+"The script is <span class=\"marker\">not sandboxed</span>: it runs with "
+"the same privileges as `Bash`. `ToolScript` asks for confirmation on "
+"every `action=\"call\"` and the prompt shows the opening lines of the "
+"script, syntax-highlighted; `--yolo` skips that confirmation exactly as "
+"it does for `Bash`."
+msgstr ""
+"脚本<span class=\"marker\">不是沙箱</span>:它与 `Bash` 拥有相同权限。`ToolScript` 对每次 "
+"`action=\"call\"` 都会请求确认,提示会展示脚本开头若干行,并带语法高亮;`--yolo` 会像跳过 `Bash` "
+"一样跳过该确认。"
+
+#: ../../mcp.md:151
+msgid "Reading the script"
+msgstr "查看脚本"
+
+#: ../../mcp.md:153
+msgid ""
+"The log shows a bounded excerpt of the script, not all of it — a long "
+"script would bury everything it then goes on to do. The whole body is one"
+" keypress away:"
+msgstr "日志只展示脚本的有限摘录,而不是全文 —— 长脚本会把它随后做的一切都淹没。完整脚本只差一次按键:"
+
+#: ../../mcp.md:156
+msgid ""
+"**`v` at the confirmation prompt** opens a read-only, scrolling viewer "
+"with the complete script, numbered and highlighted. `Esc`/`q` returns to "
+"the prompt; nothing is approved by viewing."
+msgstr "**在确认提示处按 `v`** 会打开只读、可滚动的查看器,展示带行号与高亮的完整脚本。`Esc`/`q` 回到提示;查看本身不会批准任何东西。"
+
+#: ../../mcp.md:158
+msgid ""
+"**`Ctrl-O` afterwards** lists recent `Bash` and `ToolScript` calls; "
+"selecting a script opens the same viewer, with the result it returned "
+"below the source — the printed output, or the whole traceback when the "
+"script failed. This is how a script is read under `--yolo`, where no "
+"prompt ever stops to offer `v`. A very large result is bounded there "
+"(head and tail, long lines clipped) and the header says when it was."
+msgstr ""
+"**事后按 `Ctrl-O`** 会列出最近的 `Bash` 与 `ToolScript` "
+"调用;选中一个脚本即可打开同一个查看器,并在源码下方显示它返回的结果——print 的输出,或者脚本失败时的完整 traceback。在 "
+"`--yolo` 下就是这样读脚本的,因为那里没有任何提示会停下来提供 `v`。超大的结果在那里会被限制(保留头尾、截断超长行),"
+"发生时头部会写明。"
+
+#: ../../mcp.md:164
+msgid ""
+"Line numbers in the viewer match the ones in a failed script's traceback "
+"(`File \"<toolscript>\", line N`)."
+msgstr "查看器中的行号与脚本失败时 traceback 里的行号一致(`File \"<toolscript>\", line N`)。"
+
+#: ../../mcp.md:167
+msgid ""
+"Calls the script makes are logged indented under it, on a `│` rail that "
+"runs unbroken from the script through every call it made — including "
+"whatever each of those calls logged below itself, a diff or a command's "
+"output — down to the result line. The batch therefore reads as work the "
+"script did rather than as calls the model made itself, and the closing "
+"line reports how many nested calls ran and the first lines of what the "
+"script printed."
+msgstr ""
+"脚本发起的调用会缩进记录在它下面,并落在一条 `│` 竖线上:这条线从脚本一路不断开地穿过它发起的每一次调用 "
+"——包括每次调用自己在下方记录的内容,比如一段 diff "
+"或一条命令的输出——直到结果行为止。于是这一批读起来是脚本做的事,而不是模型自己发起的调用;收尾行会报告嵌套调用的数量,以及脚本打印内容的开头几行。"
+
+#: ../../mcp.md:173
 msgid "Authentication"
 msgstr "认证"
 
-#: ../../mcp.md:82
+#: ../../mcp.md:175
 msgid ""
 "**Bearer token** — set `bearer_token_env_var` (or a custom header via "
 "`env_http_headers`)."
@@ -219,18 +437,37 @@ msgstr ""
 "**Bearer token** — 设置 `bearer_token_env_var`，或通过 `env_http_headers` 设置自定义"
 " header。"
 
-#: ../../mcp.md:83
+#: ../../mcp.md:176
 msgid ""
 "**OAuth** — set `auth = \"oauth\"`. Connecting runs the authorization "
 "flow; disconnecting clears the saved login."
 msgstr "**OAuth** — 设置 `auth = \"oauth\"`。连接时执行授权流程；断开连接会清除已保存的登录信息。"
 
-#: ../../mcp.md:86
+#: ../../mcp.md:179
 msgid "Trust"
 msgstr "信任边界"
 
-#: ../../mcp.md:88
+#: ../../mcp.md:181
 msgid ""
 "Local (stdio) servers run programs on your machine, and remote servers "
 "receive whatever the agent sends them. Only connect servers you trust."
 msgstr "本地（stdio）server 会在你的机器上运行程序，远程 server 会收到 agent 发给它的内容。只连接可信的 server。"
+
+#~ msgid ""
+#~ "`call(name, args, format=\"text\")` — `name`"
+#~ " must be `\"MCP\"`; built-in tools"
+#~ " answer `not scriptable yet`. "
+#~ "`format=\"text\"` returns the rendered result;"
+#~ " `format=\"json\"` returns a parsed dict."
+#~ msgstr ""
+#~ "`call(name, args, format=\"text\")` — `name`"
+#~ " 必须是 `\"MCP\"`;内置工具会回答 `not scriptable "
+#~ "yet`。`format=\"text\"` 返回渲染后的结果;`format=\"json\"` 返回解析后的"
+#~ " dict。"
+
+#~ msgid ""
+#~ "`format=\"json\"` prefers the server's "
+#~ "declared `structuredContent`. Two errors are"
+#~ " possible:"
+#~ msgstr "`format=\"json\"` 优先取 server 声明的 `structuredContent`。可能有两种错误:"
+

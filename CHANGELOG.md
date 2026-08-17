@@ -1,6 +1,71 @@
 # Changelog
 
 
+## 0.25.0 - 2026-08-17
+
+### Added
+
+- New `ToolScript` tool for batches of same-shape MCP calls. `action="describe"` batch-reports
+  each tool's call shape and a json gate ("yes" when the server declared an `outputSchema`,
+  "unknown" otherwise); `action="call"` runs a Python script whose `call("MCP", {...})` performs
+  nested MCP invocations with the usual confirmation, logging, and `tr.N` retention - only printed
+  output returns to the context. Nested calls never add tool messages, a refused nested call aborts
+  the script while the rest of the batch proceeds, and `format="json"` prefers the declared
+  `structuredContent` payload over parsing rendered text. Built-in tools are scriptable with
+  `format="text"` too (Delegate/Job/ToolScript cannot be nested); `format="json"` for built-ins
+  waits for structured results.
+- ToolScript scripts are readable in the UI. The approval block shows the opening lines
+  syntax-highlighted and numbered, `v` at the confirmation prompt opens the whole script in a
+  read-only scrolling viewer, and `Ctrl-O` reopens it afterwards - which is the only way to read a
+  script under `--yolo`, where nothing stops to ask.
+- `Ctrl-O` lists ToolScript calls alongside Bash outputs, and every entry opens that same viewer,
+  showing what was run above what it returned: a Bash command with both its streams, or a script
+  with its result - the printed output, or the whole traceback when it failed, against the numbered
+  line the traceback names. Large results are bounded there (head and tail kept, lines over 1000
+  characters clipped) because stored output has no cap of its own; the header says whenever
+  anything was cut, and the complete result stays under its `tr.N` key.
+
+### Changed
+
+- The system prompt now says when to reach for `ToolScript` rather than leaving it to the tool
+  description: 4+ same-shape calls whose individual results are not needed, since only what the
+  script prints returns - and plain batching when each result matters or a step needs the model's
+  judgment, because a script runs to the end on its own. `ToolScript`'s own description states the
+  same trade rather than a bare threshold, and it gains examples.
+- Calls a ToolScript makes are logged indented under the script, on a `|` rail that runs unbroken
+  from the script through every call it made - including whatever each of those calls logged below
+  itself, a diff or a command's output - down to the result line, so the batch reads as work the
+  script did rather than as calls the model made itself. The closing line reports how many nested
+  calls ran plus the first lines of what the script printed. The call line now names the script's
+  size instead of echoing its first line, which was usually setup.
+
+### Fixed
+
+- A `ToolScript` script can no longer end the session: `sys.exit()` raised a `SystemExit` that flew
+  past the tool, past the runner, and out of the agent loop. It is now a failed script like any
+  other, while Ctrl-C still cancels the turn.
+- Nested calls inside a script log to the terminal again instead of into the script's own output.
+  The capture meant for what the script prints was swallowing every nested call's log line and
+  handing it back to the model as the script's result; on the headless path the confirmation prompt
+  went with it, stopping the run at a prompt nobody could see.
+- `ToolScript` no longer requires the describe-only `tools` argument on every call. Under a
+  strict-tools provider that made running a script at all a schema violation; `action` is now the
+  required field.
+- A failed script now reads as failed in the transcript: the result line says so and carries the
+  error, instead of looking exactly like a script that finished.
+- `call()` inside a script returns the result of tools whose output is not retained (`Recall`,
+  `RecallContext`, `Note`) rather than the model-facing envelope wrapped around it.
+- An MCP tool that declares an `outputSchema` and returns an empty `{}` or `[]` payload - a search
+  matching nothing - no longer fails a scripted `format="json"` call as though the payload were
+  missing, and a non-JSON structured payload is reported as a tool error rather than escaping.
+- The Delegate `v` viewer reflects a worker configuration just changed with `c`, instead of the one
+  captured when the prompt was first drawn.
+- The `Ctrl-O` viewer shows the whole command that was run; it was rendering the transcript's
+  one-line display, clipped at 200 characters.
+- The script time budget no longer enables line tracing inside every tool a script calls, which
+  cost a callback per line of `Read`, `Search`, and the MCP transport.
+
+
 ## 0.24.6 - 2026-08-17
 
 ### Added

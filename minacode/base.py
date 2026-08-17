@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, ClassVar, Generic, TypeVar
 
@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-__version__ = "0.24.6"
+__version__ = "0.25.0"
 
 _ResourceT = TypeVar("_ResourceT")
 
@@ -375,6 +375,31 @@ class LogRole(Enum):
     DIFF = auto()
     WORKER = auto()
     FIELD = auto()
+    CODE = auto()
+
+
+@dataclass(frozen=True)
+class ApprovalView:
+    """The full text behind a call, for the read-only viewer its confirmation offers.
+
+    A tool that commits to something longer than one log line returns one of these from
+    `approval_view()`, and the runner uses it twice: to render the clipped, syntax-highlighted
+    excerpt inside the approval block, and to feed the viewer opened by the confirm-time `v` key.
+    The same view is what the post-hoc Ctrl-O browser shows, which is the only way to read the
+    text under yolo -- there is no confirmation prompt there to press `v` at.
+
+    `label` names it in the viewer title and the action row ("order", "script"). `lexer` is a
+    pygments lexer name; empty means the text is prose and renders as markdown. `rows` are the
+    header fields shown above the text. `result` is what the call returned, shown below the text
+    when the view is opened after the fact; it is empty at a confirmation prompt, where the call
+    has not run yet.
+    """
+
+    label: str
+    text: str
+    lexer: str = ""
+    rows: list[tuple[str, str]] = field(default_factory=list)
+    result: str = ""
 
 
 @dataclass(frozen=True)
@@ -395,7 +420,15 @@ class LogLine:
 @dataclass
 class LogBlock:
     INDENT: ClassVar[str] = "  "
+    # The indent unit of a nested region, drawn instead of blank spacing so the call that opened
+    # the region stays connected to everything logged inside it. Exactly as wide as INDENT: a rail
+    # replaces spacing, never adds a column, so turning one on cannot shift the tree.
+    RAIL: ClassVar[str] = "│ "
     items: list[LogLine | LogBlock]
+    # True on a wrapper whose whole subtree was logged by an enclosing tool call (a ToolScript's
+    # nested calls). Every line below the region's own root lines then carries the rail; see
+    # margin_units and ToolRunner.emit.
+    gutter: bool = False
 
     @classmethod
     def hierarchy(cls, root: LogLine | None, children: list[LogLine]) -> LogBlock:
@@ -416,19 +449,40 @@ class LogBlock:
     def prefix(cls, level: int, edge: LogEdge = LogEdge.NONE) -> str:
         return cls.margin(level) + ((edge.value + " ") if edge is not LogEdge.NONE else "")
 
+    @classmethod
+    def margin_units(cls, level: int, rails: tuple[int, ...] = ()) -> list[tuple[bool, str]]:
+        """A line's indent, unit by unit, each flagged as a rail or as plain spacing.
+
+        A nested region's rail sits at the unit its own root lines draw an edge in, so the root's
+        `│` and the rail below it land in one column and the region reads as a single bracket. The
+        root lines themselves are shorter than that unit and are unaffected."""
+        return [(index in rails, cls.RAIL if index in rails else cls.INDENT) for index in range(level)]
+
     def walk(self, parent_level: int = 0):
+        for line, level, _rails in self.walk_rows(parent_level):
+            yield line, level
+
+    def walk_rows(self, parent_level: int = 0, rails: tuple[int, ...] = ()):
+        """Every line with its depth and the rail units its margin carries.
+
+        A gutter block claims the unit one past its own items' level: that is where the lines it
+        contains draw their edges, so deeper lines rail in the same column instead of floating free
+        under them."""
         level = parent_level + 1
+        if self.gutter:
+            rails = (*rails, level + 1)
         for item in self.items:
             if isinstance(item, LogLine):
-                yield item, level
+                yield item, level, rails
             else:
-                yield from item.walk(level)
+                yield from item.walk_rows(level, rails)
 
     def __str__(self) -> str:
         rows = []
-        for line, level in self.walk():
-            prefix = self.margin(level) + line.text_prefix()
-            continuation = self.margin(level) + " " * get_cwidth(line.text_prefix())
+        for line, level, rails in self.walk_rows():
+            margin = "".join(text for _rail, text in self.margin_units(level, rails))
+            prefix = margin + line.text_prefix()
+            continuation = margin + " " * get_cwidth(line.text_prefix())
             rows.extend(Text.wrap_styled([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
         return "\n".join("".join(text for _style, text in row) for row in rows)
 

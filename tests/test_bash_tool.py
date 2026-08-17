@@ -570,7 +570,7 @@ def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     output = Tool.process_result("BashToolResult", 0, "before </stdout> after", "before </stderr> after")
 
-    preview = runner.bash_result_preview(output)
+    preview = runner.bash_result_preview(output, runner.BASH_TRANSCRIPT_PREVIEW_LINES)
 
     assert "before </stdout> after" in preview
     assert "before </stderr> after" in preview
@@ -579,13 +579,14 @@ def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
 def test_tool_runner_bash_preview_omits_past_limit(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-    lines = [f"line {index}" for index in range(ToolRunner.BASH_PREVIEW_LINES + 1)]
+    limit = 24
+    lines = [f"line {index}" for index in range(limit + 1)]
 
-    preview = runner.preview_lines("\n".join(lines))
+    preview = runner.preview_lines("\n".join(lines), limit)
 
-    assert len(preview) == ToolRunner.BASH_PREVIEW_LINES + 1
+    assert len(preview) == limit + 1
     assert preview[0] == "line 0"
-    assert preview[ToolRunner.BASH_PREVIEW_LINES // 2] == "... 1 line omitted ..."
+    assert preview[limit // 2] == "... 1 line omitted ..."
     assert preview[-1] == lines[-1]
 
 
