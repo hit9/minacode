@@ -163,6 +163,14 @@ class Tool:
         covered by that trust and opts out here."""
         return False
 
+    def blocks_agent(self) -> bool:
+        """True when this call parks the agent for a while with nothing to stream meanwhile.
+
+        The runner prints the call line before such a call so the user sees what is being waited
+        on, instead of a blank screen until the result lands. Tools that stream their own output
+        (Bash) or that draw their own progress (Delegate) say False: they are already visible."""
+        return False
+
     @classmethod
     def log_lexer(cls, _: ToolArgs) -> str:
         return cls.LOG_LEXER

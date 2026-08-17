@@ -112,6 +112,12 @@ SELECTION_BACK = object()
 SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"
 
+# The line prefixes a rendered Note body can open with (memory.py writes them). A fact about the
+# Note format rather than about drawing, so it lives here: the renderer uses it to pick the
+# per-line memory colors, and the Delegate worker wrapper uses it to recognize a worker's Note
+# output and pass it through to that same renderer.
+MEMORY_PREFIXES = ("goal:", "check:", "plan:", "known:")
+
 
 class MinacodeError(Exception): ...
 
@@ -267,6 +273,17 @@ class ModelUsage:
     last_prompt_budget: int = 0
     last_cached_prompt_tokens: int = 0
     last_cache_write_prompt_tokens: int = 0
+
+    def context_percent(self, fallback: int = 0) -> int:
+        """How full the last request's prompt was, as a percentage of that request's budget.
+
+        The provider-reported pair describes one real request, so a changed max_context_tokens only
+        shows up after the next request rather than re-scoring the last one. `fallback` (the
+        session's own estimate, state.context_percent) stands in before any request exists.
+        """
+        if not self.last_prompt_tokens or not self.last_prompt_budget:
+            return fallback
+        return min(100, self.last_prompt_tokens * 100 // self.last_prompt_budget)
 
     @staticmethod
     def field(usage: Any, *paths: str) -> int:

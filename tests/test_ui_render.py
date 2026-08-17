@@ -140,8 +140,10 @@ def test_editor_context_caps_long_replies_to_recent_lines(tmp_path):
     reply = "\n".join(f"line {index}" for index in range(total))
     command_loop.session.messages = [{"role": "assistant", "content": reply}]
     lines = command_loop.editor_context().splitlines()
+    # The cap covers the omission note too, so the reply never silently reads as complete.
     assert len(lines) == command_loop.EDITOR_CONTEXT_MAX_LINES
-    assert lines[0] == "line 50"
+    assert lines[0] == command_loop.EDITOR_CONTEXT_ELLIPSIS
+    assert lines[1] == "line 51"
     assert lines[-1] == f"line {total - 1}"
 
 

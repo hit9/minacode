@@ -18,7 +18,7 @@
 - NextHints chips are picked with `Space` instead of `Enter`, so `Enter` only ever sends the
   input; `Space` toggles the focused chip into or out of the picked set.
 - Delegate `send` results now include the worker's `context_percent` and `rounds` so the model
-  can decide when to reset the worker's context.
+  can decide when to reset the worker's context; the done line shows both as well.
 - The external editor (`Ctrl-X Ctrl-E` / `Ctrl-G`) now includes several recent AI replies as
   reference, not just the last one, so the reply you are answering is usually in view.
 
@@ -30,6 +30,8 @@
   and rejecting repeated text now finds and reports its hit lines in linear time.
 - Worker-mode `Note` output now shows the same per-line colors (goal/plan/known) as the main
   session; it was rendered as a plain block before.
+- A `Job wait` no longer prints its call line twice when the confirmation prompt already showed
+  it.
 
 
 ## 0.24.5 - 2026-08-16

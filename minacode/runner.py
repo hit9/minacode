@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, NamedTuple, cast
 
 from prompt_toolkit.utils import get_cwidth
 
@@ -516,10 +516,12 @@ class ToolRunner:
                     self.output_fn(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     d.nested_display = True
                 self.live_start()
-            elif isinstance(tool, JobTool) and tool.is_blocking():
-                # A Job wait/status-with-timeout blocks the agent with no live stream to show for it,
-                # so print the call line now (as a leaf the finish block will hang children under) so
-                # the user sees the agent is waiting, not a blank screen until the result lands.
+            elif tool.blocks_agent() and not d.nested_display:
+                # A blocking call (a Job wait) holds the agent with no live stream to show for it, so
+                # print the call line now -- as a leaf the finish block will hang children under --
+                # and the user sees the agent is waiting instead of a blank screen until the result
+                # lands. Skipped when something already drew a root (an approval block, an auto
+                # preview); a second copy of the same line is noise, not reassurance.
                 self.output_fn(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                 d.nested_display = True
             output = self.call_tool(tool, planned_edit)
@@ -898,16 +900,15 @@ class ToolRunner:
                         # `summary` only renders when the envelope parsed, so fields is never None
                         # here; the guard exists for the type checker.
                         if fields is not None:
-                            steps, worker_elapsed, files, in_tokens, out_tokens, _, _, _ = fields
                             title = ""
                             if call.args and isinstance(call.args[0], dict):
                                 raw_title = call.args[0].get("title")
                                 title = raw_title.strip() if isinstance(raw_title, str) else ""
-                            parts = ([title] if title else []) + [f"steps {steps}", worker_elapsed]
-                            if in_tokens:
-                                parts.append(f"{in_tokens} in / {out_tokens} out")
-                            if files != "(none)":
-                                parts.append(files if len(files) <= 48 else files[:47].rstrip() + "…")
+                            parts = ([title] if title else []) + [f"steps {fields.steps}", fields.elapsed]
+                            if fields.in_tokens:
+                                parts.append(f"{fields.in_tokens} in / {fields.out_tokens} out")
+                            if fields.files != "(none)":
+                                parts.append(fields.files if len(fields.files) <= 48 else fields.files[:47].rstrip() + "…")
                             self.worker_rule("worker done · " + " · ".join(parts))
                     else:
                         children.append(LogLine("done", summary, LogRole.META, LogEdge.BRANCH))
@@ -1000,13 +1001,24 @@ class ToolRunner:
             parts.append(f"{elapsed:.1f}s")
         return "→ " + " · ".join(parts)
 
-    def delegate_result_fields(self, output: str) -> tuple[str, str, str, str, str, bool, str, str] | None:
-        """Parse a finished Delegate send envelope into its display fields.
+    class DelegateFields(NamedTuple):
+        """The display fields of a finished Delegate send envelope. Named rather than a plain tuple
+        because both readers want a different subset, and the envelope keeps gaining attributes."""
 
-        Returns (steps, elapsed, files, in_tokens, out_tokens, stopped, rounds, context_percent)
-        or None when the envelope is missing. rounds/context_percent are "" when the envelope was
-        written before they existed. Shared by delegate_result_summary (the fallback child line)
-        and the finish rule label, so both show the same numbers.
+        steps: str
+        elapsed: str
+        files: str
+        in_tokens: str
+        out_tokens: str
+        stopped: bool
+        rounds: str
+        context_percent: str
+
+    def delegate_result_fields(self, output: str) -> DelegateFields | None:
+        """Parse a finished Delegate send envelope into its display fields, or None when the
+        envelope is missing. rounds/context_percent are "" when the envelope was written before
+        they existed. Shared by delegate_result_summary (the fallback child line) and the finish
+        rule label, so both show the same numbers.
         """
         match = self.DELEGATE_META_RE.search(output)
         if not match:
@@ -1018,20 +1030,21 @@ class ToolRunner:
             out_tokens = Text.abbreviate_count(int(out_tokens))
         else:
             in_tokens = out_tokens = ""
-        return steps, elapsed, files, in_tokens, out_tokens, stopped == "true", rounds or "", context_percent or ""
+        return self.DelegateFields(steps, elapsed, files, in_tokens, out_tokens, stopped == "true", rounds or "", context_percent or "")
 
     def delegate_result_summary(self, output: str) -> str:
         """The one-line summary of a finished Delegate send, from its envelope attributes."""
         fields = self.delegate_result_fields(output)
         if fields is None:
             return ""
-        steps, elapsed, files, in_tokens, out_tokens, stopped, _, context_percent = fields
-        parts = [f"steps {steps}", elapsed, files]
-        if in_tokens:
-            parts.append(f"{in_tokens} in / {out_tokens} out")
-        if context_percent:
-            parts.append(f"ctx {context_percent}%")
-        if stopped:
+        parts = [f"steps {fields.steps}", fields.elapsed, fields.files]
+        if fields.in_tokens:
+            parts.append(f"{fields.in_tokens} in / {fields.out_tokens} out")
+        if fields.rounds:
+            parts.append(f"round {fields.rounds}")
+        if fields.context_percent:
+            parts.append(f"ctx {fields.context_percent}%")
+        if fields.stopped:
             parts.append("stopped at max steps")
         return " · ".join(parts)
 

@@ -91,8 +91,13 @@ def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, mon
     assert 1 < time.monotonic() - started < 20
     assert "Status: done" in waited
     assert "--- output ---\nslow-done" in waited
-    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget(None) == 1
-    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget(3600) == 900
+    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget({}) == 1  # DEFAULT_WAIT
+    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget({"timeout": 3600}) == 900  # MAX_WAIT
+    # A non-numeric timeout is named in the error rather than surfacing as a bare int() ValueError.
+    with pytest.raises(ToolError, match="whole number of seconds"):
+        JobTool(s, [{"action": "wait", "job": "job.1", "timeout": "1m"}]).call()
+    # The same call reports itself as non-blocking, so the runner's pre-block never raises on it.
+    assert JobTool(s, [{"action": "wait", "job": "job.1", "timeout": "1m"}]).blocks_agent() is False
 
 
 def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypatch):
@@ -121,13 +126,19 @@ def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypa
     JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
 
 
+def _job_call_lines(blocks) -> list[str]:
+    """The `Job ...` root lines among the emitted blocks, in order."""
+    return [line[0].text for block in blocks if isinstance(block, LogBlock) for line in block.walk() if line[0].label == "Job"]
+
+
 def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
-    """A Job wait blocks the agent with no live stream, so the runner prints the call line as soon
-    as the wait starts -- before the result lands -- so the user can see the agent is waiting
-    instead of a blank screen. The finish block then hangs its children under that same root."""
+    """A Job wait blocks the agent with no live stream, so under yolo the runner prints the call
+    line as soon as the wait starts -- before the result lands -- so the user can see the agent is
+    waiting instead of a blank screen. The finish block then hangs its children under that root."""
     monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 30)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
     s = session(tmp_path)
+    s.settings.yolo = True  # no approval block, so the pre-block is the only thing drawing the root
     blocks: list[LogBlock | str] = []
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "y", output_fn=blocks.append)
     JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call()
@@ -154,6 +165,24 @@ def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
     blocks.clear()
     runner.run([ToolCall("call_2", "Job", [{"action": "list"}])])
     assert len(blocks) == 1
+
+
+def test_job_wait_call_line_is_not_repeated_after_an_approval(tmp_path, monkeypatch):
+    """A Job wait needs confirmation, and the approval block already drew the call line before the
+    block starts. The pre-block must stand down there, or the same line lands twice in a row."""
+    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 30)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    s = session(tmp_path)
+    assert s.settings.yolo is False  # the approval path is the default one
+    blocks: list[LogBlock | str] = []
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "y", output_fn=blocks.append)
+    JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call()
+
+    runner.run([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
+
+    call_lines = _job_call_lines(blocks)
+    assert len(call_lines) == 1, f"the call line was drawn {len(call_lines)} times: {call_lines}"
+    assert "wait" in call_lines[0] and "job.1" in call_lines[0]
 
 
 def test_bash_behaviors(tmp_path):

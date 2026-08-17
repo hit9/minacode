@@ -23,6 +23,7 @@ from rich.rule import Rule
 from rich.text import Text as RichText
 
 from minacode.base import (
+    MEMORY_PREFIXES,
     MODEL_REQUEST_RETRIES,
     Json,
     LogBlock,
@@ -235,7 +236,6 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
-    MEMORY_PREFIXES: ClassVar[tuple[str, ...]] = ("goal:", "check:", "plan:", "known:")
     MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|connecting|disconnected|disconnecting|error|skipped)")
     MCP_STATUS_ANSI: ClassVar[dict[str, str]] = {
         "connected": "\x1b[32m",
@@ -465,7 +465,7 @@ class UiPrinter:
         return parts
 
     def segments(self, text: str) -> list[tuple[str, str]]:
-        if text.startswith(UiPrinter.MEMORY_PREFIXES):
+        if text.startswith(MEMORY_PREFIXES):
             return self.memory_segments(text)
         if text.startswith(self.USER_LOG_PREFIX):
             prefix, content = self.USER_LOG_PREFIX, text[len(self.USER_LOG_PREFIX) :]
@@ -591,6 +591,9 @@ class UiPrinter:
     def memory_segments(self, text: str) -> list[tuple[str, str]]:
         segments = []
         for line in text.splitlines() or [""]:
+            # Deliberately narrower than MEMORY_PREFIXES: these two carry their value on the same
+            # line, so the whole line is the headline; `plan:`/`known:` head a list below them and
+            # are matched exactly, one case down.
             if line.startswith(("goal:", "check:")):
                 segments.append(("ansimagenta", line))
             elif line in {"summary:", "plan:", "known:"}:

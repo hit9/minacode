@@ -434,18 +434,16 @@ class JobTool(Tool):
             raise ToolError(f"unknown action: {action!r}")
         return action
 
-    def is_blocking(self) -> bool:
-        """Whether this call holds the agent in _await_process: a `wait`, or a `status` with a
-        positive timeout. The runner prints the call line before such a block so the user can see
-        the agent is waiting, instead of a blank screen until the result lands."""
+    def blocks_agent(self) -> bool:
+        """A `wait`, or a `status` with a positive timeout: the two actions that hold the agent in
+        _await_process. A malformed call blocks nothing -- it is rejected before it runs."""
         try:
             payload = self.payload()
             action = self.resolved_action(payload)
+            timeout = self.requested_timeout(payload)
         except ToolError:
             return False
-        if action == "wait":
-            return True
-        return action == "status" and int(payload.get("timeout") or 0) > 0
+        return action == "wait" or (action == "status" and timeout > 0)
 
     def needs_confirmation(self) -> bool:
         return self.resolved_action(self.payload()) in {"start", "kill", "wait"}
@@ -506,15 +504,28 @@ class JobTool(Tool):
         self.session.jobs[job_id] = BackgroundJob(id=job_id, command=command, process=proc, log_path=log_path, started_at=time.monotonic())
         return f"Started {job_id}: {command}"
 
-    def wait_budget(self, requested: Any) -> int:
-        timeout = int(requested or 0)
+    @staticmethod
+    def requested_timeout(payload: Json) -> int:
+        """The `timeout` the model asked for, 0 when it asked for none. A `status` waits only when
+        this is positive; a `wait` always waits, falling back to DEFAULT_WAIT. Non-numeric text is
+        rejected by name rather than raised as a bare int() ValueError the model has to decode."""
+        raw = payload.get("timeout")
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            raise ToolError(f"timeout must be a whole number of seconds, got {raw!r}") from None
+
+    def wait_budget(self, payload: Json) -> int:
+        """The seconds one wait may hold the agent: what was asked for, clamped to MAX_WAIT, or
+        DEFAULT_WAIT when nothing was asked for."""
+        timeout = self.requested_timeout(payload)
         return self.DEFAULT_WAIT if timeout <= 0 else min(timeout, self.MAX_WAIT)
 
-    def _await_process(self, job: BackgroundJob, requested: Any) -> bool:
+    def _await_process(self, job: BackgroundJob, payload: Json) -> bool:
         """Wait for the job, in slices, so Ctrl-C lands within POLL_INTERVAL instead of after the
         whole budget. Returns whether the wait was interrupted. A single blocking process.wait()
         would be simpler but unreachable from the cancelling thread."""
-        deadline = time.monotonic() + self.wait_budget(requested)
+        deadline = time.monotonic() + self.wait_budget(payload)
         while job.process.poll() is None and time.monotonic() < deadline:
             if self._interrupted.wait(self.POLL_INTERVAL):
                 break
@@ -523,12 +534,12 @@ class JobTool(Tool):
 
     def _status(self, payload: Json) -> str:
         job = self._resolve_job(payload)
-        interrupted = self._await_process(job, payload.get("timeout")) if int(payload.get("timeout") or 0) > 0 else False
+        interrupted = self._await_process(job, payload) if self.requested_timeout(payload) else False
         return self._format(job, payload, interrupted=interrupted)
 
     def _wait(self, payload: Json) -> str:
         job = self._resolve_job(payload)
-        interrupted = self._await_process(job, payload.get("timeout"))
+        interrupted = self._await_process(job, payload)
         return self._format(job, payload, interrupted=interrupted)
 
     def _list(self) -> str:

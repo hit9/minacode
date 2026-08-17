@@ -189,16 +189,13 @@ def status(loop: CommandLoop, args: str) -> str:
     usage = loop.session.usage
     context_tokens = loop.agent.context.update_current_tokens(loop.agent.session.system_prompt)
     context_budget = loop.agent.context.request_token_budget()
+    context_percent = usage.context_percent(loop.session.state.context_percent)
     if usage.last_prompt_tokens and usage.last_prompt_budget:
-        # Display the provider-reported tokens and the budget of the last request; the estimate
-        # (state.context_percent) stays the fallback before any request exists. The pair describes
-        # one real request, so a changed max_context_tokens shows up here after the next request
-        # rather than re-scoring the last one. `/config` reports the configured value immediately.
+        # Display the provider-reported tokens and the budget of the last request alongside the
+        # percentage; `/config` reports the configured max_context_tokens immediately, while these
+        # describe one real request and only catch up after the next one.
         context_tokens = usage.last_prompt_tokens
         context_budget = usage.last_prompt_budget
-        context_percent = min(100, context_tokens * 100 // context_budget)
-    else:
-        context_percent = loop.session.state.context_percent
     index = CodeIndex(loop.session)
     index_status, index_message = index.status(check=False)
     index.update_pending_async()
@@ -279,7 +276,7 @@ def status(loop: CommandLoop, args: str) -> str:
     state = f"`{'delegating' if worker._active_turn_messages else 'idle'}`, rounds `{worker.state.round_count}`"
     rows.append(("worker", _status_model_line(worker.config)))
     if worker_usage.last_prompt_tokens and worker_usage.last_prompt_budget:
-        percent = min(100, worker_usage.last_prompt_tokens * 100 // worker_usage.last_prompt_budget)
+        percent = worker_usage.context_percent()
         context = _status_context_line(worker_usage.last_prompt_tokens, worker_usage.last_prompt_budget, percent)
     else:
         context = "(no requests yet)"

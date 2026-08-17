@@ -1046,6 +1046,23 @@ def test_delegate_summary_formats_tokens_and_tolerates_old_envelopes(tmp_path):
     assert "2.5s" in legacy
     assert "a.txt, b.txt" in legacy
     assert " in / " not in legacy
+    assert "round " not in legacy and "ctx " not in legacy  # neither attribute existed back then
+
+
+# 14d. rounds and context_percent are the two attributes a reset decision is made from, so the
+#      summary line shows both -- otherwise the model reads them and the user never sees them.
+def test_delegate_summary_shows_rounds_and_context_fill(tmp_path):
+    parent = _delegate_session(tmp_path)
+    runner = _delegate_runner(parent)
+
+    envelope = '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt" stopped_at_max_steps="false" tokens="10/20" rounds="4" context_percent="73">'
+    fields = runner.delegate_result_fields(envelope)
+    assert fields is not None
+    assert (fields.rounds, fields.context_percent) == ("4", "73")
+
+    summary = runner.delegate_result_summary(envelope)
+    assert "round 4" in summary
+    assert "ctx 73%" in summary
 
 # 15. resolve_uid prefix search never resolves to a worker snapshot (review point 5): the parent's
 #     uid prefix must resolve to the parent alone, without ambiguity.

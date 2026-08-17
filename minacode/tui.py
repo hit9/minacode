@@ -529,11 +529,24 @@ class TuiApp:
         self.quick_hint_focus = focus
         self.invalidate()
 
+    def _live_quick_hints(self, buffer: Buffer) -> tuple[str, ...]:
+        """The chips Tab and Space act on, or () when the chip row is not in play.
+
+        It is in play on a chat prompt that still holds exactly the picked text -- any manual edit
+        leaves that agreement -- and with no completion menu open, which owns both keys while it
+        is up. Refreshing the hints here is what makes the two keys decide from one snapshot.
+        """
+        if self.input_mode != "chat":
+            return ()
+        hints = self.quick_hints()
+        if not hints or buffer.complete_state is not None or buffer.text != "\n".join(self.quick_hint_picked):
+            return ()
+        return hints
+
     def tab_or_complete(self, buffer: Buffer, *, reverse: bool) -> None:
         # On an idle prompt whose text is only picked suggestions Tab/Shift-Tab cycle the quick
         # inputs; anywhere else they complete.
-        hints = self.quick_hints() if self.input_mode == "chat" else ()
-        if hints and buffer.text == "\n".join(self.quick_hint_picked) and buffer.complete_state is None:
+        if self._live_quick_hints(buffer):
             self.cycle_quick_hint_focus(reverse=reverse)
             return
         target = self._file_mention_at_cursor(buffer)
@@ -550,10 +563,10 @@ class TuiApp:
         self.complete_input(buffer, reverse=reverse)
 
     def _handle_space(self, buffer: Buffer) -> None:
-        """Space toggles the focused chip only while the input holds exactly the picked text and no
-        completion menu is open; anywhere else it inserts a plain space."""
-        hints = self.quick_hints() if self.input_mode == "chat" else ()
-        if hints and buffer.text == "\n".join(self.quick_hint_picked) and buffer.complete_state is None and 0 <= self.quick_hint_focus < len(hints):
+        """Space toggles the chip Tab has focused, and only then; anywhere else -- including on the
+        chip row with focus still on the input line -- it inserts a plain space."""
+        hints = self._live_quick_hints(buffer)
+        if hints and 0 <= self.quick_hint_focus < len(hints):
             hint = hints[self.quick_hint_focus]
             if hint in self.quick_hint_picked:
                 self.quick_hint_picked.remove(hint)

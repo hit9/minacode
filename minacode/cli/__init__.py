@@ -80,6 +80,8 @@ class CommandLoop:
     HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
+    EDITOR_CONTEXT_ELLIPSIS: ClassVar[str] = "# [... earlier lines of this reply omitted ...]"
+    EDITOR_CONTEXT_SEPARATOR: ClassVar[str] = "# --- (earlier reply) ---"
     INPUT_HISTORY_BYTES: ClassVar[int] = 512 * 1024
     # The command registry (`COMMANDS` below, after the class) drives dispatch, the completer's
     # name tuple, and the queue-safe allowlist. `CommandLoop.COMMANDS` is derived from it and
@@ -300,12 +302,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 continue
             lines = content.strip().splitlines()
             if len(lines) > self.EDITOR_CONTEXT_MAX_LINES:
-                drop = len(lines) - self.EDITOR_CONTEXT_MAX_LINES
-                lines = lines[drop:]  # keep only the newest MAX lines of this reply
+                # Keep the newest lines and say so: a headless reply that reads as complete is
+                # worse reference than a shorter one that admits where it was cut.
+                drop = len(lines) - self.EDITOR_CONTEXT_MAX_LINES + 1
+                lines = [self.EDITOR_CONTEXT_ELLIPSIS] + lines[drop:]
             if parts and len(parts) + 1 + len(lines) > self.EDITOR_CONTEXT_MAX_LINES:
                 break  # an earlier reply would push the line budget; it adds little recent context
             if parts:
-                parts.append("# --- (earlier reply) ---")
+                parts.append(self.EDITOR_CONTEXT_SEPARATOR)
             parts.extend(lines)
         if not parts:
             return ""
