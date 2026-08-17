@@ -219,16 +219,26 @@ def test_edit_anchor_survives_trailing_newline_change(tmp_path):
     assert path.read_text(encoding="utf-8") == "a\nB\n"
 
 
-def test_edit_create_decodes_escaped_newlines_for_preview_and_write(tmp_path):
+def test_edit_preserves_literal_escape_sequences_in_content_and_new(tmp_path):
     s = session(tmp_path)
-    tool = EditTool(s, ["script.py", [{"op": "create", "content": "print(1)\\nprint(2)\\n"}]])
+    literal_line = r'pattern = "\n\t"'
+    tool = EditTool(s, ["script.py", [{"op": "create", "content": literal_line}]])
 
     preview = tool.preview()
-    output = tool.call()
+    tool.call()
 
-    assert "+print(1)\n+print(2)\n" in preview
-    assert (tmp_path / "script.py").read_text(encoding="utf-8") == "print(1)\nprint(2)\n"
-    assert "<Edit path=" in output
+    assert literal_line in preview
+    assert (tmp_path / "script.py").read_text(encoding="utf-8") == literal_line
+
+    path = tmp_path / "replace.py"
+    path.write_text("old\nnext\n", encoding="utf-8")
+    EditTool(s, ["replace.py", [{"op": "replace", "start": anchor(0, "old\n"), "end": anchor(0, "old\n"), "content": literal_line}]]).call()
+    assert path.read_text(encoding="utf-8") == literal_line + "\nnext\n"
+
+    path = tmp_path / "unique.py"
+    path.write_text("value = OLD\n", encoding="utf-8")
+    EditTool(s, ["unique.py", [{"op": "replace_unique", "old": "OLD", "new": r'"\n"'}]]).call()
+    assert path.read_text(encoding="utf-8") == 'value = "\\n"\n'
 
 
 def test_edit_accepts_redundant_matching_path_in_model_operation(tmp_path):
@@ -494,6 +504,7 @@ def test_planned_edit_refuses_to_overwrite_external_change(tmp_path):
         ),
         ("a\nb\n", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "inserted"}]),
         ("a\nb", [{"op": "delete", "start": anchor(1, "b"), "end": anchor(1, "b")}]),
+        ("a\nb\nc\n", [{"op": "replace_unique", "old": "b\n", "new": "B"}]),
     ],
 )
 def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, raw_edits):
@@ -1085,7 +1096,7 @@ def test_single_anchor_stale_guides_content_check(tmp_path):
     assert "retry with the current anchor only if its content is the line you meant, otherwise re-read" in message
 
 
-def test_range_stale_anchor_error_carries_current_range(tmp_path):
+def test_range_stale_anchor_error_does_not_guess_current_range(tmp_path):
     path = tmp_path / "note.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
 
@@ -1094,10 +1105,7 @@ def test_range_stale_anchor_error_carries_current_range(tmp_path):
 
     message = str(error.value)
     assert "stale anchor" in message and "retry with the current anchor" in message
-    # The intended range's current content is attached so the model can rewrite without re-reading.
-    assert "<current-target-ranges hashline-numbered>" in message
-    assert "anchor=1:" + ReadTool.line_hash("a\n") + " | a" in message
-    assert "anchor=3:" + ReadTool.line_hash("c\n") + " | c" in message
+    assert "<current-target-ranges hashline-numbered>" not in message
     assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
 
 
@@ -1105,13 +1113,14 @@ def test_anchor_out_of_range_reports_file_length(tmp_path):
     path = tmp_path / "note.txt"
     path.write_text("a\nb\n", encoding="utf-8")
 
-    with pytest.raises(ToolError, match="anchor line 10 out of range; file has 2 lines"):
+    with pytest.raises(ToolError, match="anchor line 10 out of range; file has 2 lines") as error:
         EditTool(session(tmp_path), ["note.txt", [{"op": "replace", "start": "10:abcde", "end": "10:abcde", "content": "x\n"}]]).call()
 
+    assert "<current-target-ranges" not in str(error.value)
     assert path.read_text(encoding="utf-8") == "a\nb\n"
 
 
-def test_stale_anchor_error_display_is_oneline_but_tool_result_full(tmp_path, monkeypatch):
+def test_stale_anchor_error_display_is_oneline_but_tool_result_keeps_guidance(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
     monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
@@ -1129,13 +1138,46 @@ def test_stale_anchor_error_display_is_oneline_but_tool_result_full(tmp_path, mo
     rendered_line = items[0][0]
     assert "\n" not in rendered_line.text
     assert "..." in rendered_line.text
-    # Model side: the full error, including the attached current-range block, is preserved.
+    # Model side: the full retry guidance is preserved without an untrusted guessed range.
     assert len(s.tool_errors) == 1
     message = s.tool_errors[0].error
     assert "retry with the current anchor" in message
-    assert "<current-target-ranges hashline-numbered>" in message
-    assert "anchor=1:" + ReadTool.line_hash("a\n") + " | a" in message
-    assert "anchor=3:" + ReadTool.line_hash("c\n") + " | c" in message
+    assert "<current-target-ranges hashline-numbered>" not in message
+
+
+def test_batch_stale_range_does_not_guess_after_prior_shift(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            ToolCall(
+                "first",
+                "Edit",
+                [
+                    "code.txt",
+                    [
+                        {"op": "insert_before", "start": anchor(0, "a\n"), "content": "x\n"},
+                        {"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"},
+                    ],
+                ],
+            ),
+            ToolCall(
+                "second",
+                "Edit",
+                ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(2, "c\n"), "content": "Y\n"}]],
+            ),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "x\na\nB\nc\n"
+    assert len(s.tool_errors) == 1
+    assert "original line was changed in this batch" in s.tool_errors[0].error
+    assert "<current-target-ranges" not in s.tool_errors[0].error
 
 
 # --- neighborhood anchors on success (B) ---
@@ -1242,6 +1284,36 @@ def test_replace_unique_replaces_text_spanning_lines(tmp_path):
     assert path.read_text(encoding="utf-8") == "a\nBC\nd\n"
 
 
+@pytest.mark.parametrize(
+    ("original", "old", "new", "expected"),
+    [
+        ("a\nb\nc\n", "b\n", "B", "a\nBc\n"),
+        ("a\nb", "\n", "", "ab"),
+        ("abc\ndef\n", "bc\n", "X", "aXdef\n"),
+        ("a\nb\n", "a\nb\n", "", ""),
+    ],
+)
+def test_replace_unique_is_exact_across_line_boundaries(tmp_path, original, old, new, expected):
+    path = tmp_path / "note.txt"
+    path.write_text(original, encoding="utf-8")
+
+    EditTool(session(tmp_path), ["note.txt", [{"op": "replace_unique", "old": old, "new": new}]]).call()
+
+    assert path.read_text(encoding="utf-8") == expected
+
+
+def test_replace_unique_multiple_hit_report_is_bounded(tmp_path):
+    path = tmp_path / "note.txt"
+    original = "hit\n" * 7
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ToolError) as error:
+        EditTool(session(tmp_path), ["note.txt", [{"op": "replace_unique", "old": "hit", "new": "miss"}]]).call()
+
+    assert "occurs 7 times at lines 1, 2, 3, 4, 5, ..." in str(error.value)
+    assert path.read_text(encoding="utf-8") == original
+
+
 def test_replace_unique_mixes_with_anchored_ops_in_one_call(tmp_path):
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\nd\n", encoding="utf-8")
@@ -1278,4 +1350,23 @@ def test_replace_unique_then_anchored_edit_in_batch(tmp_path, monkeypatch):
     # The second call's anchor was captured against the original file; the batch maps it through the
     # lines the replace_unique edit shifted down.
     assert path.read_text(encoding="utf-8") == "a\nB\nB\nx\nc\n"
+    assert s.tool_errors == []
+
+
+def test_replace_unique_line_join_keeps_later_batch_anchor(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            ToolCall("ru", "Edit", ["code.txt", [{"op": "replace_unique", "old": "b\n", "new": "B"}]]),
+            ToolCall("ins", "Edit", ["code.txt", [{"op": "insert_before", "start": anchor(3, "d\n"), "content": "x\n"}]]),
+        ]
+    )
+
+    assert path.read_text(encoding="utf-8") == "a\nBc\nx\nd\n"
     assert s.tool_errors == []

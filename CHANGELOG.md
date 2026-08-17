@@ -12,9 +12,16 @@
 ### Changed
 
 - Stale-anchor errors now end with guidance to retry with the returned current anchor only when
-  its content is the intended line, and range errors carry the intended range's current content so
-  the model can rewrite against it without re-reading. Successful edits return three lines of
-  anchor context on each side of the change, so a follow-up edit can anchor next to the hunk.
+  its content is the intended line; otherwise the model re-reads instead of relying on a guessed
+  range. Successful edits return three lines of anchor context on each side of the change, so a
+  follow-up edit can anchor next to the hunk.
+
+### Fixed
+
+- `Edit` now treats `content` and `new` as the JSON-decoded strings they already are, preserving
+  literal `\n` and `\t` text instead of guessing that it represents another layer of escaping.
+- `replace_unique` remains an exact substring replacement when the match ends at a line boundary,
+  and rejecting repeated text now finds and reports its hit lines in linear time.
 
 
 ## 0.24.5 - 2026-08-16

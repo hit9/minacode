@@ -483,9 +483,9 @@ class EditTool(Tool):
                     op=op,
                     start=str(item.get("start") or ""),
                     end=str(item.get("end") or ""),
-                    content=self.content_text(str(item.get("content") or "")),
+                    content=self.normalize_text(str(item.get("content") or "")),
                     old=self.normalize_text(str(item.get("old") or "")),
-                    new=self.content_text(str(item.get("new") or "")),
+                    new=self.normalize_text(str(item.get("new") or "")),
                 )
             )
         return path, edits
@@ -554,19 +554,11 @@ class EditTool(Tool):
         replacements = []
         for edit in edits:
             if edit.op == "replace_unique":
-                span_start, span_end, prefix, suffix = self._replace_unique_span(original, edit.old)
-                replacement_text = prefix + edit.new + suffix
-                replacements.append((span_start, span_end, self.content_lines(replacement_text, span_end < len(lines))))
+                replacements.append(self._replace_unique_span(original, edit.old, edit.new))
                 continue
-            try:
-                start = resolve_anchor(edit.start)
-            except ToolError as error:
-                raise self._range_augmented_error(lines, error, edit) from error
+            start = resolve_anchor(edit.start)
             if edit.op in {"replace", "delete"}:
-                try:
-                    end = resolve_anchor(edit.end)
-                except ToolError as error:
-                    raise self._range_augmented_error(lines, error, edit) from error
+                end = resolve_anchor(edit.end)
                 if end < start:
                     raise ToolError("end anchor is before start anchor")
                 replacement = [] if edit.op == "delete" else self.content_lines(edit.content, end + 1 < len(lines))
@@ -594,77 +586,53 @@ class EditTool(Tool):
             delta += len(replacement) - (end - start)
         return EditApplyResult("".join(new_lines), changes, replacements)
 
-    @classmethod
-    def _line_at(cls, lines: list[str], pos: int) -> int:
-        """0-based line containing text offset `pos`; len(lines) when pos sits on the content's end
-        boundary (past the last line)."""
-        offset = 0
-        for index, line in enumerate(lines):
-            if pos < offset + len(line):
-                return index
-            offset += len(line)
-        return len(lines)
+    @staticmethod
+    def _replace_unique_span(content: str, old: str, new: str) -> tuple[int, int, list[str]]:
+        """Return the canonical line splice for one exact substring replacement.
 
-    @classmethod
-    def _replace_unique_span(cls, content: str, old: str) -> tuple[int, int, str, str]:
-        """Locate `old` as a substring (non-overlapping, exactly like replace_all) and return the
-        half-open line span it covers plus the row prefixes/suffixes that must survive the swap.
-        Refuses with the hit count and lines unless it occurs exactly once; nothing has been written
-        yet, so the file stays byte-identical."""
+        Match counting and line reporting advance through the file once. When removing a newline
+        joins the replacement to the following row, that row joins the splice too so the returned
+        list remains the same line model that Read uses.
+        """
         if not old:
             raise ToolError("replace_unique requires old")
-        positions = []
+        first = -1
+        count = 0
+        line = 0
+        scanned = 0
+        hit_lines = []
         pos = content.find(old)
         while pos != -1:
-            positions.append(pos)
+            if first == -1:
+                first = pos
+            count += 1
+            line += content.count("\n", scanned, pos)
+            if (not hit_lines or hit_lines[-1] != line) and len(hit_lines) < 6:
+                hit_lines.append(line)
+            scanned = pos
             pos = content.find(old, pos + len(old))
-        if not positions:
+        if not count:
             raise ToolError("replace_unique old text not found")
-        if len(positions) > 1:
-            lines = ReadTool.split_lines(content)
-            hit_lines = []
-            for hit in positions:
-                line = cls._line_at(lines, hit)
-                if not hit_lines or hit_lines[-1] != line:
-                    hit_lines.append(line)
+        if count > 1:
             shown = ", ".join(str(line + 1) for line in hit_lines[:5])
             if len(hit_lines) > 5:
                 shown += ", ..."
-            raise ToolError(f"replace_unique old text occurs {len(positions)} times at lines {shown}; it must occur exactly once")
-        lines = ReadTool.split_lines(content)
-        offsets = []
-        offset = 0
-        for line in lines:
-            offsets.append(offset)
-            offset += len(line)
-        start = positions[0]
-        end = start + len(old)
-        start_line = cls._line_at(lines, start)
-        end_line = cls._line_at(lines, end)
-        if end_line < len(lines) and end > offsets[end_line]:
-            end_line += 1  # the hit ends mid-row: that row is covered too
-        prefix = lines[start_line][: start - offsets[start_line]] if start > offsets[start_line] else ""
-        last_line = end_line - 1
-        line_end = offsets[last_line] + len(lines[last_line])
-        suffix = lines[last_line][end - offsets[last_line] :] if end < line_end else ""
-        return start_line, end_line, prefix, suffix
+            raise ToolError(f"replace_unique old text occurs {count} times at lines {shown}; it must occur exactly once")
 
-    @classmethod
-    def _range_augmented_error(cls, lines: list[str], error: ToolError, edit: Edit) -> ToolError:
-        """Attach the intended range's current content to a stale/out-of-range anchor error so the
-        model can rewrite the content against what the file actually holds instead of re-reading."""
-        message = str(error)
-        if "stale anchor" not in message and "out of range" not in message:
-            return error
-        start = ReadTool.parse_anchor(edit.start)
-        end = ReadTool.parse_anchor(edit.end)
-        if start is None or end is None:
-            return error
-        start_index = min(max(start[0], 0), len(lines))
-        end_index = min(max(end[0], 0), len(lines))
-        if start_index > end_index:
-            start_index, end_index = end_index, start_index
-        return ToolError(message + "\n" + cls.format_current_ranges(lines, [(start_index, min(end_index + 1, len(lines)))]))
+        lines = ReadTool.split_lines(content)
+        start = first
+        end = start + len(old)
+        span_start = content.count("\n", 0, start)
+        ends_at_boundary = content[end - 1 : end] == "\n"
+        span_end = content.count("\n", 0, end) + int(not ends_at_boundary)
+        line_start = content.rfind("\n", 0, start) + 1
+        next_newline = content.find("\n", end)
+        line_end = end if ends_at_boundary else len(content) if next_newline == -1 else next_newline + 1
+        replacement = content[line_start:start] + new + content[end:line_end]
+        if replacement and not replacement.endswith("\n") and span_end < len(lines):
+            replacement += lines[span_end]
+            span_end += 1
+        return span_start, span_end, ReadTool.split_lines(replacement)
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
         return self.no_changes_error_from_lines(ReadTool.split_lines(original), result.replacements, result.replace_all)
@@ -741,11 +709,6 @@ class EditTool(Tool):
     @staticmethod
     def normalize_text(value: str) -> str:
         return value.replace("\r\n", "\n").replace("\r", "\n")
-
-    @classmethod
-    def content_text(cls, value: str) -> str:
-        value = cls.normalize_text(value)
-        return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t") if "\n" not in value and "\\n" in value else value
 
     def resolve_anchor(self, lines: list[str], anchor: str) -> int:
         index, expected = ReadTool.require_anchor(anchor)
