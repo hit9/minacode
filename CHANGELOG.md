@@ -3,6 +3,9 @@
 
 ## Unreleased
 
+
+## 0.24.5 - 2026-08-16
+
 ### Fixed
 
 - An MCP tool that returns only `structuredContent` no longer arrives as an empty result. A tool
