@@ -128,7 +128,9 @@ fallback. Ignored paths and `.git` are never offered.
   - Describes or scripts tool calls in bulk: `action="describe"` batch-reports call and return
     shapes with a json gate (built-in entries carry `json: no`), and `action="call"` runs a
     Python script whose nested `call(name, ...)` invocations cover built-in tools and MCP,
-    keeping the usual confirmation and logging; see [MCP](mcp.md#scripting-tool-calls).
+    keeping the usual confirmation and logging. It earns its keep at four or more same-shape
+    calls whose individual results are not needed, since only what the script prints returns to
+    the conversation; see [MCP](mcp.md#scripting-tool-calls).
 * - **`Delegate`**
   - Hands a bounded task to a second in-process session (the worker) that runs on its own
     configured provider with a reduced tool set, keeping its context across delegations until

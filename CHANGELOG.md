@@ -29,6 +29,11 @@
 
 ### Changed
 
+- The system prompt now says when to reach for `ToolScript` rather than leaving it to the tool
+  description: 4+ same-shape calls whose individual results are not needed, since only what the
+  script prints returns - and plain batching when each result matters or a step needs the model's
+  judgment, because a script runs to the end on its own. `ToolScript`'s own description states the
+  same trade rather than a bare threshold, and it gains examples.
 - Calls a ToolScript makes are logged indented under the script, on a `|` rail that runs unbroken
   from the script through every call it made - including whatever each of those calls logged below
   itself, a diff or a command's output - down to the result line, so the batch reads as work the

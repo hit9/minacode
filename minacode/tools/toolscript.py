@@ -75,9 +75,16 @@ class ToolScript(Tool):
     DESCRIPTION = (
         "Batch-query tool shapes for scripting, or run a Python script that calls tools: "
         'action="call" executes code where call(name, {...}) performs nested tool invocations with '
-        "normal confirmation and logging, and only printed output returns. Use only for 4+ "
-        'consecutive same-shape calls; for single tools use MCP(action="describe"). Built-in tools '
-        'are scriptable with format="text"; Delegate/Job/ToolScript are not.'
+        "normal confirmation and logging, and only printed output returns. Worth it at 4+ "
+        "consecutive same-shape calls whose individual results you do not need -- the script "
+        "keeps them out of context and returns the summary you print. Not worth it below that, "
+        "when you must read each result, or when a step needs your judgment: the script runs to "
+        'the end on its own. Describe one tool with MCP(action="describe"). Built-in tools are '
+        'scriptable with format="text"; Delegate/Job/ToolScript are not.'
+    )
+    EXAMPLE = (
+        'Aggregate many same-shape calls into one line. Example: {"action":"call","code":"hits = 0\\nfor path in (\\"a.py\\", \\"b.py\\", \\"c.py\\", \\"d.py\\"):\\n    hits += call(\\"Search\\", {\\"pattern\\": \\"TODO\\", \\"path\\": path}).count(\\"TODO\\")\\nprint(hits)"}',
+        'Learn call shapes before scripting them. Example: {"action":"describe","tools":["Read","server.tool"]}',
     )
     MUTATES = True
     runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the confirm wiring
