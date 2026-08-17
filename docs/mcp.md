@@ -80,95 +80,9 @@ read-only run without a prompt; anything that may change state asks for
 ## Scripting tool calls
 
 When the agent expects several <span class="marker">same-shape MCP calls</span> — the same tool
-with a handful of different arguments — the `ToolScript` tool lets it write one Python script
-instead of emitting each call separately. Only what the script prints returns to the
-conversation, so a batch of calls collapses into a single result. `ToolScript` is always
-available; the MCP entries below need a connected server.
-
-### Describing shapes in bulk
-
-`ToolScript(action="describe", tools=[...])` batch-reports each tool's call shape and a json
-gate. A list entry is either a built-in tool name like `"Read"` or an MCP tool as
-`"server.tool"`:
-
-- `json: yes` — the server declared an `outputSchema`, so `format="json"` below can rely on it.
-- `json: unknown` — no declared schema; `format="json"` will try to parse the returned text and
-  may fail.
-- `json: no` — built-in tools: scriptable with `format="text"`, but no structured return yet.
-
-The MCP rendering matches `MCP(action="describe")` with the gate line added; built-in entries
-are compact one-liners with their parameter essentials. Either way, a shape learned here is what
-a scripted call will actually receive.
-
-### Running a script
-
-`ToolScript(action="call", code="...")` runs the code as Python. Inside it, `call()` invokes a
-tool — built-in or MCP:
-
-```python
-rows = []
-for lang in ("zh", "en", "ja"):
-    d = call("MCP", {"server": "orionTemplate", "tool": "get_template_detail",
-                     "arguments": {"template_key": KEY, "language": lang}},
-             format="json")
-    rows.append((lang, d["title"]))
-print(rows)  # only this line returns to the conversation
-```
-
-- `call(name, args, format="text")` — `name` is a built-in tool like `"Read"`, `"Bash"`, or
-  `"Edit"`, or `"MCP"` for a server tool. `Delegate`, `Job`, and `ToolScript` itself cannot be
-  nested. `format="text"` returns the rendered result; MCP calls may use `format="json"` for a
-  parsed dict, while built-ins refuse it until they gain structured results
-  (`<name> does not support format="json"`).
-- Nested calls go through the <span class="marker">same confirmation, live logging, and `tr.N`
-  retention as top-level calls</span>, and they never add extra tool messages — the agent still
-  sees exactly one result per call it emitted.
-- The result envelope lists the nested `tr.N` keys, so a shortened output can still be recalled.
-- Refusing a nested call aborts the script; the rest of the outer batch continues.
-- A script that fails returns with a traceback (source lines included) so the agent can correct
-  itself.
-- Pure script execution is budgeted at about 60 seconds, excluding time spent inside nested
-  calls.
-
-### The json gate in practice
-
-Built-in tools report `json: no` and take `format="text"` only: `format="json"` refuses with
-`<name> does not support format="json"`. For MCP calls, `format="json"` prefers the server's
-declared `structuredContent`. Two errors are possible:
-
-- The tool declared an `outputSchema` but the call returned no `structuredContent` — reported as
-  `server declared outputSchema but no structuredContent`.
-- No schema was declared and the returned text is not JSON — reported as
-  `MCP returned text that is not JSON`.
-
-### Safety
-
-The script is <span class="marker">not sandboxed</span>: it runs with the same privileges as
-`Bash`. `ToolScript` asks for confirmation on every `action="call"` and the prompt shows the
-opening lines of the script, syntax-highlighted; `--yolo` skips that confirmation exactly as it
-does for `Bash`.
-
-### Reading the script
-
-The log shows a bounded excerpt of the script, not all of it — a long script would bury everything
-it then goes on to do. The whole body is one keypress away:
-
-- **`v` at the confirmation prompt** opens a read-only, scrolling viewer with the complete script,
-  numbered and highlighted. `Esc`/`q` returns to the prompt; nothing is approved by viewing.
-- **`Ctrl-O` afterwards** lists recent `Bash` and `ToolScript` calls; selecting a script opens the
-  same viewer, with the result it returned below the source — the printed output, or the whole
-  traceback when the script failed. This is how a script is read under `--yolo`, where no prompt
-  ever stops to offer `v`. A very large result is bounded there (head and tail, long lines
-  clipped) and the header says when it was.
-
-Line numbers in the viewer match the ones in a failed script's traceback
-(`File "<toolscript>", line N`).
-
-Calls the script makes are logged indented under it, on a `│` rail that runs unbroken from the
-script through every call it made — including whatever each of those calls logged below itself, a
-diff or a command's output — down to the result line. The batch therefore reads as work the script
-did rather than as calls the model made itself, and the closing line reports how many nested calls
-ran and the first lines of what the script printed.
+with a handful of different arguments — it can write one Python script instead of emitting each
+call separately, and only what the script prints returns to the conversation. See
+[ToolScript](toolscript.md), which covers scripting built-in tools as well.
 
 ### Authentication
 

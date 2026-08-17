@@ -130,7 +130,7 @@ fallback. Ignored paths and `.git` are never offered.
     Python script whose nested `call(name, ...)` invocations cover built-in tools and MCP,
     keeping the usual confirmation and logging. It earns its keep at four or more same-shape
     calls whose individual results are not needed, since only what the script prints returns to
-    the conversation; see [MCP](mcp.md#scripting-tool-calls).
+    the conversation; see [ToolScript](toolscript.md).
 * - **`Delegate`**
   - Hands a bounded task to a second in-process session (the worker) that runs on its own
     configured provider with a reduced tool set, keeping its context across delegations until
