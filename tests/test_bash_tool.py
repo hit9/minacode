@@ -121,6 +121,41 @@ def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypa
     JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
 
 
+def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
+    """A Job wait blocks the agent with no live stream, so the runner prints the call line as soon
+    as the wait starts -- before the result lands -- so the user can see the agent is waiting
+    instead of a blank screen. The finish block then hangs its children under that same root."""
+    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 30)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    s = session(tmp_path)
+    blocks: list[LogBlock | str] = []
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda _prompt: "y", output_fn=blocks.append)
+    JobTool(s, [{"action": "start", "command": "sleep 0.3; printf done"}]).call()
+
+    runner.run([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 30}])])
+
+    # The first output is the call line printed before the block: a leaf LogBlock whose root is a
+    # LogLine carrying the tool name and args, with no children yet.
+    first = blocks[0]
+    assert isinstance(first, LogBlock)
+    root = next(first.walk())[0]
+    assert root.label == "Job"
+    assert "wait" in root.text and "job.1" in root.text
+    # The finish block comes after, with no root of its own (the pre-block already drew it) and a
+    # stored/done child hanging underneath.
+    finish_blocks = [block for block in blocks[1:] if isinstance(block, LogBlock) and not any(isinstance(item, LogLine) and item.label == "Job" for item in block.items)]
+    assert finish_blocks, "no rootless finish block after the pre-block call line"
+    assert any(
+        line[0].label in {"stored", "done"}
+        for block in finish_blocks
+        for line in block.walk()
+    )
+    # A non-blocking action (list) prints no pre-block call line: only the finish block appears.
+    blocks.clear()
+    runner.run([ToolCall("call_2", "Job", [{"action": "list"}])])
+    assert len(blocks) == 1
+
+
 def test_bash_behaviors(tmp_path):
     s = session(tmp_path)
     bash = BashTool(s, ["printf out; printf err >&2; exit 3"]).call()

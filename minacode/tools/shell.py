@@ -434,6 +434,19 @@ class JobTool(Tool):
             raise ToolError(f"unknown action: {action!r}")
         return action
 
+    def is_blocking(self) -> bool:
+        """Whether this call holds the agent in _await_process: a `wait`, or a `status` with a
+        positive timeout. The runner prints the call line before such a block so the user can see
+        the agent is waiting, instead of a blank screen until the result lands."""
+        try:
+            payload = self.payload()
+            action = self.resolved_action(payload)
+        except ToolError:
+            return False
+        if action == "wait":
+            return True
+        return action == "status" and int(payload.get("timeout") or 0) > 0
+
     def needs_confirmation(self) -> bool:
         return self.resolved_action(self.payload()) in {"start", "kill", "wait"}
 

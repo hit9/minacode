@@ -516,6 +516,12 @@ class ToolRunner:
                     self.output_fn(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     d.nested_display = True
                 self.live_start()
+            elif isinstance(tool, JobTool) and tool.is_blocking():
+                # A Job wait/status-with-timeout blocks the agent with no live stream to show for it,
+                # so print the call line now (as a leaf the finish block will hang children under) so
+                # the user sees the agent is waiting, not a blank screen until the result lands.
+                self.output_fn(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
+                d.nested_display = True
             output = self.call_tool(tool, planned_edit)
             observation = tool.model_observation()
         except ToolError as error:
