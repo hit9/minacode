@@ -18,10 +18,10 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
-from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall
+from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError
 from minacode.render import UiPrinter
 from minacode.session import ToolResultRecord
-from minacode.tools import AskSpec, ToolScript
+from minacode.tools import AskSpec, BashTool, ToolScript
 from minacode.tui import (
     ASK_DONE,
     ASK_FREE_TEXT,
@@ -310,6 +310,16 @@ def script_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
     return ApprovalView(f"script · {record.key}", code, "python", rows, result)
 
 
+def bash_command(loop: CommandLoop, record: ToolResultRecord) -> str:
+    """The command as it was run. Taken from the tool rather than from its log display, which is
+    collapsed to one line and clipped at 200 characters -- fine for a transcript row, wrong for a
+    viewer whose whole job is showing the thing in full."""
+    try:
+        return BashTool(loop.session, record.args).command()
+    except ToolError:
+        return loop.agent.tools.short_call(ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
+
+
 def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
     """The stored Bash call as a viewable command: what was run, plus the streams it produced.
 
@@ -317,7 +327,7 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     open the one viewer. The output is bounded (see ToolRunner.VIEWER_LINES): stored Bash output
     has no cap, and a viewer that hangs on the one command that printed a megabyte is worse than
     one that says how much it is showing."""
-    command = loop.agent.tools.short_call(ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
+    command = bash_command(loop, record)
     streams, note = loop.agent.tools.bash_viewer_output(record.output)
     if not streams:
         # A command that printed nothing has nothing here the transcript does not already show. A
@@ -339,18 +349,22 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     to it; Bash is here because a bounded excerpt under the list was never the whole answer."""
     if loop.tui is None:
         return
-    records: list[ToolResultRecord] = []
+    # Built once, on the way in: a record with nothing to show is also a record with no view, so
+    # the same call decides whether to list it and what to open. Kept alongside its record rather
+    # than rebuilt on selection -- the bounding work is proportional to the stored result, and
+    # doing it twice for a multi-megabyte one would be paid on a keypress.
+    views: list[tuple[ToolResultRecord, ApprovalView]] = []
     for record in reversed(loop.session.tool_records):
-        if record_view(loop, record) is not None:
-            records.append(record)
-        if len(records) == 10:
+        view = record_view(loop, record)
+        if view is not None:
+            views.append((record, view))
+        if len(views) == 10:
             break
-    if not records:
+    if not views:
         return
-    picked = _tool_output_list(loop, records)
-    view = record_view(loop, picked) if picked is not None else None
-    if view is not None:
-        approval_text_viewer(loop, view)
+    picked = _tool_output_list(loop, views)
+    if picked is not None:
+        approval_text_viewer(loop, picked)
 
 
 def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
@@ -362,13 +376,13 @@ def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
     return None
 
 
-def _tool_output_list(loop: CommandLoop, records: list[ToolResultRecord]) -> ToolResultRecord | None:
-    """The list modal itself: pick one, and it closes returning the record to open."""
+def _tool_output_list(loop: CommandLoop, views: list[tuple[ToolResultRecord, ApprovalView]]) -> ApprovalView | None:
+    """The list modal itself: pick one, and it closes returning the view to open."""
     assert loop.tui is not None
     width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
     labels = {
         str(index): Text.clip_width(f"{record.key}  {loop.agent.tools.short_call(ToolCall('', record.name, record.args))}", width)
-        for index, record in enumerate(records)
+        for index, (record, _view) in enumerate(views)
     }
     state = ChoiceViewState(tuple(labels), labels, set())
 
@@ -381,7 +395,7 @@ def _tool_output_list(loop: CommandLoop, records: list[ToolResultRecord]) -> Too
 
     def fragments() -> StyleAndTextTuples:
         list_fragments = state.fragments("")
-        return [*rule(f"Tool output · latest {len(records)}"), *list_fragments[1:]]
+        return [*rule(f"Tool output · latest {len(views)}"), *list_fragments[1:]]
 
     def handle_key(key: str, data: str) -> Any:
         if key in {"c-o", "q"}:
@@ -389,10 +403,10 @@ def _tool_output_list(loop: CommandLoop, records: list[ToolResultRecord]) -> Too
         result = state.handle_key(key, data)
         if result is SELECTION_BACK:
             return None
-        return records[int(result)] if isinstance(result, str) else TUI_MODAL_PENDING
+        return views[int(result)][1] if isinstance(result, str) else TUI_MODAL_PENDING
 
     picked = loop.tui.show_modal(fragments, handle_key)
-    return picked if isinstance(picked, ToolResultRecord) else None
+    return picked if isinstance(picked, ApprovalView) else None
 
 
 def code_rows(text: str, lexer: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:

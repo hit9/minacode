@@ -54,6 +54,29 @@
 
 ### Fixed
 
+- A `ToolScript` script can no longer end the session: `sys.exit()` raised a `SystemExit` that flew
+  past the tool, past the runner, and out of the agent loop. It is now a failed script like any
+  other, while Ctrl-C still cancels the turn.
+- Nested calls inside a script log to the terminal again instead of into the script's own output.
+  The capture meant for what the script prints was swallowing every nested call's log line and
+  handing it back to the model as the script's result; on the headless path the confirmation prompt
+  went with it, stopping the run at a prompt nobody could see.
+- `ToolScript` no longer requires the describe-only `tools` argument on every call. Under a
+  strict-tools provider that made running a script at all a schema violation; `action` is now the
+  required field.
+- A failed script now reads as failed in the transcript: the result line says so and carries the
+  error, instead of looking exactly like a script that finished.
+- `call()` inside a script returns the result of tools whose output is not retained (`Recall`,
+  `RecallContext`, `Note`) rather than the model-facing envelope wrapped around it.
+- An MCP tool that declares an `outputSchema` and returns an empty `{}` or `[]` payload - a search
+  matching nothing - no longer fails a scripted `format="json"` call as though the payload were
+  missing, and a non-JSON structured payload is reported as a tool error rather than escaping.
+- The Delegate `v` viewer reflects a worker configuration just changed with `c`, instead of the one
+  captured when the prompt was first drawn.
+- The `Ctrl-O` viewer shows the whole command that was run; it was rendering the transcript's
+  one-line display, clipped at 200 characters.
+- The script time budget no longer enables line tracing inside every tool a script calls, which
+  cost a callback per line of `Read`, `Search`, and the MCP transport.
 - `Edit` now treats `content` and `new` as the JSON-decoded strings they already are, preserving
   literal `\n` and `\t` text instead of guessing that it represents another layer of escaping.
 - `replace_unique` remains an exact substring replacement when the match ends at a line boundary,

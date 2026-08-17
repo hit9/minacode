@@ -245,7 +245,6 @@ class ToolRunner:
     """
 
     BASH_TRANSCRIPT_PREVIEW_LINES: ClassVar[int] = 3
-    BASH_PREVIEW_LINES: ClassVar[int] = 24
     BASH_PREVIEW_LINE_LIMIT: ClassVar[int] = 220
     EDIT_PATH_RE: ClassVar[re.Pattern] = re.compile(r'<Edit\s+path=(".*?")')
     MCP_CALL_RE: ClassVar[re.Pattern] = re.compile(r"(?s)<MCPCall\b[^>]*>\n?(.*?)\n?</MCPCall>\s*$")
@@ -660,7 +659,6 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
-        view = tool.approval_view()
         # Decided before the brief is drawn: the brief needs the actions either way -- live in the
         # form, or spelled out in the typed legend when there is no form to show them.
         actions = self.approval_actions(tool, always_option)
@@ -684,10 +682,14 @@ class ToolRunner:
                 # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
                 self.delegate_config_cycle()
                 continue  # re-ask; the config cycle printed what it changed
-            if view is not None and lower in {"v", "view"}:
+            if lower in {"v", "view"} and (view := tool.approval_view()) is not None:
                 # Same whole-line exact-match rule as `c`: `v`/`view` opens the read-only viewer on
                 # whatever text this call commits to -- an order, a script -- and anything else
                 # (e.g. "cost too high") stays an ordinary refusal reason.
+                #
+                # Built here rather than before the loop: `c` can have edited the worker config
+                # since, and a viewer that reports the configuration a send will run under has to
+                # read it now, not as it stood when the prompt was first drawn.
                 self.view_text(view)
                 continue  # re-ask; viewing changed nothing, so there is nothing to redraw
             if lower in {"", "y", "yes"}:
@@ -944,10 +946,19 @@ class ToolRunner:
             # body itself stays one keypress away rather than repeated here.
             fields = self.toolscript_result_fields(output)
             if fields is not None:  # a describe returns tool shapes, not a script envelope
-                counted, stdout = fields
+                counted, stdout, error = fields
                 duration = f" · {elapsed:.1f}s" if elapsed is not None else ""
-                children.append(LogLine(f"calls {counted}" + duration, "Ctrl-O for more", LogRole.META, LogEdge.BRANCH))
-                children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in self.preview_lines(stdout, self.BASH_TRANSCRIPT_PREVIEW_LINES))
+                # A script that raised returns its envelope normally, so the call itself did not
+                # fail and nothing above this line says otherwise. Said here, or a script that died
+                # on call 2 of 40 reads exactly like one that finished -- and the error, unlike the
+                # printed output, is the part the reader needs.
+                head = ("failed · " if error else "") + f"calls {counted}" + duration
+                children.append(LogLine(head, "Ctrl-O for more", LogRole.ERROR if error else LogRole.META, LogEdge.BRANCH))
+                body = error or stdout
+                children.extend(
+                    LogLine("", line, LogRole.ERROR if error else LogRole.OUTPUT, LogEdge.CONTINUE)
+                    for line in self.preview_lines(body, self.BASH_TRANSCRIPT_PREVIEW_LINES)
+                )
         elif call.name == "Ask":
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         elif call.name == "Delegate":
@@ -1000,7 +1011,7 @@ class ToolRunner:
         meta = ("  " + batch_suffix) if batch_suffix else ""
         return LogLine(name, args, role, meta=meta, syntax=syntax)
 
-    def bash_result_preview(self, output: str, line_limit: int | None = None, char_limit: int | None = None) -> str:
+    def bash_result_preview(self, output: str, line_limit: int, char_limit: int | None = None) -> str:
         sections = []
         for name in ("stdout", "stderr"):
             text = self.tagged_output(output, name).strip()
@@ -1024,28 +1035,30 @@ class ToolRunner:
         dropped. The same head/tail elision the transcript preview uses, at a size meant to be read
         rather than glanced at."""
         bounded = "\n".join(self.preview_lines(text, self.VIEWER_LINES, self.VIEWER_LINE_CHARS))
-        return bounded, self.viewer_note(len(text.splitlines()), bounded)
+        return bounded, self.viewer_note(text, bounded)
 
     def bash_viewer_output(self, output: str) -> tuple[str, str]:
         """A Bash result's streams, labeled and bounded for a scrolling viewer, with the same note.
 
-        Counted against the streams rather than the stored envelope: the envelope's tag lines are
+        Measured against the streams rather than the stored envelope: the envelope's tag lines are
         not output, and a note that counts them reads as nonsense on a one-line result."""
         bounded = self.bash_result_preview(output, self.VIEWER_LINES, self.VIEWER_LINE_CHARS)
-        streams = sum(len(self.tagged_output(output, name).strip().splitlines()) for name in ("stdout", "stderr"))
-        return bounded, self.viewer_note(streams, bounded)
+        streams = [text for name in ("stdout", "stderr") if (text := self.tagged_output(output, name).strip())]
+        return bounded, self.viewer_note("\n".join(streams), bounded)
 
-    def viewer_note(self, total_lines: int, bounded: str) -> str:
+    def viewer_note(self, source: str, bounded: str) -> str:
         """What the viewer's bound dropped, as a header phrase -- empty when it dropped nothing.
 
-        Silence is the dangerous half: a reader who cannot tell an elided result from a complete
-        one has to distrust every result, so the note is stated whenever anything was cut."""
+        Both facts come from the source, not from sniffing the rendered text: a clipped line whose
+        tail was whitespace comes back shorter than the limit, so a length test on the output would
+        stay silent about exactly the clip it was meant to report. Silence is the dangerous half --
+        a reader who cannot tell an elided result from a complete one has to distrust every one."""
+        lines = source.splitlines()
         omitted = sum(int(match.group(1)) for match in self.OMITTED_RE.finditer(bounded))
-        clipped = any(line.endswith("...") and len(line.strip()) >= self.VIEWER_LINE_CHARS for line in bounded.splitlines())
         parts = []
         if omitted:
-            parts.append(f"{total_lines - omitted} shown of {total_lines}")
-        if clipped:
+            parts.append(f"{len(lines) - omitted} shown of {len(lines)}")
+        if any(len(line.rstrip()) > self.VIEWER_LINE_CHARS for line in lines):
             parts.append(f"long lines clipped at {self.VIEWER_LINE_CHARS}")
         return " · ".join(parts)
 
@@ -1078,23 +1091,25 @@ class ToolRunner:
     # lead with the count -- the keys themselves are already in the log, one per nested call line.
     TOOLSCRIPT_CALLS_RE: ClassVar[re.Pattern] = re.compile(r"^calls: (?:\.\.\. \+)?(\d+)", re.MULTILINE)
 
-    def toolscript_result_fields(self, output: str) -> tuple[str, str] | None:
-        """(nested call count, printed stdout) from a ToolScript envelope, or None when the output
-        is not one -- a `describe` returns tool shapes, and has no script to summarize."""
+    def toolscript_result_fields(self, output: str) -> tuple[str, str, str] | None:
+        """(nested call count, printed stdout, error) from a ToolScript envelope, or None when the
+        output is not one -- a `describe` returns tool shapes, and has no script to summarize."""
         if not output.startswith(("ToolScript ok", "ToolScript failed")):
             return None
         match = self.TOOLSCRIPT_CALLS_RE.search(output)
-        stdout: list[str] = []
+        sections: dict[str, list[str]] = {"stdout:": [], "error:": []}
         section = ""
         for line in output.splitlines():
             if line in ("stdout:", "stderr:", "error:"):
                 section = line
-            elif section == "stdout:":
-                stdout.append(line)
-        return match.group(1) if match else "0", "\n".join(stdout)
+            elif section in sections:
+                sections[section].append(line)
+        # The traceback's last line is the one that names what went wrong; the frames above it are
+        # in the viewer, against the numbered source.
+        error = "\n".join(sections["error:"]).strip()
+        return match.group(1) if match else "0", "\n".join(sections["stdout:"]), error.splitlines()[-1] if error else ""
 
-    def preview_lines(self, text: str, line_limit: int | None = None, char_limit: int | None = None) -> list[str]:
-        line_limit = self.BASH_PREVIEW_LINES if line_limit is None else line_limit
+    def preview_lines(self, text: str, line_limit: int, char_limit: int | None = None) -> list[str]:
         lines = [self.clip_preview_line(line, char_limit) for line in text.splitlines()]
         if len(lines) <= line_limit:
             return lines

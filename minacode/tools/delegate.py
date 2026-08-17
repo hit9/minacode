@@ -184,12 +184,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         to delegate at all. Seeing the order before it goes is the only cheap check on that; a bad
         one costs a whole worker round to discover. Editing files under yolo fails visibly and at
         once, which is what that flag actually buys."""
-        payload = self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
+        payload = self.payload_dict()
         return str(payload.get("action") or "").strip() == "send"
 
     def short_args(self) -> list[str]:
         """The root log line is just the action: `Delegate send`, never the order blob."""
-        payload = self.args[0] if len(self.args) == 1 and isinstance(self.args[0], dict) else {}
+        payload = self.payload_dict()
         action = str(payload.get("action") or "").strip()
         return [action] if action else [""]
 

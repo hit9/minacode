@@ -1123,3 +1123,19 @@ def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
     assert " 2  print(rows[2])" in viewer
     assert "IndexError: list index out of range" in viewer
     assert 'File "<toolscript>", line 2' in viewer
+
+
+def test_tool_output_viewer_shows_the_whole_command_not_the_clipped_log_line(tmp_path):
+    """The transcript row collapses and clips a command at 200 characters. A viewer opened to see
+    what was run has to show what was run."""
+    command_loop = loop(tmp_path)
+    command = "rg --json " + " ".join(f"--glob '!vendor/{index}/**'" for index in range(30)) + " pattern"
+    command_loop.session.store_tool_result("Bash", [command], Tool.process_result("BashToolResult", 0, "hit", ""))
+    modal = ModalHarness(["enter"])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    viewer = next(frame for frame in ("".join(v for _s, v in f) for f in modal.frames) if "read-only" in frame)
+    assert "vendor/29" in viewer  # the tail of the command survived
+    assert "..." not in viewer.split("── result")[0]

@@ -23,7 +23,6 @@ if TYPE_CHECKING:
 SCRIPT_FILENAME = "<toolscript>"
 # Pure script execution budget (nested tool calls are paused out of it). Best-effort, not a kill.
 SCRIPT_TIME_LIMIT = 60.0
-PREVIEW_LIMIT = 2000
 CALLS_LINE_LIMIT = 200
 _RESULT_KEY_RE = re.compile(r"^tool (tr\.\d+)")
 
@@ -44,8 +43,12 @@ class _ScriptTimeBudget:
 
     def tracer(self):
         def trace(frame, event, arg):
+            # None for a foreign frame, not `trace`: what a global trace call returns becomes that
+            # frame's local trace, so returning the tracer here would fire a Python callback on
+            # every line of every tool the script reaches -- Read, Search, the MCP transport --
+            # to immediately return. Script frames are still offered at their own call event.
             if frame.f_code.co_filename != SCRIPT_FILENAME:
-                return trace
+                return None
             if event == "line":
                 self._check(time.monotonic())
             return trace
@@ -68,6 +71,36 @@ class _ScriptTimeBudget:
     def resume(self) -> None:
         self._paused = False
         self._last = None
+
+
+class _StdoutCapture:
+    """The script's own stdout/stderr, captured -- and stepped aside for nested calls.
+
+    Only what the script itself prints returns to the model, so its writes are captured. But a
+    nested call is not the script writing: it logs to the terminal and may prompt for
+    confirmation, and both go through sys.stdout on the headless path. Capturing those would post
+    the log into the model's result and hide the prompt, so `paused()` restores the real streams
+    for exactly as long as the nested call runs."""
+
+    def __init__(self, stdout_buf: io.StringIO, stderr_buf: io.StringIO):
+        self.stdout_buf = stdout_buf
+        self.stderr_buf = stderr_buf
+        # Whatever was current when capture began, not sys.__stdout__: an outer redirect (the test
+        # harness, a caller capturing the run) owns these streams, and stepping aside must hand
+        # them back to that owner rather than punch through to the process's original terminal.
+        self.outer_stdout = sys.stdout
+        self.outer_stderr = sys.stderr
+
+    @contextlib.contextmanager
+    def active(self):
+        self.outer_stdout, self.outer_stderr = sys.stdout, sys.stderr
+        with contextlib.redirect_stdout(self.stdout_buf), contextlib.redirect_stderr(self.stderr_buf):
+            yield
+
+    @contextlib.contextmanager
+    def paused(self):
+        with contextlib.redirect_stdout(self.outer_stdout), contextlib.redirect_stderr(self.outer_stderr):
+            yield
 
 
 class ToolScript(Tool):
@@ -101,7 +134,7 @@ class ToolScript(Tool):
                 "description": 'Tools to describe, e.g. ["Read", "server.tool", ...]',
             },
             "code": {"type": "string", "description": 'Python source for action="call"; nested tool invocations go through call(name, {...}, format="text"|"json")'},
-        }, ["tools"])
+        }, ["action"])
         # fmt: on
 
     @staticmethod
@@ -113,13 +146,6 @@ class ToolScript(Tool):
 
     def needs_confirmation(self) -> bool:
         return self.resolved_action(self.payload()) == "call"
-
-    def preview(self) -> str:
-        """The full script, so a confirmation block can show the code. Truncated beyond PREVIEW_LIMIT."""
-        code = self.script()
-        if not code:
-            return self.NAME
-        return code if len(code) <= PREVIEW_LIMIT else code[: PREVIEW_LIMIT - 3] + "..."
 
     def script(self) -> str:
         """The script source of a `call`, or "" when there is none (a describe, a malformed call)."""
@@ -231,13 +257,14 @@ class ToolScript(Tool):
         keys: list[str] = []
 
         def call_fn(name, args=None, format="text"):
-            return self._nested_call(runner, budget, keys, name, args, format)
+            return self._nested_call(runner, budget, keys, name, args, format, capture)
 
         compiled = compile(code, SCRIPT_FILENAME, "exec")
         linecache.cache[SCRIPT_FILENAME] = (len(code), None, code.splitlines(True), SCRIPT_FILENAME)
 
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
+        capture = _StdoutCapture(stdout_buf, stderr_buf)
         previous_trace = sys.gettrace()
         failed = False
         error_text = ""
@@ -247,12 +274,20 @@ class ToolScript(Tool):
                 # Everything the nested calls log is printed one level deeper, so the batch reads as
                 # what it is -- calls made by this script -- instead of as calls the model made
                 # itself. The indent is the whole signal; the nested lines keep their usual shape.
-                with runner.nested(), contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                with runner.nested(), capture.active():
                     exec(  # noqa: S102 - ToolScript is the sanctioned script executor; not a sandbox, the outer confirmation is the boundary
                         compiled,
                         {"__name__": "__toolscript__", "__builtins__": builtins, "call": call_fn},
                     )
-            except Exception:  # noqa: BLE001 - script failures become a failed envelope, not a ToolScript crash.
+            except KeyboardInterrupt:
+                # Ctrl-C is the user cancelling the turn, not the script failing. It has to keep
+                # travelling: swallowing it here would report a failed script and carry on.
+                raise
+            except BaseException:  # noqa: BLE001 - script failures become a failed envelope, not a ToolScript crash.
+                # BaseException, not Exception: `sys.exit()` is an ordinary idiom in written-to-be-
+                # standalone Python, and a model writes it without thinking. As SystemExit it flew
+                # past this handler, past run_one (which catches Exception), and out of the agent
+                # loop -- one line of a script could end the session.
                 failed = True
                 error_text = traceback.format_exc()
             finally:
@@ -262,7 +297,7 @@ class ToolScript(Tool):
 
         return self._envelope(failed, keys, stdout_buf.getvalue(), stderr_buf.getvalue(), error_text)
 
-    def _nested_call(self, runner: ToolRunner, budget: _ScriptTimeBudget, keys: list[str], name, args, format) -> Json | str:
+    def _nested_call(self, runner: ToolRunner, budget: _ScriptTimeBudget, keys: list[str], name, args, format, capture: _StdoutCapture) -> Json | str:
         if name == "ToolScript":
             raise ToolError('call("ToolScript", ...) is not allowed')
         if name in ("Delegate", "Job"):
@@ -295,9 +330,15 @@ class ToolScript(Tool):
                 call = ToolCall(f"toolscript.{len(keys) + 1}", name, ModelClient.tool_payload(name, args))
             except ToolError as error:
                 raise ToolError(f"{name}: {error}") from error
+        # The capture steps aside for the same reason the clock pauses: what the nested call logs
+        # belongs on the terminal, not in the script's stdout. Left in place, every nested call
+        # line was swallowed into the buffer and handed back to the model as the script's own
+        # output, and a headless confirmation prompt -- input() writes to sys.stdout -- went with
+        # it, stopping the run at a prompt nobody could see.
         budget.pause()
         try:
-            status, message, _observation = self._run_nested(runner, call)
+            with capture.paused():
+                status, message, _observation = self._run_nested(runner, call)
         finally:
             budget.resume()
         if status == "refused":
@@ -309,7 +350,10 @@ class ToolScript(Tool):
             keys.append(key)
             full = self.session.tool_results.get(key, message)
         else:
-            full = message
+            # A tool the runner does not retain (Recall, RecallContext, Note) has no tr.N to read
+            # the result back from, and `message` is the model-facing envelope: a header line, then
+            # `output:`, then the text. The script asked for the result, so hand it the result.
+            full = self._message_body(message)
         if format == "json":
             try:
                 return json.loads(full)
@@ -327,6 +371,12 @@ class ToolScript(Tool):
             plan = EditBatchPlan(self.session).build([call])
             return runner.run_one(call, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
         return runner.run_one(call)
+
+    @staticmethod
+    def _message_body(message: str) -> str:
+        """The output half of a tool message, or the whole thing when it carries no `output:` line."""
+        head, separator, body = message.partition("\noutput:\n")
+        return body if separator else head
 
     @staticmethod
     def _result_key(message: str) -> str:

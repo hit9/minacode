@@ -810,8 +810,11 @@ class MCPManager:
         except Exception as e:
             raise ToolError("MCP call failed: " + self.error_text(e)) from e
 
-    def call_tool_structured(self, server: str, tool_name: str, arguments: Json) -> Json:
+    def call_tool_structured(self, server: str, tool_name: str, arguments: Json) -> Any:
         """Call an MCP tool and return its payload as a parsed JSON value.
+
+        `Any`, not `Json`: a declared outputSchema may describe an array as legitimately as an
+        object, and a tool returning a list of hits must reach the script as that list.
 
         When the tool declared an outputSchema the structuredContent payload is authoritative: it is
         returned as-is, and a declared-but-missing payload is an error, never a silent downgrade to
@@ -822,9 +825,19 @@ class MCPManager:
 
         info = self.tool_info(server, tool_name)
         if info is not None and info.output_schema:
-            structured = self._structured_content(result)
-            if structured:
-                return json.loads(structured)
+            # Asked for by attribute, not through _structured_content: that helper renders "" both
+            # for "no payload" and for an empty one, and a search that legitimately matched nothing
+            # returns exactly `{}` or `[]`. Treating that as a missing payload would fail every
+            # such call.
+            for attribute in ("structuredContent", "structured_content"):
+                structured = getattr(result, attribute, None)
+                if isinstance(structured, (dict, list)):
+                    return structured
+                if structured is not None:
+                    try:
+                        return json.loads(self._dump_object(structured))
+                    except (json.JSONDecodeError, ValueError):
+                        raise ToolError(f'server returned a structuredContent payload that is not JSON for tool "{tool_name}"') from None
             raise ToolError(f'server declared outputSchema but no structuredContent for tool "{tool_name}"')
 
         # No declared schema: parse the call's text body (the same text call_tool wraps in

@@ -153,7 +153,10 @@ class TestRegistration:
         params = schemas["ToolScript"]["parameters"]
         assert set(params["properties"]) == {"action", "tools", "code"}
         assert params["properties"]["action"]["enum"] == ["describe", "call"]
-        assert params["required"] == ["tools"]
+        # `action` is the discriminator and the only field every call has: requiring the
+        # describe-only `tools` made every script emit a list it has no use for -- and under a
+        # strict-tools provider, made running a script at all a schema violation.
+        assert params["required"] == ["action"]
         assert params["properties"]["tools"]["minItems"] == 1
 
     def test_toolscript_always_in_schemas(self, tmp_path):
@@ -278,6 +281,28 @@ class TestJsonFormat:
         content = _run_script(s, code)
         assert "ToolScript failed" in content
         assert 'MCP returned text that is not JSON for tool "echo"' in content
+
+    def test_declared_schema_with_an_empty_payload_returns_it(self, tmp_path, monkeypatch):
+        """`{}` and `[]` are payloads a search that matched nothing legitimately returns. Reported
+        as a missing payload, every such call raised instead of handing the script its answer."""
+        s = _mcp_session(tmp_path)
+        s.mcp.tools["test"] = [
+            mcp_tool_info("test", "empty_object", output_schema={"type": "object"}),
+            mcp_tool_info("test", "empty_list", output_schema={"type": "array"}),
+        ]
+
+        async def fake_call(config, headers, name, arguments):
+            return SimpleNamespace(content=[], structuredContent=[] if name == "empty_list" else {})
+
+        monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
+        code = (
+            'a = call("MCP", {"server": "test", "tool": "empty_object", "arguments": {}}, format="json")\n'
+            'b = call("MCP", {"server": "test", "tool": "empty_list", "arguments": {}}, format="json")\n'
+            "print(repr(a), repr(b))\n"
+        )
+        content = _run_script(s, code)
+        assert "ToolScript ok" in content
+        assert "{} []" in content
 
     def test_declared_schema_without_structured_content_errors(self, tmp_path, monkeypatch):
         s = _mcp_session(tmp_path)
@@ -621,6 +646,82 @@ class TestScriptLogShape:
         s = _mcp_session(tmp_path)
         runner = _runner(s)
         envelope = "ToolScript ok\ncalls: 3 [tr.1-3]\nstdout:\nfirst\nsecond\nstderr:\nnoise\n"
-        assert runner.toolscript_result_fields(envelope) == ("3", "first\nsecond")
-        assert runner.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "")
+        assert runner.toolscript_result_fields(envelope) == ("3", "first\nsecond", "")
+        assert runner.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "", "")
         assert runner.toolscript_result_fields("Read\njson:    no") is None
+        # A failed script keeps the line that names what went wrong; the frames are in the viewer.
+        failed = 'ToolScript failed\ncalls: 1 [tr.1]\nstdout:\npartial\nerror:\nTraceback (most recent call last):\n  File "<toolscript>", line 2\nValueError: boom'
+        assert runner.toolscript_result_fields(failed) == ("1", "partial", "ValueError: boom")
+
+
+class TestScriptCannotEndTheSession:
+    def test_sys_exit_becomes_a_failed_envelope(self, tmp_path):
+        """`sys.exit()` is ordinary in standalone Python and a model writes it without thinking.
+        As a SystemExit it flew past this tool, past run_one, and out of the agent loop: one line
+        of a script ended the session. It is a script failure like any other."""
+        s = _mcp_session(tmp_path)
+        content = _run_script(s, 'print("before")\nimport sys\nsys.exit(1)\nprint("after")\n')
+        assert "ToolScript failed" in content
+        assert "SystemExit" in content
+        assert "before" in content and "after" not in content
+
+    def test_keyboard_interrupt_still_travels(self, tmp_path):
+        """Ctrl-C is the user cancelling the turn, not the script failing; swallowing it would
+        report a failed script and carry on."""
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        with pytest.raises(KeyboardInterrupt):
+            runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": "raise KeyboardInterrupt\n"}])])
+
+
+class TestFailedScriptLooksFailed:
+    def test_the_result_line_reports_the_failure_and_the_error(self, tmp_path):
+        """A script that raised returns its envelope normally, so the call itself did not fail and
+        nothing else in the block says otherwise. Without this, a script that died on call 2 of 40
+        read exactly like one that finished."""
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        blocks = []
+        runner.output_fn = blocks.append
+        runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'print("partial")\nraise ValueError("boom")\n'}])])
+        lines = [line for block in blocks for line, _ in block.walk()]
+        head = next(line for line in lines if line.label.startswith(("calls", "failed")))
+        assert head.label.startswith("failed · calls 0")
+        assert head.role is LogRole.ERROR
+        assert any("ValueError: boom" in line.text for line in lines)
+
+
+class TestNestedCallsDoNotStealTheScriptStdout:
+    def test_nested_logging_reaches_the_terminal_not_the_model(self, tmp_path):
+        """The capture is for what the script prints. A nested call's log is not that: swallowed,
+        it was posted back as the script's own output, and on the headless path the confirmation
+        prompt -- input() writes to sys.stdout -- went the same way, stopping the run at a prompt
+        nobody could see."""
+        import contextlib
+        import io
+
+        (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)  # the headless default
+        terminal = io.StringIO()
+        with contextlib.redirect_stdout(terminal):
+            (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 't = call("Read", {"path": "f.txt"})\nprint("script says hi")\n'}])])
+
+        content = str(message["content"])
+        assert "Read f.txt" in terminal.getvalue()  # the nested call was logged where the user is
+        assert content.split("stdout:")[1].strip() == "script says hi"  # and nowhere near the result
+
+    def test_the_outer_stream_owner_gets_it_back(self, tmp_path):
+        """Stepping aside restores whatever was current when capture began, not the process's
+        original stdout: an outer redirect owns those streams and must keep owning them."""
+        import contextlib
+        import io
+
+        (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)
+        outer = io.StringIO()
+        with contextlib.redirect_stdout(outer):
+            runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'call("Read", {"path": "f.txt"})\n'}])])
+
+        assert "Read f.txt" in outer.getvalue()

@@ -1347,6 +1347,28 @@ def test_delegate_view_opens_viewer_then_approves(tmp_path):
     assert not any(label == "order" for label, _ in header_rows)  # order is shown in full in the viewer
 
 
+def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
+    """`c` then `v`: the viewer reports the configuration the send would run under, so it has to
+    read that configuration when the key is pressed, not as it stood when the prompt was drawn."""
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+    from minacode.tools.delegate import DelegateTool
+
+    parent = _delegate_session(tmp_path)
+    args = {"action": "send", "order": "do the thing"}
+    seen = []
+    answers = iter(["c", "v", "y"])
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
+    runner.text_viewer = lambda view: seen.append(dict(view.rows))
+    runner.worker_config_picker = lambda: setattr(parent.config, "worker_model", "chosen-in-the-c-cycle")
+
+    confirmed, _reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+
+    assert confirmed
+    assert seen and seen[0]["model"] == "chosen-in-the-c-cycle"
+
+
 def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
     from minacode.base import LogBlock, ToolCall
     from minacode.context import ContextManager
