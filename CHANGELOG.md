@@ -3,6 +3,23 @@
 
 ## Unreleased
 
+### Fixed
+
+- An MCP tool that returns only `structuredContent` no longer arrives as an empty result. A tool
+  declaring an `outputSchema` returns its payload there and only *should* also repeat it as text
+  for older clients; minacode read the text alone, so a server that skips the repeat produced a
+  result the model reads as a query that matched nothing. The structured payload now stands in when
+  the content blocks are empty, and is not appended when they are not — servers that honor the
+  repeat send the same payload twice.
+
+### Added
+
+- `MCP(action="describe")` reports what a tool returns, on the servers that declare it. The result
+  shape is read from the tool's `outputSchema` and rendered as `<returns>` in the same form as its
+  arguments, with the full schema below. Without it the only way to learn a tool's result shape was
+  to call it, spending an exploratory call on every unfamiliar tool. Tools that declare no schema
+  read exactly as before.
+
 
 ## 0.24.4 - 2026-08-16
 

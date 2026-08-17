@@ -156,6 +156,9 @@ class MCPToolInfo:
     name: str
     description: str
     input_schema: Json
+    # The tool's declared result shape (MCP `outputSchema`, 2025-06-18). Empty when the server
+    # declares none, which is most of them: it is rendered only when present.
+    output_schema: Json = field(default_factory=dict)
     annotations: Json = field(default_factory=dict)
 
 
@@ -549,6 +552,7 @@ class MCPManager:
                 name=t.name,
                 description=t.description or "",
                 input_schema=t.inputSchema,
+                output_schema=self.tool_output_schema(t),
                 annotations=self.tool_annotations(t),
             )
             for t in tools
@@ -570,6 +574,18 @@ class MCPManager:
                 )
             )
         return infos
+
+    @staticmethod
+    def tool_output_schema(tool: Tool) -> Json:
+        """The tool's declared `outputSchema`, or {} when it declares none.
+
+        Read under both spellings: the wire field is camelCase and SDK models expose it that way,
+        but a server object built by hand may carry the snake_case name instead."""
+        for attribute in ("outputSchema", "output_schema"):
+            schema = getattr(tool, attribute, None)
+            if isinstance(schema, dict) and schema:
+                return schema
+        return {}
 
     @staticmethod
     def tool_annotations(tool: Tool) -> Json:
@@ -845,6 +861,17 @@ class MCPManager:
         body = "\n".join(blocks)
         return f'<MCPAutoResources note="docs referenced by {server}.{tool_name}; injected once">\n{body}\n</MCPAutoResources>\n'
 
+    @classmethod
+    def _structured_content(cls, result: Any) -> str:
+        """The result's `structuredContent` as JSON text, or "" when it carries none."""
+        for attribute in ("structuredContent", "structured_content"):
+            structured = getattr(result, attribute, None)
+            if isinstance(structured, (dict, list)) and structured:
+                return json.dumps(structured, ensure_ascii=False, indent=2)
+            if structured is not None and not isinstance(structured, (dict, list)):
+                return cls._dump_object(structured)
+        return ""
+
     @staticmethod
     def _dump_object(item: Any) -> str:
         """Render a non-str/dict MCP item: pydantic-style model_dump as JSON, else str()."""
@@ -891,6 +918,15 @@ class MCPManager:
         return (props if isinstance(props, dict) else {}, required if isinstance(required, list) else [])
 
     def normalize_result(self, result: Any) -> str:
+        """Render a tool result as the text the model reads.
+
+        A tool that declares an `outputSchema` returns its payload as `structuredContent`, and only
+        *should* also repeat it as text for older clients. A server that skips the repeat would
+        otherwise arrive here as an empty result -- indistinguishable, to the model, from a query
+        that matched nothing -- so the structured payload stands in when the content blocks are
+        empty. It is not appended when they are not: servers that honor the repeat send the same
+        payload twice, and printing both would double every result.
+        """
         parts: list[str] = []
         content = getattr(result, "content", result)
         items = content if isinstance(content, list) else [content]
@@ -914,7 +950,8 @@ class MCPManager:
                 parts.append(str(getattr(item, "resource", "") or ""))
             else:
                 parts.append(self._dump_object(item))
-        return self._join_bounded(parts)
+        text = self._join_bounded(parts)
+        return text or self._join_bounded([self._structured_content(result)])
 
     def _authenticate_oauth(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
         """Validate cached OAuth credentials or complete interactive authorization."""
@@ -956,29 +993,58 @@ class MCPManager:
         from minacode.tools import Tool  # local import: tools is built on top of mcp
 
         schema = info.input_schema or {}
+        returns = info.output_schema or {}
         lines = [f"<MCPDescribe server={json.dumps(server)} tool={json.dumps(info.name)}>"]
         if info.description:
             lines.append("<description>")
             lines.append(Tool.compact(info.description, self.DESCRIBE_DESCRIPTION_LIMIT))
             lines.append("</description>")
         lines.append("<arguments>")
+        lines.extend(self._describe_properties(schema, "arguments"))
+        lines.append("</arguments>")
+        # The result shape, on the servers that declare one. Without it the only way to learn what
+        # a tool returns is to call it, so an exploratory call is spent on every unfamiliar tool.
+        # Rendered in the same shape as the arguments above, and omitted entirely when undeclared.
+        if returns:
+            lines.append("<returns>")
+            lines.extend(self._describe_properties(returns, "fields", bare="returns_schema"))
+            lines.append("</returns>")
+        if isinstance(schema, dict) and schema:
+            lines.append("<schema>")
+            lines.append(json.dumps(schema, ensure_ascii=False, indent=2))
+            lines.append("</schema>")
+        if returns:
+            lines.append("<returns_schema>")
+            lines.append(json.dumps(returns, ensure_ascii=False, indent=2))
+            lines.append("</returns_schema>")
+        lines.append("</MCPDescribe>")
+        return "\n".join(lines)
+
+    def _describe_properties(self, schema: Json, label: str, bare: str = "") -> list[str]:
+        """One `- name required type: description` line per property, bounded like the block it
+        serves. Shared by arguments and returns so a reader learns one rendering, not two.
+
+        `bare` is what to say for a schema with no properties at all -- a bare array or scalar
+        result. Arguments pass nothing and keep rendering an empty block, as they always have."""
+        from minacode.tools import Tool  # local import: tools is built on top of mcp
+
+        if not isinstance(schema, dict):
+            return []
         props, required = self._schema_props_required(schema)
+        if not props:
+            kind = schema.get("type")
+            return [f"({kind}; see {bare} below)"] if bare and isinstance(kind, str) and kind else []
+        lines: list[str] = []
         for index, (name, prop) in enumerate(props.items()):
             if index >= self.DESCRIBE_ARGUMENT_LIMIT:
-                lines.append(f"... {len(props) - self.DESCRIBE_ARGUMENT_LIMIT} more arguments omitted")
+                lines.append(f"... {len(props) - self.DESCRIBE_ARGUMENT_LIMIT} more {label} omitted")
                 break
             req = "required" if name in required else "optional"
             prop = prop if isinstance(prop, dict) else {}
             typ = prop.get("type", "any")
             desc = Tool.compact(str(prop.get("description", "") or ""), self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT)
             lines.append(f"- {name} {req} {typ}: {desc}")
-        lines.append("</arguments>")
-        if isinstance(schema, dict) and schema:
-            lines.append("<schema>")
-            lines.append(json.dumps(schema, ensure_ascii=False, indent=2))
-            lines.append("</schema>")
-        lines.append("</MCPDescribe>")
-        return "\n".join(lines)
+        return lines
 
     def render_tools_index(self) -> str:
         """Render the MCP tools block injected into every model turn (in the cached prefix).

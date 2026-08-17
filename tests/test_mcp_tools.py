@@ -546,6 +546,62 @@ class TestDescribeTool:
         assert "<MCPDescribe server=" in result
         assert "echo" in result
 
+    def test_describe_renders_a_declared_result_shape(self):
+        """Without this the only way to learn what a tool returns is to call it, so every
+        unfamiliar tool costs an exploratory call before it can be used for real."""
+        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = [
+            mcp_tool_info(
+                "test",
+                "echo",
+                output_schema={
+                    "type": "object",
+                    "properties": {"total": {"type": "integer", "description": "How many matched"}, "items": {"type": "array"}},
+                    "required": ["total"],
+                },
+            )
+        ]
+
+        result = s.mcp.describe_tool("test", "echo")
+
+        assert "<returns>" in result
+        assert "- total required integer: How many matched" in result
+        assert "- items optional array:" in result
+        assert "<returns_schema>" in result
+
+    def test_describe_omits_returns_when_the_server_declares_none(self):
+        """Most servers declare no outputSchema; they must read exactly as they did before."""
+        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+
+        result = s.mcp.describe_tool("test", "echo")
+
+        assert "returns" not in result
+        assert "<arguments>" in result and "<schema>" in result
+
+    def test_describe_names_a_result_that_is_not_an_object(self):
+        """A bare array or scalar has no properties to list, and an empty block would read as
+        'returns nothing' rather than 'see the schema'."""
+        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo", output_schema={"type": "array", "items": {"type": "string"}})]
+
+        result = s.mcp.describe_tool("test", "echo")
+
+        assert "(array; see returns_schema below)" in result
+
+    def test_describe_bounds_a_large_result_shape(self, monkeypatch):
+        """Result shapes can be far larger than argument lists; the same cap applies."""
+        s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        monkeypatch.setattr(s.mcp, "DESCRIBE_ARGUMENT_LIMIT", 3)
+        props = {f"f{i}": {"type": "string"} for i in range(10)}
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo", output_schema={"type": "object", "properties": props})]
+
+        result = s.mcp.describe_tool("test", "echo")
+
+        assert "- f2 optional string:" in result
+        assert "- f3 optional string:" not in result
+        assert "... 7 more fields omitted" in result
+
     def test_describe_unknown_tool_raises_error(self):
         """Unknown tool raises ToolError."""
         s = Session(cwd="/tmp")
@@ -683,6 +739,38 @@ class TestNormalizeResult:
         result = s.mcp.normalize_result(obj)
         assert "ok" in result
         assert "42" in result
+
+    def test_structured_content_stands_in_for_missing_text(self):
+        """A tool that declares an outputSchema returns `structuredContent` and only *should* also
+        repeat it as text. Without the repeat the result would arrive empty — which the model reads
+        as a query that matched nothing, not as a client that dropped the payload."""
+        s = session("/tmp")
+        result = SimpleNamespace(content=[], structuredContent={"total": 3, "items": ["a", "b"]})
+
+        text = s.mcp.normalize_result(result)
+
+        assert '"total": 3' in text and '"items"' in text
+
+    def test_structured_content_is_not_repeated_when_text_is_present(self):
+        """Servers that honor the compatibility repeat send the same payload twice; printing both
+        would double the size of every result they return."""
+        s = session("/tmp")
+        result = SimpleNamespace(content=[{"type": "text", "text": '{"total": 3}'}], structuredContent={"total": 3})
+
+        text = s.mcp.normalize_result(result)
+
+        assert text.count("total") == 1
+
+    def test_snake_case_structured_content_is_read_too(self):
+        """The wire field is camelCase, but a hand-built server object may use the Python spelling."""
+        s = session("/tmp")
+
+        assert '"ok"' in s.mcp.normalize_result(SimpleNamespace(content=[], structured_content={"status": "ok"}))
+
+    def test_empty_result_with_no_structured_content_stays_empty(self):
+        s = session("/tmp")
+
+        assert s.mcp.normalize_result(SimpleNamespace(content=[])) == ""
 
     def test_long_output_truncation(self, monkeypatch):
         """Output exceeding RAW_OUTPUT_LIMIT is truncated."""
@@ -999,3 +1087,32 @@ class TestMCPResources:
 # ---------------------------------------------------------------------------
 # User scenarios — public commands through model-visible context
 # ---------------------------------------------------------------------------
+
+
+class TestToolOutputSchemaCapture:
+    def test_output_schema_is_captured_under_either_spelling(self):
+        """The wire field is camelCase and SDK models expose it that way; a hand-built server
+        object may carry the Python spelling instead."""
+        shape = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+        camel = SimpleNamespace(name="a", description="", inputSchema={}, outputSchema=shape, annotations=None)
+        snake = SimpleNamespace(name="b", description="", inputSchema={}, output_schema=shape, annotations=None)
+
+        assert MCPManager.tool_output_schema(camel) == shape
+        assert MCPManager.tool_output_schema(snake) == shape
+
+    def test_a_tool_that_declares_nothing_captures_nothing(self):
+        bare = SimpleNamespace(name="c", description="", inputSchema={}, annotations=None)
+
+        assert MCPManager.tool_output_schema(bare) == {}
+        assert MCPManager.tool_output_schema(SimpleNamespace(outputSchema=None)) == {}
+        assert MCPManager.tool_output_schema(SimpleNamespace(outputSchema="not a schema")) == {}
+
+    def test_discovery_carries_the_schema_into_the_cached_tool_info(self, tmp_path):
+        s = session(tmp_path)
+        shape = {"type": "object", "properties": {"total": {"type": "integer"}}}
+        tools = [SimpleNamespace(name="echo", description="d", inputSchema={}, outputSchema=shape, annotations=None)]
+
+        (info,) = s.mcp._tools_info("test", tools)
+
+        assert info.output_schema == shape
