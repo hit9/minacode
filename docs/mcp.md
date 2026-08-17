@@ -82,25 +82,28 @@ read-only run without a prompt; anything that may change state asks for
 When the agent expects several <span class="marker">same-shape MCP calls</span> — the same tool
 with a handful of different arguments — the `ToolScript` tool lets it write one Python script
 instead of emitting each call separately. Only what the script prints returns to the
-conversation, so a batch of calls collapses into a single result. Like `MCP`, it appears only
-after a server is connected.
+conversation, so a batch of calls collapses into a single result. `ToolScript` is always
+available; the MCP entries below need a connected server.
 
 ### Describing shapes in bulk
 
-`ToolScript(action="describe", tools=["server.tool", ...])` batch-reports each tool's call
-shape, return shape, and a json gate:
+`ToolScript(action="describe", tools=[...])` batch-reports each tool's call shape and a json
+gate. A list entry is either a built-in tool name like `"Read"` or an MCP tool as
+`"server.tool"`:
 
 - `json: yes` — the server declared an `outputSchema`, so `format="json"` below can rely on it.
 - `json: unknown` — no declared schema; `format="json"` will try to parse the returned text and
   may fail.
+- `json: no` — built-in tools: scriptable with `format="text"`, but no structured return yet.
 
-The rendering matches `MCP(action="describe")` with the gate line added, so a shape learned here
-is what a scripted call will actually receive.
+The MCP rendering matches `MCP(action="describe")` with the gate line added; built-in entries
+are compact one-liners with their parameter essentials. Either way, a shape learned here is what
+a scripted call will actually receive.
 
 ### Running a script
 
-`ToolScript(action="call", code="...")` runs the code as Python. Inside it, `call()` invokes an
-MCP tool:
+`ToolScript(action="call", code="...")` runs the code as Python. Inside it, `call()` invokes a
+tool — built-in or MCP:
 
 ```python
 rows = []
@@ -112,9 +115,11 @@ for lang in ("zh", "en", "ja"):
 print(rows)  # only this line returns to the conversation
 ```
 
-- `call(name, args, format="text")` — `name` must be `"MCP"`; built-in tools answer
-  `not scriptable yet`. `format="text"` returns the rendered result; `format="json"` returns a
-  parsed dict.
+- `call(name, args, format="text")` — `name` is a built-in tool like `"Read"`, `"Bash"`, or
+  `"Edit"`, or `"MCP"` for a server tool. `Delegate`, `Job`, and `ToolScript` itself cannot be
+  nested. `format="text"` returns the rendered result; MCP calls may use `format="json"` for a
+  parsed dict, while built-ins refuse it until they gain structured results
+  (`<name> does not support format="json"`).
 - Nested calls go through the <span class="marker">same confirmation, live logging, and `tr.N`
   retention as top-level calls</span>, and they never add extra tool messages — the agent still
   sees exactly one result per call it emitted.
@@ -127,7 +132,9 @@ print(rows)  # only this line returns to the conversation
 
 ### The json gate in practice
 
-`format="json"` prefers the server's declared `structuredContent`. Two errors are possible:
+Built-in tools report `json: no` and take `format="text"` only: `format="json"` refuses with
+`<name> does not support format="json"`. For MCP calls, `format="json"` prefers the server's
+declared `structuredContent`. Two errors are possible:
 
 - The tool declared an `outputSchema` but the call returned no `structuredContent` — reported as
   `server declared outputSchema but no structuredContent`.

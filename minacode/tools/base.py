@@ -72,7 +72,6 @@ class Tool:
             MCPTool,
             NextHintsTool,
             SkillTool,
-            ToolScript,
         )
 
         strict = session.config.provider.resolve().strict_tools_active
@@ -86,7 +85,6 @@ class Tool:
             and (tool is not SkillTool or has_skills)
             and (tool is not MCPTool or has_mcp)
             and (tool is not NextHintsTool or session.settings.quick_hints)
-            and (tool is not ToolScript or has_mcp)
             and (tool is not DelegateTool or (session.worker_tool_enabled and session.settings.worker))
         ]
 

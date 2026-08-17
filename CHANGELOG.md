@@ -13,7 +13,9 @@
   nested MCP invocations with the usual confirmation, logging, and `tr.N` retention - only printed
   output returns to the context. Nested calls never add tool messages, a refused nested call aborts
   the script while the rest of the batch proceeds, and `format="json"` prefers the declared
-  `structuredContent` payload over parsing rendered text. Built-in tools are not scriptable yet.
+  `structuredContent` payload over parsing rendered text. Built-in tools are scriptable with
+  `format="text"` too (Delegate/Job/ToolScript cannot be nested); `format="json"` for built-ins
+  waits for structured results.
 
 ### Changed
 

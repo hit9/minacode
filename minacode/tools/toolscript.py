@@ -17,7 +17,6 @@ from minacode.base import Json, ToolCall, ToolError
 from minacode.tools.base import Tool
 
 if TYPE_CHECKING:
-    from minacode.mcp import MCPManager
     from minacode.runner import ToolRunner
 
 # The fake filename scripts are compiled under: linecache keeps the source visible in tracebacks.
@@ -74,11 +73,11 @@ class _ScriptTimeBudget:
 class ToolScript(Tool):
     NAME = "ToolScript"
     DESCRIPTION = (
-        "Batch-query MCP tool shapes for scripting, or run a Python script that calls MCP tools: "
-        'action="call" executes code where call("MCP", {...}) performs nested MCP invocations with '
+        "Batch-query tool shapes for scripting, or run a Python script that calls tools: "
+        'action="call" executes code where call(name, {...}) performs nested tool invocations with '
         "normal confirmation and logging, and only printed output returns. Use only for 4+ "
         'consecutive same-shape calls; for single tools use MCP(action="describe"). Built-in tools '
-        "are not scriptable yet."
+        'are scriptable with format="text"; Delegate/Job/ToolScript are not.'
     )
     MUTATES = True
     runner: ToolRunner | None = None  # injected by ToolRunner.call_tool; the runner owns the confirm wiring
@@ -87,14 +86,14 @@ class ToolScript(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         return cls.object_schema({
-            "action": {"type": "string", "enum": ["describe", "call"], "description": '"describe" batch-queries MCP tool return shapes; "call" runs a Python script that invokes MCP tools'},
+            "action": {"type": "string", "enum": ["describe", "call"], "description": '"describe" batch-queries tool return shapes; "call" runs a Python script that invokes tools'},
             "tools": {
                 "type": "array",
-                "items": {"type": "string", "description": 'MCP tool as "server.tool" — the name used in the MCP tools index'},
+                "items": {"type": "string", "description": 'a built-in tool name like "Read", or an MCP tool as "server.tool"'},
                 "minItems": 1,
-                "description": 'MCP tools to describe, e.g. ["server.tool", ...]',
+                "description": 'Tools to describe, e.g. ["Read", "server.tool", ...]',
             },
-            "code": {"type": "string", "description": 'Python source for action="call"; nested MCP invocations go through call("MCP", {"server", "tool", "arguments"}, format="text"|"json")'},
+            "code": {"type": "string", "description": 'Python source for action="call"; nested tool invocations go through call(name, {...}, format="text"|"json")'},
         }, ["tools"])
         # fmt: on
 
@@ -139,18 +138,13 @@ class ToolScript(Tool):
         code = payload.get("code")
         if not isinstance(code, str) or not code.strip():
             raise ToolError("ToolScript call requires a non-empty code string")
-        if self.session.mcp is None:
-            raise ToolError("MCP not configured")
         return self._run_script(code)
 
     def _describe(self, payload: Json) -> str:
         raw = payload.get("tools")
         if not isinstance(raw, list) or not raw or not all(isinstance(item, str) and item for item in raw):
-            raise ToolError('ToolScript tools must be a non-empty list of "server.tool" strings')
-        mcp = self.session.mcp
-        if mcp is None:
-            raise ToolError("MCP not configured")
-        return "\n\n".join(self._describe_entry(mcp, entry) for entry in raw)
+            raise ToolError('ToolScript tools must be a non-empty list of tool names or "server.tool" strings')
+        return "\n\n".join(self._describe_entry(entry) for entry in raw)
 
     @staticmethod
     def _split_name(entry: str) -> tuple[str, str]:
@@ -159,24 +153,48 @@ class ToolScript(Tool):
         server, _, tool = name.partition(".")
         return server, tool
 
-    def _describe_entry(self, mcp: MCPManager, entry: str) -> str:
+    def _describe_entry(self, raw_entry: str) -> str:
         from minacode.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
 
-        server, tool = self._split_name(entry)
+        if raw_entry in TOOL_REGISTRY:
+            return self._describe_builtin(TOOL_REGISTRY[raw_entry])
+        mcp = self.session.mcp
+        if mcp is None:
+            return f"{raw_entry}: MCP not configured"
+        server, tool = self._split_name(raw_entry)
         if mcp.find_config(server) is None:
-            if server in TOOL_REGISTRY:
-                return f"{entry}: {server} is not scriptable yet"
             if not tool:
-                return f'{entry}: expected "server.tool" format'
-            return f"{entry}: MCP server '{server}' not found"
+                return f'{raw_entry}: expected "server.tool" format'
+            return f"{raw_entry}: MCP server '{server}' not found"
         if not tool:
-            return f'{entry}: expected "server.tool" format'
+            return f'{raw_entry}: expected "server.tool" format'
         try:
             text, info = mcp.describe_tool_block(server, tool)
         except ToolError as error:
-            return f"{entry}: {error}"
+            return f"{raw_entry}: {error}"
         gate = "json:    yes" if info.output_schema else "json:    unknown"
         return text + "\n" + gate
+
+    @staticmethod
+    def _describe_builtin(tool_class: type[Tool]) -> str:
+        """One compact block per built-in tool: name, parameter essentials, and the json gate.
+        Built-ins have no structured return yet, so the gate is always "no" (format="json" refuses)."""
+        lines = [tool_class.NAME]
+        schema = tool_class.params_schema()
+        if isinstance(schema, dict):
+            props = schema.get("properties")
+            required = set(schema.get("required") or [])
+            if isinstance(props, dict):
+                args = []
+                for prop_name, prop in props.items():
+                    if not isinstance(prop, dict):
+                        continue
+                    ptype = str(prop.get("type") or "any")
+                    args.append(f"{prop_name}  {'required ' if prop_name in required else ''}{ptype}")
+                if args:
+                    lines.append("  args:    " + ", ".join(args))
+        lines.append("json:    no")
+        return "\n".join(lines)
 
     def _run_script(self, code: str) -> str:
         runner = getattr(self, "runner", None)
@@ -218,24 +236,39 @@ class ToolScript(Tool):
     def _nested_call(self, runner: ToolRunner, budget: _ScriptTimeBudget, keys: list[str], name, args, format) -> Json | str:
         if name == "ToolScript":
             raise ToolError('call("ToolScript", ...) is not allowed')
-        if name != "MCP":
+        if name in ("Delegate", "Job"):
+            raise ToolError(f"{name} is not scriptable")
+        if name == "MCP":
+            if not isinstance(args, dict):
+                raise ToolError('call("MCP", ...) requires {"server": str, "tool": str, "arguments": dict}')
+            server, tool, arguments = args.get("server"), args.get("tool"), args.get("arguments")
+            if not isinstance(server, str) or not server or not isinstance(tool, str) or not tool or not isinstance(arguments, dict):
+                raise ToolError('call("MCP", ...) requires {"server": str, "tool": str, "arguments": dict}')
+            if self.session.mcp is None:
+                raise ToolError("MCP not configured")
+            payload: Json = {"action": "call", "server": server, "tool": tool, "arguments": arguments}
+            if format == "json":
+                payload["format"] = "json"
+            call = ToolCall(f"toolscript.{len(keys) + 1}", "MCP", [payload])
+        else:
             from minacode.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
 
-            if name in TOOL_REGISTRY:
-                raise ToolError(f"{name} is not scriptable yet")
-            raise ToolError(f'unknown tool "{name}"')
-        if not isinstance(args, dict):
-            raise ToolError('call("MCP", ...) requires {"server": str, "tool": str, "arguments": dict}')
-        server, tool, arguments = args.get("server"), args.get("tool"), args.get("arguments")
-        if not isinstance(server, str) or not server or not isinstance(tool, str) or not tool or not isinstance(arguments, dict):
-            raise ToolError('call("MCP", ...) requires {"server": str, "tool": str, "arguments": dict}')
-        payload: Json = {"action": "call", "server": server, "tool": tool, "arguments": arguments}
-        if format == "json":
-            payload["format"] = "json"
-        call = ToolCall(f"toolscript.{len(keys) + 1}", "MCP", [payload])
+            tool_class = TOOL_REGISTRY.get(name)
+            if tool_class is None:
+                raise ToolError(f'unknown tool "{name}"')
+            if format == "json":
+                raise ToolError(f'{name} does not support format="json"; use format="text"')
+            if not isinstance(args, dict):
+                raise ToolError(f'call("{name}", ...) requires named arguments')
+            from minacode.model import ModelClient  # local import: model.py imports the tool registry
+
+            try:
+                call = ToolCall(f"toolscript.{len(keys) + 1}", name, ModelClient.tool_payload(name, args))
+            except ToolError as error:
+                raise ToolError(f"{name}: {error}") from error
         budget.pause()
         try:
-            status, message, _observation = runner.run_one(call)
+            status, message, _observation = self._run_nested(runner, call)
         finally:
             budget.resume()
         if status == "refused":
@@ -254,6 +287,17 @@ class ToolScript(Tool):
             except (json.JSONDecodeError, ValueError):
                 raise ToolError(f'MCP returned text that is not JSON for tool "{tool}"')
         return full
+
+    def _run_nested(self, runner: ToolRunner, call: ToolCall) -> tuple[str, str, object | None]:
+        """Run one nested call through the runner. Edits go through a single-element plan so a nested
+        Edit behaves exactly like a top-level single Edit (anchor planning, stale checks, write-time
+        verification) instead of a plan-less EditTool.call()."""
+        if call.name == "Edit":
+            from minacode.runner import EditBatchPlan  # local import: runner.py imports the tool registry
+
+            plan = EditBatchPlan(self.session).build([call])
+            return runner.run_one(call, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
+        return runner.run_one(call)
 
     @staticmethod
     def _result_key(message: str) -> str:

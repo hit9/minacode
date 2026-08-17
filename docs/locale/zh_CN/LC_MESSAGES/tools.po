@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-16 21:10-0700\n"
+"POT-Creation-Date: 2026-08-17 00:31-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -295,14 +295,16 @@ msgstr "描述或调用已连接 MCP server 的工具，并读取其资源。仅
 #: ../../tools.md:127
 msgid "**`ToolScript`**"
 msgstr "**`ToolScript`**"
+
 #: ../../tools.md:128
 msgid ""
-"Describes or scripts MCP tool calls in bulk: `action=\"describe\"` batch-"
-"reports call and return shapes with a json gate, and `action=\"call\"` "
-"runs a Python script whose nested `call(\"MCP\", ...)` invocations keep "
-"the usual confirmation and logging. It appears only after a server is "
-"connected, like `MCP`; see [MCP](mcp.md#scripting-tool-calls)."
-msgstr "批量描述或脚本化 MCP 工具调用:`action=\"describe\"` 批量报告调用形状与返回形状并带 json gate,`action=\"call\"` 运行一个 Python 脚本,其嵌套的 `call(\"MCP\", ...)` 调用保留常规的确认与日志。与 `MCP` 一样,它只在连接 server 后出现;见 [MCP](mcp.md#scripting-tool-calls)。"
+"Describes or scripts tool calls in bulk: `action="describe"` batch-"
+"reports call and return shapes with a json gate (built-in entries carry "
+"`json: no`), and `action="call"` runs a Python script whose nested "
+"`call(name, ...)` invocations cover built-in tools and MCP, keeping the "
+"usual confirmation and logging; see [MCP](mcp.md#scripting-tool-calls)."
+msgstr "批量描述或脚本化工具调用:`action=\"describe\"` 批量报告调用形状与返回形状并带 json gate(内置条目标 `json: no`),`action=\"call\"` 运行一个 Python 脚本,其嵌套的 `call(name, ...)` 调用覆盖内置工具与 MCP,保留常规的确认与日志;见 [MCP](mcp.md#scripting-tool-calls)。"
+
 #: ../../tools.md:132
 msgid "**`Delegate`**"
 msgstr "**`Delegate`**"

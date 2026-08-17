@@ -10,7 +10,7 @@ from minacode.config import Config
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
 from minacode.session import Session
-from minacode.tools import MCPTool, Tool, ToolScript
+from minacode.tools import MCPTool, ReadTool, Tool, ToolScript
 
 OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
@@ -90,10 +90,13 @@ class TestEntryErrors:
         assert "MCP tool 'nope' not found on server 'test'" in out
         assert '<MCPDescribe server="test" tool="echo">' in out
 
-    def test_builtin_tool_name_is_not_scriptable(self, tmp_path):
+    def test_builtin_tool_describes_compact_block(self, tmp_path):
         s = _mcp_session(tmp_path)
         out = _describe(s, ["Read"])
-        assert "Read is not scriptable yet" in out
+        assert "Read\n" in out
+        assert "  args:    path  string, ranges  array, files  array" in out
+        assert "json:    no" in out
+        assert "<MCPDescribe" not in out
 
 
 class TestMcpPrefix:
@@ -113,7 +116,7 @@ class TestMixedBatch:
             mcp_tool_info("test", "lookup", output_schema=OUTPUT_SHAPE),
         ]
         out = _describe(s, ["Read", "test.lookup", "ghost.tool", "test.echo"])
-        assert "Read is not scriptable yet" in out
+        assert "Read\n" in out and "json:    no" in out
         assert "MCP server 'ghost' not found" in out
         assert out.count("<MCPDescribe") == 2
         assert '<MCPDescribe server="test" tool="lookup">' in out
@@ -133,11 +136,12 @@ class TestActionValidation:
         with pytest.raises(ToolError, match="requires a non-empty code"):
             ToolScript(s, [{"tools": ["test.echo"]}]).call()
 
-    def test_no_mcp_raises(self, tmp_path):
+    def test_no_mcp_describe_reports_mcp_entries_only(self, tmp_path):
         s = Session(cwd=str(tmp_path))
         s.mcp = None
-        with pytest.raises(ToolError, match="MCP not configured"):
-            ToolScript(s, [{"action": "describe", "tools": ["test.echo"]}]).call()
+        out = ToolScript(s, [{"action": "describe", "tools": ["Read", "test.echo"]}]).call()
+        assert "Read\n" in out and "json:    no" in out
+        assert "test.echo: MCP not configured" in out
 
 
 class TestRegistration:
@@ -151,10 +155,10 @@ class TestRegistration:
         assert params["required"] == ["tools"]
         assert params["properties"]["tools"]["minItems"] == 1
 
-    def test_hidden_without_mcp(self, tmp_path):
+    def test_toolscript_always_in_schemas(self, tmp_path):
         s = Session(cwd=str(tmp_path))
         names = {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
-        assert "ToolScript" not in names
+        assert "ToolScript" in names
         assert "MCP" not in names
 
 
@@ -223,7 +227,8 @@ class TestNestedCalls:
         ("code", "expected"),
         [
             ('call("ToolScript", {})\n', 'call("ToolScript", ...) is not allowed'),
-            ('call("Read", {})\n', "Read is not scriptable yet"),
+            ('call("Delegate", {})\n', "Delegate is not scriptable"),
+            ('call("Job", {})\n', "Job is not scriptable"),
             ('call("Reed", {})\n', 'unknown tool "Reed"'),
         ],
     )
@@ -360,3 +365,138 @@ class TestConfirmationBlockShowsScript:
         assert any(line.label == "preview" for line in lines)
         assert any('tool": "echo"' in line.text for line in lines)
         assert any("for i in range(3):" in line.text for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: built-in tools are scriptable (format="text")
+# ---------------------------------------------------------------------------
+
+
+class TestNestedBuiltinCalls:
+    def test_nested_read_returns_text_and_stores_result(self, tmp_path):
+        (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+        code = 't = call("Read", {"path": "f.txt"})\nprint(t)\n'
+        runner = _runner(s)
+        messages = runner.run(
+            [
+                ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
+                ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
+            ]
+        )
+        assert len(messages) == 2  # nested calls add no tool messages
+        content = str(messages[0]["content"])
+        assert "ToolScript ok" in content
+        assert "calls: 1 [tr.1]" in content
+        assert "hello" in content
+        assert "<Read path=\"f.txt\">" in content
+        assert "<Read path=\"f.txt\">" in s.tool_results["tr.1"]
+        assert "<MCPDescribe" in str(messages[1]["content"])
+
+    def test_nested_read_rejects_json_format(self, tmp_path):
+        (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        code = 'call("Read", {"path": "f.txt"}, format="json")\n'
+        content = _run_script(s, code)
+        assert "ToolScript failed" in content
+        assert 'Read does not support format="json"; use format="text"' in content
+
+    def test_nested_read_without_mcp(self, tmp_path):
+        (tmp_path / "f.txt").write_text("hi\n", encoding="utf-8")
+        s = Session(cwd=str(tmp_path))
+        code = 'print(call("Read", {"path": "f.txt"}))\n'
+        content = _run_script(s, code)
+        assert "ToolScript ok" in content
+        assert "hi" in content
+
+    def test_nested_mcp_without_config_fails(self, tmp_path):
+        s = Session(cwd=str(tmp_path))
+        s.mcp = None
+        code = 'call("MCP", {"server": "test", "tool": "echo", "arguments": {}})\n'
+        content = _run_script(s, code)
+        assert "ToolScript failed" in content
+        assert "MCP not configured" in content
+
+    def test_nested_bash_readonly_runs_without_prompt(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        code = 'out = call("Bash", {"command": "echo hi"})\nprint(out)\n'
+        content = _run_script(s, code)
+        assert "ToolScript ok" in content
+        assert "hi" in content
+
+    def test_nested_bash_refused_aborts_script(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        code = 'call("Bash", {"command": "mkdir sub"})\nprint("after")\n'
+        answers = iter(["y", "n"])
+        runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
+        (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        content = str(message["content"])
+        assert "ToolScript failed" in content
+        assert "nested call refused by user" in content
+        assert "after" not in content
+        assert not (tmp_path / "sub").exists()
+
+    def test_yolo_skips_nested_bash_confirmation(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        s.settings.yolo = True
+        code = 'call("Bash", {"command": "mkdir made"})\nprint("done")\n'
+
+        def no_prompt(prompt):
+            raise AssertionError("input_fn must not be called under yolo")
+
+        runner = ToolRunner(s, ContextManager(s), input_fn=no_prompt, output_fn=lambda text: None)
+        (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])])
+        content = str(message["content"])
+        assert "ToolScript ok" in content
+        assert (tmp_path / "made").is_dir()
+
+    def test_nested_builtin_message_conservation(self, tmp_path):
+        (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+        code = 'for i in range(3):\n    call("Read", {"path": "f.txt"})\nprint("done")\n'
+        runner = _runner(s)
+        messages = runner.run(
+            [
+                ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}]),
+                ToolCall("m1", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}]),
+            ]
+        )
+        assert len(messages) == 2
+        content = str(messages[0]["content"])
+        assert "calls: 3 [tr.1-tr.3]" in content
+        assert "done" in content
+        for key in ("tr.1", "tr.2", "tr.3"):
+            assert "<Read path=\"f.txt\">" in s.tool_results[key]
+
+    def test_nested_args_conversion_error_names_tool(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        code = 'call("Bash", {"comand": "echo hi"})\n'
+        content = _run_script(s, code)
+        assert "ToolScript failed" in content
+        assert "Bash: Bash command must be non-empty" in content
+
+
+class TestNestedEdit:
+    def test_nested_edit_applies(self, tmp_path):
+        path = tmp_path / "code.txt"
+        path.write_text("a\nb\nc\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        start = ReadTool.anchor(1, "b\n")
+        code = f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{start}", "end": "{start}", "content": "B\\n"}}]}})\nprint("edited")\n'
+        content = _run_script(s, code)
+        assert "ToolScript ok" in content
+        assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
+
+    def test_nested_edit_stale_anchor_reports_error(self, tmp_path):
+        path = tmp_path / "code.txt"
+        path.write_text("a\nb\nc\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        bad = ReadTool.anchor(1, "wrong\n")
+        code = f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{bad}", "end": "{bad}", "content": "B\\n"}}]}})\nprint("after")\n'
+        content = _run_script(s, code)
+        assert "ToolScript failed" in content
+        assert "stale anchor" in content
+        assert "after" not in content
+        assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
