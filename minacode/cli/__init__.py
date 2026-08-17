@@ -288,19 +288,28 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         print_formatted_text(FormattedText(fragments), style=self.view.style(), end="", flush=True)
 
     def editor_context(self) -> str:
-        """The agent's latest reply, restated as read-only reference for the external editor
-        (Ctrl-X Ctrl-E / Ctrl-G), capped so the editor's temp file stays small."""
+        """The agent's recent replies, newest first, restated as read-only reference for the
+        external editor (Ctrl-X Ctrl-E / Ctrl-G), accumulated under a line budget so the
+        editor's temp file stays small."""
+        parts: list[str] = []
         for message in reversed(self.session.messages):
             if message.get("role") != "assistant":
                 continue
             content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                lines = content.strip().splitlines()
-                if len(lines) > self.EDITOR_CONTEXT_MAX_LINES:
-                    drop = len(lines) - self.EDITOR_CONTEXT_MAX_LINES
-                    lines = ["# [... earlier lines of the reply omitted ...]"] + lines[drop:]
-                return "\n".join(lines)
-        return ""
+            if not isinstance(content, str) or not content.strip():
+                continue
+            lines = content.strip().splitlines()
+            if len(lines) > self.EDITOR_CONTEXT_MAX_LINES:
+                drop = len(lines) - self.EDITOR_CONTEXT_MAX_LINES
+                lines = lines[drop:]  # keep only the newest MAX lines of this reply
+            if parts and len(parts) + 1 + len(lines) > self.EDITOR_CONTEXT_MAX_LINES:
+                break  # an earlier reply would push the line budget; it adds little recent context
+            if parts:
+                parts.append("# --- (earlier reply) ---")
+            parts.extend(lines)
+        if not parts:
+            return ""
+        return "\n".join(parts)
 
     def run_queued_command(self, text: str) -> None:
         """Dispatch a read-only slash command while an agent turn is running."""

@@ -235,6 +235,7 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
+    MEMORY_PREFIXES: ClassVar[tuple[str, ...]] = ("goal:", "check:", "plan:", "known:")
     MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|connecting|disconnected|disconnecting|error|skipped)")
     MCP_STATUS_ANSI: ClassVar[dict[str, str]] = {
         "connected": "\x1b[32m",
@@ -464,7 +465,7 @@ class UiPrinter:
         return parts
 
     def segments(self, text: str) -> list[tuple[str, str]]:
-        if text.startswith(("goal:", "check:", "plan:", "known:")):
+        if text.startswith(UiPrinter.MEMORY_PREFIXES):
             return self.memory_segments(text)
         if text.startswith(self.USER_LOG_PREFIX):
             prefix, content = self.USER_LOG_PREFIX, text[len(self.USER_LOG_PREFIX) :]

@@ -736,6 +736,26 @@ def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch
     assert any("thinking out loud" in text for text in rendered)
 
 
+def test_worker_output_passes_memory_shaped_text_through_for_highlighting():
+    from types import SimpleNamespace
+
+    from minacode.base import LogBlock, LogLine, LogRole
+    from minacode.tools.delegate import _worker_output
+
+    outputs = []
+    emit = _worker_output(SimpleNamespace(output_fn=outputs.append))
+    note = "goal: do x\nplan:\n  - [x] done"
+    emit(note)
+    emit("plain model text")
+    emit(LogLine("", "tool line", LogRole.TOOL))
+
+    # The memory-shaped string passes through as a bare str so the parent's segments() ->
+    # memory_segments() applies the per-line colors; other strings and LogLine items stay wrapped.
+    assert outputs[0] is note
+    assert isinstance(outputs[1], LogBlock)
+    assert isinstance(outputs[2], LogBlock)
+
+
 # 11b. a send opens with a visible start marker: one yellow [worker] line naming the worker's live
 # provider/model and the one-line order summary, so the scrollback has a boundary before the
 # finish block. This is the fallback when no worker_rule is wired; the wired path emits a
@@ -998,6 +1018,11 @@ def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, mon
     monkeypatch.setattr(Agent, "run", run_quiet)
     result = _delegate_call(parent, runner, action="send", order="o")
     assert 'tokens="' in result
+    assert 'rounds="' in result
+    assert 'context_percent="0"' in result  # no usage budget with the fake model: the state fallback
+    parent.worker.state.context_percent = 42  # the envelope reports the live fill, not a delta
+    result = _delegate_call(parent, runner, action="send", order="o")
+    assert 'context_percent="42"' in result
     summary = runner.delegate_result_summary(result)
     assert " in / " in summary and " out" in summary
     assert "0 in / 0 out" in summary

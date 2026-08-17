@@ -108,16 +108,30 @@ def test_editor_strip_preserves_a_scissors_line_the_user_typed():
 def test_editor_context_returns_last_assistant_reply(tmp_path):
     command_loop = loop(tmp_path)
     command_loop.session.messages = [
-        {"role": "user", "content": "first question"},
-        {"role": "assistant", "content": "first answer"},
-        {"role": "user", "content": "second question"},
-        {"role": "assistant", "content": "second answer"},
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "only answer"},
         {"role": "assistant", "content": None},  # a tool-call turn carries no text
     ]
-    assert command_loop.editor_context() == "second answer"
+    assert command_loop.editor_context() == "only answer"
 
     command_loop.session.messages = [{"role": "user", "content": "only a question"}]
     assert command_loop.editor_context() == ""
+
+
+def test_editor_context_combines_recent_replies(tmp_path):
+    command_loop = loop(tmp_path)
+    reply = "\n".join(f"long line {index}" for index in range(150))
+    command_loop.session.messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": reply},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "Done."},
+    ]
+    lines = command_loop.editor_context().splitlines()
+    assert lines[0] == "Done."  # newest reply first
+    assert lines[1] == "# --- (earlier reply) ---"
+    assert lines[2] == "long line 0"
+    assert lines[-1] == "long line 149"
 
 
 def test_editor_context_caps_long_replies_to_recent_lines(tmp_path):
@@ -126,10 +140,26 @@ def test_editor_context_caps_long_replies_to_recent_lines(tmp_path):
     reply = "\n".join(f"line {index}" for index in range(total))
     command_loop.session.messages = [{"role": "assistant", "content": reply}]
     lines = command_loop.editor_context().splitlines()
-    assert len(lines) == command_loop.EDITOR_CONTEXT_MAX_LINES + 1  # omission note + kept lines
-    assert lines[0].startswith("# [...")
-    assert lines[1] == "line 50"
+    assert len(lines) == command_loop.EDITOR_CONTEXT_MAX_LINES
+    assert lines[0] == "line 50"
     assert lines[-1] == f"line {total - 1}"
+
+
+def test_editor_context_combined_budget_keeps_latest_without_note(tmp_path):
+    command_loop = loop(tmp_path)
+    max_lines = command_loop.EDITOR_CONTEXT_MAX_LINES
+    earlier = "\n".join(f"line {index}" for index in range(max_lines))
+    latest = "\n".join(f"latest {index}" for index in range(max_lines))
+    command_loop.session.messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": earlier},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": latest},
+    ]
+    lines = command_loop.editor_context().splitlines()
+    assert len(lines) == max_lines
+    assert not any(line.startswith("# [...") for line in lines)
+    assert lines[-1] == f"latest {max_lines - 1}"
 
 
 def test_desert_user_color_does_not_leak_into_default_ui_style(tmp_path, monkeypatch):

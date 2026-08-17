@@ -243,13 +243,13 @@ msgstr "回答之后，模型可能会在提示符下面以 chip 的形式给出
 
 #: ../../usage.md:88
 msgid ""
-"`Tab` cycles between the input and the chips. `Enter` on a chip toggles "
+"`Tab` cycles between the input and the chips. `Space` on a chip toggles "
 "it into or out of the input, so several suggestions can be combined; "
 "return focus to the input and press `Enter` to send. Editing the text "
 "normally clears the chip selection state. `/hints` turns suggestions off "
 "for the session, `[runtime] quick_hints` for good."
 msgstr ""
-"`Tab` 在输入框和 chip 之间循环切换。在 chip 上按 `Enter` "
+"`Tab` 在输入框和 chip 之间循环切换。在 chip 上按 `Space` "
 "可将它选入或移出输入框，因此可以组合多条建议；将焦点切回输入框，再按 `Enter` 即可发送。正常编辑文本会清除 chip "
 "选择状态。`/hints` 可在当前 session 关闭建议，`[runtime] quick_hints` 可永久关闭。"
 

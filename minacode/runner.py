@@ -251,7 +251,7 @@ class ToolRunner:
     # the worker's answer wrapped in <worker> tags. Parsed with a couple of string scans — the
     # format is ours, so no XML parser is needed.
     DELEGATE_META_RE: ClassVar[re.Pattern] = re.compile(
-        r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)"(?: tokens="([^"]*)")?>'
+        r'<Delegate action="send" steps="(\d+)" elapsed="([^"]+)" files="([^"]*)" stopped_at_max_steps="(true|false)"(?: tokens="([^"]*)")?(?: rounds="(\d+)")?(?: context_percent="(\d+)")?>'
     )
 
     def __init__(self, session: Session, context: ContextManager, input_fn=input, output_fn=print):
@@ -892,7 +892,7 @@ class ToolRunner:
                         # `summary` only renders when the envelope parsed, so fields is never None
                         # here; the guard exists for the type checker.
                         if fields is not None:
-                            steps, worker_elapsed, files, in_tokens, out_tokens, _ = fields
+                            steps, worker_elapsed, files, in_tokens, out_tokens, _, _, _ = fields
                             title = ""
                             if call.args and isinstance(call.args[0], dict):
                                 raw_title = call.args[0].get("title")
@@ -994,34 +994,37 @@ class ToolRunner:
             parts.append(f"{elapsed:.1f}s")
         return "→ " + " · ".join(parts)
 
-    def delegate_result_fields(self, output: str) -> tuple[str, str, str, str, str, bool] | None:
+    def delegate_result_fields(self, output: str) -> tuple[str, str, str, str, str, bool, str, str] | None:
         """Parse a finished Delegate send envelope into its display fields.
 
-        Returns (steps, elapsed, files, in_tokens, out_tokens, stopped) or None when the envelope
-        is missing. Shared by delegate_result_summary (the fallback child line) and the finish
-        rule label, so both show the same numbers.
+        Returns (steps, elapsed, files, in_tokens, out_tokens, stopped, rounds, context_percent)
+        or None when the envelope is missing. rounds/context_percent are "" when the envelope was
+        written before they existed. Shared by delegate_result_summary (the fallback child line)
+        and the finish rule label, so both show the same numbers.
         """
         match = self.DELEGATE_META_RE.search(output)
         if not match:
             return None
-        steps, elapsed, files, stopped, tokens = match.groups()
+        steps, elapsed, files, stopped, tokens, rounds, context_percent = match.groups()
         if tokens is not None:
             in_tokens, out_tokens = tokens.split("/", 1)
             in_tokens = Text.abbreviate_count(int(in_tokens))
             out_tokens = Text.abbreviate_count(int(out_tokens))
         else:
             in_tokens = out_tokens = ""
-        return steps, elapsed, files, in_tokens, out_tokens, stopped == "true"
+        return steps, elapsed, files, in_tokens, out_tokens, stopped == "true", rounds or "", context_percent or ""
 
     def delegate_result_summary(self, output: str) -> str:
         """The one-line summary of a finished Delegate send, from its envelope attributes."""
         fields = self.delegate_result_fields(output)
         if fields is None:
             return ""
-        steps, elapsed, files, in_tokens, out_tokens, stopped = fields
+        steps, elapsed, files, in_tokens, out_tokens, stopped, _, context_percent = fields
         parts = [f"steps {steps}", elapsed, files]
         if in_tokens:
             parts.append(f"{in_tokens} in / {out_tokens} out")
+        if context_percent:
+            parts.append(f"ctx {context_percent}%")
         if stopped:
             parts.append("stopped at max steps")
         return " · ".join(parts)

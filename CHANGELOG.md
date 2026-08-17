@@ -15,6 +15,12 @@
   its content is the intended line; otherwise the model re-reads instead of relying on a guessed
   range. Successful edits return three lines of anchor context on each side of the change, so a
   follow-up edit can anchor next to the hunk.
+- NextHints chips are picked with `Space` instead of `Enter`, so `Enter` only ever sends the
+  input; `Space` toggles the focused chip into or out of the picked set.
+- Delegate `send` results now include the worker's `context_percent` and `rounds` so the model
+  can decide when to reset the worker's context.
+- The external editor (`Ctrl-X Ctrl-E` / `Ctrl-G`) now includes several recent AI replies as
+  reference, not just the last one, so the reply you are answering is usually in view.
 
 ### Fixed
 
@@ -22,6 +28,8 @@
   literal `\n` and `\t` text instead of guessing that it represents another layer of escaping.
 - `replace_unique` remains an exact substring replacement when the match ends at a line boundary,
   and rejecting repeated text now finds and reports its hit lines in linear time.
+- Worker-mode `Note` output now shows the same per-line colors (goal/plan/known) as the main
+  session; it was rendered as a plain block before.
 
 
 ## 0.24.5 - 2026-08-16

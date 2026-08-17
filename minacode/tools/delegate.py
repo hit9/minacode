@@ -56,9 +56,21 @@ def _worker_output(runner: ToolRunner):
 
     The engine publishes LogLine items on the runner paths but bare strings for the model's own
     text (engine.py's output_fn calls), so the wrapper cannot assume a LogLine: LogBlock.walk
-    only recognizes LogLine and LogBlock items and crashes on a str."""
+    only recognizes LogLine and LogBlock items and crashes on a str.
+
+    A memory-shaped string (Note's goal/plan/known body, UiPrinter.MEMORY_PREFIXES) is passed
+    through unwrapped so the parent renders it with segments() -> memory_segments() and gets the
+    same per-line colors as the main agent's Note display.
+    """
+    # Local import: render.py imports minacode.tools at module level (CodeIndex), and
+    # minacode.tools.__init__ imports this module before CodeIndex is bound, so a module-level
+    # import here would cycle. Same pattern as the local Agent import used elsewhere here.
+    from minacode.render import UiPrinter
 
     def emit(block) -> None:
+        if isinstance(block, str) and block.startswith(UiPrinter.MEMORY_PREFIXES):
+            runner.output_fn(block)
+            return
         if isinstance(block, str):
             block = LogLine("", block, LogRole.AUTO)
         runner.output_fn(LogBlock([block]))
@@ -140,7 +152,7 @@ Accept the result against the order's `how to verify` by looking at actual evide
 
 Write the order to state: the goal, the files it touches, the constraints, how to verify, and the boundaries (what not to touch). Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again. Set `language` to the user's reply language (e.g. \"Chinese\"): they watch the worker's live output and read its report, so the worker must speak their language; omit `language` only when the user works in English. Also set a short `title` while writing the spec -- a few words capturing the intent (e.g. \"fix /status blank line\") -- used as the human-readable label of the delegation's start and done dividers; omit `title` to fall back to the order's first line.
 
-Reset the worker when switching tasks, when the spec changed, or after it failed twice in a row (its context has accumulated wrong beliefs). Reset discards the worker's process, not its products: file changes and merged diffs stay."""
+Reset the worker when switching tasks, when the spec changed, or after it failed twice in a row (its context has accumulated wrong beliefs). The `context_percent` in each send's result shows the worker's live context fill; when it is high and the next task is still substantial, reset before re-delegating to give the worker a clean context. Reset discards the worker's process, not its products: file changes and merged diffs stay."""
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -297,9 +309,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         in_tokens = worker.usage.prompt_tokens - before_in
         out_tokens = worker.usage.completion_tokens - before_out
         files = ", ".join(sorted({diff.path for diff in worker.turn_diffs[before_diffs:]})) or "(none)"
+
+        usage = worker.usage
+        percent = min(100, usage.last_prompt_tokens * 100 // usage.last_prompt_budget) if usage.last_prompt_budget else worker.state.context_percent
         return "\n".join(
             [
-                f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str(agent.stopped_at_max_steps).lower()}" tokens="{in_tokens}/{out_tokens}">',
+                f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str(agent.stopped_at_max_steps).lower()}" tokens="{in_tokens}/{out_tokens}" rounds="{worker.state.round_count}" context_percent="{percent}">',
                 "<worker>",
                 answer.rstrip(),
                 "</worker>",
