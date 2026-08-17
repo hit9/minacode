@@ -13,7 +13,7 @@ import time
 import traceback
 from typing import TYPE_CHECKING
 
-from minacode.base import Json, ToolCall, ToolError
+from minacode.base import ApprovalView, Json, ToolCall, ToolError
 from minacode.tools.base import Tool
 
 if TYPE_CHECKING:
@@ -109,24 +109,43 @@ class ToolScript(Tool):
 
     def preview(self) -> str:
         """The full script, so a confirmation block can show the code. Truncated beyond PREVIEW_LIMIT."""
-        try:
-            code = str(self.payload().get("code") or "")
-        except ToolError:
-            return self.NAME
+        code = self.script()
         if not code:
             return self.NAME
         return code if len(code) <= PREVIEW_LIMIT else code[: PREVIEW_LIMIT - 3] + "..."
 
+    def script(self) -> str:
+        """The script source of a `call`, or "" when there is none (a describe, a malformed call)."""
+        try:
+            payload = self.payload()
+        except ToolError:
+            return ""
+        if self.resolved_action(payload) != "call":
+            return ""
+        return str(payload.get("code") or "")
+
+    def approval_view(self) -> ApprovalView | None:
+        """The whole script, lexed as Python: what `v` opens at the confirmation prompt, what the
+        approval block shows a clipped excerpt of, and what Ctrl-O reopens afterwards -- the last
+        being the only way to read it under yolo, where nothing stops to ask."""
+        code = self.script()
+        if not code.strip():
+            return None
+        return ApprovalView("script", code, "python", [("lines", str(len(code.splitlines()))), ("chars", str(len(code)))])
+
     def short_args(self) -> list[str]:
-        """A short display identity: first code line plus total length (Bash-like one-liner)."""
+        """A short display identity: the script's size, not its first line.
+
+        The first line of a script is usually setup (`rows = []`) and says nothing about what the
+        script does; the body is one keypress away in the viewer, and the approval block shows its
+        opening lines, so the log line only owes the reader the scale of what ran."""
         payload = self.payload()
         action = self.resolved_action(payload)
         if action != "call":
             return [action, str(payload.get("tools") or "")]
         code = str(payload.get("code") or "")
-        first = " ".join(code.strip().splitlines()[:1]) if code.strip() else ""
-        label = first if len(first) <= 80 else first[:77] + "..."
-        return ["call", f"{label} ({len(code)} chars)"]
+        lines = len(code.splitlines())
+        return ["call", f"{lines} line{'' if lines == 1 else 's'} ({len(code)} chars)"]
 
     def call(self) -> str:
         payload = self.single_dict_arg("ToolScript requires named fields")
@@ -218,7 +237,10 @@ class ToolScript(Tool):
         try:
             sys.settrace(budget.tracer())
             try:
-                with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                # Everything the nested calls log is printed one level deeper, so the batch reads as
+                # what it is -- calls made by this script -- instead of as calls the model made
+                # itself. The indent is the whole signal; the nested lines keep their usual shape.
+                with runner.nested(), contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
                     exec(  # noqa: S102 - ToolScript is the sanctioned script executor; not a sandbox, the outer confirmation is the boundary
                         compiled,
                         {"__name__": "__toolscript__", "__builtins__": builtins, "call": call_fn},

@@ -1334,7 +1334,7 @@ def test_delegate_view_opens_viewer_then_approves(tmp_path):
     seen = []
     answers = iter(["v", "y"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=lambda text: None)
-    runner.order_viewer = lambda order_text, header_rows: seen.append((order_text, header_rows))
+    runner.text_viewer = lambda view: seen.append((view.text, view.rows))
     confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
     assert (confirmed, reason) == (True, "")
     assert len(seen) == 1  # the `v` key opened the viewer exactly once
@@ -1360,7 +1360,7 @@ def test_delegate_view_headless_fallback_prints_full_order(tmp_path):
     outputs = []
     answers = iter(["v", "n"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=outputs.append)
-    # order_viewer stays None: headless / non-CommandLoop runners print the full order instead.
+    # text_viewer stays None: headless / non-CommandLoop runners print the full order instead.
     confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
     assert (confirmed, reason) == (False, "")
     texts = [item.text for out in outputs if isinstance(out, LogBlock) for item, _ in out.walk()]
@@ -1379,12 +1379,14 @@ def test_delegate_view_empty_order_is_noop(tmp_path):
     outputs = []
     answers = iter(["v", "y"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: next(answers), output_fn=outputs.append)
-    runner.order_viewer = lambda order_text, header_rows: seen.append((order_text, header_rows))
+    runner.text_viewer = lambda view: seen.append((view.text, view.rows))
     confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
-    assert (confirmed, reason) == (True, "")
-    assert seen == []  # nothing to view: `v` is a no-op, the prompt just re-asks
+    # Nothing to view, so `v` is not an action here and falls through to the one thing any other
+    # unrecognized line means at this prompt: a refusal carrying what was typed as its reason.
+    assert (confirmed, reason) == (False, "v")
+    assert seen == []
     assert not any(
-        isinstance(out, LogBlock) and any(item.label.strip() == "delegate order" for item, _ in out.walk()) for out in outputs
+        isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk()) for out in outputs
     )
 
 
@@ -1434,7 +1436,7 @@ def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     answers = iter(["v", "c", "v", "y"])
     outputs, prompts = [], []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
-    runner.order_viewer = lambda order_text, header_rows: None
+    runner.text_viewer = lambda view: None
     confirmed, _reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
 
     assert confirmed is True
@@ -1484,7 +1486,7 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
     # Every action's answer is a line confirm() already understands, so the two paths cannot drift.
     for _label, answer in [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]:
         typed = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt, a=answer: a, output_fn=lambda text: None)
-        typed.order_viewer = lambda order_text, header_rows: None
+        typed.text_viewer = lambda view: None
         typed.worker_config_picker = lambda: None
         if answer in {"v", "c"}:
             continue  # these re-ask forever against a constant input_fn; covered by the side-trip test
@@ -1530,7 +1532,7 @@ def test_delegate_legend_offers_only_the_actions_the_call_has(tmp_path):
     legend = runner.delegate_approval_children(orderless)[-1].text or ""
     assert "v view order" not in legend
     assert "c worker config" in legend  # the actions it does have are untouched
-    assert legend == runner.delegate_legend(runner.approval_actions(orderless, True))
+    assert legend == runner.approval_legend(runner.approval_actions(orderless, True), "order")
 
 
 def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
@@ -1542,7 +1544,8 @@ def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.cli.modals import delegate_order_viewer
+    from minacode.base import ApprovalView
+    from minacode.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
     monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
@@ -1550,7 +1553,7 @@ def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "", "```python", "def nested():", "    x = 1", "```"])
-    delegate_order_viewer(loop, order, [("title", "中文标题" * 10)])
+    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "中文标题" * 10)]))
 
     rows = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
     assert rows, "the viewer rendered nothing"
@@ -1566,7 +1569,8 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     import os
     from types import SimpleNamespace
 
-    from minacode.cli.modals import delegate_order_viewer
+    from minacode.base import ApprovalView
+    from minacode.cli.modals import approval_text_viewer
     from minacode.tui import TUI_MODAL_PENDING
 
     # Fixed terminal size keeps the viewport deterministic: 40 lines - 6 = 34 visible rows.
@@ -1582,7 +1586,7 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
         )
     )
     order_lines = [f"line {i} " + "word " * 30 for i in range(200)]  # wraps to ~400 lines
-    delegate_order_viewer(loop, "\n".join(order_lines), [("title", "fix things")])
+    approval_text_viewer(loop, ApprovalView('order', "\n".join(order_lines), '', [("title", "fix things")]))
     fragments = captured["fragments_fn"]
     handle_key = captured["key_fn"]
     assert captured["exclusive"] is True  # full-screen alternate-screen viewer
@@ -1591,7 +1595,7 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
         return "".join(text for _style, text in fragments())
 
     first = visible_text()
-    assert "Delegate order · read-only" in first
+    assert "Order · read-only" in first
     assert "line 0 " in first
 
     # down/j scroll one line each; the visible slice changes.
@@ -1624,7 +1628,8 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     import os
     from types import SimpleNamespace
 
-    from minacode.cli.modals import delegate_order_viewer
+    from minacode.base import ApprovalView
+    from minacode.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
@@ -1632,7 +1637,7 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "## Section\n\n- item one\n- item two\n\n```python\nprint(1)\n```"
-    delegate_order_viewer(loop, order, [("title", "fix things")])
+    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "fix things")]))
 
     rendered = "".join(text for _style, text in captured["fragments_fn"]())
     assert "Section" in rendered
@@ -1649,7 +1654,8 @@ def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     import os
     from types import SimpleNamespace
 
-    from minacode.cli.modals import delegate_order_viewer
+    from minacode.base import ApprovalView
+    from minacode.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
@@ -1657,7 +1663,7 @@ def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "Touch these files:\nminacode/loop.py\nminacode/parser.py\nDo not touch tests."
-    delegate_order_viewer(loop, order, [("title", "fix things")])
+    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "fix things")]))
 
     rows = [row.strip() for row in "".join(text for _style, text in captured["fragments_fn"]()).splitlines()]
     for source_line in order.splitlines():
@@ -1670,14 +1676,15 @@ def test_delegate_order_viewer_field_header_alignment(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.cli.modals import delegate_order_viewer
+    from minacode.base import ApprovalView
+    from minacode.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    delegate_order_viewer(loop, "order", [("title", "fix"), ("lang", "python"), ("max_steps", "3")])
+    approval_text_viewer(loop, ApprovalView('order', "order", '', [("title", "fix"), ("lang", "python"), ("max_steps", "3")]))
 
     fragments = captured["fragments_fn"]()
     cyan = {text for style, text in fragments if style == "ansicyan" and text.strip() in {"title", "lang", "max_steps"}}
@@ -1691,14 +1698,15 @@ def test_delegate_order_viewer_header_separator(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.cli.modals import delegate_order_viewer
+    from minacode.base import ApprovalView
+    from minacode.cli.modals import approval_text_viewer
 
     size = os.terminal_size((120, 40))
     monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    delegate_order_viewer(loop, "order", [("title", "fix things")])
+    approval_text_viewer(loop, ApprovalView('order', "order", '', [("title", "fix things")]))
 
     lines = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
     separators = [line for line in lines if line.strip() and set(line) <= {"─", " "}]
@@ -1715,7 +1723,8 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
 
     from prompt_toolkit.utils import get_cwidth
 
-    from minacode.cli.modals import delegate_order_viewer
+    from minacode.base import ApprovalView
+    from minacode.cli.modals import approval_text_viewer
 
     size = os.terminal_size((60, 40))
     monkeypatch.setattr("minacode.cli.modals.shutil.get_terminal_size", lambda *args: size)
@@ -1723,7 +1732,7 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = '## 标题\n\n- 把这段中文说明加进审批流程并补充测试\n\n```python\nprint("中文")\n```'
-    delegate_order_viewer(loop, order, [("title", "中文标题" * 10)])
+    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "中文标题" * 10)]))
 
     rendered = "".join(text for _style, text in captured["fragments_fn"]())
     rows = rendered.splitlines()

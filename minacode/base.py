@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, ClassVar, Generic, TypeVar
 
@@ -375,6 +375,28 @@ class LogRole(Enum):
     DIFF = auto()
     WORKER = auto()
     FIELD = auto()
+    CODE = auto()
+
+
+@dataclass(frozen=True)
+class ApprovalView:
+    """The full text behind a call, for the read-only viewer its confirmation offers.
+
+    A tool that commits to something longer than one log line returns one of these from
+    `approval_view()`, and the runner uses it twice: to render the clipped, syntax-highlighted
+    excerpt inside the approval block, and to feed the viewer opened by the confirm-time `v` key.
+    The same view is what the post-hoc Ctrl-O browser shows, which is the only way to read the
+    text under yolo -- there is no confirmation prompt there to press `v` at.
+
+    `label` names it in the viewer title and the action row ("order", "script"). `lexer` is a
+    pygments lexer name; empty means the text is prose and renders as markdown. `rows` are the
+    header fields shown above the text.
+    """
+
+    label: str
+    text: str
+    lexer: str = ""
+    rows: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

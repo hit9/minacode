@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-15 00:54-0700\n"
+"POT-Creation-Date: 2026-08-17 01:11-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -189,11 +189,20 @@ msgstr ""
 "按 `Ctrl-O` 可以按时间倒序浏览最近十条 Bash 的完整输出：`j`/`k` 或方向键选择，`Enter` 打开，`Esc` "
 "回到列表，`Ctrl-O` 或 `q` 关闭。"
 
-#: ../../usage.md:61
+#: ../../usage.md:59
+msgid ""
+"`ToolScript` calls are listed here too. Selecting one opens its complete "
+"script in a scrolling, syntax-highlighted viewer — the only way to read a"
+" script under `--yolo`, where no confirmation prompt stops to offer `v`."
+msgstr ""
+"`ToolScript` 的调用也会列在这里。选中其中一条会在可滚动、带语法高亮的查看器中打开完整脚本 —— 在 `--yolo` "
+"下这是读到脚本的唯一途径，因为那里没有任何确认提示会停下来提供 `v`。"
+
+#: ../../usage.md:65
 msgid "Status bar"
 msgstr "状态栏"
 
-#: ../../usage.md:63
+#: ../../usage.md:67
 msgid ""
 "A single line beneath the prompt summarizes the runtime: the active "
 "provider and model, the reasoning level, context fill with the latest "
@@ -204,13 +213,13 @@ msgstr ""
 "提示符下方的一行概括了运行状态：当前 provider 与模型、推理强度、上下文占用以及最近一次请求的缓存命中率（形如 `ctx 23% · "
 "cache 98%`）、代码索引状态，以及正在运行的后台作业。MCP 与 skill 数量、以及更新提示会在相关时出现。"
 
-#: ../../usage.md:68
+#: ../../usage.md:72
 msgid ""
 "The cache ratio fills in after the first request and refreshes with each "
 "response. `/status` reports the same figures for the whole session."
 msgstr "缓存命中率会在第一次请求之后出现，并随每次响应刷新。`/status` 会给出整个会话的同类数字。"
 
-#: ../../usage.md:71
+#: ../../usage.md:75
 msgid ""
 "While the agent works, the role colors give way to a blue-to-purple sweep"
 " that scrolls across the line, and the live counters join it: a retry or "
@@ -221,7 +230,7 @@ msgstr ""
 "agent 工作时，角色色会让位于一道蓝到紫的扫光，扫过整行，并加入实时计数：重试或尝试提示，以及当本轮步数进入 "
 "`max_agent_steps` 的最后五分之一时出现的 `step N/M` 计数，提示本轮即将被截断。"
 
-#: ../../usage.md:76
+#: ../../usage.md:80
 msgid ""
 "The working divider above the prompt names the current phase — "
 "`thinking`, `responding`, or `web search` while a [provider-side "
@@ -230,18 +239,18 @@ msgstr ""
 "提示符上方的工作分隔线会显示当前阶段——`thinking`、`responding`，以及 [Provider 侧工具](tools.md"
 "#provider-side-tools)在请求内部执行时的 `web search`。"
 
-#: ../../usage.md:81
+#: ../../usage.md:85
 msgid "Quick hints"
 msgstr "快捷提示"
 
-#: ../../usage.md:83
+#: ../../usage.md:87
 msgid ""
 "After an answer, the model may suggest two or three next steps as chips "
 "under the prompt. They are suggestions, not commands: ignore them and "
 "keep typing, or take one."
 msgstr "回答之后，模型可能会在提示符下面以 chip 的形式给出两三个下一步。它们只是建议，不是命令：可以不理会继续打字，也可以选一个。"
 
-#: ../../usage.md:88
+#: ../../usage.md:92
 msgid ""
 "`Tab` cycles between the input and the chips. `Space` on a chip toggles "
 "it into or out of the input, so several suggestions can be combined; "
@@ -253,11 +262,11 @@ msgstr ""
 "可将它选入或移出输入框，因此可以组合多条建议；将焦点切回输入框，再按 `Enter` 即可发送。正常编辑文本会清除 chip "
 "选择状态。`/hints` 可在当前 session 关闭建议，`[runtime] quick_hints` 可永久关闭。"
 
-#: ../../usage.md:93
+#: ../../usage.md:97
 msgid "Commands"
 msgstr "命令"
 
-#: ../../usage.md:95
+#: ../../usage.md:99
 msgid ""
 "Type `/` commands at the prompt to inspect state, switch models, manage "
 "the session, or configure runtime behavior on the fly. See the [command "
@@ -266,17 +275,16 @@ msgstr ""
 "在 prompt 中输入 `/` 命令，可以查看状态、切换模型、管理 session 或即时修改 runtime "
 "行为。完整列表见[命令参考](commands.md)，或在 session 中运行 `/help`。"
 
-#: ../../usage.md:99
+#: ../../usage.md:103
 msgid "Mentions"
 msgstr "引用"
 
-#: ../../usage.md:101
+#: ../../usage.md:105
 msgid ""
 "Mentions pull something into the turn. Type `@` at the prompt for a list "
 "of the three kinds; picking one opens its candidates, which narrow as you"
 " keep typing."
-msgstr ""
-"引用会把某样东西带入本轮对话。在 prompt 中输入 `@` 即可列出三种引用；选中其中一种后会打开它的候选项，并随着继续输入不断收窄。"
+msgstr "引用会把某样东西带入本轮对话。在 prompt 中输入 `@` 即可列出三种引用；选中其中一种后会打开它的候选项，并随着继续输入不断收窄。"
 
 #: ../../usage.md
 msgid "Mention"
@@ -334,8 +342,8 @@ msgid ""
 "the agent to Read it. A missing path reports itself instead of being "
 "silently dropped."
 msgstr ""
-"**文件。** 工作区内的小文件会以内联形式作为 FILE MENTIONS "
-"块进入本轮对话；大文件以及工作区之外的文件会变成提示，告诉 agent 用 Read 读取。路径缺失时会自行报告，而不会静默丢弃。"
+"**文件。** 工作区内的小文件会以内联形式作为 FILE MENTIONS 块进入本轮对话；大文件以及工作区之外的文件会变成提示，告诉 "
+"agent 用 Read 读取。路径缺失时会自行报告，而不会静默丢弃。"
 
 #: ../../usage.md:120
 msgid ""
@@ -351,8 +359,9 @@ msgid ""
 msgstr ""
 "**选择文件。** 文件不出现在 `@` 的第一层列表里：输入或选择 `@file:` 会立即打开 fzf，在已有文件引用上按 `Tab` "
 "也是如此。没有 fzf 时，会在后台运行一个有界的字面匹配 fallback。候选包含隐藏文件、已跟踪文件和未跟踪文件，但绝不包含 `.git` "
-"目录和被 Git 忽略的路径；在非 Git 目录中，会遵循嵌套的 `.gitignore` 文件及其 negation 规则。带空格、Unicode "
-"或歧义标点的路径会以可往返解析的引号形式插入，例如 `@file:\"docs/design notes/中文.txt\"`。"
+"目录和被 Git 忽略的路径；在非 Git 目录中，会遵循嵌套的 `.gitignore` 文件及其 negation "
+"规则。带空格、Unicode 或歧义标点的路径会以可往返解析的引号形式插入，例如 `@file:\"docs/design "
+"notes/中文.txt\"`。"
 
 #: ../../usage.md:127
 msgid ""
@@ -414,9 +423,9 @@ msgstr "`Ctrl-R` —— 反向搜索历史；`Enter` 把匹配放进输入框供
 
 #: ../../usage.md:145
 msgid ""
-"`Ctrl-O` — browse the ten most recent completed Bash output previews; "
+"`Ctrl-O` — browse recent Bash output previews and ToolScript scripts; "
 "press it again to close"
-msgstr "`Ctrl-O` — 浏览最近十次已完成的 Bash 输出预览；再次按下即可关闭"
+msgstr "`Ctrl-O` — 浏览最近的 Bash 输出预览与 ToolScript 脚本；再次按下即可关闭"
 
 #: ../../usage.md:146
 msgid ""

@@ -10,12 +10,13 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, NamedTuple, cast
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import (
     ActiveResource,
+    ApprovalView,
     Json,
     LogBlock,
     LogEdge,
@@ -268,10 +269,15 @@ class ToolRunner:
         # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to
         # printing the current worker config only (headless / non-CommandLoop runners).
         self.worker_config_picker: Callable[[], None] | None = None
-        # Injected by CommandLoop: opens a read-only full-order viewer for the Delegate
-        # confirm-time `v`/`view` key (see cli.modals.delegate_order_viewer). None degrades the
-        # `v` key to printing the whole order (headless / non-CommandLoop runners).
-        self.order_viewer: Callable[[str, list[tuple[str, str]]], None] | None = None
+        # Injected by CommandLoop: opens a read-only viewer for the text behind a confirmation --
+        # a Delegate order, a ToolScript body -- for the confirm-time `v`/`view` key (see
+        # cli.modals.approval_text_viewer). None degrades the `v` key to printing the whole text
+        # (headless / non-CommandLoop runners).
+        self.text_viewer: Callable[[ApprovalView], None] | None = None
+        # How many enclosing tool calls are running the calls being logged right now. Nested calls
+        # (a ToolScript's call()) are printed one level deeper per enclosing call, so the log shows
+        # who made them; see nested().
+        self.nesting = 0
         # Injected by CommandLoop: offers the next approval prompt's actions as a selectable row,
         # and reports whether it took (see TuiApp.set_approval_form). None, or a False return, means
         # the answer has to be typed out -- headless runs, piped stdin.
@@ -292,6 +298,28 @@ class ToolRunner:
         self._active_job: ActiveResource[JobTool] = ActiveResource()
         # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
         self._active_worker: ActiveResource[Agent] = ActiveResource()
+
+    @contextlib.contextmanager
+    def nested(self):
+        """Run a block with everything it logs indented one level deeper.
+
+        Held by a tool that runs other tool calls (ToolScript), so its nested calls are printed as
+        children of the call that made them. Restored on the way out even if the script raised, so
+        one failure cannot leave the rest of the session permanently indented."""
+        self.nesting += 1
+        try:
+            yield
+        finally:
+            self.nesting -= 1
+
+    def emit(self, block: str | LogBlock) -> None:
+        """Print a log block at the current nesting depth. Wrapping a block in another LogBlock is
+        exactly one indent level to LogBlock.walk, so depth costs nothing but the wrapper. Plain
+        strings (a tool display that renders itself, e.g. Note) carry no tree to indent."""
+        if isinstance(block, LogBlock):
+            for _ in range(self.nesting):
+                block = LogBlock([block])
+        self.output_fn(block)
 
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
@@ -354,7 +382,7 @@ class ToolRunner:
         payload = call.args[0] if len(call.args) == 1 else call.args
         content = json.dumps(payload, ensure_ascii=False)
         label = builtin_tool_label(call.name)
-        self.output_fn(LogBlock([LogLine(label, self.oneline(content, 120), LogRole.TOOL, LogEdge.BRANCH)]))
+        self.emit(LogBlock([LogLine(label, self.oneline(content, 120), LogRole.TOOL, LogEdge.BRANCH)]))
         return {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
 
     def skip_message(self, call: ToolCall) -> Json:
@@ -501,7 +529,7 @@ class ToolRunner:
                 # preview the result line won't repeat (e.g. an Edit diff). The auto-approval itself
                 # is recorded by the [auto] tag on the result line below.
                 if pre.has_children:
-                    self.output_fn(pre)
+                    self.emit(pre)
                     d.nested_display = True
             elif needs_confirmation:
                 if not isinstance(tool, DelegateTool):
@@ -517,7 +545,7 @@ class ToolRunner:
                 d.approved = True
             if isinstance(tool, BashTool) and self.live_start is not None:
                 if not d.nested_display:
-                    self.output_fn(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
+                    self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     d.nested_display = True
                 self.live_start()
             elif tool.blocks_agent() and not d.nested_display:
@@ -526,7 +554,7 @@ class ToolRunner:
                 # and the user sees the agent is waiting instead of a blank screen until the result
                 # lands. Skipped when something already drew a root (an approval block, an auto
                 # preview); a second copy of the same line is noise, not reassurance.
-                self.output_fn(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
+                self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                 d.nested_display = True
             output = self.call_tool(tool, planned_edit)
             observation = tool.model_observation()
@@ -545,7 +573,7 @@ class ToolRunner:
     ) -> str:
         d = d or ToolDisplay()
         self.session.record_tool_error("-", call.name, call.args, output)
-        self.output_fn(
+        self.emit(
             LogBlock.hierarchy(None, [LogLine("error", self.oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
             if d.nested_display
             else self.reject_display(call, output, d=d)
@@ -594,7 +622,7 @@ class ToolRunner:
                     round=self.session.state.round_count,
                 )
         if not (tool_class is not None and tool_class.SILENT) or failed:
-            self.output_fn(self.finish_display(call, key, output, failed=failed, elapsed=elapsed, d=d))
+            self.emit(self.finish_display(call, key, output, failed=failed, elapsed=elapsed, d=d))
         return self.tool_message(call, key, output, failed=failed, display=d.display)
 
     def tool_message(self, call: ToolCall, key: str, output: str, *, failed: bool = False, display: str | None = None) -> str:
@@ -616,6 +644,7 @@ class ToolRunner:
 
     def confirm(self, call: ToolCall, tool: Tool, batch_suffix: str = "", planned_edit: EditBatchPlan.PlannedEdit | None = None) -> tuple[bool, str]:
         always_option = isinstance(tool, DelegateTool) and tool.always_confirms()
+        view = tool.approval_view()
         # Decided before the brief is drawn: the brief needs the actions either way -- live in the
         # form, or spelled out in the typed legend when there is no form to show them.
         actions = self.approval_actions(tool, always_option)
@@ -623,7 +652,7 @@ class ToolRunner:
         # Printed once, outside the loop. The `c` and `v` actions come back here to ask again, and
         # a second copy of the brief in the transcript is noise: the first one is still on screen,
         # and what those actions changed (or showed) they report themselves.
-        self.output_fn(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, form=form, actions=actions))
+        self.emit(self.approval_display(call, tool, "confirm", batch_suffix=batch_suffix, planned_edit=planned_edit, form=form, actions=actions))
         while True:
             self.declare_approval_form(actions)  # the TUI drops the form when a prompt resolves
             reply = self.input_fn(LogBlock.prefix(2, LogEdge.CONTINUE) + self.approval_prompt(always_option, form))
@@ -639,11 +668,11 @@ class ToolRunner:
                 # (e.g. "cost too high") is an ordinary refusal reason, so only exact matches enter.
                 self.delegate_config_cycle()
                 continue  # re-ask; the config cycle printed what it changed
-            if always_option and lower in {"v", "view"}:
-                # Same whole-line exact-match rule as `c`: `v`/`view` opens the read-only order
-                # viewer; anything else (e.g. "cost too high") is an ordinary refusal reason.
-                # `always_option` already established that this is a DelegateTool.
-                self.delegate_order_view(cast(DelegateTool, tool))
+            if view is not None and lower in {"v", "view"}:
+                # Same whole-line exact-match rule as `c`: `v`/`view` opens the read-only viewer on
+                # whatever text this call commits to -- an order, a script -- and anything else
+                # (e.g. "cost too high") stays an ordinary refusal reason.
+                self.view_text(view)
                 continue  # re-ask; viewing changed nothing, so there is nothing to redraw
             if lower in {"", "y", "yes"}:
                 return True, ""
@@ -658,9 +687,10 @@ class ToolRunner:
         the whole line the user could have typed, so the typed protocol underneath is untouched and
         a headless run loses the row, not the actions."""
         actions = [("Approve", "")]
+        view = tool.approval_view()
+        if view is not None:
+            actions.append((f"View {view.label}", "v"))  # a tool with nothing to view returns None, so it is never offered
         if always_option:
-            if self._delegate_payload(cast(DelegateTool, tool)).get("order"):
-                actions.append(("View order", "v"))  # nothing to view without an order, so do not offer it
             actions.append(("Worker config", "c"))
         actions.append(("Refuse", "n"))
         return actions
@@ -691,56 +721,29 @@ class ToolRunner:
         current values; the confirmation prompt re-asks either way."""
         if self.worker_config_picker is not None:
             self.worker_config_picker()
-        self.output_fn(self.worker_config_block())
+        self.emit(self.worker_config_block())
 
-    def delegate_order_view(self, tool: DelegateTool) -> None:
-        """The `v` action of a Delegate send prompt: open a read-only viewer with the full,
-        untruncated order. Without an injected viewer (headless, or a runner outside CommandLoop)
-        this prints the whole order; the confirmation prompt re-asks either way."""
-        payload = self._delegate_payload(tool)
-        order = payload.get("order")
-        if not isinstance(order, str) or not order.strip():
-            return  # nothing to view
-        header_rows = self._delegate_header_rows(payload)
-        if self.order_viewer is not None:
-            self.order_viewer(order, header_rows)
+    def view_text(self, view: ApprovalView) -> None:
+        """The `v` action of a confirmation prompt: open a read-only viewer with the full,
+        untruncated text behind the call. Without an injected viewer (headless, or a runner outside
+        CommandLoop) this prints the whole thing; the confirmation prompt re-asks either way."""
+        if self.text_viewer is not None:
+            self.text_viewer(view)
         else:
-            self.output_fn(self.full_order_block(order, header_rows))
+            self.emit(self.full_text_block(view))
 
-    def full_order_block(self, order: str, header_rows: list[tuple[str, str]]) -> LogBlock:
-        """Headless fallback for the Delegate `v` action: header rows then the whole order, one
-        line each, so no order content is dropped."""
+    def full_text_block(self, view: ApprovalView) -> LogBlock:
+        """Headless fallback for the `v` action: header rows then the whole text, one line each, so
+        nothing behind the confirmation is dropped. Code keeps its lexer here too -- the fallback is
+        what a piped-stdin run reads instead of the viewer, not a lesser copy of it."""
+        role = LogRole.CODE if view.lexer else LogRole.OUTPUT
         return LogBlock(
             [
-                LogLine("delegate order", "", LogRole.FIELD, LogEdge.BRANCH),
-                *(LogLine(label, value, LogRole.FIELD, LogEdge.CONTINUE) for label, value in self._field_pairs(header_rows)),
-                *(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in order.splitlines()),
+                LogLine(view.label, "", LogRole.FIELD, LogEdge.BRANCH),
+                *(LogLine(label, value, LogRole.FIELD, LogEdge.CONTINUE) for label, value in self._field_pairs(view.rows)),
+                *(LogLine("", line, role, LogEdge.CONTINUE, syntax=view.lexer) for line in view.text.splitlines()),
             ]
         )
-
-    @staticmethod
-    def _delegate_payload(tool: DelegateTool) -> dict:
-        """The single-dict argument of a Delegate send call, or {} when the shape differs."""
-        return tool.args[0] if len(tool.args) == 1 and isinstance(tool.args[0], dict) else {}
-
-    def _delegate_header_rows(self, payload: dict, order_row: tuple[str, str] | None = None) -> list[tuple[str, str]]:
-        """(label, value) rows for a Delegate send: title, explicit send parameters, and the
-        worker configuration it runs under. The order itself is excluded, because the viewer shows
-        it in full separately; the approval brief passes its one-line excerpt as `order_row` and
-        this decides where it sits, so callers never have to splice a row into this list."""
-        rows: list[tuple[str, str]] = []
-        title = payload.get("title")
-        if isinstance(title, str) and title.strip():
-            rows.append(("title", self.oneline(title.strip(), 120)))
-        if order_row is not None:
-            rows.append(order_row)
-        language = payload.get("language")
-        if isinstance(language, str) and language.strip():
-            rows.append(("language", self.oneline(language.strip(), 60)))
-        if payload.get("max_steps") is not None:
-            rows.append(("max_steps", str(payload["max_steps"])))
-        rows.extend(self.worker_config_rows())
-        return rows
 
     def worker_config_block(self) -> LogBlock:
         """The current effective worker config as a log block: one row per knob, inherited values
@@ -754,17 +757,10 @@ class ToolRunner:
         )
 
     def worker_config_rows(self) -> list[tuple[str, str]]:
-        """The effective worker provider/model/effort/api as (label, value) rows; a field that
-        inherits the provider entry's own value is shown as `(inherit) <value>`."""
-        config = self.session.config
-        provider_name = config.worker_provider or config.active_provider
-        entry = config.providers[provider_name]
-        return [
-            ("provider", config.worker_provider or f"(inherit) {provider_name}"),
-            ("model", config.worker_model or f"(inherit) {entry.model or '(no model)'}"),
-            ("effort", config.worker_reasoning or f"(inherit) {entry.reasoning}"),
-            ("api", config.worker_api or f"(inherit) {entry.api}"),
-        ]
+        """The effective worker provider/model/effort/api as (label, value) rows. Owned by
+        DelegateTool, which also builds the send brief's header rows from it, so the `c` cycle and
+        the brief can never disagree about what the worker is configured as."""
+        return DelegateTool.worker_config_rows(self.session.config)
 
     @staticmethod
     def _field_pairs(rows: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -794,29 +790,56 @@ class ToolRunner:
             if preview_lines:
                 children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
                 children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
-        elif isinstance(tool, ToolScript):
-            # The script is what the user is approving: show it (bounded by preview()) in the block.
-            preview_lines = tool.preview().rstrip().splitlines()
-            if preview_lines:
-                children.append(LogLine("preview", role=LogRole.META, edge=LogEdge.BRANCH))
-                children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in preview_lines)
+        elif (view := tool.approval_view()) is not None:
+            children.extend(self.view_excerpt_children(view, status, form or [], actions or self.approval_actions(tool, False)))
         return LogBlock.hierarchy(root, children)
+
+    # How much of an approval view's text the block itself shows. The rest is one keypress away in
+    # the viewer (`v`, or Ctrl-O afterwards), and a script long enough to overflow this is exactly
+    # the one whose full body in the transcript would bury everything it then goes on to do.
+    VIEW_EXCERPT_LINES: ClassVar[int] = 10
+
+    def view_excerpt_children(self, view: ApprovalView, status: str, form: list[tuple[str, str]], actions: list[tuple[str, str]]) -> list[LogLine]:
+        """The opening lines of an approval view, syntax-highlighted, under a header naming what is
+        clipped. CODE-role lines are lexed as one block by the renderer, so a construct spanning
+        lines (a triple-quoted string) still highlights correctly inside the excerpt."""
+        lines = view.text.rstrip().splitlines()
+        if not lines:
+            return []
+        shown, hidden = lines[: self.VIEW_EXCERPT_LINES], max(0, len(lines) - self.VIEW_EXCERPT_LINES)
+        children = [
+            LogLine(view.label, "", LogRole.META, LogEdge.BRANCH),
+            *(LogLine("", line, LogRole.CODE, LogEdge.CONTINUE, syntax=view.lexer) for line in shown),
+        ]
+        # The tail line is where the rest of the text is advertised, so it is also the legend's home
+        # when there is no action row to carry the keys (headless, piped stdin). Under yolo nothing
+        # stops to ask, so it points at the one door that is still open afterwards: the Ctrl-O
+        # browser, which is the only way to read a script that was never confirmed.
+        tail = f"… +{hidden} more line{'' if hidden == 1 else 's'}" if hidden else ""
+        if status != "confirm":
+            tail = (tail + " · " if tail else "") + "Ctrl-O for more"
+        elif not form:
+            tail = (tail + " · " if tail else "") + self.approval_legend(actions, view.label)
+        if tail:
+            children.append(LogLine("", tail, LogRole.META, LogEdge.END))
+        return children
 
     # The typed protocol, spelled out for runs with no action row to show it: headless, piped stdin.
     # Keyed by the action's answer so the legend can be built from the offered actions and cannot
     # advertise one the call has no use for; ordered here rather than by the row, which leads with
     # what is reached most often while a legend reads best with the two answers first.
-    DELEGATE_LEGEND_SEGMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
+    APPROVAL_LEGEND_SEGMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("", "Y/Enter approve"),
         ("n", "n refuse"),
         ("c", "c worker config"),
-        ("v", "v view order"),
+        ("v", "v view {label}"),
     )
 
     @classmethod
-    def delegate_legend(cls, actions: list[tuple[str, str]]) -> str:
+    def approval_legend(cls, actions: list[tuple[str, str]], view_label: str = "") -> str:
         offered = {answer for _label, answer in actions}
-        return " · ".join(text for answer, text in cls.DELEGATE_LEGEND_SEGMENTS if answer in offered) + " · else reason"
+        segments = [text.format(label=view_label) for answer, text in cls.APPROVAL_LEGEND_SEGMENTS if answer in offered]
+        return " · ".join(segments) + " · else reason"
 
     def delegate_approval_children(
         self, tool: DelegateTool, form: list[tuple[str, str]] | None = None, actions: list[tuple[str, str]] | None = None
@@ -829,8 +852,7 @@ class ToolRunner:
         The key legend closes the brief only when there is no action row: with one, the same
         choices sit live above the input line, and a copy frozen into the transcript would go stale
         the moment the worker config is edited."""
-        payload = self._delegate_payload(tool)
-        order = payload.get("order")
+        order = tool.payload_dict().get("order")
         order_row = None
         if isinstance(order, str) and order.strip():
             lines = order.strip().splitlines()
@@ -838,11 +860,9 @@ class ToolRunner:
             if len(lines) > 1:
                 text += f"  (… {len(lines) - 1} more lines)"
             order_row = ("order", text)
-        rows: list[tuple[str, str, LogRole]] = [
-            (label, value, LogRole.FIELD) for label, value in self._field_pairs(self._delegate_header_rows(payload, order_row))
-        ]
+        rows: list[tuple[str, str, LogRole]] = [(label, value, LogRole.FIELD) for label, value in self._field_pairs(tool.header_rows(order_row))]
         if not form:
-            rows.append(("", self.delegate_legend(actions if actions is not None else self.approval_actions(tool, True)), LogRole.META))
+            rows.append(("", self.approval_legend(actions if actions is not None else self.approval_actions(tool, True), "order"), LogRole.META))
         last = len(rows) - 1
         return [
             LogLine(label, value, role, LogEdge.END if index == last else LogEdge.BRANCH if index == 0 else LogEdge.CONTINUE)
@@ -894,6 +914,17 @@ class ToolRunner:
                 duration = f" · {elapsed:.1f}s" if elapsed is not None else ""
                 children.append(LogLine("output" + duration, "Ctrl-O for more", LogRole.META, LogEdge.BRANCH))
                 children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
+        elif call.name == "ToolScript":
+            # Closes the bracket the nested calls were indented under: how many of them there were,
+            # how long the script took, and the first lines of what it printed -- the printed output
+            # being the whole point of a script, since only that comes back to the model. The script
+            # body itself stays one keypress away rather than repeated here.
+            fields = self.toolscript_result_fields(output)
+            if fields is not None:  # a describe returns tool shapes, not a script envelope
+                counted, stdout = fields
+                duration = f" · {elapsed:.1f}s" if elapsed is not None else ""
+                children.append(LogLine(f"calls {counted}" + duration, "Ctrl-O for more", LogRole.META, LogEdge.BRANCH))
+                children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in self.preview_lines(stdout, self.BASH_TRANSCRIPT_PREVIEW_LINES))
         elif call.name == "Ask":
             children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
         elif call.name == "Delegate":
@@ -970,6 +1001,25 @@ class ToolRunner:
             return ""
         text = output[start:end]
         return text.removesuffix("\n")
+
+    # `calls: 5 [tr.95-99]`, `calls: 0`, or the bounded `calls: ... +120 keys` form, all of which
+    # lead with the count -- the keys themselves are already in the log, one per nested call line.
+    TOOLSCRIPT_CALLS_RE: ClassVar[re.Pattern] = re.compile(r"^calls: (?:\.\.\. \+)?(\d+)", re.MULTILINE)
+
+    def toolscript_result_fields(self, output: str) -> tuple[str, str] | None:
+        """(nested call count, printed stdout) from a ToolScript envelope, or None when the output
+        is not one -- a `describe` returns tool shapes, and has no script to summarize."""
+        if not output.startswith(("ToolScript ok", "ToolScript failed")):
+            return None
+        match = self.TOOLSCRIPT_CALLS_RE.search(output)
+        stdout: list[str] = []
+        section = ""
+        for line in output.splitlines():
+            if line in ("stdout:", "stderr:", "error:"):
+                section = line
+            elif section == "stdout:":
+                stdout.append(line)
+        return match.group(1) if match else "0", "\n".join(stdout)
 
     def preview_lines(self, text: str, line_limit: int | None = None) -> list[str]:
         line_limit = self.BASH_PREVIEW_LINES if line_limit is None else line_limit

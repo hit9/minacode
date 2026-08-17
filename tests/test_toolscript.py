@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
-from minacode.base import ToolCall, ToolError
+from minacode.base import LogRole, ToolCall, ToolError
 from minacode.config import Config
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
@@ -300,7 +300,8 @@ class TestScriptFailures:
         assert "ToolScript failed" in content
         assert "ValueError: boom" in content
         assert 'raise ValueError("boom")' in content  # source line via linecache
-        assert "x = 1" in content
+        # The call line names the script's size, not its first line: the body is in the viewer.
+        assert "ToolScript call 2 lines (31 chars)" in content
 
     def test_infinite_loop_hits_time_budget(self, tmp_path, monkeypatch):
         import minacode.tools.toolscript as toolscript_module
@@ -352,7 +353,7 @@ class TestGate:
 
 
 class TestConfirmationBlockShowsScript:
-    def test_confirm_block_contains_full_script(self, tmp_path):
+    def test_confirm_block_contains_script_excerpt(self, tmp_path):
         """The confirmation block shows the script body: the user approves code, not a label."""
         s = _mcp_session(tmp_path)
         runner = _runner(s)
@@ -362,9 +363,49 @@ class TestConfirmationBlockShowsScript:
         block = runner.approval_display(ToolCall("ts-1", "ToolScript", args), tool, "confirm")
         assert block.has_children
         lines = [line for line, _ in block.walk()]
-        assert any(line.label == "preview" for line in lines)
+        assert any(line.label == "script" for line in lines)
         assert any('tool": "echo"' in line.text for line in lines)
         assert any("for i in range(3):" in line.text for line in lines)
+        # Code lines are lexed as one block by the renderer, so they carry the lexer name.
+        assert {line.syntax for line in lines if line.role is LogRole.CODE} == {"python"}
+        # No action row was declared, so the block spells out the typed keys, `v` included.
+        assert lines[-1].text == "Y/Enter approve · n refuse · v view script · else reason"
+
+    def test_confirm_block_clips_long_script_and_says_how_much_is_hidden(self, tmp_path):
+        """A long script is clipped in the transcript; the whole body stays one keypress away."""
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        code = "\n".join(f"x{index} = {index}" for index in range(30))
+        args = [{"action": "call", "code": code}]
+        block = runner.approval_display(ToolCall("ts-1", "ToolScript", args), ToolScript(s, args), "confirm")
+        lines = [line for line, _ in block.walk()]
+        code_lines = [line for line in lines if line.role is LogRole.CODE]
+        assert len(code_lines) == ToolRunner.VIEW_EXCERPT_LINES
+        assert code_lines[0].text == "x0 = 0"
+        assert lines[-1].text.startswith("… +20 more lines · ")
+
+    def test_view_action_is_offered_and_opens_the_whole_script(self, tmp_path):
+        """`v` at the prompt opens the untruncated script, and the prompt re-asks afterwards."""
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        code = "\n".join(f"x{index} = {index}" for index in range(30))
+        tool = ToolScript(s, [{"action": "call", "code": code}])
+        assert ("View script", "v") in runner.approval_actions(tool, False)
+        views = []
+        runner.text_viewer = views.append
+        replies = iter(["v", "y"])
+        runner.input_fn = lambda _prompt: next(replies)
+        confirmed, _reason = runner.confirm(ToolCall("ts-1", "ToolScript", tool.args), tool)
+        assert confirmed
+        assert [view.label for view in views] == ["script"]
+        assert views[0].text == code and views[0].lexer == "python"
+
+    def test_describe_has_nothing_to_view(self, tmp_path):
+        """A describe commits to no code, so no viewer is offered for it."""
+        s = _mcp_session(tmp_path)
+        tool = ToolScript(s, [{"action": "describe", "tools": ["Read"]}])
+        assert tool.approval_view() is None
+        assert ("View script", "v") not in _runner(s).approval_actions(tool, False)
 
 
 # ---------------------------------------------------------------------------
@@ -500,3 +541,60 @@ class TestNestedEdit:
         assert "stale anchor" in content
         assert "after" not in content
         assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
+
+
+# ---------------------------------------------------------------------------
+# Log shape: nested calls indent under the script, and the finish line closes it
+# ---------------------------------------------------------------------------
+
+
+class TestScriptLogShape:
+    def _blocks(self, s, code, **kwargs):
+        blocks = []
+        runner = _runner(s)
+        runner.output_fn = blocks.append
+        runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": code}])], **kwargs)
+        return blocks
+
+    def test_nested_calls_are_indented_under_the_script(self, tmp_path):
+        """A nested call is logged as what it is -- a call this script made -- not as a top-level
+        one the model asked for. The indent is the whole signal, so it has to be there."""
+        (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        blocks = self._blocks(s, 'print(call("Read", {"path": "f.txt"}))\n')
+        levels = {line.text: level for block in blocks for line, level in block.walk()}
+        nested = next(level for text, level in levels.items() if text.startswith("f.txt"))
+        top = next(level for text, level in levels.items() if text.startswith("call 1 line"))
+        assert nested > top
+
+    def test_nesting_depth_is_restored_after_a_failed_script(self, tmp_path):
+        """A script that raises must not leave the rest of the session permanently indented."""
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'raise ValueError("boom")\n'}])])
+        assert runner.nesting == 0
+
+    def test_finish_line_summarizes_the_script_run(self, tmp_path):
+        """The block closes with what the script did: how many calls, and what it printed --
+        the printed output being all that reaches the model."""
+        (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        blocks = self._blocks(s, 'call("Read", {"path": "f.txt"})\nprint("counted 1")\n')
+        lines = [line for block in blocks for line, _ in block.walk()]
+        assert any(line.label.startswith("calls 1") and line.text == "Ctrl-O for more" for line in lines)
+        assert any(line.text == "counted 1" for line in lines)
+
+    def test_describe_has_no_script_summary(self, tmp_path):
+        """A describe returns tool shapes, not a script envelope, so there is nothing to count."""
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        block = runner.finish_display(ToolCall("ts1", "ToolScript", [{"action": "describe", "tools": ["Read"]}]), "tr.1", "Read\njson:    no", failed=False)
+        assert not any(line.label.startswith("calls") for line, _ in block.walk())
+
+    def test_result_fields_parse_the_envelope(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        runner = _runner(s)
+        envelope = "ToolScript ok\ncalls: 3 [tr.1-3]\nstdout:\nfirst\nsecond\nstderr:\nnoise\n"
+        assert runner.toolscript_result_fields(envelope) == ("3", "first\nsecond")
+        assert runner.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "")
+        assert runner.toolscript_result_fields("Read\njson:    no") is None

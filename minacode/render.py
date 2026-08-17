@@ -490,6 +490,7 @@ class UiPrinter:
         LogRole.ERROR: ("ansired", "fg:default"),
         LogRole.MUTED: ("ansibrightblack", "ansibrightblack"),
         LogRole.DIFF: ("fg:default", "fg:default"),
+        LogRole.CODE: ("fg:default", "fg:default"),
     }
 
     def log_segments(self, block: LogBlock) -> list[tuple[str, str]]:
@@ -522,6 +523,24 @@ class UiPrinter:
                         if background:
                             used = sum(get_cwidth(fragment[1]) for fragment in row)
                             row.append((background, " " * max(0, width - used)))
+                        segments.extend([*row, ("", "\n")])
+                index = end
+                continue
+            if line.role is LogRole.CODE:
+                end = index + 1
+                while end < len(entries) and entries[end][0].role is LogRole.CODE and entries[end][1] == level:
+                    end += 1
+                code = [entry[0] for entry in entries[index:end]]
+                # Lexed as one block, for the same reason a diff is: a per-line lexer loses every
+                # construct that spans lines. The numbers are the excerpt's own 1..N, which is what
+                # a ToolScript traceback (`File "<toolscript>", line N`) counts in.
+                highlighted = self.code_lines("\n".join(item.text for item in code), code[0].syntax)
+                number_width = len(str(len(code)))
+                for number, item in enumerate(code, 1):
+                    rendered = highlighted[number - 1] if highlighted is not None and number - 1 < len(highlighted) else [("fg:default", item.text)]
+                    prefix = [("", block.margin(level)), *self.edge_segments(item.edge), ("ansibrightblack", f"{number:>{number_width}}  ")]
+                    continuation = [("", " " * sum(get_cwidth(fragment[1]) for fragment in prefix))]
+                    for row in Text.wrap_styled(prefix, continuation, rendered, width):
                         segments.extend([*row, ("", "\n")])
                 index = end
                 continue
@@ -641,6 +660,25 @@ class UiPrinter:
             lexer = get_lexer_for_filename(path, stripnl=False)
         except Exception:  # noqa: BLE001 - third-party lexer lookup must degrade to plain rendering.
             return None
+        return self._tokenized_lines(lexer, code_text)
+
+    @classmethod
+    def code_lines(cls, code_text: str, lexer_name: str) -> list[list[tuple[str, str]]] | None:
+        """Highlighted segments per source line for a standalone block of code, by lexer name.
+
+        The same whole-block lexing _diff_tokenize_lines relies on, for code that arrives without a
+        filename to infer a lexer from: a ToolScript body, anything a viewer shows. Returns None
+        when pygments is missing or the name is unknown, leaving the caller to render plain text."""
+        if pygments is None or get_lexer_by_name is None or not lexer_name:
+            return None
+        try:
+            lexer = get_lexer_by_name(lexer_name, stripnl=False)
+        except Exception:  # noqa: BLE001 - third-party lexer lookup must degrade to plain rendering.
+            return None
+        return cls._tokenized_lines(lexer, code_text)
+
+    @classmethod
+    def _tokenized_lines(cls, lexer: Any, code_text: str) -> list[list[tuple[str, str]]] | None:
         try:
             tokens = lexer.get_tokens(code_text)
         except Exception:  # noqa: BLE001 - third-party lexer execution must degrade to plain rendering.
@@ -648,7 +686,7 @@ class UiPrinter:
 
         lines: list[list[tuple[str, str]]] = [[]]
         for token_type, value in tokens:
-            style = self.pygments_style(token_type)
+            style = cls.pygments_style(token_type)
             parts = value.split("\n")
             for i, part in enumerate(parts):
                 if i > 0:

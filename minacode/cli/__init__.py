@@ -32,7 +32,7 @@ from minacode.base import (
     __version__,
 )
 from minacode.cli import commands, worker
-from minacode.cli.modals import delegate_order_viewer, question_interaction
+from minacode.cli.modals import approval_text_viewer, question_interaction
 from minacode.cli.runtime import TuiRuntime
 from minacode.cli.view import CommandCompleter, View
 from minacode.engine import Agent
@@ -228,7 +228,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.question_fn = lambda specs: question_interaction(self, specs)
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
         self.agent.tools.worker_config_picker = worker.WorkerFlow(self).run_worker_config
-        self.agent.tools.order_viewer = lambda order, header_rows: delegate_order_viewer(self, order, header_rows)
+        self.agent.tools.text_viewer = lambda view: approval_text_viewer(self, view)
         self.agent.tools.approval_form = self.set_approval_form
         # Worker agent lifecycle callbacks: delegate.py wires these onto the worker agent when set,
         # so a worker's retry backoff, provider-side builtin calls, and compaction show in this TUI.

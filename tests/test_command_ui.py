@@ -32,7 +32,7 @@ from minacode.cli.commands import (
     set_value,
     strict,
 )
-from minacode.cli.modals import bash_output_viewer, choice_application, diff_viewer, select_choice
+from minacode.cli.modals import choice_application, diff_viewer, select_choice, tool_output_viewer
 from minacode.cli.worker import WorkerFlow, worker_command
 from minacode.config import (
     PROVIDER_API_CHOICES,
@@ -87,7 +87,7 @@ class ModalHarness:
         return None
 
 
-def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkeypatch):
+def test_tool_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     for index in range(12):
         stdout = "\n".join(f"line {line}" for line in range(40)) if index == 10 else f"output {index}"
@@ -101,10 +101,10 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     # patch before pytest reports this test result, rather than waiting for fixture teardown.
     with monkeypatch.context() as patch:
         patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
-        bash_output_viewer(command_loop)
+        tool_output_viewer(command_loop)
 
     listing = "".join(value for _style, value in modal.frames[0])
-    assert listing.startswith("\n──── Bash outputs · latest 10 ")
+    assert listing.startswith("\n──── Tool output · latest 10 ")
     assert get_cwidth(listing.splitlines()[1]) == 48
     assert "command-11" in listing and "command-2" in listing
     assert "Bash printf command-1\n" not in listing and "Bash printf command-0\n" not in listing and "Bash true" not in listing
@@ -115,23 +115,23 @@ def test_bash_output_viewer_browses_latest_ten_bounded_previews(tmp_path, monkey
     assert "line 0" in second_detail and "line 39" in second_detail
     assert "... 16 lines omitted ..." in second_detail
     assert "detail stderr" in second_detail
-    assert "──── Bash outputs · latest 10 " in "".join(value for _style, value in modal.frames[3])
+    assert "──── Tool output · latest 10 " in "".join(value for _style, value in modal.frames[3])
     oldest_detail = "".join(value for _style, value in modal.frames[5])
     assert "command-2" in oldest_detail and "output 2" in oldest_detail
     assert modal.exclusive == [False]
 
 
-def test_bash_output_viewer_is_noop_without_stored_bash_output(tmp_path):
+def test_tool_output_viewer_is_noop_without_stored_bash_output(tmp_path):
     command_loop = loop(tmp_path)
     modal = ModalHarness([])
     command_loop.tui = modal
 
-    bash_output_viewer(command_loop)
+    tool_output_viewer(command_loop)
 
     assert modal.frames == []
 
 
-def test_bash_output_viewer_reads_resumed_history(tmp_path):
+def test_tool_output_viewer_reads_resumed_history(tmp_path):
     saved = session(tmp_path)
     saved.store_tool_result("Bash", ["printf persisted"], Tool.process_result("BashToolResult", 0, "persisted output", ""))
     saved.save_snapshot()
@@ -140,7 +140,7 @@ def test_bash_output_viewer_reads_resumed_history(tmp_path):
     modal = ModalHarness(["enter", "q"])
     command_loop.tui = modal
 
-    bash_output_viewer(command_loop)
+    tool_output_viewer(command_loop)
 
     detail = "".join(value for _style, value in modal.frames[1])
     assert "Bash printf persisted" in detail
@@ -1013,3 +1013,35 @@ def test_worker_provider_typed_form_does_not_cascade(tmp_path, monkeypatch):
     assert command_loop.session.config.worker_provider == "alt"
     assert command_loop.session.config.worker_model == ""
     assert command_loop.session.config.worker_reasoning == ""
+
+
+def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_path):
+    """Ctrl-O is the only door to a script under yolo, where no prompt ever offered `v`: the entry
+    hands the stored source to the same read-only viewer the confirm-time key opens."""
+    command_loop = loop(tmp_path)
+    code = "\n".join(f"x{index} = {index}" for index in range(30))
+    command_loop.session.store_tool_result("ToolScript", [{"action": "call", "code": code}], "ToolScript ok\ncalls: 2 [tr.1-2]\n")
+    modal = ModalHarness(["enter", "G"])  # open the entry, then scroll the viewer to the bottom
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert "ToolScript call 30 lines" in listing
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    viewer = [frame for frame in frames if "Script · tr.1 · read-only" in frame]
+    assert viewer, "the entry hands off to the read-only script viewer"
+    assert " 1  x0 = 0" in viewer[0]  # numbered, so a traceback's line N is findable
+    assert "x29 = 29" in viewer[-1]  # the whole script is reachable, not just the excerpt
+    assert "calls  2" in viewer[0]
+
+
+def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.store_tool_result("ToolScript", [{"action": "describe", "tools": ["Read"]}], "Read\njson:    no")
+    modal = ModalHarness([])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    assert modal.frames == []

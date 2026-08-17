@@ -145,7 +145,25 @@ declared `structuredContent`. Two errors are possible:
 
 The script is <span class="marker">not sandboxed</span>: it runs with the same privileges as
 `Bash`. `ToolScript` asks for confirmation on every `action="call"` and the prompt shows the
-script; `--yolo` skips that confirmation exactly as it does for `Bash`.
+opening lines of the script, syntax-highlighted; `--yolo` skips that confirmation exactly as it
+does for `Bash`.
+
+### Reading the script
+
+The log shows a bounded excerpt of the script, not all of it — a long script would bury everything
+it then goes on to do. The whole body is one keypress away:
+
+- **`v` at the confirmation prompt** opens a read-only, scrolling viewer with the complete script,
+  numbered and highlighted. `Esc`/`q` returns to the prompt; nothing is approved by viewing.
+- **`Ctrl-O` afterwards** lists recent `Bash` and `ToolScript` calls; selecting a script opens the
+  same viewer. This is how a script is read under `--yolo`, where no prompt ever stops to offer `v`.
+
+Line numbers in the viewer match the ones in a failed script's traceback
+(`File "<toolscript>", line N`).
+
+Calls the script makes are logged indented under it, so the batch reads as work the script did
+rather than as calls the model made itself, and the closing line reports how many nested calls ran
+and the first lines of what the script printed.
 
 ### Authentication
 

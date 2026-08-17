@@ -16,8 +16,18 @@
   `structuredContent` payload over parsing rendered text. Built-in tools are scriptable with
   `format="text"` too (Delegate/Job/ToolScript cannot be nested); `format="json"` for built-ins
   waits for structured results.
+- ToolScript scripts are readable in the UI: the approval block shows the opening lines
+  syntax-highlighted and numbered, `v` at the confirmation prompt opens the whole script in a
+  read-only scrolling viewer, and `Ctrl-O` reopens it afterwards from the recent-calls list - which
+  is the only way to read a script under `--yolo`, where nothing stops to ask. `Ctrl-O` now lists
+  ToolScript calls alongside Bash outputs.
 
 ### Changed
+
+- Calls a ToolScript makes are logged indented under the script, so a batch reads as work the
+  script did rather than as calls the model made itself, and the closing line reports how many
+  nested calls ran plus the first lines of what the script printed. The call line now names the
+  script's size instead of echoing its first line, which was usually setup.
 
 - Stale-anchor errors now end with guidance to retry with the returned current anchor only when
   its content is the intended line; otherwise the model re-reads instead of relying on a guessed
