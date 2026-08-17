@@ -1,9 +1,5 @@
 # Commands
 
-Type `/` commands at the prompt to inspect state, switch models, manage the
-session, or configure runtime behavior on the fly. Run `/help` for the built-in
-reference.
-
 ## Looking around
 
 **`/status`** — Shows everything about the runtime at a glance: workspace path,

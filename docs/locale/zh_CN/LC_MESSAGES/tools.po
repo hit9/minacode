@@ -306,9 +306,8 @@ msgstr ""
 "delegation) 时才会出现。"
 
 #: ../../tools.md:134
-#, fuzzy
 msgid "ToolScript"
-msgstr "**`ToolScript`**"
+msgstr "ToolScript"
 
 #: ../../tools.md:136
 msgid ""

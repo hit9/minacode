@@ -212,7 +212,6 @@ msgid "Scripting tool calls"
 msgstr "脚本化工具调用"
 
 #: ../../mcp.md:82
-#, fuzzy
 msgid ""
 "When the agent expects several <span class=\"marker\">same-shape MCP "
 "calls</span> — the same tool with a handful of different arguments — it "
@@ -221,9 +220,8 @@ msgid ""
 "[ToolScript](tools.md#toolscript), which covers scripting built-in tools "
 "as well."
 msgstr ""
-"当 agent 预期要发出若干次<span class=\"marker\">形状相同的 MCP "
-"调用</span>——同一工具搭配少量不同参数——`ToolScript` 工具让它写一个 Python 脚本,而不是逐个发出调用。只有脚本 "
-"print 的内容会回到对话中,于是一批调用坍缩成一个结果。`ToolScript` 始终可用;下面的 MCP 条目需要已连接的 server。"
+"当 agent 预期要发出若干次<span class=\"marker\">形状相同的 MCP 调用</span>——同一工具搭配少量不同参数——它可以写一个 Python "
+"脚本,而不是逐个发出调用,只有脚本 print 的内容回到对话。参见 [ToolScript](tools.md#toolscript),它也覆盖内置工具的脚本化。"
 
 #: ../../mcp.md:87
 msgid "Authentication"
