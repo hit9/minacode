@@ -904,7 +904,7 @@ def test_edit_refunds_anchors_for_immediate_followup(tmp_path):
     path = tmp_path / "code.txt"
     path.write_text("a\nb\nc\n", encoding="utf-8")
     first = EditTool(s, ["code.txt", [{"op": "replace", "start": anchor(1, "b\n"), "end": anchor(1, "b\n"), "content": "B\n"}]]).call()
-    refunded = re.search(r"<content hashline-numbered>\n(anchor=2:[0-9a-z]+ \| B)\n</content>", first)
+    refunded = re.search(r"(anchor=2:[0-9a-z]+ \| B)", first)
     assert refunded, first
 
     EditTool(s, ["code.txt", [{"op": "insert_after", "start": refunded.group(1), "content": "x\n"}]]).call()
@@ -1068,3 +1068,214 @@ def test_duplicate_lines_rule_branches():
 
     # ④ no adjacent duplicates at all: None.
     assert _duplicate_lines("a\nb\n", "a\nc\n") is None
+
+
+# --- stale/out-of-range anchor recovery (A) ---
+
+
+def test_single_anchor_stale_guides_content_check(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(ToolError) as error:
+        EditTool(session(tmp_path), ["note.txt", [{"op": "insert_before", "start": anchor(0, "wrong\n"), "content": "x\n"}]]).call()
+
+    message = str(error.value)
+    assert "stale anchor" in message
+    assert "retry with the current anchor only if its content is the line you meant, otherwise re-read" in message
+
+
+def test_range_stale_anchor_error_carries_current_range(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+
+    with pytest.raises(ToolError) as error:
+        EditTool(session(tmp_path), ["note.txt", [{"op": "replace", "start": anchor(0, "wrong\n"), "end": anchor(2, "c\n"), "content": "x\n"}]]).call()
+
+    message = str(error.value)
+    assert "stale anchor" in message and "retry with the current anchor" in message
+    # The intended range's current content is attached so the model can rewrite without re-reading.
+    assert "<current-target-ranges hashline-numbered>" in message
+    assert "anchor=1:" + ReadTool.line_hash("a\n") + " | a" in message
+    assert "anchor=3:" + ReadTool.line_hash("c\n") + " | c" in message
+    assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
+
+
+def test_anchor_out_of_range_reports_file_length(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("a\nb\n", encoding="utf-8")
+
+    with pytest.raises(ToolError, match="anchor line 10 out of range; file has 2 lines"):
+        EditTool(session(tmp_path), ["note.txt", [{"op": "replace", "start": "10:abcde", "end": "10:abcde", "content": "x\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_stale_anchor_error_display_is_oneline_but_tool_result_full(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+    out = []
+    runner = ToolRunner(s, ContextManager(s), output_fn=out.append)
+
+    runner.run([ToolCall("bad", "Edit", ["code.txt", [{"op": "replace", "start": anchor(0, "wrong\n"), "end": anchor(2, "wrong\n"), "content": "x\n"}]])])
+
+    # Terminal side: the reject display collapses to one truncated line (no multi-line blowout).
+    assert len(out) == 1
+    items = list(out[0].walk())
+    assert len(items) == 1
+    rendered_line = items[0][0]
+    assert "\n" not in rendered_line.text
+    assert "..." in rendered_line.text
+    # Model side: the full error, including the attached current-range block, is preserved.
+    assert len(s.tool_errors) == 1
+    message = s.tool_errors[0].error
+    assert "retry with the current anchor" in message
+    assert "<current-target-ranges hashline-numbered>" in message
+    assert "anchor=1:" + ReadTool.line_hash("a\n") + " | a" in message
+    assert "anchor=3:" + ReadTool.line_hash("c\n") + " | c" in message
+
+
+# --- neighborhood anchors on success (B) ---
+
+
+def test_edit_refunds_neighborhood_anchors_around_change(tmp_path):
+    path = tmp_path / "code.txt"
+    path.write_text("".join(f"l{i}\n" for i in range(10)), encoding="utf-8")
+
+    result = EditTool(session(tmp_path), ["code.txt", [{"op": "replace", "start": anchor(4, "l4\n"), "end": anchor(4, "l4\n"), "content": "L4\n"}]]).call()
+
+    # Change on line 5 (1-based); the window adds three lines of context on each side: 2..8.
+    assert "<invalidate>5:5</invalidate>" in result
+    assert "anchor=2:" + ReadTool.line_hash("l1\n") + " | l1" in result
+    assert "anchor=5:" + ReadTool.line_hash("L4\n") + " | L4" in result
+    assert "anchor=8:" + ReadTool.line_hash("l7\n") + " | l7" in result
+    assert "anchor=1:" + ReadTool.line_hash("l0\n") + " | l0" not in result
+    assert "anchor=9:" + ReadTool.line_hash("l8\n") + " | l8" not in result
+
+
+def test_edit_neighborhood_clamps_to_file_bounds(tmp_path):
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+
+    first = EditTool(session(tmp_path), ["code.txt", [{"op": "replace", "start": anchor(0, "a\n"), "end": anchor(0, "a\n"), "content": "A\n"}]]).call()
+    assert "anchor=1:" + ReadTool.line_hash("A\n") + " | A" in first
+    assert "anchor=4:" + ReadTool.line_hash("d\n") + " | d" in first
+
+    last = EditTool(session(tmp_path), ["code.txt", [{"op": "replace", "start": anchor(3, "d\n"), "end": anchor(3, "d\n"), "content": "D\n"}]]).call()
+    assert "anchor=1:" + ReadTool.line_hash("A\n") + " | A" in last
+    assert "anchor=4:" + ReadTool.line_hash("D\n") + " | D" in last
+
+
+# --- description (C) ---
+
+
+def test_edit_anchor_description_notes_bash_view_carries_no_anchors():
+    schema = EditTool.params_schema()
+    edit = schema["properties"]["edits"]["items"]
+    assert "replace_unique" in edit["properties"]["op"]["description"]
+    for key in ("start", "end"):
+        assert "a file viewed through Bash carries no anchors" in edit["properties"][key]["description"]
+    assert "replace_unique replaces text that occurs exactly once" in EditTool.DESCRIPTION
+
+
+# --- replace_unique op (D) ---
+
+
+def test_replace_unique_replaces_exact_single_hit(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+
+    result = EditTool(session(tmp_path), ["note.txt", [{"op": "replace_unique", "old": "b\n", "new": "B\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
+    # The hit position is visible like any other change: invalidate plus refunded anchors.
+    assert "<invalidate>2:2</invalidate>" in result
+    assert "anchor=2:" + ReadTool.line_hash("B\n") + " | B" in result
+
+
+def test_replace_unique_rejects_multiple_hits_keeps_file_unchanged(tmp_path):
+    path = tmp_path / "note.txt"
+    original = "a\nb\nb\nc\n"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ToolError) as error:
+        EditTool(session(tmp_path), ["note.txt", [{"op": "replace_unique", "old": "b\n", "new": "B\n"}]]).call()
+
+    message = str(error.value)
+    assert "occurs 2 times at lines 2, 3" in message
+    assert "must occur exactly once" in message
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_replace_unique_rejects_missing_text(tmp_path):
+    path = tmp_path / "note.txt"
+    original = "a\nb\nc\n"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ToolError, match="replace_unique old text not found"):
+        EditTool(session(tmp_path), ["note.txt", [{"op": "replace_unique", "old": "z\n", "new": "Z\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_replace_unique_matches_indentation_and_special_chars_verbatim(tmp_path):
+    path = tmp_path / "code.py"
+    path.write_text("def f():\n    x = 1\n    y = 2\n", encoding="utf-8")
+
+    EditTool(session(tmp_path), ["code.py", [{"op": "replace_unique", "old": "    x = 1\n", "new": "    x = 10\n"}]]).call()
+    assert path.read_text(encoding="utf-8") == "def f():\n    x = 10\n    y = 2\n"
+
+    quoted = EditTool(session(tmp_path), ["code.py", [{"op": "replace_unique", "old": "x = 10\n", "new": 'x = "ten"\n'}]]).call()
+    assert path.read_text(encoding="utf-8") == 'def f():\n    x = "ten"\n    y = 2\n'
+    assert quoted.endswith("</Edit>")
+
+
+def test_replace_unique_replaces_text_spanning_lines(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+
+    EditTool(session(tmp_path), ["note.txt", [{"op": "replace_unique", "old": "b\nc\n", "new": "BC\n"}]]).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nBC\nd\n"
+
+
+def test_replace_unique_mixes_with_anchored_ops_in_one_call(tmp_path):
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+
+    EditTool(
+        session(tmp_path),
+        [
+            "code.txt",
+            [
+                {"op": "replace_unique", "old": "b\n", "new": "B\n"},
+                {"op": "delete", "start": anchor(3, "d\n"), "end": anchor(3, "d\n")},
+            ],
+        ],
+    ).call()
+
+    assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
+
+
+def test_replace_unique_then_anchored_edit_in_batch(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    s.settings.yolo = True
+    monkeypatch.setattr(CodeIndex, "update", lambda self, paths: "")
+    path = tmp_path / "code.txt"
+    path.write_text("a\nb\nc\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
+
+    runner.run(
+        [
+            ToolCall("ru", "Edit", ["code.txt", [{"op": "replace_unique", "old": "b\n", "new": "B\nB\n"}]]),
+            ToolCall("ins", "Edit", ["code.txt", [{"op": "insert_before", "start": anchor(2, "c\n"), "content": "x\n"}]]),
+        ]
+    )
+
+    # The second call's anchor was captured against the original file; the batch maps it through the
+    # lines the replace_unique edit shifted down.
+    assert path.read_text(encoding="utf-8") == "a\nB\nB\nx\nc\n"
+    assert s.tool_errors == []

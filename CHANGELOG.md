@@ -3,6 +3,19 @@
 
 ## Unreleased
 
+### Added
+
+- `Edit` gains a `replace_unique` operation: like `replace_all`, but the old text must occur
+  exactly once - zero or multiple matches are rejected with the hit lines and leave the file
+  untouched.
+
+### Changed
+
+- Stale-anchor errors now end with guidance to retry with the returned current anchor only when
+  its content is the intended line, and range errors carry the intended range's current content so
+  the model can rewrite against it without re-reading. Successful edits return three lines of
+  anchor context on each side of the change, so a follow-up edit can anchor next to the hunk.
+
 
 ## 0.24.5 - 2026-08-16
 

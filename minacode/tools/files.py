@@ -307,7 +307,8 @@ class EditTool(Tool):
     DESCRIPTION = (
         "Create or patch one UTF-8 file. op=create writes a new file; replace/delete cover the inclusive "
         "start..end range (the line at end is itself replaced or deleted); insert_before/insert_after keep "
-        "the anchor line and only add content beside it; never restate lines that already exist in the file."
+        "the anchor line and only add content beside it; replace_unique replaces text that occurs exactly "
+        "once and refuses when it does not; never restate lines that already exist in the file."
     )
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
@@ -320,12 +321,13 @@ class EditTool(Tool):
     def params_schema(cls) -> Json:
         # fmt: off
         edit = cls.object_schema({
-            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all"},
+            "op": {"type": "string", "description": "create|replace|delete|insert_before|insert_after|replace_all|replace_unique"},
             "start": {
                 "type": "string",
                 "description": (
                     "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; re-read after any file change or stale-anchor error"
+                    "never invent or calculate it; re-read after any file change or stale-anchor error; "
+                    "a file viewed through Bash carries no anchors"
                 ),
             },
             "end": {
@@ -333,6 +335,7 @@ class EditTool(Tool):
                 "description": (
                     "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
                     "never invent or calculate it; re-read after any file change or stale-anchor error; "
+                    "a file viewed through Bash carries no anchors; "
                     "inclusive — the line at end is itself replaced or deleted"
                 ),
             },
@@ -345,8 +348,8 @@ class EditTool(Tool):
                     "to the start/end anchor lines."
                 ),
             },
-            "old": {"type": "string", "description": "Text to find for replace_all"},
-            "new": {"type": "string", "description": "Replacement text for replace_all"},
+            "old": {"type": "string", "description": "Text to find for replace_all/replace_unique"},
+            "new": {"type": "string", "description": "Replacement text for replace_all/replace_unique"},
         }, ["op"])
         return cls.object_schema({
             "path": {"type": "string", "description": "File to create or patch"},
@@ -467,7 +470,7 @@ class EditTool(Tool):
             if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old", "new"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
-            if op not in {"create", "replace", "delete", "insert_before", "insert_after", "replace_all"}:
+            if op not in {"create", "replace", "delete", "insert_before", "insert_after", "replace_all", "replace_unique"}:
                 raise ToolError("unknown edit op")
             if op == "create" and len(raw_edits) != 1:
                 raise ToolError("create cannot be mixed with other edits")
@@ -550,9 +553,20 @@ class EditTool(Tool):
         resolve_anchor = anchor_resolver or (lambda anchor: self.resolve_anchor(lines, anchor))
         replacements = []
         for edit in edits:
-            start = resolve_anchor(edit.start)
+            if edit.op == "replace_unique":
+                span_start, span_end, prefix, suffix = self._replace_unique_span(original, edit.old)
+                replacement_text = prefix + edit.new + suffix
+                replacements.append((span_start, span_end, self.content_lines(replacement_text, span_end < len(lines))))
+                continue
+            try:
+                start = resolve_anchor(edit.start)
+            except ToolError as error:
+                raise self._range_augmented_error(lines, error, edit) from error
             if edit.op in {"replace", "delete"}:
-                end = resolve_anchor(edit.end)
+                try:
+                    end = resolve_anchor(edit.end)
+                except ToolError as error:
+                    raise self._range_augmented_error(lines, error, edit) from error
                 if end < start:
                     raise ToolError("end anchor is before start anchor")
                 replacement = [] if edit.op == "delete" else self.content_lines(edit.content, end + 1 < len(lines))
@@ -579,6 +593,78 @@ class EditTool(Tool):
             changes.append((new_start, clear_end, new_start, new_end))
             delta += len(replacement) - (end - start)
         return EditApplyResult("".join(new_lines), changes, replacements)
+
+    @classmethod
+    def _line_at(cls, lines: list[str], pos: int) -> int:
+        """0-based line containing text offset `pos`; len(lines) when pos sits on the content's end
+        boundary (past the last line)."""
+        offset = 0
+        for index, line in enumerate(lines):
+            if pos < offset + len(line):
+                return index
+            offset += len(line)
+        return len(lines)
+
+    @classmethod
+    def _replace_unique_span(cls, content: str, old: str) -> tuple[int, int, str, str]:
+        """Locate `old` as a substring (non-overlapping, exactly like replace_all) and return the
+        half-open line span it covers plus the row prefixes/suffixes that must survive the swap.
+        Refuses with the hit count and lines unless it occurs exactly once; nothing has been written
+        yet, so the file stays byte-identical."""
+        if not old:
+            raise ToolError("replace_unique requires old")
+        positions = []
+        pos = content.find(old)
+        while pos != -1:
+            positions.append(pos)
+            pos = content.find(old, pos + len(old))
+        if not positions:
+            raise ToolError("replace_unique old text not found")
+        if len(positions) > 1:
+            lines = ReadTool.split_lines(content)
+            hit_lines = []
+            for hit in positions:
+                line = cls._line_at(lines, hit)
+                if not hit_lines or hit_lines[-1] != line:
+                    hit_lines.append(line)
+            shown = ", ".join(str(line + 1) for line in hit_lines[:5])
+            if len(hit_lines) > 5:
+                shown += ", ..."
+            raise ToolError(f"replace_unique old text occurs {len(positions)} times at lines {shown}; it must occur exactly once")
+        lines = ReadTool.split_lines(content)
+        offsets = []
+        offset = 0
+        for line in lines:
+            offsets.append(offset)
+            offset += len(line)
+        start = positions[0]
+        end = start + len(old)
+        start_line = cls._line_at(lines, start)
+        end_line = cls._line_at(lines, end)
+        if end_line < len(lines) and end > offsets[end_line]:
+            end_line += 1  # the hit ends mid-row: that row is covered too
+        prefix = lines[start_line][: start - offsets[start_line]] if start > offsets[start_line] else ""
+        last_line = end_line - 1
+        line_end = offsets[last_line] + len(lines[last_line])
+        suffix = lines[last_line][end - offsets[last_line] :] if end < line_end else ""
+        return start_line, end_line, prefix, suffix
+
+    @classmethod
+    def _range_augmented_error(cls, lines: list[str], error: ToolError, edit: Edit) -> ToolError:
+        """Attach the intended range's current content to a stale/out-of-range anchor error so the
+        model can rewrite the content against what the file actually holds instead of re-reading."""
+        message = str(error)
+        if "stale anchor" not in message and "out of range" not in message:
+            return error
+        start = ReadTool.parse_anchor(edit.start)
+        end = ReadTool.parse_anchor(edit.end)
+        if start is None or end is None:
+            return error
+        start_index = min(max(start[0], 0), len(lines))
+        end_index = min(max(end[0], 0), len(lines))
+        if start_index > end_index:
+            start_index, end_index = end_index, start_index
+        return ToolError(message + "\n" + cls.format_current_ranges(lines, [(start_index, min(end_index + 1, len(lines)))]))
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
         return self.no_changes_error_from_lines(ReadTool.split_lines(original), result.replacements, result.replace_all)
@@ -631,10 +717,15 @@ class EditTool(Tool):
                 continue
             # Reported like every other range the model sees: 1-based, both ends inclusive.
             out.append(f"<invalidate>{clear_start + 1}:{clear_end}</invalidate>")
-            shown = lines[start:end]
+            # The refund window spans the change plus three lines of context on each side so a
+            # follow-up edit can anchor next to, not only inside, the changed hunk. Only the change
+            # itself is invalidated: the neighbors' anchors are still current.
+            context_start = max(0, start - 3)
+            context_end = min(len(lines), end + 3)
+            shown = lines[context_start:context_end]
             if shown:
                 out.append("<content hashline-numbered>")
-                out.extend(ReadTool.anchor_line(start + index, line) for index, line in enumerate(shown))
+                out.extend(ReadTool.anchor_line(context_start + index, line) for index, line in enumerate(shown))
                 out.append("</content>")
         return "\n".join(out)
 
@@ -664,6 +755,8 @@ class EditTool(Tool):
         if relocated is not None:
             return relocated
         if not 0 <= index < len(lines):
-            raise ToolError("anchor line out of range")
+            raise ToolError(f"anchor line {index + 1} out of range; file has {len(lines)} lines")
         current = ReadTool.anchor_line(index, lines[index])
-        raise ToolError(f"stale anchor {anchor}; current is {current}")
+        raise ToolError(
+            f"stale anchor {anchor}; current is {current}; retry with the current anchor only if its content is the line you meant, otherwise re-read"
+        )

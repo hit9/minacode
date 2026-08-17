@@ -206,8 +206,12 @@ class EditBatchPlan:
         relocated = ReadTool.relocated_anchor([line.text for line in state.lines], index, expected)
         if relocated is not None:
             return relocated
-        current_line = ReadTool.anchor_line(index, state.lines[index].text) if 0 <= index < len(state.lines) else "out of range"
-        raise ToolError(f"stale anchor {anchor}; current is {current_line}")
+        if 0 <= index < len(state.lines):
+            current_line = ReadTool.anchor_line(index, state.lines[index].text)
+            raise ToolError(
+                f"stale anchor {anchor}; current is {current_line}; retry with the current anchor only if its content is the line you meant, otherwise re-read"
+            )
+        raise ToolError(f"anchor line {index + 1} out of range; file has {len(state.lines)} lines")
 
 
 @dataclass
