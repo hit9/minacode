@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from minacode.session import HistorySegment
 
 
-def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:
+def wrapped_rows(text: str, width: int, margin: str = "  ", style: str = "") -> list[StyleAndTextTuples]:
     """Source text as display rows, one logical line at a time. Text.wrap_styled measures in
     terminal cells, so CJK text (two cells per character) wraps where it actually reaches the right
     edge instead of overflowing at twice the width, and each continuation row re-indents to its
@@ -56,7 +56,7 @@ def wrapped_rows(text: str, width: int, margin: str = "  ") -> list[StyleAndText
         rows.extend(
             cast(
                 list[StyleAndTextTuples],
-                Text.wrap_styled([("", margin)], [("", margin + indent)], [("", raw)], width),
+                Text.wrap_styled([("", margin)], [("", margin + indent)], [(style, raw)], width),
             )
         )
     return rows
@@ -300,7 +300,11 @@ def script_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
     fields = loop.agent.tools.toolscript_result_fields(record.output)
     if fields is not None:
         rows.append(("calls", fields[0]))
-    return ApprovalView(f"script · {record.key}", code, "python", rows)
+    # The envelope rides along: a script is a question and its printed output is the answer, and
+    # the transcript only kept the first lines of it. A failed script keeps its whole traceback
+    # here too, which is the one place the clipped error line in the log can be resolved against
+    # the numbered source right above it.
+    return ApprovalView(f"script · {record.key}", code, "python", rows, record.output)
 
 
 def tool_output_viewer(loop: CommandLoop) -> None:
@@ -440,9 +444,18 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
                     rows[-1].append((style, part))
         return [[("", margin), *row] for row in rows]
 
+    def separator(width: int, label: str = "") -> StyleAndTextTuples:
+        """The rule between the viewer's sections, optionally naming the one it opens. Labeled or
+        not, it runs to the same right edge, so the sections read as one document."""
+        if not label:
+            return [("", margin), ("ansibrightblack", "─" * max(0, width - 4))]
+        lead = f"── {label} "
+        return [("", margin), ("ansibrightblack", lead + "─" * max(0, width - 4 - get_cwidth(lead)))]
+
     def layout(width: int) -> list[StyleAndTextTuples]:
-        """Field header rows, a separator, then the whole order, wrapped for `width`. Cached per
-        width: the wrap has to be redone when the terminal is resized, but not on every keypress."""
+        """Field header rows, a separator, the whole text, and -- when the call has already run --
+        what it returned below a second rule. Cached per width: the wrap has to be redone when the
+        terminal is resized, but not on every keypress."""
         if width in wrapped:
             return wrapped[width]
         lines: list[StyleAndTextTuples] = []
@@ -460,8 +473,13 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
                     ),
                 )
             )
-        lines.append([("", margin), ("ansibrightblack", "─" * max(0, width - 4))])
+        lines.append(separator(width))
         lines.extend(code_rows(view.text, view.lexer, width, margin) if view.lexer else markdown_rows(view.text, width))
+        if view.result.strip():
+            # Plain, unlexed, and whole: this is the result exactly as the model received it, and a
+            # viewer opened to check what a script did may not quietly edit or clip it.
+            lines.extend([[], separator(width, "result")])
+            lines.extend(wrapped_rows(view.result.rstrip(), width, margin, "ansibrightblack"))
         wrapped[width] = lines
         return lines
 

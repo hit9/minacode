@@ -390,13 +390,16 @@ class ApprovalView:
 
     `label` names it in the viewer title and the action row ("order", "script"). `lexer` is a
     pygments lexer name; empty means the text is prose and renders as markdown. `rows` are the
-    header fields shown above the text.
+    header fields shown above the text. `result` is what the call returned, shown below the text
+    when the view is opened after the fact; it is empty at a confirmation prompt, where the call
+    has not run yet.
     """
 
     label: str
     text: str
     lexer: str = ""
     rows: list[tuple[str, str]] = field(default_factory=list)
+    result: str = ""
 
 
 @dataclass(frozen=True)

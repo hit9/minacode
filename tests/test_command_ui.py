@@ -1020,7 +1020,8 @@ def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_pa
     hands the stored source to the same read-only viewer the confirm-time key opens."""
     command_loop = loop(tmp_path)
     code = "\n".join(f"x{index} = {index}" for index in range(30))
-    command_loop.session.store_tool_result("ToolScript", [{"action": "call", "code": code}], "ToolScript ok\ncalls: 2 [tr.1-2]\n")
+    envelope = "ToolScript ok\ncalls: 2 [tr.1-2]\nstdout:\ncounted 30 rows"
+    command_loop.session.store_tool_result("ToolScript", [{"action": "call", "code": code}], envelope)
     modal = ModalHarness(["enter", "G"])  # open the entry, then scroll the viewer to the bottom
     command_loop.tui = modal
 
@@ -1034,6 +1035,9 @@ def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_pa
     assert " 1  x0 = 0" in viewer[0]  # numbered, so a traceback's line N is findable
     assert "x29 = 29" in viewer[-1]  # the whole script is reachable, not just the excerpt
     assert "calls  2" in viewer[0]
+    # A script is a question and its printed output is the answer, so the entry carries both.
+    assert "── result " in viewer[-1]
+    assert "counted 30 rows" in viewer[-1]
 
 
 def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
@@ -1045,3 +1049,21 @@ def test_tool_output_viewer_skips_a_describe_with_no_script(tmp_path):
     tool_output_viewer(command_loop)
 
     assert modal.frames == []
+
+
+def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
+    """The log line clips a failure to one row. Here the whole traceback sits under the numbered
+    source, so `File "<toolscript>", line N` resolves against the line it names."""
+    command_loop = loop(tmp_path)
+    code = "rows = []\nprint(rows[2])\n"
+    envelope = 'ToolScript failed\ncalls: 0\nerror:\nTraceback (most recent call last):\n  File "<toolscript>", line 2, in <module>\nIndexError: list index out of range'
+    command_loop.session.store_tool_result("ToolScript", [{"action": "call", "code": code}], envelope)
+    modal = ModalHarness(["enter"])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    viewer = "".join(value for _style, value in modal.frames[-1])
+    assert " 2  print(rows[2])" in viewer
+    assert "IndexError: list index out of range" in viewer
+    assert 'File "<toolscript>", line 2' in viewer

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-17 01:47-0700\n"
+"POT-Creation-Date: 2026-08-17 01:54-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -394,19 +394,22 @@ msgstr "**在确认提示处按 `v`** 会打开只读、可滚动的查看器,�
 #: ../../mcp.md:158
 msgid ""
 "**`Ctrl-O` afterwards** lists recent `Bash` and `ToolScript` calls; "
-"selecting a script opens the same viewer. This is how a script is read "
-"under `--yolo`, where no prompt ever stops to offer `v`."
+"selecting a script opens the same viewer, with the result it returned "
+"below the source — the printed output in full, or the whole traceback "
+"when the script failed. This is how a script is read under `--yolo`, "
+"where no prompt ever stops to offer `v`."
 msgstr ""
-"**事后按 `Ctrl-O`** 会列出最近的 `Bash` 与 `ToolScript` 调用;选中一个脚本即可打开同一个查看器。在 "
-"`--yolo` 下就是这样读脚本的,因为那里没有任何提示会停下来提供 `v`。"
+"**事后按 `Ctrl-O`** 会列出最近的 `Bash` 与 `ToolScript` 调用;选中一个脚本即可打开同一个查看器,"
+"并在源码下方显示它返回的结果——完整的 print 输出,或者脚本失败时的完整 traceback。在 `--yolo` "
+"下就是这样读脚本的,因为那里没有任何提示会停下来提供 `v`。"
 
-#: ../../mcp.md:161
+#: ../../mcp.md:163
 msgid ""
 "Line numbers in the viewer match the ones in a failed script's traceback "
 "(`File \"<toolscript>\", line N`)."
 msgstr "查看器中的行号与脚本失败时 traceback 里的行号一致(`File \"<toolscript>\", line N`)。"
 
-#: ../../mcp.md:164
+#: ../../mcp.md:166
 msgid ""
 "Calls the script makes are logged indented under it, on a `│` rail that "
 "runs unbroken from the script through every call it made — including "
@@ -417,14 +420,14 @@ msgid ""
 "script printed."
 msgstr ""
 "脚本发起的调用会缩进记录在它下面,并落在一条 `│` 竖线上:这条线从脚本一路不断开地穿过它发起的每一次调用 "
-"——包括每次调用自己在下方记录的内容,比如一段 diff 或一条命令的输出——直到结果行为止。"
-"于是这一批读起来是脚本做的事,而不是模型自己发起的调用;收尾行会报告嵌套调用的数量,以及脚本打印内容的开头几行。"
+"——包括每次调用自己在下方记录的内容,比如一段 diff "
+"或一条命令的输出——直到结果行为止。于是这一批读起来是脚本做的事,而不是模型自己发起的调用;收尾行会报告嵌套调用的数量,以及脚本打印内容的开头几行。"
 
-#: ../../mcp.md:170
+#: ../../mcp.md:172
 msgid "Authentication"
 msgstr "认证"
 
-#: ../../mcp.md:172
+#: ../../mcp.md:174
 msgid ""
 "**Bearer token** — set `bearer_token_env_var` (or a custom header via "
 "`env_http_headers`)."
@@ -432,17 +435,17 @@ msgstr ""
 "**Bearer token** — 设置 `bearer_token_env_var`，或通过 `env_http_headers` 设置自定义"
 " header。"
 
-#: ../../mcp.md:173
+#: ../../mcp.md:175
 msgid ""
 "**OAuth** — set `auth = \"oauth\"`. Connecting runs the authorization "
 "flow; disconnecting clears the saved login."
 msgstr "**OAuth** — 设置 `auth = \"oauth\"`。连接时执行授权流程；断开连接会清除已保存的登录信息。"
 
-#: ../../mcp.md:176
+#: ../../mcp.md:178
 msgid "Trust"
 msgstr "信任边界"
 
-#: ../../mcp.md:178
+#: ../../mcp.md:180
 msgid ""
 "Local (stdio) servers run programs on your machine, and remote servers "
 "receive whatever the agent sends them. Only connect servers you trust."

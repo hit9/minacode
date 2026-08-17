@@ -20,7 +20,9 @@
   syntax-highlighted and numbered, `v` at the confirmation prompt opens the whole script in a
   read-only scrolling viewer, and `Ctrl-O` reopens it afterwards from the recent-calls list - which
   is the only way to read a script under `--yolo`, where nothing stops to ask. `Ctrl-O` now lists
-  ToolScript calls alongside Bash outputs.
+  ToolScript calls alongside Bash outputs, and shows what the script returned below its source:
+  the printed output in full, or the whole traceback when the script failed, against the numbered
+  line the traceback names.
 
 ### Changed
 
