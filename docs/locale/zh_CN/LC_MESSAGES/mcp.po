@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-17 01:11-0700\n"
+"POT-Creation-Date: 2026-08-17 01:30-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -370,7 +370,8 @@ msgid ""
 "it does for `Bash`."
 msgstr ""
 "脚本<span class=\"marker\">不是沙箱</span>:它与 `Bash` 拥有相同权限。`ToolScript` 对每次 "
-"`action=\"call\"` 都会请求确认,提示会展示脚本开头若干行,并带语法高亮;`--yolo` 会像跳过 `Bash` 一样跳过该确认。"
+"`action=\"call\"` 都会请求确认,提示会展示脚本开头若干行,并带语法高亮;`--yolo` 会像跳过 `Bash` "
+"一样跳过该确认。"
 
 #: ../../mcp.md:151
 msgid "Reading the script"
@@ -388,8 +389,7 @@ msgid ""
 "**`v` at the confirmation prompt** opens a read-only, scrolling viewer "
 "with the complete script, numbered and highlighted. `Esc`/`q` returns to "
 "the prompt; nothing is approved by viewing."
-msgstr ""
-"**在确认提示处按 `v`** 会打开只读、可滚动的查看器,展示带行号与高亮的完整脚本。`Esc`/`q` 回到提示;查看本身不会批准任何东西。"
+msgstr "**在确认提示处按 `v`** 会打开只读、可滚动的查看器,展示带行号与高亮的完整脚本。`Esc`/`q` 回到提示;查看本身不会批准任何东西。"
 
 #: ../../mcp.md:158
 msgid ""
@@ -397,8 +397,8 @@ msgid ""
 "selecting a script opens the same viewer. This is how a script is read "
 "under `--yolo`, where no prompt ever stops to offer `v`."
 msgstr ""
-"**事后按 `Ctrl-O`** 会列出最近的 `Bash` 与 `ToolScript` 调用;选中一个脚本即可打开同一个查看器。在 `--yolo` "
-"下就是这样读脚本的,因为那里没有任何提示会停下来提供 `v`。"
+"**事后按 `Ctrl-O`** 会列出最近的 `Bash` 与 `ToolScript` 调用;选中一个脚本即可打开同一个查看器。在 "
+"`--yolo` 下就是这样读脚本的,因为那里没有任何提示会停下来提供 `v`。"
 
 #: ../../mcp.md:161
 msgid ""
@@ -408,18 +408,20 @@ msgstr "查看器中的行号与脚本失败时 traceback 里的行号一致(`Fi
 
 #: ../../mcp.md:164
 msgid ""
-"Calls the script makes are logged indented under it, so the batch reads "
-"as work the script did rather than as calls the model made itself, and "
-"the closing line reports how many nested calls ran and the first lines of"
-" what the script printed."
+"Calls the script makes are logged indented under it and carry the tree's "
+"`│` continuation, so the script, the calls it made, and the result it "
+"returned read as one unbroken bracket rather than as calls the model made"
+" itself. The closing line reports how many nested calls ran and the first"
+" lines of what the script printed."
 msgstr ""
-"脚本发起的调用会缩进记录在它下面,于是这一批读起来是脚本做的事,而不是模型自己发起的调用;收尾行会报告嵌套调用的数量,以及脚本打印内容的开头几行。"
+"脚本发起的调用会缩进记录在它下面,并带上树形结构的 `│` 延续线,于是脚本、它发起的调用、以及它返回的结果 "
+"读起来是一个不断开的整体,而不是模型自己发起的调用。收尾行会报告嵌套调用的数量,以及脚本打印内容的开头几行。"
 
-#: ../../mcp.md:168
+#: ../../mcp.md:169
 msgid "Authentication"
 msgstr "认证"
 
-#: ../../mcp.md:170
+#: ../../mcp.md:171
 msgid ""
 "**Bearer token** — set `bearer_token_env_var` (or a custom header via "
 "`env_http_headers`)."
@@ -427,17 +429,17 @@ msgstr ""
 "**Bearer token** — 设置 `bearer_token_env_var`，或通过 `env_http_headers` 设置自定义"
 " header。"
 
-#: ../../mcp.md:171
+#: ../../mcp.md:172
 msgid ""
 "**OAuth** — set `auth = \"oauth\"`. Connecting runs the authorization "
 "flow; disconnecting clears the saved login."
 msgstr "**OAuth** — 设置 `auth = \"oauth\"`。连接时执行授权流程；断开连接会清除已保存的登录信息。"
 
-#: ../../mcp.md:174
+#: ../../mcp.md:175
 msgid "Trust"
 msgstr "信任边界"
 
-#: ../../mcp.md:176
+#: ../../mcp.md:177
 msgid ""
 "Local (stdio) servers run programs on your machine, and remote servers "
 "receive whatever the agent sends them. Only connect servers you trust."

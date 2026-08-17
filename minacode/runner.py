@@ -9,7 +9,7 @@ import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 from prompt_toolkit.utils import get_cwidth
@@ -318,8 +318,23 @@ class ToolRunner:
         strings (a tool display that renders itself, e.g. Note) carry no tree to indent."""
         if isinstance(block, LogBlock):
             for _ in range(self.nesting):
-                block = LogBlock([block])
+                block = self.gutter(LogBlock([block]))
         self.output_fn(block)
+
+    @classmethod
+    def gutter(cls, block: LogBlock) -> LogBlock:
+        """Give every root line in a nested block the tree's continuation edge.
+
+        Indent alone leaves a nested call looking like an ordinary one that happens to sit further
+        right. The `│` continues the line the enclosing call already drew down its own children, so
+        the script, the calls it made, and the result it returned read as one unbroken bracket.
+        Lines that already carry an edge are a block's own children and keep it."""
+        return LogBlock(
+            [
+                cls.gutter(item) if isinstance(item, LogBlock) else replace(item, edge=LogEdge.CONTINUE) if item.edge is LogEdge.NONE else item
+                for item in block.items
+            ]
+        )
 
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
@@ -821,7 +836,10 @@ class ToolRunner:
         elif not form:
             tail = (tail + " · " if tail else "") + self.approval_legend(actions, view.label)
         if tail:
-            children.append(LogLine("", tail, LogRole.META, LogEdge.END))
+            # CONTINUE, not END: the call is about to run, and what it does next -- the prompt, the
+            # calls the script makes, the result line -- hangs off this same gutter. Closing the
+            # tree here and reopening it below would break the bracket in the middle.
+            children.append(LogLine("", tail, LogRole.META, LogEdge.CONTINUE))
         return children
 
     # The typed protocol, spelled out for runs with no action row to show it: headless, piped stdin.

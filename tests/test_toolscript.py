@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
-from minacode.base import LogRole, ToolCall, ToolError
+from minacode.base import LogEdge, LogRole, ToolCall, ToolError
 from minacode.config import Config
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
@@ -566,6 +566,18 @@ class TestScriptLogShape:
         nested = next(level for text, level in levels.items() if text.startswith("f.txt"))
         top = next(level for text, level in levels.items() if text.startswith("call 1 line"))
         assert nested > top
+
+    def test_nested_calls_carry_the_tree_gutter(self, tmp_path):
+        """Indent alone reads as an ordinary call sitting further right. The nested roots continue
+        the enclosing call's `|`, so the script, its calls, and its result are one bracket -- and
+        the excerpt above them must not close the tree with an END edge first."""
+        (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        blocks = self._blocks(s, 'print(call("Read", {"path": "f.txt"}))\n')
+        roots = [line for block in blocks for line, _ in block.walk() if line.label == "Read"]
+        assert roots and all(line.edge is LogEdge.CONTINUE for line in roots)
+        excerpt = [line for block in blocks for line, _ in block.walk() if line.role in (LogRole.CODE, LogRole.META)]
+        assert not any(line.edge is LogEdge.END for line in excerpt[: len(excerpt) - 1])
 
     def test_nesting_depth_is_restored_after_a_failed_script(self, tmp_path):
         """A script that raises must not leave the rest of the session permanently indented."""
