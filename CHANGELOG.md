@@ -1,6 +1,14 @@
 # Changelog
 
 
+## 0.25.1 - 2026-08-17
+
+### Changed
+
+- Upgraded the `code-symbol-index` dependency from 0.4.0 to 0.5.1, picking up its latest
+  index and query improvements for the code search tools.
+
+
 ## 0.25.0 - 2026-08-17
 
 ### Added

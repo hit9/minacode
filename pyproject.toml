@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minacode"
-version = "0.25.0"
+version = "0.25.1"
 description = "A small terminal coding agent written in Python"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,7 +32,7 @@ classifiers = [
 
 dependencies = [
     "anthropic>=0.64.0",
-    "code-symbol-index>=0.4.0",
+    "code-symbol-index>=0.5.1",
     "json-repair",
     "fastmcp-slim[client]>=3,<4",
     "openai>=2.37.0",
