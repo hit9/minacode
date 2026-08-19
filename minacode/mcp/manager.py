@@ -1,4 +1,4 @@
-"""minacode MCP: Model Context Protocol server integration."""
+"""minacode MCP manager: configured-server lifecycle and the bounded model- and user-facing views."""
 
 from __future__ import annotations
 
@@ -9,16 +9,35 @@ import json
 import os
 import re
 import threading
-import time
 from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
-from minacode.base import Json, Text, ToolError
-from minacode.config import (
-    Config,
+from minacode.base import Json, ToolError
+from minacode.mcp.config import MCPServerConfig, has_header, parse_config
+from minacode.mcp.rendering import (
+    MCPResourceInfo,
+    MCPToolInfo,
+    describe_properties,
+    dump_object,
+    extract_uris,
+    format_resource_line,
+    format_tool_line,
+    index_body,
+    join_bounded,
+    markdown_cell,
+    normalize_resource,
+    normalize_result,
+    render_describe,
+    resources_block,
+    resources_info,
+    schema_json,
+    schema_props_required,
+    server_lines,
+    structured_content,
+    tool_args_summary,
 )
+from minacode.mcp.tokens import MCPFileTokenStore
 from minacode.mentions import scan_mentions
 from minacode.session import Session
 
@@ -31,144 +50,6 @@ if TYPE_CHECKING:
     from mcp.types import BlobResourceContents, Resource, TextResourceContents, Tool
 
 _MCPResultT = TypeVar("_MCPResultT")
-
-
-@dataclass
-class MCPServerConfig:
-    name: str
-    url: str = ""
-    command: str = ""
-    args: tuple[str, ...] = ()
-    env: dict[str, str] = field(default_factory=dict)
-    auth: str = ""
-    bearer_token_env_var: str = ""
-    env_http_headers: dict[str, str] = field(default_factory=dict)
-    auto_connect: bool = False
-    error: str = ""
-
-
-class MCPFileTokenStore:
-    DEFAULT_COLLECTION = "default_collection"
-    _locks: ClassVar[dict[str, threading.Lock]] = {}
-    _locks_guard: ClassVar[threading.Lock] = threading.Lock()
-
-    def __init__(self, path: str):
-        self.path = os.path.abspath(os.path.expanduser(path))
-        with self._locks_guard:
-            self.lock = self._locks.setdefault(self.path, threading.Lock())
-
-    def token_key(self, server_url: str, suffix: str) -> str:
-        return server_url.rstrip("/") + suffix
-
-    def has_server_tokens(self, server_url: str) -> bool:
-        key = self.token_key(server_url, "/tokens")
-        collection = "mcp-oauth-token"
-        with self.lock:
-            entry = self.load().get(collection, {}).get(key)
-            return bool(entry and not self.expired(entry))
-
-    def clear_server(self, server_url: str) -> None:
-        with self.lock:
-            data = self.load()
-            for collection, key in (
-                ("mcp-oauth-token", self.token_key(server_url, "/tokens")),
-                ("mcp-oauth-client-info", self.token_key(server_url, "/client_info")),
-                ("mcp-oauth-token-expiry", self.token_key(server_url, "/token_expiry")),
-            ):
-                data.get(collection, {}).pop(key, None)
-            self.save(data)
-
-    async def get(self, key: str, *, collection: str | None = None) -> Json | None:
-        collection = collection or self.DEFAULT_COLLECTION
-        with self.lock:
-            data = self.load()
-            entry = data.get(collection, {}).get(key)
-            if entry is None:
-                return None
-            if self.expired(entry):
-                data.get(collection, {}).pop(key, None)
-                self.save(data)
-                return None
-            value = entry.get("value")
-            return dict(value) if isinstance(value, dict) else None
-
-    # Called dynamically through the MCP OAuth token-storage protocol; static call graphs will not see it.
-    async def put(self, key: str, value: Json, *, collection: str | None = None, ttl: float | None = None) -> None:
-        collection = collection or self.DEFAULT_COLLECTION
-        expires_at = time.time() + float(ttl) if ttl is not None else None
-        with self.lock:
-            data = self.load()
-            data.setdefault(collection, {})[key] = {"value": dict(value), "expires_at": expires_at}
-            self.save(data)
-
-    async def delete(self, key: str, *, collection: str | None = None) -> bool:
-        collection = collection or self.DEFAULT_COLLECTION
-        with self.lock:
-            data = self.load()
-            removed = data.get(collection, {}).pop(key, None) is not None
-            if removed:
-                self.save(data)
-            return removed
-
-    @staticmethod
-    def expired(entry: Json) -> bool:
-        expires_at = entry.get("expires_at")
-        return isinstance(expires_at, int | float) and expires_at <= time.time()
-
-    def load(self) -> dict[str, dict[str, Json]]:
-        try:
-            with open(self.path, encoding="utf-8") as file:
-                data = json.load(file)
-        except FileNotFoundError:
-            return {}
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def save(self, data: dict[str, dict[str, Json]]) -> None:
-        directory = os.path.dirname(self.path)
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-        with contextlib.suppress(OSError):
-            os.chmod(directory, 0o700)
-        tmp = self.path + ".tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            try:
-                file = os.fdopen(fd, "w", encoding="utf-8")
-            except Exception:
-                # os.fdopen doesn't close fd on failure; do it ourselves so the descriptor doesn't leak.
-                os.close(fd)
-                raise
-            with file:
-                json.dump(data, file, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
-        os.replace(tmp, self.path)
-        with contextlib.suppress(OSError):
-            os.chmod(self.path, 0o600)
-
-
-@dataclass
-class MCPToolInfo:
-    server: str
-    name: str
-    description: str
-    input_schema: Json
-    # The tool's declared result shape (MCP `outputSchema`, 2025-06-18). Empty when the server
-    # declares none, which is most of them: it is rendered only when present.
-    output_schema: Json = field(default_factory=dict)
-    annotations: Json = field(default_factory=dict)
-
-
-@dataclass
-class MCPResourceInfo:
-    server: str
-    uri: str
-    name: str
-    description: str
-    mime_type: str = ""
 
 
 class MCPManager:
@@ -231,56 +112,15 @@ class MCPManager:
         mcp_config = self.session.config.mcp
         if not isinstance(mcp_config, dict):
             return []
-        configs = [self._parse_config(str(name), raw) for name, raw in mcp_config.items() if isinstance(raw, dict)]
+        configs = [parse_config(str(name), raw) for name, raw in mcp_config.items() if isinstance(raw, dict)]
         return configs
 
     def _parse_config(self, name: str, raw: Json) -> MCPServerConfig:
-        config = MCPServerConfig(
-            name=name,
-            url=Config.str(raw, "url"),
-            command=Config.str(raw, "command"),
-            auth=Config.str(raw, "auth").lower(),
-            bearer_token_env_var=Config.str(raw, "bearer_token_env_var"),
-            auto_connect=Config.bool(raw, "auto_connect", False),
-        )
-
-        def config_error(message: str) -> None:
-            if not config.error:
-                config.error = message
-
-        def string_list(value: object) -> tuple[str, ...] | None:
-            return tuple(value) if isinstance(value, list) and all(isinstance(item, str) for item in value) else None
-
-        def string_map(value: object) -> dict[str, str] | None:
-            return dict(value) if isinstance(value, dict) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items()) else None
-
-        def read_field(key: str, parse: Callable[[object], object | None], error: str) -> None:
-            if (value := raw.get(key)) is None:
-                return
-            parsed = parse(value)
-            if parsed is None:
-                config_error(error)
-            else:
-                setattr(config, key, parsed)
-
-        read_field("args", string_list, "args must be a string list")
-        read_field("env", string_map, "env must be a string map")
-        read_field("env_http_headers", string_map, "env_http_headers must be a string map")
-        if bool(config.url) == bool(config.command):
-            config_error("exactly one of url or command is required")
-        elif config.command and (config.auth or config.bearer_token_env_var or raw.get("env_http_headers")):
-            config_error("command (stdio) servers cannot use auth/bearer_token_env_var/env_http_headers")
-        if config.auth not in {"", "oauth"}:
-            config_error("auth must be oauth")
-        if config.auth == "oauth" and config.bearer_token_env_var:
-            config_error("auth=oauth conflicts with bearer_token_env_var")
-        if config.auth == "oauth" and self._has_header(config.env_http_headers, "authorization"):
-            config_error("auth=oauth conflicts with env_http_headers.Authorization")
-        return config
+        return parse_config(name, raw)
 
     @staticmethod
     def _has_header(headers: dict[str, str], name: str) -> bool:
-        return any(header.lower() == name.lower() for header in headers)
+        return has_header(headers, name)
 
     def find_config(self, name: str) -> MCPServerConfig | None:
         return next((config for config in self.parse_configs() if config.name == name), None)
@@ -559,21 +399,7 @@ class MCPManager:
         ]
 
     def _resources_info(self, server: str, resources: list[Resource]) -> list[MCPResourceInfo]:
-        infos: list[MCPResourceInfo] = []
-        for r in resources or []:
-            uri = str(getattr(r, "uri", "") or "")
-            if not uri:
-                continue
-            infos.append(
-                MCPResourceInfo(
-                    server=server,
-                    uri=uri,
-                    name=str(getattr(r, "name", "") or ""),
-                    description=str(getattr(r, "description", "") or ""),
-                    mime_type=str(getattr(r, "mimeType", "") or ""),
-                )
-            )
-        return infos
+        return resources_info(server, resources)
 
     @staticmethod
     def tool_output_schema(tool: Tool) -> Json:
@@ -904,59 +730,24 @@ class MCPManager:
 
     @classmethod
     def _structured_content(cls, result: Any) -> str:
-        """The result's `structuredContent` as JSON text, or "" when it carries none."""
-        for attribute in ("structuredContent", "structured_content"):
-            structured = getattr(result, attribute, None)
-            if isinstance(structured, (dict, list)) and structured:
-                return json.dumps(structured, ensure_ascii=False, indent=2)
-            if structured is not None and not isinstance(structured, (dict, list)):
-                return cls._dump_object(structured)
-        return ""
+        return structured_content(result)
 
     @staticmethod
     def _dump_object(item: Any) -> str:
-        """Render a non-str/dict MCP item: pydantic-style model_dump as JSON, else str()."""
-        if hasattr(item, "model_dump"):
-            return json.dumps(item.model_dump(mode="json"), ensure_ascii=False, indent=2)
-        return str(item)
+        return dump_object(item)
 
     def normalize_resource(self, result: Any) -> str:
-        items = result if isinstance(result, list) else [result]
-        parts: list[str] = []
-        for item in items:
-            text = getattr(item, "text", None)
-            if text:
-                parts.append(str(text))
-                continue
-            blob = getattr(item, "blob", None)
-            if blob is not None:
-                mime = str(getattr(item, "mimeType", "") or "application/octet-stream")
-                parts.append(f"<binary mimeType={json.dumps(mime)} bytes={len(blob)}/>")
-                continue
-            parts.append(self._dump_object(item))
-        return self._join_bounded(parts)
+        return normalize_resource(result, raw_output_limit=self.RAW_OUTPUT_LIMIT)
 
     def _format_resource_line(self, info: MCPResourceInfo) -> str:
-        desc = " ".join((info.description or "").split())
-        if len(desc) > 100:
-            desc = desc[:97] + "..."
-        mime = f" [{info.mime_type}]" if info.mime_type else ""
-        label = f"{info.uri}{mime}"
-        return f"- {label} - {desc}" if desc else f"- {label}"
+        return format_resource_line(info)
 
     def _join_bounded(self, parts: list[str]) -> str:
-        """Join non-empty parts and clip to RAW_OUTPUT_LIMIT with a truncation marker."""
-        text = "\n".join(part for part in parts if part).strip()
-        if len(text) > self.RAW_OUTPUT_LIMIT:
-            text = text[: self.RAW_OUTPUT_LIMIT] + f"\n<MCPOutputTruncated chars={json.dumps(len(text))}/>"
-        return text
+        return join_bounded(parts, raw_output_limit=self.RAW_OUTPUT_LIMIT)
 
     @staticmethod
     def _schema_props_required(schema: Json) -> tuple[Json, list[Any]]:
-        """Extract a JSON-Schema object's `properties` dict and `required` list, tolerant of bad types."""
-        props = schema.get("properties", {})
-        required = schema.get("required", [])
-        return (props if isinstance(props, dict) else {}, required if isinstance(required, list) else [])
+        return schema_props_required(schema)
 
     def normalize_result(self, result: Any) -> str:
         """Render a tool result as the text the model reads.
@@ -968,31 +759,7 @@ class MCPManager:
         empty. It is not appended when they are not: servers that honor the repeat send the same
         payload twice, and printing both would double every result.
         """
-        parts: list[str] = []
-        content = getattr(result, "content", result)
-        items = content if isinstance(content, list) else [content]
-        for item in items:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            if isinstance(item, dict):
-                item_type = item.get("type")
-                if item_type == "text":
-                    parts.append(str(item.get("text") or ""))
-                elif item_type == "resource":
-                    parts.append(json.dumps(item.get("resource"), ensure_ascii=False, indent=2))
-                else:
-                    parts.append(json.dumps(item, ensure_ascii=False, indent=2))
-                continue
-            item_type = getattr(item, "type", "")
-            if item_type == "text":
-                parts.append(str(getattr(item, "text", "") or ""))
-            elif item_type == "resource":
-                parts.append(str(getattr(item, "resource", "") or ""))
-            else:
-                parts.append(self._dump_object(item))
-        text = self._join_bounded(parts)
-        return text or self._join_bounded([self._structured_content(result)])
+        return normalize_result(result, raw_output_limit=self.RAW_OUTPUT_LIMIT)
 
     def _authenticate_oauth(self, config: MCPServerConfig, notify: Callable[[str], None] | None = None) -> str | None:
         """Validate cached OAuth credentials or complete interactive authorization."""
@@ -1045,61 +812,22 @@ class MCPManager:
         return self._render_describe(server, info), info
 
     def _render_describe(self, server: str, info: MCPToolInfo) -> str:
-        from minacode.tools import Tool  # local import: tools is built on top of mcp
-
-        schema = info.input_schema or {}
-        returns = info.output_schema or {}
-        lines = [f"<MCPDescribe server={json.dumps(server)} tool={json.dumps(info.name)}>"]
-        if info.description:
-            lines.append("<description>")
-            lines.append(Tool.compact(info.description, self.DESCRIBE_DESCRIPTION_LIMIT))
-            lines.append("</description>")
-        lines.append("<arguments>")
-        lines.extend(self._describe_properties(schema, "arguments"))
-        lines.append("</arguments>")
-        # The result shape, on the servers that declare one. Without it the only way to learn what
-        # a tool returns is to call it, so an exploratory call is spent on every unfamiliar tool.
-        # Rendered in the same shape as the arguments above, and omitted entirely when undeclared.
-        if returns:
-            lines.append("<returns>")
-            lines.extend(self._describe_properties(returns, "fields", bare="returns_schema"))
-            lines.append("</returns>")
-        if isinstance(schema, dict) and schema:
-            lines.append("<schema>")
-            lines.append(json.dumps(schema, ensure_ascii=False, indent=2))
-            lines.append("</schema>")
-        if returns:
-            lines.append("<returns_schema>")
-            lines.append(json.dumps(returns, ensure_ascii=False, indent=2))
-            lines.append("</returns_schema>")
-        lines.append("</MCPDescribe>")
-        return "\n".join(lines)
+        return render_describe(
+            server,
+            info,
+            description_limit=self.DESCRIBE_DESCRIPTION_LIMIT,
+            argument_limit=self.DESCRIBE_ARGUMENT_LIMIT,
+            argument_description_limit=self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT,
+        )
 
     def _describe_properties(self, schema: Json, label: str, bare: str = "") -> list[str]:
-        """One `- name required type: description` line per property, bounded like the block it
-        serves. Shared by arguments and returns so a reader learns one rendering, not two.
-
-        `bare` is what to say for a schema with no properties at all -- a bare array or scalar
-        result. Arguments pass nothing and keep rendering an empty block, as they always have."""
-        from minacode.tools import Tool  # local import: tools is built on top of mcp
-
-        if not isinstance(schema, dict):
-            return []
-        props, required = self._schema_props_required(schema)
-        if not props:
-            kind = schema.get("type")
-            return [f"({kind}; see {bare} below)"] if bare and isinstance(kind, str) and kind else []
-        lines: list[str] = []
-        for index, (name, prop) in enumerate(props.items()):
-            if index >= self.DESCRIBE_ARGUMENT_LIMIT:
-                lines.append(f"... {len(props) - self.DESCRIBE_ARGUMENT_LIMIT} more {label} omitted")
-                break
-            req = "required" if name in required else "optional"
-            prop = prop if isinstance(prop, dict) else {}
-            typ = prop.get("type", "any")
-            desc = Tool.compact(str(prop.get("description", "") or ""), self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT)
-            lines.append(f"- {name} {req} {typ}: {desc}")
-        return lines
+        return describe_properties(
+            schema,
+            label,
+            bare,
+            argument_limit=self.DESCRIBE_ARGUMENT_LIMIT,
+            argument_description_limit=self.DESCRIBE_ARGUMENT_DESCRIPTION_LIMIT,
+        )
 
     def render_tools_index(self) -> str:
         """Render the MCP tools block injected into every model turn (in the cached prefix).
@@ -1156,51 +884,20 @@ class MCPManager:
         return text[: self.INDEX_TOTAL_LIMIT - 10] + "\n... MCP tools truncated; use /mcp tools for full list."
 
     def _resources_block(self, server: str, resources: list[MCPResourceInfo]) -> list[str]:
-        """The 'resources (N) — read with ...' header plus one line per resource, or [] if none."""
-        if not resources:
-            return []
-        header = f'resources ({len(resources)}) — read with MCP(action="read_resource", server={json.dumps(server)}, uri=...):'
-        return [header, *(self._format_resource_line(res) for res in resources)]
+        return resources_block(server, resources)
 
     def _server_lines(self, server: str, tools: list[MCPToolInfo], resources: list[MCPResourceInfo], *, include_schema: bool = True) -> list[str]:
-        """A server's header, tool lines, and resources block — shared by the tools index and mentions."""
-        lines = [f"[{server}] {server.capitalize()}"]
-        lines.extend(line for info in tools if (line := self._format_tool_line(server, info, include_schema=include_schema)))
-        lines.extend(self._resources_block(server, resources))
-        return lines
+        return server_lines(server, tools, resources, include_schema=include_schema, schema_limit=self.INDEX_SCHEMA_LIMIT)
 
     def _index_body(self, configs: list[MCPServerConfig], *, detail: str = "schema") -> list[str]:
-        """Render the per-server body lines of the tools index at one detail level.
-
-        detail controls how much of each tool is emitted (richest to cheapest):
-            "schema" — full line via _format_tool_line, including the inline JSON schema
-            "args"   — same line without the schema (name + arg summary + description)
-            "names"  — one "tools: a, b, c" line per server, names only
-
-        Every connected server is represented regardless of detail.
-        """
-        lines: list[str] = []
-        pending: list[str] = []
-        for config in configs:
-            tools = self.tools.get(config.name, [])
-            resources = self.resources.get(config.name, [])
-            if not tools and not resources:
-                pending.append(f"- {config.name}: {self._pending_status(config.name)}")
-                continue
-            if detail == "names":
-                lines.append(f"[{config.name}] {config.name.capitalize()}")
-                if tools:
-                    lines.append("tools: " + ", ".join(tool.name for tool in tools))
-                lines.extend(self._resources_block(config.name, resources))
-            else:
-                lines.extend(self._server_lines(config.name, tools, resources, include_schema=detail == "schema"))
-            lines.append("")
-
-        if pending:
-            lines.append("Configured servers not yet available (they exist — do not assume otherwise):")
-            lines.extend(pending)
-            lines.append("")
-        return lines
+        return index_body(
+            configs,
+            detail=detail,
+            tools=self.tools,
+            resources=self.resources,
+            pending_status=self._pending_status,
+            schema_limit=self.INDEX_SCHEMA_LIMIT,
+        )
 
     def server_issue(self, name: str) -> tuple[str, str] | None:
         """Classify a server's failure state as (kind, message); error takes precedence over skip."""
@@ -1271,75 +968,18 @@ class MCPManager:
         return "\n".join(self._server_lines(server, tools, resources))
 
     def _format_tool_line(self, server: str, info: MCPToolInfo, *, include_schema: bool = True) -> str:
-        args_str = self._tool_args_summary(info)
-        desc = (info.description or "").split("\n")[0].strip()
-        desc = " ".join(desc.split())
-        if len(desc) > 80:
-            desc = desc[:77] + "..."
-
-        line = f"{server}.{info.name}{args_str} - {desc}"
-        if len(line) > 200:
-            line = line[:197] + "..."
-        # The full description (often naming a resource doc with the argument grammar) is
-        # truncated above, so surface any resource-like URIs it mentions explicitly.
-        uris = self._extract_uris(info.description)
-        if uris:
-            line += '\n  refs (read with MCP action="read_resource"): ' + ", ".join(uris)
-        if include_schema:
-            schema = self._schema_json(info.input_schema, self.INDEX_SCHEMA_LIMIT)
-            if schema:
-                line += f"\n  schema: {schema}"
-        return line
-
-    URI_PATTERN: ClassVar[re.Pattern] = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'\"<>)\]}]+")
+        return format_tool_line(server, info, include_schema=include_schema, schema_limit=self.INDEX_SCHEMA_LIMIT)
 
     @classmethod
     def _extract_uris(cls, text: str, limit: int = 5) -> list[str]:
-        """Pull resource-like URIs out of free text, deduped and lightly de-punctuated."""
-        seen: list[str] = []
-        for match in cls.URI_PATTERN.findall(text or ""):
-            uri = match.rstrip(".,;:")
-            if uri not in seen:
-                seen.append(uri)
-            if len(seen) >= limit:
-                break
-        return seen
+        return extract_uris(text, limit)
 
     @staticmethod
     def _schema_json(schema: Json, limit: int) -> str:
-        """Render a remote tool's input schema as compact JSON, capped at `limit` chars (0 = no cap)."""
-        if not isinstance(schema, dict) or not schema:
-            return ""
-        text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-        if limit and len(text) > limit:
-            text = text[: limit - 1].rstrip() + "… (truncated; MCP describe for full schema)"
-        return text
+        return schema_json(schema, limit)
 
     def _tool_args_summary(self, info: MCPToolInfo) -> str:
-        schema = info.input_schema or {}
-        props, required = self._schema_props_required(schema)
-
-        def _fmt(name: str) -> str:
-            t = props.get(name, {}).get("type", "")
-            return f"{name}: {t}" if t else name
-
-        req_args = [_fmt(k) for k in required if k in props]
-        opt_args = [_fmt(k) for k in props if k not in required]
-
-        if len(req_args) > 8:
-            req_args = req_args[:8] + ["..."]
-        if len(opt_args) > 8:
-            opt_args = opt_args[:8] + ["..."]
-
-        parts = []
-        if req_args:
-            parts.append("(" + ", ".join(req_args))
-        else:
-            parts.append("(")
-        if opt_args:
-            parts.append("; " + ", ".join(opt_args))
-        parts.append(")")
-        return "".join(parts)
+        return tool_args_summary(info)
 
     def render_tool_listing(self, server: str | None = None) -> str:
         from minacode.tools import Tool  # local import: tools is built on top of mcp
@@ -1421,4 +1061,4 @@ class MCPManager:
 
     @staticmethod
     def markdown_cell(text: str) -> str:
-        return Text.clean(str(text)).replace("\n", " ").replace("|", "\\|")
+        return markdown_cell(text)
