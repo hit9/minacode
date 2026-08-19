@@ -29,11 +29,8 @@ with references to their first full copy instead of being sent in full again.
 ### Compaction
 
 As a request approaches `runtime.max_context_tokens`, minacode **compacts**: the older part of the
-conversation is replaced by a short summary, and the most recent messages are kept as they are.
-The session continues in the same turn, so a long task does not have to stop.
-
-About eight recent messages survive, so the last tool results and file contents are still there
-and not only described. Very large ones keep fewer, or the pass would free nothing.
+conversation is replaced by a short summary, and the most recent messages — about eight of them —
+are kept as they are. The session continues in the same turn, so a long task does not have to stop.
 
 The threshold leaves room for what the next request carries besides the conversation — the reply
 the model may write, and the tool definitions — so compaction happens before the window is full.
@@ -79,13 +76,10 @@ and the agent can still recall it — but the checkpoint carries less, so tell m
 if a long task continues past one.
 
 `/compact log` marks such a pass `no summary`, and `/compact` reports the reason on the spot. The
-usual causes are a summarizer that cannot fit the span, one slower than its `response_timeout`, and
-a `[compaction]` entry missing its url, key, or model — that last one is refused by name before
-the request. Every failure names the entry that served it, so you know where to look. See
-[Compaction model](configuration.md#compaction-model) for choosing an entry that avoids all three.
-
-A weak summarizer sometimes writes something other than a summary. minacode asks once more before
-giving up; if it keeps happening, the `[compaction]` entry is too small for the job.
+usual causes are a summarizer that cannot fit the span, one slower than its `response_timeout`, one
+that answers with something other than a summary, and a `[compaction]` entry missing its url, key,
+or model. The message names the entry, so you know where to look. See
+[Compaction model](configuration.md#compaction-model) for choosing one that avoids all four.
 
 ### Sessions started before these features
 
@@ -101,10 +95,9 @@ Four levers, in the order they usually pay off:
 
 - **Keep the cache prefix stable.** Switching models or connecting a server mid-session restarts
   the reusable prefix; leaving them alone lets it grow. See [Prompt caching](#prompt-caching).
-- **Give summaries a cheap model — or leave them where they are.** A small model summarizes as
-  well as a large one, so a separate entry costs less per token. But a summary that stays on the
-  conversation's own entry reuses the cache the turn just filled, and one sent elsewhere pays for
-  the whole span. The `compaction cache` row of `/status` says which is winning. See
+- **Give summaries a cheap model — or leave them where they are.** A cheaper entry costs less per
+  token, but a summary that stays put reuses the cache the turn just filled. The `compaction
+  cache` row of `/status` says which is winning. See
   [Compaction model](configuration.md#compaction-model).
 - **Delegate bounded work to a cheap [worker](worker.md).** Its tokens are billed at the worker
   entry's rate, and its context never enters the parent's.
@@ -127,9 +120,6 @@ Anything that changes an early one — connecting an MCP server, installing a sk
 models, enabling a provider-side tool — shortens the reusable prefix; a compaction deliberately
 starts a new one. Appending to the conversation, including Note updates and resume events, does
 not.
-
-A summary reuses this prefix too, as long as it runs on the conversation's own entry. It is the
-largest request a session makes, which is why sending summaries elsewhere is not free.
 
 Support differs by provider. OpenAI-compatible endpoints may match prefixes on their own, all the
 way through the conversation. Anthropic caches only what it is told to, and minacode marks the

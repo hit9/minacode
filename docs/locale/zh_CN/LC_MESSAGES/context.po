@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-19 03:47-0700\n"
+"POT-Creation-Date: 2026-08-19 03:51-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -86,22 +86,15 @@ msgstr "Compaction"
 msgid ""
 "As a request approaches `runtime.max_context_tokens`, minacode "
 "**compacts**: the older part of the conversation is replaced by a short "
-"summary, and the most recent messages are kept as they are. The session "
-"continues in the same turn, so a long task does not have to stop."
+"summary, and the most recent messages — about eight of them — are kept as"
+" they are. The session continues in the same turn, so a long task does "
+"not have to stop."
 msgstr ""
-"当一个请求接近 `runtime.max_context_tokens` 时，minacode "
-"会**压缩**：较早的那部分对话被一段简短摘要取代，最近的消息按原样保留。会话在同一个回合里继续，因此一个长任务不必中断。"
+"当一次请求逼近 `runtime.max_context_tokens` 时，minacode 会**压缩**：较早的那部分对话被"
+"一段简短摘要取代，最近的消息——大约八条——原样保留。会话在同一轮里继续，所以长任务不必"
+"中断。"
 
 #: ../../context.md:35
-msgid ""
-"About eight recent messages survive, so the last tool results and file "
-"contents are still there and not only described. Very large ones keep "
-"fewer, or the pass would free nothing."
-msgstr ""
-"最近大约八条消息会保留下来，所以最后几个工具结果和文件内容还在，而不只是被描述过。很"
-"大的消息会保留更少，否则这次压缩等于什么都没腾出来。"
-
-#: ../../context.md:38
 msgid ""
 "The threshold leaves room for what the next request carries besides the "
 "conversation — the reply the model may write, and the tool definitions — "
@@ -109,14 +102,14 @@ msgid ""
 "status bar measures the last request; compaction looks ahead to the next."
 msgstr "这个阈值会为下一次请求里除对话之外要携带的东西留出余地——模型可能写出的回复，以及工具定义——所以压缩发生在窗口被填满之前。状态栏显示的占用衡量的是上一次请求，而压缩看的是下一次。"
 
-#: ../../context.md:42
+#: ../../context.md:39
 msgid ""
 "The summary is lossy, so each compaction also stores a verbatim excerpt "
 "of the messages it evicted, as a **history segment**. The session log "
 "keeps the originals either way."
 msgstr "摘要是有损的，因此每次压缩还会把它丢弃的那些消息按原样存成一段**历史片段**。无论如何，会话日志里都保留着原文。"
 
-#: ../../context.md:47
+#: ../../context.md:44
 msgid ""
 "Each compaction names the span it evicted, in the same reply that writes "
 "the summary, so the title describes the work rather than whichever "
@@ -127,7 +120,7 @@ msgstr ""
 "每次压缩都会在写下摘要的那次回复里为它丢弃的这段对话命名，因此标题描述的是这段工作本身，而不是恰好位于窗口开头的那条消息。agent 通过 "
 "`RecallContext` 访问这些片段——列出、搜索或取回其中一个——在它这么做之前，它们不会占用请求里的任何位置。"
 
-#: ../../context.md:52
+#: ../../context.md:49
 msgid ""
 "Only the newest 50 segments stay recallable; a session that compacts more"
 " often drops its oldest spans. `seg.N` keys keep counting, so the agent "
@@ -136,7 +129,7 @@ msgstr ""
 "只有最新的 50 个 segment 保持可取回；压缩次数超过这个数量的会话会丢弃最旧的片段。`seg.N` key 会继续递增，因此 agent"
 " 得到的是该 segment 已不存在的答复，而不是另一个片段。"
 
-#: ../../context.md:56
+#: ../../context.md:53
 msgid ""
 "Run `/compact` to compact immediately rather than waiting for the "
 "threshold, for example before starting a large refactor. `/status` "
@@ -145,7 +138,7 @@ msgstr ""
 "运行 `/compact` 可以立即压缩，而不必等待阈值；例如可在大型重构前使用。`/status` 会显示当前 session 已执行的 "
 "compaction 次数。"
 
-#: ../../context.md:59
+#: ../../context.md:56
 msgid ""
 "`/compact log` reviews them one by one. Each row shows when the pass ran,"
 " whether it was automatic or manual, whether it covered prior "
@@ -158,14 +151,14 @@ msgstr ""
 "可以逐个回顾它们。每一行显示这次压缩何时运行、是自动还是手动、覆盖的是先前对话还是当前回合，以及丢弃了多少内容。打开其中一个会显示当时写下的摘要——活动上下文只保留最新的那一份——`/compact"
 " log seg.N` 则不经查看器直接打印该摘要。"
 
-#: ../../context.md:64
+#: ../../context.md:61
 msgid ""
 "Neither form prints the stored excerpt — that is the agent's to retrieve "
 "— and a pass that finds nothing to evict stores no segment at all, so the"
 " compaction count can exceed the segment count."
 msgstr "两种方式都不会打印已存储的逐字摘录——那是留给 agent 取回的；而没有可丢弃内容的那次压缩根本不会存储片段，因此压缩次数可能多于片段数量。"
 
-#: ../../context.md:67
+#: ../../context.md:64
 msgid ""
 "While a summary is running, the status bar names the entry doing it — "
 "`[compaction]`, then that entry's model and effort — the same way it "
@@ -176,11 +169,11 @@ msgstr ""
 "摘要运行期间，状态栏会显示正在执行它的条目——先是 `[compaction]`，然后是该条目的模型与推理强度——就像它显示进行中的 "
 "[worker](worker.md) 一样。摘要完成后，这一行会回到对话本身的模型；如果压缩就运行在已经显示的那个模型上，这一行不会有任何变化。"
 
-#: ../../context.md:74
+#: ../../context.md:71
 msgid "When a summary does not arrive"
 msgstr "摘要没有拿到时"
 
-#: ../../context.md:76
+#: ../../context.md:73
 msgid ""
 "Compaction always makes room, even when the summary request fails: the "
 "same messages leave the context, with no summary written in their place. "
@@ -191,36 +184,26 @@ msgstr ""
 "即使摘要请求失败，压缩也一定会腾出空间：同样的消息会离开上下文，只是没有写下摘要。工作本身不会丢失——片段仍然存储着，agent "
 "仍然可以取回——但检查点承载的信息更少，所以如果一个长任务要继续跨过它，请把要紧的事情再告诉 minacode 一次。"
 
-#: ../../context.md:81
+#: ../../context.md:78
 msgid ""
 "`/compact log` marks such a pass `no summary`, and `/compact` reports the"
 " reason on the spot. The usual causes are a summarizer that cannot fit "
-"the span, one slower than its `response_timeout`, and a `[compaction]` "
-"entry missing its url, key, or model — that last one is refused by name "
-"before the request. Every failure names the entry that served it, so you "
-"know where to look. See [Compaction model](configuration.md#compaction-"
-"model) for choosing an entry that avoids all three."
+"the span, one slower than its `response_timeout`, one that answers with "
+"something other than a summary, and a `[compaction]` entry missing its "
+"url, key, or model. The message names the entry, so you know where to "
+"look. See [Compaction model](configuration.md#compaction-model) for "
+"choosing one that avoids all four."
 msgstr ""
 "`/compact log` 会把这样的一次标记为 `no summary`，`/compact` 则当场说明原因。常见原因"
-"有三种：摘要模型装不下这一段、比它的 `response_timeout` 还慢、以及 `[compaction]` 配置"
-"缺少 url、key 或 model——最后一种会在发请求之前就按名字拒绝。每一次失败都会点名是哪个 "
-"entry 服务的，你就知道该去看哪里。见[压缩模型](configuration.md#compaction-model)，挑一"
-"个三种都能避开的 entry。"
+"有：摘要模型装不下这一段、比它的 `response_timeout` 还慢、给出的东西根本不是摘要、以及 "
+"`[compaction]` 配置缺少 url、key 或 model。消息里会点名是哪个 entry，你就知道该去看哪"
+"里。见[压缩模型](configuration.md#compaction-model)，挑一个四种都能避开的。"
 
-#: ../../context.md:87
-msgid ""
-"A weak summarizer sometimes writes something other than a summary. "
-"minacode asks once more before giving up; if it keeps happening, the "
-"`[compaction]` entry is too small for the job."
-msgstr ""
-"能力弱的摘要模型有时写出来的并不是摘要。minacode 会再问一次才放弃；如果反复出现，说明 "
-"`[compaction]` 那个 entry 撑不起这份活儿。"
-
-#: ../../context.md:90
+#: ../../context.md:84
 msgid "Sessions started before these features"
 msgstr "在这些功能之前开始的会话"
 
-#: ../../context.md:92
+#: ../../context.md:86
 msgid ""
 "Resuming a session older than a given feature shows blanks rather than "
 "errors. Segments compacted by an earlier version have no recorded time, "
@@ -234,15 +217,15 @@ msgstr ""
 "`—` 列出它们，并说明摘要早于这份日志；那时花掉的摘要 token 留在总的 `usage` 里，因此在本次会话再次压缩之前，`/status`"
 " 不会出现 `compaction usage` 这一行。从现在起记录的一切都会正常填入。"
 
-#: ../../context.md:98
+#: ../../context.md:92
 msgid "Spending less"
 msgstr "更省钱"
 
-#: ../../context.md:100
+#: ../../context.md:94
 msgid "Four levers, in the order they usually pay off:"
 msgstr "四个杠杆，按通常见效的顺序排列："
 
-#: ../../context.md:102
+#: ../../context.md:96
 msgid ""
 "**Keep the cache prefix stable.** Switching models or connecting a server"
 " mid-session restarts the reusable prefix; leaving them alone lets it "
@@ -251,21 +234,19 @@ msgstr ""
 "**保持缓存前缀稳定。** 会话中途切换模型或连接服务器会让可复用的前缀重新开始；不去动它们，前缀就会一直长下去。见[提示词缓存"
 "](#prompt-caching)。"
 
-#: ../../context.md:104
+#: ../../context.md:98
 msgid ""
-"**Give summaries a cheap model — or leave them where they are.** A small "
-"model summarizes as well as a large one, so a separate entry costs less "
-"per token. But a summary that stays on the conversation's own entry "
-"reuses the cache the turn just filled, and one sent elsewhere pays for "
-"the whole span. The `compaction cache` row of `/status` says which is "
-"winning. See [Compaction model](configuration.md#compaction-model)."
+"**Give summaries a cheap model — or leave them where they are.** A "
+"cheaper entry costs less per token, but a summary that stays put reuses "
+"the cache the turn just filled. The `compaction cache` row of `/status` "
+"says which is winning. See [Compaction model](configuration.md"
+"#compaction-model)."
 msgstr ""
-"**把摘要交给便宜的模型——或者就让它留在原地。** 小模型总结得并不比大模型差，所以另配一"
-"个 entry 单价更低。但留在对话自己那个 entry 上的摘要，会复用这一轮刚填好的缓存；发去别"
-"处则要为整段重新付钱。`/status` 的 `compaction cache` 一行会告诉你哪边占上风。见[压缩模"
-"型](configuration.md#compaction-model)。"
+"**把摘要交给便宜的模型——或者就让它留在原地。** 更便宜的 entry 单价更低，但留在原地的摘"
+"要会复用这一轮刚填好的缓存。`/status` 的 `compaction cache` 一行会告诉你哪边占上风。见"
+"[压缩模型](configuration.md#compaction-model)。"
 
-#: ../../context.md:109
+#: ../../context.md:102
 msgid ""
 "**Delegate bounded work to a cheap [worker](worker.md).** Its tokens are "
 "billed at the worker entry's rate, and its context never enters the "
@@ -274,23 +255,23 @@ msgstr ""
 "**把有界的工作委派给便宜的 [worker](worker.md)。** 它的 token 按 worker "
 "条目的价格计费，而且它的上下文不会进入父会话。"
 
-#: ../../context.md:111
+#: ../../context.md:104
 msgid ""
 "**Size `runtime.max_context_tokens` to the work.** A larger window means "
 "fewer compactions but a more expensive request every turn."
 msgstr "**按工作量设置 `runtime.max_context_tokens`。** 更大的窗口意味着更少的压缩，但每一回合的请求都更贵。"
 
-#: ../../context.md:114
+#: ../../context.md:107
 msgid ""
 "`/status` shows what each is doing: cache ratio, conversation usage, and "
 "summary usage and cache on their own rows."
 msgstr "`/status` 会显示它们各自的情况：缓存命中率、对话用量，以及摘要的用量和缓存，各占一行。"
 
-#: ../../context.md:117
+#: ../../context.md:110
 msgid "Prompt caching"
 msgstr "Prompt 缓存"
 
-#: ../../context.md:119
+#: ../../context.md:112
 msgid ""
 "Prompt caching lets a provider reuse work for an unchanged beginning of a"
 " request. Each request usually starts with the same instructions, "
@@ -298,7 +279,7 @@ msgid ""
 "processing."
 msgstr "提示词缓存让 provider 复用请求中未改变的开头部分。每次请求通常都以相同的指令、环境、工具和更早的对话开始，因此只有新的尾部需要处理。"
 
-#: ../../context.md:125
+#: ../../context.md:118
 msgid ""
 "A request is reused only up to its first difference, which is why the "
 "stable sections come first. Anything that changes an early one — "
@@ -310,43 +291,33 @@ msgstr ""
 "请求只会被复用到第一处差异为止，这也是稳定的部分排在最前面的原因。任何改变靠前部分的动作——连接 MCP 服务器、安装 skill、切换模型、启用"
 " provider 侧工具——都会缩短可复用的前缀；一次压缩则会有意开启一个新的前缀。向对话追加内容（包括 Note 更新和恢复事件）不会。"
 
-#: ../../context.md:131
-msgid ""
-"A summary reuses this prefix too, as long as it runs on the "
-"conversation's own entry. It is the largest request a session makes, "
-"which is why sending summaries elsewhere is not free."
-msgstr ""
-"摘要也会复用这条前缀，只要它跑在对话自己的 entry 上。它是一个 session 里最大的一次请求"
-"，这就是把摘要发去别处并非免费的原因。"
-
-#: ../../context.md:134
+#: ../../context.md:124
 msgid ""
 "Support differs by provider. OpenAI-compatible endpoints may match "
 "prefixes on their own, all the way through the conversation. Anthropic "
 "caches only what it is told to, and minacode marks the instructions and "
 "tools — so there the conversation itself is processed again each turn."
 msgstr ""
-"各家 provider 的支持并不相同。OpenAI 兼容端点可能自己匹配前缀，一路匹配到对话内容。"
-"Anthropic 只缓存被明确告知的部分，而 minacode 标出的是指令和工具——所以在那里，对话本身"
-"每一轮都会被重新处理。"
+"各家 provider 的支持并不相同。OpenAI 兼容端点可能自己匹配前缀，一路匹配到对话内容。Anthropic 只缓存被明确告知的部分，而"
+" minacode 标出的是指令和工具——所以在那里，对话本身每一轮都会被重新处理。"
 
-#: ../../context.md:138
+#: ../../context.md:128
 msgid "Checking the hit rate"
 msgstr "检查命中率"
 
-#: ../../context.md:140
+#: ../../context.md:130
 msgid ""
 "`/status` reports the ratio for the latest request and for the whole "
 "session, with cache-write tokens when the provider exposes them:"
 msgstr "`/status` 会报告最近一次请求以及整个会话的命中率；当 provider 提供缓存写入 token 时也一并显示："
 
-#: ../../context.md:145
+#: ../../context.md:135
 msgid ""
 "The latest-request ratio also shows live in the status bar, beside the "
 "context fill, updating with each response."
 msgstr "最近一次请求的命中率也会实时显示在状态栏中，紧跟上下文占用，随每次响应更新。"
 
-#: ../../context.md:148
+#: ../../context.md:138
 msgid ""
 "The ratio varies with the provider, model, prompt length, and "
 "conversation. When request prefixes line up, it <span "
@@ -605,4 +576,33 @@ msgstr ""
 #~ "上：它是拿这次对话的请求加一条指令拼成的，而不是另起炉灶重新构造一个请求。它是一个 session "
 #~ "里最大的一次请求，所以复用在这里最值钱——这也是把摘要发去别处并非免费的原因。它的命中率在 `/status` "
 #~ "里单独占一行。"
+
+#~ msgid ""
+#~ "About eight recent messages survive, so"
+#~ " the last tool results and file "
+#~ "contents are still there and not "
+#~ "only described. Very large ones keep "
+#~ "fewer, or the pass would free "
+#~ "nothing."
+#~ msgstr "最近大约八条消息会保留下来，所以最后几个工具结果和文件内容还在，而不只是被描述过。很大的消息会保留更少，否则这次压缩等于什么都没腾出来。"
+
+#~ msgid ""
+#~ "A weak summarizer sometimes writes "
+#~ "something other than a summary. minacode"
+#~ " asks once more before giving up; "
+#~ "if it keeps happening, the "
+#~ "`[compaction]` entry is too small for"
+#~ " the job."
+#~ msgstr ""
+#~ "能力弱的摘要模型有时写出来的并不是摘要。minacode 会再问一次才放弃；如果反复出现，说明 "
+#~ "`[compaction]` 那个 entry 撑不起这份活儿。"
+
+#~ msgid ""
+#~ "A summary reuses this prefix too, "
+#~ "as long as it runs on the "
+#~ "conversation's own entry. It is the "
+#~ "largest request a session makes, which"
+#~ " is why sending summaries elsewhere "
+#~ "is not free."
+#~ msgstr "摘要也会复用这条前缀，只要它跑在对话自己的 entry 上。它是一个 session 里最大的一次请求，这就是把摘要发去别处并非免费的原因。"
 
