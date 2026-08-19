@@ -30,6 +30,7 @@ from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_REQUEST_EVENT,
+    LIVE_FOLLOWUP_PREFIX,
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
     PREVIOUS_CONTEXT_TRIMMED,
@@ -1941,3 +1942,40 @@ def test_the_slice_and_the_split_agree_on_where_the_cut_is(tmp_path):
         carried = messages[len(context.model_header(live.system_prompt)) : -1]
         for message in compacted:
             assert message in carried, f"recent={recent} evicted a message the summary never saw"
+
+
+def test_the_slice_follows_the_request_being_built_not_the_one_already_sent(tmp_path):
+    """A follow-up queued mid-turn joins the request before compaction runs, so the projection the
+    slice is cut from carries it and the previously sent request does not. The slice therefore
+    aligns with the request about to go out rather than the one that wrote the cache.
+
+    That is deliberate, and it is not the boundary bug it resembles. The queued message moves the
+    reasoning boundary for the ordinary request too, so the divergence from what was sent exists
+    with or without compaction -- at the same position. Aligning to the outgoing request keeps the
+    hit rather than losing it: the summary writes a prefix the larger request that follows reads
+    back. Aligning to the sent one instead would need the last projection carried as state, to
+    move a hit from one request to the other."""
+    live = session(tmp_path)
+    live.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    live.messages = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "earlier answer"}]
+    sent_turn = [
+        {"role": "user", "content": "do X"},
+        {"role": "assistant", "content": "", "reasoning_content": "thought", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "out"},
+        *({"role": "assistant", "content": f"step {index}"} for index in range(16)),
+    ]
+    queued_turn = [*sent_turn, {"role": "user", "content": LIVE_FOLLOWUP_PREFIX + "also do Y"}]
+
+    context, model = ContextManager(live), ModelClient(live)
+    sent = model.chat_messages(context.model_messages(live.system_prompt, sent_turn))
+    outgoing = model.chat_messages(context.model_messages(live.system_prompt, queued_turn))
+    compacted, _keep = context.turn_compaction_parts(queued_turn)
+    summary = model.chat_messages(context.compaction_request(compacted, queued_turn)[0])
+
+    def diverges_at(left, right):
+        return next((index for index, (a, b) in enumerate(zip(left, right)) if a != b), None)
+
+    # The summary matches the outgoing request everywhere but its appended instruction.
+    assert diverges_at(summary, outgoing) == len(summary) - 1
+    # It parts from the sent request earlier -- at exactly where the queued message already parted.
+    assert diverges_at(summary, sent) == diverges_at(outgoing, sent)
