@@ -1552,7 +1552,9 @@ class ChoiceViewState:
                 parts.append((style, prefix))
                 # The selected row stays a solid reverse bar: composing the part colours into it
                 # would repaint the bar in each part's colour rather than highlight the row.
-                parts.extend((style or part_style, text) for part_style, text in (label_fn(choice) or [("", label)]))
+                # Indexed rather than unpacked: a fragment may carry a third mouse-handler element,
+                # and this row only ever wants the style and the text.
+                parts.extend((style or fragment[0], fragment[1]) for fragment in (label_fn(choice) or [("", label)]))
                 parts.append((style, "\n"))
             elif match := UiPrinter.MCP_STATUS_RE.search(label):
                 parts.append((style, prefix + label[: match.start()]))

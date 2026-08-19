@@ -22,6 +22,7 @@ from minacode.base import (
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model import ModelClient
 from minacode.prompts import (
+    COMPACTION_REQUEST_EVENT,
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
     PREVIOUS_CONTEXT_TRIMMED,
@@ -196,19 +197,23 @@ class ContextManager:
         attempted = compacted_any = False
         if self._auto_compaction_allowed("history", self.session.messages):
             attempted = True
+            recent = None
             compacted, keep = self.compaction_parts()
             if not compacted:
-                compacted, keep = self.compaction_parts(self.COMPACT_MINIMUM_RECENT)
-            if self._compact_messages(model, compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages):
+                recent = self.COMPACT_MINIMUM_RECENT
+                compacted, keep = self.compaction_parts(recent)
+            if self._compact_messages(model, compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages, recent=recent):
                 compacted_any = True
                 messages = self.model_messages(base_system, turn_messages)
             self._auto_compacted_at["history"] = len(self.session.messages)
         if turn_messages is not None and self.request_tokens(messages, tools) >= budget and self._auto_compaction_allowed("turn", turn_messages):
             attempted = True
+            recent = None
             compacted, keep = self.turn_compaction_parts(turn_messages)
             if not compacted:
-                compacted, keep = self.turn_compaction_parts(turn_messages, self.COMPACT_MINIMUM_RECENT)
-            if self._compact_messages(model, compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages):
+                recent = self.COMPACT_MINIMUM_RECENT
+                compacted, keep = self.turn_compaction_parts(turn_messages, recent)
+            if self._compact_messages(model, compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages, recent=recent):
                 compacted_any = True
                 messages = self.model_messages(base_system, turn_messages)
             self._auto_compacted_at["turn"] = len(turn_messages)
@@ -247,7 +252,9 @@ class ContextManager:
         usage = self.session.usage
         return usage.last_prompt_budget > 0 and usage.last_prompt_tokens * 100 >= usage.last_prompt_budget * 99
 
-    def compaction_request(self, compacted: list[Json], turn_messages: list[Json] | None = None) -> tuple[list[Json], list[Json]] | None:
+    def compaction_request(
+        self, compacted: list[Json], turn_messages: list[Json] | None = None, recent: int | None = None
+    ) -> tuple[list[Json], list[Json]] | None:
         """The compaction request as the agent's own request truncated, plus one instruction, or
         None to use the flattened payload instead.
 
@@ -265,7 +272,14 @@ class ContextManager:
 
         Eligible only when the summary runs on the entry that served the turn: a `[compaction]`
         entry elsewhere is a different cache namespace, so rebuilding the prefix would cost the
-        whole history at full rate to save nothing."""
+        whole history at full rate to save nothing.
+
+        One case builds the slice and gets no cache for it: a turn-scope pass that follows a
+        history-scope pass in the same projection, where session.messages has just been rewritten
+        and no request with that prefix has ever been sent. It is not a regression -- the flattened
+        payload never hit either, and the real messages are still worth more to the summarizer than
+        a rendering that drops tool calls -- but the reuse this method is named for does not apply
+        there."""
         if self.session.config.compaction_provider or self.session.system_info is None:
             return None
         base_system = self.session.system_prompt
@@ -277,7 +291,9 @@ class ContextManager:
         # its slice starts there. Both scopes are ordinary prefixes of the same projection; only
         # the offset differs.
         cut = header + (
-            len(self.session.messages) + self.compaction_prefix_count(turn_messages) if turn_messages is not None else self.compaction_prefix_count()
+            len(self.session.messages) + self.compaction_prefix_count(turn_messages, recent)
+            if turn_messages is not None
+            else self.compaction_prefix_count(recent=recent)
         )
         if cut <= header:
             return None
@@ -286,11 +302,17 @@ class ContextManager:
             previous_summary=self.session.state.summary,
             recent_count=min(self.COMPACT_RECENT_MESSAGES, len(compacted)),
         )
-        return [*live[:cut], {"role": "user", "content": tail}], Tool.resolved_schemas(self.session)
+        return [*live[:cut], {"role": "user", "content": tail, SESSION_EVENT_KEY: COMPACTION_REQUEST_EVENT}], Tool.resolved_schemas(self.session)
 
-    def compaction_prefix_count(self, turn_messages: list[Json] | None = None) -> int:
+    def compaction_prefix_count(self, turn_messages: list[Json] | None = None, recent: int | None = None) -> int:
         """How many messages of the scope's own list the summary request carries, counted the way
         that scope's own split works so the slice ends where the kept tail begins.
+
+        `recent` has to be the window the split actually used. Both callers fall back to
+        COMPACT_MINIMUM_RECENT when the ordinary window leaves nothing to compact, and counting
+        that case with the default window put the cut before the end of `compacted` -- the request
+        then carried one message while nine were evicted, so the summary silently lost eight of
+        them.
 
         The two scopes part company when the list holds no user message, which is the ordinary
         shape of a long turn: `compaction_parts` keeps nothing and hands the whole list over, while
@@ -301,9 +323,9 @@ class ContextManager:
         if index is None:
             if turn_messages is None:
                 return len(messages)
-            _, keep = self.compaction_parts_for(messages)
+            _, keep = self.compaction_parts_for(messages, recent)
             return len(messages) - len(keep)
-        _, keep_tail = self.compaction_parts_for(messages[index + 1 :])
+        _, keep_tail = self.compaction_parts_for(messages[index + 1 :], recent)
         return len(messages) - len(keep_tail)
 
     def compaction_echo_source(self, sent: list[Json]) -> str:
@@ -329,6 +351,7 @@ class ContextManager:
         *,
         tool_messages: list[Json] | None = None,
         turn_messages: list[Json] | None = None,
+        recent: int | None = None,
     ) -> bool:
         if not compacted:
             return False
@@ -339,11 +362,12 @@ class ContextManager:
         interrupted = False
         try:
             try:
-                request = self.compaction_request(compacted, turn_messages)
+                request = self.compaction_request(compacted, turn_messages, recent)
                 # Checked against what the model is handed, which is not `compacted`: the inline
                 # slice carries one message more, and the flattened payload carries `compacted`.
                 sent = request[0][:-1] if request else compacted
-                data = model.compact(self.compaction_input(compacted), *(request or ()), echo_source=self.compaction_echo_source(sent))
+                flat = self.compaction_input(compacted) if request is None else ""
+                data = model.compact(flat, *(request or ()), echo_source=self.compaction_echo_source(sent))
             except KeyboardInterrupt:
                 error_detail = "cancelled by user"
                 interrupted = True

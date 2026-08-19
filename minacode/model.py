@@ -54,6 +54,7 @@ from minacode.model_catalog import THINKING_BUDGETS
 from minacode.prompts import (
     COMPACTION_ECHO_RETRY,
     COMPACTION_PROMPT,
+    COMPACTION_REQUEST_EVENT,
     COMPACTION_RETRY,
 )
 from minacode.provider_compat import (
@@ -222,7 +223,15 @@ class ModelClient:
 
         converted: list[Json] = []
         latest_user = max(
-            (index for index, message in enumerate(messages) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
+            (
+                index
+                for index, message in enumerate(messages)
+                # The compaction instruction is a user message by shape only: it is appended after a
+                # conversation that was already sent, and treating it as the turn boundary would
+                # strip reasoning from assistant messages the live request kept, breaking the
+                # byte-identical prefix the summary request exists to reuse.
+                if message.get("role") == "user" and not ImageInputs.is_tool_observation(message) and message.get(SESSION_EVENT_KEY) != COMPACTION_REQUEST_EVENT
+            ),
             default=-1,
         )
         for index, message in enumerate(messages):

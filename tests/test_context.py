@@ -28,7 +28,13 @@ from minacode.config import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
-from minacode.prompts import COMPACTION_SUMMARY_TITLE, CURRENT_TURN_CONTEXT_TRIMMED, SYSTEM_PROMPT
+from minacode.prompts import (
+    COMPACTION_REQUEST_EVENT,
+    COMPACTION_SUMMARY_TITLE,
+    CURRENT_TURN_CONTEXT_TRIMMED,
+    PREVIOUS_CONTEXT_TRIMMED,
+    SYSTEM_PROMPT,
+)
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session
 from minacode.skill import SkillLibrary
@@ -509,20 +515,24 @@ def test_compaction_uses_configured_context_budget(tmp_path):
         def __init__(self):
             self.input = None
 
-        def compact(self, text, *_args, **_kwargs):
-            self.input = text
+        def __call__(self):
+            return self
+
+        def compact(self, text, inline_messages=None, *_args, **_kwargs):
+            # The inline form carries the conversation as messages; the flattened text is only
+            # built when that form cannot serve, so this reads whichever one was actually sent.
+            self.input = "\n".join(str(message.get("content") or "") for message in inline_messages) if inline_messages else text
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
     model = FakeModel()
     context.prepare_messages(model, "system", [{"role": "user", "content": "request"}])
     assert compaction_phases == [True, False]
     assert model.input is not None
-    assert "Older Messages:" in model.input
     assert "old answer" in model.input
-    assert "Recent Messages (rewrite briefly inside summary):" in model.input
     assert "recent 7" in model.input
-    assert "latest" not in model.input
-    assert "request" not in model.input
+    assert "Compact the minacode working context." in model.input  # the appended instruction
+    assert "tool kept" not in model.input  # the kept tail is not handed to the summarizer
+    assert "\nrequest" not in model.input  # nor the turn message; "request" alone occurs in the system prompt
     assert s.state.summary == "compact summary"
     assert [vars(item) for item in s.state.plan] == [{"status": "todo", "text": "next"}]
     assert s.state.known == ["fact"]
@@ -1751,3 +1761,70 @@ def test_echo_source_covers_the_message_the_slice_adds(tmp_path):
 
     assert latest not in context.compaction_echo_source(compacted)  # what it used to be checked against
     assert latest in context.compaction_echo_source(messages[:-1])  # what the model is actually handed
+
+
+def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
+    """Both scopes re-split with COMPACT_MINIMUM_RECENT when the ordinary window leaves nothing to
+    compact. Counting the slice with the default window then cut it short of `compacted`, evicting
+    messages the summarizer was never shown -- a silent loss, since the summary is what replaces
+    them."""
+    live = session(tmp_path)
+    live.messages = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "Bash", "arguments": "{}"}} for i in range(5)]},
+        *({"role": "tool", "tool_call_id": f"c{i}", "content": f"t{i}"} for i in range(5)),
+        *({"role": "assistant", "content": f"a{i}"} for i in range(5)),
+    ]
+    context = ContextManager(live)
+    assert not context.compaction_parts()[0]  # the ordinary window yields nothing, forcing the fallback
+    compacted, _keep = context.compaction_parts(ContextManager.COMPACT_MINIMUM_RECENT)
+
+    messages, _tools = context.compaction_request(compacted, recent=ContextManager.COMPACT_MINIMUM_RECENT)
+
+    carried = messages[len(context.model_header(live.system_prompt)) : -1]
+    assert len(carried) >= len(compacted)
+    for message in compacted:  # nothing evicted may go unseen by the summarizer
+        assert message in carried
+
+
+def test_appended_instruction_does_not_move_the_reasoning_boundary(tmp_path):
+    """Providers with chat_reasoning_history="current_turn" replay reasoning only after the last
+    user message. The compaction instruction is a user message by shape only -- if it counted as
+    that boundary it would strip reasoning off the whole conversation, diverging from what the turn
+    sent at exactly the tool loop this reuse targets."""
+    live = session(tmp_path)
+    live.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert live.config.provider.resolve().chat_reasoning_history == "current_turn"
+    conversation = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "reasoning_content": "thought", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "out"},
+    ]
+    model = ModelClient(live)
+    tail = {"role": "user", "content": "COMPACT", SESSION_EVENT_KEY: COMPACTION_REQUEST_EVENT}
+
+    turn = model.chat_messages(list(conversation))
+    summary = model.chat_messages([*conversation, tail])
+
+    assert "reasoning_content" in turn[1]
+    assert summary[: len(conversation)] == turn  # byte-identical prefix, which is the whole point
+    assert SESSION_EVENT_KEY not in summary[-1]  # the marker never reaches the wire
+
+
+def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkeypatch):
+    """compact() ignores `context` whenever inline messages are given, and flattening the span is
+    proportional to a conversation large enough to need compacting."""
+    live = session(tmp_path)
+    live.messages = [{"role": "user", "content": "task"}]
+    for index in range(12):
+        live.messages.append({"role": "assistant", "content": f"step {index}"})
+    context = ContextManager(live)
+    monkeypatch.setattr(context, "compaction_input", lambda _compacted: pytest.fail("flattened the span despite the inline form"))
+
+    class FakeModel:
+        def compact(self, text, inline_messages=None, *_args, **_kwargs):
+            assert text == "" and inline_messages
+            return {"summary": "done"}
+
+    compacted, keep = context.compaction_parts()
+    assert context._compact_messages(FakeModel(), compacted, keep, PREVIOUS_CONTEXT_TRIMMED)

@@ -155,6 +155,13 @@ COMPACTION_RETRY = (
 )
 
 
+# Marks the one message the inline compaction request appends. It is a user message, and providers
+# whose reasoning history is "current_turn" replay reasoning only after the last user message -- so
+# without a marker this one becomes that boundary and strips reasoning off the whole conversation,
+# diverging from what the turn sent at exactly the tool loop the reuse was aimed at.
+COMPACTION_REQUEST_EVENT = "compaction_request"
+
+
 def compaction_tail(*, state: str, previous_summary: str, recent_count: int) -> str:
     """The one message appended after the live conversation when compaction reuses the agent's own
     prefix. Everything the flattened payload carried that the conversation itself does not: the

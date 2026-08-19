@@ -433,7 +433,7 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry]) -> Approval
         return [("", "\n"), ("class:choice.disabled", lead + label + trail + "\n")]
 
     def fragments() -> StyleAndTextTuples:
-        list_fragments = state.fragments("", label_fn=parts.get)
+        list_fragments = state.fragments("", label_fn=lambda choice: parts.get(choice, []))
         return [*rule(f"Tool output · latest {len(entries)}"), *list_fragments[1:]]
 
     def handle_key(key: str, data: str) -> Any:
