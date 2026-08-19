@@ -32,11 +32,8 @@ As a request approaches `runtime.max_context_tokens`, minacode **compacts**: the
 conversation is replaced by a short summary, and the most recent messages are kept as they are.
 The session continues in the same turn, so a long task does not have to stop.
 
-The recent messages are kept for continuity — the last tool results and file contents, not just
-the summary's prose — so around eight of them survive, along with the request they belong to.
-Very large ones keep fewer: a handful of enormous tool results would fill the room the pass was
-meant to free, so the kept tail is bounded by size as well as count and collapses to the latest
-exchange when it has to.
+About eight recent messages survive, so the last tool results and file contents are still there
+and not only described. Very large ones keep fewer, or the pass would free nothing.
 
 The threshold leaves room for what the next request carries besides the conversation — the reply
 the model may write, and the tool definitions — so compaction happens before the window is full.
@@ -84,15 +81,11 @@ if a long task continues past one.
 `/compact log` marks such a pass `no summary`, and `/compact` reports the reason on the spot. The
 usual causes are a summarizer that cannot fit the span, one slower than its `response_timeout`, and
 a `[compaction]` entry missing its url, key, or model — that last one is refused by name before
-the request, so the message tells you which entry to fix. Every failure names the entry that
-served it, which matters when the summary runs somewhere cheaper than the conversation. See
+the request. Every failure names the entry that served it, so you know where to look. See
 [Compaction model](configuration.md#compaction-model) for choosing an entry that avoids all three.
 
-A weaker summarizer sometimes answers the wrong question instead: it continues the conversation it
-was handed, or copies it back rather than describing it. Both are asked once more with a
-correction before the pass gives up, and where the provider supports it the reply is additionally
-constrained to be a JSON object. A repeat offender here is a sign the `[compaction]` entry is
-smaller than the job.
+A weak summarizer sometimes writes something other than a summary. minacode asks once more before
+giving up; if it keeps happening, the `[compaction]` entry is too small for the job.
 
 ### Sessions started before these features
 
@@ -108,12 +101,10 @@ Four levers, in the order they usually pay off:
 
 - **Keep the cache prefix stable.** Switching models or connecting a server mid-session restarts
   the reusable prefix; leaving them alone lets it grow. See [Prompt caching](#prompt-caching).
-- **Give summaries a cheap model — or leave them where they are.** A small model summarizes a
-  span as well as a large one, so a separate entry is cheaper per token. But a summary that runs
-  on the conversation's own entry is built as that conversation's request with one instruction
-  appended, and reuses the prefix the turn just paid for; sent elsewhere it is a different cache
-  and pays for the span in full. Which wins depends on the price gap and how well the provider
-  caches. The `compaction cache` row of `/status` reports the hit rate either way. See
+- **Give summaries a cheap model — or leave them where they are.** A small model summarizes as
+  well as a large one, so a separate entry costs less per token. But a summary that stays on the
+  conversation's own entry reuses the cache the turn just filled, and one sent elsewhere pays for
+  the whole span. The `compaction cache` row of `/status` says which is winning. See
   [Compaction model](configuration.md#compaction-model).
 - **Delegate bounded work to a cheap [worker](worker.md).** Its tokens are billed at the worker
   entry's rate, and its context never enters the parent's.
@@ -137,15 +128,12 @@ models, enabling a provider-side tool — shortens the reusable prefix; a compac
 starts a new one. Appending to the conversation, including Note updates and resume events, does
 not.
 
-The summary request rides that prefix too, when it runs on the conversation's own entry: it is
-that conversation's request with one instruction appended rather than a separate request built
-from scratch. It is the largest request a session makes, so this is where reuse is worth the
-most — and why sending summaries elsewhere is not free. Its hit rate has its own `/status` row.
+A summary reuses this prefix too, as long as it runs on the conversation's own entry. It is the
+largest request a session makes, which is why sending summaries elsewhere is not free.
 
-Support differs by provider. OpenAI-compatible endpoints may match prefixes on their own, and what
-they reuse is the whole unchanged beginning, conversation included. Anthropic caches nothing
-unless asked, and minacode marks the instructions and tool definitions — so on that provider the
-reused prefix is the fixed head, and the conversation itself is processed again each turn.
+Support differs by provider. OpenAI-compatible endpoints may match prefixes on their own, all the
+way through the conversation. Anthropic caches only what it is told to, and minacode marks the
+instructions and tools — so there the conversation itself is processed again each turn.
 
 ### Checking the hit rate
 

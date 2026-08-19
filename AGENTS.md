@@ -32,7 +32,22 @@ Keep this file short. It is an entry point, not a second design document.
 - **Tests:** run targeted tests while iterating and `uv run pytest` before completing behavior changes.
 - **Quality:** run `uv run ruff check minacode`, `uv run ruff format --check minacode`, and `uv run pyright`.
 - **Docs:** on user-facing doc changes, update the English source, run `make -C docs locale-zh`,
-  update the Chinese catalog, then build `html` and `html-zh`.
+  update the Chinese catalog, then build `html` and `html-zh`. The Chinese pages are gettext
+  catalogs keyed on the English text, so editing English without this step renders those
+  paragraphs in English on a Chinese page.
+- **Docs standard:** `docs/` is written for users, not for the people who changed the code.
+  - Say what the reader gets and what it costs them. Leave out how it is implemented, why an
+    alternative was rejected, and the taxonomy of ways it can fail.
+  - Prefer a number to a mechanism: "about eight recent messages survive" beats a paragraph on
+    how the window is bounded.
+  - Add a trade-off only when the reader has to choose. Name the setting or the `/status` row
+    that answers it, and stop.
+  - Rewriting a paragraph is usually better than appending one. A behavior change means the old
+    sentence is wrong, not incomplete.
+  - Reasoning that is worth keeping but not worth showing a user goes in a code comment, a commit
+    message, or `notes/`.
+  - A `term-shot` is a screenshot in HTML: when the colors or rows it depicts change, it is stale
+    and has to be redrawn. Keep every `<span>` closed.
 - **Changelog:** record user-visible changes under `Unreleased`; omit internal-only refactors and
   doc maintenance.
 - **Release (only when requested):** bump `pyproject.toml` and `minacode/base.py`, move Unreleased
