@@ -246,7 +246,7 @@ If the manual does not settle the question, inspect source code that matches the
 Use this ownership map:
 
 - `minacode/base.py`: configuration schema, defaults, validation, errors, and shared types.
-- `minacode/provider_compat.py`: provider and model compatibility policy.
+- `minacode/providers/compat.py`: provider and model compatibility policy.
 - `minacode/model.py`: Chat, Responses, and Anthropic request/response adapters.
 - `minacode/engine.py`: the agent turn loop and context/tool composition.
 - `minacode/context.py`: context projection, token budgeting, and compaction.

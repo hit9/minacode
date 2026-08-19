@@ -27,7 +27,7 @@ from minacode.render import StatusBar, UiPrinter
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
-from minacode.update import UpdateChecker
+from minacode.cli.update import UpdateChecker
 
 
 def oauth_value(store: MCPFileTokenStore, url: str, collection: str, suffix: str) -> dict | None:

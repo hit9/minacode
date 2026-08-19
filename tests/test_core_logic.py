@@ -8,7 +8,7 @@ import pytest
 from model_harness import _MockClientFactory
 
 import minacode.__main__ as cli
-import minacode.update as update_module
+import minacode.cli.update as update_module
 from minacode.__main__ import main
 from minacode.base import (
     HTTP_USER_AGENT,
@@ -38,7 +38,7 @@ from minacode.render import StatusBar
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore
 from minacode.tools import TOOL_REGISTRY, CodeIndex, Tool
-from minacode.update import UpdateChecker
+from minacode.cli.update import UpdateChecker
 
 
 def session(tmp_path):

@@ -23,8 +23,8 @@ from minacode.base import (
 )
 from minacode.config import ProviderConfig
 from minacode.image import ImageInputs
-from minacode.model_catalog import THINKING_BUDGETS
-from minacode.provider_compat import (
+from minacode.providers.catalog import THINKING_BUDGETS
+from minacode.providers.compat import (
     ResolvedProvider,
     anthropic_thinking_always_on,
     anthropic_thinking_params,

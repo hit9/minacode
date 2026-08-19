@@ -32,7 +32,7 @@ from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp
-from minacode.update import UpdateChecker
+from minacode.cli.update import UpdateChecker
 
 
 def history_file(path, entries, line="x" * 200):

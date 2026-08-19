@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from minacode.base import PROVIDER_ECHO_KEYS, SESSION_EVENT_KEY, Json, ModelError, Text
 from minacode.config import ProviderConfig
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
-from minacode.provider_compat import ResolvedProvider
+from minacode.providers.compat import ResolvedProvider
 
 if TYPE_CHECKING:
     from openai import OpenAI

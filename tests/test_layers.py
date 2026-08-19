@@ -40,6 +40,8 @@ LAYERS = {
     "minacode.__main__": 0,
     "minacode.cli": 1,
     "minacode.tui": 2,
+    "minacode.cli.hints": 1,
+    "minacode.cli.update": 1,
     "minacode.tui.app": 2,
     "minacode.tui.views": 2,
     "minacode.render": 2,
@@ -61,11 +63,12 @@ LAYERS = {
     "minacode.image": 8,
     "minacode.base": 9,
     "minacode.config": 9,
-    "minacode.provider_compat": 9,
-    "minacode.model_catalog": 10,
+    "minacode.providers": 9,
+    "minacode.providers.catalog": 10,
+    "minacode.providers.compat": 9,
 }
 # Leaves: any layer may depend on them; their own dependencies are not checked.
-LEAVES = ("minacode.prompts", "minacode.hints", "minacode.update")
+LEAVES = ("minacode.prompts",)
 
 
 def layer_of(module: str) -> int | None:

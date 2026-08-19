@@ -44,14 +44,14 @@ from minacode.config import (
 )
 from minacode.image import IMAGE_REFS_KEY, ImageInputs
 from minacode.model import chat, resilience, responses
-from minacode.model_catalog import THINKING_BUDGETS
 from minacode.prompts import (
     COMPACTION_ECHO_RETRY,
     COMPACTION_PROMPT,
     COMPACTION_REQUEST_EVENT,
     COMPACTION_RETRY,
 )
-from minacode.provider_compat import (
+from minacode.providers.catalog import THINKING_BUDGETS
+from minacode.providers.compat import (
     ResolvedProvider,
     anthropic_keeps_prior_thinking,
     builtin_tools_issue,

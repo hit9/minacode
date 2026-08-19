@@ -19,13 +19,13 @@ from prompt_toolkit.styles import Style
 
 from minacode.base import Text
 from minacode.cli.commands import SET_KEYS, SET_VALUES
+from minacode.cli.hints import Context as HintContext
+from minacode.cli.hints import HintPicker
 from minacode.cli.worker import WORKER_SUBCOMMANDS
 from minacode.config import (
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
 )
-from minacode.hints import Context as HintContext
-from minacode.hints import HintPicker
 from minacode.mentions import MentionSpan, active_mention, encode_file_mention
 from minacode.render import Theme, UiPrinter
 from minacode.session import QueuedInput
@@ -276,7 +276,7 @@ class View:
 
     def __init__(self, loop: CommandLoop) -> None:
         self.loop = loop
-        self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/hints.py
+        self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/cli/hints.py
 
     def waiting_pulse_fragments(self) -> StyleAndTextTuples:
         if self.loop.session.state.current_model_call_started_at <= 0:
