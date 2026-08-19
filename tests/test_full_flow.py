@@ -316,7 +316,9 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     # this request a prefix of the agent's, so the provider's cache covers all but the tail.
     assert compactor_request["messages"][0]["content"] == agent_request["messages"][0]["content"]
     assert compactor_request["tools"] == agent_request["tools"]
-    assert compactor_request["tool_choice"] == "none"  # tools are there for the cache, not to call
+    # Identical tool_choice, deliberately: changing it invalidates the messages cache, which is the
+    # conversation this request exists to reuse. The instruction not to call tools is in the tail.
+    assert compactor_request["tool_choice"] == agent_request["tool_choice"]
     assert "Compact the minacode working context." in compactor_request["messages"][-1]["content"]
     assert "OLD_BODY_SENTINEL" in "\n".join(str(message.get("content") or "") for message in compactor_request["messages"])
 

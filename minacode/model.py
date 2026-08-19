@@ -636,7 +636,6 @@ class ModelClient:
         response_timeout: float | None = None,
         provider: ProviderConfig | None = None,
         json_object: bool = False,
-        no_tool_calls: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
         messages = self.chat_messages(messages, provider=provider)
@@ -653,7 +652,7 @@ class ModelClient:
             params["max_tokens"] = provider.max_tokens
         if request_tools := [*(tools or []), *self.builtin_tools(resolved)]:
             params["tools"] = request_tools
-            params["tool_choice"] = "none" if no_tool_calls else "auto"
+            params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
         prompt_cache_key = self.prompt_cache_key(provider, tools)
         if prompt_cache_key:
@@ -812,7 +811,6 @@ class ModelClient:
         response_timeout: float | None = None,
         provider: ProviderConfig | None = None,
         json_object: bool = False,
-        no_tool_calls: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
         api = provider.resolve().api
@@ -826,8 +824,6 @@ class ModelClient:
         # Anthropic spells it differently again (output_format); neither is wired yet, and passing
         # an unknown keyword to them would be an error rather than a no-op.
         extra: Json = {"json_object": True} if json_object and api not in ("anthropic", "responses") else {}
-        if no_tool_calls and api != "responses":
-            extra["no_tool_calls"] = True
         if allow_stream and response_timeout is None:
             return request(messages, tools, provider=provider, **extra)
         return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout, provider=provider, **extra)
@@ -1207,17 +1203,14 @@ class ModelClient:
         attempt_messages = list(messages)
         for attempt in (1, 2):
             try:
-                # Tools ride along only to keep the cached prefix identical -- they are ahead of the
-                # system block in every provider's render order, so dropping them would move the
-                # divergence to position zero. no_tool_calls is what stops the model using them.
+                # Tools ride along, and tool_choice is deliberately left exactly as an ordinary
+                # request sets it. Forcing "none" here looks safer and is not: changing tool_choice
+                # invalidates the messages cache, which is the whole 100k-token conversation this
+                # request exists to reuse -- it would spend the prize to buy the guarantee. The
+                # instruction not to call tools lives in the appended message instead, and a model
+                # that calls one anyway returns no text, which the retry below already handles.
                 _, _, content = self.api_request(
-                    attempt_messages,
-                    tools,
-                    allow_stream=False,
-                    response_timeout=response_timeout,
-                    provider=provider,
-                    json_object=True,
-                    no_tool_calls=tools is not None,
+                    attempt_messages, tools, allow_stream=False, response_timeout=response_timeout, provider=provider, json_object=True
                 )
             except ModelResponseTimeout:
                 raise ModelResponseTimeout(
@@ -1419,11 +1412,10 @@ class ModelClient:
         allow_stream: bool = True,
         response_timeout: float | None = None,
         provider: ProviderConfig | None = None,
-        no_tool_calls: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
         messages = Text.value(messages)
-        params = self.anthropic_params(messages, tools, provider=provider, no_tool_calls=no_tool_calls)
+        params = self.anthropic_params(messages, tools, provider=provider)
         client = self.anthropic_client(provider=provider)
         stream = allow_stream and provider.stream and self.on_stream is not None
         if stream:
@@ -1526,7 +1518,7 @@ class ModelClient:
         finally:
             self._emit_stream("", "")
 
-    def anthropic_params(self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None, no_tool_calls: bool = False) -> Json:
+    def anthropic_params(self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None) -> Json:
         provider = provider if provider is not None else self.session.config.provider
         resolved = provider.resolve()
         system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
@@ -1544,7 +1536,7 @@ class ModelClient:
         # Thinking pins temperature to its default; sending any other value is rejected.
         if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
             params["tools"] = request_tools
-            params["tool_choice"] = {"type": "none"} if no_tool_calls else {"type": "auto"}
+            params["tool_choice"] = {"type": "auto"}
         effort = provider.reasoning_effort()
         thinking_params = anthropic_thinking_params(
             provider.model,

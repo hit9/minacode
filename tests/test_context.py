@@ -1637,13 +1637,15 @@ def test_compaction_falls_back_to_the_flat_payload_on_a_separate_provider(tmp_pa
     assert ContextManager(live).compaction_request(list(live.messages)) is None
 
 
-def test_compaction_keeps_the_flat_payload_on_the_responses_wire(tmp_path):
-    """Tools ride the inline form only to hold the prefix steady; a wire with no tool_choice gate
-    would offer them with a free choice, so it keeps the payload that carries no tools at all."""
+def test_compaction_leaves_tool_choice_exactly_as_an_ordinary_request_sets_it(tmp_path):
+    """Forcing tool_choice would look safer and cost the prize: it invalidates the messages cache,
+    which is the whole conversation this request exists to reuse. Every wire is treated alike."""
     live = session(tmp_path)
     live.messages = [{"role": "user", "content": "hello"}]
-    live.config.provider.api = "responses"
-    assert ContextManager(live).compaction_request(list(live.messages)) is None
+    for api in ("chat", "responses", "anthropic"):
+        live.config.provider.api = api
+        built = ContextManager(live).compaction_request(list(live.messages))
+        assert built is not None, api  # no wire is excluded any more
 
 
 def test_state_apply_takes_a_bare_string_where_a_list_was_asked_for(tmp_path):

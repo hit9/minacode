@@ -262,11 +262,6 @@ class ContextManager:
         matches at position zero and never again."""
         if self.session.config.compaction_provider or self.session.system_info is None:
             return None
-        # The Responses wire carries no tool_choice gate here, and tools ride along in this form
-        # purely to keep the prefix identical -- offering them with a free choice would invite the
-        # compactor to call one instead of summarizing. It keeps the flattened payload until wired.
-        if self.session.config.provider.resolve().api == "responses":
-            return None
         base_system = self.session.system_prompt
         if not base_system:
             return None
