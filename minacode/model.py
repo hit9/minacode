@@ -52,6 +52,7 @@ from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInpu
 from minacode.model_catalog import THINKING_BUDGETS
 from minacode.prompts import (
     COMPACTION_PROMPT,
+    COMPACTION_RETRY,
 )
 from minacode.provider_compat import (
     ResolvedProvider,
@@ -1153,20 +1154,48 @@ class ModelClient:
         response_timeout = provider.response_timeout
         # The status bar reads this to name the entry actually serving the summary; cleared in the
         # finally so a timeout, a cancel, or a provider error leaves no stale row behind.
-        self.session.state.compaction_entry = f"{self.session.config.compaction_provider or self.session.config.active_provider}/{provider.model}"
+        entry_label = f"{entry_name}/{provider.model}"
+        self.session.state.compaction_entry = entry_label
         try:
-            _, _, content = self.api_request(messages, None, allow_stream=False, response_timeout=response_timeout, provider=provider)
-        except ModelResponseTimeout:
-            raise ModelResponseTimeout(
-                f"compaction summary exceeded provider.response_timeout={response_timeout:g}s; set it to 0 to disable the total-generation limit"
-            ) from None
+            data = self.compact_attempts(messages, provider, response_timeout, entry_label)
         finally:
             self.session.state.compaction_entry = ""
-        data = self.parse_json_object(content)
-        if not isinstance(data, dict):
-            raise ModelError("compactor returned non-object JSON")
         self.last_compaction_model = provider.model
         return data
+
+    def compact_attempts(self, messages: list[Json], provider: ProviderConfig, response_timeout: float, entry_label: str) -> Json:
+        """Ask for the summary, and ask once more if what came back was not a JSON object.
+
+        The failure this retries is a model ignoring the format and replying in prose -- usually by
+        continuing the conversation it was handed instead of summarizing it. A bare resend would
+        likely reproduce it, so the second attempt carries the previous reply and a correction,
+        which is the same shape a person would use. Every error names the entry that served the
+        request: compaction can run on its own `[compaction]` provider, and a cheaper model there is
+        exactly the one that fails this way, so the message has to say which model to look at."""
+        attempt_messages = list(messages)
+        for attempt in (1, 2):
+            try:
+                _, _, content = self.api_request(attempt_messages, None, allow_stream=False, response_timeout=response_timeout, provider=provider)
+            except ModelResponseTimeout:
+                raise ModelResponseTimeout(
+                    f"compaction summary on `{entry_label}` exceeded provider.response_timeout={response_timeout:g}s; "
+                    "set it to 0 to disable the total-generation limit"
+                ) from None
+            try:
+                data = self.parse_json_object(content)
+            except ModelError as error:
+                if attempt == 2:
+                    raise ModelError(f"{error} (compaction provider `{entry_label}`)") from None
+                attempt_messages = [
+                    *attempt_messages,
+                    {"role": "assistant", "content": Tool.compact(content, 400)},
+                    {"role": "user", "content": COMPACTION_RETRY},
+                ]
+                continue
+            if not isinstance(data, dict):
+                raise ModelError(f"compactor returned non-object JSON (compaction provider `{entry_label}`)")
+            return data
+        raise ModelError(f"compactor returned no usable JSON (compaction provider `{entry_label}`)")
 
     @classmethod
     def parse_json_object(cls, text: str) -> Json:
