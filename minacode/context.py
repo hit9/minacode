@@ -253,7 +253,7 @@ class ContextManager:
         return usage.last_prompt_budget > 0 and usage.last_prompt_tokens * 100 >= usage.last_prompt_budget * 99
 
     def compaction_request(
-        self, compacted: list[Json], turn_messages: list[Json] | None = None, recent: int | None = None
+        self, compacted: list[Json], turn_messages: list[Json] | None = None, recent: int | None = None, live_turn: list[Json] | None = None
     ) -> tuple[list[Json], list[Json]] | None:
         """The compaction request as the agent's own request truncated, plus one instruction, or
         None to use the flattened payload instead.
@@ -285,7 +285,10 @@ class ContextManager:
         base_system = self.session.system_prompt
         if not base_system or not compacted:
             return None
-        live = self.model_messages(base_system, turn_messages)
+        # Projected with the turn attached whichever scope this is: the request being ridden
+        # carries it, and its reasoning boundary is read off the whole projection below even when
+        # only the stored half is being sliced.
+        live = self.model_messages(base_system, turn_messages if turn_messages is not None else live_turn)
         header = len(self.model_header(base_system))
         # A turn-scope span sits after the stored conversation rather than at the head of it, so
         # its slice starts there. Both scopes are ordinary prefixes of the same projection; only
@@ -302,7 +305,17 @@ class ContextManager:
             previous_summary=self.session.state.summary,
             recent_count=min(self.COMPACT_RECENT_MESSAGES, len(compacted)),
         )
-        return [*live[:cut], {"role": "user", "content": tail, SESSION_EVENT_KEY: COMPACTION_REQUEST_EVENT}], Tool.resolved_schemas(self.session)
+        # Where the appended instruction sits relative to the reasoning boundary decides whether
+        # this request replays the same reasoning the live one did, and the answer differs by shape.
+        # When the boundary is inside the slice, the instruction must not become it -- marked. When
+        # it is beyond the slice (the recent window kept it, or it lives in the current turn), the
+        # live request strips reasoning from everything here, so the instruction is left unmarked
+        # and becomes the boundary itself, which strips exactly the same set. Marking in that shape
+        # kept reasoning the live request had dropped and diverged four messages in.
+        instruction: Json = {"role": "user", "content": tail}
+        if -1 < ModelClient.latest_user_position(live) < cut:
+            instruction[SESSION_EVENT_KEY] = COMPACTION_REQUEST_EVENT
+        return [*live[:cut], instruction], Tool.resolved_schemas(self.session)
 
     def compaction_prefix_count(self, turn_messages: list[Json] | None = None, recent: int | None = None) -> int:
         """How many messages of the scope's own list the summary request carries.
@@ -351,7 +364,7 @@ class ContextManager:
         interrupted = False
         try:
             try:
-                request = self.compaction_request(compacted, turn_messages, recent)
+                request = self.compaction_request(compacted, turn_messages, recent, live_turn=tool_messages)
                 # Checked against what the model is handed, which is not `compacted`: the inline
                 # slice carries one message more, and the flattened payload carries `compacted`.
                 sent = request[0][:-1] if request else compacted

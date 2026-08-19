@@ -209,6 +209,27 @@ class ModelClient:
         saved = message.get(PROVIDER_ORIGIN_KEY)
         return not isinstance(saved, str) or not saved or saved == origin
 
+    @staticmethod
+    def latest_user_position(messages: list[Json]) -> int:
+        """Index of the message that ends the current turn for reasoning replay, or -1.
+
+        Exposed rather than inlined because compaction places its appended instruction relative to
+        this exact boundary: whether that instruction counts as the boundary decides whether the
+        summary request strips the same reasoning the live request did, and a second expression of
+        the rule is how that came apart twice.
+
+        A message carrying COMPACTION_REQUEST_EVENT is excluded -- see
+        ContextManager.compaction_request, which marks its instruction only when the live
+        projection's own boundary already falls inside the slice it is appending to."""
+        return max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.get("role") == "user" and not ImageInputs.is_tool_observation(message) and message.get(SESSION_EVENT_KEY) != COMPACTION_REQUEST_EVENT
+            ),
+            default=-1,
+        )
+
     def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None) -> list[Json]:
         """Build Chat Completions history using the provider's documented replay contract."""
 
@@ -222,18 +243,7 @@ class ModelClient:
             history = "all"
 
         converted: list[Json] = []
-        latest_user = max(
-            (
-                index
-                for index, message in enumerate(messages)
-                # The compaction instruction is a user message by shape only: it is appended after a
-                # conversation that was already sent, and treating it as the turn boundary would
-                # strip reasoning from assistant messages the live request kept, breaking the
-                # byte-identical prefix the summary request exists to reuse.
-                if message.get("role") == "user" and not ImageInputs.is_tool_observation(message) and message.get(SESSION_EVENT_KEY) != COMPACTION_REQUEST_EVENT
-            ),
-            default=-1,
-        )
+        latest_user = self.latest_user_position(messages)
         for index, message in enumerate(messages):
             clean = {
                 key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)

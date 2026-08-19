@@ -14,9 +14,28 @@
 - `Ctrl-O` lists the ToolScript that is running right now, above the stored entries, and opens its
   source in the same read-only viewer. A long batch is exactly when the script is worth reading,
   and until it returns there is no stored record to open.
+- `/status` gained a `compaction cache` row. Summaries are billed to their own counter, and this is
+  the only place that says whether one reused the conversation's cached prefix.
 
 ### Changed
 
+- Compaction keeps far more of the recent conversation. The recent window was measured only over
+  what follows the latest user message, which made it a cap rather than a floor: `/compact` run
+  just after a turn answered kept two messages out of 118, and everything concrete - the last tool
+  results and file contents - survived only as prose in the checkpoint. It now spans the whole
+  tail, bounded by size as well as count (at most 8 messages and a quarter of the request budget),
+  so ordinary messages get the full window while very large ones still collapse it rather than
+  leaving the request over budget with nothing left to compact.
+- The summary request is now the agent's own request with one instruction appended - same system,
+  same tools, the conversation as real messages - instead of a fresh request carrying a flattened
+  re-rendering. It rides the prefix the turn just paid for on providers with prefix caching, and
+  the compactor sees tool calls, which the flattening dropped. It falls back to the old payload
+  when the summary runs on a separate `[compaction]` provider.
+- A compactor that replies in prose, or that copies the conversation into `summary` instead of
+  summarizing it, is asked once more with a correction before compaction degrades to the
+  deterministic trim. Where the provider supports it (OpenAI, DeepSeek, Alibaba Model Studio), the
+  reply is additionally constrained to a JSON object. Compaction failures now name the provider
+  entry that served them.
 - ToolScript's description now states what `call()` returns for each `format`, that a failed nested
   call raises and ends the script, and shows a fan-out example that contains per-item failures.
 - The `Ctrl-O` browser colours each row by part - dim `tr.N` key, green tool name, plain arguments -

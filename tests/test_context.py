@@ -1809,29 +1809,79 @@ def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
         assert message in carried
 
 
-def test_appended_instruction_does_not_move_the_reasoning_boundary(tmp_path):
+def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_path):
     """Providers with chat_reasoning_history="current_turn" replay reasoning only after the last
-    user message. The compaction instruction is a user message by shape only -- if it counted as
-    that boundary it would strip reasoning off the whole conversation, diverging from what the turn
-    sent at exactly the tool loop this reuse targets."""
-    live = session(tmp_path)
-    live.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert live.config.provider.resolve().chat_reasoning_history == "current_turn"
-    conversation = [
-        {"role": "user", "content": "task"},
-        {"role": "assistant", "content": "", "reasoning_content": "thought", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "out"},
-    ]
-    model = ModelClient(live)
-    tail = {"role": "user", "content": "COMPACT", SESSION_EVENT_KEY: COMPACTION_REQUEST_EVENT}
+    user message, so where the appended instruction sits relative to that boundary decides whether
+    the summary request strips the same set the live request did.
 
-    turn = model.chat_messages(list(conversation))
-    summary = model.chat_messages([*conversation, tail])
+    It differs by shape, and a fix for one shape broke the others. Marked when the boundary is
+    inside the slice, so the instruction does not displace it; unmarked when the boundary is beyond
+    the slice -- kept by the recent window, or living in the current turn -- so the instruction
+    becomes the boundary and strips everything here, which is what the live request also does."""
 
-    assert "reasoning_content" in turn[1]
-    assert summary[: len(conversation)] == turn  # byte-identical prefix, which is the whole point
-    assert SESSION_EVENT_KEY not in summary[-1]  # the marker never reaches the wire
+    def diverges_at(live_session, request, turn=None):
+        context, model = ContextManager(live_session), ModelClient(live_session)
+        live = model.chat_messages(context.model_messages(live_session.system_prompt, turn))
+        summary = model.chat_messages(request)
+        pairs = zip(live, summary)
+        return next((index for index, (a, b) in enumerate(pairs) if a != b), None), len(summary) - 1
 
+    def reasoning_history(path):
+        live_session = session(path)
+        live_session.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert live_session.config.provider.resolve().chat_reasoning_history == "current_turn"
+        live_session.messages = [
+            {"role": "user", "content": "earlier task"},
+            {"role": "assistant", "content": "", "reasoning_content": "thought", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "out"},
+        ]
+        return live_session
+
+    # The boundary is kept by the recent window, so it sits beyond the slice.
+    outside = reasoning_history(tmp_path / "outside")
+    outside.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(10))
+    outside.messages.extend([{"role": "user", "content": "latest"}, {"role": "assistant", "content": "answer"}])
+    context = ContextManager(outside)
+    compacted, _keep = context.compaction_parts()
+    at, body = diverges_at(outside, context.compaction_request(compacted)[0])
+    assert at == body, "the slice must match the live request; only the appended instruction may differ"
+
+    # The non-contiguous shape: the boundary falls before the window, so it is inside the slice.
+    inside = reasoning_history(tmp_path / "inside")
+    inside.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(20))
+    context = ContextManager(inside)
+    compacted, _keep = context.compaction_parts()
+    assert context.compaction_keep_start(inside.messages, None) > context.latest_user_index(inside.messages)
+    at, body = diverges_at(inside, context.compaction_request(compacted)[0])
+    assert at == body
+
+    # History-scope compaction during a turn: the boundary lives in the turn, outside the slice.
+    midturn = reasoning_history(tmp_path / "midturn")
+    midturn.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(12))
+    turn = [{"role": "user", "content": "this turn"}, {"role": "assistant", "content": "working"}]
+    context = ContextManager(midturn)
+    compacted, _keep = context.compaction_parts()
+    # Through the real call chain, so the turn actually reaches the projection: history-scope
+    # compaction receives it as `tool_messages`, and reading the boundary without it marked the
+    # instruction in a shape where the live request had already stripped everything.
+    captured = {}
+
+    class CapturingModel:
+        last_compaction_model = ""
+
+        def compact(self, _text, inline_messages=None, *_args, **_kwargs):
+            captured["messages"] = inline_messages
+            return {"summary": "done"}
+
+    # Snapshot the live projection first: _compact_messages rewrites session.messages, and the
+    # prefix being ridden is the one that existed before it did.
+    before = ModelClient(midturn).chat_messages(context.model_messages(midturn.system_prompt, turn))
+    assert context._compact_messages(CapturingModel(), compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
+    request = captured["messages"]
+    summary = ModelClient(midturn).chat_messages(request)
+    at = next((index for index, (a, b) in enumerate(zip(before, summary)) if a != b), None)
+    assert at == len(summary) - 1
+    assert SESSION_EVENT_KEY not in ModelClient(midturn).chat_messages(request)[-1]  # never on the wire
 
 def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkeypatch):
     """compact() ignores `context` whenever inline messages are given, and flattening the span is
