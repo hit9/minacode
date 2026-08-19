@@ -18,7 +18,7 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, session, wait_until
 
-import minacode.tui as tui_module
+import minacode.tui.app as tui_module
 from minacode import hints
 from minacode.base import (
     SESSION_EVENT_KEY,
@@ -1643,7 +1643,7 @@ def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
         del callback, in_executor
         return "edited text"
 
-    monkeypatch.setattr("minacode.tui.run_in_terminal", edit_in_terminal)
+    monkeypatch.setattr("minacode.tui.app.run_in_terminal", edit_in_terminal)
     asyncio.run(app._run_input_editor())
 
     assert app.input_buffer.text == "edited text"

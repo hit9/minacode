@@ -9,7 +9,7 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-import minacode.tui as tui_module
+import minacode.tui.app as tui_module
 from minacode.cli import CommandLoop
 from minacode.config import (
     Config,

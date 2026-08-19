@@ -17,7 +17,7 @@ from tui_harness import ResizableOutput, loop, run_interactive_tui, session, wai
 
 import minacode.cli as loop_module
 import minacode.render as render_module
-import minacode.tui as tui_module
+import minacode.tui.app as tui_module
 from minacode.base import (
     MalformedToolCallError,
     MinacodeError,

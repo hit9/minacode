@@ -61,7 +61,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["minacode", "minacode.builtin_skills", "minacode.cli", "minacode.model", "minacode.session", "minacode.tools"]
+packages = ["minacode", "minacode.builtin_skills", "minacode.cli", "minacode.model", "minacode.session", "minacode.tools", "minacode.tui"]
 
 [tool.setuptools.package-data]
 minacode = ["builtin_skills/*/SKILL.md"]

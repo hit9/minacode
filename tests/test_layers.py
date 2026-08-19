@@ -40,6 +40,8 @@ LAYERS = {
     "minacode.__main__": 0,
     "minacode.cli": 1,
     "minacode.tui": 2,
+    "minacode.tui.app": 2,
+    "minacode.tui.views": 2,
     "minacode.render": 2,
     "minacode.engine": 3,
     "minacode.context": 4,
