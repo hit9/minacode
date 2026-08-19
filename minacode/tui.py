@@ -1523,8 +1523,8 @@ class ChoiceViewState:
     ) -> StyleAndTextTuples:
         """The list as fragments. `label_fn` styles one row's label in pieces instead of printing it
         flat, for a list whose rows carry more than one kind of thing (the Ctrl-O browser's key,
-        tool name, and arguments). Its styles compose with the row's, so a selected row still
-        reverses whole."""
+        tool name, and arguments). The row's own style wins where it has one, so a selected row
+        stays a solid bar instead of being repainted part by part."""
         visible = self.visible()
         options = self.clamp()
         suffix = (" /" + self.query) if self.query else ""
@@ -1552,7 +1552,7 @@ class ChoiceViewState:
                 parts.append((style, prefix))
                 # The selected row stays a solid reverse bar: composing the part colours into it
                 # would repaint the bar in each part's colour rather than highlight the row.
-                parts.extend((style or part_style, text) for part_style, text in label_fn(choice))
+                parts.extend((style or part_style, text) for part_style, text in (label_fn(choice) or [("", label)]))
                 parts.append((style, "\n"))
             elif match := UiPrinter.MCP_STATUS_RE.search(label):
                 parts.append((style, prefix + label[: match.start()]))

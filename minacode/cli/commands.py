@@ -546,9 +546,12 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
     else:
         loop.status_bar.start(reset=False)
     try:
-        request = loop.agent.context.compaction_request(compacted) or ()
+        request = loop.agent.context.compaction_request(compacted)
+        # Same pairing as the automatic path: the echo guard checks what the model is handed, and
+        # the inline slice carries one message more than `compacted` does.
+        sent = request[0][:-1] if request else compacted
         data = loop.agent.model.compact(
-            loop.agent.context.compaction_input(compacted), *request, echo_source=loop.agent.context.compaction_echo_source(compacted)
+            loop.agent.context.compaction_input(compacted), *(request or ()), echo_source=loop.agent.context.compaction_echo_source(sent)
         )
     except KeyboardInterrupt:
         return "Cancelled"

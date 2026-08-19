@@ -1717,3 +1717,37 @@ def test_state_apply_takes_a_bare_string_where_a_list_was_asked_for(tmp_path):
     # A type that is neither is still refused, as before.
     live.state.apply({"known": 17})
     assert live.state.known == []
+
+
+def test_turn_scope_prefix_stops_where_the_turn_keeps(tmp_path):
+    """The scopes split differently when the list holds no user message -- the ordinary shape of a
+    long turn. Counting a turn the history way sent every message it was about to keep."""
+    live = session(tmp_path)
+    live.messages = [{"role": "user", "content": "task"}]
+    turn = [{"role": "assistant", "content": f"step {index}"} for index in range(14)]
+    context = ContextManager(live)
+    compacted, keep = context.turn_compaction_parts(turn)
+    assert compacted and keep  # the split is real, not a degenerate all-or-nothing
+
+    messages, _tools = context.compaction_request(compacted, turn)
+
+    head = len(context.model_header(live.system_prompt)) + len(live.messages)
+    assert len(messages) - 1 - head == len(compacted)
+
+
+def test_echo_source_covers_the_message_the_slice_adds(tmp_path):
+    """The slice reaches one message past `compacted`, and that message is the latest user one --
+    exactly the text the observed failure reproduced. Checking `compacted` left the guard blind to
+    the case it was written for."""
+    live = session(tmp_path)
+    live.messages = [{"role": "user", "content": "task A"}]
+    for index in range(6):
+        live.messages.extend([{"role": "assistant", "content": f"s{index}"}, {"role": "tool", "content": f"tool tr.{index} out"}])
+    latest = "继续 Part B 收尾：检查 _run_workflow 的所有调用点。"
+    live.messages.append({"role": "user", "content": latest})
+    context = ContextManager(live)
+    compacted, _keep = context.compaction_parts()
+    messages, _tools = context.compaction_request(compacted)
+
+    assert latest not in context.compaction_echo_source(compacted)  # what it used to be checked against
+    assert latest in context.compaction_echo_source(messages[:-1])  # what the model is actually handed

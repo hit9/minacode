@@ -314,7 +314,9 @@ class ToolScript(Tool):
         the script had to be rewritten into the call("MCP", {...}) shape."""
         from minacode.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
 
-        if name in TOOL_REGISTRY or "." not in name:
+        # isinstance first: `name` is whatever the script passed, and `"." in 123` raises a
+        # TypeError that would surface as a traceback instead of the plain "unknown tool" below.
+        if not isinstance(name, str) or name in TOOL_REGISTRY or "." not in name:
             return None
         mcp = self.session.mcp
         if mcp is None:
@@ -351,7 +353,7 @@ class ToolScript(Tool):
 
             tool_class = TOOL_REGISTRY.get(name)
             if tool_class is None:
-                if "." in name:
+                if isinstance(name, str) and "." in name:
                     # The name is spelled like an MCP tool but resolved to nothing: say which half
                     # is wrong, so the script is not rewritten into a shape that was never the problem.
                     raise ToolError(f'unknown tool "{name}": no MCP server named "{name.split(".", 1)[0]}" is configured')

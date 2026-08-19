@@ -290,22 +290,34 @@ class ContextManager:
 
     def compaction_prefix_count(self, turn_messages: list[Json] | None = None) -> int:
         """How many messages of the scope's own list the summary request carries, counted the way
-        its `compaction_parts` splits them so the slice ends where the kept tail begins."""
+        that scope's own split works so the slice ends where the kept tail begins.
+
+        The two scopes part company when the list holds no user message, which is the ordinary
+        shape of a long turn: `compaction_parts` keeps nothing and hands the whole list over, while
+        `turn_compaction_parts` still splits a recent tail off the end. Counting both the first way
+        put every message the turn was about to keep into the summary request."""
         messages = self.session.messages if turn_messages is None else turn_messages
         index = self.latest_user_index(messages)
         if index is None:
-            return len(messages)
+            if turn_messages is None:
+                return len(messages)
+            _, keep = self.compaction_parts_for(messages)
+            return len(messages) - len(keep)
         _, keep_tail = self.compaction_parts_for(messages[index + 1 :])
         return len(messages) - len(keep_tail)
 
-    def compaction_echo_source(self, compacted: list[Json]) -> str:
+    def compaction_echo_source(self, sent: list[Json]) -> str:
         """What a copied summary would have been copied from.
 
-        The observed failure reproduces the tail of what it was handed -- the last user message and
-        what followed it -- so that is what the summary is checked against. Bounded, because this
-        feeds a substring search and the span being compacted has no size limit."""
-        index = self.latest_user_index(compacted)
-        tail = compacted if index is None else compacted[index:]
+        Takes what the request actually carries, never `compacted`. The inline slice deliberately
+        reaches one message further than `compacted` does, and that extra message is the latest user
+        message -- precisely the text the failure this guard exists for reproduced. Checking against
+        `compacted` left the guard blind to exactly the case it was written for.
+
+        The tail, not the whole span: recency is what the failure follows, and this feeds a
+        substring search over a span with no size limit."""
+        index = self.latest_user_index(sent)
+        tail = sent if index is None else sent[index:]
         return self.messages_text(tail)[-4000:]
 
     def _compact_messages(
@@ -327,8 +339,11 @@ class ContextManager:
         interrupted = False
         try:
             try:
-                request = self.compaction_request(compacted, turn_messages) or ()
-                data = model.compact(self.compaction_input(compacted), *request, echo_source=self.compaction_echo_source(compacted))
+                request = self.compaction_request(compacted, turn_messages)
+                # Checked against what the model is handed, which is not `compacted`: the inline
+                # slice carries one message more, and the flattened payload carries `compacted`.
+                sent = request[0][:-1] if request else compacted
+                data = model.compact(self.compaction_input(compacted), *(request or ()), echo_source=self.compaction_echo_source(sent))
             except KeyboardInterrupt:
                 error_detail = "cancelled by user"
                 interrupted = True

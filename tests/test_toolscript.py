@@ -745,3 +745,12 @@ class TestNestedCallsDoNotStealTheScriptStdout:
             runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 'call("Read", {"path": "f.txt"})\n'}])])
 
         assert "Read f.txt" in outer.getvalue()
+
+
+def test_non_string_tool_name_stays_a_plain_tool_error(tmp_path):
+    """`name` is whatever the script passed. The dotted-name checks read it as text, so a number
+    has to be turned away before them or it surfaces as a TypeError traceback."""
+    content = _run_script(_mcp_session(tmp_path), "call(123, {})\n")
+    assert "ToolScript failed" in content
+    assert 'unknown tool "123"' in content
+    assert "TypeError" not in content
