@@ -1629,13 +1629,71 @@ def test_status_bar_names_the_entry_a_summary_runs_on(tmp_path):
     assert bar.entries(show_elapsed=False)[0] == ("default/big-model", "provider")
 
 
-def test_status_bar_leaves_the_row_alone_when_compaction_runs_on_it(tmp_path):
-    """With no [compaction] overrides the resolved entry is the active one, and flashing an
-    identical row for the length of one request says nothing the spinner does not."""
+def test_status_bar_marks_a_compaction_running_on_the_row_own_entry(tmp_path):
+    """With no [compaction] overrides the resolved entry is the active one, and the row keeps its
+    own provider segments -- but it still says a summary is what the wait is for. Naming the phase
+    is the point: a compaction otherwise looks exactly like an ordinary request."""
     s = _compaction_bar_session(tmp_path)
+    bar = StatusBar(s)
     s.state.compaction_entry = "default/big-model"
 
-    assert StatusBar(s).entries(show_elapsed=False)[0] == ("default/big-model", "provider")
+    assert bar.entries(show_elapsed=False)[:3] == [("[compaction]", "ctx"), ("default/big-model", "provider"), ("high", "reason")]
+
+    s.state.compaction_entry = ""
+    assert bar.entries(show_elapsed=False)[0] == ("default/big-model", "provider")
+
+
+def test_status_bar_output_rate_reads_the_stream_that_is_running(tmp_path):
+    """The rate belongs to the response being watched: no stream, no number. It is an estimate from
+    streamed characters, because token deltas are not on the wire."""
+    s = _compaction_bar_session(tmp_path)
+    bar = StatusBar(s)
+
+    assert bar.output_rate() == ""  # nothing streaming
+
+    s.state.stream_started_at = time.monotonic() - 2.0
+    s.state.stream_chars = 400
+    assert bar.output_rate() == "~50 tok/s"
+
+    # Suppressed inside the first second, where a chunk over a near-zero elapsed reads as a wild number.
+    s.state.stream_started_at = time.monotonic() - 0.2
+    assert bar.output_rate() == ""
+
+    # Cleared when the request ends, so a finished response does not freeze a rate on the divider.
+    s.state.stream_started_at = 0.0
+    assert bar.output_rate() == ""
+
+
+def test_status_bar_output_rate_follows_an_in_flight_worker(tmp_path):
+    """Same in-flight predicate as every other value on the row: while a delegation runs, the speed
+    shown is the worker's, and it goes back to the parent's the moment the worker answers."""
+    s = _compaction_bar_session(tmp_path)
+    worker = Session(cwd=str(tmp_path), config=s.config)
+    s.worker = worker
+    bar = StatusBar(s)
+
+    worker.state.stream_started_at = time.monotonic() - 2.0
+    worker.state.stream_chars = 800
+    assert bar.output_rate() == ""  # an idle worker never shadows the parent
+
+    worker._active_turn_messages = [{"role": "user", "content": "order"}]
+    assert bar.output_rate() == "~100 tok/s"
+
+
+def test_model_client_counts_streamed_output_per_request(tmp_path):
+    """One funnel for every API shape, reasoning deltas included: the wait is made of both."""
+    s = _compaction_bar_session(tmp_path)
+    model = ModelClient(s)
+
+    model._emit_stream("reasoning", "abcd")
+    model._emit_stream("output", "efgh")
+    assert s.state.stream_chars == 8
+    assert s.state.stream_started_at > 0  # started at the first delta, not at the request
+
+    # The next attempt starts from zero: a rate must not blend two responses.
+    s.state.stream_started_at, s.state.stream_chars = 0.0, 0
+    model._emit_stream("output", "ij")
+    assert s.state.stream_chars == 2
 
 
 def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatch):

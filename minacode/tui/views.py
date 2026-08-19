@@ -184,6 +184,10 @@ class ChoiceViewState:
     query: str = ""
     selected: int = 0
     searching: bool = False
+    # Rows drawn at once, 0 for all of them. A list long enough to need this is drawn through a
+    # viewport that follows the selection, because the inline modal grows to fit its content and a
+    # forty-row list would push the rest of the screen out of the way to show rows nobody asked for.
+    max_rows: int = 0
 
     def visible(self) -> tuple[str, ...]:
         if not self.query:
@@ -220,6 +224,18 @@ class ChoiceViewState:
         self.query = query
         self.selected = 0
 
+    def window(self, visible: tuple[str, ...], options: tuple[str, ...]) -> tuple[int, int]:
+        """The half-open row range of `visible` to draw, centred on the selection.
+
+        The whole list when it fits or when no cap is set. The selection is clamped to the middle of
+        the viewport rather than to its edges, so moving through a long list scrolls it instead of
+        walking the cursor to the bottom and stopping."""
+        if self.max_rows <= 0 or len(visible) <= self.max_rows:
+            return 0, len(visible)
+        target = visible.index(options[self.selected]) if options else 0
+        start = min(max(0, target - self.max_rows // 2), len(visible) - self.max_rows)
+        return start, start + self.max_rows
+
     def selected_choice(self) -> str | None:
         options = self.clamp()
         return options[self.selected] if options else None
@@ -245,13 +261,19 @@ class ChoiceViewState:
         ]
         if self.query and not options:
             return [*parts, ("class:choice.disabled", "  no matches\n")]
+        start, end = self.window(visible, options)
         number = 0
-        for choice in visible:
+        for index, choice in enumerate(visible):
             label = self.labels.get(choice, choice)
             if choice in self.disabled:
-                parts.append(("class:choice.disabled", "  " + label + "\n"))
+                if start <= index < end:
+                    parts.append(("class:choice.disabled", "  " + label + "\n"))
                 continue
             number += 1
+            # Numbering runs over the whole list, not the window: a row keeps the same number
+            # whether or not the viewport currently shows it.
+            if not (start <= index < end):
+                continue
             selected = number - 1 == self.selected
             if selected:
                 parts.append(("[SetCursorPosition]", ""))
@@ -272,6 +294,8 @@ class ChoiceViewState:
                 parts.append((style, label[match.start() + 1 :] + "\n"))
             else:
                 parts.append((style, prefix + label + "\n"))
+        if end - start < len(visible):
+            parts.append(("class:choice.disabled", f"  showing {start + 1}-{end} of {len(visible)}\n"))
         if preview_fn and options:
             preview = preview_fn(options[self.selected]).replace("\\n", "\n")
             if preview:

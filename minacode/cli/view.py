@@ -329,7 +329,11 @@ class View:
             activity = retry_status or (
                 ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or status) + (" · " + attempt_status if attempt_status else "")
             )
-            label = f"{activity} ({Text.elapsed_since(self.loop.status_bar.started_at)})"
+            # The elapsed time says how long the wait has been; the rate says whether it is moving.
+            # Empty whenever nothing is streaming (between requests, non-streaming providers, a
+            # summary), so the divider never claims a speed it is not currently seeing.
+            rate = self.loop.status_bar.output_rate()
+            label = f"{activity} ({Text.elapsed_since(self.loop.status_bar.started_at)}{' · ' + rate if rate else ''})"
         elif status == "running script":
             # Timed like the working phases, but never relabelled from the stream phase: nothing is
             # streaming while a script runs, so the last kind seen would be stale, not current.

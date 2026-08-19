@@ -113,6 +113,12 @@ class AgentState:
     # is. Live display state, like the retry and index fields above: set around the request in
     # ModelClient.compact and never persisted.
     compaction_entry: str = ""
+    # The current request's output stream, for the throughput the running divider shows. Characters
+    # rather than tokens because token deltas are not on the wire: providers report usage once, when
+    # the request is over. Reset at the start of every attempt and cleared when it ends, so the rate
+    # belongs to the response being watched and never survives it. Live display state, never persisted.
+    stream_started_at: float = 0.0
+    stream_chars: int = 0
 
     def __post_init__(self) -> None:
         self.plan = cast(list[PlanItem | Json | str], self.plan_items(self.plan))

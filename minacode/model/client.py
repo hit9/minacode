@@ -333,6 +333,7 @@ class ModelClient:
             while True:
                 state.current_model_attempt = attempt + 1
                 state.current_model_call_started_at = time.monotonic()
+                state.stream_started_at = state.stream_chars = 0
                 try:
                     result = self.api_request(messages, tools)
                     self.session.images.note_success(messages)
@@ -360,6 +361,9 @@ class ModelClient:
                     self._wait_before_retry(resilience.retry_delay(error, attempt), state)
                 finally:
                     state.current_model_call_started_at = 0.0
+                    # Cleared, not kept: a rate with no stream behind it would freeze on the divider
+                    # for the length of the tool call that follows.
+                    state.stream_started_at = 0.0
                 attempt += 1
         finally:
             state.current_model_attempt = 0
@@ -612,6 +616,12 @@ class ModelClient:
         )
 
     def _emit_stream(self, kind: str, delta: str) -> None:
+        # Counted here rather than at each protocol's stream reader: this is the one funnel every
+        # API shape passes through, and reasoning deltas are part of what the wait is made of.
+        state = self.session.state
+        if not state.stream_started_at:
+            state.stream_started_at = time.monotonic()
+        state.stream_chars += len(delta)
         if self.on_stream is not None:
             self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
 

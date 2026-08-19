@@ -2,26 +2,26 @@
 
 Layers, from highest to lowest:
 
-    __main__  ->  cli/  ->  tui.py / render.py
+    __main__  ->  cli/  ->  tui/ / render.py
                    |
                engine.py
                    |
          context.py / runner.py
                    |
-                model.py
+                model/
                    |
-       tools/   mcp.py   skill.py
+       tools/   mcp/   skill.py
                    |
                session/
                    |
                 image.py
                    |
-        base.py  config.py  provider_compat.py
+      base.py  config.py  providers/compat.py
                    |
-             model_catalog.py
+            providers/catalog.py
 
 Same-layer imports are allowed; cross-layer imports may only point downward.
-prompts.py, hints.py and update.py are leaves: any layer may import them, and their own
+prompts.py, cli/hints.py and cli/update.py are leaves: any layer may import them, and their own
 imports are unconstrained. TYPE_CHECKING blocks and function-local imports are not counted.
 """
 

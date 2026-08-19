@@ -53,11 +53,14 @@ While Bash runs, its live output stays above the `working` divider. When the com
 finishes, up to three lines from each stream stay in the transcript, and the complete result
 is stored under its `tr.N` key.
 
-Press `Ctrl-O` to browse the ten most recent results, newest first: `j`/`k` or the arrows
-select, `Enter` opens, and `Ctrl-O` or `q` closes. Opening one shows what was run above what it
-returned, in a read-only scrolling viewer — a Bash command with both its streams, or a
-`ToolScript` with its complete script and result. For a script this is the only way to read it
-under `--yolo`, where no confirmation prompt stops to offer `v`.
+Press `Ctrl-O` to browse the 50 most recent results, newest first: `j`/`k` or the arrows
+select, `/` searches, `Enter` opens, and `Ctrl-O` or `q` closes. Long lists scroll inside a window
+about ten rows tall, and a counter under it says which rows you are looking at. Opening one shows
+what was run above what it returned, in a read-only scrolling viewer — a Bash command with both
+its streams, a `ToolScript` with its complete script and result, or a delegation order with the
+worker's answer below it. For a script this is the only way to read it under `--yolo`, where no
+confirmation prompt stops to offer `v`; for an order it is where you judge the answer against
+what was actually asked, since the transcript keeps only the `Delegate send` line.
 
 A `ToolScript` that is **running right now** leads the list, marked `running` instead of a `tr.N`
 key. A long batch is exactly when its script is worth reading, and until it returns there is no
@@ -84,8 +87,14 @@ across the line, and the live counters join it: a retry or attempt notice, and t
 `step N/M` counter once the turn reaches the final fifth of `max_agent_steps`, signaling
 that the turn is about to be cut off.
 
+A `[compaction]` marker leads the line while a summary runs, so the pause reads as compaction
+rather than as a slow reply.
+
 The working divider above the prompt names the current phase — `thinking`, `responding`, or
-`web search` while a [provider-side tool](tools.md#provider-side-tools) runs inside the request.
+`web search` while a [provider-side tool](tools.md#provider-side-tools) runs inside the request —
+with the time spent so far beside it, and an estimated output speed while text is arriving:
+`responding (12s · ~48 tok/s)`. The speed is estimated from the text as it streams, which is why
+it carries a `~`; it disappears between requests and on providers that do not stream.
 
 <div class="term-shot" role="img" aria-label="The status bar in two states. At rest: provider and model, reasoning, context fill with the cache ratio, and index, each in its role color. While working: the same line rendered as a blue-to-purple sweep with a bright band, plus a step counter near the cap."><span><span class="fs-i fs-dim">idle    </span><span class="fs-i sb-base">dashscope/qwen3.7-plus</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">high</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 23% · cache 98%</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-index">index ✓</span></span><span><span class="fs-i fs-dim">working </span><span class="fs-i sb-sweep-a">dashscope/qwen3.7-plus | high | </span><span class="fs-i sb-sweep-hi">ctx 41% · cache 95%</span><span class="fs-i sb-sweep-b"> | index ✓ | step 320/400</span></span></div>
 
@@ -149,7 +158,8 @@ Mentions are expanded in follow-ups queued while the agent is working, too.
 - `Ctrl-D` — exit from an empty prompt
 - `Ctrl-R` — reverse-search your history; `Enter` puts the match in the input to edit, a second
   `Enter` sends it
-- `Ctrl-O` — browse recent Bash outputs and ToolScript scripts in full; press it again to close
+- `Ctrl-O` — browse recent Bash outputs, ToolScript scripts, and delegation orders in full; press
+  it again to close
 - `Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / `$EDITOR` (falls back to
   vim), as a temporary Markdown file
 

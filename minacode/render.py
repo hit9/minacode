@@ -1031,6 +1031,31 @@ class StatusBar:
             self.retry_notice_until = now + self.RETRY_NOTICE_DURATION
         return self.retry_notice_until > now
 
+    def output_rate(self) -> str:
+        """The model's live output speed while a response streams, as `~48 tok/s`, or "" when
+        nothing is streaming.
+
+        Estimated from streamed characters at four per token, because token deltas are not on the
+        wire: providers report usage once, when the request is over, which is exactly too late for
+        the line the reader is watching. The `~` is the whole disclaimer. Suppressed for the first
+        second, where a couple of chunks over a near-zero elapsed reads as a wild number.
+
+        Read off the in-flight worker when there is one, like every other value on this row.
+        """
+        state = self.active_session().state
+        if not state.stream_started_at or not state.stream_chars:
+            return ""
+        elapsed = time.monotonic() - state.stream_started_at
+        if elapsed < 1.0:
+            return ""
+        return f"~{round(state.stream_chars / 4 / elapsed)} tok/s"
+
+    def active_session(self) -> Session:
+        """The session whose work this row describes: the worker while a delegation is in flight,
+        the parent otherwise. Same in-flight predicate as `entries`."""
+        worker = self.session.worker
+        return worker if worker is not None and bool(worker._active_turn_messages) else self.session
+
     def model_attempt_status(self) -> str:
         attempt = self.session.state.current_model_attempt
         return f"attempt {attempt}/{MODEL_REQUEST_RETRIES + 1}" if attempt > 1 else ""
@@ -1068,41 +1093,44 @@ class StatusBar:
         return self.sweep_fragments(text) if sweep else self.styled_fragments(entries)
 
     @staticmethod
-    def compaction_lead(source: Session, config: Config) -> list[tuple[str, str]] | None:
-        """The `[compaction] entry/model effort` segments while a summary runs on an entry other
-        than the row's own, or None to leave the row alone. The reasoning comes from the resolved
-        entry, and falls back to the row's when the named entry is gone from the config."""
+    def compaction_lead(source: Session, config: Config, row: list[tuple[str, str]]) -> list[tuple[str, str]] | None:
+        """The row's leading segments while a summary is in flight, or None when none is.
+
+        The `[compaction]` marker shows for every summary, including one running on the row's own
+        entry. What the reader needs from this row is which phase the wait belongs to, and a
+        compaction is the one phase that looks exactly like an ordinary request while being none of
+        the turn's actual work. When the summary runs elsewhere the marker is followed by that
+        entry and its effort instead of `row`; the reasoning comes from the resolved entry, and
+        falls back to the row's when the named entry is gone from the config."""
         entry = source.state.compaction_entry
-        if not entry or entry == config.active_provider + "/" + config.provider.model:
+        if not entry:
             return None
+        if entry == config.active_provider + "/" + config.provider.model:
+            return [("[compaction]", "ctx"), *row]
         name, _, entry_model = entry.rpartition("/")
         reasoning = compaction_provider_config(config).reasoning if name in config.providers else config.provider.reasoning
         return [("[compaction]", "ctx"), (name + "/" + (entry_model or "(no model)"), "warn"), (reasoning, "reason")]
 
     def entries(self, *, show_elapsed: bool) -> list[tuple[str, str]]:
-        worker = self.session.worker
         # The worker display is scoped to an in-flight delegation: the engine clears
         # _active_turn_messages in finish_turn, so the moment the worker answers, the bar returns
         # to the parent's provider/model/usage exactly as if no worker existed. An idle worker no
         # longer shadows the parent's row.
-        inflight = worker if worker is not None and bool(worker._active_turn_messages) else None
-        source = inflight if inflight is not None else self.session
+        source = self.active_session()
+        inflight = source is not self.session
         config = source.config
-        lead_role = "warn" if inflight is not None else "provider"
+        lead_role = "warn" if inflight else "provider"
         provider = config.provider
         model = provider.model.rsplit("/", 1)[-1] or "(no model)"
         parts: list[tuple[str, str]] = []
-        if inflight is not None:
+        if inflight:
             parts.append(("[worker]", "worker"))
-        # A summary running on its own provider entry is the same situation as an in-flight worker:
-        # the request on the wire is not this row's model, so name the one that is. Read off the
-        # displayed session, so a worker compacting its own context shows on the worker's row. Only
-        # when it differs -- with no [compaction] overrides the resolved entry is this one, and
-        # flashing an identical row for the length of one request says nothing the spinner does not.
-        if (compacting := self.compaction_lead(source, config)) is not None:
-            parts += compacting
-        else:
-            parts += [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
+        # A summary in flight is named on the row, always. Read off the displayed session, so a
+        # worker compacting its own context shows on the worker's row. When it runs on its own
+        # [compaction] entry the situation is also the in-flight worker's -- the request on the wire
+        # is not this row's model -- so the marker names that entry in place of these segments.
+        row = [(config.active_provider + "/" + model, lead_role), (provider.reasoning, "reason")]
+        parts += self.compaction_lead(source, config, row) or row
 
         mcp_status = self.mcp_status()
         if mcp_status:
@@ -1114,10 +1142,9 @@ class StatusBar:
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
         # Deliberately the conversation's counter, never the compaction one. A summary in flight
-        # has no usage yet, so switching would show the *previous* summary's numbers -- and with
-        # nothing on the row to say so, since the [compaction] lead appears only when the entry
-        # differs. Silently changing what a percentage refers to is worse than a stale one. The
-        # per-summary reading is the `compaction cache` row of /status, which is exact and stays.
+        # has no usage yet, so switching would show the *previous* summary's numbers under a row
+        # that reads as the current one. Silently changing what a percentage refers to is worse than
+        # a stale one. The per-summary reading is `/status`'s `compaction cache` row, which is exact.
         usage = source.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;

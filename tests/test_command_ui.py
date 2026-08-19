@@ -88,7 +88,7 @@ class ModalHarness:
         return None
 
 
-def test_tool_output_viewer_browses_latest_ten_and_opens_full_output(tmp_path, monkeypatch):
+def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_full_output(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     for index in range(12):
         stdout = "\n".join(f"line {line}" for line in range(40)) if index == 10 else f"output {index}"
@@ -105,10 +105,13 @@ def test_tool_output_viewer_browses_latest_ten_and_opens_full_output(tmp_path, m
         tool_output_viewer(command_loop)
 
     listing = "".join(value for _style, value in modal.frames[0])
-    assert listing.startswith("\n──── Tool output · latest 10 ")
+    assert listing.startswith("\n──── Tool output · latest 12 ")
     assert get_cwidth(listing.splitlines()[1]) == 48
     assert "command-11" in listing and "command-2" in listing
+    # A twenty-row terminal draws ten of the twelve: the rest are a scroll away, not dropped, and
+    # the counter is what says so. `true` printed nothing and is not an entry at all.
     assert "Bash printf command-1\n" not in listing and "Bash printf command-0\n" not in listing and "Bash true" not in listing
+    assert "showing 1-10 of 12" in listing
     # The second entry opens in the scrolling viewer: the command as its body, the streams below.
     frames = ["".join(value for _style, value in frame) for frame in modal.frames]
     viewer = [frame for frame in frames if "read-only" in frame]
@@ -118,6 +121,56 @@ def test_tool_output_viewer_browses_latest_ten_and_opens_full_output(tmp_path, m
     assert "stdout:" in viewer[0] and "line 0" in viewer[0]
     assert "stderr:" in viewer[-1] and "detail stderr" in viewer[-1]  # both streams, a scroll away
     assert modal.exclusive == [False, True]  # the list shares the screen; the viewer takes it
+
+
+def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path):
+    """A row is one row. `short_call` keeps a multi-line command whole for the transcript, and a
+    `git commit -m` with a real message would otherwise spill its row over several lines, carrying
+    the numbering and the selection bar with it."""
+    command_loop = loop(tmp_path)
+    command_loop.session.store_tool_result(
+        "Bash",
+        ['git commit -m "fix the parser\n\nIt dropped the last token."'],
+        Tool.process_result("BashToolResult", 0, "1 file changed", ""),
+    )
+    modal = ModalHarness([])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    rows = [row for row in listing.splitlines() if "tr.1" in row]
+    assert len(rows) == 1
+    assert "fix the parser It dropped the last token." in rows[0]
+
+    # The viewer still opens the command exactly as it was run, newlines and all.
+    view = modals_mod.record_view(command_loop, command_loop.session.tool_records[0])
+    assert view is not None and view.text.count("\n") == 2
+
+
+def test_tool_output_viewer_reopens_a_delegate_order_with_the_worker_answer(tmp_path):
+    """An order is written to be read twice: at the send prompt, and again when the worker's answer
+    has to be judged against what was actually asked. The transcript keeps only the `Delegate send`
+    line, so this browser is the second reading."""
+    command_loop = loop(tmp_path)
+    order = "Goal: rename the flag.\nFiles: minacode/config.py\nVerify: uv run pytest tests/test_cli.py"
+    command_loop.session.store_tool_result(
+        "Delegate",
+        [{"action": "send", "order": order, "title": "rename the flag"}],
+        '<Delegate action="send" files="minacode/config.py">\n<worker>renamed it at config.py:118</worker>\n</Delegate>',
+    )
+    command_loop.session.store_tool_result("Delegate", [{"action": "status"}], '<Delegate action="status" alive="true"/>')
+    modal = ModalHarness(["enter"])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert "Tool output · latest 1" in listing  # a status carries no order and is not an entry
+    viewer = next(frame for frame in ("".join(value for _style, value in f) for f in modal.frames) if "read-only" in frame)
+    assert "Order · tr.1 · read-only" in viewer
+    assert "rename the flag" in viewer and "Verify: uv run pytest" in viewer
+    assert "renamed it at config.py:118" in viewer  # the answer, below the order it is judged against
 
 
 def test_tool_output_viewer_shows_the_whole_output_not_the_transcript_preview(tmp_path):

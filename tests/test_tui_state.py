@@ -189,6 +189,27 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     assert "working" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
 
+def test_divider_shows_output_rate_while_a_response_streams(tmp_path):
+    """The elapsed time says how long the wait has been; the rate says whether it is moving. Both
+    live in the same parenthesis, and the rate leaves when the stream does."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    session = Session(cwd=str(tmp_path), config=config)
+    loop = CommandLoop(Agent(session), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+
+    loop.model_stream_output("output", "answering now")
+    assert "tok/s" not in "".join(text for _style, text in loop.view.queue_divider_fragments())
+
+    loop.status_bar.started_at = time.monotonic() - 4.0
+    session.state.stream_started_at = time.monotonic() - 4.0
+    session.state.stream_chars = 800
+    assert "responding (4s · ~50 tok/s)" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+
+    session.state.stream_started_at = 0.0
+    label = "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "responding (" in label and "tok/s" not in label
+
+
 def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_path):
     config = Config()
     config.data_dir = str(tmp_path / "data")

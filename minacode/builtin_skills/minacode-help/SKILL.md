@@ -245,17 +245,20 @@ If the manual does not settle the question, inspect source code that matches the
 
 Use this ownership map:
 
-- `minacode/base.py`: configuration schema, defaults, validation, errors, and shared types.
-- `minacode/providers/compat.py`: provider and model compatibility policy.
-- `minacode/model.py`: Chat, Responses, and Anthropic request/response adapters.
+- `minacode/base.py`: errors, text and log primitives, and shared data types.
+- `minacode/config.py`: provider entries, runtime settings, and the config file.
+- `minacode/providers/`: model capability catalog (`catalog.py`) and protocol-compatibility policy (`compat.py`).
+- `minacode/model/`: the model client (`client.py`) with the Chat, Responses, and Anthropic adapters beside it, plus retry policy in `resilience.py`.
 - `minacode/engine.py`: the agent turn loop and context/tool composition.
 - `minacode/context.py`: context projection, token budgeting, and compaction.
 - `minacode/runner.py`: tool execution, approvals, parallelism, and result storage.
-- `minacode/session.py`: durable session state and persistence.
-- `minacode/skill.py`: skill discovery, parsing, precedence, mentions, and expansion.
-- `minacode/mcp.py`: MCP configuration, connection lifecycle, tools, and resources.
-- `minacode/tools/`: built-in tool implementations and registry.
-- `minacode/loop.py`, `minacode/tui.py`, and `minacode/render.py`: commands, interaction, and presentation.
+- `minacode/session/`: live session state (`__init__.py`) and snapshot persistence (`store.py`).
+- `minacode/skill.py`: skill discovery, parsing, precedence, and expansion; `minacode/mentions.py`: mention grammar and @file expansion.
+- `minacode/mcp/`: MCP server config (`config.py`), connection lifecycle (`manager.py`), display formatting (`rendering.py`), and OAuth token storage (`tokens.py`).
+- `minacode/tools/`: built-in tool implementations, split by capability, with the registry in `__init__.py`.
+- `minacode/cli/`: the command loop (`__init__.py`), commands (`commands.py`), modals (`modals.py`), `/worker`'s flow (`worker.py`), TUI runtime (`runtime.py`), and view fragments (`view.py`).
+- `minacode/tui/`: the prompt-toolkit application (`app.py`) and interactive view state (`views.py`); `minacode/render.py`: terminal rendering, live output, and the status bar.
+- `minacode/prompts.py`: the system and worker prompts and compaction templates; `minacode/image.py`: local image input.
 - `minacode/__main__.py`: CLI arguments and startup.
 - `tests/`: executable behavior examples and regression coverage.
 

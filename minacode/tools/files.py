@@ -285,6 +285,29 @@ def _duplicate_lines(before: str, after: str) -> EditWarning | None:
 # here is enough — call() only invokes warnings_block() and the envelope does not change.
 EDIT_WARNINGS: tuple[Callable[[str, str], EditWarning | None], ...] = (_duplicate_lines,)
 
+# Characters written in one call past which the call is worth splitting. About 1.5k tokens: large
+# enough that ordinary edits never see it, small enough to stay well inside any output budget.
+LARGE_EDIT_CHARS = 6000
+
+
+def _large_edit(edits: list[Edit]) -> EditWarning | None:
+    """Warn when one call wrote enough text that it should have been several.
+
+    Deliberately measured on what the model typed (`content` and `new`), not on the file's before
+    and after, which is why this one is not in EDIT_WARNINGS: the subject is the assistant message
+    the call arrived in, not the change it made. That message is generated in one stretch, and a
+    response timeout or an output cap partway through discards all of it -- this edit, the
+    reasoning that reached it, and every other call batched beside it. Smaller edits land as they
+    go, and cost nothing extra when nothing goes wrong."""
+    written = sum(len(edit.content) + len(edit.new) for edit in edits)
+    if written < LARGE_EDIT_CHARS:
+        return None
+    return EditWarning(
+        "large-edit",
+        f"this call wrote {written} characters in one assistant message; a change this size is safer as several "
+        "Edit calls, since a timeout mid-message loses the whole batch",
+    )
+
 
 class EditTool(Tool):
     """Create or patch one file through content-verified anchors rather than line numbers.
@@ -308,7 +331,10 @@ class EditTool(Tool):
         "Create or patch one UTF-8 file. op=create writes a new file; replace/delete cover the inclusive "
         "start..end range (the line at end is itself replaced or deleted); insert_before/insert_after keep "
         "the anchor line and only add content beside it; replace_unique replaces text that occurs exactly "
-        "once and refuses when it does not; never restate lines that already exist in the file."
+        "once and refuses when it does not; never restate lines that already exist in the file. "
+        "Work in small steps: one call per cohesive change, and split a large rewrite across several "
+        "calls, because everything one call writes is generated inside a single assistant message "
+        "and a timeout partway through loses all of it."
     )
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
@@ -374,7 +400,7 @@ class EditTool(Tool):
         return [path, edits]
 
     def call(self) -> str:
-        path, original, created, result = self.build()
+        path, original, created, result, edits = self.build()
         if result.content == original and not created:
             raise ToolError(self.no_changes_error(original, result))
         if created:
@@ -390,14 +416,14 @@ class EditTool(Tool):
             self.file_stat(path),
             self.last_diff.rstrip(),
         ]
-        block = self.warnings_block(original, result.content)
+        block = self.warnings_block(original, result.content, edits)
         if block:
             parts.append(block)
         parts.append(self.edit_context(result.content, result.changes))
         parts.append("</Edit>")
         return "\n".join(parts)
 
-    def warnings_block(self, before: str, after: str) -> str:
+    def warnings_block(self, before: str, after: str, edits: list[Edit]) -> str:
         """Render post-edit warnings as a `<warnings>` block, or "" when nothing fired. Warnings
         are advisory only and never change the edit; anchors always name lines of the edited
         file. Output is bounded: at most 3 warnings and 12 anchor lines, truncated with "..."
@@ -407,6 +433,9 @@ class EditTool(Tool):
             warning = rule(before, after)
             if warning is not None:
                 collected.append(warning)
+        # Last, so a rule about the change itself is read before one about how it was delivered.
+        if (large := _large_edit(edits)) is not None:
+            collected.append(large)
         if not collected:
             return ""
         out = ["<warnings>"]
@@ -434,7 +463,7 @@ class EditTool(Tool):
         return TurnDiff(key="", turn=0, path=path, diff=diff, before=getattr(self, "last_before", ""), after=getattr(self, "last_after", ""))
 
     def preview(self) -> str:
-        path, original, _, result = self.build()
+        path, original, _, result, _edits = self.build()
         if result.content == original and os.path.exists(path):
             raise ToolError(self.no_changes_error(original, result))
         return self.diff(path, original, result.content) or f"Edit({path})"
@@ -510,7 +539,7 @@ class EditTool(Tool):
             return False
         raise ToolError("file does not exist; use op=create to create it")
 
-    def build(self) -> tuple[str, str, bool, EditApplyResult]:
+    def build(self) -> tuple[str, str, bool, EditApplyResult, list[Edit]]:
         path, edits = self.parse()
         creating = edits[0].op == "create"
         if self._validate_target(path, creating):
@@ -520,7 +549,7 @@ class EditTool(Tool):
         else:
             original, created = "", True
         result = self.apply(original, edits)
-        return path, original, created, result
+        return path, original, created, result, edits
 
     def apply(self, original: str, edits: list[Edit], anchor_resolver: Callable[[str], int] | None = None) -> EditApplyResult:
         """Apply one call's edits to a file's lines, returning the new content and its change spans.

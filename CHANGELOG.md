@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- The working divider shows the model's output speed while a response streams, next to the elapsed
+  time: `responding (12s · ~48 tok/s)`. Estimated from the text as it arrives, hence the `~`, and
+  absent between requests and on providers that do not stream.
+- `Ctrl-O` lists delegation orders alongside Bash outputs and ToolScript scripts, and opens one
+  with the worker's answer below it. Judging an answer means reading the order again, and the
+  transcript keeps only the `Delegate send` line.
+- An `Edit` call that writes more than 6000 characters now says so in its own result. Everything
+  one call writes is generated inside a single assistant message, and a timeout partway through
+  loses all of it, so a change that size is safer as several calls.
+
+### Changed
+
+- The status bar marks a running compaction with `[compaction]` even when the summary runs on the
+  session's own provider and model, which is the default. The marker was previously shown only
+  when a `[compaction]` entry overrode the model, so an ordinary compaction pause looked exactly
+  like a slow reply.
+- `Ctrl-O` browses the 50 most recent results instead of 10, through a scrolling window about ten
+  rows tall with a counter under it. The session keeps 400 results; the old limit was the list
+  filling the screen, not the storage.
+
+### Fixed
+
+- A multi-line command no longer breaks its row in the `Ctrl-O` list. A `git commit -m` with a real
+  message spilled over several lines and took the numbering and the selection bar with it; the row
+  now folds to one line, and the viewer still shows the command exactly as it was run.
 
 ## 0.26.0 - 2026-08-19
 
