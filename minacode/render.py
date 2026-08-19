@@ -1113,15 +1113,12 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        # While a summary is on the wire the row switches to the compaction counter, which is where
-        # a summary's usage is recorded. Note what this can and cannot say: the request in flight
-        # has no usage yet, so what shows is the previous summary's -- compaction-scoped numbers
-        # while compacting, rather than the conversation's, which describe a request that is not
-        # running. Only when there are such numbers, or the first compaction of a session would
-        # swap a measured percentage for an estimate mid-flight and swap back. The authoritative
-        # per-summary reading is the `compaction cache` row of /status.
-        compaction = source.compaction_usage
-        usage = compaction if source.state.compaction_entry and compaction.last_prompt_tokens else source.usage
+        # Deliberately the conversation's counter, never the compaction one. A summary in flight
+        # has no usage yet, so switching would show the *previous* summary's numbers -- and with
+        # nothing on the row to say so, since the [compaction] lead appears only when the entry
+        # differs. Silently changing what a percentage refers to is worse than a stale one. The
+        # per-summary reading is the `compaction cache` row of /status, which is exact and stays.
+        usage = source.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;
             # the estimate (state.context_percent) stays as the fallback before any request exists.
