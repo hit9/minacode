@@ -116,6 +116,7 @@ COMPACTION_PROMPT = """
 Compact the minacode working context.
 Return one JSON object only. No markdown, prose, code fences, or comments.
 Use keys: title, summary, goal, plan, known, check.
+title, summary, goal, and check are strings. known is an array of strings.
 Plan must be an array of objects: {"status":"todo|doing|done|blocked","text":"..."}.
 Title names what this compacted stretch of conversation was about, at most 8 words, no trailing period.
 Rewrite recent conversation briefly inside summary.

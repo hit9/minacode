@@ -132,6 +132,12 @@ class AgentState:
                 setattr(self, attr, str(data[attr]).strip())
         for attr in ("plan", "known"):
             value = data.get(attr)
+            # One string where the schema asks for a list used to fall through untouched, which is
+            # worse than being wrong: the previous compaction's value survives as though the model
+            # had confirmed it, and gets fed back as current on the next pass. One string is one
+            # item. Anything else that is not a list is still refused, as before.
+            if isinstance(value, str):
+                value = [value] if value.strip() else []
             if isinstance(value, list):
                 items = list(filter(None, (str(item).strip() for item in value))) if attr == "known" else self.plan_items(value)
                 setattr(self, attr, items)

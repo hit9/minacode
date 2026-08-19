@@ -1644,3 +1644,21 @@ def test_compaction_keeps_the_flat_payload_on_the_responses_wire(tmp_path):
     live.messages = [{"role": "user", "content": "hello"}]
     live.config.provider.api = "responses"
     assert ContextManager(live).compaction_request(list(live.messages)) is None
+
+
+def test_state_apply_takes_a_bare_string_where_a_list_was_asked_for(tmp_path):
+    """Ignoring the wrong type is worse than accepting it: the previous compaction's value survives
+    as though this one had confirmed it, and is fed back as current on the next pass."""
+    live = session(tmp_path)
+    live.state.apply({"known": ["stale fact"], "plan": [{"status": "done", "text": "old step"}]})
+
+    live.state.apply({"known": "the API is rate limited", "plan": "finish Part B"})
+    assert live.state.known == ["the API is rate limited"]
+    assert [item.text for item in live.state.plan] == ["finish Part B"]
+
+    # An empty string clears rather than silently keeping the old value.
+    live.state.apply({"known": "   "})
+    assert live.state.known == []
+    # A type that is neither is still refused, as before.
+    live.state.apply({"known": 17})
+    assert live.state.known == []
