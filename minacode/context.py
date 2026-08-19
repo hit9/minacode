@@ -247,31 +247,52 @@ class ContextManager:
         usage = self.session.usage
         return usage.last_prompt_budget > 0 and usage.last_prompt_tokens * 100 >= usage.last_prompt_budget * 99
 
-    def compaction_request(self, compacted: list[Json]) -> tuple[list[Json], list[Json]] | None:
-        """The compaction request as the agent's own request plus one instruction, or None to use
-        the flattened payload instead.
+    def compaction_request(self, compacted: list[Json], turn_messages: list[Json] | None = None) -> tuple[list[Json], list[Json]] | None:
+        """The compaction request as the agent's own request truncated, plus one instruction, or
+        None to use the flattened payload instead.
+
+        A cache hit needs a byte-identical prefix, so this slices `model_messages` -- the very list
+        the turn just sent -- rather than assembling a lookalike from `compacted`. They are not the
+        same thing: `compacted` has had `without_compaction_summaries` applied and has not had the
+        describe/skill dedup applied, so a request built from it diverges at the first earlier
+        summary and at every repeated schema, which cost the whole conversation and left only the
+        header cached.
+
+        The slice therefore ends one message later than `compacted` does, taking in the latest user
+        message that `compacted` deliberately excludes. That message is kept either way -- what is
+        evicted is decided by `keep`, not by this request -- so the only effect is that the
+        compactor sees what is being worked on right now, which helps it.
 
         Eligible only when the summary runs on the entry that served the turn: a `[compaction]`
-        entry pointing elsewhere is a different cache namespace, so rebuilding the prefix for it
-        would cost the whole history at full rate to save nothing.
-
-        The header is reused verbatim and the compacted span appended raw, which makes this request
-        a prefix of the one the turn just paid for -- as far as the two agree. They agree entirely
-        the first time; a later compaction diverges wherever `without_compaction_summaries` dropped
-        an earlier summary, and the header still hits. Partial reuse is the point: today's shape
-        matches at position zero and never again."""
-        if self.session.config.compaction_provider or self.session.system_info is None:
+        entry elsewhere is a different cache namespace, so rebuilding the prefix would cost the
+        whole history at full rate to save nothing. Turn-scope compaction takes the flattened path:
+        its span comes from the live turn rather than from stored history, and is not a prefix of
+        what was sent."""
+        if turn_messages is not None or self.session.config.compaction_provider or self.session.system_info is None:
             return None
         base_system = self.session.system_prompt
-        if not base_system:
+        if not base_system or not compacted:
+            return None
+        live = self.model_messages(base_system)
+        cut = len(self.model_header(base_system)) + self.compaction_prefix_count()
+        if cut <= len(self.model_header(base_system)):
             return None
         tail = compaction_tail(
             state=self.session.state.format(),
             previous_summary=self.session.state.summary,
             recent_count=min(self.COMPACT_RECENT_MESSAGES, len(compacted)),
         )
-        messages = [*self.model_header(base_system), *compacted, {"role": "user", "content": tail}]
-        return Text.value(messages), Tool.resolved_schemas(self.session)
+        return [*live[:cut], {"role": "user", "content": tail}], Tool.resolved_schemas(self.session)
+
+    def compaction_prefix_count(self) -> int:
+        """How many stored messages the summary request carries, counted the way `compaction_parts`
+        splits them so the slice ends where the kept tail begins."""
+        messages = self.session.messages
+        index = self.latest_user_index(messages)
+        if index is None:
+            return len(messages)
+        _, keep_tail = self.compaction_parts_for(messages[index + 1 :])
+        return len(messages) - len(keep_tail)
 
     def compaction_echo_source(self, compacted: list[Json]) -> str:
         """What a copied summary would have been copied from.
@@ -302,7 +323,7 @@ class ContextManager:
         interrupted = False
         try:
             try:
-                request = self.compaction_request(compacted) or ()
+                request = self.compaction_request(compacted, turn_messages) or ()
                 data = model.compact(self.compaction_input(compacted), *request, echo_source=self.compaction_echo_source(compacted))
             except KeyboardInterrupt:
                 error_detail = "cancelled by user"

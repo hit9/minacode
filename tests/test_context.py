@@ -1604,28 +1604,72 @@ def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
 
 
 def test_compaction_reuses_the_agent_prefix_and_keeps_real_messages(tmp_path):
-    """The summary request is the agent's own request with an instruction appended, so the provider
-    cache already covers it -- and the compactor sees tool calls, which flattening drops."""
+    """The summary request is the agent's own request truncated, with an instruction appended, so
+    the provider cache already covers it -- and the compactor sees tool calls, which the flattened
+    payload drops (ImageInputs.label_text reads only content)."""
     live = session(tmp_path)
-    live.messages = [
-        {"role": "user", "content": "check the call sites"},
-        {"role": "assistant", "content": "Looking.", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "tool tr.1 Bash rg -n _run_workflow"},
-    ]
+    live.messages = [{"role": "user", "content": "check the call sites"}]
+    for index in range(6):
+        live.messages.extend(
+            [
+                {"role": "assistant", "content": "Looking.", "tool_calls": [{"id": f"c{index}", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": f"c{index}", "content": f"tool tr.{index} Bash rg -n _run_workflow"},
+            ]
+        )
+    live.messages.append({"role": "user", "content": "继续 Part B"})
+    live.messages.append({"role": "assistant", "content": "ok"})
     context = ContextManager(live)
-    compacted = list(live.messages)
+    compacted, _keep = context.compaction_parts()
+    assert compacted  # there is a head to summarize
 
     built = context.compaction_request(compacted)
     assert built is not None
     messages, tools = built
 
-    header = context.model_header(live.system_prompt)
-    assert messages[: len(header)] == Text.value(header)  # a real prefix of what the turn already paid for
-    assert tools  # carried so the cached prefix matches; tool_choice is what stops their use
-    # The tool call survives as structure, where messages_text() would have dropped it.
+    # Every message but the appended instruction is byte-identical to what the turn already sent,
+    # which is what a prefix cache requires -- not merely "starts with the same system prompt".
+    sent = context.model_messages(live.system_prompt)
+    assert messages[:-1] == sent[: len(messages) - 1]
+    assert tools  # carried so the prefix matches; tool_choice stays exactly as an ordinary request
+    # The tool calls survive as structure, where the flattened payload would have dropped them.
     assert any(message.get("tool_calls") for message in messages)
     assert "Compact the minacode working context." in messages[-1]["content"]
     assert "END OF CONVERSATION TO COMPACT" in messages[-1]["content"]
+
+
+def test_compaction_prefix_survives_an_earlier_summary_and_repeated_schemas(tmp_path):
+    """The prefix has to be a slice of the list the turn actually sent. Rebuilding a lookalike from
+    `compacted` diverges at the first earlier summary (dropped by without_compaction_summaries) and
+    at every repeated schema (collapsed by the dedup only the live projection runs) -- which cost
+    the whole conversation and left just the header cached."""
+    live = session(tmp_path)
+    describe = 'tool tr.%d MCP\n<MCPDescribe server="x" tool="y">SCHEMA</MCPDescribe>'
+    live.messages = [
+        {"role": "user", "content": COMPACTION_SUMMARY_TITLE + "\nSummary: earlier", SESSION_EVENT_KEY: "compaction_checkpoint"},
+        {"role": "user", "content": "task A"},
+        {"role": "assistant", "content": "looking"},
+        {"role": "tool", "content": describe % 1},
+        {"role": "tool", "content": describe % 2},
+        {"role": "user", "content": "task B"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    context = ContextManager(live)
+    compacted, _keep = context.compaction_parts()
+    messages, _tools = context.compaction_request(compacted)
+
+    sent = context.model_messages(live.system_prompt)
+    assert messages[:-1] == sent[: len(messages) - 1]
+    # Not just the header: the conversation is in the shared prefix too.
+    assert len(messages) - 1 > len(context.model_header(live.system_prompt))
+
+
+def test_compaction_falls_back_to_the_flat_payload_for_turn_scope(tmp_path):
+    """A turn-scope span comes from the live turn, not from stored history, so it is not a prefix
+    of what was sent and cannot be sliced out of it."""
+    live = session(tmp_path)
+    live.messages = [{"role": "user", "content": "hello"}]
+    turn = [{"role": "assistant", "content": "working"}]
+    assert ContextManager(live).compaction_request(list(live.messages), turn) is None
 
 
 def test_compaction_falls_back_to_the_flat_payload_on_a_separate_provider(tmp_path):
