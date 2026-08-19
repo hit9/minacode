@@ -278,6 +278,16 @@ class ContextManager:
         messages = [*self.model_header(base_system), *compacted, {"role": "user", "content": tail}]
         return Text.value(messages), Tool.resolved_schemas(self.session)
 
+    def compaction_echo_source(self, compacted: list[Json]) -> str:
+        """What a copied summary would have been copied from.
+
+        The observed failure reproduces the tail of what it was handed -- the last user message and
+        what followed it -- so that is what the summary is checked against. Bounded, because this
+        feeds a substring search and the span being compacted has no size limit."""
+        index = self.latest_user_index(compacted)
+        tail = compacted if index is None else compacted[index:]
+        return self.messages_text(tail)[-4000:]
+
     def _compact_messages(
         self,
         model: ModelClient,
@@ -297,11 +307,8 @@ class ContextManager:
         interrupted = False
         try:
             try:
-                request = self.compaction_request(compacted)
-                if request is None:
-                    data = model.compact(self.compaction_input(compacted))
-                else:
-                    data = model.compact(self.compaction_input(compacted), *request)
+                request = self.compaction_request(compacted) or ()
+                data = model.compact(self.compaction_input(compacted), *request, echo_source=self.compaction_echo_source(compacted))
             except KeyboardInterrupt:
                 error_detail = "cancelled by user"
                 interrupted = True

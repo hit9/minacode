@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from json_repair import repair_json
@@ -51,6 +52,7 @@ from minacode.config import (
 from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model_catalog import THINKING_BUDGETS
 from minacode.prompts import (
+    COMPACTION_ECHO_RETRY,
     COMPACTION_PROMPT,
     COMPACTION_RETRY,
 )
@@ -1148,7 +1150,7 @@ class ModelClient:
                 return Text.value(dumped)
         return {}
 
-    def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None) -> Json:
+    def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None, echo_source: str = "") -> Json:
         self.cancel_requested.clear()
         # The summary request runs on the [compaction]-resolved provider entry (empty [compaction]
         # = the active provider), resolved per call so a runtime /provider switch applies next
@@ -1179,14 +1181,20 @@ class ModelClient:
         entry_label = f"{entry_name}/{provider.model}"
         self.session.state.compaction_entry = entry_label
         try:
-            data = self.compact_attempts(messages, provider, response_timeout, entry_label, tools=tools if inline else None)
+            data = self.compact_attempts(messages, provider, response_timeout, entry_label, tools=tools if inline else None, echo_source=echo_source)
         finally:
             self.session.state.compaction_entry = ""
         self.last_compaction_model = provider.model
         return data
 
     def compact_attempts(
-        self, messages: list[Json], provider: ProviderConfig, response_timeout: float, entry_label: str, tools: list[Json] | None = None
+        self,
+        messages: list[Json],
+        provider: ProviderConfig,
+        response_timeout: float,
+        entry_label: str,
+        tools: list[Json] | None = None,
+        echo_source: str = "",
     ) -> Json:
         """Ask for the summary, and ask once more if what came back was not a JSON object.
 
@@ -1229,8 +1237,43 @@ class ModelClient:
                 continue
             if not isinstance(data, dict):
                 raise ModelError(f"compactor returned non-object JSON (compaction provider `{entry_label}`)")
+            # Checked after parsing, not instead of it: this is the same failure the retry above
+            # exists for, only it arrived shaped like a valid answer. Left unchecked it applies
+            # cleanly into session.state and is fed back into every later compaction.
+            if self.echoes_source(data.get("summary") or "", echo_source):
+                if attempt == 2:
+                    raise ModelError(f"compactor echoed the conversation instead of summarizing it (compaction provider `{entry_label}`)")
+                attempt_messages = [
+                    *attempt_messages,
+                    {"role": "assistant", "content": Tool.compact(content, 400)},
+                    {"role": "user", "content": COMPACTION_ECHO_RETRY},
+                ]
+                continue
             return data
         raise ModelError(f"compactor returned no usable JSON (compaction provider `{entry_label}`)")
+
+    # A summary that is mostly one verbatim run copied out of the conversation is the echo failure
+    # wearing valid JSON: constrained decoding forces the shape, never the task. Deliberately blunt
+    # thresholds -- a real summary paraphrases, so 80% of it being a single unbroken copy is not a
+    # close call, and quoting a path or an identifier is far below that.
+    #
+    # The floor is counted in characters, which are not equal: the same sentence is 138 characters
+    # of English and 68 of Chinese. It is set for the denser script, because a floor tuned to
+    # English would have excluded from this check every summary written in the language the failure
+    # was first seen in.
+    ECHO_MIN_CHARS: ClassVar[int] = 40
+    ECHO_RATIO: ClassVar[float] = 0.8
+    ECHO_COMPARE_CHARS: ClassVar[int] = 4000
+
+    @classmethod
+    def echoes_source(cls, summary: str, source: str) -> bool:
+        """True when `summary` reproduces `source` rather than describing it."""
+        summary = " ".join(str(summary).split())[: cls.ECHO_COMPARE_CHARS]
+        source = " ".join(str(source).split())[-cls.ECHO_COMPARE_CHARS :]
+        if len(summary) < cls.ECHO_MIN_CHARS or not source:
+            return False
+        match = SequenceMatcher(None, summary, source, autojunk=False).find_longest_match(0, len(summary), 0, len(source))
+        return match.size >= len(summary) * cls.ECHO_RATIO
 
     @classmethod
     def parse_json_object(cls, text: str) -> Json:

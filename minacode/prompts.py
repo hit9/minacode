@@ -144,6 +144,11 @@ COMPACTION_REMINDER = (
     "Reply with one JSON object and nothing else, using keys: title, summary, goal, plan, known, check."
 )
 
+COMPACTION_ECHO_RETRY = (
+    "That reply copied the conversation instead of summarizing it. Do not reproduce any message. "
+    "Write summary in your own words, describing what happened and what remains, and reply with one JSON object only."
+)
+
 COMPACTION_RETRY = (
     "That reply was not a JSON object. Do not restate the conversation. Reply with one JSON object only, using keys: title, summary, goal, plan, known, check."
 )

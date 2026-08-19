@@ -544,7 +544,9 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
         loop.status_bar.start(reset=False)
     try:
         request = loop.agent.context.compaction_request(compacted) or ()
-        data = loop.agent.model.compact(loop.agent.context.compaction_input(compacted), *request)
+        data = loop.agent.model.compact(
+            loop.agent.context.compaction_input(compacted), *request, echo_source=loop.agent.context.compaction_echo_source(compacted)
+        )
     except KeyboardInterrupt:
         return "Cancelled"
     except Exception as error:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.

@@ -855,3 +855,38 @@ def test_compaction_sends_json_response_format_only_where_the_provider_supports_
     run("api.moonshot.cn")
     assert seen["api.deepseek.com"] == {"type": "json_object"}
     assert seen["api.moonshot.cn"] is None
+
+
+def test_compaction_rejects_a_summary_that_copies_the_conversation(tmp_path, monkeypatch):
+    """Constrained decoding forces the shape, never the task: a model that means to continue the
+    conversation returns valid JSON with the conversation inside it, which would apply cleanly into
+    session.state and be fed back into every later compaction."""
+    s = _session(tmp_path)
+    model = ModelClient(s)
+    echo = "继续 Part B 收尾：检查 `_run_workflow` 的所有调用点，确保新参数没有遗漏，然后跑 lint 与 pyright，再把结果贴回来。"
+    sent = []
+
+    def api_request(messages, _tools, **kwargs):
+        sent.append(messages)
+        if len(sent) == 1:
+            return None, None, json.dumps({"title": "Part B", "summary": echo}, ensure_ascii=False)
+        return None, None, json.dumps({"title": "Part B", "summary": "Wrapped up Part B; lint and pyright still to run."})
+
+    monkeypatch.setattr(model, "api_request", api_request)
+
+    data = model.compact("long context", echo_source=f"user:\n{echo}")
+    assert data["summary"].startswith("Wrapped up Part B")
+    assert len(sent) == 2
+    assert "copied the conversation" in sent[1][-1]["content"]
+
+
+def test_compaction_echo_guard_leaves_real_summaries_alone(tmp_path):
+    """A summary that quotes a path or paraphrases the request is not a copy; only a summary that is
+    almost entirely one verbatim run is."""
+    source = "user:\n继续 Part B 收尾：检查 `_run_workflow` 的所有调用点，确保新参数没有遗漏，然后跑 lint 与 pyright。"
+    assert ModelClient.echoes_source("继续 Part B 收尾：检查 `_run_workflow` 的所有调用点，确保新参数没有遗漏，然后跑 lint 与 pyright。", source)
+    assert not ModelClient.echoes_source(
+        "用户要求收尾 Part B。已核对 `_run_workflow` 的调用点，新参数补齐；lint 与 pyright 尚未运行，是下一步。", source
+    )
+    assert not ModelClient.echoes_source("short", source)  # below the length floor
+    assert not ModelClient.echoes_source("a" * 200, "")  # nothing to copy from

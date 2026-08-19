@@ -337,7 +337,7 @@ def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     command_loop.tui = TuiApp()
     divider_during_compaction = []
 
-    def compact(_context, _inline_messages=None, _tools=None):
+    def compact(_context, *_args, **_kwargs):
         divider_during_compaction.append(fragment_list_to_text(command_loop.view.queue_divider_fragments()))
         return {"summary": "compact summary"}
 
