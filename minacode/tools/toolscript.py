@@ -275,7 +275,7 @@ class ToolScript(Tool):
         error_text = ""
         try:
             if script_status is not None:
-                script_status(True)
+                script_status(True, code)
             sys.settrace(budget.tracer())
             try:
                 # Everything the nested calls log is printed one level deeper, so the batch reads as
@@ -302,7 +302,7 @@ class ToolScript(Tool):
         finally:
             linecache.cache.pop(SCRIPT_FILENAME, None)
             if script_status is not None:
-                script_status(False)
+                script_status(False, "")
 
         return self._envelope(failed, keys, stdout_buf.getvalue(), stderr_buf.getvalue(), error_text)
 

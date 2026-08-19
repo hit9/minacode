@@ -1515,7 +1515,16 @@ class ChoiceViewState:
         options = self.clamp()
         return options[self.selected] if options else None
 
-    def fragments(self, title: str, preview_fn: Callable[[str], str] | None = None) -> StyleAndTextTuples:
+    def fragments(
+        self,
+        title: str,
+        preview_fn: Callable[[str], str] | None = None,
+        label_fn: Callable[[str], StyleAndTextTuples] | None = None,
+    ) -> StyleAndTextTuples:
+        """The list as fragments. `label_fn` styles one row's label in pieces instead of printing it
+        flat, for a list whose rows carry more than one kind of thing (the Ctrl-O browser's key,
+        tool name, and arguments). Its styles compose with the row's, so a selected row still
+        reverses whole."""
         visible = self.visible()
         options = self.clamp()
         suffix = (" /" + self.query) if self.query else ""
@@ -1539,7 +1548,13 @@ class ChoiceViewState:
                 parts.append(("[SetCursorPosition]", ""))
             style = "class:choice.selected" if selected else ""
             prefix = ("> " if selected else "  ") + f"{number:2d}. "
-            if match := UiPrinter.MCP_STATUS_RE.search(label):
+            if label_fn is not None:
+                parts.append((style, prefix))
+                # The selected row stays a solid reverse bar: composing the part colours into it
+                # would repaint the bar in each part's colour rather than highlight the row.
+                parts.extend((style or part_style, text) for part_style, text in label_fn(choice))
+                parts.append((style, "\n"))
+            elif match := UiPrinter.MCP_STATUS_RE.search(label):
                 parts.append((style, prefix + label[: match.start()]))
                 marker_style = (style + " class:choice.status." + match.group(1)).strip()
                 parts.append((marker_style, "●"))

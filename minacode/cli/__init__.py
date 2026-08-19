@@ -183,6 +183,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.live_status_paused = False
         self.compaction_active = False
         self.script_active = False
+        # The source of the ToolScript body running right now, so Ctrl-O can offer it before it
+        # finishes and becomes a stored record. Empty whenever no script is running.
+        self.script_running_code = ""
         # Set to the uid this run should hand over to. `main` reads it after run() returns and
         # builds the next CommandLoop around that session.
         self.resume_request = ""
@@ -249,12 +252,15 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         """Show a retry backoff wait as a distinct phase instead of claiming the agent is working."""
         self.set_running_phase(retrying=active)
 
-    def toolscript_run_status(self, active: bool) -> None:
+    def toolscript_run_status(self, active: bool, code: str = "") -> None:
         """Show a running ToolScript body as a distinct phase of the turn.
 
         A script is the one stretch where the model is idle and no single tool line is pending, so
-        without this the divider claims "working" from approval until the whole batch is done."""
+        without this the divider claims "working" from approval until the whole batch is done. The
+        source is held for the same reason: a long batch is exactly when the reader wants to see
+        what is running, and until it returns there is no stored record to open."""
         self.script_active = active
+        self.script_running_code = code if active else ""
         self.set_running_phase()
 
     def set_running_phase(self, retrying: bool = False) -> None:

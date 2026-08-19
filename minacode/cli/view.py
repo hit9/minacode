@@ -452,6 +452,12 @@ class View:
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
+                # The Ctrl-O browser's rows, coloured as the transcript colours the same call: the
+                # tr.N key dim, the tool name in the tool green, the arguments plain. A row that is
+                # still running takes the working divider's magenta instead of the dim key.
+                "choice.meta": "ansibrightblack",
+                "choice.tool": "ansigreen",
+                "choice.live": "ansimagenta bold",
                 "choice.status.connected": "ansigreen bold",
                 "choice.status.connecting": "ansigreen bold",
                 "choice.status.disconnected": "ansiyellow bold",

@@ -187,6 +187,51 @@ def test_tool_output_viewer_is_noop_without_stored_bash_output(tmp_path):
     assert modal.frames == []
 
 
+def test_tool_output_viewer_offers_the_script_that_is_still_running(tmp_path):
+    """A long batch is exactly when the reader wants to look; the record only arrives at the end."""
+    command_loop = loop(tmp_path)
+    command_loop.session.store_tool_result("Bash", ["printf done"], Tool.process_result("BashToolResult", 0, "done", ""))
+    command_loop.toolscript_run_status(True, 'for key in KEYS:\n    call("server.tool", {"key": key})\n')
+    modal = ModalHarness(["enter"])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert "running  ToolScript call 2 lines" in listing  # first row, above the stored Bash entry
+    assert listing.index("running") < listing.index("Bash")
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    viewer = [frame for frame in frames if "read-only" in frame]
+    assert "Script · running · read-only" in viewer[0]
+    assert 'call("server.tool"' in viewer[0]
+
+    # It leaves with the script: once the batch returns, only the stored record remains.
+    command_loop.tui = None
+    command_loop.toolscript_run_status(False)
+    modal = ModalHarness([])
+    command_loop.tui = modal
+    tool_output_viewer(command_loop)
+    assert "running" not in "".join(value for _style, value in modal.frames[0])
+
+
+def test_tool_output_list_rows_are_coloured_by_part(tmp_path):
+    """All-grey rows read as a wall; the key, the tool name, and the arguments each get their own."""
+    command_loop = loop(tmp_path)
+    for index in range(2):
+        command_loop.session.store_tool_result("Bash", [f"printf hi-{index}"], Tool.process_result("BashToolResult", 0, "hi", ""))
+    modal = ModalHarness([])
+    command_loop.tui = modal
+
+    tool_output_viewer(command_loop)
+
+    row = [(style, text) for style, text in modal.frames[0] if text.strip()]
+    assert ("class:choice.meta", "tr.1  ") in row
+    assert ("class:choice.tool", "Bash ") in row
+    assert ("", "printf hi-0") in row
+    # The selected row is left as one reverse bar rather than repainted part by part.
+    assert not [style for style, _text in row if "choice.selected" in style and ("meta" in style or "tool" in style)]
+
+
 def test_tool_output_viewer_reads_resumed_history(tmp_path):
     saved = session(tmp_path)
     saved.store_tool_result("Bash", ["printf persisted"], Tool.process_result("BashToolResult", 0, "persisted output", ""))

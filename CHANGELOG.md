@@ -11,11 +11,17 @@
   resolves to no configured server now says which server is missing instead of "unknown tool".
 - The running divider shows `running script` while a ToolScript body executes, so a long batch no
   longer reads as plain `working` from approval until the last nested call returns.
+- `Ctrl-O` lists the ToolScript that is running right now, above the stored entries, and opens its
+  source in the same read-only viewer. A long batch is exactly when the script is worth reading,
+  and until it returns there is no stored record to open.
 
 ### Changed
 
 - ToolScript's description now states what `call()` returns for each `format`, that a failed nested
   call raises and ends the script, and shows a fan-out example that contains per-item failures.
+- The `Ctrl-O` browser colours each row by part - dim `tr.N` key, green tool name, plain arguments -
+  the way the transcript colours the same call, instead of one flat grey line. The selected row is
+  still a single reverse bar.
 
 
 ## 0.25.1 - 2026-08-17

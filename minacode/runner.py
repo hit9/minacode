@@ -293,8 +293,9 @@ class ToolRunner:
         self.compaction: Callable[[bool, str], None] | None = None
         # Injected by CommandLoop: a ToolScript body is the one stretch of a turn where nothing is
         # streaming and no single tool line is pending, so the divider would otherwise sit on
-        # "working" for the whole batch. None degrades to no phase label (headless runners).
-        self.script_status: Callable[[bool], None] | None = None
+        # "working" for the whole batch. The source rides along so Ctrl-O can offer the script
+        # while it runs. None degrades to no phase label (headless runners).
+        self.script_status: Callable[[bool, str], None] | None = None
         # Bash and Job are the tools that block on something outside the agent, so Ctrl-C has to
         # reach them: Bash kills its process group, Job abandons a wait and leaves the job running.
         self._active_bash: ActiveResource[BashTool] = ActiveResource()

@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples, to_formatted_text
@@ -341,6 +342,30 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     return ApprovalView(f"output · {record.key}", command, "bash", rows, streams)
 
 
+@dataclass(frozen=True)
+class OutputEntry:
+    """One row of the Ctrl-O browser: how it reads in the list, and what it opens."""
+
+    key: str
+    name: str
+    detail: str
+    view: ApprovalView
+    live: bool = False
+
+
+def running_script_entry(loop: CommandLoop) -> OutputEntry | None:
+    """The ToolScript running right now, if one is. It has no stored record yet -- that arrives
+    only when the whole batch returns -- and a long batch is exactly when the reader wants to see
+    what is running, so the browser offers it from the live source instead."""
+    code = loop.script_running_code
+    if not code.strip():
+        return None
+    lines = len(code.splitlines())
+    detail = f"call {lines} line{'' if lines == 1 else 's'} ({len(code)} chars)"
+    rows = [("status", "running"), ("lines", str(lines))]
+    return OutputEntry("running", "ToolScript", detail, ApprovalView("script · running", code, "python", rows), live=True)
+
+
 def tool_output_viewer(loop: CommandLoop) -> None:
     """Browse what recent calls produced without copying it into scrollback.
 
@@ -353,16 +378,18 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     # the same call decides whether to list it and what to open. Kept alongside its record rather
     # than rebuilt on selection -- the bounding work is proportional to the stored result, and
     # doing it twice for a multi-megabyte one would be paid on a keypress.
-    views: list[tuple[ToolResultRecord, ApprovalView]] = []
+    entries: list[OutputEntry] = []
+    if (running := running_script_entry(loop)) is not None:
+        entries.append(running)
     for record in reversed(loop.session.tool_records):
         view = record_view(loop, record)
         if view is not None:
-            views.append((record, view))
-        if len(views) == 10:
+            entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view))
+        if len(entries) == 10:
             break
-    if not views:
+    if not entries:
         return
-    picked = _tool_output_list(loop, views)
+    picked = _tool_output_list(loop, entries)
     if picked is not None:
         approval_text_viewer(loop, picked)
 
@@ -376,14 +403,26 @@ def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
     return None
 
 
-def _tool_output_list(loop: CommandLoop, views: list[tuple[ToolResultRecord, ApprovalView]]) -> ApprovalView | None:
-    """The list modal itself: pick one, and it closes returning the view to open."""
+def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry]) -> ApprovalView | None:
+    """The list modal itself: pick one, and it closes returning the view to open.
+
+    Rows are coloured the way the transcript colours the same call -- dim key, green tool name,
+    plain arguments -- so a row is scannable by shape instead of read word by word. The label is
+    still the flat text, which is what `/` searches over."""
     assert loop.tui is not None
     width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
-    labels = {
-        str(index): Text.clip_width(f"{record.key}  {loop.agent.tools.short_call(ToolCall('', record.name, record.args))}", width)
-        for index, (record, _view) in enumerate(views)
-    }
+    parts: dict[str, StyleAndTextTuples] = {}
+    labels: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        head = f"{entry.key}  "
+        detail = entry.detail.removeprefix(entry.name).strip()
+        detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1))
+        labels[str(index)] = f"{head}{entry.name} {detail}".rstrip()
+        parts[str(index)] = [
+            ("class:choice.live" if entry.live else "class:choice.meta", head),
+            ("class:choice.tool", entry.name + " "),
+            ("", detail),
+        ]
     state = ChoiceViewState(tuple(labels), labels, set())
 
     def rule(label: str) -> StyleAndTextTuples:
@@ -394,8 +433,8 @@ def _tool_output_list(loop: CommandLoop, views: list[tuple[ToolResultRecord, App
         return [("", "\n"), ("class:choice.disabled", lead + label + trail + "\n")]
 
     def fragments() -> StyleAndTextTuples:
-        list_fragments = state.fragments("")
-        return [*rule(f"Tool output · latest {len(views)}"), *list_fragments[1:]]
+        list_fragments = state.fragments("", label_fn=parts.get)
+        return [*rule(f"Tool output · latest {len(entries)}"), *list_fragments[1:]]
 
     def handle_key(key: str, data: str) -> Any:
         if key in {"c-o", "q"}:
@@ -403,7 +442,7 @@ def _tool_output_list(loop: CommandLoop, views: list[tuple[ToolResultRecord, App
         result = state.handle_key(key, data)
         if result is SELECTION_BACK:
             return None
-        return views[int(result)][1] if isinstance(result, str) else TUI_MODAL_PENDING
+        return entries[int(result)].view if isinstance(result, str) else TUI_MODAL_PENDING
 
     picked = loop.tui.show_modal(fragments, handle_key)
     return picked if isinstance(picked, ApprovalView) else None
