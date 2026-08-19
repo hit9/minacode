@@ -311,9 +311,14 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     assert len(requests) == 2
 
     compactor_request, agent_request = requests
-    assert "Compact the minacode working context." in compactor_request["messages"][0]["content"]
-    assert "tools" not in compactor_request
-    assert "OLD_BODY_SENTINEL" in compactor_request["messages"][1]["content"]
+    # The summary rides the agent's own prefix: same system message, same tools, the conversation
+    # as real messages, and the compaction instruction appended as the last message. That makes
+    # this request a prefix of the agent's, so the provider's cache covers all but the tail.
+    assert compactor_request["messages"][0]["content"] == agent_request["messages"][0]["content"]
+    assert compactor_request["tools"] == agent_request["tools"]
+    assert compactor_request["tool_choice"] == "none"  # tools are there for the cache, not to call
+    assert "Compact the minacode working context." in compactor_request["messages"][-1]["content"]
+    assert "OLD_BODY_SENTINEL" in "\n".join(str(message.get("content") or "") for message in compactor_request["messages"])
 
     active_messages = agent_request["messages"]
     contents = [str(message.get("content") or "") for message in active_messages]

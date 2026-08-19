@@ -17,6 +17,7 @@ from minacode.base import (
     MAX_TOOL_OUTPUT_TOKENS,
     SESSION_EVENT_KEY,
     ModelError,
+    Text,
 )
 from minacode.cli import CommandLoop
 from minacode.cli.commands import compact
@@ -508,7 +509,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
         def __init__(self):
             self.input = None
 
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             self.input = text
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
@@ -574,7 +575,7 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
         def __init__(self):
             self.called = False
 
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             self.called = True
             return {"summary": "summary"}
 
@@ -640,7 +641,7 @@ def test_prepare_messages_does_not_recompact_a_summary_by_itself(tmp_path):
     s.messages = [{"role": "user", "content": summary}]
 
     class FakeModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             raise AssertionError(f"synthetic summary was compacted again: {text}")
 
     ContextManager(s).prepare_messages(FakeModel(), "system")
@@ -693,7 +694,7 @@ def test_prepare_request_persists_current_turn_compaction_without_pending_input(
         {"role": "user", "content": "continue"},
         *({"role": "assistant", "content": f"new step {index}"} for index in range(10)),
     ]
-    agent.model.compact = lambda _text: {"summary": "compact summary"}
+    agent.model.compact = lambda _text, *_args: {"summary": "compact summary"}
 
     agent.prepare_request(turn)
 
@@ -712,7 +713,7 @@ def test_accepted_followup_commits_staged_current_turn_compaction(tmp_path):
     ]
     transcript = [agent.transcript_message(turn[0])]
     s.enqueue_user_input("late follow-up")
-    agent.model.compact = lambda _text: {"summary": "compact summary"}
+    agent.model.compact = lambda _text, *_args: {"summary": "compact summary"}
     agent.context.request_token_budget = lambda: 10
     agent.context.request_tokens = lambda messages, tools=None: 100 if any("old step" in str(message.get("content") or "") for message in messages) else 1
 
@@ -739,7 +740,7 @@ def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_pa
     context.on_compaction = lambda active, error: phases.append((active, error))
 
     class InterruptedModel:
-        def compact(self, _text):
+        def compact(self, _text, _inline_messages=None, _tools=None):
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
@@ -793,7 +794,7 @@ def test_prepare_messages_skips_compaction_when_context_under_budget(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class ExplodingModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             raise AssertionError(text)
 
     context.prepare_messages(ExplodingModel(), "system", [{"role": "user", "content": "request"}])
@@ -820,7 +821,7 @@ class _CountingModel:
     def __init__(self):
         self.calls = 0
 
-    def compact(self, _text):
+    def compact(self, _text, _inline_messages=None, _tools=None):
         self.calls += 1
         return {"summary": "new summary"}
 
@@ -1007,7 +1008,7 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
     current_key = s.store_tool_result("Bash", ["current"], "current output")
 
     class FakeModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             return {"summary": "summary"}
 
     ContextManager(s).prepare_messages(FakeModel(), "system", [{"role": "tool", "content": f"tool {current_key} Bash current"}])
@@ -1152,7 +1153,7 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
         def __init__(self):
             self.calls = 0
 
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             self.calls += 1
             return {"summary": f"summary {self.calls}"}
 
@@ -1204,7 +1205,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FailingModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             raise ModelError("failed")
 
     context.prepare_messages(FailingModel(), "system", [{"role": "user", "content": "request"}])
@@ -1238,7 +1239,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     class FakeModel:
         last_compaction_model = ""
 
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             assert transitions == ["compacting context"]
             return {"summary": "summary", "plan": ["next"], "known": ["fact"]}
 
@@ -1299,7 +1300,7 @@ def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
     turn = [{"role": "user", "content": "请用中文回复"}]
@@ -1331,7 +1332,7 @@ def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
     turn = [{"role": "user", "content": "request"}]
@@ -1436,7 +1437,7 @@ def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, e
     ]
 
     class FakeModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             return {"summary": "summary"}
 
     messages = context.prepare_messages(FakeModel(), "system", turn)
@@ -1479,7 +1480,7 @@ def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
     ]
 
     class FakeModel:
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             return {"summary": "summary"}
 
     client = ModelClient(s)
@@ -1544,7 +1545,7 @@ def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def compact(self, text):
+        def compact(self, text, _inline_messages=None, _tools=None):
             self.calls += 1
             return {"summary": f"summary {self.calls}"}
 
@@ -1600,3 +1601,46 @@ def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
 
     assert [segment.key for segment in restored.history] == [segment.key for segment in s.history]
     assert [segment.text for segment in restored.history] == [segment.text for segment in s.history]
+
+
+def test_compaction_reuses_the_agent_prefix_and_keeps_real_messages(tmp_path):
+    """The summary request is the agent's own request with an instruction appended, so the provider
+    cache already covers it -- and the compactor sees tool calls, which flattening drops."""
+    live = session(tmp_path)
+    live.messages = [
+        {"role": "user", "content": "check the call sites"},
+        {"role": "assistant", "content": "Looking.", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "tool tr.1 Bash rg -n _run_workflow"},
+    ]
+    context = ContextManager(live)
+    compacted = list(live.messages)
+
+    built = context.compaction_request(compacted)
+    assert built is not None
+    messages, tools = built
+
+    header = context.model_header(live.system_prompt)
+    assert messages[: len(header)] == Text.value(header)  # a real prefix of what the turn already paid for
+    assert tools  # carried so the cached prefix matches; tool_choice is what stops their use
+    # The tool call survives as structure, where messages_text() would have dropped it.
+    assert any(message.get("tool_calls") for message in messages)
+    assert "Compact the minacode working context." in messages[-1]["content"]
+    assert "END OF CONVERSATION TO COMPACT" in messages[-1]["content"]
+
+
+def test_compaction_falls_back_to_the_flat_payload_on_a_separate_provider(tmp_path):
+    """A [compaction] entry elsewhere is a different cache namespace, so rebuilding the prefix for
+    it would pay the whole history at full rate to save nothing."""
+    live = session(tmp_path)
+    live.messages = [{"role": "user", "content": "hello"}]
+    live.config.compaction_provider = "cheap"
+    assert ContextManager(live).compaction_request(list(live.messages)) is None
+
+
+def test_compaction_keeps_the_flat_payload_on_the_responses_wire(tmp_path):
+    """Tools ride the inline form only to hold the prefix steady; a wire with no tool_choice gate
+    would offer them with a free choice, so it keeps the payload that carries no tools at all."""
+    live = session(tmp_path)
+    live.messages = [{"role": "user", "content": "hello"}]
+    live.config.provider.api = "responses"
+    assert ContextManager(live).compaction_request(list(live.messages)) is None

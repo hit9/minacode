@@ -149,6 +149,26 @@ COMPACTION_RETRY = (
 )
 
 
+def compaction_tail(*, state: str, previous_summary: str, recent_count: int) -> str:
+    """The one message appended after the live conversation when compaction reuses the agent's own
+    prefix. Everything the flattened payload carried that the conversation itself does not: the
+    working state, the previous summary, which messages count as recent, and the contract."""
+    recent = (
+        f"The last {recent_count} messages are the recent ones: rewrite those briefly inside summary, and compress everything before them hard."
+        if recent_count > 0
+        else "Compress the whole conversation into summary."
+    )
+    return "\n\n".join(
+        [
+            "State:\n" + state,
+            "Previous Summary:\n" + (previous_summary or "(empty)"),
+            recent,
+            COMPACTION_PROMPT,
+            COMPACTION_REMINDER,
+        ]
+    )
+
+
 def compaction_input(*, state: str, previous_summary: str, older_messages: str, recent_messages: str) -> str:
     return "\n\n".join(
         [
