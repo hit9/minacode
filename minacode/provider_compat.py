@@ -63,6 +63,11 @@ class CompatibilityProfile:
     responses_reasoning_effort_off_rules: tuple[ModelRule, ...] = ()
     responses_reasoning_models: tuple[str, ...] | None = None
     prompt_cache_key: bool = True
+    # Chat-Completions `response_format={"type":"json_object"}`. Opt-in, not a default: an
+    # OpenAI-compatible gateway that does not implement it answers 400, and the only caller is
+    # compaction, whose failure is a silent downgrade to deterministic trimming. Off is the safe
+    # unknown -- the prompt reminder and the retry still apply everywhere.
+    json_response_format: bool = False
     strict_tools: bool = False
     strict_beta: bool = False
     suppress_temperature: bool = False
@@ -96,6 +101,9 @@ class ResolvedProvider:
     prompt_cache_key: bool
     strict_tools_active: bool
     builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
+    # Defaulted, and last: an unknown or hand-built provider must land on "no constrained
+    # decoding" rather than fail to construct.
+    json_response_format: bool = False
 
 
 @dataclass(frozen=True)
@@ -216,6 +224,7 @@ def _compatibility_profile(data: ProviderData) -> CompatibilityProfile:
         ),
         responses_reasoning_models=data.get("responses_reasoning_models"),
         prompt_cache_key=data.get("prompt_cache_key", True),
+        json_response_format=data.get("json_response_format", False),
         strict_tools=data.get("strict_tools", False),
         strict_beta=data.get("strict_beta", False),
         suppress_temperature=data.get("suppress_temperature", False),

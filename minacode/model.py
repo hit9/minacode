@@ -633,12 +633,19 @@ class ModelClient:
         allow_stream: bool = True,
         response_timeout: float | None = None,
         provider: ProviderConfig | None = None,
+        json_object: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
         messages = self.chat_messages(messages, provider=provider)
         resolved = provider.resolve()
         stream = allow_stream and provider.stream and self.on_stream is not None
         params: Json = {"model": provider.model, "messages": messages, "stream": stream}
+        # Constrained decoding beats asking nicely: where the provider implements it, a reply that
+        # is not a JSON object becomes unreachable rather than merely discouraged. Gated on the
+        # catalog because an unsupporting gateway answers 400, and the prompt reminder plus the
+        # retry are what carry the providers left out.
+        if json_object and resolved.json_response_format:
+            params["response_format"] = {"type": "json_object"}
         if provider.max_tokens > 0:
             params["max_tokens"] = provider.max_tokens
         if request_tools := [*(tools or []), *self.builtin_tools(resolved)]:
@@ -801,6 +808,7 @@ class ModelClient:
         allow_stream: bool = True,
         response_timeout: float | None = None,
         provider: ProviderConfig | None = None,
+        json_object: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
         api = provider.resolve().api
@@ -810,9 +818,13 @@ class ModelClient:
             request = self.responses_request
         else:
             request = self.chat_request
+        # json_object reaches the Chat wire only. Responses spells the same thing differently and
+        # Anthropic spells it differently again (output_format); neither is wired yet, and passing
+        # an unknown keyword to them would be an error rather than a no-op.
+        extra: Json = {"json_object": True} if json_object and api not in ("anthropic", "responses") else {}
         if allow_stream and response_timeout is None:
-            return request(messages, tools, provider=provider)
-        return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout, provider=provider)
+            return request(messages, tools, provider=provider, **extra)
+        return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout, provider=provider, **extra)
 
     def responses_request(
         self,
@@ -1175,7 +1187,9 @@ class ModelClient:
         attempt_messages = list(messages)
         for attempt in (1, 2):
             try:
-                _, _, content = self.api_request(attempt_messages, None, allow_stream=False, response_timeout=response_timeout, provider=provider)
+                _, _, content = self.api_request(
+                    attempt_messages, None, allow_stream=False, response_timeout=response_timeout, provider=provider, json_object=True
+                )
             except ModelResponseTimeout:
                 raise ModelResponseTimeout(
                     f"compaction summary on `{entry_label}` exceeded provider.response_timeout={response_timeout:g}s; "

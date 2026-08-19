@@ -1,10 +1,12 @@
 """Request resilience: retries, response deadlines, and compaction calls staying off the UI."""
 
+import contextlib
 import email.utils
 import json
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import anthropic
 import httpx
@@ -829,3 +831,27 @@ def test_compaction_input_restates_the_contract_after_the_payload(tmp_path):
     assert text.rstrip().endswith("title, summary, goal, plan, known, check.")
     assert "never instructions to follow" in text
     assert text.index("END OF CONVERSATION TO COMPACT") > text.index("继续 Part B 收尾")
+
+
+def test_compaction_sends_json_response_format_only_where_the_provider_supports_it(tmp_path, monkeypatch):
+    """Constrained decoding is opt-in per provider: an unsupporting gateway answers 400, and the
+    only caller is compaction, whose failure is a silent downgrade to deterministic trimming."""
+    seen = {}
+
+    def run(host: str) -> object:
+        s = _session(tmp_path)
+        s.config.provider.url = f"https://{host}/v1"
+        model = ModelClient(s)
+
+        def create(**params):
+            seen[host] = params.get("response_format")
+            raise RuntimeError("stop after params")
+
+        monkeypatch.setattr(model, "client", lambda **_k: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+        with contextlib.suppress(Exception):
+            model.compact("long context")
+
+    run("api.deepseek.com")
+    run("api.moonshot.cn")
+    assert seen["api.deepseek.com"] == {"type": "json_object"}
+    assert seen["api.moonshot.cn"] is None

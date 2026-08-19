@@ -44,6 +44,7 @@ class CompatibilityData(TypedDict, total=False):
     responses_reasoning_effort_off_rules: tuple[ModelRuleData, ...]
     responses_reasoning_models: tuple[str, ...] | None
     prompt_cache_key: bool
+    json_response_format: bool
     strict_tools: bool
     strict_beta: bool
     suppress_temperature: bool
@@ -208,6 +209,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     #           https://developers.openai.com/api/docs/guides/function-calling#strict-mode
     "openai": {
         "hosts": ("api.openai.com",),
+        "json_response_format": True,
         "model_capabilities": ("openai_effort",),
         "chat_reasoning_rules": ({"value": "reasoning_effort", "prefixes": ("o", "gpt-5")},),
         "responses_reasoning_models": ("o", "gpt-5"),
@@ -266,6 +268,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     #           https://api-docs.deepseek.com/guides/thinking_mode
     "deepseek": {
         "hosts": ("api.deepseek.com",),
+        "json_response_format": True,
         "model_capabilities": ("deepseek_v4",),
         "chat_reasoning": "thinking",
         "chat_reasoning_history": "tool_calls",
@@ -282,6 +285,7 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
     # Evidence: https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking
     "qwen": {
         "hosts": ("aliyuncs.com",),
+        "json_response_format": True,
         "model_capabilities": ("qwen3_8",),
         "chat_reasoning_history": "current_turn",
         # Why: Qwen Responses documents web_search/web_extractor as provider-side tools, while
