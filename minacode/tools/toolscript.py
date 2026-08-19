@@ -112,11 +112,15 @@ class ToolScript(Tool):
         "consecutive same-shape calls whose individual results you do not need -- the script "
         "keeps them out of context and returns the summary you print. Not worth it below that, "
         "when you must read each result, or when a step needs your judgment: the script runs to "
-        'the end on its own. Describe one tool with MCP(action="describe"). Built-in tools are '
-        'scriptable with format="text"; Delegate/Job/ToolScript are not.'
+        'the end on its own. Name an MCP tool the way the tool list spells it: call("server.tool", '
+        '{...}). call() returns the result as text, or parsed JSON with format="json" (MCP only). A '
+        "failed call raises, ending the script -- catch it per item so one bad item does not lose the "
+        'batch. Describe one tool with MCP(action="describe"). Built-in tools are scriptable with '
+        'format="text"; Delegate/Job/ToolScript are not.'
     )
     EXAMPLE = (
         'Aggregate many same-shape calls into one line. Example: {"action":"call","code":"hits = 0\\nfor path in (\\"a.py\\", \\"b.py\\", \\"c.py\\", \\"d.py\\"):\\n    hits += call(\\"Search\\", {\\"pattern\\": \\"TODO\\", \\"path\\": path}).count(\\"TODO\\")\\nprint(hits)"}',
+        'Fan out over an MCP tool, keeping going past a failure. Example: {"action":"call","code":"for key in (\\"A\\", \\"B\\", \\"C\\", \\"D\\"):\\n    try:\\n        r = call(\\"server.tool\\", {\\"key\\": key}, format=\\"json\\")\\n        print(\\"ok\\", key, r[\\"id\\"])\\n    except Exception as error:\\n        print(\\"FAIL\\", key, error)"}',
         'Learn call shapes before scripting them. Example: {"action":"describe","tools":["Read","server.tool"]}',
     )
     MUTATES = True
@@ -133,7 +137,7 @@ class ToolScript(Tool):
                 "minItems": 1,
                 "description": 'Tools to describe, e.g. ["Read", "server.tool", ...]',
             },
-            "code": {"type": "string", "description": 'Python source for action="call"; nested tool invocations go through call(name, {...}, format="text"|"json")'},
+            "code": {"type": "string", "description": 'Python source for action="call"; nested tool invocations go through call(name, {...}, format="text"|"json"), where name is a built-in tool or an MCP "server.tool"'},
         }, ["action"])
         # fmt: on
 
@@ -266,9 +270,12 @@ class ToolScript(Tool):
         stderr_buf = io.StringIO()
         capture = _StdoutCapture(stdout_buf, stderr_buf)
         previous_trace = sys.gettrace()
+        script_status = getattr(runner, "script_status", None)
         failed = False
         error_text = ""
         try:
+            if script_status is not None:
+                script_status(True)
             sys.settrace(budget.tracer())
             try:
                 # Everything the nested calls log is printed one level deeper, so the batch reads as
@@ -294,14 +301,39 @@ class ToolScript(Tool):
                 sys.settrace(previous_trace)
         finally:
             linecache.cache.pop(SCRIPT_FILENAME, None)
+            if script_status is not None:
+                script_status(False)
 
         return self._envelope(failed, keys, stdout_buf.getvalue(), stderr_buf.getvalue(), error_text)
+
+    def _mcp_target(self, name: str) -> tuple[str, str] | None:
+        """The (server, tool) a "server.tool" name resolves to, or None when it names no MCP tool.
+
+        The tool listing spells MCP tools "server.tool" and `describe` takes them in that form, so
+        that is the form a script reaches for first; without this it failed as an unknown tool and
+        the script had to be rewritten into the call("MCP", {...}) shape."""
+        from minacode.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
+
+        if name in TOOL_REGISTRY or "." not in name:
+            return None
+        mcp = self.session.mcp
+        if mcp is None:
+            return None
+        server, tool = self._split_name(name)
+        return (server, tool) if tool and mcp.find_config(server) is not None else None
 
     def _nested_call(self, runner: ToolRunner, budget: _ScriptTimeBudget, keys: list[str], name, args, format, capture: _StdoutCapture) -> Json | str:
         if name == "ToolScript":
             raise ToolError('call("ToolScript", ...) is not allowed')
         if name in ("Delegate", "Job"):
             raise ToolError(f"{name} is not scriptable")
+        target = self._mcp_target(name)
+        if target is not None:
+            # Rewritten into the canonical form rather than handled apart, so a "server.tool" call
+            # goes through exactly the same validation, confirmation, and logging as call("MCP", ...).
+            if args is not None and not isinstance(args, dict):
+                raise ToolError(f'call("{name}", ...) requires named arguments')
+            name, args = "MCP", {"server": target[0], "tool": target[1], "arguments": args or {}}
         if name == "MCP":
             if not isinstance(args, dict):
                 raise ToolError('call("MCP", ...) requires {"server": str, "tool": str, "arguments": dict}')
@@ -319,6 +351,10 @@ class ToolScript(Tool):
 
             tool_class = TOOL_REGISTRY.get(name)
             if tool_class is None:
+                if "." in name:
+                    # The name is spelled like an MCP tool but resolved to nothing: say which half
+                    # is wrong, so the script is not rewritten into a shape that was never the problem.
+                    raise ToolError(f'unknown tool "{name}": no MCP server named "{name.split(".", 1)[0]}" is configured')
                 raise ToolError(f'unknown tool "{name}"')
             if format == "json":
                 raise ToolError(f'{name} does not support format="json"; use format="text"')

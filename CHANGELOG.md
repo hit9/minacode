@@ -1,6 +1,23 @@
 # Changelog
 
 
+## Unreleased
+
+### Added
+
+- ToolScript scripts can name an MCP tool the way the tool list spells it: `call("server.tool",
+  {...})` is now the `call("MCP", {"server": ..., "tool": ..., "arguments": ...})` form, which is
+  the spelling models reach for first and `action="describe"` already accepted. A dotted name that
+  resolves to no configured server now says which server is missing instead of "unknown tool".
+- The running divider shows `running script` while a ToolScript body executes, so a long batch no
+  longer reads as plain `working` from approval until the last nested call returns.
+
+### Changed
+
+- ToolScript's description now states what `call()` returns for each `format`, that a failed nested
+  call raises and ends the script, and shows a fan-out example that contains per-item failures.
+
+
 ## 0.25.1 - 2026-08-17
 
 ### Changed

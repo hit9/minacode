@@ -330,6 +330,10 @@ class View:
                 ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or status) + (" · " + attempt_status if attempt_status else "")
             )
             label = f"{activity} ({Text.elapsed_since(self.loop.status_bar.started_at)})"
+        elif status == "running script":
+            # Timed like the working phases, but never relabelled from the stream phase: nothing is
+            # streaming while a script runs, so the last kind seen would be stale, not current.
+            label = f"{status} ({Text.elapsed_since(self.loop.status_bar.started_at)})"
         else:
             label = status
         if queued:

@@ -199,6 +199,26 @@ class TestNestedCalls:
         for key in ("tr.1", "tr.2", "tr.3"):
             assert "<MCPCall" in s.tool_results[key]
 
+    def test_dotted_name_calls_the_mcp_tool(self, tmp_path, monkeypatch):
+        """call("server.tool", {...}) is the call("MCP", {...}) form -- same name the listing shows."""
+        s = _mcp_session(tmp_path)
+        s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
+
+        async def fake_call(config, headers, name, arguments):
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="ok " + str(arguments))])
+
+        monkeypatch.setattr(s.mcp, "_call_tool", fake_call)
+        content = _run_script(s, 'call("test.echo", {"text": "hi"})\nprint("done")\n')
+        assert "ToolScript ok" in content
+        assert "calls: 1 [tr.1]" in content
+        assert "<MCPCall" in s.tool_results["tr.1"]
+        assert "'text': 'hi'" in s.tool_results["tr.1"]
+
+    def test_dotted_name_on_unknown_server_says_so(self, tmp_path):
+        content = _run_script(_mcp_session(tmp_path), 'call("ghost.echo", {})\n')
+        assert "ToolScript failed" in content
+        assert 'unknown tool "ghost.echo": no MCP server named "ghost" is configured' in content
+
     def test_stdout_and_stderr_captured(self, tmp_path):
         s = _mcp_session(tmp_path)
         code = 'print("out-line")\nimport sys\nprint("err-line", file=sys.stderr)\n'

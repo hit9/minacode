@@ -182,6 +182,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.model_stream_promoted_text = ""
         self.live_status_paused = False
         self.compaction_active = False
+        self.script_active = False
         # Set to the uid this run should hand over to. `main` reads it after run() returns and
         # builds the next CommandLoop around that session.
         self.resume_request = ""
@@ -235,19 +236,34 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.retry_wait = self.model_retry_wait_status
         self.agent.tools.builtin_call = self.builtin_call_output
         self.agent.tools.compaction = self.automatic_compaction_status
+        self.agent.tools.script_status = self.toolscript_run_status
 
     def automatic_compaction_status(self, active: bool, error: str = "") -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""
         self.compaction_active = active
-        if self.tui is not None:
-            self.tui.set_running("compacting context" if active else "working")
+        self.set_running_phase()
         if error:
             self.tool_output(LogBlock([LogLine("compaction fallback", error, LogRole.ERROR, LogEdge.END)]))
 
     def model_retry_wait_status(self, active: bool) -> None:
         """Show a retry backoff wait as a distinct phase instead of claiming the agent is working."""
-        if self.tui is not None:
-            self.tui.set_running("retrying" if active else ("compacting context" if self.compaction_active else "working"))
+        self.set_running_phase(retrying=active)
+
+    def toolscript_run_status(self, active: bool) -> None:
+        """Show a running ToolScript body as a distinct phase of the turn.
+
+        A script is the one stretch where the model is idle and no single tool line is pending, so
+        without this the divider claims "working" from approval until the whole batch is done."""
+        self.script_active = active
+        self.set_running_phase()
+
+    def set_running_phase(self, retrying: bool = False) -> None:
+        """Put the running divider on the innermost phase currently active."""
+        if self.tui is None:
+            return
+        self.tui.set_running(
+            "retrying" if retrying else "compacting context" if self.compaction_active else "running script" if self.script_active else "working"
+        )
 
     @classmethod
     def trim_input_history(cls, path: str) -> None:
