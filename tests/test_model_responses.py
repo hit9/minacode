@@ -7,7 +7,7 @@ import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
 from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
-from minacode.model import ModelClient
+from minacode.model import ModelClient, resilience
 from minacode.tools import BashTool
 
 
@@ -401,7 +401,7 @@ def test_responses_incomplete_output_reports_the_cap_instead_of_an_empty_answer(
     assert "16384" in str(error.value)
     assert "reasoning" in str(error.value)
     # Deterministic: the same request hits the same cap again, so it must not consume a retry.
-    assert ModelClient.retryable_error(error.value) is False
+    assert resilience.retryable_error(error.value) is False
 
 
 def test_responses_incomplete_for_another_reason_still_returns_its_output(tmp_path):

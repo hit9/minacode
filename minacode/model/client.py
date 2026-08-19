@@ -2,34 +2,27 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
-import email.utils
 import hashlib
 import json
-import random
 import re
 import threading
 import time
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from json_repair import repair_json
 
+# Aliased because the module name `anthropic` shadows the third-party SDK package of the same
+# name imported inside function bodies.
+import minacode.model.anthropic as anthropic_module
 from minacode.base import (
     ANTHROPIC_CONTENT_KEY,
     HTTP_USER_AGENT,
     MODEL_REQUEST_RETRIES,
-    PAUSED_TURN_KEY,
-    PROVIDER_ECHO_KEYS,
     PROVIDER_ORIGIN_KEY,
-    RESPONSES_OUTPUT_KEY,
-    RETRY_BASE_DELAY,
-    RETRY_MAX_DELAY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
     ActiveResource,
@@ -49,7 +42,8 @@ from minacode.config import (
     ProviderConfig,
     compaction_provider_config,
 )
-from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
+from minacode.image import IMAGE_REFS_KEY, ImageInputs
+from minacode.model import chat, resilience, responses
 from minacode.model_catalog import THINKING_BUDGETS
 from minacode.prompts import (
     COMPACTION_ECHO_RETRY,
@@ -60,8 +54,6 @@ from minacode.prompts import (
 from minacode.provider_compat import (
     ResolvedProvider,
     anthropic_keeps_prior_thinking,
-    anthropic_thinking_always_on,
-    anthropic_thinking_params,
     builtin_tools_issue,
 )
 
@@ -116,48 +108,6 @@ class ModelClient:
     Cancelling closes the in-flight client, so a blocked read ends instead of waiting out its timeout.
     """
 
-    _RETRYABLE_STATUS_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b")
-    _STATUS_CODE_RE: ClassVar[re.Pattern] = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(4\d\d|5\d\d)\b")
-
-    # 429 carries two opposite meanings and cannot be retried uniformly: transient rate limiting
-    # (retry after backoff is right) and permanent quota/billing failures (retrying just makes the
-    # user wait through the backoff for an error that will never clear). Providers express the
-    # permanent class as 429 with account/billing wording in the error body, e.g.:
-    #   - OpenAI: code "insufficient_quota", "You exceeded your current quota, please check your
-    #     plan and billing details."
-    #   - Aliyun/DashScope (OpenAI-compatible): "insufficient_quota" / "Throttling.AllocationQuota",
-    #     "CommodityNotPurchased", "PrepaidBillOverdue" / "PostpaidBillOverdue"
-    #   - Kimi/Moonshot: type "exceeded_current_quota_error", "check your account balance"
-    #   - z.ai/bigmodel: codes "1113" (Insufficient balance... recharge), "1309" (...package has
-    #     expired... renewing the subscription), "1314" (...enterprise package has expired...)
-    # This is a fail-open heuristic: unknown wording retries as before, preferring to miss a
-    # permanent error over misclassifying a transient rate limit as a billing failure.
-    #
-    # The markers are phrases, not words, because the vocabulary overlaps: a transient limit is
-    # commonly phrased with the same nouns the permanent class uses. "Quota exceeded for quota
-    # metric ... per minute" (Google/Vertex) and "Throttling.RateQuota" (DashScope) are per-minute
-    # limits that clear on their own, so a bare "quota" marker would fail them at once — the exact
-    # outcome this rule exists to prevent. Same for bare "expired" and "credit", which appear in
-    # transient infrastructure errors that have nothing to do with an account.
-    _BILLING_MARKERS: ClassVar[tuple[str, ...]] = (
-        "insufficient_quota",
-        "insufficient balance",
-        "insufficient credit",
-        "exceeded_current_quota",
-        "exceeded your current quota",
-        "check your plan",
-        "billing",
-        "recharge",
-        "overdue",
-        "arrears",
-        "not purchased",
-        "notpurchased",
-        "allocationquota",
-        "account balance",
-        "no resource package",
-        "package has expired",
-        "subscription has expired",
-    )
     _JSON_FENCE_RE: ClassVar[re.Pattern] = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
 
     def __init__(self, session: Session):
@@ -234,30 +184,7 @@ class ModelClient:
         """Build Chat Completions history using the provider's documented replay contract."""
 
         provider = provider if provider is not None else self.session.config.provider
-        resolved = provider.resolve()
-        history = resolved.chat_reasoning_history
-        thinking = provider.extra_body.get("thinking")
-        if provider.extra_body.get("preserve_thinking") is True or (
-            isinstance(thinking, dict) and (thinking.get("keep") == "all" or thinking.get("clear_thinking") is False)
-        ):
-            history = "all"
-
-        converted: list[Json] = []
-        latest_user = self.latest_user_position(messages)
-        for index, message in enumerate(messages):
-            clean = {
-                key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
-            }
-            keep_reasoning = history == "all" or (
-                bool(message.get("tool_calls")) and (history == "tool_calls" or (history == "current_turn" and index > latest_user))
-            )
-            if message.get("role") == "assistant" and not keep_reasoning:
-                for key in ("reasoning_content", "reasoning", "reasoning_details"):
-                    clean.pop(key, None)
-            if message.get("role") == "user" and self.session.images.refs(message):
-                clean["content"] = self.session.images.chat_content(message)
-            converted.append(clean)
-        return Text.value(converted)
+        return chat.chat_messages(messages, provider, provider.resolve(), self.session.images, self.latest_user_position)
 
     def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
@@ -422,30 +349,21 @@ class ModelClient:
                         raise ModelError(
                             f"{identity} does not support image input. Switch to an image-capable model, or continue with image labels only."
                         ) from error
-                    retryable = self.retryable_error(error)
+                    retryable = resilience.retryable_error(error)
                     if attempt >= MODEL_REQUEST_RETRIES or not retryable:
                         if attempt:
                             raise ModelError(f"{error} (after {attempt + 1} attempts)") from error
                         raise
                     state.current_model_attempt = attempt + 2
-                    state.model_retry_reason = self.retry_reason(error)
+                    state.model_retry_reason = resilience.retry_reason(error)
                     state.model_retry_count += 1
-                    self._wait_before_retry(self.retry_delay(error, attempt), state)
+                    self._wait_before_retry(resilience.retry_delay(error, attempt), state)
                 finally:
                     state.current_model_call_started_at = 0.0
                 attempt += 1
         finally:
             state.current_model_attempt = 0
             state.model_retry_reason = ""
-
-    def retry_delay(self, error: Exception, attempt: int) -> float:
-        """Single-wait pacing: provider Retry-After wins when parseable, else exponential backoff + jitter."""
-        if (retry_after := self.retry_after_delay(error)) is not None:
-            return retry_after
-        delay = min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * 2**attempt)
-        # jitter 0.5x-1.5x is not optional: without it, parallel read-only tool batches (and worker vs
-        # parent requests) would retry in lockstep and spike the provider exactly when it is weakest.
-        return delay * (0.5 + random.random())
 
     def _wait_before_retry(self, delay: float, state: AgentState) -> None:
         """Sleep in ~0.1s slices, watching the UI-thread cancel signal, and publish the wait as facts:
@@ -474,134 +392,6 @@ class ModelClient:
             state.model_retry_until = 0.0
             if on_retry_wait is not None:
                 on_retry_wait(False)
-
-    @staticmethod
-    def _billing_marker_hit(text: str) -> bool:
-        """Fail-open billing-marker scan shared by the SDK-status and text-fallback paths."""
-        return any(marker in text for marker in ModelClient._BILLING_MARKERS)
-
-    @staticmethod
-    def retryable_error(error: Exception) -> bool:
-        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
-        import anthropic
-        import httpx
-        import openai
-
-        # A truncated generation is deterministic: the same request hits the same output cap again.
-        if isinstance(error, (ModelResponseTimeout, ModelOutputTruncated)):
-            return False
-        cause = getattr(error, "__cause__", None)
-
-        # SDK status errors expose status_code directly. A 429 whose structured error text carries
-        # billing wording is a permanent quota/account failure, not a transient limit: fail at once
-        # instead of backoff-retrying. Structured text joins code/type/message/body (any may be
-        # missing) because the openai SDK unwraps body to the inner error object while the anthropic
-        # SDK keeps the full body and only surfaces error.type.
-        if isinstance(cause, (openai.APIStatusError, anthropic.APIStatusError)):
-            if cause.status_code == 429 and ModelClient._billing_marker_hit(
-                " ".join(str(getattr(cause, field, "") or "") for field in ("code", "type", "message", "body")).lower()
-            ):
-                return False
-            return cause.status_code in {408, 409, 425, 429} or 500 <= cause.status_code < 600
-
-        # SDK connection/timeout errors are always retryable.
-        if isinstance(
-            cause,
-            (openai.APIConnectionError, openai.APITimeoutError, anthropic.APIConnectionError, anthropic.APITimeoutError),
-        ):
-            return True
-
-        # Built-in network/timeout errors are retryable.
-        if isinstance(cause, (TimeoutError, asyncio.TimeoutError, ConnectionError, ConnectionResetError, ConnectionAbortedError)):
-            return True
-
-        # Streaming reads surface httpx transport errors unwrapped: the provider SDKs' Stream.__stream__
-        # iterates the response directly and re-raises httpx failures (a dropped connection mid-stream is
-        # httpx.ReadError, an interrupted chunked body is httpx.RemoteProtocolError) rather than wrapping
-        # them as APIConnectionError. They're the same class of transient failure. httpx transport errors
-        # don't inherit OSError, so the isinstance above misses them.
-        if isinstance(cause, httpx.TransportError):
-            return True
-
-        # Fallback: parse status codes embedded in the error text or cause attributes.
-        text = str(error).lower()
-        status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
-        status_match = ModelClient._RETRYABLE_STATUS_RE.search(text)
-        # The same permanent-429 rule as the SDK branch above, gated on the status the same way:
-        # only a 429 can be a billing failure. It runs ahead of the status parses so a "429
-        # insufficient balance" message is not rescued by them and retried, but a 5xx that happens
-        # to mention an expired certificate stays transient.
-        if (str(status) == "429" or (status_match is not None and status_match.group(1) == "429")) and ModelClient._billing_marker_hit(text):
-            return False
-        with contextlib.suppress(Exception):
-            if int(status) in {408, 409, 425, 429, 500, 502, 503, 504}:
-                return True
-        if status_match:
-            return True
-        return any(
-            part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable")
-        )
-
-    @staticmethod
-    def retry_reason(error: Exception) -> str:
-        cause = getattr(error, "__cause__", None)
-        status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
-        with contextlib.suppress(Exception):
-            status_code = int(status)
-            if 400 <= status_code <= 599:
-                return str(status_code)
-        text = str(error).lower()
-        match = ModelClient._STATUS_CODE_RE.search(text)
-        if match:
-            return match.group(1)
-        if "timeout" in text or "timed out" in text:
-            return "timeout"
-        if any(part in text for part in ("connection", "reset", "aborted")):
-            return "connection"
-        if "internal server error" in text or "temporarily unavailable" in text:
-            return "server error"
-        return "transient error"
-
-    @staticmethod
-    def retry_after_delay(error: Exception) -> float | None:
-        """Provider Retry-After (seconds or HTTP-date) from the SDK cause, clamped to RETRY_MAX_DELAY.
-
-        Returns None to fall back to the backoff algorithm when the header is missing, empty,
-        malformed, or negative. Any parsed value is clamped so a single aberrant header cannot stall
-        the CLI for minutes; the retry decision itself is unchanged (see retryable_error)."""
-        # lazy import: keeps the ~0.8s provider SDK import off the startup path (see the TYPE_CHECKING block above)
-        import anthropic
-        import openai
-
-        cause = getattr(error, "__cause__", None)
-        if not isinstance(cause, (openai.APIStatusError, anthropic.APIStatusError)):
-            return None
-        headers = getattr(cause.response, "headers", None) or {}
-        value = headers.get("retry-after")
-        if value is None:
-            return None
-        if isinstance(value, bytes):
-            value = value.decode("latin-1")
-        text = str(value).strip()
-        if not text:
-            return None
-        try:
-            seconds = int(text)
-        except ValueError:
-            # HTTP-date form (RFC 7231; no zone means GMT). parsedate_to_datetime raises on some
-            # malformed inputs instead of returning None, so treat either outcome as "unparseable".
-            try:
-                parsed = email.utils.parsedate_to_datetime(text)
-            except (TypeError, ValueError, OverflowError):
-                return None
-            if parsed is None:
-                return None
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            seconds = (parsed - datetime.now(UTC)).total_seconds()
-        if seconds < 0:
-            return None
-        return min(seconds, RETRY_MAX_DELAY)
 
     def truncated_output_error(self, usage: Any) -> ModelOutputTruncated:
         """Report a generation the provider cut off at the output cap before it produced anything.
@@ -660,25 +450,17 @@ class ModelClient:
         messages = self.chat_messages(messages, provider=provider)
         resolved = provider.resolve()
         stream = allow_stream and provider.stream and self.on_stream is not None
-        params: Json = {"model": provider.model, "messages": messages, "stream": stream}
-        # Constrained decoding beats asking nicely: where the provider implements it, a reply that
-        # is not a JSON object becomes unreachable rather than merely discouraged. Gated on the
-        # catalog because an unsupporting gateway answers 400, and the prompt reminder plus the
-        # retry are what carry the providers left out.
-        if json_object and resolved.json_response_format:
-            params["response_format"] = {"type": "json_object"}
-        if provider.max_tokens > 0:
-            params["max_tokens"] = provider.max_tokens
-        if request_tools := [*(tools or []), *self.builtin_tools(resolved)]:
-            params["tools"] = request_tools
-            params["tool_choice"] = "auto"
-            params["parallel_tool_calls"] = True
-        prompt_cache_key = self.prompt_cache_key(provider, tools)
-        if prompt_cache_key:
-            params["prompt_cache_key"] = prompt_cache_key
-        self.apply_provider_params(params, provider, resolved)
-        if stream:
-            params["stream_options"] = {"include_usage": True}
+        params = chat.chat_params(
+            messages,
+            tools,
+            provider,
+            resolved,
+            stream=stream,
+            json_object=json_object,
+            builtin_tools=self.builtin_tools,
+            derive_cache_key=self.prompt_cache_key,
+            apply_provider_params=self.apply_provider_params,
+        )
         client = self.client(provider=provider)
         if stream:
             message, usage, finish_reason = self.call_client(client, lambda: self._chat_stream(client, params), response_timeout=response_timeout)
@@ -710,116 +492,14 @@ class ModelClient:
         delta: compatible providers can vary their delta order. `finish_reason=tool_calls` is the
         first protocol boundary that proves this assistant message is complete.
         """
-        content: list[str] = []
-        reasoning_content: list[str] = []
-        reasoning: list[str] = []
-        reasoning_details: list[Json] = []
-        tool_calls: dict[int, Json] = {}
-        tool_call_functions: dict[int, Json] = {}
-        tool_call_ids: dict[str, int] = {}
-        tool_call_positions: dict[int, int] = {}
-        next_index = 0
-        usage: Any = None
-        output_promoted = False
-        finish_reason = ""
-
-        def allocate_tool_call() -> int:
-            nonlocal next_index
-            while next_index in tool_calls:
-                next_index += 1
-            index = next_index
-            next_index += 1
-            return index
-
-        def resolve_tool_call_index(raw_index: object, call_id: str, position: int, chunk_size: int) -> int:
-            nonlocal next_index
-            if isinstance(raw_index, int):
-                index = raw_index
-            elif call_id and call_id in tool_call_ids:
-                index = tool_call_ids[call_id]
-            elif call_id:
-                index = allocate_tool_call()
-            elif chunk_size == 1 and len(tool_calls) == 1:
-                index = next(iter(tool_calls))
-            elif position in tool_call_positions and chunk_size == len(tool_call_positions):
-                index = tool_call_positions[position]
-            elif position not in tool_call_positions:
-                index = allocate_tool_call()
-            else:
-                raise ModelError("Chat stream tool-call delta omitted both index and id; cannot associate it safely")
-            next_index = max(next_index, index + 1)
-            tool_call_positions[position] = index
-            if call_id:
-                tool_call_ids[call_id] = index
-            return index
-
-        try:
-            for chunk in client.chat.completions.create(**params):
-                self._raise_if_request_inactive()
-                if chunk_usage := self.message_field(chunk, "usage"):
-                    usage = chunk_usage
-                choices = self.message_field(chunk, "choices") or []
-                if not choices:
-                    continue
-                choice = choices[0]
-                delta = self.message_field(choice, "delta")
-                reasoning_content_delta = str(self.message_field(delta, "reasoning_content") or "")
-                reasoning_delta = str(self.message_field(delta, "reasoning") or "")
-                if reasoning_content_delta:
-                    reasoning_content.append(reasoning_content_delta)
-                    self._emit_stream("reasoning", reasoning_content_delta)
-                elif reasoning_delta:
-                    reasoning.append(reasoning_delta)
-                    self._emit_stream("reasoning", reasoning_delta)
-                raw_details = self.message_field(delta, "reasoning_details") or []
-                details = [self.dump_message_item(item) for item in raw_details]
-                reasoning_details.extend(item for item in details if item)
-                if not reasoning_content_delta and not reasoning_delta:
-                    for detail in details:
-                        text = detail.get("text") if detail.get("type") == "reasoning.text" else detail.get("summary")
-                        if text:
-                            self._emit_stream("reasoning", str(text))
-                if content_delta := str(self.message_field(delta, "content") or ""):
-                    content.append(content_delta)
-                    self._emit_stream("output", content_delta)
-                raw_tool_calls = self.message_field(delta, "tool_calls") or []
-                for position, raw in enumerate(raw_tool_calls):
-                    raw_index = self.message_field(raw, "index")
-                    call_id = str(self.message_field(raw, "id") or "")
-                    index = resolve_tool_call_index(raw_index, call_id, position, len(raw_tool_calls))
-                    if index not in tool_calls:
-                        function_target: Json = {"name": "", "arguments": ""}
-                        tool_calls[index] = {"id": "", "type": "function", "function": function_target}
-                        tool_call_functions[index] = function_target
-                    call = tool_calls[index]
-                    if call_id:
-                        call["id"] = call_id
-                    function = self.message_field(raw, "function")
-                    target = tool_call_functions[index]
-                    if name := self.message_field(function, "name"):
-                        target["name"] = str(name)
-                    if arguments := self.message_field(function, "arguments"):
-                        target["arguments"] = str(target["arguments"]) + str(arguments)
-                if chunk_finish_reason := str(self.message_field(choice, "finish_reason") or ""):
-                    finish_reason = chunk_finish_reason
-                if finish_reason == "tool_calls" and content and tool_calls and not output_promoted:
-                    self._emit_stream("output_done", "".join(content))
-                    output_promoted = True
-        finally:
-            self._emit_stream("", "")
-        message: Json = {"content": "".join(content) or None}
-        if reasoning_content:
-            message["reasoning_content"] = "".join(reasoning_content)
-        if reasoning:
-            message["reasoning"] = "".join(reasoning)
-        if reasoning_details:
-            # OpenRouter defines the complete sequence as the ordered concatenation of each
-            # delta's reasoning_details array; replay it unchanged on the assistant message.
-            # Evidence: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
-            message["reasoning_details"] = reasoning_details
-        if tool_calls:
-            message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
-        return message, usage, finish_reason
+        return chat.reassemble_stream(
+            client,
+            params,
+            message_field=self.message_field,
+            dump_message_item=self.dump_message_item,
+            raise_if_inactive=self._raise_if_request_inactive,
+            emit=self._emit_stream,
+        )
 
     def api_request(
         self,
@@ -861,13 +541,19 @@ class ModelClient:
         stream = allow_stream and provider.stream and self.on_stream is not None
         params: Json = {
             "model": provider.model,
-            "input": self.responses_input(Text.value(messages), self.provider_origin(provider)),
+            "input": responses.responses_input(
+                Text.value(messages),
+                self.provider_origin(provider),
+                provider_origin=self.provider_origin,
+                replayable_echo=self.replayable_echo,
+                images=self.session.images,
+            ),
             "stream": stream,
             "store": False,
         }
         if provider.max_tokens > 0:
             params["max_output_tokens"] = provider.max_tokens
-        if request_tools := [*self.responses_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
+        if request_tools := [*responses.responses_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
             params["tools"] = request_tools
             params["tool_choice"] = "auto"
             params["parallel_tool_calls"] = True
@@ -883,7 +569,7 @@ class ModelClient:
                 raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
         if provider.temperature is not None and not resolved.suppress_temperature:
             params["temperature"] = provider.temperature
-        if provider.extra_body and (extra_body := self.responses_extra_body(provider.extra_body, params)):
+        if provider.extra_body and (extra_body := responses.responses_extra_body(provider.extra_body, params)):
             params["extra_body"] = extra_body
         client = self.client(provider=provider)
         if stream:
@@ -906,16 +592,7 @@ class ModelClient:
         resolved `effort` with it. Merging per field keeps a documented extra reachable while
         `/reason` stays authoritative, mirroring how the Chat path folds `thinking`.
         """
-        merged = dict(extra_body)
-        configured = merged.pop("reasoning", None)
-        managed = params.get("reasoning")
-        if isinstance(configured, dict):
-            params["reasoning"] = {**configured, **managed} if isinstance(managed, dict) else configured
-        elif configured is not None:
-            # Nothing to merge field by field: a scalar keeps the plain override an unknown host may
-            # want, rather than being second-guessed here.
-            merged["reasoning"] = configured
-        return merged
+        return responses.responses_extra_body(extra_body, params)
 
     def _responses_stream(self, client: OpenAI, params: Json) -> Any:
         """Consume a Responses stream, promoting completed text before tool arguments finish.
@@ -925,140 +602,27 @@ class ModelClient:
         the terminal response is still consumed normally for history, tool calls, and usage.
         """
 
-        terminal: Any = None
-        output: list[str] = []
-        text_done = handoff_seen = output_promoted = False
-
-        def promote_output() -> None:
-            nonlocal output_promoted
-            if text_done and handoff_seen and output and not output_promoted:
-                self._emit_stream("output_done", "".join(output))
-                output_promoted = True
-
-        try:
-            for event in client.responses.create(**params):
-                self._raise_if_request_inactive()
-                event_type = str(self.message_field(event, "type") or "")
-                # Two spellings of the same event: hosts that summarize reasoning stream the summary,
-                # hosts that expose the raw chain stream the text. DeepSeek only ever sends the
-                # latter and documents that it generates no summary at all, so listening for one
-                # spelling leaves a thinking model with no preview.
-                # Evidence: https://api-docs.deepseek.com/guides/responses_api
-                if event_type in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-                    self._emit_stream("reasoning", str(self.message_field(event, "delta") or ""))
-                elif event_type in ("response.output_text.delta", "response.refusal.delta"):
-                    delta = str(self.message_field(event, "delta") or "")
-                    output.append(delta)
-                    self._emit_stream("output", delta)
-                elif event_type in ("response.output_text.done", "response.refusal.done"):
-                    text_done = True
-                    promote_output()
-                elif event_type == "response.output_item.added":
-                    item = self.message_field(event, "item")
-                    item_type = str(self.message_field(item, "type") or "")
-                    if item_type == "function_call":
-                        handoff_seen = True
-                        promote_output()
-                    elif item_type.endswith("_call"):
-                        # A provider-side tool is the same durable tool boundary as a local function
-                        # call: completed text before it must be handed off now, so the live status
-                        # below never covers a finished answer. A provider-side tool also runs inside
-                        # the request with no local tool line to show for it, so the status label is
-                        # the only sign the turn is still moving.
-                        handoff_seen = True
-                        promote_output()
-                        self._emit_stream(builtin_tool_label(item_type), "")
-                elif event_type == "response.output_item.done":
-                    item = self.message_field(event, "item")
-                    item_type = str(self.message_field(item, "type") or "")
-                    # A provider-side call has no local tool line of its own, so report it the moment
-                    # the stream completes it and the transcript shows it live. The stream and the
-                    # terminal output carry the same calls, so the parsed-result scan stays silent on
-                    # streaming requests; reporting here is the one and only record for them.
-                    if item_type.endswith("_call") and item_type != "function_call":
-                        # Some compatible providers omit the matching output_item.added event, so the
-                        # durable report below must also establish the promotion boundary itself.
-                        handoff_seen = True
-                        promote_output()
-                        action = self.message_field(item, "action")
-                        query = self.message_field(action, "query") if action is not None else ""
-                        self.report_builtin_call(item_type, str(query or ""))
-                elif event_type == "response.function_call_arguments.delta":
-                    handoff_seen = True
-                    promote_output()
-                elif event_type in ("response.completed", "response.incomplete"):
-                    # Compatible providers may omit response.output_text.done; the accepted terminal
-                    # response proves the streamed text is final, so it is the terminal fallback for
-                    # text completion. The tool boundary guard keeps plain responses unpromoted.
-                    text_done = True
-                    promote_output()
-                    terminal = self.message_field(event, "response")
-                elif event_type == "response.failed":
-                    terminal = self.message_field(event, "response")
-        finally:
-            self._emit_stream("", "")
-        if terminal is None:
-            raise ModelError("Responses stream ended without a terminal response")
-        return terminal
+        return responses.reassemble_stream(
+            client,
+            params,
+            message_field=self.message_field,
+            raise_if_inactive=self._raise_if_request_inactive,
+            emit=self._emit_stream,
+            report_builtin_call=self.report_builtin_call,
+        )
 
     def _emit_stream(self, kind: str, delta: str) -> None:
         if self.on_stream is not None:
             self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
 
     def responses_input(self, messages: list[Json], origin: str = "") -> list[Json]:
-        origin = origin or self.provider_origin()
-        converted: list[Json] = []
-        seen_output_ids: set[str] = set()
-        for message in messages:
-            role = str(message.get("role") or "")
-            content = message.get("content")
-            saved_output = message.get(RESPONSES_OUTPUT_KEY) if self.replayable_echo(message, origin) else None
-            if role == "assistant" and isinstance(saved_output, list):
-                for item in saved_output:
-                    if not isinstance(item, dict) or not self.replayable_output_item(item):
-                        continue
-                    if content is None and item.get("type") == "message":
-                        continue
-                    item_id = str(item.get("id") or "")
-                    if item_id and item_id in seen_output_ids:
-                        continue
-                    if item_id:
-                        seen_output_ids.add(item_id)
-                    converted.append(item)
-                continue
-            if role == "tool":
-                converted.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": str(message.get("tool_call_id") or ""),
-                        "output": str(message.get("content") or ""),
-                    }
-                )
-                continue
-            if role not in ("system", "developer", "user", "assistant"):
-                continue
-            if content is not None:
-                converted.append(
-                    {
-                        "role": role,
-                        "content": self.session.images.responses_content(message) if role == "user" and self.session.images.refs(message) else str(content),
-                    }
-                )
-            if role == "assistant":
-                for raw in message.get("tool_calls") or []:
-                    if not isinstance(raw, dict):
-                        continue
-                    raw_function = raw.get("function")
-                    function = raw_function if isinstance(raw_function, dict) else {}
-                    converted.append(
-                        {
-                            "type": "function_call",
-                            "call_id": str(raw.get("id") or uuid.uuid4().hex),
-                            "name": str(function.get("name") or ""),
-                            "arguments": str(function.get("arguments") or "{}"),
-                        }
-                    )
-        return converted
+        return responses.responses_input(
+            messages,
+            origin,
+            provider_origin=self.provider_origin,
+            replayable_echo=self.replayable_echo,
+            images=self.session.images,
+        )
 
     @staticmethod
     def replayable_output_item(item: Json) -> bool:
@@ -1067,74 +631,23 @@ class ModelClient:
         Stateless reasoning travels in the encrypted payload, which the id alone cannot stand in
         for once the response was never stored. A host that returns neither that payload nor any
         readable reasoning leaves an empty shell, so it is dropped instead of replayed."""
-        return item.get("type") != "reasoning" or any(item.get(key) for key in ("encrypted_content", "content", "summary"))
+        return responses.replayable_output_item(item)
 
     @staticmethod
     def responses_tool_schemas(tools: list[Json]) -> list[Json]:
-        converted: list[Json] = []
-        for schema in tools:
-            raw_function = schema.get("function")
-            function = raw_function if isinstance(raw_function, dict) else {}
-            converted.append(
-                {
-                    "type": "function",
-                    "name": str(function.get("name") or ""),
-                    "description": str(function.get("description") or ""),
-                    "parameters": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
-                    "strict": bool(function.get("strict", False)),
-                }
-            )
-        return converted
+        return responses.responses_tool_schemas(tools)
 
     def responses_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
-        if self.message_field(result, "status") == "failed":
-            error = self.message_field(result, "error") or "unknown error"
-            raise ModelError(f"Responses request failed: {error}")
-        output = self.message_field(result, "output") or []
-        saved_output = [self.dump_message_item(item) for item in output]
-        text_parts: list[str] = []
-        tool_calls: list[Json] = []
-        calls: list[ToolCall] = []
-        for item in output:
-            item_type = self.message_field(item, "type")
-            if item_type == "message":
-                for part in self.message_field(item, "content") or []:
-                    part_type = self.message_field(part, "type")
-                    if part_type == "output_text":
-                        text_parts.append(str(self.message_field(part, "text") or ""))
-                    elif part_type == "refusal":
-                        text_parts.append(str(self.message_field(part, "refusal") or ""))
-            elif item_type == "function_call":
-                name = str(self.message_field(item, "name") or "")
-                call_id = str(self.message_field(item, "call_id") or self.message_field(item, "id") or uuid.uuid4().hex)
-                arguments = str(self.message_field(item, "arguments") or "{}")
-                try:
-                    payload = json.loads(arguments, strict=False)
-                except json.JSONDecodeError:
-                    payload = {}
-                tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
-                calls.append(self.tool_call(call_id, name, payload))
-        text = "".join(text_parts) or str(self.message_field(result, "output_text") or "")
-        # Streaming already reported every provider-side call live, and the stream and the terminal
-        # output carry the same calls, so scanning again would double each one — and a call without an
-        # id could not be de-duplicated at all. The scan is the only source for non-streaming requests.
-        if not streamed:
-            for item in saved_output:
-                item_type = str(item.get("type") or "")
-                if item_type.endswith("_call") and item_type != "function_call":
-                    action = item.get("action")
-                    query = action.get("query") if isinstance(action, dict) else ""
-                    self.report_builtin_call(item_type, query if isinstance(query, str) else "")
-        if not calls and not text.strip() and self.message_field(result, "status") == "incomplete":
-            details = self.message_field(result, "incomplete_details")
-            if self.message_field(details, "reason") == "max_output_tokens":
-                raise self.truncated_output_error(self.message_field(result, "usage"))
-        assistant: Json = {"role": "assistant", "content": text or None, RESPONSES_OUTPUT_KEY: saved_output}
-        if sources := self.responses_sources(saved_output):
-            assistant[SEARCH_SOURCES_KEY] = sources
-        if tool_calls:
-            assistant["tool_calls"] = tool_calls
-        return assistant, calls, text
+        return responses.responses_result(
+            result,
+            streamed,
+            message_field=self.message_field,
+            dump_message_item=self.dump_message_item,
+            tool_call=self.tool_call,
+            report_builtin_call=self.report_builtin_call,
+            truncated_output_error=self.truncated_output_error,
+            collect_sources=self.collect_sources,
+        )
 
     @classmethod
     def responses_sources(cls, saved_output: list[Json]) -> list[Json]:
@@ -1143,27 +656,11 @@ class ModelClient:
         Two hosts, two places: OpenAI cites inline through `url_citation` annotations on the
         message, while Qwen returns no citations at all and reports sources only on the search
         call. Reading both keeps one renderer honest across them."""
-        groups: list[Any] = []
-        for item in saved_output:
-            if item.get("type") == "message":
-                for part in item.get("content") or []:
-                    if isinstance(part, dict):
-                        groups.append(part.get("annotations"))
-                continue
-            action = item.get("action")
-            groups.append(action.get("sources") if isinstance(action, dict) else None)
-            groups.append(item.get("results"))
-        return cls.collect_sources(*groups)
+        return responses.responses_sources(saved_output, cls.collect_sources)
 
     @staticmethod
     def dump_message_item(item: Any) -> Json:
-        if isinstance(item, dict):
-            return Text.value(item)
-        if hasattr(item, "model_dump"):
-            dumped = item.model_dump(mode="json", exclude_none=True)
-            if isinstance(dumped, dict):
-                return Text.value(dumped)
-        return {}
+        return responses.dump_message_item(item)
 
     def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None, echo_source: str = "") -> Json:
         self.cancel_requested.clear()
@@ -1455,120 +952,27 @@ class ModelClient:
         order-independent transition as Responses. Input JSON may continue after promotion when the
         completed text block came first.
         """
-        output: list[str] = []
-        text_blocks: set[int] = set()
-        server_tools: dict[int, dict[str, str]] = {}
-        text_done = handoff_seen = output_promoted = False
-
-        def promote_output() -> None:
-            nonlocal output_promoted
-            if text_done and handoff_seen and output and not output_promoted:
-                self._emit_stream("output_done", "".join(output))
-                output_promoted = True
-
-        try:
-            with client.messages.stream(**params) as stream:
-                for event in stream:
-                    self._raise_if_request_inactive()
-                    event_type = self.message_field(event, "type")
-                    if event_type == "content_block_start":
-                        block = self.message_field(event, "content_block")
-                        block_type = self.message_field(block, "type")
-                        if block_type == "text":
-                            text_blocks.add(int(self.message_field(event, "index") or 0))
-                        elif block_type == "tool_use":
-                            handoff_seen = True
-                            promote_output()
-                        elif block_type == "server_tool_use":
-                            # A provider-side tool is the same durable tool boundary as a local
-                            # tool_use: completed text before it is final and must be handed off now,
-                            # before the live status below covers the preview.
-                            handoff_seen = True
-                            promote_output()
-                            self._emit_stream(builtin_tool_label(str(self.message_field(block, "name") or "")), "")
-                            # The query streams in via input_json_delta and is only whole at content_block_stop,
-                            # so register the block now and report it there, showing the search in the transcript live.
-                            # Some hosts put the whole input on content_block_start instead of streaming
-                            # it via input_json_delta; keep that query as the fallback the stop handler
-                            # uses when no partial_json ever arrived.
-                            start_input = self.message_field(block, "input")
-                            server_tools[int(self.message_field(event, "index") or 0)] = {
-                                "id": str(self.message_field(block, "id") or ""),
-                                "name": str(self.message_field(block, "name") or ""),
-                                "json": "",
-                                "query": str(start_input.get("query") or "") if isinstance(start_input, dict) else "",
-                            }
-                        continue
-                    if event_type == "content_block_stop":
-                        index = int(self.message_field(event, "index") or 0)
-                        if index in text_blocks:
-                            text_done = True
-                            promote_output()
-                        elif index in server_tools:
-                            info = server_tools.pop(index)
-                            # Defensively establish the boundary here too; the durable report below
-                            # must not be the first durable tool signal after a finished text block.
-                            handoff_seen = True
-                            promote_output()
-                            query = info["query"]
-                            if info["json"]:
-                                with contextlib.suppress(json.JSONDecodeError):
-                                    parsed = json.loads(info["json"])
-                                    if isinstance(parsed, dict) and parsed.get("query"):
-                                        query = str(parsed["query"])
-                            self.report_builtin_call(info["name"], query)
-                        continue
-                    if event_type != "content_block_delta":
-                        continue
-                    delta = self.message_field(event, "delta")
-                    delta_type = self.message_field(delta, "type")
-                    if delta_type == "thinking_delta":
-                        self._emit_stream("reasoning", str(self.message_field(delta, "thinking") or ""))
-                    elif delta_type == "text_delta":
-                        text = str(self.message_field(delta, "text") or "")
-                        output.append(text)
-                        self._emit_stream("output", text)
-                    elif delta_type == "input_json_delta":
-                        index = int(self.message_field(event, "index") or 0)
-                        if index in server_tools:
-                            server_tools[index]["json"] += str(self.message_field(delta, "partial_json") or "")
-                self._raise_if_request_inactive()
-                return stream.get_final_message()
-        finally:
-            self._emit_stream("", "")
+        return anthropic_module.reassemble_stream(
+            client,
+            params,
+            message_field=self.message_field,
+            raise_if_inactive=self._raise_if_request_inactive,
+            emit=self._emit_stream,
+            report_builtin_call=self.report_builtin_call,
+        )
 
     def anthropic_params(self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None) -> Json:
         provider = provider if provider is not None else self.session.config.provider
-        resolved = provider.resolve()
-        system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
-        # Anthropic prompt caching is a prefix match that only takes effect at explicit
-        # cache_control breakpoints; without one, every turn reprocesses the whole prompt from
-        # scratch. Render order is tools -> system -> messages, so a breakpoint on the (single)
-        # system block caches the stable tools+system prefix and is reused on every later turn.
-        system: str | list[Json] = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}] if system_text else system_text
-        params: Json = {
-            "model": provider.model,
-            "system": system,
-            "messages": self.anthropic_messages(messages, self.provider_origin(provider)),
-            "max_tokens": provider.anthropic_output_cap(),
-        }
-        # Thinking pins temperature to its default; sending any other value is rejected.
-        if request_tools := [*self.anthropic_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
-            params["tools"] = request_tools
-            params["tool_choice"] = {"type": "auto"}
-        effort = provider.reasoning_effort()
-        thinking_params = anthropic_thinking_params(
-            provider.model,
-            provider.reasoning,
-            effort,
-            self.manual_thinking_budget(effort, provider.anthropic_output_cap()),
+        return anthropic_module.anthropic_params(
+            messages,
+            tools,
+            provider,
+            provider.resolve(),
+            provider_origin=self.provider_origin,
+            replayable_echo=self.replayable_echo,
+            images=self.session.images,
+            builtin_tools=self.builtin_tools,
         )
-        params.update(thinking_params)
-        thinking = thinking_params.get("thinking")
-        thinking_active = anthropic_thinking_always_on(provider.model) or (isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive"))
-        if provider.temperature is not None and not thinking_active:
-            params["temperature"] = provider.temperature
-        return params
 
     @staticmethod
     def manual_thinking_budget(effort: str, max_tokens: int) -> int:
@@ -1582,127 +986,44 @@ class ModelClient:
         all and the provider's own error is the honest answer.
         Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
                   https://docs.qwencloud.com/api-reference/chat/openai-chat"""
-        budget = THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
-        return max(1024, min(max_tokens - 1024, budget))
+        return anthropic_module.manual_thinking_budget(effort, max_tokens)
 
     def anthropic_messages(self, messages: list[Json], origin: str = "") -> list[Json]:
-        origin = origin or self.provider_origin()
-        converted: list[Json] = []
-        for message in messages:
-            role = message.get("role")
-            if role == "system":
-                continue
-            if role == "user":
-                self.append_anthropic_message(converted, "user", self.session.images.anthropic_content(message))
-            elif role == "assistant":
-                blocks = self.anthropic_assistant_blocks(message, origin)
-                if blocks:
-                    self.append_anthropic_message(converted, "assistant", blocks)
-            elif role == "tool":
-                block = {"type": "tool_result", "tool_use_id": str(message.get("tool_call_id") or ""), "content": str(message.get("content") or "")}
-                self.append_anthropic_message(converted, "user", [block])
-        return converted or [{"role": "user", "content": ""}]
+        return anthropic_module.anthropic_messages(
+            messages,
+            origin,
+            provider_origin=self.provider_origin,
+            replayable_echo=self.replayable_echo,
+            images=self.session.images,
+        )
 
     @staticmethod
     def append_anthropic_message(messages: list[Json], role: str, content: str | list[Json]) -> None:
-        if messages and messages[-1].get("role") == role:
-            previous = messages[-1].get("content")
-            if isinstance(previous, list) and isinstance(content, list):
-                previous.extend(content)
-                return
-            if isinstance(previous, list) and isinstance(content, str):
-                if content:
-                    previous.append({"type": "text", "text": content})
-                return
-            if isinstance(previous, str) and isinstance(content, list):
-                messages[-1]["content"] = ([{"type": "text", "text": previous}] if previous else []) + content
-                return
-            if isinstance(previous, str) and isinstance(content, str):
-                messages[-1]["content"] = (previous + "\n\n" + content).strip()
-                return
-        messages.append({"role": role, "content": content})
+        anthropic_module.append_anthropic_message(messages, role, content)
 
     def anthropic_assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
-        # The API verifies that thinking blocks come back exactly as it produced them, signature
-        # included, so a turn it produced is echoed rather than rebuilt from text and tool calls.
-        saved = message.get(ANTHROPIC_CONTENT_KEY) if self.replayable_echo(message, origin or self.provider_origin()) else None
-        if isinstance(saved, list) and saved:
-            return [block for block in saved if isinstance(block, dict) and (message.get("content") is not None or block.get("type") != "text")]
-        blocks: list[Json] = []
-        content = message.get("content")
-        if isinstance(content, str) and content:
-            blocks.append({"type": "text", "text": content})
-        for raw in message.get("tool_calls") or []:
-            if not isinstance(raw, dict):
-                continue
-            raw_function = raw.get("function")
-            function = raw_function if isinstance(raw_function, dict) else {}
-            try:
-                # strict=False: tool-call argument strings often contain literal newlines
-                # (e.g. a multi-line git commit message), which are not valid JSON otherwise.
-                payload = json.loads(str(function.get("arguments") or "{}"), strict=False)
-            except json.JSONDecodeError:
-                payload = {}
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": str(raw.get("id") or uuid.uuid4().hex),
-                    "name": str(function.get("name") or ""),
-                    "input": payload if isinstance(payload, dict) else {"args": [payload]},
-                }
-            )
-        return blocks
+        return anthropic_module.anthropic_assistant_blocks(
+            message,
+            origin,
+            provider_origin=self.provider_origin,
+            replayable_echo=self.replayable_echo,
+        )
 
     @staticmethod
     def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
-        def convert(schema: Json) -> Json:
-            raw_function = schema.get("function")
-            function = raw_function if isinstance(raw_function, dict) else {}
-            return {
-                "name": str(function.get("name") or ""),
-                "description": str(function.get("description") or ""),
-                "input_schema": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
-            }
-
-        return [convert(schema) for schema in tools]
+        return anthropic_module.anthropic_tool_schemas(tools)
 
     def anthropic_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
-        text_parts: list[str] = []
-        tool_calls: list[Json] = []
-        calls: list[ToolCall] = []
-        content_blocks = self.message_field(result, "content") or []
-        saved_content = [self.dump_message_item(block) for block in content_blocks]
-        for block in content_blocks:
-            block_type = self.message_field(block, "type")
-            # Streaming already reported each server tool live; the scan is the only source otherwise.
-            if block_type == "server_tool_use" and not streamed:
-                raw_input = self.message_field(block, "input")
-                query = raw_input.get("query") if isinstance(raw_input, dict) else ""
-                self.report_builtin_call(str(self.message_field(block, "name") or ""), query)
-            if block_type == "text":
-                text_parts.append(str(self.message_field(block, "text") or ""))
-            elif block_type == "tool_use":
-                raw_input = self.message_field(block, "input")
-                payload = raw_input if isinstance(raw_input, dict) else {}
-                name = str(self.message_field(block, "name") or "")
-                call_id = str(self.message_field(block, "id") or uuid.uuid4().hex)
-                arguments = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-                tool_calls.append({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}})
-                calls.append(self.tool_call(call_id, name, payload))
-        text = "".join(text_parts)
-        if not calls and not text.strip() and self.message_field(result, "stop_reason") == "max_tokens":
-            raise self.truncated_output_error(self.message_field(result, "usage"))
-        assistant: Json = {"role": "assistant", "content": text or None, ANTHROPIC_CONTENT_KEY: [block for block in saved_content if block]}
-        # A long server-side tool run can be paused and handed back mid-turn. The turn continues by
-        # sending this message back unchanged, which the saved content blocks above already do.
-        # Evidence: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
-        if self.message_field(result, "stop_reason") == "pause_turn":
-            assistant[PAUSED_TURN_KEY] = True
-        if sources := self.anthropic_sources(saved_content):
-            assistant[SEARCH_SOURCES_KEY] = sources
-        if tool_calls:
-            assistant["tool_calls"] = tool_calls
-        return assistant, calls, text
+        return anthropic_module.anthropic_result(
+            result,
+            streamed,
+            message_field=self.message_field,
+            dump_message_item=self.dump_message_item,
+            tool_call=self.tool_call,
+            report_builtin_call=self.report_builtin_call,
+            truncated_output_error=self.truncated_output_error,
+            collect_sources=self.collect_sources,
+        )
 
     @classmethod
     def anthropic_sources(cls, saved_content: list[Json]) -> list[Json]:
@@ -1710,15 +1031,7 @@ class ModelClient:
 
         A `web_search_tool_result` carries an error object rather than a result list when the
         search itself failed, which `collect_sources` skips as having no URL."""
-        groups: list[Any] = []
-        for block in saved_content:
-            if not isinstance(block, dict):
-                continue
-            groups.append(block.get("citations"))
-            if block.get("type") == "web_search_tool_result":
-                content = block.get("content")
-                groups.append(content if isinstance(content, list) else None)
-        return cls.collect_sources(*groups)
+        return anthropic_module.anthropic_sources(saved_content, cls.collect_sources)
 
     def apply_provider_params(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider | None = None) -> None:
         resolved = resolved or provider.resolve()

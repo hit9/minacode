@@ -7,7 +7,7 @@ import pytest
 from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _session
 
 from minacode.base import ModelOutputTruncated, ToolCall
-from minacode.model import ModelClient
+from minacode.model import ModelClient, resilience
 
 
 def test_anthropic_request_success(tmp_path, monkeypatch):
@@ -287,7 +287,7 @@ def test_anthropic_max_tokens_stop_reason_names_the_cap_only_when_nothing_was_ge
         model.anthropic_result(empty)
 
     assert "provider.max_tokens" in str(error.value)
-    assert ModelClient.retryable_error(error.value) is False
+    assert resilience.retryable_error(error.value) is False
 
     partial = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "half a sen"}]}
     _assistant, calls, content = model.anthropic_result(partial)

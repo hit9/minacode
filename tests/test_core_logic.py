@@ -33,7 +33,7 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.model import ModelClient
+from minacode.model import ModelClient, resilience
 from minacode.render import StatusBar
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore
@@ -1170,19 +1170,17 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
 
 
 def test_retryable_error_detects_status_codes_in_text(tmp_path):
-    client = ModelClient(session(tmp_path))
 
-    assert client.retryable_error(ModelError("Error code: 500 - provider failed"))
-    assert client.retryable_error(ModelError("{'error': {'code': 503, 'message': 'busy'}}"))
-    assert not client.retryable_error(ModelError("Error code: 400 - bad request"))
+    assert resilience.retryable_error(ModelError("Error code: 500 - provider failed"))
+    assert resilience.retryable_error(ModelError("{'error': {'code': 503, 'message': 'busy'}}"))
+    assert not resilience.retryable_error(ModelError("Error code: 400 - bad request"))
 
 
 def test_retry_reason_is_short_and_safe(tmp_path):
-    client = ModelClient(session(tmp_path))
 
-    assert client.retry_reason(ModelError("Error code: 429 - secret provider payload")) == "429"
-    assert client.retry_reason(ModelError("request timed out with secret provider payload")) == "timeout"
-    assert client.retry_reason(ModelError("connection reset by peer")) == "connection"
+    assert resilience.retry_reason(ModelError("Error code: 429 - secret provider payload")) == "429"
+    assert resilience.retry_reason(ModelError("request timed out with secret provider payload")) == "timeout"
+    assert resilience.retry_reason(ModelError("connection reset by peer")) == "connection"
 
 
 def test_model_usage_counts_cached_tokens_from_multiple_shapes():

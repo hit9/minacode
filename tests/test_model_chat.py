@@ -8,7 +8,7 @@ import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
 from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
-from minacode.model import ModelClient
+from minacode.model import ModelClient, resilience
 
 
 def _chat_completion(content, finish_reason, completion_tokens=16384):
@@ -42,7 +42,7 @@ def test_chat_output_cap_reached_with_nothing_generated_names_the_cap(tmp_path, 
     assert "provider.max_tokens" in str(error.value)
     assert "16384" in str(error.value)
     # Deterministic: the same request hits the same cap again, so it must not consume a retry.
-    assert ModelClient.retryable_error(error.value) is False
+    assert resilience.retryable_error(error.value) is False
     # The call reached the provider and was billed, so it belongs in usage regardless of the failure.
     assert s.usage.completion_tokens == 16384
 
@@ -63,7 +63,7 @@ def test_chat_length_with_output_below_the_cap_names_both_settings(tmp_path, mon
     assert "runtime.max_context_tokens" in str(error.value)
     assert not isinstance(error.value, ModelOutputTruncated)
     # Deterministic: the same request stops the same way, so it must not consume a retry.
-    assert ModelClient.retryable_error(error.value) is False
+    assert resilience.retryable_error(error.value) is False
 
 
 def test_chat_length_without_a_configured_cap_names_both_settings(tmp_path, monkeypatch):
