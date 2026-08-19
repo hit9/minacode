@@ -305,28 +305,17 @@ class ContextManager:
         return [*live[:cut], {"role": "user", "content": tail, SESSION_EVENT_KEY: COMPACTION_REQUEST_EVENT}], Tool.resolved_schemas(self.session)
 
     def compaction_prefix_count(self, turn_messages: list[Json] | None = None, recent: int | None = None) -> int:
-        """How many messages of the scope's own list the summary request carries, counted the way
-        that scope's own split works so the slice ends where the kept tail begins.
+        """How many messages of the scope's own list the summary request carries.
 
-        `recent` has to be the window the split actually used. Both callers fall back to
-        COMPACT_MINIMUM_RECENT when the ordinary window leaves nothing to compact, and counting
-        that case with the default window put the cut before the end of `compacted` -- the request
-        then carried one message while nine were evicted, so the summary silently lost eight of
-        them.
-
-        The two scopes part company when the list holds no user message, which is the ordinary
-        shape of a long turn: `compaction_parts` keeps nothing and hands the whole list over, while
-        `turn_compaction_parts` still splits a recent tail off the end. Counting both the first way
-        put every message the turn was about to keep into the summary request."""
+        One expression of the cut, shared with the split that produces `compacted`. Deriving it
+        separately is what put the request out of step with what was being evicted twice already:
+        once when the MINIMUM_RECENT fallback re-split with a different window, and again when the
+        split grew a size bound this did not have."""
         messages = self.session.messages if turn_messages is None else turn_messages
-        index = self.latest_user_index(messages)
-        if index is None:
-            if turn_messages is None:
-                return len(messages)
-            _, keep = self.compaction_parts_for(messages, recent)
-            return len(messages) - len(keep)
-        _, keep_tail = self.compaction_parts_for(messages[index + 1 :], recent)
-        return len(messages) - len(keep_tail)
+        if turn_messages is None and self.latest_user_index(messages) is None:
+            # compaction_parts hands the whole list over when there is no request to keep.
+            return len(messages)
+        return self.compaction_keep_start(messages, recent)
 
     def compaction_echo_source(self, sent: list[Json]) -> str:
         """What a copied summary would have been copied from.
@@ -440,20 +429,53 @@ class ContextManager:
         index = self.latest_user_index(messages)
         if index is None:
             return self.without_compaction_summaries(messages), []
-        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :], recent)
-        compacted = self.without_compaction_summaries(messages[:index] + compacted_tail)
-        keep = self.without_compaction_summaries([messages[index]] + keep_tail)
-        return compacted, keep
+        compacted, keep = self.compaction_split(messages, index, recent)
+        return self.without_compaction_summaries(compacted), self.without_compaction_summaries(keep)
+
+    def compaction_split(self, messages: list[Json], index: int, recent: int | None) -> tuple[list[Json], list[Json]]:
+        """Split around a kept tail counted over the whole list, with the latest user message always
+        in it.
+
+        The window used to be measured only over what follows that message, which made it a cap
+        rather than a floor: `/compact` run just after a turn answered has one message there, so a
+        118-message session kept two and a checkpoint. Continuity wants the concrete recent work --
+        the last tool results and file contents -- and the checkpoint is only prose.
+
+        The kept tail stays non-contiguous in the one case that needs it. When the latest user
+        message falls before the window (a worker given one order that then ran twenty steps),
+        keeping everything from it onward would compact nothing at all, so it is carried on its own
+        and the span between it and the window is compacted."""
+        start = self.compaction_keep_start(messages, recent)
+        if start <= index:
+            return messages[:start], messages[start:]
+        return messages[:index] + messages[index + 1 : start], [messages[index], *messages[start:]]
+
+    def compaction_keep_start(self, messages: list[Json], recent: int | None) -> int:
+        """Where the kept tail begins: at most `recent` messages, and at most a quarter of the
+        request budget.
+
+        The size bound is the reason the window could not simply be widened. A count is not a size,
+        and a handful of very large messages inside the kept tail leaves the request over budget
+        with nothing left to compact -- which is the failure COMPACT_MINIMUM_RECENT was added for.
+        Bounding by both means small messages give the full window and large ones collapse it to
+        the last exchange, which is what the old anchor achieved by accident."""
+        limit = self.COMPACT_RECENT_MESSAGES if recent is None else recent
+        share = max(1, self.request_token_budget() // 4)
+        start = len(messages)
+        while start > 0 and len(messages) - start < limit:
+            # One message is always kept whatever its size; the bound only stops the tail growing.
+            if start < len(messages) and self.request_tokens(messages[start - 1 :]) > share:
+                break
+            start -= 1
+        return self.safe_cut(messages, start)
 
     def turn_compaction_parts(self, messages: list[Json], recent: int | None = None) -> tuple[list[Json], list[Json]]:
         index = self.latest_user_index(messages)
         if index is None:
-            compacted, keep = self.compaction_parts_for(messages, recent)
-            return self.without_compaction_summaries(compacted), self.without_compaction_summaries(keep)
-        compacted_tail, keep_tail = self.compaction_parts_for(messages[index + 1 :], recent)
-        compacted = self.without_compaction_summaries(messages[:index] + compacted_tail)
-        keep = self.without_compaction_summaries([messages[index]] + keep_tail)
-        return compacted, keep
+            start = self.compaction_keep_start(messages, recent)
+            return self.without_compaction_summaries(messages[:start]), self.without_compaction_summaries(messages[start:])
+        compacted, keep = self.compaction_split(messages, index, recent)
+        return self.without_compaction_summaries(compacted), self.without_compaction_summaries(keep)
 
     def without_compaction_summaries(self, messages: list[Json]) -> list[Json]:
         return [message for message in messages if not self.is_compaction_summary(message)]
@@ -468,13 +490,18 @@ class ContextManager:
         latest user message followed by one enormous tool result cannot be split here at all, and
         has to be bounded on the way in instead.
         """
-        cut = max(0, len(messages) - (self.COMPACT_RECENT_MESSAGES if recent is None else recent))
+        cut = self.safe_cut(messages, max(0, len(messages) - (self.COMPACT_RECENT_MESSAGES if recent is None else recent)))
+        return messages[:cut], messages[cut:]
+
+    @staticmethod
+    def safe_cut(messages: list[Json], cut: int) -> int:
+        """Move a cut back off the middle of a tool exchange. See compaction_parts_for."""
         if cut < len(messages) and messages[cut].get("role") == "tool":
             while cut > 0 and messages[cut - 1].get("role") == "tool":
                 cut -= 1
             if cut > 0 and messages[cut - 1].get("role") == "assistant" and messages[cut - 1].get("tool_calls"):
                 cut -= 1
-        return messages[:cut], messages[cut:]
+        return cut
 
     def messages_text(self, messages: list[Json]) -> str:
         return "\n\n".join(f"{message.get('role', 'message')}:\n{ImageInputs.label_text(message)}" for message in messages) or "(empty)"

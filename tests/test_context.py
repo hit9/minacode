@@ -529,7 +529,7 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert compaction_phases == [True, False]
     assert model.input is not None
     assert "old answer" in model.input
-    assert "recent 7" in model.input
+    assert "recent 7" in model.input  # this budget is 1 token, so the size bound collapses the tail
     assert "Compact the minacode working context." in model.input  # the appended instruction
     assert "tool kept" not in model.input  # the kept tail is not handed to the summarizer
     assert "\nrequest" not in model.input  # nor the turn message; "request" alone occurs in the system prompt
@@ -603,6 +603,9 @@ def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
         {"role": "assistant", "content": "before"},
         {"role": "user", "content": "old request"},
         {"role": "assistant", "content": "old answer"},
+        # Padding so the recent window still leaves a head to compact; the rule under test is which
+        # side of the split each kind of message lands on.
+        *({"role": "assistant", "content": f"filler {index}"} for index in range(8)),
         {"role": "user", "content": "latest request"},
         {"role": "user", "content": summary},
         {"role": "assistant", "content": "working"},
@@ -611,8 +614,11 @@ def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
 
     compacted, keep = ContextManager(s).compaction_parts()
 
-    assert [message["content"] for message in compacted] == ["before", "old request", "old answer"]
-    assert [message["content"] for message in keep] == ["latest request", "working", "tool tr.1"]
+    assert [message["content"] for message in compacted][:3] == ["before", "old request", "old answer"]
+    # The latest request and everything after it stay together; the prior summary is dropped from
+    # both sides rather than carried into either.
+    assert [message["content"] for message in keep][-3:] == ["latest request", "working", "tool tr.1"]
+    assert summary not in [message["content"] for message in (*compacted, *keep)]
 
 
 def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
@@ -708,7 +714,7 @@ def test_prepare_request_persists_current_turn_compaction_without_pending_input(
 
     agent.prepare_request(turn)
 
-    assert len(turn) == 10
+    assert len(turn) < 21  # incidental: a 1-token budget collapses the kept tail by size
     assert turn[0]["content"] == "continue"
     assert turn[1]["content"].startswith(COMPACTION_SUMMARY_TITLE)
     assert "original request" in s.history[-1].text
@@ -756,7 +762,9 @@ def test_interrupted_current_turn_compaction_falls_back_before_cancelling(tmp_pa
     with pytest.raises(KeyboardInterrupt):
         context.prepare_messages(InterruptedModel(), "system", turn)
 
-    assert len(turn) == 10
+    # The count is incidental here -- this budget is 1 token, so the size bound collapses the kept
+    # tail. What matters is that the trim happened and left its marker before the interrupt flew.
+    assert len(turn) < 21
     assert turn[0]["content"] == "request"
     assert turn[1]["content"].startswith(COMPACTION_SUMMARY_TITLE)
     assert CURRENT_TURN_CONTEXT_TRIMMED in turn[1]["content"]
@@ -851,7 +859,9 @@ def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
     assert s.state.compaction_count == 1
 
     # A new message is new information, so one more pass is allowed -- and again only one.
-    s.messages.append({"role": "assistant", "content": "another step " + "y" * 160_000})
+    # Large enough to go back over budget on its own: a pass now frees more than it used to, so a
+    # smaller message no longer re-triggers one and the guard under test would never be exercised.
+    s.messages.append({"role": "assistant", "content": "another step " + "y" * 700_000})
     for _ in range(5):
         context.prepare_messages(model, "system")
 
@@ -903,17 +913,22 @@ def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     assert reports[0][0] is False
     assert "nothing is left to compact" in reports[0][1]
 
-    # A new message buys one more attempt, and reports again because it is still a dead end.
+    # A new message buys one more attempt. It is no longer a dead end: with something after the
+    # enormous result, the call and its result can be lifted out together, which the old cut --
+    # confined to what follows the latest user message -- could never reach.
     s.messages.append({"role": "assistant", "content": "still working"})
     context.prepare_messages(model, "system")
-    assert len(reports) == 2
-    assert model.calls == 0
+    assert reports[1:] == [(True, ""), (False, "")]
+    assert all("read the file" != str(message.get("content") or "") or index == 1 for index, message in enumerate(s.messages))
+    assert not any(message.get("tool_calls") for message in s.messages)  # the 1MB pair is gone
+    assert model.calls == 1
 
-    # A new *user* message is different: everything before it becomes compactable again, so the
-    # dead end ends and a real compaction runs.
+    # And that pass actually fixed it: the request fits again, so a further message asks for no
+    # further compaction. The dead end was reported once and then stopped being one.
     s.messages.append({"role": "user", "content": "carry on"})
     context.prepare_messages(model, "system")
     assert model.calls == 1
+    assert context.request_tokens(context.model_messages("system")) < context.request_token_budget()
     assert reports[-2:] == [(True, ""), (False, "")]
 
 
@@ -1235,9 +1250,10 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
 
 def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     s = session(tmp_path)
+    # Long enough that something is actually evicted: the rule under test is where the checkpoint
+    # lands relative to the latest request, which only exists once there is a head to replace.
     s.messages = [
-        {"role": "user", "content": "old"},
-        {"role": "assistant", "content": "old answer"},
+        *({"role": "assistant", "content": f"old {index}"} for index in range(10)),
         {"role": "user", "content": "latest"},
         {"role": "tool", "content": "tool kept"},
     ]
@@ -1256,13 +1272,13 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     loop.agent.model = FakeModel()
     result = compact(loop, "")
 
-    assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
-    assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)
-    assert s.messages[1]["content"] == "latest"
-    assert s.messages[2]["content"] == "tool kept"
+    assert len(s.messages) < 12  # a head was evicted
+    assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)  # the checkpoint leads
+    assert s.messages[-2]["content"] == "latest"  # and sits before the latest request, not after
+    assert s.messages[-1]["content"] == "tool kept"
     assert s.state.summary == "summary"
     assert transitions == ["compacting context", "dispatch"]
-    assert "messages 4 -> 3" in result
+    assert "messages 12 -> " in result
     assert "prior summary inserted" in result
 
 
@@ -1461,9 +1477,10 @@ def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, e
 
 def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path):
     s = session(tmp_path)
+    # Long enough that the recent window leaves a compactable head: the rule under test is where
+    # the split lands, and there is no split to inspect when everything fits inside the window.
     s.messages = [
-        {"role": "user", "content": "old"},
-        {"role": "assistant", "content": "old answer"},
+        *({"role": "assistant", "content": f"old {index}"} for index in range(10)),
         {"role": "user", "content": "the whole order"},
         {"role": "user", "content": "runtime expansion", SESSION_EVENT_KEY: "skill_mentions"},
         {"role": "assistant", "content": "working"},
@@ -1471,8 +1488,10 @@ def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path
 
     compacted, keep = ContextManager(s).compaction_parts()
 
-    assert [message["content"] for message in compacted] == ["old", "old answer"]
-    assert [message["content"] for message in keep] == ["the whole order", "runtime expansion", "working"]
+    assert compacted  # older history is summarized away
+    assert "the whole order" not in [message["content"] for message in compacted]
+    # The request and the runtime expansion it produced stay together on the kept side.
+    assert [message["content"] for message in keep][-3:] == ["the whole order", "runtime expansion", "working"]
 
 
 def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
@@ -1660,6 +1679,9 @@ def test_compaction_prefix_survives_an_earlier_summary_and_repeated_schemas(tmp_
         {"role": "assistant", "content": "looking"},
         {"role": "tool", "content": describe % 1},
         {"role": "tool", "content": describe % 2},
+        # Past the recent window, so the earlier summary and the repeated schema are on the
+        # compacted side where the divergence this pins used to happen.
+        *({"role": "assistant", "content": f"filler {index}"} for index in range(10)),
         {"role": "user", "content": "task B"},
         {"role": "assistant", "content": "ok"},
     ]
@@ -1678,7 +1700,7 @@ def test_turn_scope_compaction_slices_the_same_projection(tmp_path):
     the same projection and the same kind of prefix -- only the offset differs."""
     live = session(tmp_path)
     live.messages = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "starting"}]
-    turn = [{"role": "assistant", "content": f"step {index}"} for index in range(14)]
+    turn = [{"role": "assistant", "content": f"step {index}"} for index in range(24)]
     context = ContextManager(live)
     compacted, _keep = context.turn_compaction_parts(turn)
     assert compacted
@@ -1704,7 +1726,7 @@ def test_compaction_leaves_tool_choice_exactly_as_an_ordinary_request_sets_it(tm
     """Forcing tool_choice would look safer and cost the prize: it invalidates the messages cache,
     which is the whole conversation this request exists to reuse. Every wire is treated alike."""
     live = session(tmp_path)
-    live.messages = [{"role": "user", "content": "hello"}]
+    live.messages = [{"role": "user", "content": "hello"}, *({"role": "assistant", "content": f"step {index}"} for index in range(12))]
     for api in ("chat", "responses", "anthropic"):
         live.config.provider.api = api
         built = ContextManager(live).compaction_request(list(live.messages))
@@ -1746,22 +1768,22 @@ def test_turn_scope_prefix_stops_where_the_turn_keeps(tmp_path):
 
 
 def test_echo_source_covers_the_message_the_slice_adds(tmp_path):
-    """The slice reaches one message past `compacted`, and that message is the latest user one --
-    exactly the text the observed failure reproduced. Checking `compacted` left the guard blind to
-    the case it was written for."""
+    """In the non-contiguous case -- the latest user message falling before the recent window, a
+    worker given one order that then ran many steps -- the contiguous slice carries that message
+    while `compacted` does not. It is a user message, the shape the observed echo copied, so
+    checking `compacted` would leave the guard blind to it."""
     live = session(tmp_path)
-    live.messages = [{"role": "user", "content": "task A"}]
-    for index in range(6):
-        live.messages.extend([{"role": "assistant", "content": f"s{index}"}, {"role": "tool", "content": f"tool tr.{index} out"}])
-    latest = "继续 Part B 收尾：检查 _run_workflow 的所有调用点。"
-    live.messages.append({"role": "user", "content": latest})
+    order = "继续 Part B 收尾：检查 _run_workflow 的所有调用点。"
+    live.messages = [{"role": "user", "content": order}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
     context = ContextManager(live)
-    compacted, _keep = context.compaction_parts()
+    compacted, keep = context.compaction_parts()
+    assert order not in [message["content"] for message in compacted]
+    assert order in [message["content"] for message in keep]
+
     messages, _tools = context.compaction_request(compacted)
 
-    assert latest not in context.compaction_echo_source(compacted)  # what it used to be checked against
-    assert latest in context.compaction_echo_source(messages[:-1])  # what the model is actually handed
-
+    assert order not in context.compaction_echo_source(compacted)  # what it used to be checked against
+    assert order in context.compaction_echo_source(messages[:-1])  # what the model is actually handed
 
 def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
     """Both scopes re-split with COMPACT_MINIMUM_RECENT when the ordinary window leaves nothing to
@@ -1828,3 +1850,44 @@ def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkey
 
     compacted, keep = context.compaction_parts()
     assert context._compact_messages(FakeModel(), compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
+
+
+def test_recent_window_is_a_floor_for_small_messages_and_a_ceiling_for_large_ones(tmp_path):
+    """The window used to be measured only after the latest user message, which made it a cap: a
+    /compact run just after a turn answered kept two messages out of a hundred and eighteen. It now
+    spans the whole tail, bounded by size -- because a count is not a size, and keeping eight
+    enormous messages leaves the request over budget with nothing left to compact."""
+    small = session(tmp_path)
+    for index in range(58):
+        small.messages.extend([{"role": "user", "content": f"q{index}"}, {"role": "assistant", "content": f"a{index}"}])
+    small.messages.extend([{"role": "user", "content": "latest"}, {"role": "assistant", "content": "answer"}])
+    _compacted, keep = ContextManager(small).compaction_parts()
+    assert len(keep) == ContextManager.COMPACT_RECENT_MESSAGES  # was 2
+
+    large = session(tmp_path / "large")
+    large.messages = [{"role": "user", "content": "go"}]
+    for index in range(10):
+        large.messages.append({"role": "assistant", "content": f"step {index} " + "x" * 400_000})
+    compacted, keep = ContextManager(large).compaction_parts()
+    assert compacted  # the tail collapses by size, so there is still something to evict
+    assert len(keep) < ContextManager.COMPACT_RECENT_MESSAGES
+
+
+def test_the_slice_and_the_split_agree_on_where_the_cut_is(tmp_path):
+    """Two expressions of the cut drifted apart twice: once when the MINIMUM_RECENT fallback
+    re-split with a different window, once when the split grew a size bound the count did not have.
+    Both times the request carried less than was evicted, and the summary lost the difference."""
+    live = session(tmp_path)
+    live.messages = [{"role": "user", "content": "go"}]
+    for index in range(30):
+        live.messages.append({"role": "assistant", "content": f"step {index} " + "y" * 20_000})
+    context = ContextManager(live)
+
+    for recent in (None, ContextManager.COMPACT_MINIMUM_RECENT):
+        compacted, _keep = context.compaction_parts(recent)
+        if not compacted:
+            continue
+        messages, _tools = context.compaction_request(compacted, recent=recent)
+        carried = messages[len(context.model_header(live.system_prompt)) : -1]
+        for message in compacted:
+            assert message in carried, f"recent={recent} evicted a message the summary never saw"
