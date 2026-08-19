@@ -25,7 +25,7 @@ from minacode.config import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
-from minacode.prompts import INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
+from minacode.prompts import FAILED_TURN_MARKER, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotCodec
 from minacode.skill import SkillLibrary
@@ -567,10 +567,13 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
 
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     assert s.tool_records == []
-    # The turn aborts, but the corrections it already sent survive: history is append-only.
+    # The turn aborts, but the corrections it already sent survive: history is append-only, and
+    # the error marker records where the turn ended (the failure-path counterpart of the interrupt
+    # marker, keeping the two settling paths the same shape).
     assert s.messages == [
         {"role": "user", "content": "continue"},
         *[_correction("Bash")] * engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS,
+        {"role": "user", "content": FAILED_TURN_MARKER.format(error="Model emitted Bash as text 6 times; none of the textual calls were executed.")},
     ]
     assert s._active_turn_messages == []
     restored = Session.load_snapshot(s.uid, config=s.config)

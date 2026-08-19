@@ -341,19 +341,28 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                     ]
                 )
             )
+        failure: Exception | None = None
         try:
             with runner._active_worker.track(agent):
                 answer = agent.run(order)
-        except Exception as error:
-            raise ToolError(f"worker failed: {error}") from error
+        except Exception as error:  # noqa: BLE001 - the worker's failure becomes a ToolError envelope below, after the finally block merged its diffs
+            failure = error
         finally:
             # Merge diffs even when interrupted, or the user never sees what the worker did.
             self._merge_diffs(worker, parent, before_diffs)
-        elapsed = time.monotonic() - started
+        if failure is not None:
+            # Folded to one bounded, quote-free line at the source rather than where it is read.
+            # `status` renders it as an attribute of the envelope the model parses, and a provider
+            # error routinely carries both a quote and a newline -- an unescaped one closes the
+            # attribute early and the rest of the tag reads as garbage. The full text is in the
+            # failure report the parent got when it happened; this is the reminder, not the record.
+            worker.state.last_error = ToolRunner.oneline(str(failure).replace('"', "'"), 200)
+            worker.state.last_error_round = worker.state.round_count
+            raise ToolError(self._failure_report(worker, failure, started, before_diffs)) from failure
+        worker.state.last_error, worker.state.last_error_round = "", 0
+        elapsed, files, percent = self._send_facts(worker, started, before_diffs)
         in_tokens = worker.usage.prompt_tokens - before_in
         out_tokens = worker.usage.completion_tokens - before_out
-        files = ", ".join(sorted({diff.path for diff in worker.turn_diffs[before_diffs:]})) or "(none)"
-        percent = worker.usage.context_percent(worker.state.context_percent)
         return "\n".join(
             [
                 f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str(agent.stopped_at_max_steps).lower()}" tokens="{in_tokens}/{out_tokens}" rounds="{worker.state.round_count}" context_percent="{percent}">',
@@ -361,6 +370,31 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                 answer.rstrip(),
                 "</worker>",
                 "</Delegate>",
+            ]
+        )
+
+    def _send_facts(self, worker: Session, started: float, before_diffs: int) -> tuple[float, str, int]:
+        """Elapsed time, changed-file list, and context fill for one delegation: the facts the
+        success envelope and the failure report both carry, computed from the same sources so the
+        two paths cannot drift. `files` only reflects diffs merged so far, which is why the
+        failure report is built after the `finally` block ran `_merge_diffs`."""
+        elapsed = time.monotonic() - started
+        files = ", ".join(sorted({diff.path for diff in worker.turn_diffs[before_diffs:]})) or "(none)"
+        percent = worker.usage.context_percent(worker.state.context_percent)
+        return elapsed, files, percent
+
+    def _failure_report(self, worker: Session, error: Exception, started: float, before_diffs: int) -> str:
+        """The ToolError message for a failed delegation. Still raised, not returned: the runner
+        must mark the call failed (red line + status="failed"), and the envelope lives in the
+        exception text. Answers the parent's three questions: what the worker did (`files`),
+        whether it is still alive, and what to do next."""
+        elapsed, files, percent = self._send_facts(worker, started, before_diffs)
+        return "\n".join(
+            [
+                f"worker failed after {worker.state.turn_step} steps ({elapsed:.1f}s): {error}",
+                f'alive="true" rounds="{worker.state.round_count}" context_percent="{percent}" files="{files}"',
+                "Its context is kept: answer the problem and send again, or reset to discard this worker's process.",
+                "Files listed above were already changed and merged.",
             ]
         )
 
@@ -446,9 +480,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             return '<Delegate action="status" alive="false"/>'
         percent = worker.usage.context_percent(worker.state.context_percent)
         last = next((str(message.get("content") or "") for message in reversed(worker.messages) if message.get("role") == "assistant"), "")
+        # The last failure, so the parent can confirm why it stopped without relying on memory;
+        # absent once a send succeeded since then.
+        error_attr = f' last_error="{worker.state.last_error}" last_error_round="{worker.state.last_error_round}"' if worker.state.last_error else ""
         return "\n".join(
             [
-                f'<Delegate action="status" alive="true" provider="{worker.config.active_provider}" model="{worker.config.provider.model}" rounds="{worker.state.round_count}" context_percent="{percent}">',
+                f'<Delegate action="status" alive="true" provider="{worker.config.active_provider}" model="{worker.config.provider.model}" rounds="{worker.state.round_count}" context_percent="{percent}"{error_attr}>',
                 f"<last>{(last.strip()[:400] or '(no answer yet)')}</last>",
                 "</Delegate>",
             ]

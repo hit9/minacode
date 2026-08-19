@@ -128,6 +128,11 @@ REQUIRED: Answer this in visible text in your next assistant message. Keep the t
 """
 
 INTERRUPT_MARKER = "[The user interrupted this turn (Ctrl-C) before it completed.]"
+# The failure-path counterparts of the interrupt wording above: a turn that died from an error
+# gives every unanswered tool call this result (keeping the persisted history legal for the next
+# request) and ends with FAILED_TURN_MARKER so the next order sees where the previous one stopped.
+FAILED_TOOL_CALL_RESULT = "Failed: the turn ended with an error before this tool call finished."
+FAILED_TURN_MARKER = "[This turn ended early: {error}]"
 COMPACTION_SUMMARY_TITLE = "--- Prior Conversation Summary (compacted) ---"
 WORKING_STATE_CHECKPOINT_TITLE = "--- Working State Checkpoint ---"
 PREVIOUS_CONTEXT_TRIMMED = "Previous context was deterministically trimmed."

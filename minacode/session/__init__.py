@@ -113,6 +113,11 @@ class AgentState:
     # is. Live display state, like the retry and index fields above: set around the request in
     # ModelClient.compact and never persisted.
     compaction_entry: str = ""
+    # The last delegation that failed on this worker, for `Delegate status` to tell the parent
+    # (which cannot see the worker) why it stopped, instead of the parent having to remember.
+    # Live display state, like compaction_entry: never persisted.
+    last_error: str = ""
+    last_error_round: int = 0
     # The current request's output stream, for the throughput the running divider shows. Characters
     # rather than tokens because token deltas are not on the wire: providers report usage once, when
     # the request is over. Reset at the start of every attempt and cleared when it ends, so the rate

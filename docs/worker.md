@@ -132,6 +132,10 @@ Otherwise the model simply saw no task worth handing over, which is the normal c
 
 - **Reset drops the conversation, not the work.** `/worker reset` clears the worker's context —
   along with any wrong beliefs it picked up — while file changes and merged diffs survive.
+- **A failed delegation is not a lost worker.** When a send dies — a provider error, a timeout —
+  the worker keeps its context and any files it already changed are merged and named in the
+  failure, so the model can answer the problem and send again instead of starting over. Reset it
+  when you want the context gone too.
 - **Every send asks, even under `yolo`.** The order is a spec the model wrote for itself, so the
   approval brief is the one cheap check on it.
 - **The worker inherits your environment.** Same directory, skills, MCP servers, and language

@@ -484,6 +484,166 @@ def test_delegate_interrupt_settles_and_merges_diffs(tmp_path, monkeypatch):
     assert '"role": "tool"' in worker_messages
 
 
+# 7b. a failed delegation reports what the worker did before dying (steps, elapsed, files, alive,
+#     rounds, context_percent) as a ToolError envelope, and the worker's history stays legal: the
+#     unanswered tool call is settled with a Failed result and a turn-ended marker, so the next
+#     send goes out instead of being rejected for a dangling call.
+def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, monkeypatch):
+    from minacode.base import ToolError
+    from minacode.prompts import FAILED_TOOL_CALL_RESULT
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    # Step 1 edits a real file (its diff lands before the failure), step 2 dies inside tools.run,
+    # step 3 answers the follow-up delegation.
+    model = FakeModelClient(
+        [
+            (
+                {"role": "assistant", "content": "editing"},
+                [call("Edit", ["f.txt", [{"op": "create", "content": "x"}]])],
+                "editing",
+            ),
+            (
+                {"role": "assistant", "content": ""},
+                [call("Read", [{"path": "missing.txt", "ranges": [[0, 1]]}])],
+                "",
+            ),
+            ({"role": "assistant", "content": "done"}, [], "done"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+
+    real_run = ToolRunner.run
+    batches = {"n": 0}
+
+    def run_then_fail(self, tool_calls, **kwargs):
+        batches["n"] += 1
+        if batches["n"] == 2:
+            raise RuntimeError("provider timeout")
+        return real_run(self, tool_calls, **kwargs)
+
+    monkeypatch.setattr(ToolRunner, "run", run_then_fail)
+
+    with pytest.raises(ToolError) as excinfo:
+        _delegate_call(parent, runner, action="send", order="create f.txt then die")
+    message = str(excinfo.value)
+    assert "worker failed after 2 steps" in message
+    assert 'alive="true"' in message
+    assert 'rounds="1"' in message
+    assert 'context_percent="0"' in message  # no usage budget with the fake model: the state fallback
+    assert 'files="f.txt"' in message
+    assert "Its context is kept: answer the problem and send again, or reset to discard this worker's process." in message
+
+    # The diff was still merged: the parent sees the file, and the failure report names it.
+    assert (tmp_path / "f.txt").read_text() == "x"
+    assert any(diff.path == "f.txt" for diff in parent.turn_diffs)
+
+    # The settled history has no unanswered tool call: the Read got a Failed result and the turn
+    # ends with the failure marker (the same check settle_interrupted_turn runs).
+    worker = parent.worker
+    worker_messages = json.dumps(worker.messages)
+    assert FAILED_TOOL_CALL_RESULT in worker_messages
+    assert '"[This turn ended early: provider timeout]"' in worker_messages
+    answered = {message.get("tool_call_id") for message in worker.messages if message.get("role") == "tool"}
+    dangling = [
+        call_id
+        for message in worker.messages
+        if message.get("role") == "assistant"
+        for call_id in [call.get("id") for call in (message.get("tool_calls") or [])]
+        if call_id and call_id not in answered
+    ]
+    assert dangling == []
+
+    # The next delegation on the same worker goes out normally on the settled history.
+    result = _delegate_call(parent, runner, action="send", order="continue")
+    assert 'rounds="2"' in result
+    assert "done" in result
+
+
+# 7c. Delegate status carries the last failure and the round it happened in until a send succeeds
+#     and clears it, so the parent can confirm why the worker stopped without relying on memory.
+def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypatch):
+    from minacode.base import ToolError
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient(
+        [
+            (
+                {"role": "assistant", "content": ""},
+                [call("Read", [{"path": "missing.txt", "ranges": [[0, 1]]}])],
+                "",
+            ),
+            ({"role": "assistant", "content": "done"}, [], "done"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+
+    real_run = ToolRunner.run
+    monkeypatch.setattr(ToolRunner, "run", lambda self, tool_calls, **kwargs: (_ for _ in ()).throw(RuntimeError("provider timeout")))
+    with pytest.raises(ToolError):
+        _delegate_call(parent, runner, action="send", order="first")
+
+    status = _delegate_call(parent, runner, action="status")
+    assert 'last_error="provider timeout"' in status
+    assert 'last_error_round="1"' in status
+    assert 'rounds="1"' in status
+    assert 'alive="true"' in status
+
+    # A successful send clears the remembered failure.
+    monkeypatch.setattr(ToolRunner, "run", real_run)
+    _delegate_call(parent, runner, action="send", order="second")
+    assert parent.worker.state.last_error == "" and parent.worker.state.last_error_round == 0
+    status = _delegate_call(parent, runner, action="status")
+    assert "last_error" not in status
+    assert 'rounds="2"' in status
+
+
+# 7d. neither the status envelope nor the worker's permanent history takes a provider error
+#     verbatim: an HTTP body carries quotes and newlines that break the attribute the model parses,
+#     and it would ride every later request from inside the turn-ended marker.
+def test_delegate_failure_bounds_and_sanitizes_the_error_text(tmp_path, monkeypatch):
+    from minacode.base import ToolError
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient(
+        [
+            (
+                {"role": "assistant", "content": ""},
+                [call("Read", [{"path": "missing.txt", "ranges": [[0, 1]]}])],
+                "",
+            ),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+    body = 'HTTP 400: {"error": "bad "quoted" thing"}\nsecond line\n' + "x" * 3000
+    monkeypatch.setattr(ToolRunner, "run", lambda self, tool_calls, **kwargs: (_ for _ in ()).throw(RuntimeError(body)))
+    with pytest.raises(ToolError):
+        _delegate_call(parent, runner, action="send", order="first")
+
+    # The status tag stays parseable: one line, no bare double quote inside the attribute value.
+    status = _delegate_call(parent, runner, action="status")
+    head = status.splitlines()[0]
+    assert head.endswith(">") and head.count('"') % 2 == 0
+    value = head.split('last_error="', 1)[1].split('"', 1)[0]
+    assert value.startswith("HTTP 400: {'error': 'bad 'quoted' thing'}")
+    assert "\n" not in value and len(value) <= 200
+
+    # The marker in permanent history is bounded, so a whole HTTP body does not ride every later
+    # request; it still names where the turn stopped.
+    marker = next(
+        message["content"]
+        for message in parent.worker.messages
+        if isinstance(message.get("content"), str) and message["content"].startswith("[This turn ended early:")
+    )
+    assert len(marker) <= 330 and "\n" not in marker
+    assert "HTTP 400" in marker and marker.endswith("]")
+
+
 # 8. cache prefix: system + tools + Environment are byte-identical across delegations.
 def test_worker_cache_prefix_stable_across_delegations(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)

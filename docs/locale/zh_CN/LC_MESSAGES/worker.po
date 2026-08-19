@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.20\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-19 10:30-0700\n"
+"POT-Creation-Date: 2026-08-19 11:04-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -259,8 +259,8 @@ msgid ""
 "line."
 msgstr ""
 "`View order` 会在只读查看器里打开完整的 order —— 同样的字段行，然后是按 markdown 渲染的 order "
-"本身。可以滚动查看，`Esc` 返回操作行。委派跑完之后，`Ctrl-O` 会重新打开同一份 order，并把 worker "
-"的回答显示在它下面 —— 这正是拿两者相互对照的地方：记录里只留下了 `Delegate send` 那一行。"
+"本身。可以滚动查看，`Esc` 返回操作行。委派跑完之后，`Ctrl-O` 会重新打开同一份 order，并把 worker 的回答显示在它下面 "
+"—— 这正是拿两者相互对照的地方：记录里只留下了 `Delegate send` 那一行。"
 
 #: ../../worker.md:116
 msgid "When nothing delegates"
@@ -319,18 +319,30 @@ msgstr ""
 
 #: ../../worker.md:135
 msgid ""
+"**A failed delegation is not a lost worker.** When a send dies — a "
+"provider error, a timeout — the worker keeps its context and any files it"
+" already changed are merged and named in the failure, so the model can "
+"answer the problem and send again instead of starting over. Reset it when"
+" you want the context gone too."
+msgstr ""
+"**一次委派失败不等于 worker 报废。** 一次发送死掉时 —— provider "
+"报错、超时 —— worker 的上下文仍然保留，它已经改过的文件也已经合并，并在失败信息里被点名，"
+"因此模型可以把问题回答掉再发一次，而不必从头来过。想把上下文也一并清掉时才 reset 它。"
+
+#: ../../worker.md:139
+msgid ""
 "**Every send asks, even under `yolo`.** The order is a spec the model "
 "wrote for itself, so the approval brief is the one cheap check on it."
 msgstr "**每一次发送都会询问，即使在 `yolo` 下也一样。** order 是模型给自己写的规格，因此这份审批简报是对它唯一的低成本检查。"
 
-#: ../../worker.md:137
+#: ../../worker.md:141
 msgid ""
 "**The worker inherits your environment.** Same directory, skills, MCP "
 "servers, and language setting; the files and the repository are what both"
 " actually share."
 msgstr "**worker 继承你的环境。** 同一个目录、skills、MCP 服务器和语言设置；真正由双方共享的是文件和这个仓库。"
 
-#: ../../worker.md:139
+#: ../../worker.md:143
 msgid ""
 "**Its tokens are its own.** The worker bills to its own entry and keeps "
 "its own context, and `/status` gives it separate rows — provider and "
@@ -340,7 +352,7 @@ msgstr ""
 "**它的 token 是它自己的。** worker 按自己的条目计费、保有自己的上下文，`/status` "
 "也会给它单独的几行——provider 与模型、上下文占用与轮数、缓存命中率——因此一次委派不会和父会话的数字混在一起。"
 
-#: ../../worker.md:142
+#: ../../worker.md:146
 msgid ""
 "**Its sessions are not yours to manage.** Worker snapshots ride along "
 "with the parent's and never appear in `/sessions`; when the parent's "

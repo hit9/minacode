@@ -26,6 +26,12 @@
 
 ### Fixed
 
+- A failed `Delegate send` now reports what the worker did before dying — steps, elapsed time,
+  changed files, rounds, and context fill — and that its context survives, so the parent can
+  decide between resending and resetting instead of guessing. The failed turn is settled in the
+  worker's history: every unanswered tool call gets a `Failed` result and the turn ends with a
+  `[This turn ended early: …]` marker, so the next delegation goes out normally, and
+  `Delegate status` keeps showing the last failure until a send succeeds.
 - A multi-line command no longer breaks its row in the `Ctrl-O` list. A `git commit -m` with a real
   message spilled over several lines and took the numbering and the selection bar with it; the row
   now folds to one line, and the viewer still shows the command exactly as it was run.
