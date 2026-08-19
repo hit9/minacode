@@ -266,6 +266,9 @@ def status(loop: CommandLoop, args: str) -> str:
                 f"calls `{compaction_usage.calls}`; total `{Text.abbreviate_count(compaction_usage.total_tokens)}`; `{compaction_model}`",
             )
         )
+        # The summary request is built to ride the conversation's own cached prefix, and this is
+        # the only place that says whether it did. Without it the reuse is unfalsifiable.
+        rows.append(("compaction cache", _status_cache_line(compaction_usage)))
 
     worker = loop.session.worker
     if worker is None:

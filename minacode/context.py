@@ -265,17 +265,21 @@ class ContextManager:
 
         Eligible only when the summary runs on the entry that served the turn: a `[compaction]`
         entry elsewhere is a different cache namespace, so rebuilding the prefix would cost the
-        whole history at full rate to save nothing. Turn-scope compaction takes the flattened path:
-        its span comes from the live turn rather than from stored history, and is not a prefix of
-        what was sent."""
-        if turn_messages is not None or self.session.config.compaction_provider or self.session.system_info is None:
+        whole history at full rate to save nothing."""
+        if self.session.config.compaction_provider or self.session.system_info is None:
             return None
         base_system = self.session.system_prompt
         if not base_system or not compacted:
             return None
-        live = self.model_messages(base_system)
-        cut = len(self.model_header(base_system)) + self.compaction_prefix_count()
-        if cut <= len(self.model_header(base_system)):
+        live = self.model_messages(base_system, turn_messages)
+        header = len(self.model_header(base_system))
+        # A turn-scope span sits after the stored conversation rather than at the head of it, so
+        # its slice starts there. Both scopes are ordinary prefixes of the same projection; only
+        # the offset differs.
+        cut = header + (
+            len(self.session.messages) + self.compaction_prefix_count(turn_messages) if turn_messages is not None else self.compaction_prefix_count()
+        )
+        if cut <= header:
             return None
         tail = compaction_tail(
             state=self.session.state.format(),
@@ -284,10 +288,10 @@ class ContextManager:
         )
         return [*live[:cut], {"role": "user", "content": tail}], Tool.resolved_schemas(self.session)
 
-    def compaction_prefix_count(self) -> int:
-        """How many stored messages the summary request carries, counted the way `compaction_parts`
-        splits them so the slice ends where the kept tail begins."""
-        messages = self.session.messages
+    def compaction_prefix_count(self, turn_messages: list[Json] | None = None) -> int:
+        """How many messages of the scope's own list the summary request carries, counted the way
+        its `compaction_parts` splits them so the slice ends where the kept tail begins."""
+        messages = self.session.messages if turn_messages is None else turn_messages
         index = self.latest_user_index(messages)
         if index is None:
             return len(messages)

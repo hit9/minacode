@@ -1663,13 +1663,22 @@ def test_compaction_prefix_survives_an_earlier_summary_and_repeated_schemas(tmp_
     assert len(messages) - 1 > len(context.model_header(live.system_prompt))
 
 
-def test_compaction_falls_back_to_the_flat_payload_for_turn_scope(tmp_path):
-    """A turn-scope span comes from the live turn, not from stored history, so it is not a prefix
-    of what was sent and cannot be sliced out of it."""
+def test_turn_scope_compaction_slices_the_same_projection(tmp_path):
+    """A turn-scope span sits after the stored conversation rather than at the head of it, but it is
+    the same projection and the same kind of prefix -- only the offset differs."""
     live = session(tmp_path)
-    live.messages = [{"role": "user", "content": "hello"}]
-    turn = [{"role": "assistant", "content": "working"}]
-    assert ContextManager(live).compaction_request(list(live.messages), turn) is None
+    live.messages = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "starting"}]
+    turn = [{"role": "assistant", "content": f"step {index}"} for index in range(14)]
+    context = ContextManager(live)
+    compacted, _keep = context.turn_compaction_parts(turn)
+    assert compacted
+
+    messages, _tools = context.compaction_request(compacted, turn)
+
+    sent = context.model_messages(live.system_prompt, turn)
+    assert messages[:-1] == sent[: len(messages) - 1]
+    # The slice reaches into the turn, not merely up to the end of stored history.
+    assert len(messages) - 1 > len(context.model_header(live.system_prompt)) + len(live.messages)
 
 
 def test_compaction_falls_back_to_the_flat_payload_on_a_separate_provider(tmp_path):

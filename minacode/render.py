@@ -1113,7 +1113,13 @@ class StatusBar:
         running_jobs = len(self.session.running_jobs())
         if running_jobs:
             parts.append((f"jobs {running_jobs}", "warn"))
-        usage = source.usage
+        # While a summary is on the wire, the bar describes that request, not the conversation's
+        # last one: `compaction_entry` is set for exactly its duration, and its usage is counted
+        # separately. Showing the conversation's numbers there reported a cache rate for a request
+        # that was not running, and after apply_compaction cleared the last-* fields the rate
+        # vanished entirely -- so the one request built to reuse the prefix was the one request
+        # whose reuse could never be seen.
+        usage = source.compaction_usage if source.state.compaction_entry else source.usage
         if usage.last_prompt_tokens and usage.last_prompt_budget:
             # The provider-reported tokens and the budget of the last request are the display truth;
             # the estimate (state.context_percent) stays as the fallback before any request exists.
