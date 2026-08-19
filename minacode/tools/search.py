@@ -21,10 +21,15 @@ from minacode.tools.files import ReadTool
 
 class SearchTool(Tool):
     NAME = "Search"
-    DESCRIPTION = "Search UTF-8 text files with case-insensitive regex; skips binary/hidden/gitignored files and returns path anchor=line:hash matches."
+    DESCRIPTION = (
+        "Search UTF-8 text files with case-insensitive regex, through ripgrep where it is installed; skips binary/hidden/gitignored "
+        "files and returns path anchor=line:hash matches. Prefer it over grep or rg in a shell: matches come back with anchors you "
+        "can edit from directly, where shell output carries none and costs you a re-read. The batch form runs several unrelated "
+        "queries -- each with its own pattern, path, and glob -- in one call, so a whole investigation is one round trip."
+    )
     EXAMPLE = (
         'Search source with context. Example: {"pattern":"class .*Tool","path":"src","glob":"*.py","context":2}',
-        'Search multiple queries. Example: {"queries":[{"pattern":"TODO","glob":"*.py"},{"pattern":"FIXME","path":"tests","glob":"*.py"}]}',
+        'A whole investigation in one call, each query labelled by its pattern in the result. Example: {"queries":[{"pattern":"class ChatBubble","glob":"*.tsx"},{"pattern":"ChatBubble","path":"src/views","context":2},{"pattern":"assistantName","glob":"*.ts"}]}',
     )
     MAX_FILE_BYTES = 2_000_000
     MAX_CONTEXT = 30
