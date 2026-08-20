@@ -857,6 +857,7 @@ def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
     calls = []
     runner.model_stream = lambda kind, text: calls.append((kind, text))
     _delegate_call(parent, runner, action="send", order="o")
+    calls.clear()  # the send itself clears the live preview (delegate.py); test the wrapper alone
     on_stream = parent.worker._agent.model.on_stream
     assert on_stream is not runner.model_stream  # wrapped: `output_done` must not promote
     assert callable(on_stream)
@@ -2394,6 +2395,61 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     done = [label for label in labels if label.startswith("worker done · ")]
     assert done, "the finish worker_rule callback never fired"
     assert done[0].startswith("worker done · fix /status blank line · steps 1")
+# 28c. the worker's final report prints into the scrollback in full -- like its interim
+# messages -- while the finish block's answer preview stays the folded three-line form: the
+# scrollback block is the record, the preview only shows that it is there.
+def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, LogRole, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    answer = "\n".join(f"report line {i}" for i in range(40))
+    model = FakeModelClient([({"role": "assistant", "content": answer}, [], answer)])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "ok"
+
+    blocks = [item for item in outputs if isinstance(item, LogBlock)]
+    # The worker's own output (agent.output_fn) prints the whole answer as one AUTO block.
+    full = next(
+        block
+        for block in blocks
+        if any(item.role is LogRole.AUTO and "report line 0" in item.text and "report line 39" in item.text for item, _ in block.walk())
+    )
+    assert "report line 20" in str(full)  # the middle of the answer survived
+    # The finish block's preview is still the folded three-line form (head, omitted marker, tail).
+    finish = next(
+        block
+        for block in blocks
+        if block is not full and any(item.role is LogRole.OUTPUT for item, _ in block.walk())
+    )
+    rendered = str(finish)
+    assert "lines omitted" in rendered
+    assert "report line 20" not in rendered  # the folded preview only carries the head and tail
+
+
+# 28d. with the loop wired in (worker_answer set), the final report goes through the answer
+# renderer instead of the plain log lines: the hook receives the whole answer, exactly once.
+def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "the report"}, [], "the report")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    answers = []
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    runner.worker_answer = answers.append
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "ok"
+
+    assert answers == ["the report"]
+    assert not any("the report" in str(item) for item in outputs if isinstance(item, str))  # no plain-text duplicate on the fallback path
 
 
 # 29. a Delegate reset is a one-shot tool call, not a bracket: it keeps its ordinary tool root
