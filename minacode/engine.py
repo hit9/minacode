@@ -58,12 +58,15 @@ class Agent:
     never swallows a follow-up.
     """
 
-    def __init__(self, session: Session, input_fn=input, output_fn=print):
+    def __init__(self, session: Session, input_fn=input, output_fn=print, final_output_fn=None):
         self.session = session
         self.model = ModelClient(session)
         self.context = ContextManager(session, self.model)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
+        # How a turn's final answer is published, when it should look different from interim
+        # text (e.g. markdown rendering). None publishes through output_fn like interim text.
+        self.final_output_fn = final_output_fn
         self.cancel_requested = threading.Event()
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
@@ -145,7 +148,7 @@ class Agent:
                     # Publish the final answer through the same output channel as interim text, so
                     # every agent (the parent's and a worker's) reports its final answer the same
                     # way; callers that used to print the return value themselves no longer do.
-                    self.output_fn(answer)
+                    (self.final_output_fn or self.output_fn)(answer)
                     self.finish_turn(turn_messages, transcript_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
                 if content.strip() and self.terminal_next_hints(tool_calls):
@@ -171,7 +174,7 @@ class Agent:
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
             self.stopped_at_max_steps = True
             self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": stopped})
-            self.output_fn(stopped)
+            (self.final_output_fn or self.output_fn)(stopped)
             return stopped
         except KeyboardInterrupt:
             self.session.release_user_inputs()
@@ -289,8 +292,9 @@ class Agent:
         self.raise_if_cancelled()
         self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
         # Same publishing rule as the plain final-answer path: the answer goes out through
-        # output_fn; a stream promotion that already wrote it is skipped by the consumer.
-        self.output_fn(answer)
+        # final_output_fn (or output_fn); a stream promotion that already wrote it is skipped
+        # by the consumer.
+        (self.final_output_fn or self.output_fn)(answer)
         return answer
 
     def settle_interrupted_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:

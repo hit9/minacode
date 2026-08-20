@@ -2430,6 +2430,33 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     assert "report line 20" not in rendered  # the folded preview only carries the head and tail
 
 
+# 28e. with the loop wired in (worker_answer set), the worker's final report goes through the
+# answer renderer (markdown) instead of the plain log lines; interim messages keep the plain
+# output channel.
+def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, LogRole, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    model = FakeModelClient([({"role": "assistant", "content": "the report"}, [], "the report")])
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    answers = []
+    outputs = []
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
+    runner.worker_answer = answers.append
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    assert status == "ok"
+
+    assert answers == ["the report"]  # the report went through the markdown hook, exactly once
+    auto = [
+        block
+        for block in outputs
+        if isinstance(block, LogBlock) and any(item.role is LogRole.AUTO for item, _ in block.walk())
+    ]
+    assert not auto  # nothing on the plain output channel carries the final report
+
+
 # 29. a Delegate reset is a one-shot tool call, not a bracket: it keeps its ordinary tool root
 #     and adds a plain done child stating what was cleared and what survives. No worker_rule rule
 #     and no [worker] ◀ root.
