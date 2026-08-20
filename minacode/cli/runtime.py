@@ -163,12 +163,12 @@ class TuiRuntime:
         started = time.monotonic()
         cancelled = False
         malformed_tool_call = False
-        promoted_answer = ""
+        answered = False
         try:
-            answer = self.loop.agent.run(user_input)
+            self.loop.agent.run(user_input)
+            answered = True
         except KeyboardInterrupt:
             self.submit_next(self.loop.take_pending_inputs())
-            answer = ""
             cancelled = True
         except MalformedToolCallError as error:
             answer = str(error)
@@ -176,21 +176,18 @@ class TuiRuntime:
         except MinacodeError as error:
             answer = f"Error: {error}"
         finally:
-            # Snapshot the stream-promotion marker before reset_turn clears it: a terminal NextHints
-            # batch promotes its answer into scrollback like any tool batch, but nothing re-publishes
-            # it through agent_output, so without this the final emit below would print it again.
-            with self.loop.model_stream_lock:
-                promoted_answer = self.loop.model_stream_promoted_text
             self.reset_turn()
             self.loop.session.state.manual_model_retry_requested = False
             CodeIndex(self.loop.session).update_pending_async()
         if cancelled:
             self.loop.emit("Cancelled")
             return
-        if remaining := self.loop.unpromoted_text(answer, promoted_answer):
+        # The engine publishes its own final answer through output_fn now; only errors it raised
+        # before publishing land here.
+        if not answered:
             if self.loop.ui.color:
                 self.loop.emit()
-            self.loop.ui.emit_answer(remaining, rule=False)
+            self.loop.ui.emit_answer(answer, rule=False)
         # Emitted outside the promotion check: a promoted answer is already in scrollback without
         # its sources, so skipping the footer there would drop them exactly when a search ran.
         if footer := search_sources_footer(self.loop.agent.turn_sources):

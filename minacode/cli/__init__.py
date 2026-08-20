@@ -231,7 +231,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.model_stream = self.model_stream_output
         self.agent.tools.question_fn = lambda specs: question_interaction(self, specs)
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
-        self.agent.tools.worker_answer = self.worker_answer_output
         self.agent.tools.worker_config_picker = worker.WorkerFlow(self).run_worker_config
         self.agent.tools.text_viewer = lambda view: approval_text_viewer(self, view)
         self.agent.tools.approval_form = self.set_approval_form
@@ -749,11 +748,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         if self.ui.color and text.strip():
             self.emit()
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
-
-    def worker_answer_output(self, text: str) -> None:
-        """The worker's final report, rendered like an answer (markdown) rather than the plain log
-        lines its interim messages print as."""
-        self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def _begin_cli_preview(self) -> None:
         """Pause the status bar if running and start the CLI Bash live-preview line."""

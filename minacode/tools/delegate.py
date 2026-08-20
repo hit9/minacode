@@ -344,19 +344,9 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         failure: Exception | None = None
         try:
             with runner._active_worker.track(agent):
+                # The engine publishes the final answer through the agent's output_fn, so a
+                # worker's report lands in the parent scrollback like its interim messages.
                 answer = agent.run(order)
-                # The engine returns a turn's final answer without calling output_fn (interim
-                # text prints at engine.py:159-160; the final one does not), so the report the
-                # user just watched stream into the live preview would never land in the
-                # scrollback on its own. Print it like any other worker message, and clear the
-                # preview the way an interim `output_done` would -- the parent's promotion path
-                # is skipped for worker text (see _worker_stream), so nothing else clears it.
-                if runner.model_stream is not None:
-                    runner.model_stream("", "")
-                if runner.worker_answer is not None:
-                    runner.worker_answer(answer)  # Rendered like an agent answer: markdown.
-                else:
-                    agent.output_fn(answer)
         except Exception as error:  # noqa: BLE001 - the worker's failure becomes a ToolError envelope below, after the finally block merged its diffs
             failure = error
         finally:

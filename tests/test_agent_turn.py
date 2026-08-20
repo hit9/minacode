@@ -664,7 +664,8 @@ def test_agent_does_not_reclassify_content_when_native_tool_call_exists(tmp_path
     assert all("[Runtime protocol correction]" not in str(message.get("content") or "") for message in agent.model.requests[1])
     assert [record.name for record in s.tool_records] == ["Read"]
     assert output[0] == pseudo
-    assert len(output) == 2
+    assert output[-1] == "done"  # the engine publishes the final answer through output_fn
+    assert len(output) == 3
 
 
 def test_system_prompt_requires_native_tool_calls():
@@ -816,7 +817,8 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
     assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant", "tool", "assistant"]
     assert len(s.tool_records) == 1
     assert s.pending_user_inputs == []
-    assert all(isinstance(item, LogBlock) for item in output)  # only the tool log; no forced acknowledgement text
+    assert all(isinstance(item, LogBlock) for item in output[:-1])  # tool logs only
+    assert output[-1] == "done"  # the engine publishes the final answer through output_fn
 
 
 def test_agent_never_rewrites_a_sent_followup_message(tmp_path):

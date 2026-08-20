@@ -305,7 +305,8 @@ def test_tui_runtime_does_not_reemit_a_stream_promoted_answer(tmp_path, monkeypa
 
 
 def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch):
-    # A plain final answer is never promoted, so the post-turn emit is its only path to scrollback.
+    # A plain final answer is published by the engine through output_fn now, never by the
+    # post-turn emit; the post-turn emit only prints errors the engine raised first.
     scenario_session = session(tmp_path)
     command_loop = CommandLoop(
         Agent(scenario_session, output_fn=lambda _text: None),
@@ -322,7 +323,7 @@ def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch
 
     runtime.run_agent_turn("do it")
 
-    assert emitted == [("the final answer",)]
+    assert emitted == []  # the engine printed the answer; the runtime does not repeat it
 
 
 def test_automatic_compaction_replaces_working_divider_status(tmp_path):
@@ -563,7 +564,11 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
 
 
 def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_path, monkeypatch):
-    """The final answer is published once even when a mid-response promotion wrote its opening."""
+    """The final answer is published once even when a mid-response promotion wrote its opening.
+
+    The engine publishes through agent_output, which consumes the one-shot promotion marker
+    and skips the already-promoted prefix; the runtime's post-turn emit no longer prints the
+    answer (the engine did), so nothing repeats it."""
     command_loop = loop(tmp_path)
     command_loop.tui = TuiApp()
     runtime = TuiRuntime(command_loop)
@@ -574,6 +579,7 @@ def test_turn_end_answer_drops_the_prefix_already_promoted_into_scrollback(tmp_p
     def answer(_user_input):
         with command_loop.model_stream_lock:
             command_loop.model_stream_promoted_text = "Let me look that up."
+        command_loop.agent_output("Let me look that up.\n\nThe searched answer.")
         return "Let me look that up.\n\nThe searched answer."
 
     command_loop.agent.run = answer
@@ -626,7 +632,11 @@ def test_stream_promotion_waits_for_the_follow_up_it_answers(tmp_path, monkeypat
 
     assert command_loop.agent.run("update the code") == "done"
 
-    assert timeline == [("user", ["also update the README"]), ("assistant", "Sure, editing both files.")]
+    assert timeline == [
+        ("user", ["also update the README"]),
+        ("assistant", "Sure, editing both files."),
+        ("assistant", "done"),  # the engine publishes the final answer through output_fn
+    ]
 
 
 def test_tui_turn_reset_clears_unconsumed_stream_promotion(tmp_path):

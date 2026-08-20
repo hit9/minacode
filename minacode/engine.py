@@ -142,6 +142,10 @@ class Agent:
                     if not content.strip():
                         raise ModelError("empty final response")
                     answer = content.strip()
+                    # Publish the final answer through the same output channel as interim text, so
+                    # every agent (the parent's and a worker's) reports its final answer the same
+                    # way; callers that used to print the return value themselves no longer do.
+                    self.output_fn(answer)
                     self.finish_turn(turn_messages, transcript_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
                 if content.strip() and self.terminal_next_hints(tool_calls):
@@ -167,6 +171,7 @@ class Agent:
             stopped = f"Stopped after max_agent_steps={self.session.settings.max_steps}"
             self.stopped_at_max_steps = True
             self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": stopped})
+            self.output_fn(stopped)
             return stopped
         except KeyboardInterrupt:
             self.session.release_user_inputs()
@@ -283,6 +288,9 @@ class Agent:
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(result_messages))
         self.raise_if_cancelled()
         self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
+        # Same publishing rule as the plain final-answer path: the answer goes out through
+        # output_fn; a stream promotion that already wrote it is skipped by the consumer.
+        self.output_fn(answer)
         return answer
 
     def settle_interrupted_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:

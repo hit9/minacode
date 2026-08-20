@@ -263,9 +263,6 @@ class ToolRunner:
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
         self.worker_rule: Callable | None = None
-        # The worker's final report, rendered like an agent answer (markdown) rather than the plain
-        # log lines its interim messages use. None falls back to output_fn (headless runners).
-        self.worker_answer: Callable[[str], None] | None = None
         self.question_fn: Callable[[list[AskSpec]], list[str]] | None = None
         # Injected by CommandLoop: drives the Delegate confirm-time `c` config loop through the
         # shared choice selector (see CommandLoop.run_worker_config). None degrades the `c` key to

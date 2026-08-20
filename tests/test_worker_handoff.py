@@ -857,7 +857,6 @@ def test_worker_model_stream_is_wired_from_the_runner(tmp_path, monkeypatch):
     calls = []
     runner.model_stream = lambda kind, text: calls.append((kind, text))
     _delegate_call(parent, runner, action="send", order="o")
-    calls.clear()  # the send itself clears the live preview (delegate.py); test the wrapper alone
     on_stream = parent.worker._agent.model.on_stream
     assert on_stream is not runner.model_stream  # wrapped: `output_done` must not promote
     assert callable(on_stream)
@@ -2429,27 +2428,6 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     rendered = str(finish)
     assert "lines omitted" in rendered
     assert "report line 20" not in rendered  # the folded preview only carries the head and tail
-
-
-# 28d. with the loop wired in (worker_answer set), the final report goes through the answer
-# renderer instead of the plain log lines: the hook receives the whole answer, exactly once.
-def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
-    from minacode.base import ToolCall
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-
-    parent = _delegate_session(tmp_path)
-    model = FakeModelClient([({"role": "assistant", "content": "the report"}, [], "the report")])
-    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
-    answers = []
-    outputs = []
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    runner.worker_answer = answers.append
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
-    assert status == "ok"
-
-    assert answers == ["the report"]
-    assert not any("the report" in str(item) for item in outputs if isinstance(item, str))  # no plain-text duplicate on the fallback path
 
 
 # 29. a Delegate reset is a one-shot tool call, not a bracket: it keeps its ordinary tool root

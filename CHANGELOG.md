@@ -13,9 +13,9 @@
 - `Ctrl-P`/`Up` pressed immediately after submitting a message now recalls that message. Every
   submit resets the input buffer, and the history copy that refills it only runs at the next
   repaint, so a recall key arriving in between found an empty list and recalled nothing.
-- The worker's final report now prints into the scrollback rendered like the agent's own
-  answers, instead of hiding inside the tool result; the folded answer preview under the
-  `worker done` divider is unchanged.
+- The worker's final report now prints into the scrollback like its interim messages, instead
+  of hiding inside the tool result; the folded answer preview under the `worker done` divider
+  is unchanged.
 
 ## 0.27.0 - 2026-08-19
 
