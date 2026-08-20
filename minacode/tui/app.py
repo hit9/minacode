@@ -476,7 +476,12 @@ class TuiApp:
             return
         for entry in reversed(entries):  # Oldest first: each appendleft lands before the last one.
             buffer._working_lines.appendleft(entry)
+        # The index setter parks the cursor at zero; the native loader moves the index without
+        # touching it, and the text is unchanged here (the edited line just moved), so keep the
+        # cursor where it was - a draft being recalled over should not jump to the line start.
+        cursor = buffer.cursor_position
         buffer.working_index = len(entries)  # The freshly reset line stays the one being edited.
+        buffer.cursor_position = cursor
         done = asyncio.get_running_loop().create_future()
         done.set_result(None)
         buffer._load_history_task = done  # The next repaint must not copy the entries in again.

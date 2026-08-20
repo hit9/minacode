@@ -526,6 +526,103 @@ def test_interactive_tui_history_recall_wins_the_race_with_the_async_history_loa
     assert app.input_buffer.text == "queued message"
 
 
+def test_interactive_tui_manual_history_load_matches_the_async_loader(monkeypatch, tmp_path):
+    """The synchronous history load must reproduce the native async loader exactly.
+
+    It reaches into prompt_toolkit's private buffer state, so this pins the contract it relies
+    on: the same working-lines layout the loader produces, the same recall order, and no
+    duplication when a later repaint runs the real loader again.
+    """
+    from prompt_toolkit.buffer import Buffer
+
+    received = []
+    app = TuiApp(
+        on_running_submit=received.append,
+        history=FileHistory(str(tmp_path / "history.txt")),
+    )
+    app.set_running("working")
+
+    native_loader = Buffer.load_history_if_not_yet_loaded
+    native_loading = {"enabled": True}
+
+    def toggleable_loader(self):
+        if native_loading["enabled"]:
+            native_loader(self)
+
+    monkeypatch.setattr(Buffer, "load_history_if_not_yet_loaded", toggleable_loader)
+
+    def drive(pipe_input):
+        buffer = app.input_buffer
+
+        def working_lines():
+            try:
+                return list(buffer._working_lines)
+            except RuntimeError:  # The deque mutated between appends while the loader ran.
+                return None
+
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("first\r")
+        wait_until(lambda: received == ["first"])
+        wait_until(lambda: working_lines() == ["first", ""])
+        pipe_input.send_text("second\r")
+        wait_until(lambda: received == ["first", "second"])
+        wait_until(lambda: working_lines() == ["first", "second", ""])
+        assert buffer.working_index == 2  # The native layout: oldest..newest, then the editing line.
+
+        native_loading["enabled"] = False  # The next recall runs on the manual load alone.
+        pipe_input.send_text("third\r")
+        wait_until(lambda: received == ["first", "second", "third"])
+        pipe_input.send_text("\x10")
+        wait_until(lambda: buffer.text == "third")
+        assert working_lines() == ["first", "second", "third", ""]
+        assert buffer.working_index == 2  # Sitting on the recalled entry, not the editing line.
+
+        pipe_input.send_text("\x10")
+        wait_until(lambda: buffer.text == "second")  # The walk order follows the native layout.
+
+        native_loading["enabled"] = True
+        pipe_input.send_text("\x10")
+        wait_until(lambda: buffer.text == "first")
+        time.sleep(0.3)  # Repaints ran with the real loader again; a duplicate copy would show here.
+        assert working_lines() == ["first", "second", "third", ""]
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
+def test_interactive_tui_recall_over_a_draft_keeps_the_cursor(monkeypatch, tmp_path):
+    """A recall over a draft that matches no history entry recalls nothing and leaves the cursor.
+
+    The manual load moves the buffer's working index, whose setter parks the cursor at zero;
+    the text is unchanged (the draft line just moved), so the cursor must stay where it was.
+    """
+    from prompt_toolkit.buffer import Buffer
+
+    received = []
+    app = TuiApp(
+        on_running_submit=received.append,
+        history=FileHistory(str(tmp_path / "history.txt")),
+    )
+    app.set_running("working")
+    monkeypatch.setattr(Buffer, "load_history_if_not_yet_loaded", lambda self: None)
+
+    def drive(pipe_input):
+        buffer = app.input_buffer
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("submitted\r")
+        wait_until(lambda: received == ["submitted"])
+        pipe_input.send_text("draft")
+        wait_until(lambda: buffer.text == "draft")
+        pipe_input.send_text("\x10")
+        wait_until(lambda: len(buffer._working_lines) == 2)  # The manual load ran.
+        time.sleep(0.1)
+        assert buffer.text == "draft"  # No entry starts with the draft, so nothing is recalled.
+        assert buffer.cursor_position == len("draft")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+
 def test_interactive_tui_ctrl_r_search_enter_fills_input_without_submitting(monkeypatch, tmp_path):
     received = []
     app = None
