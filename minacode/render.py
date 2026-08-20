@@ -943,11 +943,22 @@ class LiveSpark:
         return ["fg:" + Theme.mix(low, high, step / span) + (" bold" if step >= cls.STEPS - cls.BOLD_STEPS else "") for step in range(cls.STEPS)]
 
     @classmethod
-    def style(cls) -> str:
-        """Where on that ramp the spark sits right now: a triangular breath, dark to bright and
-        back, on the same curve as the divider pulse."""
-        phase = (time.monotonic() % cls.PERIOD) / cls.PERIOD
-        intensity = 1.0 - abs(2.0 * phase - 1.0)
+    def style(cls, started_at: float = 0.0) -> str:
+        """Where on the ramp the spark sits now: a triangular breath measured from `started_at`,
+        opening at the crest and falling from there.
+
+        Both halves of that matter. Timed off the wall clock instead, a region catches the cycle
+        wherever it happens to be, so one appearing near the trough opens near-black and stays
+        unreadable for over a second — precisely the moment it exists to announce. And starting
+        bright is what makes the arrival the loudest frame; the breath afterwards is what says it
+        is still going.
+
+        A falsy `started_at` falls back to the wall clock, which is the old arbitrary phase but
+        never a crash: a caller with no anchor still gets a breathing spark.
+        """
+        elapsed = (time.monotonic() - started_at) if started_at else time.monotonic()
+        phase = (elapsed % cls.PERIOD) / cls.PERIOD
+        intensity = abs(2.0 * phase - 1.0)  # 1 at the start, 0 at the half-period, 1 again
         ramp = cls.ramp()
         return ramp[min(len(ramp) - 1, int(intensity * len(ramp)))]
 
@@ -1048,7 +1059,7 @@ class BashLivePreview:
         limit = max(1, width - get_cwidth(rail) - 1)
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
-        rows = [[(LiveSpark.style(), LogBlock.margin(2) + LiveSpark.GLYPH), ("ansibrightblack", status)]]
+        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.GLYPH), ("ansibrightblack", status)]]
         rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
         return rows
 

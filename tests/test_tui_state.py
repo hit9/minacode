@@ -214,7 +214,10 @@ def test_bash_live_preview_frame_rows():
     # frame never had: it is built as `hierarchy(None, ...)`. Same mark as the stream preview --
     # both say the same thing, that the region is live with nothing new to show yet.
     assert lines[0].startswith(LogBlock.margin(2) + LiveSpark.GLYPH)
-    assert rows[0][0][0] == LiveSpark.style()  # and it is the one fragment that breathes
+    assert rows[0][0][0] == LiveSpark.style(preview.started_at)  # the one fragment that breathes,
+    # anchored to this command rather than the wall clock, so it opens at its crest.
+    preview.started_at = time.monotonic()
+    assert preview.frame_rows()[0][0][0] == LiveSpark.ramp()[-1]
     assert not any(LogEdge.BRANCH.value in line for line in lines)
 
 
@@ -246,14 +249,21 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
     monkeypatch.setattr(render_module.time, "monotonic", lambda: clock[0])
     ramp = LiveSpark.ramp()
 
-    clock[0] = 0.0
-    assert LiveSpark.style() == ramp[0]  # trough at the start of the period
+    # Measured from the region's own start, and opening at the crest: the frame that announces a
+    # region has to be its loudest. Timed off the wall clock, a region appearing near the trough
+    # would open near-black and stay unreadable for over a second.
+    for born in (0.0, 0.7, 1.5, 2.6, 11.3):  # wherever the wall clock happens to be
+        clock[0] = born
+        assert LiveSpark.style(started_at=born) == ramp[-1]
 
-    clock[0] = LiveSpark.PERIOD / 2
-    assert LiveSpark.style() == ramp[-1]  # crest at the half-way point
+    clock[0] = 100.0 + LiveSpark.PERIOD / 2
+    assert LiveSpark.style(started_at=100.0) == ramp[0]  # trough at the half-way point
 
-    clock[0] = LiveSpark.PERIOD  # and back down: the breath is a loop, not a sawtooth
-    assert LiveSpark.style() == ramp[0]
+    clock[0] = 100.0 + LiveSpark.PERIOD  # and back up: the breath is a loop, not a sawtooth
+    assert LiveSpark.style(started_at=100.0) == ramp[-1]
+
+    clock[0] = 7.0  # no anchor: still breathing, just at whatever phase the clock is in
+    assert LiveSpark.style() in ramp
 
     def luma(style):
         red, green, blue = Theme.rgb(style.split()[0])

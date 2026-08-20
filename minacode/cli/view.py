@@ -407,7 +407,10 @@ class View:
             if index:
                 fragments.extend([("ansibrightblack", f"{rail}{row}"), ("", "\n")])
             else:
-                fragments.extend([(LiveSpark.style(), spark), ("ansibrightblack", row), ("", "\n")])
+                # Anchored to the stream this preview is showing, which ModelClient stamps on the
+                # first chunk of each request and clears between them, so every response opens the
+                # spark at its crest instead of wherever the wall clock happened to be.
+                fragments.extend([(LiveSpark.style(self.loop.session.state.stream_started_at), spark), ("ansibrightblack", row), ("", "\n")])
         return fragments
 
     def tui_input_hint(self) -> str:

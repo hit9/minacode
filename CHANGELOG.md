@@ -26,7 +26,9 @@
   already names the phase and times it, so the word was printed twice on one screen.
 - A spark caps the preview's rail in its place, breathing slowly from near-black up to near-white
   in the divider's own accent, so a long silent stretch of reasoning still shows a pulse. Only
-  the spark moves; the streamed text under it holds still.
+  the spark moves; the streamed text under it holds still. It opens at its brightest and is timed
+  from the moment the region appears, so the frame that announces it is the loudest one rather
+  than wherever the clock happened to be.
 - The live output of a running `Bash` command gets the same treatment, from the same definition:
   its status row had the same phantom `├` — drawn under a root that frame never had — and it now
   carries the same breathing spark. A command that goes quiet for minutes no longer leaves a
