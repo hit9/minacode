@@ -262,6 +262,14 @@ class View:
     )
     WAITING_PULSE_PERIOD: ClassVar[float] = 1.6
 
+    # A spark on the stream preview's phase line, breathing from the block's own dim tone up to the
+    # status line's plain one. Twice the divider pulse's period: that dot marks a request being in
+    # flight and should read as a heartbeat, while this one sits under a wall of streaming text and
+    # would nag at that rate. It rides at the end of the line so the phase stays in its column.
+    STREAM_SPARK: ClassVar[str] = "✨"
+    STREAM_SPARK_PERIOD: ClassVar[float] = 3.2
+    STREAM_SPARK_STEPS: ClassVar[int] = 8
+
     # One cell per frame. A head that advances further than its own glow between redraws stops
     # reading as motion and starts reading as a dash blinking at scattered positions.
     QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 1.0 / TuiApp.ANIMATION_INTERVAL
@@ -286,6 +294,17 @@ class View:
         intensity = 1.0 - abs(2.0 * phase - 1.0)
         idx = min(len(self.WAITING_PULSE_STYLES) - 1, int(intensity * len(self.WAITING_PULSE_STYLES)))
         return [(self.WAITING_PULSE_STYLES[idx], "● ")]
+
+    def stream_spark_style(self) -> str:
+        """The phase line's style right now, on the same triangular breath as the divider pulse.
+
+        Read off the palette rather than hard-coded like WAITING_PULSE_STYLES: that dot is green in
+        both themes, while this line has to stay legible against whichever background the preview
+        is drawn on, so it breathes between two entries the theme already sets."""
+        phase = (time.monotonic() % self.STREAM_SPARK_PERIOD) / self.STREAM_SPARK_PERIOD
+        intensity = 1.0 - abs(2.0 * phase - 1.0)
+        ramp = Theme.ramp("divider.rule", "status.base", self.STREAM_SPARK_STEPS)
+        return "fg:" + ramp[min(len(ramp) - 1, int(intensity * len(ramp)))]
 
     def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: StyleAndTextTuples | None = None) -> StyleAndTextTuples:
         prefix = prefix or []
@@ -401,13 +420,14 @@ class View:
         # The rows carry CONTINUE (`│`) and nothing carries BRANCH: `├` is a T-junction, and here
         # there is no line above the phase for one to join. Nor does a `└` close the block — the
         # stream is still arriving, and an end cap would say it had finished.
-        head = LogBlock.margin(TurnBox.CONTENT_LEVEL) + label
+        head = LogBlock.margin(TurnBox.CONTENT_LEVEL) + label + " " + self.STREAM_SPARK
         rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
         rows = [Text.clip_width(line.expandtabs(4), max(1, width - len(rail) - 1)) for line in text.replace("\r", "\n").splitlines()[-6:]]
-        lines = [head, *(f"{rail}{row}" for row in rows)]
-        fragments: StyleAndTextTuples = []
-        for line in lines:
-            fragments.extend([("ansibrightblack", line), ("", "\n")])
+        # Only the phase line breathes. The rows are what the reader is actually reading; pulsing
+        # a wall of streaming text under them would be a strobe, not a sign of life.
+        fragments: StyleAndTextTuples = [(self.stream_spark_style(), head), ("", "\n")]
+        for row in rows:
+            fragments.extend([("ansibrightblack", f"{rail}{row}"), ("", "\n")])
         return fragments
 
     def tui_input_hint(self) -> str:

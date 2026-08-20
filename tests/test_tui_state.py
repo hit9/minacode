@@ -7,13 +7,15 @@ import os
 import shutil
 import time
 
+import minacode.cli.view as view_module
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
 from minacode.cli import CommandLoop
+from minacode.cli.view import View
 from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.render import BashLivePreview
+from minacode.render import BashLivePreview, Theme
 from minacode.session import Session
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState
 
@@ -228,6 +230,27 @@ def test_bash_live_preview_finish():
     assert preview.text == ""
 
 
+def test_stream_spark_breathes_between_the_two_palette_tones(monkeypatch):
+    """A slow triangular breath, dim tone up to the plain one and back, off the palette so it
+    follows the theme. Only the phase line carries it; the streamed rows stay fixed."""
+    clock = [0.0]
+    monkeypatch.setattr(view_module.time, "monotonic", lambda: clock[0])
+    ramp = Theme.ramp("divider.rule", "status.base", View.STREAM_SPARK_STEPS)
+    view = View.__new__(View)
+
+    clock[0] = 0.0
+    assert view.stream_spark_style() == "fg:" + ramp[0]  # trough at the start of the period
+
+    clock[0] = View.STREAM_SPARK_PERIOD / 2
+    assert view.stream_spark_style() == "fg:" + ramp[-1]  # crest at the half-way point
+
+    clock[0] = View.STREAM_SPARK_PERIOD  # and back down: the breath is a loop, not a sawtooth
+    assert view.stream_spark_style() == "fg:" + ramp[0]
+
+    # Slower than the divider's in-flight heartbeat, which sits above a much quieter line.
+    assert View.STREAM_SPARK_PERIOD > View.WAITING_PULSE_PERIOD
+
+
 def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
     """The preview is drawn as a log block: the phase is a root line in the content column, where
     the turn's own text sits, and the streamed rows are its output underneath.
@@ -242,7 +265,8 @@ def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
     loop.model_stream_output("reasoning", "weighing the two paths")
     lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
 
-    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL) + "thinking"  # a root line, no glyph
+    # A root line: no glyph, and the spark rides at the end so the phase keeps its column.
+    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL) + "thinking " + View.STREAM_SPARK
     assert lines[1] == LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE) + "weighing the two paths"
     assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
     # The shape a tool's own output lines are drawn in: a root, then CONTINUE rows under it.

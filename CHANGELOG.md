@@ -10,8 +10,12 @@
   `thinking`/`responding` preview did not. They do now, so the transcript has one left edge
   instead of two. Session chrome — the startup banner, the restored-session notice, the resume
   line — stays flush left and frames the conversation.
-- The live `thinking`/`responding` preview draws its branch with the same two-cell `├ ` and `│ `
-  as every other tree in the UI, instead of a wider `├─ ` of its own.
+- The live `thinking`/`responding` preview is drawn as a log block like a tool call's: the phase
+  is a root line and the streamed rows are its output underneath. It no longer opens with a `├`,
+  which claimed a line joining it from above that was never there.
+- The preview's phase line carries a `✨` and breathes slowly between the block's dim tone and
+  the status line's plain one, so a long silent stretch of reasoning still shows a pulse. Only
+  that line breathes; the streamed text under it holds still.
 - A resumed session renders the final answer in that column too. It was replayed flush left
   while the live turn had already moved it, so the same turn changed shape across `--resume`.
 
