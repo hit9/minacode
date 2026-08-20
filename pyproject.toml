@@ -57,6 +57,7 @@ minacode = "minacode.__main__:main"
 dev = [
     "pyright>=1.1.411",
     "pytest>=8.0",
+    "pytest-xdist>=3.8",
     "ruff==0.16.0",
 ]
 
@@ -68,6 +69,7 @@ minacode = ["builtin_skills/*/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["-n", "5"]
 
 [tool.ruff]
 line-length = 160
