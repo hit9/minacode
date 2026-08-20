@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-20 06:28-0700\n"
+"POT-Creation-Date: 2026-08-20 06:32-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -23,8 +23,8 @@ msgid "Changelog"
 msgstr "变更日志"
 
 #: ../../../CHANGELOG.md:4
-msgid "Unreleased"
-msgstr ""
+msgid "0.28.0 - 2026-08-20"
+msgstr "0.28.0 - 2026-08-20"
 
 #: ../../../CHANGELOG.md:6 ../../../CHANGELOG.md:41 ../../../CHANGELOG.md:87
 #: ../../../CHANGELOG.md:115 ../../../CHANGELOG.md:145
@@ -72,9 +72,7 @@ msgid ""
 "The final answer of a turn is now indented to the same column as the text"
 " the model writes between tool calls, and the `Sources` footer after a "
 "web search follows it there instead of starting at column 0."
-msgstr ""
-"一轮对话的最终回答现在与模型在工具调用之间写下的文本缩进到同一列，网页搜索后的 `Sources` "
-"脚注也跟着对齐，不再从第 0 列开始。"
+msgstr "一轮对话的最终回答现在与模型在工具调用之间写下的文本缩进到同一列，网页搜索后的 `Sources` 脚注也跟着对齐，不再从第 0 列开始。"
 
 #: ../../../CHANGELOG.md:11
 msgid ""
@@ -148,8 +146,8 @@ msgid ""
 "final answer twice. The engine publishes the answer itself now, and the "
 "simple REPL was still printing the returned value on top of it."
 msgstr ""
-"管道或非 TTY 运行（`echo ... | minacode`）不再把每个最终回答打印两遍。引擎现在自己发布回答，"
-"而简易 REPL 仍在其之上又打印了一次返回值。"
+"管道或非 TTY 运行（`echo ... | minacode`）不再把每个最终回答打印两遍。引擎现在自己发布回答，而简易 REPL "
+"仍在其之上又打印了一次返回值。"
 
 #: ../../../CHANGELOG.md:27
 msgid "0.27.0 - 2026-08-19"
@@ -6409,5 +6407,5 @@ msgstr "让无界的工具结果日志在磁盘上可用,同时有界结果保�
 #~ "则直接完整打印某个片段。"
 
 #~ msgid "Unreleased"
-#~ msgstr "未发布"
+#~ msgstr ""
 
