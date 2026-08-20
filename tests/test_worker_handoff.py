@@ -1652,7 +1652,7 @@ def test_delegate_view_empty_order_is_noop(tmp_path):
 
 
 def test_delegate_approval_legend_mentions_view(tmp_path):
-    from minacode.base import LogRole, ToolCall
+    from minacode.base import LogRole
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
     from minacode.tools.delegate import DelegateTool

@@ -42,7 +42,7 @@ myst_heading_anchors = 3
 
 # -- HTML output -------------------------------------------------------------
 
-import better  # noqa: E402
+import better
 
 html_theme = "better"
 html_theme_path = [better.better_theme_path]

@@ -11,9 +11,8 @@ from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolErr
 from minacode.cli import CommandLoop
 from minacode.cli.commands import ps_command
 from minacode.context import ContextManager
-from minacode.render import LiveSpark
 from minacode.engine import Agent
-from minacode.render import BashLivePreview, UiPrinter
+from minacode.render import BashLivePreview, LiveSpark, UiPrinter
 from minacode.runner import ToolDisplay, ToolRunner
 from minacode.session import Session
 from minacode.tools import BashTool, JobTool, Tool

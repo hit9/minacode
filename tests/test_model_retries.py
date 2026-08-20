@@ -219,7 +219,7 @@ def test_cancelled_request_stays_stale_after_next_request_clears_cancel(tmp_path
     def call_stale_request():
         try:
             model.call_client(Client(), stale_request)
-        except BaseException as error:  # The cancellation contract is KeyboardInterrupt.
+        except BaseException as error:  # noqa: BLE001 - The cancellation contract is KeyboardInterrupt.
             errors.append(error)
         finally:
             caller_finished.set()

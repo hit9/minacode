@@ -25,6 +25,7 @@ from minacode.base import (
     TurnBox,
 )
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
+from minacode.cli.update import UpdateChecker
 from minacode.config import (
     Config,
 )
@@ -33,7 +34,6 @@ from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp
-from minacode.cli.update import UpdateChecker
 
 
 def history_file(path, entries, line="x" * 200):
@@ -141,7 +141,7 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "build_tui", lambda: fake_tui)
     monkeypatch.setattr(runtime, "run_agent_loop", lambda: None)
     monkeypatch.setattr(command_loop, "start_session", lambda: None)
-    monkeypatch.setattr(command_loop, "take_pending_inputs", lambda: [])
+    monkeypatch.setattr(command_loop, "take_pending_inputs", list)
     monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
     monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: warmed.append(callback))
 

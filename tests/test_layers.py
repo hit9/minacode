@@ -79,9 +79,8 @@ def layer_of(module: str) -> int | None:
     """The layer for a module, matched by longest prefix."""
     best = None
     for prefix, layer in LAYERS.items():
-        if module == prefix or module.startswith(prefix + "."):
-            if best is None or len(prefix) > len(best[0]):
-                best = (prefix, layer)
+        if (module == prefix or module.startswith(prefix + ".")) and (best is None or len(prefix) > len(best[0])):
+            best = (prefix, layer)
     return best[1] if best else None
 
 

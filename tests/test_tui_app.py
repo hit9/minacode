@@ -19,25 +19,24 @@ from prompt_toolkit.output import DummyOutput
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, session, wait_until
 
 import minacode.tui.app as tui_module
-from minacode.cli import hints
 from minacode.base import (
     SESSION_EVENT_KEY,
     LogBlock,
     LogEdge,
 )
-from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime
+from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime, hints
 from minacode.cli.commands import select_choice
+from minacode.cli.hints import HintPicker
+from minacode.cli.update import UpdateChecker
 from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.cli.hints import HintPicker
 from minacode.mentions import FilePick, active_mention
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, TuiApp
-from minacode.cli.update import UpdateChecker
 
 
 def ctrl_c_queue_scenario(cwd, results):

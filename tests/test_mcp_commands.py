@@ -18,6 +18,7 @@ from minacode.base import SELECTION_BACK
 from minacode.cli import CommandCompleter, CommandLoop
 from minacode.cli.commands import mcp_command
 from minacode.cli.modals import mcp_manager
+from minacode.cli.update import UpdateChecker
 from minacode.config import (
     Config,
 )
@@ -27,7 +28,6 @@ from minacode.render import StatusBar, UiPrinter
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
-from minacode.cli.update import UpdateChecker
 
 
 def oauth_value(store: MCPFileTokenStore, url: str, collection: str, suffix: str) -> dict | None:

@@ -17,7 +17,6 @@ from minacode.base import (
     MAX_TOOL_OUTPUT_TOKENS,
     SESSION_EVENT_KEY,
     ModelError,
-    Text,
 )
 from minacode.cli import CommandLoop
 from minacode.cli.commands import compact
@@ -29,10 +28,9 @@ from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import (
-    COMPACTION_REQUEST_EVENT,
-    LIVE_FOLLOWUP_PREFIX,
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
+    LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
     SYSTEM_PROMPT,
 )

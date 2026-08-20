@@ -7,7 +7,6 @@ import os
 import shutil
 import time
 
-import minacode.cli.view as view_module
 import minacode.render as render_module
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
 from minacode.cli import CommandLoop

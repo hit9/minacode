@@ -21,6 +21,7 @@ from minacode.base import (
     __version__,
 )
 from minacode.cli import CommandLoop
+from minacode.cli.update import UpdateChecker
 from minacode.config import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     CHAT_REASONING_CHOICES,
@@ -38,7 +39,6 @@ from minacode.render import StatusBar
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore
 from minacode.tools import TOOL_REGISTRY, CodeIndex, Tool
-from minacode.cli.update import UpdateChecker
 
 
 def session(tmp_path):
