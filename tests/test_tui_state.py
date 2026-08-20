@@ -230,46 +230,60 @@ def test_bash_live_preview_finish():
     assert preview.text == ""
 
 
-def test_stream_spark_breathes_between_the_two_palette_tones(monkeypatch):
-    """A slow triangular breath, dim tone up to the plain one and back, off the palette so it
-    follows the theme. Only the phase line carries it; the streamed rows stay fixed."""
+def test_stream_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypatch):
+    """A slow triangular breath, dark to bright and back, around the divider's own accent.
+
+    The reach matters as much as the curve: a shallow fade reads as the terminal mis-drawing a
+    cell. It spans at least as far as WAITING_PULSE_STYLES, the pulse it is a sibling of."""
     clock = [0.0]
     monkeypatch.setattr(view_module.time, "monotonic", lambda: clock[0])
-    ramp = Theme.ramp("divider.rule", "status.base", View.STREAM_SPARK_STEPS)
+    ramp = View.stream_spark_ramp()
     view = View.__new__(View)
 
     clock[0] = 0.0
-    assert view.stream_spark_style() == "fg:" + ramp[0]  # trough at the start of the period
+    assert view.stream_spark_style() == ramp[0]  # trough at the start of the period
 
     clock[0] = View.STREAM_SPARK_PERIOD / 2
-    assert view.stream_spark_style() == "fg:" + ramp[-1]  # crest at the half-way point
+    assert view.stream_spark_style() == ramp[-1]  # crest at the half-way point
 
     clock[0] = View.STREAM_SPARK_PERIOD  # and back down: the breath is a loop, not a sawtooth
-    assert view.stream_spark_style() == "fg:" + ramp[0]
+    assert view.stream_spark_style() == ramp[0]
+
+    def luma(style):
+        red, green, blue = Theme.rgb(style.split()[0])
+        return 0.299 * red + 0.587 * green + 0.114 * blue
+
+    accent = Theme.style(View.STREAM_SPARK_ROLE)
+    assert luma(ramp[0]) < luma(accent) < luma(ramp[-1])  # the breath brackets the accent
+    assert luma(ramp[-1]) - luma(ramp[0]) >= luma(View.WAITING_PULSE_STYLES[-1]) - luma(View.WAITING_PULSE_STYLES[0])
+    assert ramp[-1].endswith(" bold") and not ramp[0].endswith(" bold")  # the crest carries weight
 
     # Slower than the divider's in-flight heartbeat, which sits above a much quieter line.
     assert View.STREAM_SPARK_PERIOD > View.WAITING_PULSE_PERIOD
 
 
 def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
-    """The preview is drawn as a log block: the phase is a root line in the content column, where
-    the turn's own text sits, and the streamed rows are its output underneath.
+    """The preview has no heading: the divider under it already names the phase and times it, so
+    a `thinking` line here would print the same word twice on one screen. The spark caps the rail
+    instead, saying the region is live without words.
 
     The rows carry CONTINUE and nothing carries BRANCH -- `├` is a T-junction, and there is no
-    line above the phase for one to join. Nothing closes the block either: the stream is still
-    arriving, and a `└` would say it had finished."""
+    line above the block for one to join. Nothing closes it either: the stream is still arriving,
+    and a `└` would say it had finished."""
     config = Config()
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
-    loop.model_stream_output("reasoning", "weighing the two paths")
+    loop.model_stream_output("reasoning", "weighing the two paths\nthe second option is cleaner")
     lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
 
-    # A root line: no glyph, and the spark rides at the end so the phase keeps its column.
-    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL) + "thinking " + View.STREAM_SPARK
-    assert lines[1] == LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE) + "weighing the two paths"
+    rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
+    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + View.STREAM_SPARK + "weighing the two paths"
+    assert lines[1] == rail + "the second option is cleaner"
+    assert "thinking" not in "".join(lines)  # named on the divider, not repeated here
+    assert len(View.STREAM_SPARK) == len(LogBlock.RAIL)  # so the spark sits in the rail's column
     assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
-    # The shape a tool's own output lines are drawn in: a root, then CONTINUE rows under it.
+    # The column a tool's own output lines are drawn in: the two trees share a grid.
     tool = str(LogBlock.hierarchy(LogLine("Bash", "pytest -q", LogRole.TOOL), [LogLine("", "output line", LogRole.OUTPUT, LogEdge.CONTINUE)]))
     assert tool.splitlines()[1].index(LogEdge.CONTINUE.value) == lines[1].index(LogEdge.CONTINUE.value)
 
@@ -279,16 +293,17 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
+    # The phase is named once, on the divider. The preview carries only the text it is previewing.
     loop.model_stream_output("reasoning", "checking the request")
     reasoning = "".join(text for _style, text in loop.view.model_stream_fragments())
-    assert "thinking" in reasoning
     assert "checking the request" in reasoning
+    assert "thinking" not in reasoning
     assert "thinking" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("output", "answering now")
     output = "".join(text for _style, text in loop.view.model_stream_fragments())
-    assert "responding" in output
     assert "answering now" in output
+    assert "responding" not in output
     assert "checking the request" not in output
     assert "responding" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
@@ -333,8 +348,8 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
 
     activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert activity.count("use black instead") == 1
-    phase = LogBlock.margin(TurnBox.CONTENT_LEVEL) + "thinking"
-    assert activity.index("• use black instead") < activity.index(phase) < activity.rindex("thinking")
+    preview = View.STREAM_SPARK + "checking the formatter"
+    assert activity.index("• use black instead") < activity.index(preview) < activity.rindex("thinking")
     assert "+ use black instead" not in activity
     assert "queued" not in activity and "sent" not in activity
 

@@ -6,16 +6,17 @@
 
 - Everything a turn produces now starts in the same column. The user's message already sat there
   with its `• ` bullet hanging in the margin, and the model's text and tool lines followed it;
-  the turn outcome (`Cancelled`, an error), a slash command's reply, and the live
-  `thinking`/`responding` preview did not. They do now, so the transcript has one left edge
+  the turn outcome (`Cancelled`, an error), a slash command's reply, and the live stream
+  preview did not. They do now, so the transcript has one left edge
   instead of two. Session chrome — the startup banner, the restored-session notice, the resume
   line — stays flush left and frames the conversation.
-- The live `thinking`/`responding` preview is drawn as a log block like a tool call's: the phase
-  is a root line and the streamed rows are its output underneath. It no longer opens with a `├`,
-  which claimed a line joining it from above that was never there.
-- The preview's phase line carries a `✨` and breathes slowly between the block's dim tone and
-  the status line's plain one, so a long silent stretch of reasoning still shows a pulse. Only
-  that line breathes; the streamed text under it holds still.
+- The live stream preview is drawn with the same rail as a tool call's output, and no longer
+  opens with a `├` — a `├` claims a line joining it from above, and there was never one there.
+- The preview has also lost its `thinking`/`responding` heading. The divider right below it
+  already names the phase and times it, so the word was printed twice on one screen.
+- A spark caps the preview's rail in its place, breathing slowly from near-black up to near-white
+  in the divider's own accent, so a long silent stretch of reasoning still shows a pulse. Only
+  the spark moves; the streamed text under it holds still.
 - A resumed session renders the final answer in that column too. It was replayed flush left
   while the live turn had already moved it, so the same turn changed shape across `--resume`.
 
