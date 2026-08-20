@@ -1653,7 +1653,7 @@ def test_status_bar_output_rate_reads_the_stream_that_is_running(tmp_path):
 
     s.state.stream_started_at = time.monotonic() - 2.0
     s.state.stream_chars = 400
-    assert bar.output_rate() == "~50 tok/s"
+    assert bar.output_rate() == "↓ 50 tok/s"
 
     # Suppressed inside the first second, where a chunk over a near-zero elapsed reads as a wild number.
     s.state.stream_started_at = time.monotonic() - 0.2
@@ -1677,7 +1677,7 @@ def test_status_bar_output_rate_follows_an_in_flight_worker(tmp_path):
     assert bar.output_rate() == ""  # an idle worker never shadows the parent
 
     worker._active_turn_messages = [{"role": "user", "content": "order"}]
-    assert bar.output_rate() == "~100 tok/s"
+    assert bar.output_rate() == "↓ 100 tok/s"
 
 
 def test_model_client_counts_streamed_output_per_request(tmp_path):

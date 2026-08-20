@@ -268,7 +268,7 @@ def test_divider_shows_output_rate_while_a_response_streams(tmp_path):
     loop.status_bar.started_at = time.monotonic() - 4.0
     session.state.stream_started_at = time.monotonic() - 4.0
     session.state.stream_chars = 800
-    assert "responding (4s · ~50 tok/s)" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "responding (4s · ↓ 50 tok/s)" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     session.state.stream_started_at = 0.0
     label = "".join(text for _style, text in loop.view.queue_divider_fragments())

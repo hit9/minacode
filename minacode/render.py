@@ -1032,13 +1032,14 @@ class StatusBar:
         return self.retry_notice_until > now
 
     def output_rate(self) -> str:
-        """The model's live output speed while a response streams, as `~48 tok/s`, or "" when
+        """The model's live output speed while a response streams, as `↓ 48 tok/s`, or "" when
         nothing is streaming.
 
         Estimated from streamed characters at four per token, because token deltas are not on the
         wire: providers report usage once, when the request is over, which is exactly too late for
-        the line the reader is watching. The `~` is the whole disclaimer. Suppressed for the first
-        second, where a couple of chunks over a near-zero elapsed reads as a wild number.
+        the line the reader is watching. The `↓` marks the incoming stream, not a measured token
+        rate. Suppressed for the first second, where a couple of chunks over a near-zero elapsed
+        reads as a wild number.
 
         Read off the in-flight worker when there is one, like every other value on this row.
         """
@@ -1048,7 +1049,7 @@ class StatusBar:
         elapsed = time.monotonic() - state.stream_started_at
         if elapsed < 1.0:
             return ""
-        return f"~{round(state.stream_chars / 4 / elapsed)} tok/s"
+        return f"↓ {round(state.stream_chars / 4 / elapsed)} tok/s"
 
     def active_session(self) -> Session:
         """The session whose work this row describes: the worker while a delegation is in flight,

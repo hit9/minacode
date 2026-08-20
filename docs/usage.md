@@ -93,8 +93,8 @@ rather than as a slow reply.
 The working divider above the prompt names the current phase — `thinking`, `responding`, or
 `web search` while a [provider-side tool](tools.md#provider-side-tools) runs inside the request —
 with the time spent so far beside it, and an estimated output speed while text is arriving:
-`responding (12s · ~48 tok/s)`. The speed is estimated from the text as it streams, which is why
-it carries a `~`; it disappears between requests and on providers that do not stream.
+`responding (12s · ↓ 48 tok/s)`. The `↓` marks the speed as the model's incoming stream; it is
+still an estimate, and it disappears between requests and on providers that do not stream.
 
 <div class="term-shot" role="img" aria-label="The status bar in two states. At rest: provider and model, reasoning, context fill with the cache ratio, and index, each in its role color. While working: the same line rendered as a blue-to-purple sweep with a bright band, plus a step counter near the cap."><span><span class="fs-i fs-dim">idle    </span><span class="fs-i sb-base">dashscope/qwen3.7-plus</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-reason">high</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-ctx">ctx 23% · cache 98%</span><span class="fs-i sb-sep"> | </span><span class="fs-i sb-index">index ✓</span></span><span><span class="fs-i fs-dim">working </span><span class="fs-i sb-sweep-a">dashscope/qwen3.7-plus | high | </span><span class="fs-i sb-sweep-hi">ctx 41% · cache 95%</span><span class="fs-i sb-sweep-b"> | index ✓ | step 320/400</span></span></div>
 
