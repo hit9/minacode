@@ -22,7 +22,12 @@ gettext:
 locale-zh: gettext
 	sphinx-intl update -d locale -p "$(BUILDDIR)/gettext" -l zh_CN
 
-html-zh:
+# Compiled ahead of the build on purpose: Sphinx reads the .mo files as-is, so a .po edit
+# without this step renders the changed paragraphs in English on the Chinese pages.
+locale-mo:
+	sphinx-intl build -d locale
+
+html-zh: locale-mo
 	$(SPHINXBUILD) -b html -D language=zh_CN "$(SOURCEDIR)" "$(BUILDDIR)/html-zh_CN" $(SPHINXOPTS)
 
 clean:
