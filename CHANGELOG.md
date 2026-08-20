@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The output speed on the working divider is now marked with a `↓`: `responding (12s · ↓ 48
+  tok/s)`. The arrow names the model's incoming stream and replaces the `~` that stood for the
+  estimate; the speed is still estimated from the text as it arrives.
+
+### Fixed
+
+- `Ctrl-P`/`Up` pressed immediately after submitting a message now recalls that message. Every
+  submit resets the input buffer, and the history copy that refills it only runs at the next
+  repaint, so a recall key arriving in between found an empty list and recalled nothing.
+
 ## 0.27.0 - 2026-08-19
 
 ### Added
