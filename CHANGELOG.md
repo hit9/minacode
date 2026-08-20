@@ -4,6 +4,9 @@
 
 ### Changed
 
+- The final answer of a turn is now indented to the same column as the text the model writes
+  between tool calls, and the `Sources` footer after a web search follows it there instead of
+  starting at column 0.
 - The output speed on the working divider is now marked with a `↓`: `responding (12s · ↓ 48
   tok/s)`. The arrow names the model's incoming stream and replaces the `~` that stood for the
   estimate; the speed is still estimated from the text as it arrives.
@@ -16,6 +19,9 @@
 - The worker's final report now prints into the scrollback rendered like the agent's own
   answers, instead of hiding inside the tool result; the folded answer preview under the
   `worker done` divider is unchanged.
+- A piped or non-TTY run (`echo ... | minacode`) no longer prints each final answer twice. The
+  engine publishes the answer itself now, and the simple REPL was still printing the returned
+  value on top of it.
 
 ## 0.27.0 - 2026-08-19
 

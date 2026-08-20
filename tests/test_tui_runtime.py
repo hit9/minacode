@@ -22,6 +22,7 @@ from minacode.base import (
     MalformedToolCallError,
     MinacodeError,
     ToolCall,
+    TurnBox,
 )
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
 from minacode.config import (
@@ -324,6 +325,28 @@ def test_tui_runtime_emits_answer_when_not_stream_promoted(tmp_path, monkeypatch
     runtime.run_agent_turn("do it")
 
     assert emitted == []  # the engine printed the answer; the runtime does not repeat it
+
+
+def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, monkeypatch):
+    """The footer belongs to the answer, and the engine publishes that answer through
+    emit_agent_output at CONTENT_LEVEL. At column 0 the sources would hang off the left of the
+    text they cite."""
+    command_loop = loop(tmp_path)
+    command_loop.tui = TuiApp()
+    command_loop.tui.set_running = lambda label: None
+    command_loop.agent.run = lambda _text: "the final answer"
+    command_loop.agent.turn_sources = [{"url": "https://a.example", "title": "A"}]
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+    emitted: list[tuple[str, int]] = []
+    command_loop.ui.emit_answer = lambda text, **kwargs: emitted.append((text, kwargs.get("indent", 0)))
+
+    runtime = TuiRuntime(command_loop)
+    runtime.run_agent_turn("do it")
+
+    assert len(emitted) == 1  # the footer alone; the engine published the answer itself
+    text, indent = emitted[0]
+    assert "a.example" in text
+    assert indent == TurnBox.CONTENT_LEVEL
 
 
 def test_automatic_compaction_replaces_working_divider_status(tmp_path):

@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
-from minacode.base import MalformedToolCallError, MinacodeError
+from minacode.base import MalformedToolCallError, MinacodeError, TurnBox
 from minacode.cli.modals import tool_output_viewer
 from minacode.image import UserInput
 from minacode.render import search_sources_footer
@@ -190,8 +190,10 @@ class TuiRuntime:
             self.loop.ui.emit_answer(answer, rule=False)
         # Emitted outside the promotion check: a promoted answer is already in scrollback without
         # its sources, so skipping the footer there would drop them exactly when a search ran.
+        # Indented like the answer it belongs to, which the engine publishes through
+        # emit_agent_output at CONTENT_LEVEL; at column 0 it would hang off the left of its answer.
         if footer := search_sources_footer(self.loop.agent.turn_sources):
-            self.loop.ui.emit_answer(footer, rule=False)
+            self.loop.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
         if not malformed_tool_call:
             self.loop.ui.emit_turn_end(started)
         self.loop.session.save_snapshot()

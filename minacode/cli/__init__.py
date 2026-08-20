@@ -406,10 +406,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             self.emit("")
             started = time.monotonic()
             malformed_tool_call = False
+            answered = False
             try:
                 self.status_bar.start()
                 try:
-                    answer = self.agent.run(user_input)
+                    self.agent.run(user_input)
+                    answered = True
                 except KeyboardInterrupt:
                     self.emit("Cancelled")
                     continue
@@ -421,11 +423,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             finally:
                 CodeIndex(self.session).update_pending_async()
                 self.status_bar.stop()
-            if self.ui.color and answer.strip():
-                self.emit()
-            self.ui.emit_answer(answer, rule=False)
+            # Same rule as TuiRuntime.run_agent_turn: the engine publishes its own final answer
+            # through output_fn, so only an error it raised before publishing prints here.
+            if not answered:
+                if self.ui.color and answer.strip():
+                    self.emit()
+                self.ui.emit_answer(answer, rule=False)
             if footer := search_sources_footer(self.agent.turn_sources):
-                self.ui.emit_answer(footer, rule=False)
+                self.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
             if not malformed_tool_call:
                 self.ui.emit_turn_end(started)
             self.session.save_snapshot()

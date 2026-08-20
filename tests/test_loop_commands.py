@@ -23,6 +23,7 @@ from minacode.base import (
     SESSION_EVENT_KEY,
     LogBlock,
     LogLine,
+    MinacodeError,
     Text,
     ToolError,
     TurnBox,
@@ -789,6 +790,41 @@ def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypat
     assert command_loop.run() == 0
 
     assert output.count("Cancelled") == expected_cancelled
+
+
+@pytest.mark.parametrize("raised", [None, "error"])
+def test_simple_repl_publishes_the_final_answer_exactly_once(tmp_path, monkeypatch, raised):
+    """The engine publishes a completed turn's answer through output_fn, so the REPL must not
+    print the return value on top of it; an error raised before that publish still prints here,
+    because nothing else put it in the scrollback."""
+    output = []
+    reads = iter(["question", EOFError()])
+
+    def read_input(_prompt=""):
+        value = next(reads)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    agent = Agent(session(tmp_path), output_fn=output.append)
+
+    def run(_user_input):
+        if raised:
+            raise MinacodeError("provider is down")
+        agent.output_fn("The answer.")  # what Agent.run does before it returns
+        return "The answer."
+
+    agent.run = run
+    command_loop = CommandLoop(agent, input_fn=read_input, output_fn=output.append)
+    monkeypatch.setattr(loop_module.UpdateChecker, "start", lambda _checker: None)
+    monkeypatch.setattr(CodeIndex, "status", lambda _index: False)
+    monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
+
+    assert command_loop.run() == 0
+
+    printed = [str(item) for item in output]
+    expected = "Error: provider is down" if raised else "The answer."
+    assert sum(expected in line for line in printed) == 1
 
 
 def test_select_choice_noninteractive_does_not_prompt(tmp_path):
