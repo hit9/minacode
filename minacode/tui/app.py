@@ -461,6 +461,26 @@ class TuiApp:
         if self.history is not None:
             self.history.append_string(value.original_text())
 
+    def _load_buffer_history_now(self) -> None:
+        """Copy history entries into the input buffer synchronously when its async loader has not.
+
+        `Buffer.reset` - every submit - cancels the background task that copies history into the
+        buffer's working lines, and the copy only restarts at the next repaint. A recall key can
+        arrive first, right after Enter, and `auto_up` then walks a list with no entries: nothing
+        is recalled (or, with older history, a stale entry). Left alone when nothing has been
+        loaded from disk yet - the first repaint's loader owns that, and there is nothing to race.
+        """
+        buffer = self.input_buffer
+        entries = self.history.get_strings() if self.history is not None else []
+        if not entries or buffer._load_history_task is not None:
+            return
+        for entry in reversed(entries):  # Oldest first: each appendleft lands before the last one.
+            buffer._working_lines.appendleft(entry)
+        buffer.working_index = len(entries)  # The freshly reset line stays the one being edited.
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        buffer._load_history_task = done  # The next repaint must not copy the entries in again.
+
     def _recognize_input(self) -> UserInput:
         value = self.images.recognize(self.input_buffer.text, self.input_images)
         if str(value) != self.input_buffer.text or value.images != self.input_images:
@@ -1075,6 +1095,7 @@ class TuiApp:
             if text:
                 self._reset_input(text, cursor_position=len(text))
             else:
+                self._load_buffer_history_now()
                 event.current_buffer.auto_up(count=event.arg)
 
         bindings.add("c-p", filter=running, eager=True)(recall)

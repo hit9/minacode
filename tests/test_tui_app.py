@@ -496,6 +496,36 @@ def test_interactive_tui_history_keys_recall_when_queue_is_empty(monkeypatch, tm
     assert recalled == ["queued message"]
 
 
+def test_interactive_tui_history_recall_wins_the_race_with_the_async_history_loader(monkeypatch, tmp_path):
+    """Ctrl-P right after Enter must recall the entry the submit just appended.
+
+    Every submit resets the buffer, which cancels prompt_toolkit's background task that copies
+    history into the buffer's working lines; the copy only restarts at the next repaint. The
+    recall key can arrive first. With the async loader pinned off, the entry must still land.
+    """
+    from prompt_toolkit.buffer import Buffer
+
+    received = []
+    app = TuiApp(
+        on_running_submit=received.append,
+        history=FileHistory(str(tmp_path / "history.txt")),
+    )
+    app.set_running("working")
+    monkeypatch.setattr(Buffer, "load_history_if_not_yet_loaded", lambda self: None)
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("queued message\r")
+        wait_until(lambda: received == ["queued message"])
+        pipe_input.send_text("\x10")
+        wait_until(lambda: app.input_buffer.text == "queued message")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+    assert app.input_buffer.text == "queued message"
+
+
 def test_interactive_tui_ctrl_r_search_enter_fills_input_without_submitting(monkeypatch, tmp_path):
     received = []
     app = None
