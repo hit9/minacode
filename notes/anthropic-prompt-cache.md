@@ -1,6 +1,7 @@
 # Anthropic 路径：会话主体从未进入缓存
 
-状态：待处理，未开工。发现于 compaction 前缀复用工作（分支 `toolscript-mcp-names-and-script-phase`）的收尾复查。
+状态：**已修，待实测**（2026-08-19，分支 `refactor/model-package`）。修法与结论见文末「落地」一节。
+发现于 compaction 前缀复用工作（分支 `toolscript-mcp-names-and-script-phase`）的收尾复查。
 
 ## 事实
 
@@ -66,3 +67,31 @@ Anthropic 路径与其他 provider 行为一致，不再是特例。
 ## 参考
 
 - https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+
+## 落地（2026-08-19）
+
+没有用顶层 `cache_control`，用的是**第二个显式断点**，打在请求最后一个块上
+（`minacode/model/anthropic.py` 的 `mark_prompt_cache_tail`）。理由：顶层字段是 Anthropic
+SDK 的新参数，而这条 Messages 路径不只发往 api.anthropic.com —— OpenCode Zen 的
+`claude-*` / `qwen-*` 也走它（`providers/catalog.py` 的 `api_rules`）。块级 `cache_control`
+是 Messages 线协议本身的一部分，system 块上已经在无条件发了；顶层字段则是网关可能整个不认的
+未知参数，按仓库里 `json_response_format` 那条注释的判断标准，"未知即关"。块级不需要开关。
+
+对三条取舍的回答：
+
+1. **断点能否并存** —— 能，官方上限 4 个，现在用 2 个（system + 滚动尾部）。所以是**加**一个
+   断点，不是把 system 断点换掉，正是文档里 "cache different sections that change at
+   different frequencies" 的形态。
+2. **写入溢价** —— 保留默认 5 分钟 TTL（写 1.25x）。`ttl: "1h"` 写要 2x，得三轮才回本，
+   而 agent 循环的轮间隔基本都在 5 分钟内；真要改，先看实测。
+3. **TTL 5 分钟** —— 未变。用户离开超过 5 分钟的那一轮只付写不收读，和改之前一样。
+
+一处顺带的改动：`anthropic_messages` 现在把所有文本内容统一渲染成块列表，不再有裸字符串。
+因为断点必须落在块上，而"当轮渲染成块（带标记）、下一轮变回字符串"会让同一段历史在两轮里
+是两个前缀 —— 缓存正好在它写入的那一段上读不中。统一形状后这个问题不存在。
+
+滚动断点只有一个，所以受官方那条 **20 个块的回溯窗口**约束：一轮如果新增超过 20 个块
+（大量并行工具调用 + tool_result），这一轮的断点找不到上一轮的条目，会整轮全价。实测如果
+看到命中率间歇性掉底，下一步就是在长轮次中间再插一个断点（还剩 2 个额度）。
+
+待办：按原计划跑真实 session 对比 `/status` 的 cache 行。

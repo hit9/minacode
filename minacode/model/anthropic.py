@@ -54,13 +54,16 @@ def anthropic_params(
     system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
     # Anthropic prompt caching is a prefix match that only takes effect at explicit
     # cache_control breakpoints; without one, every turn reprocesses the whole prompt from
-    # scratch. Render order is tools -> system -> messages, so a breakpoint on the (single)
-    # system block caches the stable tools+system prefix and is reused on every later turn.
+    # scratch. Render order is tools -> system -> messages, so this breakpoint caches the stable
+    # tools+system prefix, and `mark_prompt_cache_tail` adds the rolling one that covers the
+    # conversation itself. Two breakpoints, well under the four a request may carry.
     system: str | list[Json] = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}] if system_text else system_text
     params: Json = {
         "model": provider.model,
         "system": system,
-        "messages": anthropic_messages(messages, provider_origin(provider), provider_origin=provider_origin, replayable_echo=replayable_echo, images=images),
+        "messages": mark_prompt_cache_tail(
+            anthropic_messages(messages, provider_origin(provider), provider_origin=provider_origin, replayable_echo=replayable_echo, images=images)
+        ),
         "max_tokens": provider.anthropic_output_cap(),
     }
     # Thinking pins temperature to its default; sending any other value is rejected.
@@ -110,7 +113,39 @@ def anthropic_messages(
         elif role == "tool":
             block = {"type": "tool_result", "tool_use_id": str(message.get("tool_call_id") or ""), "content": str(message.get("content") or "")}
             append_anthropic_message(converted, "user", [block])
+    # One shape for every turn: text content is a block list, never a bare string. The wire
+    # accepts both, but the rolling cache breakpoint has to land on a block, and a turn that
+    # rendered as blocks while it was last (marked) and as a string once it is history would be
+    # two different prefixes -- the cache read would miss on exactly the span it was written for.
+    for message in converted:
+        if isinstance(text := message.get("content"), str) and text:
+            message["content"] = [{"type": "text", "text": text}]
     return converted or [{"role": "user", "content": ""}]
+
+
+# Blocks the API documents as carrying cache_control. `thinking` is deliberately absent: the API
+# verifies replayed thinking blocks against the signature it issued, so they are echoed untouched.
+CACHE_BREAKPOINT_BLOCKS = ("text", "image", "tool_use", "tool_result", "document")
+
+
+def mark_prompt_cache_tail(messages: list[Json]) -> list[Json]:
+    """Put a rolling cache_control breakpoint on the last block of the conversation.
+
+    Cache writes happen only at a breakpoint, so the system breakpoint alone caches tools+system
+    and leaves the conversation body -- the part that grows to a hundred thousand tokens -- paid
+    for in full on every single turn. This marker writes the history through this turn; the next
+    turn's marker reads it back as its prefix, which is what the OpenAI-shaped providers give
+    implicitly. The block is copied rather than annotated in place because assistant blocks are
+    replayed from session state and must not pick up wire-only fields.
+    """
+    content = messages[-1].get("content") if messages else None
+    if not isinstance(content, list):
+        return messages
+    for index in range(len(content) - 1, -1, -1):
+        if isinstance(block := content[index], dict) and block.get("type") in CACHE_BREAKPOINT_BLOCKS:
+            content[index] = {**block, "cache_control": {"type": "ephemeral"}}
+            break
+    return messages
 
 
 def append_anthropic_message(messages: list[Json], role: str, content: str | list[Json]) -> None:

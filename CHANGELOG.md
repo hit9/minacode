@@ -26,6 +26,14 @@
 
 ### Fixed
 
+- Anthropic requests now cache the conversation, not just the prompt header. Anthropic has no
+  implicit caching and writes only at a `cache_control` breakpoint, and minacode set one on the
+  system block — so tools and the system prompt were cached while the conversation body, the part
+  that grows to a hundred thousand tokens, was re-read at full price on every turn. A second,
+  rolling breakpoint on the last block of the request writes the history through this turn and
+  reads it back on the next, which is what the OpenAI-shaped providers were already doing
+  implicitly. `/status` shows the difference in its cache row.
+
 - A failed `Delegate send` now reports what the worker did before dying — steps, elapsed time,
   changed files, rounds, and context fill — and that its context survives, so the parent can
   decide between resending and resetting instead of guessing. The failed turn is settled in the
