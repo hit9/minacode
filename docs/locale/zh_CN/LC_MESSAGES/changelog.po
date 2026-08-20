@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-19 19:52-0700\n"
+"POT-Creation-Date: 2026-08-19 22:33-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -23,8 +23,8 @@ msgid "Changelog"
 msgstr "变更日志"
 
 #: ../../../CHANGELOG.md:4
-msgid "Unreleased"
-msgstr "未发布"
+msgid "0.27.0 - 2026-08-19"
+msgstr "0.27.0 - 2026-08-19"
 
 #: ../../../CHANGELOG.md:6 ../../../CHANGELOG.md:50 ../../../CHANGELOG.md:100
 #: ../../../CHANGELOG.md:165 ../../../CHANGELOG.md:207
@@ -188,11 +188,10 @@ msgid ""
 "next, which is what the OpenAI-shaped providers were already doing "
 "implicitly. `/status` shows the difference in its cache row."
 msgstr ""
-"Anthropic 请求现在会缓存整个会话，而不只是提示词头部。Anthropic 没有隐式缓存，只在 "
-"`cache_control` 断点处写入，而 minacode 只在 system 块上打了一个断点 —— 于是工具和系统"
-"提示被缓存，会话主体这个会涨到十万 token 的部分，却每一轮都按全价重新处理。现在请求的最"
-"后一个块上多了一个滚动断点，把截至本轮的历史写进缓存，下一轮再读回来，也就是 OpenAI 系"
-"provider 本来就隐式在做的事。`/status` 的 cache 行能看出前后差别。"
+"Anthropic 请求现在会缓存整个会话，而不只是提示词头部。Anthropic 没有隐式缓存，只在 `cache_control` "
+"断点处写入，而 minacode 只在 system 块上打了一个断点 —— 于是工具和系统提示被缓存，会话主体这个会涨到十万 token "
+"的部分，却每一轮都按全价重新处理。现在请求的最后一个块上多了一个滚动断点，把截至本轮的历史写进缓存，下一轮再读回来，也就是 OpenAI "
+"系provider 本来就隐式在做的事。`/status` 的 cache 行能看出前后差别。"
 
 #: ../../../CHANGELOG.md:38
 msgid ""
@@ -6358,5 +6357,5 @@ msgstr "让无界的工具结果日志在磁盘上可用,同时有界结果保�
 #~ "则直接完整打印某个片段。"
 
 #~ msgid "Unreleased"
-#~ msgstr ""
+#~ msgstr "未发布"
 
