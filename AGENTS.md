@@ -45,8 +45,8 @@ Keep this file short. It is an entry point, not a second design document.
     that answers it, and stop.
   - Rewriting a paragraph is usually better than appending one. A behavior change means the old
     sentence is wrong, not incomplete.
-  - Reasoning that is worth keeping but not worth showing a user goes in a code comment, a commit
-    message, or `notes/`.
+  - Reasoning that is worth keeping but not worth showing a user goes in a code comment or a
+    commit message.
   - A `term-shot` is a screenshot in HTML: when the colors or rows it depicts change, it is stale
     and has to be redrawn. Keep every `<span>` closed.
 - **Changelog:** record user-visible changes under `Unreleased`; omit internal-only refactors and
