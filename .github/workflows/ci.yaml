@@ -9,7 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.13", "3.14", "3.15t-dev"]
+        # Python 3.15: tried "3.15t-dev" (RC track) once; the dependency chain fastmcp-slim[client]
+        # -> py-key-value-aio -> beartype fails to import on 3.15 (beartype still pulls
+        # typing.no_type_check_decorator, removed in 3.15). Add "3.15" once beartype ships a
+        # 3.15-compatible release, ideally at the October release.
+        python-version: ["3.11", "3.13", "3.14"]
 
     steps:
       - name: Checkout
