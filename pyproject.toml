@@ -69,7 +69,7 @@ minacode = ["builtin_skills/*/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-n", "5"]
+addopts = ["-n", "auto"]
 
 [tool.ruff]
 line-length = 160
