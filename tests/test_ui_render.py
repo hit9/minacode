@@ -296,7 +296,7 @@ def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((20, 24)))
-        assert all(get_cwidth(line) < 20 for line in preview.frame_lines())
+        assert all(get_cwidth("".join(text for _style, text in row)) < 20 for row in preview.frame_rows())
 
 
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):

@@ -8,6 +8,7 @@ import shutil
 import time
 
 import minacode.cli.view as view_module
+import minacode.render as render_module
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
 from minacode.cli import CommandLoop
 from minacode.cli.view import View
@@ -15,7 +16,7 @@ from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.render import BashLivePreview, Theme
+from minacode.render import BashLivePreview, LiveSpark, Theme
 from minacode.session import Session
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState, DiffViewState, TabbedViewState
 
@@ -199,16 +200,23 @@ def test_choice_view_state_window_counter_and_numbering_stay_stable():
     assert "1. r0" in text and "10. r9" in text
 
 
-def test_bash_live_preview_frame_lines():
+def test_bash_live_preview_frame_rows():
     preview = BashLivePreview()
     preview.active = True
     preview.text = "line1\nline2\n"
     preview.started_at = time.monotonic() - 1.5
 
-    lines = preview.frame_lines()
+    rows = preview.frame_rows()
+    lines = ["".join(text for _style, text in row) for row in rows]
     assert any("line1" in line for line in lines)
     assert any("line2" in line for line in lines)
     assert any("output" in line.lower() or "running" in line.lower() for line in lines)
+    # The spark caps the rail in place of the old BRANCH glyph, which hung off a root that the
+    # frame never had: it is built as `hierarchy(None, ...)`. Same mark as the stream preview --
+    # both say the same thing, that the region is live with nothing new to show yet.
+    assert lines[0].startswith(LogBlock.margin(2) + LiveSpark.GLYPH)
+    assert rows[0][0][0] == LiveSpark.style()  # and it is the one fragment that breathes
+    assert not any(LogEdge.BRANCH.value in line for line in lines)
 
 
 def test_bash_live_preview_text_accumulation():
@@ -230,36 +238,35 @@ def test_bash_live_preview_finish():
     assert preview.text == ""
 
 
-def test_stream_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypatch):
+def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypatch):
     """A slow triangular breath, dark to bright and back, around the divider's own accent.
 
     The reach matters as much as the curve: a shallow fade reads as the terminal mis-drawing a
     cell. It spans at least as far as WAITING_PULSE_STYLES, the pulse it is a sibling of."""
     clock = [0.0]
-    monkeypatch.setattr(view_module.time, "monotonic", lambda: clock[0])
-    ramp = View.stream_spark_ramp()
-    view = View.__new__(View)
+    monkeypatch.setattr(render_module.time, "monotonic", lambda: clock[0])
+    ramp = LiveSpark.ramp()
 
     clock[0] = 0.0
-    assert view.stream_spark_style() == ramp[0]  # trough at the start of the period
+    assert LiveSpark.style() == ramp[0]  # trough at the start of the period
 
-    clock[0] = View.STREAM_SPARK_PERIOD / 2
-    assert view.stream_spark_style() == ramp[-1]  # crest at the half-way point
+    clock[0] = LiveSpark.PERIOD / 2
+    assert LiveSpark.style() == ramp[-1]  # crest at the half-way point
 
-    clock[0] = View.STREAM_SPARK_PERIOD  # and back down: the breath is a loop, not a sawtooth
-    assert view.stream_spark_style() == ramp[0]
+    clock[0] = LiveSpark.PERIOD  # and back down: the breath is a loop, not a sawtooth
+    assert LiveSpark.style() == ramp[0]
 
     def luma(style):
         red, green, blue = Theme.rgb(style.split()[0])
         return 0.299 * red + 0.587 * green + 0.114 * blue
 
-    accent = Theme.style(View.STREAM_SPARK_ROLE)
+    accent = Theme.style(LiveSpark.ROLE)
     assert luma(ramp[0]) < luma(accent) < luma(ramp[-1])  # the breath brackets the accent
     assert luma(ramp[-1]) - luma(ramp[0]) >= luma(View.WAITING_PULSE_STYLES[-1]) - luma(View.WAITING_PULSE_STYLES[0])
     assert ramp[-1].endswith(" bold") and not ramp[0].endswith(" bold")  # the crest carries weight
 
     # Slower than the divider's in-flight heartbeat, which sits above a much quieter line.
-    assert View.STREAM_SPARK_PERIOD > View.WAITING_PULSE_PERIOD
+    assert LiveSpark.PERIOD > View.WAITING_PULSE_PERIOD
 
 
 def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
@@ -278,10 +285,10 @@ def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
     lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
 
     rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
-    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + View.STREAM_SPARK + "weighing the two paths"
+    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.GLYPH + "weighing the two paths"
     assert lines[1] == rail + "the second option is cleaner"
     assert "thinking" not in "".join(lines)  # named on the divider, not repeated here
-    assert len(View.STREAM_SPARK) == len(LogBlock.RAIL)  # so the spark sits in the rail's column
+    assert len(LiveSpark.GLYPH) == len(LogBlock.RAIL)  # so the spark sits in the rail's column
     assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
     # The column a tool's own output lines are drawn in: the two trees share a grid.
     tool = str(LogBlock.hierarchy(LogLine("Bash", "pytest -q", LogRole.TOOL), [LogLine("", "output line", LogRole.OUTPUT, LogEdge.CONTINUE)]))
@@ -348,7 +355,7 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
 
     activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert activity.count("use black instead") == 1
-    preview = View.STREAM_SPARK + "checking the formatter"
+    preview = LiveSpark.GLYPH + "checking the formatter"
     assert activity.index("• use black instead") < activity.index(preview) < activity.rindex("thinking")
     assert "+ use black instead" not in activity
     assert "queued" not in activity and "sent" not in activity

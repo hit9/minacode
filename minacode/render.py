@@ -28,7 +28,6 @@ from minacode.base import (
     Json,
     LogBlock,
     LogEdge,
-    LogLine,
     LogRole,
     Text,
     __version__,
@@ -877,6 +876,58 @@ class UiPrinter:
         return lines
 
 
+class LiveSpark:
+    """The mark that says a live region is still alive, for regions with nothing else moving.
+
+    A streaming response and a running command both spend long stretches with only a clock
+    changing, and a still block does not say it is still running. Both cap their rail with this
+    instead of another `│`, and share one definition so the two regions never drift apart.
+
+    Deliberately wordless: whatever the region is doing is already named on the divider under it,
+    and saying it twice on one screen is worse than not saying it here at all.
+    """
+
+    # Exactly the width of a rail, so it sits in the rail's column and the rows keep their own.
+    # A text glyph rather than an emoji: terminals draw emoji in their own colors, so a breath put
+    # on one lands on whatever is beside it instead, and emoji are two cells before the space.
+    GLYPH: ClassVar[str] = "✦ "
+    # Twice the divider pulse's period: that dot marks a request in flight and should read as a
+    # heartbeat, while this one sits over a wall of text and would nag at that rate.
+    PERIOD: ClassVar[float] = 3.2
+    STEPS: ClassVar[int] = 12
+    # The divider's own accent, so the live rule and the live region it caps read as one thing.
+    ROLE: ClassVar[str] = "divider.glow"
+    # How far the breath reaches past that color, as a fraction of the way to black at the trough
+    # and to white at the crest. Wide on purpose: a shallow fade reads as the terminal mis-drawing
+    # a cell rather than as a breath, and the crest has to clear the gray rows beside it.
+    FLOOR: ClassVar[float] = 0.78
+    CEILING: ClassVar[float] = 0.78
+    BOLD_STEPS: ClassVar[int] = 3
+
+    @classmethod
+    def ramp(cls) -> list[str]:
+        """The spark's shades, darkest to brightest, around the divider's accent.
+
+        Derived from the palette rather than hard-coded like the divider's pulse: that dot is green
+        in both themes and answers to nothing, while this spark caps the divider's own rule and has
+        to keep sharing its color when a theme changes it.
+        """
+        hue = Theme.rgb(Theme.style(cls.ROLE))
+        low = Theme.rgb(Theme.mix(hue, (0, 0, 0), cls.FLOOR))
+        high = Theme.rgb(Theme.mix(hue, (255, 255, 255), cls.CEILING))
+        span = max(1, cls.STEPS - 1)
+        return ["fg:" + Theme.mix(low, high, step / span) + (" bold" if step >= cls.STEPS - cls.BOLD_STEPS else "") for step in range(cls.STEPS)]
+
+    @classmethod
+    def style(cls) -> str:
+        """Where on that ramp the spark sits right now: a triangular breath, dark to bright and
+        back, on the same curve as the divider pulse."""
+        phase = (time.monotonic() % cls.PERIOD) / cls.PERIOD
+        intensity = 1.0 - abs(2.0 * phase - 1.0)
+        ramp = cls.ramp()
+        return ramp[min(len(ramp) - 1, int(intensity * len(ramp)))]
+
+
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
     MAX_CHARS: ClassVar[int] = 8000
@@ -934,7 +985,7 @@ class BashLivePreview:
     def render(self) -> None:
         if not self.active:
             return
-        rows: list[list[tuple[str, str]]] = [[("ansibrightblack", line)] for line in self.frame_lines()]
+        rows = self.frame_rows()
         if rows == self.rendered_rows:
             return
         previous = self.rendered_lines
@@ -955,22 +1006,27 @@ class BashLivePreview:
         self.rendered_lines = len(rows)
         self.rendered_rows = rows
 
-    def frame_lines(self) -> list[str]:
+    def frame_rows(self) -> list[list[tuple[str, str]]]:
+        """The frame as styled rows: a breathing spark capping the rail, then the output under it.
+
+        The status row used to carry a BRANCH edge under a `hierarchy(None, ...)` — a `├` with no
+        root above it at all, claiming a line joining from a place there was never anything. The
+        spark takes that cell instead and is the same width, so the rows keep their column. It is
+        also the only thing that moves: a command that goes quiet for minutes leaves nothing else
+        on screen changing but the clock, which is what the tick loop was already there for.
+        """
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
         label = Text.elapsed_since(self.started_at, precise=True)
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
-        limit = max(1, width - get_cwidth(LogBlock.prefix(2, LogEdge.CONTINUE)) - 1)
-
-        def clip(line: str) -> str:
-            return Text.clip_width(line, limit)
-
+        rail = LogBlock.prefix(2, LogEdge.CONTINUE)
+        limit = max(1, width - get_cwidth(rail) - 1)
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
-        lines = [LogLine(status, role=LogRole.META, edge=LogEdge.BRANCH)]
-        lines.extend(LogLine("", clip(line), LogRole.OUTPUT, LogEdge.CONTINUE) for line in body)
-        return str(LogBlock.hierarchy(None, lines)).splitlines()
+        rows = [[(LiveSpark.style(), LogBlock.margin(2) + LiveSpark.GLYPH), ("ansibrightblack", status)]]
+        rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
+        return rows
 
 
 class StatusBar:

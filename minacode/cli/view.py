@@ -27,7 +27,7 @@ from minacode.config import (
     REASONING_CHOICES,
 )
 from minacode.mentions import MentionSpan, active_mention, encode_file_mention
-from minacode.render import Theme, UiPrinter
+from minacode.render import LiveSpark, Theme, UiPrinter
 from minacode.session import QueuedInput
 from minacode.tui import TuiApp
 
@@ -262,28 +262,6 @@ class View:
     )
     WAITING_PULSE_PERIOD: ClassVar[float] = 1.6
 
-    # The stream preview's rail opens with a breathing spark instead of another `│`. The block has
-    # no heading: the divider under it already names the phase and times it, so a `thinking` line
-    # here would print the same word twice on one screen. What is left to say is that the region is
-    # live, and a pulse says that without words.
-    #
-    # Exactly the width of a rail, so it sits in the rail's column and the rows keep their own.
-    # A text glyph rather than an emoji: terminals draw emoji in their own colors, so a breath put
-    # on one lands on whatever is beside it instead, and emoji are two cells before the space.
-    STREAM_SPARK: ClassVar[str] = "✦ "
-    # Twice the divider pulse's period: that dot marks a request in flight and should read as a
-    # heartbeat, while this one sits over a wall of streaming text and would nag at that rate.
-    STREAM_SPARK_PERIOD: ClassVar[float] = 3.2
-    STREAM_SPARK_STEPS: ClassVar[int] = 12
-    # The divider's own accent, so the live rule and the live region it caps read as one thing.
-    STREAM_SPARK_ROLE: ClassVar[str] = "divider.glow"
-    # How far the breath reaches past that color, as a fraction of the way to black at the trough
-    # and to white at the crest. Wide on purpose, the reach WAITING_PULSE_STYLES takes: a shallow
-    # fade reads as the terminal mis-drawing a cell rather than as a breath.
-    STREAM_SPARK_FLOOR: ClassVar[float] = 0.78
-    STREAM_SPARK_CEILING: ClassVar[float] = 0.78
-    STREAM_SPARK_BOLD_STEPS: ClassVar[int] = 3
-
     # One cell per frame. A head that advances further than its own glow between redraws stops
     # reading as motion and starts reading as a dash blinking at scattered positions.
     QUEUE_SWEEP_CELLS_PER_SEC: ClassVar[float] = 1.0 / TuiApp.ANIMATION_INTERVAL
@@ -308,31 +286,6 @@ class View:
         intensity = 1.0 - abs(2.0 * phase - 1.0)
         idx = min(len(self.WAITING_PULSE_STYLES) - 1, int(intensity * len(self.WAITING_PULSE_STYLES)))
         return [(self.WAITING_PULSE_STYLES[idx], "● ")]
-
-    @classmethod
-    def stream_spark_ramp(cls) -> list[str]:
-        """The spark's shades, darkest to brightest, around the divider's accent.
-
-        Derived from the palette rather than hard-coded like WAITING_PULSE_STYLES: that dot is
-        green in both themes and answers to nothing, while this spark caps the divider's own rule
-        and has to keep sharing its color when a theme changes it.
-        """
-        hue = Theme.rgb(Theme.style(cls.STREAM_SPARK_ROLE))
-        low = Theme.rgb(Theme.mix(hue, (0, 0, 0), cls.STREAM_SPARK_FLOOR))
-        high = Theme.rgb(Theme.mix(hue, (255, 255, 255), cls.STREAM_SPARK_CEILING))
-        span = max(1, cls.STREAM_SPARK_STEPS - 1)
-        return [
-            "fg:" + Theme.mix(low, high, step / span) + (" bold" if step >= cls.STREAM_SPARK_STEPS - cls.STREAM_SPARK_BOLD_STEPS else "")
-            for step in range(cls.STREAM_SPARK_STEPS)
-        ]
-
-    def stream_spark_style(self) -> str:
-        """Where on that ramp the spark sits right now: a triangular breath, dark to bright and
-        back, on the same curve as the divider pulse."""
-        phase = (time.monotonic() % self.STREAM_SPARK_PERIOD) / self.STREAM_SPARK_PERIOD
-        intensity = 1.0 - abs(2.0 * phase - 1.0)
-        ramp = self.stream_spark_ramp()
-        return ramp[min(len(ramp) - 1, int(intensity * len(ramp)))]
 
     def sweep_divider_fragments(self, label: str, width: int | None = None, prefix: StyleAndTextTuples | None = None) -> StyleAndTextTuples:
         prefix = prefix or []
@@ -426,10 +379,10 @@ class View:
         if stream:
             fragments.append(("", "\n"))
         with self.loop.live_preview.lock:
-            lines = self.loop.live_preview.frame_lines() if self.loop.live_preview.active else []
-        for line in lines:
-            fragments.extend([("ansibrightblack", line), ("", "\n")])
-        if lines:
+            rows = self.loop.live_preview.frame_rows() if self.loop.live_preview.active else []
+        for row in rows:
+            fragments.extend([*row, ("", "\n")])
+        if rows:
             fragments.append(("", "\n"))
         fragments.extend(waiting)
         return fragments
@@ -448,13 +401,13 @@ class View:
         rows = [Text.clip_width(line.expandtabs(4), max(1, width - len(rail) - 1)) for line in text.replace("\r", "\n").splitlines()[-6:]]
         # The spark caps the rail and is the only thing that moves. The rows are what the reader is
         # actually reading, and breathing those would be a strobe rather than a sign of life.
-        spark = LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + self.STREAM_SPARK
+        spark = LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.GLYPH
         fragments: StyleAndTextTuples = []
         for index, row in enumerate(rows):
             if index:
                 fragments.extend([("ansibrightblack", f"{rail}{row}"), ("", "\n")])
             else:
-                fragments.extend([(self.stream_spark_style(), spark), ("ansibrightblack", row), ("", "\n")])
+                fragments.extend([(LiveSpark.style(), spark), ("ansibrightblack", row), ("", "\n")])
         return fragments
 
     def tui_input_hint(self) -> str:

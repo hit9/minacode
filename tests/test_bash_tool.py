@@ -11,6 +11,7 @@ from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolErr
 from minacode.cli import CommandLoop
 from minacode.cli.commands import ps_command
 from minacode.context import ContextManager
+from minacode.render import LiveSpark
 from minacode.engine import Agent
 from minacode.render import BashLivePreview, UiPrinter
 from minacode.runner import ToolDisplay, ToolRunner
@@ -280,7 +281,7 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     p.render()
     assert len(printed) > first
     # BashLivePreview uses sub-second precision (`1.1s`) so the ticker feels live.
-    assert any("  ├ running… 1.1s" in line for line in printed[first:])
+    assert any(LiveSpark.GLYPH + "running… 1.1s" in line for line in printed[first:])
 
 
 def test_bash_promoted_job_is_killable(tmp_path):

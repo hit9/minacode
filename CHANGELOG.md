@@ -17,6 +17,10 @@
 - A spark caps the preview's rail in its place, breathing slowly from near-black up to near-white
   in the divider's own accent, so a long silent stretch of reasoning still shows a pulse. Only
   the spark moves; the streamed text under it holds still.
+- The live output of a running `Bash` command gets the same treatment, from the same definition:
+  its status row had the same phantom `├` — drawn under a root that frame never had — and it now
+  carries the same breathing spark. A command that goes quiet for minutes no longer leaves a
+  frozen-looking frame with only a clock ticking in it.
 - A resumed session renders the final answer in that column too. It was replayed flush left
   while the live turn had already moved it, so the same turn changed shape across `--resume`.
 
