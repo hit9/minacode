@@ -152,16 +152,16 @@ def test_provider_overrides_survive_delta_saves(tmp_path):
     assert restored.config.provider.model == "model-y"
 
 
-def test_provider_overrides_alone_force_a_save(tmp_path):
-    """A fresh session whose only content is a provider switch must still persist, or the switch is
-    lost the moment the user quits without a request."""
+def test_provider_overrides_alone_do_not_force_a_save(tmp_path):
+    """A fresh session whose only content is a provider switch has no value and must not persist:
+    an empty session file would show up in /sessions and claim the latest pointer. The switch is
+    remembered only once the session actually has content."""
     s = session_with_data_dir(tmp_path)
     s.provider_overrides = {"providers": {"default": {"model": "model-z"}}}
 
     s.save_snapshot()
 
-    restored = Session.load_snapshot(s.uid, config=s.config)
-    assert restored.config.provider.model == "model-z"
+    assert not os.path.exists(log_path(s))
 
 
 def test_pending_user_inputs_persist_and_restore(tmp_path):

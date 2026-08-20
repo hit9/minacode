@@ -191,7 +191,6 @@ class SessionSnapshotCodec:
                 bool(session.tool_errors),
                 bool(session.turn_diffs),
                 bool(session.history),
-                bool(session.provider_overrides),
                 bool(state.goal or state.plan or state.known or state.check or state.summary),
             )
         )
