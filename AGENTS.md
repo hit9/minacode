@@ -62,3 +62,7 @@ Keep this file short. It is an entry point, not a second design document.
   failure, intended result, and important rejection paths (see `DESIGN.md` for the full policy).
 - Mock external uncertainty, not the core behavior under test; keep tests deterministic and fast.
 - Keep `CHANGELOG.md` aligned with user-visible behavior.
+- Never rebuild or re-sync the project `.venv` (no `uv run --python X` / `uv sync --python X`
+  with a different interpreter): the developer's own `minacode` process runs out of it, and swapping
+  it mid-session deletes modules under that process and crashes it. For cross-version testing,
+  point `UV_PROJECT_ENVIRONMENT` at a throwaway directory instead.
