@@ -7,7 +7,7 @@ import os
 import shutil
 import time
 
-from minacode.base import LogBlock, TurnBox
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
 from minacode.cli import CommandLoop
 from minacode.config import (
     Config,
@@ -228,10 +228,13 @@ def test_bash_live_preview_finish():
     assert preview.text == ""
 
 
-def test_model_stream_preview_sits_in_the_content_column(tmp_path):
-    """The preview is the live view of text that lands in the content column, so its rail opens
-    there rather than a level to the left; a left edge that shifts when the preview is torn down
-    would read as a jump."""
+def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
+    """The preview is drawn as a log block: the phase is a root line in the content column, where
+    the turn's own text sits, and the streamed rows are its output underneath.
+
+    The rows carry CONTINUE and nothing carries BRANCH -- `├` is a T-junction, and there is no
+    line above the phase for one to join. Nothing closes the block either: the stream is still
+    arriving, and a `└` would say it had finished."""
     config = Config()
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
@@ -239,10 +242,12 @@ def test_model_stream_preview_sits_in_the_content_column(tmp_path):
     loop.model_stream_output("reasoning", "weighing the two paths")
     lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
 
-    margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
-    assert lines[0] == f"{margin}\u251c\u2500 thinking"
-    assert all(line.startswith(margin) for line in lines)
-    assert lines[1].startswith(f"{margin}\u2502  ")
+    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL) + "thinking"  # a root line, no glyph
+    assert lines[1] == LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE) + "weighing the two paths"
+    assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
+    # The shape a tool's own output lines are drawn in: a root, then CONTINUE rows under it.
+    tool = str(LogBlock.hierarchy(LogLine("Bash", "pytest -q", LogRole.TOOL), [LogLine("", "output line", LogRole.OUTPUT, LogEdge.CONTINUE)]))
+    assert tool.splitlines()[1].index(LogEdge.CONTINUE.value) == lines[1].index(LogEdge.CONTINUE.value)
 
 
 def test_model_stream_preview_switches_phase_and_clears(tmp_path):
@@ -304,7 +309,8 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
 
     activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert activity.count("use black instead") == 1
-    assert activity.index("• use black instead") < activity.index("├─ thinking") < activity.rindex("thinking")
+    phase = LogBlock.margin(TurnBox.CONTENT_LEVEL) + "thinking"
+    assert activity.index("• use black instead") < activity.index(phase) < activity.rindex("thinking")
     assert "+ use black instead" not in activity
     assert "queued" not in activity and "sent" not in activity
 

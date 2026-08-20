@@ -17,7 +17,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
 
-from minacode.base import LogBlock, Text, TurnBox
+from minacode.base import LogBlock, LogEdge, Text, TurnBox
 from minacode.cli.commands import SET_KEYS, SET_VALUES
 from minacode.cli.hints import Context as HintContext
 from minacode.cli.hints import HintPicker
@@ -394,12 +394,17 @@ class View:
             return []
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         label = "thinking" if kind == "reasoning" else "responding"
-        # The preview's rail sits in the content column, flush with the turn's text and tool lines
-        # rather than hanging a level to their left: this is the live view of text that lands in
-        # that column, and a left edge that shifts when the preview is torn down reads as a jump.
-        margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
-        rows = [Text.clip_width(line.expandtabs(4), max(1, width - 4 - len(margin))) for line in text.replace("\r", "\n").splitlines()[-6:]]
-        lines = [f"{margin}├─ {label}", *(f"{margin}│  {row}" for row in rows)]
+        # Drawn as a log block: the phase is a root line in the content column, flush with the
+        # turn's text and tool lines, and the streamed rows are its output underneath. Shaped with
+        # LogBlock so it cannot drift from the tree every tool call draws.
+        #
+        # The rows carry CONTINUE (`│`) and nothing carries BRANCH: `├` is a T-junction, and here
+        # there is no line above the phase for one to join. Nor does a `└` close the block — the
+        # stream is still arriving, and an end cap would say it had finished.
+        head = LogBlock.margin(TurnBox.CONTENT_LEVEL) + label
+        rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
+        rows = [Text.clip_width(line.expandtabs(4), max(1, width - len(rail) - 1)) for line in text.replace("\r", "\n").splitlines()[-6:]]
+        lines = [head, *(f"{rail}{row}" for row in rows)]
         fragments: StyleAndTextTuples = []
         for line in lines:
             fragments.extend([("ansibrightblack", line), ("", "\n")])

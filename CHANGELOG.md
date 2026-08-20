@@ -10,6 +10,8 @@
   `thinking`/`responding` preview did not. They do now, so the transcript has one left edge
   instead of two. Session chrome — the startup banner, the restored-session notice, the resume
   line — stays flush left and frames the conversation.
+- The live `thinking`/`responding` preview draws its branch with the same two-cell `├ ` and `│ `
+  as every other tree in the UI, instead of a wider `├─ ` of its own.
 - A resumed session renders the final answer in that column too. It was replayed flush left
   while the live turn had already moved it, so the same turn changed shape across `--resume`.
 
