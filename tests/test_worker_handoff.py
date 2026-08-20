@@ -561,6 +561,85 @@ def test_delegate_failure_reports_envelope_and_settles_worker_history(tmp_path, 
     assert "done" in result
 
 
+# 7b'. a batch that dies after its first call already ran keeps that call's side effects: the file is
+#      written, its diff is merged and named in the failure envelope, while the settled history marks
+#      every call of the dying batch as Failed — the executed call's result died with the crash, which
+#      is the honest record — and the next send still goes out.
+def test_delegate_failure_after_a_call_ran_in_the_dying_batch(tmp_path, monkeypatch):
+    from minacode.base import ToolCall, ToolError
+    from minacode.prompts import FAILED_TOOL_CALL_RESULT
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    # Step 1 edits f.txt (answered), step 2 carries two calls and dies with the first one already
+    # executed, step 3 answers the follow-up delegation.
+    model = FakeModelClient(
+        [
+            (
+                {"role": "assistant", "content": "editing"},
+                [call("Edit", ["f.txt", [{"op": "create", "content": "x"}]])],
+                "editing",
+            ),
+            (
+                {"role": "assistant", "content": ""},
+                [
+                    ToolCall("edit-2", "Edit", ["g.txt", [{"op": "create", "content": "y"}]]),
+                    call("Read", [{"path": "missing.txt", "ranges": [[0, 1]]}]),
+                ],
+                "",
+            ),
+            ({"role": "assistant", "content": "done"}, [], "done"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = _delegate_runner(parent)
+
+    real_run = ToolRunner.run
+    batches = {"n": 0}
+
+    def run_then_die(self, tool_calls, **kwargs):
+        batches["n"] += 1
+        if batches["n"] == 2:
+            # The first call of the dying batch really runs against the worker's session (file on
+            # disk, diff recorded); the second never starts. The batch then dies before any result
+            # is committed to the turn.
+            real_run(self, tool_calls[:1], **kwargs)
+            raise RuntimeError("provider timeout")
+        return real_run(self, tool_calls, **kwargs)
+
+    monkeypatch.setattr(ToolRunner, "run", run_then_die)
+
+    with pytest.raises(ToolError) as excinfo:
+        _delegate_call(parent, runner, action="send", order="create f.txt then die mid-batch")
+    message = str(excinfo.value)
+    assert "worker failed after 2 steps" in message
+    # The edit from the dying batch is not lost: its diff was merged and the envelope names it.
+    assert 'files="f.txt, g.txt"' in message
+
+    assert (tmp_path / "f.txt").read_text() == "x"
+    assert (tmp_path / "g.txt").read_text() == "y"
+
+    # Every call of the dying batch is answered with the Failed result — the executed one included,
+    # since its output died with the crash — and none dangles for the next request to reject.
+    worker = parent.worker
+    worker_messages = json.dumps(worker.messages)
+    assert '"[This turn ended early: provider timeout]"' in worker_messages
+    assert worker_messages.count(FAILED_TOOL_CALL_RESULT) == 2
+    answered = {message.get("tool_call_id") for message in worker.messages if message.get("role") == "tool"}
+    dangling = [
+        call_id
+        for message in worker.messages
+        if message.get("role") == "assistant"
+        for call_id in [call.get("id") for call in (message.get("tool_calls") or [])]
+        if call_id and call_id not in answered
+    ]
+    assert dangling == []
+
+    # The next delegation on the same worker goes out normally on the settled history.
+    result = _delegate_call(parent, runner, action="send", order="continue")
+    assert 'rounds="2"' in result and "done" in result
+
+
 # 7c. Delegate status carries the last failure and the round it happened in until a send succeeds
 #     and clears it, so the parent can confirm why the worker stopped without relying on memory.
 def test_delegate_status_reports_last_failure_until_a_success(tmp_path, monkeypatch):

@@ -585,6 +585,44 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
     assert restored_messages == s.messages
 
 
+def test_failed_first_request_leaves_a_marked_legal_history_and_the_next_turn_runs(tmp_path):
+    """The failure-path settling also covers a turn that died before the model ever answered: the
+    user message stays, a bounded marker records where the turn stopped, and the settled history
+    (two consecutive user messages) is a shape the protocol codecs merge, so the next turn on the
+    same session goes out normally."""
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class Model:
+        fail = True
+        on_stream = None
+
+        def request(self, messages, tools=None):
+            if self.fail:
+                self.fail = False
+                raise ModelError("provider exploded")
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+
+    with pytest.raises(ModelError, match="provider exploded"):
+        agent.run("continue")
+
+    # Nothing was settled (no tool calls ever issued) and nothing was retracted: the user message
+    # and the marker are both permanent history, with nothing live left behind.
+    assert s.messages == [
+        {"role": "user", "content": "continue"},
+        {"role": "user", "content": FAILED_TURN_MARKER.format(error="provider exploded")},
+    ]
+    assert s._active_turn_messages == []
+    assert s.state.turn_messages == 0
+
+    # The next turn on the same session runs to completion on the marked history.
+    assert agent.run("continue again") == "done"
+    assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant"]
+    assert s.messages[-1]["content"] == "done"
+
+
 @pytest.mark.parametrize(
     "content",
     [

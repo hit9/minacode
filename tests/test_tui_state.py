@@ -131,6 +131,71 @@ def test_choice_view_state_selected_choice():
     assert state.selected_choice() is None
 
 
+def test_choice_view_state_window_uncapped_and_fitting():
+    choices = tuple(f"r{index}" for index in range(50))
+    state = ChoiceViewState(choices=choices, labels={}, disabled=set(), max_rows=0)  # no cap: the whole list
+    visible = state.visible()
+    assert state.window(visible, state.clamp()) == (0, 50)
+
+    state.max_rows = 50  # exactly fits: still the whole list, no viewport
+    assert state.window(visible, state.clamp()) == (0, 50)
+
+    state.max_rows = 10
+    assert state.window(visible, state.clamp()) == (0, 10)  # a long list caps at the viewport size
+
+
+def test_choice_view_state_window_centers_the_selection_and_clamps_to_edges():
+    choices = tuple(f"r{index}" for index in range(50))
+    state = ChoiceViewState(choices=choices, labels={}, disabled=set(), max_rows=10)
+    visible = state.visible()
+
+    state.selected = 0  # head: anchored at the top
+    assert state.window(visible, state.clamp()) == (0, 10)
+
+    state.selected = 2  # near the head: centering is clamped by the top edge, not shifted down
+    assert state.window(visible, state.clamp()) == (0, 10)
+
+    state.selected = 24  # middle: centred, half the viewport above, half below
+    assert state.window(visible, state.clamp()) == (19, 29)
+
+    state.selected = 49  # tail: the window never runs past the last row
+    assert state.window(visible, state.clamp()) == (40, 50)
+
+
+def test_choice_view_state_window_counts_disabled_headers_in_the_row_range():
+    # Filtering keeps section headers in `visible`; the window is over `visible`, so a header row
+    # shifts the selection's row index but not the numbering (which counts enabled rows only).
+    choices = ("topic", *tuple(f"r{index}" for index in range(30)), "tail", "extra")
+    state = ChoiceViewState(choices=choices, labels={}, disabled={"topic", "tail"}, max_rows=10)
+    state.set_query("r")  # drops "topic"; "extra" survives the filter
+    visible = state.visible()
+    options = state.clamp()
+    assert len(options) == 31 and len(visible) == 33  # 2 headers + 31 enabled rows
+
+    state.selected = 0  # "r0" sits one row below the first header
+    assert state.window(visible, state.clamp()) == (0, 10)
+
+    state.selected = 15  # centred over the row index, header included
+    assert state.window(visible, state.clamp()) == (11, 21)
+
+    state.selected = len(options) - 1  # "extra" is the last visible row
+    assert state.window(visible, state.clamp()) == (23, 33)
+
+
+def test_choice_view_state_window_counter_and_numbering_stay_stable():
+    state = ChoiceViewState(choices=tuple(f"r{index}" for index in range(50)), labels={}, disabled=set(), max_rows=10)
+    state.selected = 49
+    parts = state.fragments("list")
+    text = "".join(value for _style, value in parts)
+    assert "showing 41-50 of 50" in text
+    assert "41. r40" in text and "50. r49" in text
+
+    state.selected = 0
+    text = "".join(value for _style, value in state.fragments("list"))
+    assert "showing 1-10 of 50" in text
+    assert "1. r0" in text and "10. r9" in text
+
+
 def test_bash_live_preview_frame_lines():
     preview = BashLivePreview()
     preview.active = True
