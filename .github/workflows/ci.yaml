@@ -34,7 +34,7 @@ jobs:
 
       - name: Run lint and type checks
         run: |
-          uv run ruff check minacode
+          uv run ruff check .
           uv run ruff format --check minacode
           uv run pyright
 
