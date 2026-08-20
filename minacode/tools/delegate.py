@@ -418,7 +418,10 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         # replace() is shallow, so the worker needs its own providers dict with a detached copy of
         # the entry it runs on: the /worker live-switch mutates that entry in place, and the
         # snapshot-load path below receives this same config so a resumed worker picks up the
-        # current provider/model/reasoning overrides.
+        # current provider/model/reasoning overrides. Every other entry is still the parent's
+        # object, so a worker snapshot that carried provider_overrides for such an entry would
+        # leak a restore into the parent via apply_provider_overrides. It cannot today: a worker
+        # runs no slash commands, so its overrides are always empty.
         provider = worker_provider_config(parent.config, provider_name)
         config = replace(parent.config, active_provider=provider_name, providers={**parent.config.providers, provider_name: provider})
         settings = replace(parent.settings)

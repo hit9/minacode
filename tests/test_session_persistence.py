@@ -8,7 +8,7 @@ import pytest
 
 from minacode.base import SESSION_EVENT_KEY, MinacodeError
 from minacode.cli import CommandLoop
-from minacode.cli.commands import compact
+from minacode.cli.commands import compact, provider, set_model
 from minacode.config import (
     Config,
     ProviderConfig,
@@ -162,6 +162,64 @@ def test_provider_overrides_alone_do_not_force_a_save(tmp_path):
     s.save_snapshot()
 
     assert not os.path.exists(log_path(s))
+
+
+def test_provider_switch_chain_round_trips_through_commands(tmp_path):
+    """End to end through the real slash-command handlers: /model on default, /provider a,
+    /model on a, /provider b — save and resume keeps each switch keyed to the entry it was made
+    on, with the last active provider winning."""
+    s = session_with_data_dir(tmp_path)
+    s.config.providers["a"] = ProviderConfig(model="ma", api="chat", reasoning="low")
+    s.config.providers["b"] = ProviderConfig(model="mb", api="chat", reasoning="low")
+    loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
+    loop.interactive_input = False
+
+    set_model(loop, "m-on-default")
+    provider(loop, "a")
+    set_model(loop, "m-on-a")
+    provider(loop, "b")
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.config.active_provider == "b"
+    assert restored.config.providers["default"].model == "m-on-default"
+    assert restored.config.providers["a"].model == "m-on-a"
+    assert restored.config.providers["b"].model == "mb"
+
+
+def test_resumed_session_switch_writes_a_new_delta(tmp_path):
+    """After a resume restores an override, switching again writes a delta for the new value and a
+    second resume reads it back — the marker/delta chain stays aligned across a full round trip."""
+    s = session_with_data_dir(tmp_path)
+    s.provider_overrides = {"providers": {"default": {"model": "model-1"}}}
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.config.provider.model == "model-1"
+
+    restored.provider_overrides = {"providers": {"default": {"model": "model-2"}}}
+    restored.messages.append({"role": "user", "content": "more"})
+    restored.save_snapshot()
+
+    again = Session.load_snapshot(s.uid, config=s.config)
+    assert again.config.provider.model == "model-2"
+
+
+def test_switch_then_first_message_carries_the_override(tmp_path):
+    """A switch made while the session is still empty is dropped by the empty-content early return;
+    once the session gains its first message, the full snapshot is written with the override intact."""
+    s = session_with_data_dir(tmp_path)
+    s.provider_overrides = {"providers": {"default": {"model": "model-z"}}}
+    s.save_snapshot()
+    assert not os.path.exists(log_path(s))
+
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.config.provider.model == "model-z"
 
 
 def test_pending_user_inputs_persist_and_restore(tmp_path):
