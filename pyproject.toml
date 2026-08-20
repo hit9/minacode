@@ -38,7 +38,9 @@ dependencies = [
     "openai>=2.37.0",
     "pathspec>=1.0",
     "pillow>=11.0",
-    "prompt-toolkit>=3.0",
+    # 3.0.53 fixed Application.invalidate() so it is safe to call from any thread; older versions
+    # crash with "no running event loop" when the agent thread asks for a redraw.
+    "prompt-toolkit>=3.0.53",
     "rich>=13.0",
     "socksio>=1.0.0",
     "websockets>=15.0.1",

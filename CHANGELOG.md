@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A TUI redraw no longer crashes with `RuntimeError: no running event loop` when the agent thread
+  asks for a repaint while a long task runs. prompt_toolkit made `Application.invalidate()` safe
+  to call from any thread in 3.0.53; the dependency floor now guarantees that fix instead of
+  depending on whatever version a fresh install resolves.
+
 ## 0.29.0 - 2026-08-20
 
 ### Fixed
