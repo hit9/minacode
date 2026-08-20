@@ -22,7 +22,7 @@ from rich.markdown import Markdown
 from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError
 from minacode.render import UiPrinter
 from minacode.session import ToolResultRecord
-from minacode.tools import AskSpec, BashTool, ToolScript
+from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript
 from minacode.tui import (
     ASK_DONE,
     ASK_FREE_TEXT,
@@ -342,6 +342,13 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     return ApprovalView(f"output · {record.key}", command, "bash", rows, streams)
 
 
+# How far back the browser lists. The session keeps 400 results (Session.store_tool_result), so this
+# is a reading bound, not a storage one: a list is scanned, and past a few dozen rows the `/` search
+# is the way through it rather than the cursor. The viewport (ChoiceViewState.max_rows) is what keeps
+# a list this long from filling the screen.
+MAX_OUTPUT_ENTRIES = 50
+
+
 @dataclass(frozen=True)
 class OutputEntry:
     """One row of the Ctrl-O browser: how it reads in the list, and what it opens."""
@@ -369,9 +376,11 @@ def running_script_entry(loop: CommandLoop) -> OutputEntry | None:
 def tool_output_viewer(loop: CommandLoop) -> None:
     """Browse what recent calls produced without copying it into scrollback.
 
-    Every entry -- a Bash command with its output, a ToolScript with its script and result --
-    opens the same read-only scrolling viewer. ToolScript is here because yolo has no other door
-    to it; Bash is here because a bounded excerpt under the list was never the whole answer."""
+    Every entry -- a Bash command with its output, a ToolScript with its script and result, a
+    Delegate order with the worker's answer -- opens the same read-only scrolling viewer.
+    ToolScript is here because yolo has no other door to it; Bash is here because a bounded excerpt
+    under the list was never the whole answer; Delegate is here because judging the answer means
+    reading the order again, and the transcript kept only the `Delegate send` line."""
     if loop.tui is None:
         return
     # Built once, on the way in: a record with nothing to show is also a record with no view, so
@@ -385,7 +394,7 @@ def tool_output_viewer(loop: CommandLoop) -> None:
         view = record_view(loop, record)
         if view is not None:
             entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view))
-        if len(entries) == 10:
+        if len(entries) == MAX_OUTPUT_ENTRIES:
             break
     if not entries:
         return
@@ -400,7 +409,27 @@ def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
         return bash_view(loop, record)
     if record.name == "ToolScript":
         return script_view(loop, record)
+    if record.name == "Delegate":
+        return delegate_view(loop, record)
     return None
+
+
+def delegate_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
+    """The stored Delegate call as its order plus what the worker sent back.
+
+    An order is the one text in a session written to be read twice: once at the send prompt, and
+    again when the worker's answer has to be judged against what was actually asked. The transcript
+    keeps neither -- just the `Delegate send` line -- so this is the second reading. Only a send has
+    an order; status and reset return None from `approval_view` and are skipped like any other
+    record this browser does not show."""
+    view = DelegateTool(loop.session, record.args).approval_view()
+    if view is None:
+        return None
+    result, note = loop.agent.tools.viewer_text(record.output)
+    rows = [("key", record.key), *view.rows]
+    if note:
+        rows.append(("shown", note))
+    return ApprovalView(f"order · {record.key}", view.text, view.lexer, rows, result)
 
 
 def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry]) -> ApprovalView | None:
@@ -415,7 +444,11 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry]) -> Approval
     labels: dict[str, str] = {}
     for index, entry in enumerate(entries):
         head = f"{entry.key}  "
-        detail = entry.detail.removeprefix(entry.name).strip()
+        # Folded to one line before it is measured. `short_call` keeps a multi-line command whole,
+        # which is right in the transcript and wrong here: a row is one row, and an embedded newline
+        # spills it over several, taking the numbering and the selection bar with it. `git commit -m`
+        # with a real message is the everyday case. The full command is a keypress away in the viewer.
+        detail = loop.agent.tools.oneline(entry.detail.removeprefix(entry.name).strip(), 400)
         detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1))
         labels[str(index)] = f"{head}{entry.name} {detail}".rstrip()
         parts[str(index)] = [
@@ -423,7 +456,9 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry]) -> Approval
             ("class:choice.tool", entry.name + " "),
             ("", detail),
         ]
-    state = ChoiceViewState(tuple(labels), labels, set())
+    # Leave room for the rule, the help row, the counter, and the input region below.
+    height = shutil.get_terminal_size((120, 24)).lines
+    state = ChoiceViewState(tuple(labels), labels, set(), max_rows=max(5, min(20, height - 10)))
 
     def rule(label: str) -> StyleAndTextTuples:
         cols = shutil.get_terminal_size((80, 20)).columns

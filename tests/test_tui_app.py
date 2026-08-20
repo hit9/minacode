@@ -18,8 +18,8 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, session, wait_until
 
-import minacode.tui as tui_module
-from minacode import hints
+import minacode.tui.app as tui_module
+from minacode.cli import hints
 from minacode.base import (
     SESSION_EVENT_KEY,
     LogBlock,
@@ -31,13 +31,13 @@ from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.hints import HintPicker
+from minacode.cli.hints import HintPicker
 from minacode.mentions import FilePick, active_mention
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, TuiApp
-from minacode.update import UpdateChecker
+from minacode.cli.update import UpdateChecker
 
 
 def ctrl_c_queue_scenario(cwd, results):
@@ -1643,7 +1643,7 @@ def test_quick_hint_external_edit_drops_picked_state(monkeypatch):
         del callback, in_executor
         return "edited text"
 
-    monkeypatch.setattr("minacode.tui.run_in_terminal", edit_in_terminal)
+    monkeypatch.setattr("minacode.tui.app.run_in_terminal", edit_in_terminal)
     asyncio.run(app._run_input_editor())
 
     assert app.input_buffer.text == "edited text"

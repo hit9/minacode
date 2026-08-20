@@ -12,8 +12,8 @@ from typing import ClassVar
 from urllib.parse import urlparse
 
 from minacode.base import ConfigError, Json, builtin_function_names
-from minacode.model_catalog import REASONING_LEVELS
-from minacode.provider_compat import (
+from minacode.providers.catalog import REASONING_LEVELS
+from minacode.providers.compat import (
     COMPATIBILITY_PROFILES,
     CompatibilityProfile,
     ResolvedProvider,

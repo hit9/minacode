@@ -7,7 +7,7 @@ import pytest
 from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _session
 
 from minacode.base import ModelOutputTruncated, ToolCall
-from minacode.model import ModelClient
+from minacode.model import ModelClient, resilience
 
 
 def test_anthropic_request_success(tmp_path, monkeypatch):
@@ -287,7 +287,7 @@ def test_anthropic_max_tokens_stop_reason_names_the_cap_only_when_nothing_was_ge
         model.anthropic_result(empty)
 
     assert "provider.max_tokens" in str(error.value)
-    assert ModelClient.retryable_error(error.value) is False
+    assert resilience.retryable_error(error.value) is False
 
     partial = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "half a sen"}]}
     _assistant, calls, content = model.anthropic_result(partial)
@@ -317,3 +317,45 @@ def test_another_hosts_thinking_signature_is_not_replayed(tmp_path):
 
     echoed = issuer.anthropic_messages(history)
     assert echoed[1]["content"][0] == {"type": "thinking", "thinking": "why", "signature": "sig"}
+
+
+def test_prompt_cache_breakpoint_rolls_with_the_conversation(tmp_path):
+    """Anthropic writes cache only at a breakpoint. The system block covers tools+system; without a
+    second, rolling one the conversation body -- the part that grows -- is re-read at full price
+    every turn. It has to land on the tail, skip thinking blocks, and leave saved state alone."""
+    model = ModelClient(_session(tmp_path, api="anthropic", url="https://api.anthropic.com/v1", model="claude-x"))
+    saved = [{"type": "thinking", "thinking": "why", "signature": "sig"}, {"type": "tool_use", "id": "tc.1", "name": "Read", "input": {}}]
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "_anthropic_content": saved, "_provider_origin": model.provider_origin()},
+        {"role": "tool", "tool_call_id": "tc.1", "content": "output"},
+    ]
+
+    messages = model.anthropic_params(history, None)["messages"]
+
+    # Only the tail is marked, and the earlier turns keep the exact bytes they were cached with.
+    assert messages[0] == {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+    assert messages[1]["content"] == saved
+    assert messages[2]["content"] == [{"type": "tool_result", "tool_use_id": "tc.1", "content": "output", "cache_control": {"type": "ephemeral"}}]
+    # The marker is a wire-only field: the session's replayed blocks must not pick it up.
+    assert saved == [{"type": "thinking", "thinking": "why", "signature": "sig"}, {"type": "tool_use", "id": "tc.1", "name": "Read", "input": {}}]
+
+    # A turn ending in thinking marks the last block that may carry it -- a signed thinking block
+    # is verified byte-for-byte, so it is echoed untouched.
+    trailing = model.anthropic_params(
+        [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "answer",
+                "_anthropic_content": [{"type": "text", "text": "answer"}, {"type": "thinking", "thinking": "why", "signature": "sig"}],
+                "_provider_origin": model.provider_origin(),
+            },
+        ],
+        None,
+    )["messages"]
+    assert trailing[1]["content"] == [
+        {"type": "text", "text": "answer", "cache_control": {"type": "ephemeral"}},
+        {"type": "thinking", "thinking": "why", "signature": "sig"},
+    ]

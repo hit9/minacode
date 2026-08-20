@@ -22,6 +22,8 @@ from minacode.context import ContextManager
 from minacode.image import UserInput
 from minacode.model import ModelClient, PreparedRequest
 from minacode.prompts import (
+    FAILED_TOOL_CALL_RESULT,
+    FAILED_TURN_MARKER,
     INTERRUPT_MARKER,
     LIVE_FOLLOWUP_PREFIX,
 )
@@ -171,10 +173,21 @@ class Agent:
             self.settle_interrupted_turn(turn_messages, transcript_messages)
             self.session.save_snapshot()
             raise
-        except Exception:
+        except Exception as error:
             self.session.release_user_inputs()
-            self.session.messages.extend(self.session._active_turn_messages)
-            self.session.transcript_messages.extend(self.session._active_transcript_messages)
+            # A turn that died from an error still has to leave a legal, marked history: tool
+            # calls that never got results are settled so the next request is not rejected for a
+            # dangling call, and a marker records where the turn ended. Settling only keeps the
+            # history valid; the failure still propagates unchanged.
+            self.settle_unanswered_tool_calls(turn_messages, transcript_messages, FAILED_TOOL_CALL_RESULT)
+            # The error is bounded before it is written down. Unlike INTERRUPT_MARKER this marker
+            # interpolates a value nobody controls -- a provider can answer with a whole HTTP body --
+            # and it lands in permanent history, so it would ride every later request and the
+            # compaction payload with it. What the marker is for is where the turn stopped, and a
+            # line of that fits.
+            turn_messages.append({"role": "user", "content": FAILED_TURN_MARKER.format(error=ToolRunner.oneline(str(error), 300))})
+            self.session.messages.extend(turn_messages)
+            self.session.transcript_messages.extend(transcript_messages)
             self.session._active_turn_messages.clear()
             self.session._active_transcript_messages.clear()
             self.session.state.turn_messages = 0
@@ -286,6 +299,32 @@ class Agent:
         self.session.state.turn_messages = 0
         if not any(message.get("role") != "user" for message in transcript_messages):
             return
+
+        def cancelled_text(call: Json) -> str:
+            if (call.get("function") or {}).get("name") == "Delegate":
+                # Name who was cancelled and that the worker's context survives: the parent
+                # cannot see the worker, so the interrupt line is its only notice.
+                return "Cancelled: the worker's turn was interrupted; its context is kept, reset it with /worker reset."
+            return "Cancelled: the user interrupted before this tool call finished."
+
+        self.settle_unanswered_tool_calls(turn_messages, transcript_messages, cancelled_text)
+        turn_messages.append({"role": "user", "content": INTERRUPT_MARKER})
+        self.session.messages.extend(turn_messages)
+        self.session.transcript_messages.extend(transcript_messages)
+
+    def settle_unanswered_tool_calls(
+        self,
+        turn_messages: list[Json],
+        transcript_messages: list[Json],
+        text: str | Callable[[Json], str],
+    ) -> None:
+        """Give every tool call of the turn that never got a result a synthetic failed one.
+
+        A turn that ends early — interrupted or dead from an error — may leave an assistant
+        message whose tool_calls have no matching tool results, and providers reject a messages
+        list with dangling calls: one such turn would fail every later request on this session.
+        `text` is the result content for each unanswered call; a callable receives the call so
+        the wording can depend on the tool (the interrupt path's Delegate line)."""
         answered = {message.get("tool_call_id") for message in turn_messages if message.get("role") == "tool"}
         for message in turn_messages:
             if message.get("role") != "assistant":
@@ -293,18 +332,10 @@ class Agent:
             for call in message.get("tool_calls") or []:
                 call_id = call.get("id")
                 if call_id and call_id not in answered:
-                    if (call.get("function") or {}).get("name") == "Delegate":
-                        # Name who was cancelled and that the worker's context survives: the parent
-                        # cannot see the worker, so the interrupt line is its only notice.
-                        cancelled_text = "Cancelled: the worker's turn was interrupted; its context is kept, reset it with /worker reset."
-                    else:
-                        cancelled_text = "Cancelled: the user interrupted before this tool call finished."
-                    turn_messages.append({"role": "tool", "tool_call_id": call_id, "content": cancelled_text})
+                    content = text(call) if callable(text) else text
+                    turn_messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
                     transcript_messages.append({"role": "tool", "tool_call_id": call_id, "result_key": "", "status": "failed"})
                     answered.add(call_id)
-        turn_messages.append({"role": "user", "content": INTERRUPT_MARKER})
-        self.session.messages.extend(turn_messages)
-        self.session.transcript_messages.extend(transcript_messages)
 
     @staticmethod
     def transcript_message(message: Json) -> Json:

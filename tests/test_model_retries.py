@@ -14,7 +14,6 @@ import openai
 import pytest
 from model_harness import _MockClientFactory, _session
 
-import minacode.model as model_module
 from minacode.base import (
     MODEL_REQUEST_RETRIES,
     RETRY_BASE_DELAY,
@@ -27,7 +26,7 @@ from minacode.base import (
 from minacode.config import (
     Config,
 )
-from minacode.model import ModelClient
+from minacode.model import ModelClient, resilience
 
 
 def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):
@@ -136,7 +135,7 @@ def test_total_response_timeout_closes_client_and_does_not_retry(tmp_path, monke
 
     assert started.is_set()
     assert client.close_count == 1
-    assert model.retryable_error(caught.value) is False
+    assert resilience.retryable_error(caught.value) is False
 
     calls = 0
 
@@ -338,7 +337,7 @@ def test_retry_backoff_sequence_within_jitter_bands(tmp_path, monkeypatch):
     model = ModelClient(s)
     factory = _MockClientFactory([(503, _OVERLOADED)] * MODEL_REQUEST_RETRIES + [(200, _OK)])
     monkeypatch.setattr(model, "client", factory)
-    monkeypatch.setattr(model_module.random, "random", lambda: 0.5)  # jitter factor exactly 1.0
+    monkeypatch.setattr(resilience.random, "random", lambda: 0.5)  # jitter factor exactly 1.0
     waits = _retry_wait_recorder(monkeypatch, factory)
 
     _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], None)
@@ -402,7 +401,7 @@ def test_retry_after_invalid_falls_back_to_backoff(tmp_path, monkeypatch, value)
     model = ModelClient(s)
     factory = _MockClientFactory([httpx.Response(503, json=_OVERLOADED, headers={"retry-after": value}), (200, _OK)])
     monkeypatch.setattr(model, "client", factory)
-    monkeypatch.setattr(model_module.random, "random", lambda: 0.5)
+    monkeypatch.setattr(resilience.random, "random", lambda: 0.5)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
     model.request([{"role": "user", "content": "hi"}], None)
@@ -542,8 +541,8 @@ def test_streamed_httpx_transport_error_is_retryable():
     cause = httpx.RemoteProtocolError("peer closed connection without sending complete message body (incomplete chunked read)")
     error = ModelError(str(cause))
     error.__cause__ = cause
-    assert ModelClient.retryable_error(error) is True
-    assert ModelClient.retry_reason(error) == "connection"
+    assert resilience.retryable_error(error) is True
+    assert resilience.retry_reason(error) == "connection"
 
 
 def test_streamed_httpx_read_error_is_retryable():
@@ -551,7 +550,7 @@ def test_streamed_httpx_read_error_is_retryable():
     cause = httpx.ReadError("peer closed connection without sending bytes")
     error = ModelError(str(cause))
     error.__cause__ = cause
-    assert ModelClient.retryable_error(error) is True
+    assert resilience.retryable_error(error) is True
 
 
 def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
@@ -615,7 +614,7 @@ def test_429_quota_body_not_retryable_openai_style():
             "param": None,
         }
     )
-    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+    assert resilience.retryable_error(_error_with_cause(cause)) is False
 
 
 def test_429_quota_body_not_retryable_kimi_style():
@@ -627,7 +626,7 @@ def test_429_quota_body_not_retryable_kimi_style():
             "code": "exceeded_current_quota_error",
         }
     )
-    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+    assert resilience.retryable_error(_error_with_cause(cause)) is False
 
 
 def test_429_quota_body_not_retryable_zai_style():
@@ -639,7 +638,7 @@ def test_429_quota_body_not_retryable_zai_style():
             "code": "1113",
         }
     )
-    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+    assert resilience.retryable_error(_error_with_cause(cause)) is False
 
 
 def test_429_anthropic_rate_limit_still_retryable():
@@ -654,7 +653,7 @@ def test_429_anthropic_rate_limit_still_retryable():
             },
         }
     )
-    assert ModelClient.retryable_error(_error_with_cause(cause)) is True
+    assert resilience.retryable_error(_error_with_cause(cause)) is True
 
 
 def test_429_openai_transient_rate_limit_still_retryable():
@@ -666,14 +665,14 @@ def test_429_openai_transient_rate_limit_still_retryable():
             "code": "rate_limit_exceeded",
         }
     )
-    assert ModelClient.retryable_error(_error_with_cause(cause)) is True
+    assert resilience.retryable_error(_error_with_cause(cause)) is True
 
 
 def test_429_text_fallback_with_billing_marker_not_retryable():
     """The text fallback honors the same markers: a message combining a 429 status pattern with
     account/billing wording must not be rescued by the status-code regex and retried."""
     error = ModelError("Error code: 429 - insufficient balance, please recharge your account")
-    assert ModelClient.retryable_error(error) is False
+    assert resilience.retryable_error(error) is False
 
 
 def test_429_rate_limits_phrased_as_quota_still_retry():
@@ -683,21 +682,21 @@ def test_429_rate_limits_phrased_as_quota_still_retry():
     vertex = _openai_429({"message": "Quota exceeded for quota metric 'Generate requests per minute'.", "code": 429})
     dashscope = _openai_429({"message": "Requests throttling triggered.", "code": "Throttling.RateQuota"})
 
-    assert ModelClient.retryable_error(_error_with_cause(vertex)) is True
-    assert ModelClient.retryable_error(_error_with_cause(dashscope)) is True
+    assert resilience.retryable_error(_error_with_cause(vertex)) is True
+    assert resilience.retryable_error(_error_with_cause(dashscope)) is True
 
 
 def test_429_allocated_quota_exhaustion_is_still_permanent():
     """DashScope's allocation quota is the permanent half of the same vocabulary."""
     cause = _openai_429({"message": "Free allocated quota exceeded.", "code": "Throttling.AllocationQuota"})
-    assert ModelClient.retryable_error(_error_with_cause(cause)) is False
+    assert resilience.retryable_error(_error_with_cause(cause)) is False
 
 
 def test_billing_wording_outside_a_429_still_retries():
     """The billing rule is about 429 only. A 5xx is transient whatever its text mentions: an
     expired certificate or a failing credit service upstream says nothing about the account."""
-    assert ModelClient.retryable_error(ModelError("Error code: 503 - upstream TLS certificate expired")) is True
-    assert ModelClient.retryable_error(ModelError("Error code: 500 - internal error in credit service")) is True
+    assert resilience.retryable_error(ModelError("Error code: 503 - upstream TLS certificate expired")) is True
+    assert resilience.retryable_error(ModelError("Error code: 500 - internal error in credit service")) is True
 
 
 def test_compaction_uses_effective_provider(tmp_path, monkeypatch):

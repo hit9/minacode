@@ -13,16 +13,17 @@ Keep this file short. It is an entry point, not a second design document.
 ## Project map
 
 - `minacode/engine.py`: the agent turn loop composing context, model, and tools.
-- `minacode/context.py`, `minacode/model.py`, `minacode/runner.py`: context projection/compaction,
-  provider request protocols, and the tool execution lifecycle.
-- `minacode/update.py`: the background version check.
+- `minacode/context.py`, `minacode/model/`, `minacode/runner.py`: context projection/compaction,
+  provider request protocols (`model/client.py` with the per-API adapters beside it), and the tool
+  execution lifecycle.
+- `minacode/cli/update.py`, `minacode/cli/hints.py`: the background version check and quick hints.
 - `minacode/session/`: durable semantic state (`__init__.py`) and snapshot persistence
   (`store.py`); `store.py` never imports the package at module scope.
-- `minacode/tools/`, `minacode/image.py`, `minacode/mcp.py`, `minacode/skill.py`: vertical
+- `minacode/tools/`, `minacode/image.py`, `minacode/mcp/`, `minacode/skill.py`: vertical
   features; `tools/` splits built-ins by capability, registry in `__init__.py`.
-- `minacode/config.py`, `minacode/provider_compat.py`: config-file settings and evidence-backed
-  provider compatibility policy.
-- `minacode/cli/`, `minacode/tui.py`, `minacode/render.py`: commands (`cli/commands.py`,
+- `minacode/config.py`, `minacode/providers/`: config-file settings, the model capability catalog
+  (`providers/catalog.py`), and evidence-backed compatibility policy (`providers/compat.py`).
+- `minacode/cli/`, `minacode/tui/`, `minacode/render.py`: commands (`cli/commands.py`,
   `cli/modals.py`, `/worker`'s flow in `cli/worker.py`), TUI runtime (`cli/runtime.py`), view
   fragments (`cli/view.py`), interaction, and presentation.
 - `tests/`: behavior-oriented tests grouped by subsystem and boundary.
@@ -44,8 +45,8 @@ Keep this file short. It is an entry point, not a second design document.
     that answers it, and stop.
   - Rewriting a paragraph is usually better than appending one. A behavior change means the old
     sentence is wrong, not incomplete.
-  - Reasoning that is worth keeping but not worth showing a user goes in a code comment, a commit
-    message, or `notes/`.
+  - Reasoning that is worth keeping but not worth showing a user goes in a code comment or a
+    commit message.
   - A `term-shot` is a screenshot in HTML: when the colors or rows it depicts change, it is stale
     and has to be redrawn. Keep every `<span>` closed.
 - **Changelog:** record user-visible changes under `Unreleased`; omit internal-only refactors and

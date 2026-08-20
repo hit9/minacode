@@ -7,7 +7,7 @@ import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
 from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
-from minacode.model import ModelClient
+from minacode.model import ModelClient, resilience
 from minacode.tools import BashTool
 
 
@@ -401,7 +401,7 @@ def test_responses_incomplete_output_reports_the_cap_instead_of_an_empty_answer(
     assert "16384" in str(error.value)
     assert "reasoning" in str(error.value)
     # Deterministic: the same request hits the same cap again, so it must not consume a retry.
-    assert ModelClient.retryable_error(error.value) is False
+    assert resilience.retryable_error(error.value) is False
 
 
 def test_responses_incomplete_for_another_reason_still_returns_its_output(tmp_path):
@@ -726,8 +726,10 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
     # Consecutive assistant turns merge into one message, as the Messages API requires roles to
     # alternate. The responses-only turn is rebuilt as text; only the Anthropic turn is echoed.
     anthropic_params = model.anthropic_params(history, None)
+    # The cache breakpoint skips the thinking block -- the API checks those against the signature
+    # it issued -- and lands on the last block that may carry it.
     assert anthropic_params["messages"][1]["content"] == [
-        {"type": "text", "text": "from responses"},
+        {"type": "text", "text": "from responses", "cache_control": {"type": "ephemeral"}},
         {"type": "thinking", "thinking": "", "signature": "sig"},
     ]
 

@@ -17,7 +17,7 @@ from tui_harness import ResizableOutput, loop, run_interactive_tui, session, wai
 
 import minacode.cli as loop_module
 import minacode.render as render_module
-import minacode.tui as tui_module
+import minacode.tui.app as tui_module
 from minacode.base import (
     MalformedToolCallError,
     MinacodeError,
@@ -32,7 +32,7 @@ from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp
-from minacode.update import UpdateChecker
+from minacode.cli.update import UpdateChecker
 
 
 def history_file(path, entries, line="x" * 200):

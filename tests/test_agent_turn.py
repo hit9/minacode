@@ -25,7 +25,7 @@ from minacode.config import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
-from minacode.prompts import INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
+from minacode.prompts import FAILED_TURN_MARKER, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotCodec
 from minacode.skill import SkillLibrary
@@ -567,10 +567,13 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
 
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
     assert s.tool_records == []
-    # The turn aborts, but the corrections it already sent survive: history is append-only.
+    # The turn aborts, but the corrections it already sent survive: history is append-only, and
+    # the error marker records where the turn ended (the failure-path counterpart of the interrupt
+    # marker, keeping the two settling paths the same shape).
     assert s.messages == [
         {"role": "user", "content": "continue"},
         *[_correction("Bash")] * engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS,
+        {"role": "user", "content": FAILED_TURN_MARKER.format(error="Model emitted Bash as text 6 times; none of the textual calls were executed.")},
     ]
     assert s._active_turn_messages == []
     restored = Session.load_snapshot(s.uid, config=s.config)
@@ -580,6 +583,44 @@ def test_agent_stops_after_sixth_textual_tool_call_without_persisting_responses(
         message for message in restored.messages if message.get(SESSION_EVENT_KEY) != "resumed" and not SessionSnapshotCodec.is_legacy_internal_message(message)
     ]
     assert restored_messages == s.messages
+
+
+def test_failed_first_request_leaves_a_marked_legal_history_and_the_next_turn_runs(tmp_path):
+    """The failure-path settling also covers a turn that died before the model ever answered: the
+    user message stays, a bounded marker records where the turn stopped, and the settled history
+    (two consecutive user messages) is a shape the protocol codecs merge, so the next turn on the
+    same session goes out normally."""
+    s = session(tmp_path)
+    agent = Agent(s, output_fn=lambda _text: None)
+
+    class Model:
+        fail = True
+        on_stream = None
+
+        def request(self, messages, tools=None):
+            if self.fail:
+                self.fail = False
+                raise ModelError("provider exploded")
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent.model = Model()
+
+    with pytest.raises(ModelError, match="provider exploded"):
+        agent.run("continue")
+
+    # Nothing was settled (no tool calls ever issued) and nothing was retracted: the user message
+    # and the marker are both permanent history, with nothing live left behind.
+    assert s.messages == [
+        {"role": "user", "content": "continue"},
+        {"role": "user", "content": FAILED_TURN_MARKER.format(error="provider exploded")},
+    ]
+    assert s._active_turn_messages == []
+    assert s.state.turn_messages == 0
+
+    # The next turn on the same session runs to completion on the marked history.
+    assert agent.run("continue again") == "done"
+    assert [message["role"] for message in s.messages] == ["user", "user", "user", "assistant"]
+    assert s.messages[-1]["content"] == "done"
 
 
 @pytest.mark.parametrize(
@@ -1134,9 +1175,16 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assert params["max_tokens"] == ANTHROPIC_DEFAULT_MAX_TOKENS
     # An unversioned gateway alias remains generic rather than guessing a thinking generation.
     assert "thinking" not in params
-    assert params["messages"][0] == {"role": "user", "content": "first\n\nsecond"}
+    assert params["messages"][0] == {"role": "user", "content": [{"type": "text", "text": "first\n\nsecond"}]}
     assert params["messages"][1]["content"][1]["type"] == "tool_use"
-    assert params["messages"][2]["content"][0]["type"] == "tool_result"
+    # The last block of the conversation carries the rolling breakpoint, so the history itself --
+    # not just tools+system -- is written to the cache and read back on the next turn.
+    assert params["messages"][2]["content"][0] == {
+        "type": "tool_result",
+        "tool_use_id": "tc.1",
+        "content": "tool output",
+        "cache_control": {"type": "ephemeral"},
+    }
     assert params["tools"][0]["name"] == "Read"
     assert params["tools"][0]["input_schema"]["additionalProperties"] is False
 

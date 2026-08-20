@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- The working divider shows the model's output speed while a response streams, next to the elapsed
+  time: `responding (12s · ~48 tok/s)`. Estimated from the text as it arrives, hence the `~`, and
+  absent between requests and on providers that do not stream.
+- `Ctrl-O` lists delegation orders alongside Bash outputs and ToolScript scripts, and opens one
+  with the worker's answer below it. Judging an answer means reading the order again, and the
+  transcript keeps only the `Delegate send` line.
+- An `Edit` call that writes more than 6000 characters now says so in its own result. Everything
+  one call writes is generated inside a single assistant message, and a timeout partway through
+  loses all of it, so a change that size is safer as several calls.
+
+### Changed
+
+- The status bar marks a running compaction with `[compaction]` even when the summary runs on the
+  session's own provider and model, which is the default. The marker was previously shown only
+  when a `[compaction]` entry overrode the model, so an ordinary compaction pause looked exactly
+  like a slow reply.
+- `Ctrl-O` browses the 50 most recent results instead of 10, through a scrolling window about ten
+  rows tall with a counter under it. The session keeps 400 results; the old limit was the list
+  filling the screen, not the storage.
+
+### Fixed
+
+- Anthropic requests now cache the conversation, not just the prompt header. Anthropic has no
+  implicit caching and writes only at a `cache_control` breakpoint, and minacode set one on the
+  system block — so tools and the system prompt were cached while the conversation body, the part
+  that grows to a hundred thousand tokens, was re-read at full price on every turn. A second,
+  rolling breakpoint on the last block of the request writes the history through this turn and
+  reads it back on the next, which is what the OpenAI-shaped providers were already doing
+  implicitly. `/status` shows the difference in its cache row.
+
+- A failed `Delegate send` now reports what the worker did before dying — steps, elapsed time,
+  changed files, rounds, and context fill — and that its context survives, so the parent can
+  decide between resending and resetting instead of guessing. The failed turn is settled in the
+  worker's history: every unanswered tool call gets a `Failed` result and the turn ends with a
+  `[This turn ended early: …]` marker, so the next delegation goes out normally, and
+  `Delegate status` keeps showing the last failure until a send succeeds.
+- A multi-line command no longer breaks its row in the `Ctrl-O` list. A `git commit -m` with a real
+  message spilled over several lines and took the numbering and the selection bar with it; the row
+  now folds to one line, and the viewer still shows the command exactly as it was run.
 
 ## 0.26.0 - 2026-08-19
 

@@ -9,7 +9,7 @@ from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _sess
 from provider_cases import PROVIDER_CONTRACTS, ProviderContract
 
 from minacode.model import ModelClient
-from minacode.model_catalog import PROVIDER_CATALOG
+from minacode.providers.catalog import PROVIDER_CATALOG
 
 
 def _chat_response(model: str) -> dict:

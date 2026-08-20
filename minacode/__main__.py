@@ -14,6 +14,7 @@ import threading
 
 from minacode.base import ConfigError, MinacodeError, UpdateStatus, __version__
 from minacode.cli import CommandLoop
+from minacode.cli.update import UpdateChecker
 from minacode.config import (
     Config,
     ConfigFile,
@@ -22,7 +23,6 @@ from minacode.config import (
 from minacode.engine import Agent
 from minacode.render import Theme
 from minacode.session import Session
-from minacode.update import UpdateChecker
 
 
 def run_update() -> int:

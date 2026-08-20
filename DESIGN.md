@@ -19,25 +19,26 @@ Modules (dependencies point downward only):
 ```
               __main__                     entry, startup ordering
                   |
-    cli/ -- tui.py -- render.py            commands (cli/commands.py, cli/modals.py, cli/worker.py),
-        |                                    TUI runtime (cli/runtime.py), view (cli/view.py)
+    cli/ -- tui/ -- render.py              commands (cli/commands.py, cli/modals.py, cli/worker.py),
+        |                                    TUI runtime (cli/runtime.py), view (cli/view.py),
+        |                                    app (tui/app.py), view state (tui/views.py)
     engine.py                              the turn loop: commit or roll back
         |
         +-- context.py                     request projection, compaction
         +-- runner.py                      tool batch execution
                   |
-              model.py                     wire protocols, streaming, retry
-                  |
-   tools/   mcp.py   skill.py             vertical features
+              model/                       wire protocols (chat.py, responses.py,
+                  |                          anthropic.py), streaming, retry
+   tools/   mcp/   skill.py               vertical features
                   |
              session/                      durable semantic state (__init__.py)
                   |                         and snapshot persistence (store.py)
                   |
               image.py                     image storage and model projection
                   |
-   base.py   config.py   provider_compat.py  value types, settings, policy
+   base.py   config.py   providers/compat.py  value types, settings, policy
                   |
-            model_catalog.py               evidence-backed compatibility data
+            providers/catalog.py           evidence-backed compatibility data
 ```
 
 `session/__init__.py` and `session/store.py` reach upward features/state types only via deferred
@@ -136,16 +137,16 @@ Tests protect observable contracts and reproduced regressions, not implementatio
 ## System shape
 
 - `base.py` defines configuration, shared value types, and error categories, plus the log-line
-  vocabulary and resource handles; `provider_compat.py` folds `model_catalog.py` data into resolved
+  vocabulary and resource handles; `providers/compat.py` folds `providers/catalog.py` data into resolved
   request policy.
 - `Session` owns protocol-neutral semantic state (messages, transcript, checkpoints, queued input,
   retained output, diffs, usage, session resources); its snapshot codec decides what is persistable.
-- Agent semantics split by owner: `context.py` projects/compacts, `model.py` owns adapters,
+- Agent semantics split by owner: `context.py` projects/compacts, `model/` owns adapters,
   streaming, retry, `runner.py` owns execution/cancellation, `engine.py` composes the turn loop.
   Dependencies point downward only, so no pair needs a deferred import.
 - `CommandLoop`/`TuiRuntime` orchestrate commands and transitions; `TuiApp` owns input, keys,
   layout, modals; `render.py` owns presentation.
-- `tools/`, `image.py`, `mcp.py`, `skill.py` are vertical features that never leak storage or UI
+- `tools/`, `image.py`, `mcp/`, `skill.py` are vertical features that never leak storage or UI
   details; `tools/` splits built-ins by capability, with the registry in `__init__.py`.
 
 State changes belong to the module owning their meaning. Dependencies point toward stable
@@ -203,8 +204,8 @@ a provider request.
 compatibility become a `ResolvedProvider`; explicit settings win, unknown hosts stay on the
 generic standards path.
 
-- `model_catalog.py` declares overlays/capabilities with primary evidence beside each exception;
-  `provider_compat.py` owns generic matching and fallback. Neither wraps SDKs nor allowlists valid
+- `providers/catalog.py` declares overlays/capabilities with primary evidence beside each exception;
+  `providers/compat.py` owns generic matching and fallback. Neither wraps SDKs nor allowlists valid
   models.
 - `ModelClient` owns the Chat, Responses, and Anthropic wire formats; history stays one normalized
   model with namespaced opaque fields for continuation data.

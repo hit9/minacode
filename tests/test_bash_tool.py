@@ -56,8 +56,10 @@ def test_job_wait_is_bounded_and_says_the_job_is_still_running(tmp_path, monkeyp
     A wait ends at the model's timeout or at MAX_WAIT, whichever is shorter, and a job that
     outlives it is reported as still running rather than looking like it finished."""
     s = session(tmp_path)
-    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 1)
-    monkeypatch.setattr(JobTool, "MAX_WAIT", 1)
+    # Sub-second budgets keep the waits real but fast: each wait parks for 0.2s (the poll
+    # interval is 0.1s), and the ceiling clamps even an absurd requested timeout.
+    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 0.2)
+    monkeypatch.setattr(JobTool, "MAX_WAIT", 0.2)
     JobTool(s, [{"action": "start", "command": "sleep 30"}]).call()
 
     for payload in ({}, {"timeout": 0}, {"timeout": 3600}):
@@ -65,7 +67,8 @@ def test_job_wait_is_bounded_and_says_the_job_is_still_running(tmp_path, monkeyp
         waited = JobTool(s, [{"action": "wait", "job": "job.1", **payload}]).call()
         elapsed = time.monotonic() - started
 
-        assert elapsed < 5, f"wait with {payload} blocked for {elapsed:.1f}s"
+        assert elapsed < 2, f"wait with {payload} blocked for {elapsed:.1f}s"
+        assert elapsed >= 0.15  # the budget was actually spent, not skipped
         assert "Status: running" in waited
         assert "Still running (the wait ended" in waited
         assert "Exit code:" not in waited
@@ -73,25 +76,27 @@ def test_job_wait_is_bounded_and_says_the_job_is_still_running(tmp_path, monkeyp
     # status with a timeout goes through the same budget.
     started = time.monotonic()
     assert "Still running" in JobTool(s, [{"action": "status", "job": "job.1", "timeout": 3600}]).call()
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 2
 
     JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
 
 
 def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, monkeypatch):
     s = session(tmp_path)
-    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 1)
+    # The job outlives the default budget by a wide margin, so only a longer timeout sees it
+    # through; the elapsed-time range pins that the wait really parked.
+    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 0.1)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
-    JobTool(s, [{"action": "start", "command": "sleep 2; printf slow-done"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 0.8; printf slow-done"}]).call()
 
-    # The default would have given up at 1s; asking for 30 sees the job through to the end.
+    # The default would have given up at 0.1s; asking for 30 sees the job through to the end.
     started = time.monotonic()
     waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 30}]).call()
 
-    assert 1 < time.monotonic() - started < 20
+    assert 0.6 < time.monotonic() - started < 5
     assert "Status: done" in waited
     assert "--- output ---\nslow-done" in waited
-    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget({}) == 1  # DEFAULT_WAIT
+    assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget({}) == 0.1  # DEFAULT_WAIT
     assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget({"timeout": 3600}) == 900  # MAX_WAIT
     # A non-numeric timeout is named in the error rather than surfacing as a bare int() ValueError.
     with pytest.raises(ToolError, match="whole number of seconds"):

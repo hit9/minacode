@@ -19,13 +19,13 @@ from prompt_toolkit.styles import Style
 
 from minacode.base import Text
 from minacode.cli.commands import SET_KEYS, SET_VALUES
+from minacode.cli.hints import Context as HintContext
+from minacode.cli.hints import HintPicker
 from minacode.cli.worker import WORKER_SUBCOMMANDS
 from minacode.config import (
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
 )
-from minacode.hints import Context as HintContext
-from minacode.hints import HintPicker
 from minacode.mentions import MentionSpan, active_mention, encode_file_mention
 from minacode.render import Theme, UiPrinter
 from minacode.session import QueuedInput
@@ -276,7 +276,7 @@ class View:
 
     def __init__(self, loop: CommandLoop) -> None:
         self.loop = loop
-        self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/hints.py
+        self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/cli/hints.py
 
     def waiting_pulse_fragments(self) -> StyleAndTextTuples:
         if self.loop.session.state.current_model_call_started_at <= 0:
@@ -329,7 +329,11 @@ class View:
             activity = retry_status or (
                 ({"reasoning": "thinking", "output": "responding"}.get(phase, phase) or status) + (" · " + attempt_status if attempt_status else "")
             )
-            label = f"{activity} ({Text.elapsed_since(self.loop.status_bar.started_at)})"
+            # The elapsed time says how long the wait has been; the rate says whether it is moving.
+            # Empty whenever nothing is streaming (between requests, non-streaming providers, a
+            # summary), so the divider never claims a speed it is not currently seeing.
+            rate = self.loop.status_bar.output_rate()
+            label = f"{activity} ({Text.elapsed_since(self.loop.status_bar.started_at)}{' · ' + rate if rate else ''})"
         elif status == "running script":
             # Timed like the working phases, but never relabelled from the stream phase: nothing is
             # streaming while a script runs, so the last kind seen would be stale, not current.

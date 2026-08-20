@@ -34,6 +34,7 @@ from minacode.base import (
 from minacode.cli import commands, worker
 from minacode.cli.modals import approval_text_viewer, question_interaction
 from minacode.cli.runtime import TuiRuntime
+from minacode.cli.update import UpdateChecker
 from minacode.cli.view import CommandCompleter, View
 from minacode.engine import Agent
 from minacode.image import ImageInputs, UserInput
@@ -44,7 +45,6 @@ from minacode.runner import ToolDisplay
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
 from minacode.tools import TOOL_REGISTRY, CodeIndex
 from minacode.tui import TuiApp
-from minacode.update import UpdateChecker
 
 
 @dataclass(frozen=True)

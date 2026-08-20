@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from minacode.model_catalog import (
+from .catalog import (
     ANTHROPIC_MODELS,
     MODEL_CAPABILITIES,
     PROVIDER_CATALOG,

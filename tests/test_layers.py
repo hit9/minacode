@@ -2,26 +2,26 @@
 
 Layers, from highest to lowest:
 
-    __main__  ->  cli/  ->  tui.py / render.py
+    __main__  ->  cli/  ->  tui/ / render.py
                    |
                engine.py
                    |
          context.py / runner.py
                    |
-                model.py
+                model/
                    |
-       tools/   mcp.py   skill.py
+       tools/   mcp/   skill.py
                    |
                session/
                    |
                 image.py
                    |
-        base.py  config.py  provider_compat.py
+      base.py  config.py  providers/compat.py
                    |
-             model_catalog.py
+            providers/catalog.py
 
 Same-layer imports are allowed; cross-layer imports may only point downward.
-prompts.py, hints.py and update.py are leaves: any layer may import them, and their own
+prompts.py, cli/hints.py and cli/update.py are leaves: any layer may import them, and their own
 imports are unconstrained. TYPE_CHECKING blocks and function-local imports are not counted.
 """
 
@@ -40,13 +40,26 @@ LAYERS = {
     "minacode.__main__": 0,
     "minacode.cli": 1,
     "minacode.tui": 2,
+    "minacode.cli.hints": 1,
+    "minacode.cli.update": 1,
+    "minacode.tui.app": 2,
+    "minacode.tui.views": 2,
     "minacode.render": 2,
     "minacode.engine": 3,
     "minacode.context": 4,
     "minacode.runner": 4,
     "minacode.model": 5,
+    "minacode.model.chat": 5,
+    "minacode.model.responses": 5,
+    "minacode.model.anthropic": 5,
+    "minacode.model.client": 5,
+    "minacode.model.resilience": 5,
     "minacode.tools": 6,
     "minacode.mcp": 6,
+    "minacode.mcp.config": 6,
+    "minacode.mcp.tokens": 6,
+    "minacode.mcp.rendering": 6,
+    "minacode.mcp.manager": 6,
     "minacode.skill": 6,
     "minacode.mentions": 6,
     "minacode.builtin_skills": 6,
@@ -54,11 +67,12 @@ LAYERS = {
     "minacode.image": 8,
     "minacode.base": 9,
     "minacode.config": 9,
-    "minacode.provider_compat": 9,
-    "minacode.model_catalog": 10,
+    "minacode.providers": 9,
+    "minacode.providers.catalog": 10,
+    "minacode.providers.compat": 9,
 }
 # Leaves: any layer may depend on them; their own dependencies are not checked.
-LEAVES = ("minacode.prompts", "minacode.hints", "minacode.update")
+LEAVES = ("minacode.prompts",)
 
 
 def layer_of(module: str) -> int | None:

@@ -36,6 +36,7 @@ from minacode.cli.modals import (
     segment_columns,
     select_choice,
 )
+from minacode.cli.update import UpdateChecker
 from minacode.config import (
     IMAGE_INPUT_CHOICES,
     PROVIDER_API_CHOICES,
@@ -46,11 +47,10 @@ from minacode.config import (
     compaction_provider_config,
 )
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED
-from minacode.provider_compat import builtin_tools_issue
+from minacode.providers.compat import builtin_tools_issue
 from minacode.render import markdown_table, progress_bar
 from minacode.session import SessionEntry, SessionSnapshotStore
 from minacode.tools import CodeIndex
-from minacode.update import UpdateChecker
 
 if TYPE_CHECKING:
     from minacode.cli import CommandLoop

@@ -107,7 +107,9 @@ Without a TUI (piped input, a headless run) the row is gone and the same actions
 <div class="term-shot" role="img" aria-label="The Delegate send approval brief: field rows for the title, an order excerpt, and the worker's effective provider, model, effort and api with inherit markers, then the action row in yellow with View order highlighted in reverse after two presses of Tab, and the reason input line below it."><span class="fs-tool">Delegate send</span><span> </span><span><span class="fs-i fs-sel">title    </span>Review the parser refactor</span><span><span class="fs-i fs-sel">order    </span>Extract parser.py from loop.py, keep the CLI surface unchanged (… 3 more lines)</span><span><span class="fs-i fs-sel">provider </span>(inherit) deepseek</span><span><span class="fs-i fs-sel">model    </span>(inherit) deepseek-v4-flash</span><span><span class="fs-i fs-sel">effort   </span>(inherit) medium</span><span><span class="fs-i fs-sel">api      </span>(inherit) chat</span><span><span class="fs-i fs-dim">    │ </span><span class="fs-i fs-approve"> Approve </span><span class="fs-i fs-dim">  </span><span class="fs-i fs-approve-on"> View order </span><span class="fs-i fs-dim">  </span><span class="fs-i fs-approve"> Worker config </span><span class="fs-i fs-dim">  </span><span class="fs-i fs-approve"> Refuse </span><span class="fs-i fs-dim">    Tab to move</span></span><span class="fs-dim">  reason › </span></div>
 
 `View order` opens the full order in a read-only viewer — the same field rows, then the order
-itself rendered as markdown. Scroll it, then `Esc` back to the actions.
+itself rendered as markdown. Scroll it, then `Esc` back to the actions. After the delegation has
+run, `Ctrl-O` reopens the same order with the worker's answer below it, which is where you judge
+one against the other: the transcript keeps only the `Delegate send` line.
 
 <div class="term-shot" role="img" aria-label="The order viewer opened from View order: a read-only header, the same field rows as the brief with cyan labels, a rule, then the full order rendered as markdown with an underlined heading, inline code, and a bullet list, above a line of scrolling keys."><span class="fs-dim">  Delegate order · read-only</span><span><span class="fs-i fs-sel">  title   </span>  Review the parser refactor</span><span><span class="fs-i fs-sel">  language</span>  python</span><span><span class="fs-i fs-sel">  provider</span>  (inherit) deepseek</span><span><span class="fs-i fs-sel">  model   </span>  (inherit) deepseek-v4-flash</span><span class="fs-dim">  ────────────────────────────────────────────────────────────────────────</span><span>  <span class="fs-i fs-md-h">Review the parser refactor</span></span><span>&nbsp;</span><span>  Extract <span class="fs-i fs-md-code">parser.py</span> from <span class="fs-i fs-md-code">loop.py</span> and keep the CLI surface unchanged.</span><span>&nbsp;</span><span>   • keep <span class="fs-i fs-md-code">tokenize()</span> public</span><span>   • add a test for empty input</span><span>&nbsp;</span><span class="fs-dim">  ↑/↓ · Ctrl-U/D · g/G · Esc/q close</span></div>
 
@@ -130,6 +132,10 @@ Otherwise the model simply saw no task worth handing over, which is the normal c
 
 - **Reset drops the conversation, not the work.** `/worker reset` clears the worker's context —
   along with any wrong beliefs it picked up — while file changes and merged diffs survive.
+- **A failed delegation is not a lost worker.** When a send dies — a provider error, a timeout —
+  the worker keeps its context and any files it already changed are merged and named in the
+  failure, so the model can answer the problem and send again instead of starting over. Reset it
+  when you want the context gone too.
 - **Every send asks, even under `yolo`.** The order is a spec the model wrote for itself, so the
   approval brief is the one cheap check on it.
 - **The worker inherits your environment.** Same directory, skills, MCP servers, and language

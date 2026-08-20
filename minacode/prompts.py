@@ -23,7 +23,7 @@ SCOPE:
 TOOLS:
 - Use exact tools and named arguments; schemas are authoritative. A call is a request: end the response and wait; never invent or retry unseen results.
 - Use native tool calls; never print tool XML or tool-call JSON.
-- Read inspects text files; ViewImage inspects local images; Search finds text and editable anchors; InspectCode handles symbols, references, implementations, and call chains; Edit writes files.
+- Read inspects text files; ViewImage inspects local images; Search finds text and editable anchors; InspectCode handles symbols, references, implementations, and call chains; Edit writes files in small steps: one call per cohesive change, a large rewrite split across several, since a timeout mid-message loses everything that message was writing.
 - Bash runs quick shell commands; prefer `rg`, and write source with Edit. Chain related steps in one call with `&&`, `||`, and `|` instead of many round trips. Use Job for long commands; poll or kill it when done, and wait for jobs needed by the task.
 - Recall retrieves bounded tr.N tool output; RecallContext lists, searches, and retrieves compacted seg.N history; Note views or updates goal, plan, facts, and checks; MCP calls external tools. Ask only after safe progress and when blocked.
 - NextHints offers the user 2-3 next-step inputs at the idle prompt; call it together with your final answer, only when genuinely useful follow-ups exist.
@@ -84,7 +84,7 @@ SCOPE:
 TOOLS:
 - Use exact tools and named arguments; schemas are authoritative. A call is a request: end the response and wait; never invent or retry unseen results.
 - Use native tool calls; never print tool XML or tool-call JSON.
-- Read inspects text files; Search finds text and editable anchors; InspectCode handles symbols, references, implementations, and call chains; Edit writes files.
+- Read inspects text files; Search finds text and editable anchors; InspectCode handles symbols, references, implementations, and call chains; Edit writes files in small steps: one call per cohesive change, a large rewrite split across several, since a timeout mid-message loses everything that message was writing.
 - Recall retrieves bounded tr.N tool output; RecallContext lists, searches, and retrieves compacted seg.N history; Note views or updates goal, plan, facts, and checks; MCP calls external tools.
 - When the order needs a tool you do not have, do not improvise around the gap: stop and end the turn with the problem written out, exactly as SCOPE requires.
 - Bash runs quick shell commands; prefer `rg`, and write source with Edit. Chain related steps in one call with `&&`, `||`, and `|` instead of many round trips. Use Job for long commands; poll or kill it when done, and wait for jobs needed by the task.
@@ -128,6 +128,11 @@ REQUIRED: Answer this in visible text in your next assistant message. Keep the t
 """
 
 INTERRUPT_MARKER = "[The user interrupted this turn (Ctrl-C) before it completed.]"
+# The failure-path counterparts of the interrupt wording above: a turn that died from an error
+# gives every unanswered tool call this result (keeping the persisted history legal for the next
+# request) and ends with FAILED_TURN_MARKER so the next order sees where the previous one stopped.
+FAILED_TOOL_CALL_RESULT = "Failed: the turn ended with an error before this tool call finished."
+FAILED_TURN_MARKER = "[This turn ended early: {error}]"
 COMPACTION_SUMMARY_TITLE = "--- Prior Conversation Summary (compacted) ---"
 WORKING_STATE_CHECKPOINT_TITLE = "--- Working State Checkpoint ---"
 PREVIOUS_CONTEXT_TRIMMED = "Previous context was deterministically trimmed."

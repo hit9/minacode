@@ -1048,9 +1048,10 @@ def test_edit_warnings_do_not_affect_apply(tmp_path):
     assert len(result.changes) == 1
 
     # warnings_block is a pure string method: it observes before/after and changes nothing.
-    block = tool.warnings_block(original, result.content)
+    edits = tool.parse()[1]
+    block = tool.warnings_block(original, result.content, edits)
     assert "duplicate-lines" in block and block.startswith("<warnings>") and block.endswith("</warnings>")
-    assert tool.warnings_block(original, original) == ""
+    assert tool.warnings_block(original, original, edits) == ""
 
     # Error behavior is unchanged too: overlapping edits still raise.
     with pytest.raises(ToolError, match="overlap"):
@@ -1370,3 +1371,36 @@ def test_replace_unique_line_join_keeps_later_batch_anchor(tmp_path, monkeypatch
 
     assert path.read_text(encoding="utf-8") == "a\nBc\nx\nd\n"
     assert s.tool_errors == []
+
+
+def test_large_edit_warns_on_what_the_call_wrote_not_on_the_file(tmp_path):
+    """The subject is the assistant message the call arrived in: one call that writes a lot is one
+    message that loses a lot when it times out. So the measure is the payload, and an ordinary edit
+    to a large file says nothing."""
+    from minacode.tools.files import LARGE_EDIT_CHARS, _large_edit
+
+    small = [Edit(op="replace", start=anchor(0, "a\n"), end=anchor(0, "a\n"), content="b\n")]
+    assert _large_edit(small) is None
+
+    big = [Edit(op="create", content="x" * LARGE_EDIT_CHARS)]
+    warning = _large_edit(big)
+    assert warning is not None and warning.code == "large-edit"
+    assert str(LARGE_EDIT_CHARS) in warning.message and "several" in warning.message
+
+    # Counted across the whole batch and over both text fields: several edits in one call are still
+    # one message, and replace_all writes through `new` rather than `content`.
+    half = "y" * (LARGE_EDIT_CHARS // 2 + 1)
+    assert _large_edit([Edit(op="create", content=half), Edit(op="replace_all", old="q", new=half)]) is not None
+
+
+def test_large_edit_warning_rides_the_edit_result(tmp_path):
+    """It reaches the model the same way every other post-edit observation does, so a call that was
+    too big says so in its own result rather than only in the tool description."""
+    from minacode.tools.files import LARGE_EDIT_CHARS
+
+    s = session(tmp_path)
+    body = "".join(f"line {index}\n" for index in range(LARGE_EDIT_CHARS // 8))
+    result = EditTool(s, ["big.py", [{"op": "create", "content": body}]]).call()
+
+    assert "<warnings>" in result and "large-edit" in result
+    assert (tmp_path / "big.py").read_text(encoding="utf-8") == body  # advisory only: the edit stands

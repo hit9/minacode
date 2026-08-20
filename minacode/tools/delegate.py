@@ -144,9 +144,9 @@ class DelegateTool(Tool):
 
 Delegate bounded, verifiable work you can spec in one order and judge from its diff or test output; it buys context hygiene and the worker's model, never speed (delegation is serial). Do small work yourself, explore yourself until the task is bounded, and keep the heart of the current request here: writing the order and reviewing the result cost about as much as doing the work.
 
-Accept the result against the order's `how to verify` by looking at actual evidence -- the diff, the test output, the recorded command output -- never the worker's own report: it is the worker's summary and rationalizes in its favor. Prefer a rerunnable black-box test of the external contract (one you can read and rerun yourself) over your own judgment over a diff, and for complex or error-prone implementations have the order ask the worker to write that test before implementing; do not force test-first on tasks it does not fit (wording changes, config additions, open-ended exploration) -- decide per task in the order.
+Accept the result against the order's `how to verify` by looking at actual evidence -- the diff, the test output, the recorded command output -- never the worker's own report: it is the worker's summary and rationalizes in its favor. Say what you accepted on and name it (which hunk, which test, which command's output); "the worker reports the tests pass" is not acceptance, and neither is a green test run on tests the worker also wrote. Prefer a rerunnable black-box test of the external contract (one you can read and rerun yourself) over your own judgment over a diff, and for complex or error-prone implementations have the order ask the worker to write that test before implementing; do not force test-first on tasks it does not fit (wording changes, config additions, open-ended exploration) -- decide per task in the order.
 
-Write the order to state: the goal, the files it touches, the constraints, how to verify, and the boundaries (what not to touch). Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again. Set `language` to the user's reply language (e.g. \"Chinese\"): they watch the worker's live output and read its report, so the worker must speak their language; omit `language` only when the user works in English. Also set a short `title` while writing the spec -- a few words capturing the intent (e.g. \"fix /status blank line\") -- used as the human-readable label of the delegation's start and done dividers; omit `title` to fall back to the order's first line.
+Write the order to state: the goal, the files it touches, the constraints, how to verify, the boundaries (what not to touch), and the facts you already established -- exact signatures, `path:line` anchors, the approach chosen and the ones already ruled out. That last part is what keeps the delegation cheap: the worker starts on an empty context, so every fact the order leaves out it re-derives and every gap it re-decides, and its decision is the one you then have to review or undo. Keep one delegation small enough that you can re-derive its semantics in a single read; when in doubt, split it into several delegations. Spell out what \"correct\" means: the direction of the effect, edge cases, and the exact extent of terms (e.g. writing \"CJK\" must say whether kana and hangul are included). The worker stops and ends its turn (no tool call) with a written question when the order conflicts with reality; answer it and send again. Set `language` to the user's reply language (e.g. \"Chinese\"): they watch the worker's live output and read its report, so the worker must speak their language; omit `language` only when the user works in English. Also set a short `title` while writing the spec -- a few words capturing the intent (e.g. \"fix /status blank line\") -- used as the human-readable label of the delegation's start and done dividers; omit `title` to fall back to the order's first line.
 
 Reset the worker when switching tasks, when the spec changed, or after it failed twice in a row (its context has accumulated wrong beliefs). Each send's result reports `rounds` (how many orders this worker has already taken) and `context_percent` (its live context fill); when the fill is high and the next task is still substantial, reset before re-delegating to give the worker a clean context. Reset discards the worker's process, not its products: file changes and merged diffs stay."""
 
@@ -157,7 +157,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                 "action": {"type": "string", "enum": ["send", "reset", "status"], "description": "Operation to perform"},
                 "order": {
                     "type": "string",
-                    "description": "Complete work order for action=send; must stand alone, the worker cannot see this session's history",
+                    "description": "Complete work order for action=send. Must stand alone (the worker cannot see this session's history) and state the goal, the files, the constraints, the facts already established (signatures, path:line anchors, decisions already made), how to verify, and what not to touch",
                 },
                 "max_steps": {
                     "type": "integer",
@@ -341,19 +341,28 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                     ]
                 )
             )
+        failure: Exception | None = None
         try:
             with runner._active_worker.track(agent):
                 answer = agent.run(order)
-        except Exception as error:
-            raise ToolError(f"worker failed: {error}") from error
+        except Exception as error:  # noqa: BLE001 - the worker's failure becomes a ToolError envelope below, after the finally block merged its diffs
+            failure = error
         finally:
             # Merge diffs even when interrupted, or the user never sees what the worker did.
             self._merge_diffs(worker, parent, before_diffs)
-        elapsed = time.monotonic() - started
+        if failure is not None:
+            # Folded to one bounded, quote-free line at the source rather than where it is read.
+            # `status` renders it as an attribute of the envelope the model parses, and a provider
+            # error routinely carries both a quote and a newline -- an unescaped one closes the
+            # attribute early and the rest of the tag reads as garbage. The full text is in the
+            # failure report the parent got when it happened; this is the reminder, not the record.
+            worker.state.last_error = ToolRunner.oneline(str(failure).replace('"', "'"), 200)
+            worker.state.last_error_round = worker.state.round_count
+            raise ToolError(self._failure_report(worker, failure, started, before_diffs)) from failure
+        worker.state.last_error, worker.state.last_error_round = "", 0
+        elapsed, files, percent = self._send_facts(worker, started, before_diffs)
         in_tokens = worker.usage.prompt_tokens - before_in
         out_tokens = worker.usage.completion_tokens - before_out
-        files = ", ".join(sorted({diff.path for diff in worker.turn_diffs[before_diffs:]})) or "(none)"
-        percent = worker.usage.context_percent(worker.state.context_percent)
         return "\n".join(
             [
                 f'<Delegate action="send" steps="{worker.state.turn_step}" elapsed="{elapsed:.1f}s" files="{files}" stopped_at_max_steps="{str(agent.stopped_at_max_steps).lower()}" tokens="{in_tokens}/{out_tokens}" rounds="{worker.state.round_count}" context_percent="{percent}">',
@@ -361,6 +370,31 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
                 answer.rstrip(),
                 "</worker>",
                 "</Delegate>",
+            ]
+        )
+
+    def _send_facts(self, worker: Session, started: float, before_diffs: int) -> tuple[float, str, int]:
+        """Elapsed time, changed-file list, and context fill for one delegation: the facts the
+        success envelope and the failure report both carry, computed from the same sources so the
+        two paths cannot drift. `files` only reflects diffs merged so far, which is why the
+        failure report is built after the `finally` block ran `_merge_diffs`."""
+        elapsed = time.monotonic() - started
+        files = ", ".join(sorted({diff.path for diff in worker.turn_diffs[before_diffs:]})) or "(none)"
+        percent = worker.usage.context_percent(worker.state.context_percent)
+        return elapsed, files, percent
+
+    def _failure_report(self, worker: Session, error: Exception, started: float, before_diffs: int) -> str:
+        """The ToolError message for a failed delegation. Still raised, not returned: the runner
+        must mark the call failed (red line + status="failed"), and the envelope lives in the
+        exception text. Answers the parent's three questions: what the worker did (`files`),
+        whether it is still alive, and what to do next."""
+        elapsed, files, percent = self._send_facts(worker, started, before_diffs)
+        return "\n".join(
+            [
+                f"worker failed after {worker.state.turn_step} steps ({elapsed:.1f}s): {error}",
+                f'alive="true" rounds="{worker.state.round_count}" context_percent="{percent}" files="{files}"',
+                "Its context is kept: answer the problem and send again, or reset to discard this worker's process.",
+                "Files listed above were already changed and merged.",
             ]
         )
 
@@ -446,9 +480,12 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             return '<Delegate action="status" alive="false"/>'
         percent = worker.usage.context_percent(worker.state.context_percent)
         last = next((str(message.get("content") or "") for message in reversed(worker.messages) if message.get("role") == "assistant"), "")
+        # The last failure, so the parent can confirm why it stopped without relying on memory;
+        # absent once a send succeeded since then.
+        error_attr = f' last_error="{worker.state.last_error}" last_error_round="{worker.state.last_error_round}"' if worker.state.last_error else ""
         return "\n".join(
             [
-                f'<Delegate action="status" alive="true" provider="{worker.config.active_provider}" model="{worker.config.provider.model}" rounds="{worker.state.round_count}" context_percent="{percent}">',
+                f'<Delegate action="status" alive="true" provider="{worker.config.active_provider}" model="{worker.config.provider.model}" rounds="{worker.state.round_count}" context_percent="{percent}"{error_attr}>',
                 f"<last>{(last.strip()[:400] or '(no answer yet)')}</last>",
                 "</Delegate>",
             ]

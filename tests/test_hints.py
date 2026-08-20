@@ -1,6 +1,6 @@
-"""Unit tests for the idle-input hint mechanism (minacode/hints.py)."""
+"""Unit tests for the idle-input hint mechanism (minacode/cli/hints.py)."""
 
-from minacode.hints import HINTS, Context, HintPicker
+from minacode.cli.hints import HINTS, Context, HintPicker
 
 DIFF = "/diff reviews recent edits"
 SESSIONS = "/sessions resumes a past session"
