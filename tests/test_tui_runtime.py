@@ -403,7 +403,7 @@ def test_tui_runtime_clears_thinking_before_cancelled_output(tmp_path, monkeypat
         raise KeyboardInterrupt
 
     command_loop.agent.run = interrupt
-    command_loop.emit = lambda text: emitted.append((text, command_loop.view.model_stream_fragments()))
+    command_loop.emit = lambda text="", indent=0: emitted.append((text, command_loop.view.model_stream_fragments()))
     monkeypatch.setattr(CodeIndex, "update_pending_async", lambda _index: None)
 
     runtime.run_agent_turn("question")
@@ -990,7 +990,7 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
 def test_background_output_is_closed_before_final_output(tmp_path):
     command_loop = loop(tmp_path)
     emitted = []
-    command_loop.emit = emitted.append
+    command_loop.emit = lambda text="", indent=0: emitted.append(text)
 
     command_loop.close_background_output(lambda: emitted.append("final"))
     command_loop.emit_background("late worker output")
@@ -1118,7 +1118,7 @@ def test_expired_session_cleanup_reports_without_blocking_startup(monkeypatch, t
     command_loop.session.settings.session_retention_days = 7
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 3)
     lines = []
-    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
+    monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
     command_loop.clean_expired_sessions_async()
     for _ in range(200):
@@ -1137,7 +1137,7 @@ def test_no_notice_when_nothing_expired(monkeypatch, tmp_path):
     command_loop = loop(tmp_path)
     monkeypatch.setattr(SessionSnapshotStore, "clean_expired", lambda _session: 0)
     lines = []
-    monkeypatch.setattr(command_loop, "emit", lambda text="": lines.append(str(text)))
+    monkeypatch.setattr(command_loop, "emit", lambda text="", indent=0: lines.append(str(text)))
 
     command_loop.clean_expired_sessions_async()
     time.sleep(0.1)

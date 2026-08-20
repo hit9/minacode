@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Everything a turn produces now starts in the same column. The user's message already sat there
+  with its `• ` bullet hanging in the margin, and the model's text and tool lines followed it;
+  the turn outcome (`Cancelled`, an error), a slash command's reply, and the live
+  `thinking`/`responding` preview did not. They do now, so the transcript has one left edge
+  instead of two. Session chrome — the startup banner, the restored-session notice, the resume
+  line — stays flush left and frames the conversation.
+- A resumed session renders the final answer in that column too. It was replayed flush left
+  while the live turn had already moved it, so the same turn changed shape across `--resume`.
+
 ## 0.28.0 - 2026-08-20
 
 ### Changed

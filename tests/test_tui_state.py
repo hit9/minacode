@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 
+from minacode.base import LogBlock, TurnBox
 from minacode.cli import CommandLoop
 from minacode.config import (
     Config,
@@ -225,6 +226,23 @@ def test_bash_live_preview_finish():
     preview.finish()
     assert not preview.active
     assert preview.text == ""
+
+
+def test_model_stream_preview_sits_in_the_content_column(tmp_path):
+    """The preview is the live view of text that lands in the content column, so its rail opens
+    there rather than a level to the left; a left edge that shifts when the preview is torn down
+    would read as a jump."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+
+    loop.model_stream_output("reasoning", "weighing the two paths")
+    lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
+
+    margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
+    assert lines[0] == f"{margin}\u251c\u2500 thinking"
+    assert all(line.startswith(margin) for line in lines)
+    assert lines[1].startswith(f"{margin}\u2502  ")
 
 
 def test_model_stream_preview_switches_phase_and_clears(tmp_path):

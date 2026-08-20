@@ -883,7 +883,7 @@ def test_status_reports_worker_delegation_state(tmp_path):
     # No worker session: one `worker` row naming the configured [worker] provider. Everything is
     # one flat table — the session's own rows, the parent's, then the worker's under `worker*`.
     text = status_text()
-    assert text.startswith("| field | value |")
+    assert text.lstrip().startswith("| field | value |")  # rendered in the content column
     assert "###" not in text
     assert "[worker] provider" in text and "default" in text
 

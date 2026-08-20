@@ -343,12 +343,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         name = text.partition(" ")[0]
         entry = COMMAND_LOOKUP.get(name)
         if entry is None or not entry.queue_safe:
-            self.emit(f"{name} is unavailable while the agent is working; press Ctrl-C to run it.")
+            self.emit_turn(f"{name} is unavailable while the agent is working; press Ctrl-C to run it.")
             return
         if name == "/mcp":
             sub = text.partition(" ")[2].split()
             if sub and sub[0] != "tools":
-                self.emit("Only read-only /mcp (status, tools) is available while the agent is working.")
+                self.emit_turn("Only read-only /mcp (status, tools) is available while the agent is working.")
                 return
         self.command(text)
 
@@ -413,7 +413,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                     self.agent.run(user_input)
                     answered = True
                 except KeyboardInterrupt:
-                    self.emit("Cancelled")
+                    self.emit_turn("Cancelled")
                     continue
                 except MalformedToolCallError as error:
                     answer = str(error)
@@ -428,7 +428,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             if not answered:
                 if self.ui.color and answer.strip():
                     self.emit()
-                self.ui.emit_answer(answer, rule=False)
+                self.ui.emit_answer(answer, rule=False, indent=TurnBox.CONTENT_LEVEL)
             if footer := search_sources_footer(self.agent.turn_sources):
                 self.ui.emit_answer(footer, rule=False, indent=TurnBox.CONTENT_LEVEL)
             if not malformed_tool_call:
@@ -514,10 +514,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     ) -> int:
         role = str(message.get("role") or "")
         content = ImageInputs.label_text(message).strip()
-        raw_calls = message.get("tool_calls")
-        has_tool_calls = isinstance(raw_calls, list) and bool(raw_calls)
         if role == "assistant" and content:
-            self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL if has_tool_calls else TurnBox.ROOT_LEVEL)
+            # Every assistant message sits in the content column, final answer included, so a
+            # resumed session reads exactly like the live one. The turn's own text all shares that
+            # column with the user's message, whose `• ` bullet hangs in the same two-space margin.
+            self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL)
         if role == "assistant":
             return self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {})
         if role == "user" and content and not ImageInputs.is_tool_observation(message):
@@ -634,8 +635,15 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         """Read from the injected/non-TTY input path; interactive terminals use TuiApp."""
         return initial_text or self.input_fn(prompt_text)
 
-    def emit(self, text: str | LogBlock = "") -> None:
-        self.ui.emit(text)
+    def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
+        self.ui.emit(text, indent)
+
+    def emit_turn(self, text: str = "") -> None:
+        """A line that belongs to the exchange rather than to the session around it: a turn
+        outcome, a command's reply, a refusal to run one. Those sit in the content column with
+        the model's text and the tool lines; session chrome (the banner, the restored-session
+        notice, the resume line) stays at column 0 and frames them."""
+        self.emit(text, TurnBox.CONTENT_LEVEL)
 
     def emit_background(self, text: str) -> None:
         """Emit from a daemon worker only while this loop still owns terminal output."""
@@ -817,11 +825,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             if isinstance(output, LogBlock):
                 self.emit(output)
             elif entry is not None and entry.render == "compact":
-                self.ui.emit_answer(output, rule=False, compact=True)
+                self.ui.emit_answer(output, rule=False, compact=True, indent=TurnBox.CONTENT_LEVEL)
             elif entry is not None and entry.render == "answer":
-                self.ui.emit_answer(output)
+                self.ui.emit_answer(output, indent=TurnBox.CONTENT_LEVEL)
             else:
-                self.emit(output)
+                self.emit_turn(output)
         # A session switch ends this run the way /exit does; `main` starts the next one.
         return True, bool(self.resume_request)
 

@@ -258,12 +258,42 @@ class UiPrinter:
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
 
-    def emit(self, text: str | LogBlock = "") -> None:
+    def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
+        """Print one line or log block. `indent` moves plain text into a column; a LogBlock is
+        left alone, since it already carries its own margins and rails.
+
+        The margin is applied after styling, not before: `segments` dispatches on what the text
+        starts with (`• `, `Error:`, `+ `), so prefixing spaces first would strip every line of
+        its color."""
+        if isinstance(text, LogBlock):
+            indent = 0
         if not self.color:
-            self.output_fn(str(text))
+            self.output_fn(self.indent_message(str(text), "", indent) if indent else str(text))
             return
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
+        if indent:
+            segments = self.indent_segments(segments, LogBlock.margin(indent))
         print_formatted_text(FormattedText(segments), end="", flush=True)
+
+    @staticmethod
+    def indent_segments(segments: list[tuple[str, str]], margin: str) -> list[tuple[str, str]]:
+        """Open every rendered line with `margin`, carrying the style of the fragment it opens.
+
+        A trailing newline ends the last line rather than starting another, so the margin that
+        would follow it is dropped; otherwise an empty emit would print a row of spaces."""
+        indented: list[tuple[str, str]] = []
+        at_line_start = True
+        for style, value in segments:
+            for index, piece in enumerate(value.split("\n")):
+                if index:
+                    indented.append((style, "\n"))
+                    at_line_start = True
+                if at_line_start and piece:
+                    indented.append((style, margin))
+                    at_line_start = False
+                if piece:
+                    indented.append((style, piece))
+        return indented
 
     # Rich right-pads every rendered line with spaces up to the console width so backgrounds and
     # padding can fill the row. Uncolored padding gets baked into scrollback and turns into wrap

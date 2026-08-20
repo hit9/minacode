@@ -27,6 +27,7 @@ from minacode.base import (
     Text,
     ToolError,
     TurnBox,
+    __version__,
 )
 from minacode.cli import CommandLoop
 from minacode.cli.commands import (
@@ -44,7 +45,7 @@ from minacode.config import (
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.prompts import SYSTEM_PROMPT
-from minacode.render import StatusBar
+from minacode.render import StatusBar, UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore, ToolResultRecord
 from minacode.skill import SkillLibrary
@@ -75,8 +76,8 @@ def test_ps_command_uses_markdown_renderer(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     rendered = []
     plain = []
-    loop.ui.emit_answer = rendered.append
-    loop.emit = plain.append
+    loop.ui.emit_answer = lambda text, **kwargs: rendered.append(text)
+    loop.emit = lambda text="", indent=0: plain.append(text)
 
     assert loop.command("/ps") == (True, False)
 
@@ -84,6 +85,40 @@ def test_ps_command_uses_markdown_renderer(tmp_path):
     assert len(rendered) == 1
     assert rendered[0].startswith("### Active jobs")
     assert "| id | status | elapsed | command |" in rendered[0]
+
+
+def test_emit_indents_plain_text_without_losing_its_style(tmp_path):
+    """`emit(text, indent)` moves a plain line into a column. The margin is applied after
+    styling, because `segments` dispatches on what the text starts with -- prefixing spaces
+    first would strip every line of its color. A blank line gets no margin, or an empty emit
+    would print a row of trailing spaces into the scrollback."""
+    del tmp_path
+    ui = UiPrinter(lambda _text: None)
+    ui.color = True
+    margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
+
+    error = ui.indent_segments(ui.segments("Error: provider is down"), margin)
+    assert error[0] == ("ansired", margin)  # the margin carries the style of the line it opens
+    assert "".join(text for _style, text in error) == f"{margin}Error: provider is down\n"
+
+    two_lines = ui.indent_segments(ui.segments("first\nsecond"), margin)
+    assert "".join(text for _style, text in two_lines) == f"{margin}first\n{margin}second\n"
+
+    assert "".join(text for _style, text in ui.indent_segments(ui.segments(""), margin)) == "\n"
+
+
+def test_turn_output_shares_one_column_and_session_chrome_does_not(tmp_path):
+    """One left edge for the exchange: the user's line (its `• ` bullet hanging in the margin),
+    the turn outcome, and a command's reply. The banner and the resume line frame it flush left."""
+    s = session(tmp_path)
+    output = []
+    loop = CommandLoop(Agent(s, output_fn=output.append), input_fn=lambda prompt: "", output_fn=output.append)
+    margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
+
+    loop.emit_turn("Cancelled")
+    loop.emit(f"minacode {__version__}. /help for commands.")
+
+    assert output == [f"{margin}Cancelled", f"minacode {__version__}. /help for commands."]
 
 
 def test_tui_completion_applies_single_match():
@@ -440,7 +475,7 @@ def test_resume_is_an_alias_for_sessions(tmp_path):
     s.config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     emitted = []
-    loop.emit = emitted.append
+    loop.emit = lambda text="", indent=0: emitted.append(text)
 
     assert loop.command("/resume") == (True, False)
 
@@ -700,7 +735,7 @@ def test_resumed_session_renders_saved_tool_records_without_matching_tool_calls(
 
     text = "\n".join(output)
     assert f"Restored session: {s.uid}" in text
-    assert "compacted answer\nfinal detail" in text
+    assert "  compacted answer\n  final detail" in text  # the answer sits in the content column
     assert "user:" not in text and "assistant:" not in text
     assert "  Bash  wc -l minacode.py\n    └ stored tr.1" in text
     assert "999 minacode.py" not in text
@@ -722,7 +757,9 @@ def test_resumed_session_separates_turn_boxes(tmp_path):
 
     loop.render_resumed_session()
 
-    assert output[1:] == ["\n• first", "one", "", "\n• second", "two"]
+    # Both answers sit in the content column, where the live turn printed them; the user's `• `
+    # bullet hangs in that same two-space margin, so every line of text starts at column 2.
+    assert output[1:] == ["\n• first", "  one", "", "\n• second", "  two"]
 
 
 def test_turn_box_groups_followup_users_until_final_assistant():
@@ -789,7 +826,7 @@ def test_simple_repl_ctrl_c_output_matches_interrupted_phase(tmp_path, monkeypat
 
     assert command_loop.run() == 0
 
-    assert output.count("Cancelled") == expected_cancelled
+    assert [line.strip() for line in output].count("Cancelled") == expected_cancelled
 
 
 @pytest.mark.parametrize("raised", [None, "error"])
@@ -942,7 +979,7 @@ def test_ask_headless_keeps_plain_per_question_prompts(tmp_path):
 def test_ask_choice_is_not_echoed_before_final_tool_log(tmp_path, monkeypatch):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), output_fn=lambda text: None)
     emitted = []
-    loop.emit = emitted.append
+    loop.emit = lambda text="", indent=0: emitted.append(text)
     monkeypatch.setattr(modals_mod, "question_interaction", lambda _loop, specs: ["B"])
 
     assert modals_mod.question_interaction(loop, [AskSpec("Which?", choices=["A", "B"])]) == ["B"]
@@ -1015,7 +1052,7 @@ def test_colored_assistant_and_tool_blocks_each_start_with_one_blank_line(tmp_pa
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     loop.ui.color = True
     events = []
-    loop.emit = lambda text="": events.append(text)
+    loop.emit = lambda text="", indent=0: events.append(text)
     loop.ui.emit_answer = lambda text, **_kwargs: events.append(text)
     first = LogBlock.hierarchy(LogLine("Bash", "first"), [])
     first_result = LogBlock.hierarchy(None, [LogLine("stored", "tr.1")])
@@ -1268,7 +1305,7 @@ def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     plain = []
     rich = []
-    loop.emit = plain.append
+    loop.emit = lambda text="", indent=0: plain.append(text)
     loop.ui.emit_answer = lambda text, **kwargs: rich.append((text, kwargs))
 
     assert loop.command("/status") == (True, False)
@@ -1277,7 +1314,7 @@ def test_status_command_uses_rich_table_without_outer_rule(tmp_path):
     assert rich[0][0].startswith("| field | value |")  # one flat table, no section headings
     assert "###" not in rich[0][0]
     assert rich[0][0].count("| --- | --- |") == 1
-    assert rich[0][1] == {"rule": False, "compact": True}
+    assert rich[0][1] == {"rule": False, "compact": True, "indent": TurnBox.CONTENT_LEVEL}
 
 
 def test_session_from_config_file_theme_param(tmp_path):

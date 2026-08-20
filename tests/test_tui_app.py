@@ -325,7 +325,7 @@ def test_interactive_tui_decodes_submit_and_eof(monkeypatch):
 def test_interactive_tui_ctrl_c_input_state_matrix(monkeypatch, tmp_path, mode, draft, expected_interrupts):
     command_loop = loop(tmp_path)
     output = []
-    command_loop.emit = output.append
+    command_loop.emit = lambda text="", indent=0: output.append(text)
     runtime = TuiRuntime(command_loop)
     app = runtime.build_tui()
     command_loop.tui = app
@@ -1580,7 +1580,7 @@ def test_interactive_tui_choice_ctrl_c_reports_cancellation(monkeypatch, tmp_pat
     command_loop = loop(tmp_path)
     command_loop.interactive_input = True
     output = []
-    command_loop.emit = output.append
+    command_loop.emit = lambda text="", indent=0: output.append(text)
     app = TuiApp()
     command_loop.tui = app
     result = []

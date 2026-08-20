@@ -17,7 +17,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
 
-from minacode.base import Text
+from minacode.base import LogBlock, Text, TurnBox
 from minacode.cli.commands import SET_KEYS, SET_VALUES
 from minacode.cli.hints import Context as HintContext
 from minacode.cli.hints import HintPicker
@@ -394,8 +394,12 @@ class View:
             return []
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         label = "thinking" if kind == "reasoning" else "responding"
-        rows = [Text.clip_width(line.expandtabs(4), max(1, width - 4)) for line in text.replace("\r", "\n").splitlines()[-6:]]
-        lines = [f"├─ {label}", *(f"│  {row}" for row in rows)]
+        # The preview's rail sits in the content column, flush with the turn's text and tool lines
+        # rather than hanging a level to their left: this is the live view of text that lands in
+        # that column, and a left edge that shifts when the preview is torn down reads as a jump.
+        margin = LogBlock.margin(TurnBox.CONTENT_LEVEL)
+        rows = [Text.clip_width(line.expandtabs(4), max(1, width - 4 - len(margin))) for line in text.replace("\r", "\n").splitlines()[-6:]]
+        lines = [f"{margin}├─ {label}", *(f"{margin}│  {row}" for row in rows)]
         fragments: StyleAndTextTuples = []
         for line in lines:
             fragments.extend([("ansibrightblack", line), ("", "\n")])

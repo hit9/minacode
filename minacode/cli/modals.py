@@ -19,7 +19,7 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
-from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError
+from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox
 from minacode.render import UiPrinter
 from minacode.session import ToolResultRecord
 from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript
@@ -115,7 +115,7 @@ def mcp_manager(loop: CommandLoop) -> None:
         return
     configs = tuple(mcp.parse_configs())
     if not configs:
-        loop.ui.emit_answer(mcp.render_server_status())
+        loop.ui.emit_answer(mcp.render_server_status(), indent=TurnBox.CONTENT_LEVEL)
         return
 
     state = ChoiceViewState(tuple(config.name for config in configs), {}, set())
@@ -218,7 +218,7 @@ def select_choice(
     try:
         return choice_application(loop, title, choices, labels, current, set(disabled))
     except (EOFError, KeyboardInterrupt):
-        loop.emit("Cancelled")
+        loop.emit_turn("Cancelled")
         return None
 
 
