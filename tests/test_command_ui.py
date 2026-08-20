@@ -338,6 +338,51 @@ def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, mo
     assert "Set provider.api = responses (wire: responses)" in result
 
 
+def test_runtime_provider_switches_are_recorded_for_resume(tmp_path):
+    """Every runtime switch is recorded per entry so a later --resume can restore it."""
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = False
+    session = command_loop.session
+    session.config.providers["other"] = ProviderConfig(model="m", api="chat", reasoning="low")
+
+    assert provider(command_loop, "other") == "Set provider = other"
+    assert session.provider_overrides == {"active_provider": "other"}
+
+    assert set_model(command_loop, "model-b") == "Set provider.model = model-b"
+    assert session.provider_overrides["providers"]["other"]["model"] == "model-b"
+
+    assert reason(command_loop, "high") == "Set provider.reasoning = high"
+    assert session.provider_overrides["providers"]["other"]["reasoning"] == "high"
+
+    assert api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
+    assert session.provider_overrides["providers"]["other"]["api"] == "responses"
+    assert session.provider_overrides["active_provider"] == "other"
+
+
+def test_model_override_binds_to_the_entry_it_was_set_on(tmp_path):
+    """model/reasoning/api overrides key on the active entry at switch time, so a /provider after a
+    /model restores each switch to the entry it was made on."""
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = False
+    session = command_loop.session
+    session.config.providers["a"] = ProviderConfig(model="ma", api="chat", reasoning="low")
+    session.config.providers["b"] = ProviderConfig(model="mb", api="chat", reasoning="low")
+
+    set_model(command_loop, "model-on-default")
+    assert session.provider_overrides["providers"]["default"]["model"] == "model-on-default"
+
+    provider(command_loop, "a")
+    set_model(command_loop, "model-on-a")
+    assert session.provider_overrides["providers"]["a"]["model"] == "model-on-a"
+    assert session.provider_overrides["active_provider"] == "a"
+
+    session.provider_overrides["active_provider"] = "default"
+    session.apply_provider_overrides()
+    assert session.config.active_provider == "default"
+    assert session.config.providers["default"].model == "model-on-default"
+    assert session.config.providers["a"].model == "model-on-a"
+
+
 def test_provider_and_model_commands_validate_direct_arguments(tmp_path):
     command_loop = loop(tmp_path)
 

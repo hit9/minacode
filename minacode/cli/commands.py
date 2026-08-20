@@ -54,6 +54,7 @@ from minacode.tools import CodeIndex
 
 if TYPE_CHECKING:
     from minacode.cli import CommandLoop
+    from minacode.session import Session
 
 
 # fmt: off
@@ -607,10 +608,23 @@ def provider(loop: CommandLoop, args: str) -> str:
     return provider_result + ("\n" + model_result if model_result else "")
 
 
+def record_provider_override(session: Session, field: str, value: str) -> None:
+    """Remember a runtime /provider /model /reason /api switch so a later --resume can restore it.
+
+    model/reasoning/api are keyed by the provider entry they applied to (the active one at the time
+    of the change); active_provider is global. url and key are never recorded, so the config file
+    stays the only home of credentials."""
+    if field == "active_provider":
+        session.provider_overrides["active_provider"] = value
+        return
+    session.provider_overrides.setdefault("providers", {}).setdefault(session.config.active_provider, {})[field] = value
+
+
 def set_provider(loop: CommandLoop, name: str) -> str:
     if name not in loop.session.config.providers:
         return "Unknown provider: " + name
     loop.session.config.active_provider = name
+    record_provider_override(loop.session, "active_provider", name)
     return "Set provider = " + name
 
 
@@ -691,11 +705,13 @@ def set_model(loop: CommandLoop, model: str, *, back_to_model: bool = False) -> 
             break
     provider = loop.session.config.provider
     provider.model = model
+    record_provider_override(loop.session, "model", model)
     lines = ["Set provider.model = " + model]
     if isinstance(api, str):
         lines.append(set_api(loop, api))
     if isinstance(reasoning, str):
         provider.reasoning = reasoning
+        record_provider_override(loop.session, "reasoning", reasoning)
         lines.append("Set provider.reasoning = " + reasoning)
     return "\n".join(lines)
 
@@ -706,10 +722,12 @@ def reason(loop: CommandLoop, args: str) -> str:
         if value not in REASONING_CHOICES:
             return "Usage: /reason " + "|".join(REASONING_CHOICES)
         loop.session.config.provider.reasoning = value
+        record_provider_override(loop.session, "reasoning", value)
         return "Set provider.reasoning = " + value
     choice = select_reasoning(loop)
     if isinstance(choice, str):
         loop.session.config.provider.reasoning = choice
+        record_provider_override(loop.session, "reasoning", choice)
         return "Set provider.reasoning = " + choice
     return "No change"
 
@@ -728,6 +746,7 @@ def api(loop: CommandLoop, args: str) -> str:
 def set_api(loop: CommandLoop, value: str) -> str:
     provider = loop.session.config.provider
     provider.api = value
+    record_provider_override(loop.session, "api", value)
     # "auto" is the usual choice, so name the wire it resolved to rather than echoing the setting back.
     resolved = provider.resolve()
     result = f"Set provider.api = {value} (wire: {resolved.api})"

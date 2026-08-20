@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from minacode.base import (
     SESSION_EVENT_KEY,
@@ -24,7 +24,7 @@ from minacode.base import (
     ToolArgs,
     UpdateStatus,
 )
-from minacode.config import Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
+from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
 from minacode.session.store import (
@@ -380,6 +380,10 @@ class Session:
     system_info: SystemInfo | None = None
     config: Config = field(default_factory=Config)
     settings: RuntimeSettings = field(default_factory=RuntimeSettings)
+    # Runtime /provider /model /reason /api switches, keyed for restore: {"active_provider": name,
+    # "providers": {entry: {"model"/"reasoning"/"api": value}}}. Only fields the slash commands
+    # changed are recorded, and never url/key; a resume applies them best-effort over the config file.
+    provider_overrides: dict[str, Any] = field(default_factory=dict)
     messages: list[Json] = field(default_factory=list)
     state: AgentState = field(default_factory=AgentState)
     tool_results: dict[str, str] = field(default_factory=dict)
@@ -452,6 +456,31 @@ class Session:
         # thus the prompt-cache scope) mid-session. Recomputes on every load because the config
         # passed to SessionSnapshotStore.load is the caller's freshly built one.
         self.worker_tool_enabled = bool(self.config.worker_provider)
+        self.apply_provider_overrides()
+
+    def apply_provider_overrides(self) -> None:
+        """Best-effort restore of the runtime /provider /model /reason /api switches saved with this
+        session. Stale values are skipped, never fatal: a provider entry may have been removed or a
+        choice renamed since the snapshot was written. model is a free string and applied as-is, so
+        a model that no longer exists surfaces on the first request exactly as it would have live."""
+        overrides = self.provider_overrides
+        providers = self.config.providers
+        for name, fields in (overrides.get("providers") or {}).items():
+            entry = providers.get(name)
+            if entry is None or not isinstance(fields, dict):
+                continue
+            reasoning = fields.get("reasoning")
+            if reasoning and reasoning not in REASONING_CHOICES:
+                reasoning = None
+            api = fields.get("api")
+            if api and api not in PROVIDER_API_CHOICES:
+                api = None
+            for attr, value in (("model", fields.get("model")), ("reasoning", reasoning), ("api", api)):
+                if value is not None:
+                    setattr(entry, attr, value)
+        active = overrides.get("active_provider")
+        if active and active in providers:
+            self.config.active_provider = active
 
     def store_turn_diff(
         self,

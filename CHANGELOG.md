@@ -14,6 +14,9 @@
 
 ### Changed
 
+- Resuming a session restores the provider entry, model, reasoning effort, and API wire you
+  last switched to with `/provider`, `/model`, `/reason`, and `/api`, instead of falling back
+  to the config file's choices. A switch that no longer exists is skipped, never an error.
 - Everything a turn produces now starts in the same column. The user's message already sat there
   with its `• ` bullet hanging in the margin, and the model's text and tool lines followed it;
   the turn outcome (`Cancelled`, an error), a slash command's reply, and the live stream

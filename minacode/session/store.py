@@ -84,6 +84,7 @@ class SessionSnapshotCodec:
             "turn_diffs_len": len(turn_diff_keys), "turn_diffs_keys_digest": cls.digest(turn_diff_keys),
             "transcript_turn_diffs_len": transcript_diff_len, "transcript_turn_diffs_tail_digest": cls.digest(transcript_diff_tail),
             "history_len": len(session.history), "history_keys_digest": cls.digest([seg.key for seg in session.history]),
+            "provider_overrides_digest": cls.digest(session.provider_overrides),
         }
         # fmt: on
 
@@ -307,6 +308,7 @@ class SessionSnapshotCodec:
             "turn_diffs": [cls.turn_diff(diff, blobs) for diff in session.turn_diffs],
             "transcript_turn_diffs": [cls.transcript_turn_diff(diff) for diff in session.transcript_turn_diffs],
             "history": [cls.history_segment(segment, blobs) for segment in session.history],
+            "provider_overrides": dict(session.provider_overrides),
         }
         # fmt: on
 
@@ -348,6 +350,8 @@ class SessionSnapshotCodec:
         cls.add_turn_diffs_delta(delta, session.turn_diffs, saved, blobs)
         cls.add_transcript_turn_diffs_delta(delta, session.transcript_turn_diffs, saved)
         cls.add_history_delta(delta, session.history, saved, blobs)
+        if cls.digest(session.provider_overrides) != saved.get("provider_overrides_digest", cls.digest({})):
+            delta["provider_overrides"] = dict(session.provider_overrides)
         return delta
 
     @classmethod
@@ -838,6 +842,7 @@ class SessionSnapshotStore:
             cwd=data.get("cwd", cwd),
             config=config,
             settings=settings,
+            provider_overrides=data.get("provider_overrides") or {},
             messages=messages,
             transcript_messages=transcript_messages,
             state=AgentState(**data.get("state", {})),

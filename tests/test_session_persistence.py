@@ -11,6 +11,7 @@ from minacode.cli import CommandLoop
 from minacode.cli.commands import compact
 from minacode.config import (
     Config,
+    ProviderConfig,
     RuntimeSettings,
 )
 from minacode.context import ContextManager
@@ -72,6 +73,68 @@ def test_first_save_writes_init_line(tmp_path):
     assert "config" not in init
     assert "settings" not in init
     assert "tool_results" not in init
+
+
+def test_provider_overrides_persist_and_restore(tmp_path):
+    """Runtime /provider /model /reason /api switches survive a save/load round trip, and an
+    unchanged override is not rewritten by the next save."""
+    s = session_with_data_dir(tmp_path)
+    s.config.providers["other"] = ProviderConfig(model="m", api="chat", reasoning="low")
+    s.provider_overrides = {
+        "active_provider": "other",
+        "providers": {"other": {"model": "model-x", "reasoning": "high", "api": "responses"}},
+    }
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()
+
+    lines = read_jsonl(log_path(s))
+    assert lines[0]["provider_overrides"] == s.provider_overrides
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.config.active_provider == "other"
+    entry = restored.config.providers["other"]
+    assert (entry.model, entry.reasoning, entry.api) == ("model-x", "high", "responses")
+
+    restored.save_snapshot()
+    assert "provider_overrides" not in read_jsonl(log_path(s))[-1]
+
+
+def test_provider_overrides_stale_values_are_skipped(tmp_path):
+    """A resume applies overrides best-effort: a removed entry or a renamed choice falls back to
+    the config value, while a free-string model still applies."""
+    s = session_with_data_dir(tmp_path)
+    s.config.providers["other"] = ProviderConfig(model="m", api="chat", reasoning="low")
+    s.provider_overrides = {
+        "active_provider": "gone",
+        "providers": {"other": {"model": "model-x", "reasoning": "bogus", "api": "bogus"}},
+    }
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.config.active_provider == "default"
+    entry = restored.config.providers["other"]
+    assert entry.model == "model-x"
+    assert entry.reasoning == "low"
+    assert entry.api == "chat"
+
+
+def test_legacy_snapshot_without_provider_overrides_loads(tmp_path):
+    """Snapshots written before this feature carry no provider_overrides key and load unchanged."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()
+    path = log_path(s)
+    lines = read_lines(path)
+    for line in lines:
+        line.pop("provider_overrides", None)
+    with open(path, "w") as f:
+        for line in lines:
+            f.write(json.dumps(line) + "\n")
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.provider_overrides == {}
+    assert restored.config.active_provider == s.config.active_provider
 
 
 def test_pending_user_inputs_persist_and_restore(tmp_path):
