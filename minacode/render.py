@@ -675,6 +675,26 @@ class UiPrinter:
             segments.append(("", "\n"))
         return segments
 
+    @staticmethod
+    def token_definition(style: Any, token_type: Any) -> dict | None:
+        """The style entry for a token, falling back to its ancestors, or None if nothing matches.
+
+        `style_for_token` raises KeyError when a style defines nothing anywhere in a token's
+        subtree, and a style only has to cover the tokens its own authors thought about: the YAML
+        lexer emits `Token.Literal.Scalar.Plain` and `Token.Punctuation.Indicator`, which
+        github-dark never mentions, so highlighting any `.yaml` used to abort mid-render and take
+        the whole Edit down with it.
+
+        Walking up to the parent is what Pygments' own token hierarchy is for: a plain scalar
+        renders like the Literal it is, rather than dropping the whole file to unstyled text.
+        """
+        while token_type is not None:
+            try:
+                return style.style_for_token(token_type)
+            except KeyError:
+                token_type = getattr(token_type, "parent", None)
+        return None
+
     @classmethod
     def pygments_style(cls, token_type: Any) -> str:
         style = Theme.pygments_style()
@@ -684,7 +704,9 @@ class UiPrinter:
             return "fg:default"
         if token_type in Token.Name.Builtin:
             return Theme.style("syntax.builtin")
-        definition = style.style_for_token(token_type)
+        definition = cls.token_definition(style, token_type)
+        if definition is None:
+            return "fg:default"
         color = definition.get("color")
         default_hex = Theme.style("syntax.default_hex")
         parts = ["fg:default" if not color or color.lower() == default_hex else f"fg:#{color}"]
@@ -724,21 +746,23 @@ class UiPrinter:
 
     @classmethod
     def _tokenized_lines(cls, lexer: Any, code_text: str) -> list[list[tuple[str, str]]] | None:
+        # The whole walk is guarded, not just the call that starts it: get_tokens is a generator,
+        # so a lexer that fails does it while this loop pulls from it, not here. Highlighting is
+        # decoration -- a lexer that cannot cope must cost the color, never the edit it was
+        # previewing.
         try:
-            tokens = lexer.get_tokens(code_text)
+            lines: list[list[tuple[str, str]]] = [[]]
+            for token_type, value in lexer.get_tokens(code_text):
+                style = cls.pygments_style(token_type)
+                parts = value.split("\n")
+                for i, part in enumerate(parts):
+                    if i > 0:
+                        lines.append([])
+                    if part:
+                        lines[-1].append((style, part))
+            return lines
         except Exception:  # noqa: BLE001 - third-party lexer execution must degrade to plain rendering.
             return None
-
-        lines: list[list[tuple[str, str]]] = [[]]
-        for token_type, value in tokens:
-            style = cls.pygments_style(token_type)
-            parts = value.split("\n")
-            for i, part in enumerate(parts):
-                if i > 0:
-                    lines.append([])
-                if part:
-                    lines[-1].append((style, part))
-        return lines
 
     # Width taken by the line-number gutter emitted inside diff_segments (`NNNN NNNN | `).
     DIFF_GUTTER_WIDTH: ClassVar[int] = 12

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- Editing a `.yaml` or `.yml` file no longer fails with `ToolError: Token.Literal.Scalar.Plain`.
+  Rendering the edit's own diff preview highlights the file, and the YAML lexer emits tokens
+  neither theme's syntax style names — the lookup raised instead of falling back, so the error
+  reached the model as a failed `Edit` and the file was never touched. CI workflows, compose
+  files, and k8s manifests were all unreachable. Perl's `.pl` had the same hole.
+  A token the style does not name now inherits from its ancestors, so those files are highlighted
+  rather than merely spared, and a lexer that fails costs the color instead of the edit.
+
 ### Changed
 
 - Everything a turn produces now starts in the same column. The user's message already sat there

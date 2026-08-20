@@ -289,6 +289,96 @@ def test_styled_wrapping_respects_terminal_width_for_unicode(width):
     assert "".join(text for row in rows for _style, text in row).replace("  Read  ", "", 1).replace("        ", "") == content_text
 
 
+# One small, lexer-exercising sample per language an agent routinely edits. `.yaml` and `.pl` are
+# the two that actually broke; the rest are here so the next style/lexer pairing that does the
+# same is caught by this test rather than by an Edit dying in someone's session.
+HIGHLIGHT_SAMPLES = {
+    "a.py": "def f(x):\n    return {'k': x}\n",
+    "a.js": "const a = {b: 1};\n",
+    "a.ts": "let a: number = 1;\n",
+    "a.tsx": "const A = () => <div id='x'/>;\n",
+    "a.go": "package main\nfunc main() {}\n",
+    "a.rs": "fn main() { let x = 1; }\n",
+    "a.rb": "def f(x)\n  {k: x}\nend\n",
+    "a.java": "class A { int x = 1; }\n",
+    "a.c": "int main(void){return 0;}\n",
+    "a.sh": 'set -e\necho "$HOME"\n',
+    "a.yaml": "jobs:\n  t:\n    - run: pytest\n",
+    "a.yml": "a: 1\nb:\n  - c\n",
+    "a.toml": '[tool]\nname = "x"\n',
+    "a.json": '{"a": [1, null]}\n',
+    "a.md": "# T\n\n- a `b`\n",
+    "a.html": "<div class='a'>x</div>\n",
+    "a.css": "a { color: red; }\n",
+    "a.sql": "SELECT * FROM t WHERE x = 1;\n",
+    "a.pl": "my $x = 1;\n",
+    "Dockerfile": "FROM x\nRUN y\n",
+    "Makefile": "all:\n\techo hi\n",
+}
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_every_lexer_token_maps_to_a_style_in_both_themes(mode):
+    """A pygments style only covers the tokens its authors thought about, and `style_for_token`
+    raises KeyError for the rest instead of returning a default.
+
+    The YAML lexer emits `Token.Literal.Scalar.Plain` and `Token.Punctuation.Indicator`, which
+    neither theme's style names, so every Edit to a `.yaml` died rendering its own diff preview
+    and reported the token name as the error -- CI configs, compose files, k8s manifests. Perl's
+    `Token.Literal.String.Atom` is the same hole. Both themes, so neither was a way out.
+
+    Token lookup has to be total for every lexer we can reach, which is what this sweeps."""
+    lexers = pytest.importorskip("pygments.lexers")
+    previous = Theme._mode
+    try:
+        Theme.set_mode(mode)
+        for name, text in HIGHLIGHT_SAMPLES.items():
+            lexer = lexers.get_lexer_for_filename(name, stripnl=False)
+            for token_type, _value in lexer.get_tokens(text):
+                style = UiPrinter.pygments_style(token_type)  # must not raise for any of them
+                assert isinstance(style, str) and style
+    finally:
+        Theme.set_mode(previous)
+
+
+def test_highlighting_inherits_from_the_token_hierarchy_rather_than_giving_up():
+    """Not crashing is the floor. A token the style never named still has ancestors that carry a
+    color, so a YAML plain scalar renders like the Literal it is instead of dropping the file to
+    unstyled text -- and the Edit that previews it survives end to end."""
+    pygments_token = pytest.importorskip("pygments.token")
+    previous = Theme._mode
+    try:
+        Theme.set_mode("dark")
+        ui = UiPrinter(lambda _text: None)
+        diff = (
+            "--- a/.github/workflows/ci.yaml\n"
+            "+++ b/.github/workflows/ci.yaml\n"
+            "@@ -40,3 +40,3 @@\n"
+            "       - name: test\n"
+            "-        run: uv run pytest\n"
+            "+        run: uv run pytest -q\n"
+        )
+        assert "uv run pytest -q" in "".join(text for _style, text in ui.diff_segments(diff))
+
+        literal = UiPrinter.pygments_style(pygments_token.Token.Literal.Scalar.Plain)
+        assert literal == UiPrinter.pygments_style(pygments_token.Token.Literal.String)  # inherited
+        assert literal != "fg:default"  # and not quietly flattened
+    finally:
+        Theme.set_mode(previous)
+
+
+def test_a_lexer_that_fails_mid_stream_costs_the_color_not_the_render():
+    """get_tokens is a generator, so a broken lexer raises while the caller pulls from it, not
+    when it is called. Highlighting is decoration; it must never take down the edit it previews."""
+
+    class ExplodingLexer:
+        def get_tokens(self, _text):
+            yield ("Token.Text", "fine so far\n")
+            raise RuntimeError("lexer blew up mid-stream")
+
+    assert UiPrinter._tokenized_lines(ExplodingLexer(), "anything") is None
+
+
 def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
     preview = BashLivePreview()
     preview.active = True
