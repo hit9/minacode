@@ -191,6 +191,7 @@ class SessionSnapshotCodec:
                 bool(session.tool_errors),
                 bool(session.turn_diffs),
                 bool(session.history),
+                bool(session.provider_overrides),
                 bool(state.goal or state.plan or state.known or state.check or state.summary),
             )
         )
@@ -436,6 +437,8 @@ class SessionSnapshotCodec:
             data["state"] = delta["state"]
         if "pending_user_inputs" in delta:
             data["pending_user_inputs"] = delta["pending_user_inputs"]
+        if "provider_overrides" in delta:
+            data["provider_overrides"] = delta["provider_overrides"]
         for key in ("created_at", "context_layout_version", "transcript_sync"):
             if key in delta:
                 data[key] = delta[key]

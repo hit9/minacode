@@ -137,6 +137,33 @@ def test_legacy_snapshot_without_provider_overrides_loads(tmp_path):
     assert restored.config.active_provider == s.config.active_provider
 
 
+def test_provider_overrides_survive_delta_saves(tmp_path):
+    """A session that already has a snapshot continues through delta writes; the override added
+    later must be merged back on load, not dropped with the rest of the un-listed delta keys."""
+    s = session_with_data_dir(tmp_path)
+    s.messages.append({"role": "user", "content": "hi"})
+    s.save_snapshot()
+
+    s.provider_overrides = {"providers": {"default": {"model": "model-y"}}}
+    s.messages.append({"role": "user", "content": "more"})
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.config.provider.model == "model-y"
+
+
+def test_provider_overrides_alone_force_a_save(tmp_path):
+    """A fresh session whose only content is a provider switch must still persist, or the switch is
+    lost the moment the user quits without a request."""
+    s = session_with_data_dir(tmp_path)
+    s.provider_overrides = {"providers": {"default": {"model": "model-z"}}}
+
+    s.save_snapshot()
+
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    assert restored.config.provider.model == "model-z"
+
+
 def test_pending_user_inputs_persist_and_restore(tmp_path):
     s = session_with_data_dir(tmp_path)
     s.enqueue_user_input("queued one")
