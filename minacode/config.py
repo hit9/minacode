@@ -553,11 +553,11 @@ model = ""
 # model = ""                  # optional: override the entry's model (inherit by default)
 # reasoning = ""              # optional: override the entry's reasoning; /worker reason at runtime
 # api = ""                    # optional: override the entry's api protocol; empty = inherit the entry's own
-# [vision]                     # optional: a vision model that reads images when the active
-# provider = "vision"          # provider cannot; names a provider entry carrying the vision
-                               # model's url/key/model. Attached images and ViewImage calls are
-                               # answered by it in plain text; unused when the active model
-                               # already takes images.
+# [vision]                     # optional: a fallback vision model, used only when the active
+# provider = "vision"          # provider cannot take images; names a provider entry carrying
+                               # the vision model's url/key/model. Attached images and ViewImage
+                               # calls are answered by it in plain text; never used while the
+                               # active model takes images itself.
 # [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
 # auto_connect = false

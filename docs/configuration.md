@@ -123,7 +123,7 @@ being rejected.
 ## Vision model
 
 Some text-only models ship a sibling vision model from the same vendor (for example DeepSeek's
-`deepseek-v4-flash-vision-exp` or GLM's `glm-4.5v`). Point minacode at one and images keep
+`deepseek-v4-flash-vision-exp` or GLM's `glm-4.5v`). Configure one as a fallback and images keep
 working even when the active provider cannot take them:
 
 ```toml
