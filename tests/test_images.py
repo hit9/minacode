@@ -148,6 +148,55 @@ def test_session_queue_round_trips_images_and_garbage_collects_assets(tmp_path):
     assert not os.path.exists(assets)
 
 
+def test_garbage_collect_spares_dotfile_staging_and_drops_stray_files(tmp_path):
+    s = session(tmp_path)
+    path = image_file(tmp_path / "kept.png")
+    s.messages.append(s.images.message(s.images.recognize(path.name)))
+    s.save_snapshot()
+
+    assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
+    staged = os.path.join(assets, ".image-93e8u1vn")
+    stray = os.path.join(assets, "orphan-deadbeef")
+    with open(staged, "w") as file:
+        file.write("staging")
+    with open(stray, "w") as file:
+        file.write("stray")
+
+    s.save_snapshot()
+
+    assert os.path.isfile(staged)  # .image-* staging from ImageInputs._store survives GC
+    assert not os.path.exists(stray)  # unreferenced non-dotfile is still collected
+    assert os.listdir(assets)  # the referenced asset is kept
+
+
+def test_store_survives_snapshot_gc_between_mkstemp_and_replace(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    settled = image_file(tmp_path / "settled.png", color=(1, 2, 3))
+    s.messages.append(s.images.message(s.images.recognize(settled.name)))
+    s.save_snapshot()  # a real snapshot, so the save during the race reaches garbage collection
+
+    racing = image_file(tmp_path / "racing.png", color=(4, 5, 6))
+    value = s.images.recognize(racing.name)
+
+    real_replace = os.replace
+    intercepted = {"hit": False}
+
+    def racing_replace(source, destination):
+        if not intercepted["hit"] and os.path.basename(source).startswith(".image-"):
+            intercepted["hit"] = True
+            s.save_snapshot()  # the agent thread's snapshot GC runs while staging is unreferenced
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", racing_replace)
+
+    stored = s.images.prepare(value)
+
+    assert intercepted["hit"] is True  # the race was actually exercised
+    assert os.path.isfile(os.path.join(s.images.assets_dir(), stored.images[0].ref))
+    with open(os.path.join(s.images.assets_dir(), stored.images[0].ref), "rb") as file:
+        assert file.read() == racing.read_bytes()
+
+
 def test_recalling_image_follow_up_keeps_asset_until_resubmission(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "recall.png")

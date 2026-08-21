@@ -584,6 +584,10 @@ class SessionSnapshotStore:
         refs.update(key + TOOL_OUTPUT_ASSET_SUFFIX for key in self.session.tool_results)
         with contextlib.suppress(OSError):
             for entry in os.scandir(directory):
+                # Dotfiles are never assets: ImageInputs._store stages uploads as ".image-*"
+                # (mkstemp in this dir) before os.replace, and deleting one mid-flight breaks the rename.
+                if entry.name.startswith("."):
+                    continue
                 if entry.is_file() and entry.name not in refs:
                     os.unlink(entry.path)
             if not any(os.scandir(directory)):
