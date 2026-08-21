@@ -388,7 +388,7 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     under the list was never the whole answer; Delegate is here because judging the answer means
     reading the order again, and the transcript kept only the `Delegate send` line.
 
-    A detail's Esc returns to the list with the cursor where it was; q (or Ctrl-O again) closes the
+    A detail's Esc (or q) returns to the list with the cursor where it was; Ctrl-O closes the
     whole browser."""
     if loop.tui is None:
         return
@@ -414,7 +414,7 @@ def tool_output_viewer(loop: CommandLoop) -> None:
         picked, state = _tool_output_list(loop, entries, state)
         if picked is None:
             return
-        # Esc in a detail goes back to the list; q (or Ctrl-O) closes the whole browser.
+        # Esc or q in a detail goes back to the list; Ctrl-O closes the whole browser.
         if approval_text_viewer(loop, picked, back_on_escape=True) is not _TOOL_OUTPUT_BACK:
             return
 
@@ -528,8 +528,8 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
     anything. The same viewer is what the Ctrl-O browser opens after the fact, which is how a
     script is read under yolo, where no prompt ever stops to offer `v`.
 
-    With `back_on_escape`, Esc returns `_TOOL_OUTPUT_BACK` instead of closing, so the caller can
-    reopen the list; q (or Ctrl-O) still closes."""
+    With `back_on_escape`, Esc or q returns `_TOOL_OUTPUT_BACK` instead of closing, so the caller
+    can reopen the list; Ctrl-O still closes."""
     if loop.tui is None:
         return
     margin = "  "
@@ -617,9 +617,9 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
         # the right edge on a narrow terminal, where the modal window would just cut it off.
         legend = "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q close"
         if back_on_escape:
-            legend = "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc back · q close"
+            legend = "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q back · c-o close"
         if get_cwidth(legend) > width:
-            legend = "  ↑/↓ · Ctrl-U/D · g/G · Esc back · q close" if back_on_escape else "  ↑/↓ · Ctrl-U/D · g/G · Esc/q close"
+            legend = "  ↑/↓ · Ctrl-U/D · g/G · Esc/q back · c-o close" if back_on_escape else "  ↑/↓ · Ctrl-U/D · g/G · Esc/q close"
         parts: StyleAndTextTuples = [("class:choice.disabled", f"  {view.label[:1].upper() + view.label[1:]} · read-only\n")]
         for line in lines[scroll : scroll + height]:
             parts.extend(line)
@@ -629,10 +629,10 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
 
     def handle_key(key: str, data: str) -> Any:
         nonlocal scroll
-        if key in {"q", "c-o"}:
+        if back_on_escape and key in {"q", "escape"}:
+            return _TOOL_OUTPUT_BACK
+        if key in {"q", "c-o", "escape"}:
             return None
-        if key == "escape":
-            return _TOOL_OUTPUT_BACK if back_on_escape else None
         height = viewport()
         if key in {"down", "j"}:
             scroll += 1
