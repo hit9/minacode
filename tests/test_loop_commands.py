@@ -33,11 +33,9 @@ from minacode.base import (
 from minacode.cli import CommandLoop
 from minacode.cli.commands import (
     name_command,
-    session_label,
     session_label_fn,
     session_preview,
     session_rows,
-    session_summary,
     session_table,
     sessions_command,
     skills_command,
@@ -553,14 +551,18 @@ def test_session_labels_carry_age_and_size(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
     entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
-    label = session_label(loop, entry)
+    rows, widths = session_table(loop, [entry])
+    row = session_rows(rows, widths)[0]
 
-    assert label.startswith("current work")
-    assert "just now" in label and "4 rounds" in label and "current" in label
+    assert row.startswith("current work")
+    assert "just now" in row and "4 rounds" in row and "current" in row
     s.state.round_count = 1
     s.save_snapshot()
-    assert "1 round " in session_label(loop, SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]) + " "
-    assert session_preview(loop, entry) == []  # no summary, no preview
+    entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
+    rows, widths = session_table(loop, [entry])
+    row = session_rows(rows, widths)[0]
+    assert "1 round " in row + " "
+    assert session_preview(entry) == []  # no summary, no preview
 
 
 def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
@@ -628,8 +630,8 @@ def test_session_summary_tails_the_recent_messages(tmp_path):
     other.messages.append({"role": "assistant", "content": "three"})
     other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
-    assert session_summary(entry) == [("assistant", "three"), ("assistant", "two"), ("user", "one"), ("user", "opening")]
-    assert session_summary(entry, limit=2) == [("assistant", "three"), ("assistant", "two")]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "three"), ("assistant", "two"), ("user", "one"), ("user", "opening")]
+    assert SessionSnapshotStore.tail_summary(entry.path, limit=2) == [("assistant", "three"), ("assistant", "two")]
 
 
 def test_session_summary_skips_internal_events(tmp_path):
@@ -641,7 +643,7 @@ def test_session_summary_skips_internal_events(tmp_path):
     other.messages.append({"role": "assistant", "content": "real answer"})
     other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
-    summary = session_summary(entry)
+    summary = SessionSnapshotStore.tail_summary(entry.path)
     assert summary[:2] == [("assistant", "real answer"), ("user", "real question")]
     assert all("<session_event" not in text for _role, text in summary)
 
@@ -663,7 +665,7 @@ def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
     other.messages.append({"role": "assistant", "content": "found it"})
     other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
-    assert session_summary(entry) == [("assistant", "found it"), ("user", "investigate"), ("tool", "→ Bash, Read")]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "found it"), ("user", "investigate"), ("tool", "→ Bash, Read")]
 
 
 def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
@@ -675,7 +677,7 @@ def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
     other.messages.append({"role": "assistant", "content": "answer"})
     other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
-    assert session_summary(entry) == [("assistant", "answer"), ("user", "q"), ("tool", "→ Bash ×3, Read")]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "answer"), ("user", "q"), ("tool", "→ Bash ×3, Read")]
 
     full = stored_session(tmp_path, "t0")
     for i in range(1, 6):
@@ -683,7 +685,7 @@ def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
     full.messages.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Bash", "arguments": "{}"}}]})
     full.save_snapshot()
     full_entry = SessionSnapshotStore.list_sessions(full.config.data_dir, full.cwd)[0]
-    summary = session_summary(full_entry)
+    summary = SessionSnapshotStore.tail_summary(full_entry.path)
     assert len(summary) == 5
     assert all(not text.startswith("→") for _role, text in summary)
 
@@ -697,7 +699,7 @@ def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
     other.messages.append({"role": "tool", "content": "x" * 200000})
     other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
-    assert session_summary(entry) == [("user", f"q{i}") for i in range(5, 0, -1)]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("user", f"q{i}") for i in range(5, 0, -1)]
 
 
 def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkeypatch):
@@ -705,7 +707,7 @@ def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkey
     multi-byte character, the old text-mode readline raised UnicodeDecodeError and took /sessions
     down with it. The binary line split skips the torn line instead. The tail budget is shrunk so
     the seek lands inside the character regardless of the default budget."""
-    monkeypatch.setattr(commands_mod, "TAIL_BUDGET", 65536)
+    monkeypatch.setattr(SessionSnapshotStore, "TAIL_BUDGET", 65536)
     header = json.dumps({"v": 4})
     # The CJK character sits right at the start of a padding line whose tail pushes the seek point
     # (size - budget) onto the character's second byte.
@@ -719,28 +721,41 @@ def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkey
     path = tmp_path / "torn.jsonl"
     path.write_bytes(data)
     entry = SessionEntry(uid="torn", name="", opening="", rounds=0, cwd=str(tmp_path), updated_at=time.time(), path=str(path))
-    assert session_summary(entry) == [("user", "latest")]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("user", "latest")]
 
 
 def test_session_label_fn_matches_the_text_layout(tmp_path):
     """The styled rows line up exactly like the plain ones: the styled text of every field is the
-    padded table row, and the current marker takes the live colour."""
+    padded table row, and the current marker takes the live colour. A second session whose round
+    count is a different width than the current one's makes the last column not always the widest
+    value in its own column -- the one spot where the styled and plain layouts can disagree."""
     s = session(tmp_path)
     s.config.data_dir = str(tmp_path / "data")
     s.messages.append({"role": "user", "content": "current work"})
-    s.state.round_count = 2
+    s.state.round_count = 100
     s.save_snapshot()
+    other = stored_session(tmp_path, "a different session")
+    other.state.round_count = 3
+    other.save_snapshot()
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
     entries = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)
     rows, widths = session_table(loop, entries)
     label_fn = session_label_fn({entry.uid: row for entry, row in zip(entries, rows)}, widths)
+    text_rows = session_rows(rows, widths)
 
+    # Every styled row joins to exactly its plain counterpart, including the rows whose last column
+    # is narrower than the widest value in that column.
+    for entry in entries:
+        index = entries.index(entry)
+        parts = label_fn(entry.uid)
+        assert "".join(text for _style, text in parts) == text_rows[index]
     parts = label_fn(s.uid)
-    assert parts[0] == ("", rows[0][0] + "  ")  # name plain, padded to the column plus the gap
+    current = next(entry for entry in entries if entry.uid == s.uid)
+    index = entries.index(current)
+    assert parts[0] == ("", rows[index][0] + " " * (widths[0] - get_cwidth(rows[index][0])) + "  ")  # name plain, padded to the column plus the gap
     assert parts[1][0] == "class:choice.meta"  # age dim
     assert parts[2][0] == "class:choice.meta"  # rounds dim
     assert parts[-1] == ("class:choice.live", "current")
-    assert "".join(text for _style, text in parts) == session_rows(loop, entries)[0]
 
 
 def test_name_command_shows_and_sets_the_session_name(tmp_path):
