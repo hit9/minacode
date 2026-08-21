@@ -25,6 +25,7 @@ from minacode.base import (
     TurnBox,
 )
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
+from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.update import UpdateChecker
 from minacode.config import (
     Config,
@@ -99,6 +100,10 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
 
         def drive():
             assert history_emitted.wait(timeout=1)
+            # The resuming status ends with set_idle; EOF only exits from chat mode, so wait for the
+            # transition to finish before sending it.
+            while command_loop.tui.input_mode != "chat":
+                time.sleep(0.01)
             pipe_input.send_text("\x04")
 
         driver = threading.Thread(target=drive, daemon=True)
@@ -149,6 +154,49 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
 
     assert runtime.run() == 0
     assert warmed == [None]
+
+
+def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
+    """While a resumed session's transcript is being restored the TUI shows a resuming status, and
+    returns to idle the moment the replay is out."""
+    scenario_session = session(tmp_path)
+    scenario_session.resumed = True
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=lambda _text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda _text: None,
+    )
+    runtime = TuiRuntime(command_loop)
+    calls = []
+
+    class FakeTui:
+        ready = threading.Event()
+
+        def __init__(self):
+            self.ready.set()
+
+        def run(self, style=None):
+            del style
+
+        def exit(self):
+            pass
+
+        def set_running(self, label):
+            calls.append(("running", label))
+
+        def set_idle(self):
+            calls.append(("idle",))
+
+    fake_tui = FakeTui()
+    monkeypatch.setattr(runtime, "build_tui", lambda: fake_tui)
+    monkeypatch.setattr(runtime, "run_agent_loop", lambda: None)
+    monkeypatch.setattr(command_loop, "start_session", lambda: calls.append(("start_session",)))
+    monkeypatch.setattr(command_loop, "take_pending_inputs", list)
+    monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
+    monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: None)
+
+    assert runtime.run() == 0
+    assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]
 
 
 def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):

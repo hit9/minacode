@@ -6,10 +6,12 @@ These tests exercise the stateful parts of the TUI without requiring a real term
 import os
 import shutil
 import time
+from types import SimpleNamespace
 
 import minacode.render as render_module
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
 from minacode.cli import CommandLoop
+from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.view import View
 from minacode.config import (
     Config,
@@ -345,6 +347,16 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     loop.model_stream_output("", "")
     assert loop.view.model_stream_fragments() == []
     assert "working" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+
+
+def test_queue_divider_resuming_status_is_a_quiet_gray_line(tmp_path):
+    """While a session is being restored the divider is one gray line: no sweep, no pulse, no
+    elapsed time, because nothing is streaming and the replay that follows is the whole story."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    loop.tui = SimpleNamespace(status_label=RESUME_STATUS_LABEL)
+    assert loop.view.queue_divider_fragments() == [("ansibrightblack", RESUME_STATUS_LABEL)]
 
 
 def test_divider_shows_output_rate_while_a_response_streams(tmp_path):

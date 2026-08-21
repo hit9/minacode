@@ -21,6 +21,7 @@ from minacode.base import LogBlock, LogEdge, Text, TurnBox
 from minacode.cli.commands import SET_KEYS, SET_VALUES
 from minacode.cli.hints import Context as HintContext
 from minacode.cli.hints import HintPicker
+from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.worker import WORKER_SUBCOMMANDS
 from minacode.config import (
     PROVIDER_API_CHOICES,
@@ -338,6 +339,10 @@ class View:
             # Timed like the working phases, but never relabelled from the stream phase: nothing is
             # streaming while a script runs, so the last kind seen would be stale, not current.
             label = f"{status} ({Text.elapsed_since(self.loop.status_bar.started_at)})"
+        elif status == RESUME_STATUS_LABEL:
+            # A quiet gray lead-in to the restored transcript: nothing streams and nothing sweeps
+            # while the replay is being prepared, so no pulse pretends there is activity.
+            return [("ansibrightblack", status)]
         else:
             label = status
         if queued:
