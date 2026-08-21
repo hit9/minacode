@@ -227,6 +227,9 @@ class ToolDisplay:
     nested_display: bool = False
     approved: bool = False
     auto: bool = False
+    # Non-empty when a ViewImage call bridged to the [vision] entry; finish_display draws it as a
+    # child of the call line so the bridge trace can never precede the call's own root.
+    vision_entry: str = ""
 
 
 class ToolRunner:
@@ -262,10 +265,6 @@ class ToolRunner:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
-        # Injected by CommandLoop: the transcript hook for vision-bridge observations, handed to a
-        # bridged ViewImage whose fresh ModelClient would otherwise drop it (attachments observe
-        # through the agent's own wired client). None logs nothing, e.g. in tests.
-        self.vision_observe_hook: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
         self.worker_rule: Callable | None = None
         # Renders the worker's final report like an agent answer (markdown), wired by the loop;
@@ -542,8 +541,6 @@ class ToolRunner:
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
-        if isinstance(tool, ViewImageTool):
-            tool.vision_observe_hook = self.vision_observe_hook
         started = time.monotonic()
         d = ToolDisplay(batch_suffix=batch_suffix)
         if isinstance(tool, AskTool):
@@ -588,6 +585,8 @@ class ToolRunner:
                 self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                 d.nested_display = True
             output = self.call_tool(tool, planned_edit)
+            if isinstance(tool, ViewImageTool) and tool.vision_entry_label:
+                d.vision_entry = tool.vision_entry_label
             observation = tool.model_observation()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", d=d), None
@@ -924,7 +923,7 @@ class ToolRunner:
         if call.name == "Note" and not failed and d.display:
             return self.with_batch_suffix(d.display.removeprefix("Note ").strip(), d.batch_suffix)
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
-        tree = d.nested_display or call.name in ("Bash", "Delegate")
+        tree = d.nested_display or call.name in ("Bash", "Delegate") or bool(d.vision_entry)
         # A failed call explains itself in the error child below, so its root only has to identify
         # the call -- collapsed to one line, or a multi-line display (Note keeps the whole rendered
         # note there) paints its entire body red under the tag.
@@ -1006,6 +1005,11 @@ class ToolRunner:
                     preview = self.delegate_answer_preview(output)
                     if preview:
                         children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
+        elif call.name == "ViewImage" and d.vision_entry:
+            # The bridged observation is a child of the call line, drawn before the stored row, so
+            # the trace can never appear above its own call (the attachment path's standalone
+            # line is the engine's, not a tool's).
+            children.append(LogLine("described by", d.vision_entry, LogRole.META, LogEdge.BRANCH))
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree and root is not None:

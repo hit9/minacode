@@ -234,7 +234,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.live_start = self.tool_live_start
         self.agent.tools.live_output = self.tool_live_output
         self.agent.tools.model_stream = self.model_stream_output
-        self.agent.tools.vision_observe_hook = self.agent.model.on_vision_observe
         self.agent.tools.question_fn = lambda specs: question_interaction(self, specs)
         self.agent.tools.worker_rule = self.ui.emit_worker_rule
         self.agent.tools.worker_answer = self.worker_answer_output
@@ -718,9 +717,10 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def vision_observe_output(self, label: str, detail: str) -> None:
         """Log one vision-bridge observation, so a bridged image shows as a real request.
 
-        The bridge fires before the turn's first model call (attachments) or inside ViewImage;
-        without this line the vision request -- real latency and cost on another entry -- is
-        invisible, and the image's text description seems to come from nowhere."""
+        The attachment bridge fires before the turn's first model call (a bridged ViewImage draws
+        its trace inside the tool's own finish block); without this line the vision request --
+        real latency and cost on another entry -- is invisible, and the image's text description
+        seems to come from nowhere."""
         self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.BRANCH)]))
 
     @staticmethod

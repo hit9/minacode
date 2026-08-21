@@ -124,9 +124,9 @@ class ModelClient:
         # streaming is off and on a frontend that shows no live status at all.
         self.on_builtin_call: Callable[[str, str], None] | None = None
         # Called with (label, detail) when a vision-bridge observation runs, before the request is
-        # sent: the bridge fires before the turn's first model call (attachments) or inside a tool
-        # (ViewImage), both stretches where nothing else reports, so without it the vision request
-        # is invisible in the transcript.
+        # sent: the attachment bridge fires before the turn's first model call, a stretch where
+        # nothing else reports, so without it the vision request is invisible in the transcript.
+        # (A bridged ViewImage draws its trace inside the tool's own finish block instead.)
         self.on_vision_observe: Callable[[str, str], None] | None = None
         # Lifecycle hook, mirroring ContextManager.on_compaction: True while a retry backoff wait is in
         # progress, False in a finally block. Lets the orchestration label the phase without model
@@ -697,7 +697,7 @@ class ModelClient:
         if self.on_vision_observe is not None:
             self.on_vision_observe(
                 f"{entry_name}/{provider.model}",
-                f"observing {len(images)} image{'s' if len(images) != 1 else ''} via the vision bridge",
+                f"described {len(images)} attached image{'s' if len(images) != 1 else ''}",
             )
         messages = [
             {"role": "system", "content": VISION_OBSERVE_PROMPT},

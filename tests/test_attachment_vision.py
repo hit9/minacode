@@ -14,8 +14,9 @@ import os
 import pytest
 from PIL import Image
 
-from minacode.base import ModelError
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ModelError, ToolCall
 from minacode.config import Config, ProviderConfig
+from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.image import (
     ATTACHMENT_VISION_OBSERVATION_PREFIX,
@@ -23,6 +24,7 @@ from minacode.image import (
 )
 from minacode.model import ModelClient
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION
+from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import ViewImageTool
 from minacode.tui import TuiApp
@@ -221,13 +223,18 @@ def test_attachment_vision_failure_raises_model_error_naming_entry(tmp_path, mon
     monkeypatch.setattr(ModelClient, "api_request", failing)
     monkeypatch.setattr(ModelClient, "request", lambda self, messages, tools=None: ({"role": "assistant", "content": "done"}, [], "done"))
 
+    logged = []
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model.on_vision_observe = lambda label, detail: logged.append((label, detail))
     with pytest.raises(ModelError) as caught:
-        Agent(s, output_fn=lambda _text: None).run(s.images.recognize(shot.name))
+        agent.run(s.images.recognize(shot.name))
 
     message = str(caught.value)
     assert "[vision]" in message
     assert "`v`" in message
     assert "upstream 502" in message
+    # The log line fires before the request, so a failed observation still leaves it.
+    assert logged == [("v/vision-model", "described 1 attached image")]
 
 
 # --- UI 输入区预检（验收标准 7）---
@@ -320,33 +327,55 @@ def test_bridge_logs_one_transcript_line_per_observation(tmp_path, monkeypatch):
     agent, calls = bridged_agent(s, monkeypatch)
     logged = []
     agent.model.on_vision_observe = lambda label, detail: logged.append((label, detail))
-    # The runner hands the agent's hook to a bridged ViewImage, whose fresh client would drop it.
-    agent.tools.vision_observe_hook = agent.model.on_vision_observe
 
     agent.run(s.images.recognize(f"look {shot.name}"))
 
     # One line per observation, naming the vision entry and the image count; fired before the
     # request, so a failure to observe still leaves the line in the log.
-    assert logged == [("v/vision-model", "observing 1 image via the vision bridge")]
+    assert logged == [("v/vision-model", "described 1 attached image")]
     assert len(calls["vision"]) == 1
 
 
-def test_view_image_bridge_logs_through_the_runner_hook(tmp_path, monkeypatch):
+def test_bridged_view_image_logs_bridge_as_a_finish_child_under_the_call_root(tmp_path, monkeypatch):
     s = session(tmp_path, image_input="off")
     shot = image_file(tmp_path / "shot.png")
-    logged = []
-    # The tool is constructed directly, as run_one does, with the hook the runner injected.
-    tool = ViewImageTool(s, [str(shot), ""])
-    tool.vision_observe_hook = lambda label, detail: logged.append((label, detail))
+    emitted = []
+    runner = ToolRunner(s, ContextManager(s, ModelClient(s)), output_fn=emitted.append)
+    monkeypatch.setattr(ModelClient, "vision_observe", lambda self, images, question="": OBSERVATION_TEXT)
 
-    def fake_observe(self, images, question=""):
-        assert self.on_vision_observe is not None
-        self.on_vision_observe("v/vision-model", "observing 1 image via the vision bridge")
-        return OBSERVATION_TEXT
+    status, _message, observation = runner.run_one(ToolCall(id="t1", name="ViewImage", args=[str(shot), "报错原文是什么"]))
 
-    monkeypatch.setattr(ModelClient, "vision_observe", fake_observe)
-    result = tool.call()
+    assert status == "ok"
+    assert observation is None  # bridged: no image observation rides back to the main model
+    # The finish block is the only emitted block, so no standalone bridge line precedes it; the
+    # root is the call line and the bridge trace is a child below it, by construction.
+    assert len(emitted) == 1
+    block = emitted[0]
+    assert isinstance(block, LogBlock)
+    rendered = str(block)
+    assert rendered.index("ViewImage") < rendered.index("described by")
+    root = block.items[0]
+    assert root.label == "ViewImage"
+    children = block.items[1]
+    assert isinstance(children, LogBlock)
+    assert children.items[0] == LogLine("described by", "v/vision-model", LogRole.META, LogEdge.BRANCH)
+    assert children.items[1].label == "stored"
+    assert children.items[1].text.startswith("tr.")
+    assert children.items[1].edge == LogEdge.END
 
-    assert logged == [("v/vision-model", "observing 1 image via the vision bridge")]
-    assert OBSERVATION_TEXT in result and 'vision="v/vision-model"' in result
-    assert tool.model_observation() is None
+
+def test_direct_view_image_finish_block_has_no_bridge_child(tmp_path):
+    s = session(tmp_path, image_input="on")
+    shot = image_file(tmp_path / "shot.png")
+    emitted = []
+    runner = ToolRunner(s, ContextManager(s, ModelClient(s)), output_fn=emitted.append)
+
+    status, _message, observation = runner.run_one(ToolCall(id="t1", name="ViewImage", args=[str(shot)]))
+
+    assert status == "ok"
+    assert observation is not None  # direct: the image rides back to the main model
+    assert len(emitted) == 1
+    block = emitted[0]
+    assert isinstance(block, LogBlock)
+    assert len(block.items) == 1  # root only; no bridge child, no stored child (meta tail)
+    assert "described by" not in str(block)

@@ -193,7 +193,10 @@ class ViewImageTool(Tool):
         super().__init__(session, args)
         self.image: ImageRef | None = None
         self._bridged = False
-        self.vision_observe_hook: Callable[[str, str], None] | None = None
+        # Set when call() bridged to the [vision] entry, so the runner can draw the bridge trace
+        # under the call line in the finish block (the attachment path's standalone log line does
+        # not apply inside a tool call).
+        self.vision_entry_label = ""
 
     @classmethod
     def params_schema(cls) -> Json:
@@ -239,14 +242,7 @@ class ViewImageTool(Tool):
         assert self.image is not None  # call() loaded it before bridging
         from minacode.model import ModelClient  # local import: model.py imports the tool registry
 
-        client = ModelClient(self.session)
-        # The fresh client would drop the transcript hook the running loop wired onto its own
-        # client, so a bridged ViewImage would not log its observation (an attachment does --
-        # engine reuses the wired client). Session holds no back-reference to the agent, so the
-        # runner hands the hook to the tool instead.
-        if self.vision_observe_hook is not None:
-            client.on_vision_observe = self.vision_observe_hook
-        return client.vision_observe((self.image,), question)
+        return ModelClient(self.session).vision_observe((self.image,), question)
 
     def call(self) -> str:
         path = self.path()
@@ -264,6 +260,7 @@ class ViewImageTool(Tool):
         if not bridging:
             return header + "/>"
         self._bridged = True
+        self.vision_entry_label = self._vision_label()
         try:
             observation = self._vision_observe(self.question())
         except ModelError as error:
