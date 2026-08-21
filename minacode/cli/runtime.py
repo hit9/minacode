@@ -115,7 +115,7 @@ class TuiRuntime:
             images=self.loop.session.images,
             history=self.loop.input_history,
             completer=self.loop.input_completer,
-            flush_scrollback=lambda: self.loop.ui.drain_scrollback(),
+            on_app_stop=lambda: self.loop.ui.drain_scrollback(),
         )
 
     def submit_next(self, entered: Sequence[str | UserInput]) -> None:

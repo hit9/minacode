@@ -19,10 +19,9 @@ from prompt_toolkit import search as pt_search
 from prompt_toolkit.application import Application, create_app_session, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer
-from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions, is_done, is_searching
-from prompt_toolkit.formatted_text import StyleAndTextTuples, fragment_list_to_text
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -44,7 +43,6 @@ from minacode.base import (
 from minacode.image import IMAGE_MARKER, ImageInputs, ImageRef, UserInput
 from minacode.mentions import FilePick, MentionSpan, active_mention, encode_file_mention, scan_mentions
 from minacode.render import UiPrinter
-from minacode.tui.renderer import ScrollbackRenderer, install_scrollback_renderer
 from minacode.tui.views import TUI_MODAL_PENDING
 
 
@@ -180,7 +178,7 @@ class TuiApp:
         image_cwd: str = "",
         history: FileHistory | None = None,
         completer: Completer | None = None,
-        flush_scrollback: Callable[[], None] | None = None,
+        on_app_stop: Callable[[], None] | None = None,
     ) -> None:
         self.on_chat_submit = on_chat_submit or (lambda _: None)
         self.on_running_submit = on_running_submit or (lambda _: None)
@@ -191,7 +189,9 @@ class TuiApp:
         self.on_recall = on_recall or (lambda: "")
         self.on_expand_output = on_expand_output or (lambda: None)
         self.status_fragments_fn: Callable[[], StyleAndTextTuples] = status_fragments_fn or list
-        self.flush_scrollback = flush_scrollback or (lambda: None)
+        # Called once after the application stops, before the terminal is handed back, so the
+        # owner can flush anything still queued (see UiPrinter.drain_scrollback).
+        self.on_app_stop = on_app_stop or (lambda: None)
         self.activity_fragments_fn: Callable[[], StyleAndTextTuples] = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.quick_hints_fn: Callable[[], tuple[str, ...]] = quick_hints_fn or (lambda: ())
@@ -367,10 +367,9 @@ class TuiApp:
     def write_to_scrollback(self, callback: Callable[[], None]) -> None:
         """Print above the live application and wait until the terminal has accepted it.
 
-        The scrollback renderer writes without erasing the application when it has a verified
-        origin; otherwise prompt-toolkit owns the safe erase/write/redraw fallback. Waiting is
-        intentional: the caller must not start tool output until the promoted response is
-        permanent scrollback.
+        `run_in_terminal` owns the erase/write/redraw sequence, while `create_app_session` routes
+        nested prompt-toolkit printers to this application's output. Waiting is intentional: the
+        caller must not start tool output until the promoted response is permanent scrollback.
         """
         app = self.app
         if app is None or not app.is_running:
@@ -386,12 +385,7 @@ class TuiApp:
                     with create_app_session(output=app.output):
                         callback()
 
-                renderer = app.renderer
-                if isinstance(renderer, ScrollbackRenderer) and renderer.scrollback_ready:
-                    callback()
-                    self.flush_scrollback()
-                else:
-                    await run_in_terminal(render)
+                await run_in_terminal(render)
             except Exception as error:  # noqa: BLE001 - return terminal failures to the agent thread.
                 errors.append(error)
             finally:
@@ -927,29 +921,6 @@ class TuiApp:
             dont_extend_height=dont_extend_height,
         )
 
-    def _compact_terminal(self) -> bool:
-        app = self.app
-        if app is None:
-            return False
-        size = app.output.get_size()
-        return size.rows < 16 or size.columns < 60
-
-    def _activity_height(self) -> Dimension:
-        """Bound transient output in a small pane so completed scrollback remains visible."""
-        app = self.app
-        if app is None or not self._compact_terminal():
-            return Dimension()
-        # A tmux split can reduce the pane below the old live region in one resize. If activity is
-        # allowed to claim every new row, prompt-toolkit anchors at row zero and later resizes keep
-        # showing only the transient footer. Reserve rows for native scrollback and hide decorative
-        # gaps below; the activity window scrolls to its newest logical row when it is clipped.
-        return Dimension(max=max(1, min(8, app.output.get_size().rows - 4)))
-
-    def _activity_cursor_position(self) -> Point:
-        text = fragment_list_to_text(self.activity_fragments_fn())
-        lines = text.split("\n")
-        return Point(x=len(lines[-1]), y=len(lines) - 1)
-
     def build_layout(self) -> Layout:
         input_processors: list[Processor] = [
             HighlightIncrementalSearchProcessor(),
@@ -978,25 +949,19 @@ class TuiApp:
             Window(FormattedTextControl(self.approval_form_fragments), dont_extend_height=True, wrap_lines=True),
             filter=Condition(lambda: bool(self._approval_actions) and self.input_mode == "approval"),
         )
-        self.activity_window = Window(
-            FormattedTextControl(self.activity_fragments_fn, get_cursor_position=self._activity_cursor_position),
-            height=self._activity_height,
-            dont_extend_height=True,
-            wrap_lines=True,
-        )
+        self.activity_window = Window(FormattedTextControl(self.activity_fragments_fn), dont_extend_height=True, wrap_lines=True)
         running = Condition(lambda: self.input_mode == "running")
-        roomy = ~Condition(self._compact_terminal)
         activity = ConditionalContainer(
             self.activity_window,
             filter=running,
         )
         running_gap_above = ConditionalContainer(
             Window(height=1, dont_extend_height=True),
-            filter=running & roomy,
+            filter=running,
         )
         running_gap_below = ConditionalContainer(
             Window(height=1, dont_extend_height=True),
-            filter=running & roomy,
+            filter=running,
         )
         prompt_above = ConditionalContainer(
             Window(FormattedTextControl(self.input_prompt_above_fragments), wrap_lines=True, dont_extend_height=True),
@@ -1026,7 +991,7 @@ class TuiApp:
                     quick_hints_row,
                     completion_space,
                     self.search_toolbar,
-                    ConditionalContainer(Window(height=1, dont_extend_height=True), filter=roomy),
+                    Window(height=1, dont_extend_height=True),
                 ]
             ),
             filter=~modal_active,
@@ -1338,7 +1303,6 @@ class TuiApp:
             style=style,
             erase_when_done=True,
         )
-        install_scrollback_renderer(app)
         # A persistent primary-screen renderer needs CPR after a terminal resize; otherwise its
         # stale cursor coordinates can leave the transient footer in tmux scrollback. Keep the
         # legacy behavior of silently degrading on terminals that do not answer the probe.
@@ -1359,7 +1323,7 @@ class TuiApp:
             self.ready.set()
             # Flush anything still queued in the scrollback batching window before the terminal
             # is handed back; a timer fired inside the app loop would never get to run again.
-            self.flush_scrollback()
+            self.on_app_stop()
             self.app = None
             # If the agent thread is still parked in request_input at exit, unblock it so its frame
             # unwinds instead of leaking a thread. It unblocks as a cancel: a pending approval must

@@ -352,8 +352,6 @@ as content-addressed blobs. Persist semantic checkpoints, not object graphs.
 - Drafts, live previews, queue state, selectors, and status are one prompt-toolkit application on
   the primary screen; exclusive viewers like `/diff` may use the alternate screen and restore on
   exit.
-- The TUI renderer owns the primary-screen origin, cursor, and writes above the live layout. Other
-  modules submit completed fragments; they never infer terminal coordinates from layout height.
 
 Preserving native scrollback beats making every transient frame durable: resize/reflow can leave
 preview copies in scrollback — visual artifacts, not history. Do not clear scrollback, persist

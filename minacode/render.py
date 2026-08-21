@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import math
 import os
@@ -237,8 +236,9 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
-    # How long scrollback emits wait before one renderer write. This coalesces tool-result bursts;
-    # on terminals where the owned scrollback path is unavailable it also limits stock suspends.
+    # How long scrollback emits wait before printing as one batch. Each print suspends the live
+    # application (erase + repaint), so batching a burst of tool-result lines into one suspend
+    # keeps the animated divider on screen; 30ms is well below human perception.
     SCROLLBACK_BATCH_WINDOW: ClassVar[float] = 0.03
     MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|connecting|disconnected|disconnecting|error|skipped)")
     MCP_STATUS_ANSI: ClassVar[dict[str, str]] = {
@@ -266,9 +266,10 @@ class UiPrinter:
         # print_formatted_text call and flushes once. Under the TUI each call coordinates with the
         # renderer, so batching turns a hundred of those into one. Only the colored path batches.
         self._batch_parts: list[FormattedText | ANSI] | None = None
-        # Scrollback window: collect a short burst before handing it to the live renderer. Outside
-        # a live application nothing changes; an unsupported renderer safely falls back to one
-        # stock prompt-toolkit suspend for the whole batch.
+        # Scrollback window: while a prompt_toolkit application is live, each print_formatted_text
+        # suspends it (erase the whole rendered output, print above it, repaint), which makes the
+        # animated divider visibly blink on every emit. A short window batches a burst of emits
+        # (a tool result's lines) into one suspend; outside a live application nothing changes.
         self._scrollback_parts: list[FormattedText | ANSI] = []
         self._scrollback_timer: Any | None = None  # asyncio.TimerHandle, created on the app loop
         # Parts/timer are touched from the app loop (enqueue/flush) and the agent thread
@@ -289,10 +290,10 @@ class UiPrinter:
         if timer is not None:
             timer.cancel()
         if parts:
-            self._print_scrollback_parts(parts)
+            print_formatted_text(*parts, sep="", end="", flush=True)
 
     def _scrollback_print(self, fragment: FormattedText | ANSI) -> None:
-        """Print above a live application, batching a burst into one renderer write.
+        """Print above a live application, batching a burst of emits into one suspend.
 
         Outside a live application this drains any queued batch first and then prints
         immediately, exactly as before, so headless and pre-TUI output is unchanged and
@@ -315,14 +316,7 @@ class UiPrinter:
             return
         loop = app.loop
         assert loop is not None  # a running application always has one; the checker cannot see it
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-        if current_loop is loop:
-            self._enqueue_scrollback(app, fragment)
-        else:
-            loop.call_soon_threadsafe(self._enqueue_scrollback, app, fragment)
+        loop.call_soon_threadsafe(self._enqueue_scrollback, app, fragment)
 
     def _enqueue_scrollback(self, app: Any, fragment: FormattedText | ANSI) -> None:
         with self._scrollback_lock:
@@ -336,13 +330,6 @@ class UiPrinter:
             parts = self._scrollback_parts
             self._scrollback_parts = []
         if parts:
-            self._print_scrollback_parts(parts)
-
-    @staticmethod
-    def _print_scrollback_parts(parts: list[FormattedText | ANSI]) -> None:
-        app = get_app_or_none()
-        printer = getattr(app.renderer, "print_scrollback", None) if app is not None and app.is_running and not app._running_in_terminal else None
-        if printer is None or not printer(app, parts):
             print_formatted_text(*parts, sep="", end="", flush=True)
 
     @contextlib.contextmanager
