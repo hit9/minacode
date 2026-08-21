@@ -1031,12 +1031,14 @@ class LiveSpark:
     ROLE: ClassVar[str] = "divider.glow"
     # How far the breath reaches past that color, as a fraction of the way to black at the trough
     # and to white at the crest. Wide on purpose: a shallow fade reads as the terminal mis-drawing
-    # a cell rather than as a breath, and the crest has to clear the gray rows beside it.
+    # a cell rather than as a breath, and the crest has to clear the gray rows beside it. The
+    # crest stays shy of pure white so a light terminal does not lose the mark against its own
+    # background, but is close enough to read as white on a dark one.
     # The star is thin in its own shape and the terminal has no font size, so it is bold for the
     # whole ramp: that is the only way the mark reads heavier than the rows beside it. The breath
     # survives as the color ramp alone.
     FLOOR: ClassVar[float] = 0.78
-    CEILING: ClassVar[float] = 0.78
+    CEILING: ClassVar[float] = 0.92
 
     @classmethod
     def ramp(cls) -> list[str]:

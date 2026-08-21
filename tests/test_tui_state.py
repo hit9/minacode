@@ -287,8 +287,23 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
     assert luma(ramp[-1]) - luma(ramp[0]) >= luma(View.WAITING_PULSE_STYLES[-1]) - luma(View.WAITING_PULSE_STYLES[0])
     assert all(step.endswith(" bold") for step in ramp)  # the star is thin; bold carries its weight
 
+    # The crest is the loudest frame on the ramp: close enough to white to clear the gray rows
+    # beside it on a dark terminal (kept shy of pure white for light ones).
+    crest = Theme.rgb(ramp[-1].split()[0])
+    assert all(channel >= 230 for channel in crest)
+
     # Slower than the divider's in-flight heartbeat, which sits above a much quieter line.
     assert LiveSpark.PERIOD > View.WAITING_PULSE_PERIOD
+
+
+def test_live_spark_keeps_range_on_a_light_terminal(monkeypatch):
+    """The crest stays shy of pure white and the trough stays dark, so the breath still reads
+    against a light background instead of vanishing into it or washing out."""
+    monkeypatch.setattr(Theme, "_mode", "light")
+    crest = Theme.rgb(LiveSpark.ramp()[-1].split()[0])
+    assert all(channel >= 225 for channel in crest)  # near-white, but not the background itself
+    trough = Theme.rgb(LiveSpark.ramp()[0].split()[0])
+    assert sum(trough) <= sum(crest) - 300  # the trough stays clearly darker: the breath has range
 
 
 def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
