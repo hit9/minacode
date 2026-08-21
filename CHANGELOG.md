@@ -16,6 +16,9 @@
   visible) and is bold throughout: bigger and still continuous. A blank row now separates the
   spark from the output rail below it, so the star reads as capping the region rather than
   sitting on it.
+- The `/sessions` / `/resume` list now lines up its columns: session name, age, and round count
+  are padded to the widest value in each column (measured in terminal cells, so CJK names align
+  too) instead of running together on one ragged line.
 
 ## 0.29.1 - 2026-08-20
 

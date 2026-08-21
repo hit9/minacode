@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from prompt_toolkit.utils import get_cwidth
+
 from minacode.base import (
     HTTP_USER_AGENT,
     SELECTION_BACK,
@@ -415,9 +417,11 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
     entries = SessionSnapshotStore.list_sessions(loop.session.config.data_dir, loop.session.cwd, all_projects=argument == "all")
     if not entries:
         return "No saved sessions yet."
-    labels = {entry.uid: session_label(loop, entry, all_projects=argument == "all") for entry in entries}
+    rows = session_rows(loop, entries, all_projects=argument == "all")
     if loop.tui is None or not loop.interactive_input:
-        return "\n".join(f"{entry.uid}  {labels[entry.uid]}" for entry in entries)
+        width = max(get_cwidth(entry.uid) for entry in entries)
+        return "\n".join(f"{entry.uid}{' ' * (width - get_cwidth(entry.uid))}  {label}" for entry, label in zip(entries, rows))
+    labels = {entry.uid: label for entry, label in zip(entries, rows)}
     title = "Sessions" + (" · all projects" if argument == "all" else "")
     # The preview renders on every frame, so it reads the list already in hand, never the store.
     by_uid = {entry.uid: entry for entry in entries}
@@ -431,14 +435,44 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
     return None
 
 
+def _session_fields(loop: CommandLoop, entry: SessionEntry, *, all_projects: bool) -> list[str]:
+    """One session's fields in display order: name, age, round count, then the project when
+    browsing all projects and a `current` marker for the live session."""
+    rounds = f"{entry.rounds} round{'s' if entry.rounds > 1 else ''}" if entry.rounds else "no turns"
+    fields = [entry.label(), Text.age(time.time() - entry.updated_at), rounds]
+    if all_projects and entry.cwd:
+        fields.append(os.path.basename(entry.cwd.rstrip(os.sep)) or entry.cwd)
+    if entry.uid == loop.session.uid:
+        fields.append("current")
+    return fields
+
+
 def session_label(loop: CommandLoop, entry: SessionEntry, *, all_projects: bool = False) -> str:
-    rounds = f"{entry.rounds} round" + ("s" if entry.rounds > 1 else "") if entry.rounds else "no turns"
+    rounds = f"{entry.rounds} round{'s' if entry.rounds > 1 else ''}" if entry.rounds else "no turns"
     parts = [Text.age(time.time() - entry.updated_at), rounds]
     if all_projects and entry.cwd:
         parts.append(os.path.basename(entry.cwd.rstrip(os.sep)) or entry.cwd)
     if entry.uid == loop.session.uid:
         parts.append("current")
     return f"{entry.label()}  ·  " + " · ".join(parts)
+
+
+def session_rows(loop: CommandLoop, entries: list[SessionEntry], *, all_projects: bool = False) -> list[str]:
+    """The session list as table rows: every column padded to the widest value in it, so names,
+    ages, and round counts line up in the picker instead of drifting with the label lengths.
+    Padding is measured in display cells, so CJK names align too."""
+    rows = [_session_fields(loop, entry, all_projects=all_projects) for entry in entries]
+    if not rows:
+        return []
+    widths = [0] * max(len(row) for row in rows)
+    for row in rows:
+        for index, field in enumerate(row):
+            widths[index] = max(widths[index], get_cwidth(field))
+    lines = []
+    for row in rows:
+        cells = [field if index == len(row) - 1 else field + " " * max(0, widths[index] - get_cwidth(field)) for index, field in enumerate(row)]
+        lines.append("  ".join(cells))
+    return lines
 
 
 def session_preview(loop: CommandLoop, entry: SessionEntry | None) -> str:

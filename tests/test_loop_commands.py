@@ -13,6 +13,7 @@ from agent_harness import call, queue, session
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.utils import get_cwidth
 
 import minacode.cli as loop_module
 import minacode.cli.commands as commands_mod
@@ -558,6 +559,31 @@ def test_session_labels_carry_age_and_size(tmp_path):
     assert entry.uid in session_preview(loop, entry)
 
 
+def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
+    """The picker's labels are table rows: each column padded to the widest value in it, so names
+    of different lengths -- CJK included -- still line up their ages and round counts."""
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.tui = TuiApp()
+    loop.interactive_input = True
+    for text in ("a", "中文名", "quite a long session name"):
+        other = stored_session(tmp_path, text)
+        other.state.round_count = 3
+        other.save_snapshot()
+
+    captured: dict[str, dict[str, str]] = {}
+    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(labels=args[2]) or None)
+
+    assert loop.command("/sessions") == (True, False)
+    labels = list(captured["labels"].values())
+    assert len(labels) == 3
+    # Once the name and age columns are padded, the round count starts at the same display
+    # column in every row; it would drift with the label lengths without the padding. The
+    # char-index find() differs across CJK rows, so compare padded display widths instead.
+    assert len({get_cwidth(row[: row.find("3 rounds")]) for row in labels}) == 1
+
+
 def test_name_command_shows_and_sets_the_session_name(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "make the divider smoother"})
@@ -885,7 +911,8 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
 
     loop.tui = Modal()
 
-    result = choice_application(loop, 
+    result = choice_application(
+        loop,
         "Select:",
         ("A", "B"),
         {},
