@@ -21,6 +21,7 @@ from minacode.engine import Agent
 from minacode.image import IMAGE_REFS_KEY, ImageInputs
 from minacode.model import ModelClient
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
+from minacode.render import StatusBar
 from minacode.session import Session
 from minacode.tools import ViewImageTool
 
@@ -275,6 +276,64 @@ def test_bridged_wire_keeps_the_prebuilt_image_blocks_on_anthropic(tmp_path, mon
     }
     assert user["content"][-1]["type"] == "text"
     assert user["content"][-1]["text"] == VISION_OBSERVE_DEFAULT_QUESTION
+
+
+# --- 观察请求不污染主模型的 cache/ctx 读数（回归）---
+
+
+def test_observation_keeps_the_main_request_cache_snapshot(tmp_path, monkeypatch):
+    """A vision observation is billed to the session totals but is not a main-model request, so it
+    must not overwrite the last-request snapshot the status bar reads. Regression: an inline-image
+    follow-up ran an observation with no prefix reuse (cached_tokens=0) and the status bar's cache%
+    dropped to 0 until the next main-model request re-recorded it."""
+    s = session(tmp_path, image_input="off", api="chat")
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory(
+        [
+            (  # the main-model request rides the warm conversation prefix
+                200,
+                {
+                    "id": "chatcmpl-main",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "main-model",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105, "prompt_tokens_details": {"cached_tokens": 80}},
+                },
+            ),
+            (  # the vision observation has no prefix reuse at all
+                200,
+                {
+                    "id": "chatcmpl-vision",
+                    "object": "chat.completion",
+                    "created": 2,
+                    "model": "vision-model",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": OBSERVATION_TEXT}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "client", factory)
+
+    model = ModelClient(s)
+    model.request([{"role": "user", "content": "hello"}])
+    assert s.usage.last_prompt_tokens == 100
+    assert s.usage.last_cached_prompt_tokens == 80
+
+    ViewImageTool(s, [path.name]).call()  # one bridged observation through the real api_request path
+
+    # The last-request snapshot still describes the main-model request, not the observation.
+    assert s.usage.last_prompt_tokens == 100
+    assert s.usage.last_cached_prompt_tokens == 80
+    # The observation is still billed to the session totals exactly as before.
+    assert s.usage.prompt_tokens == 110
+    assert s.usage.cached_prompt_tokens == 80
+    assert s.usage.calls == 2
+    # And the status bar keeps reading the main-model cache ratio.
+    bar = StatusBar(s)
+    ctx_text = next(text for text, role in bar.entries(show_elapsed=False) if role == "ctx")
+    assert ctx_text.endswith("· cache 80%")
 
 
 # --- 直塞不受影响（验收标准 3）---

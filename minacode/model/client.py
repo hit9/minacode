@@ -446,7 +446,7 @@ class ModelClient:
         and its prefix reuse is worth reading on its own -- it now rides the conversation's cached
         prefix deliberately, and blending the two would hide whether that worked."""
         counter = self.session.compaction_usage if self.session.state.compaction_entry else self.session.usage
-        counter.add(usage, self.session.request_token_budget())
+        counter.add(usage, self.session.request_token_budget(), touch_last=not self.session.state.vision_observe_active)
 
     def chat_request(
         self,
@@ -706,7 +706,13 @@ class ModelClient:
                 "content": self.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
             },
         ]
-        _, _, content = self.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
+        # The observation is billed to the session totals but is not a main-model request, so its
+        # usage must not overwrite the last-request ctx/cache snapshot the status bar reads.
+        self.session.state.vision_observe_active = True
+        try:
+            _, _, content = self.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
+        finally:
+            self.session.state.vision_observe_active = False
         return content.strip()
 
     def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None, echo_source: str = "") -> Json:

@@ -113,6 +113,11 @@ class AgentState:
     # is. Live display state, like the retry and index fields above: set around the request in
     # ModelClient.compact and never persisted.
     compaction_entry: str = ""
+    # True while a vision-bridge observation request is in flight. Its usage joins the session
+    # totals but it is not a main-model request, so `_record_usage` must not let it overwrite the
+    # last-request ctx/cache snapshot the status bar reads. Live request state, like
+    # compaction_entry: never persisted.
+    vision_observe_active: bool = False
     # The last delegation that failed on this worker, for `Delegate status` to tell the parent
     # (which cannot see the worker) why it stopped, instead of the parent having to remember.
     # Live display state, like compaction_entry: never persisted.

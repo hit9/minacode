@@ -298,7 +298,10 @@ class ModelUsage:
                 return int(raw or 0)
         return 0
 
-    def add(self, usage: Any, budget: int | None = None) -> None:
+    def add(self, usage: Any, budget: int | None = None, *, touch_last: bool = True) -> None:
+        """Add one completed request to the totals, and unless `touch_last` is False make it the
+        new last-request snapshot (the status bar's ctx/cache reading). Non-main-model requests
+        (vision observations) stay in the totals but must not move that snapshot."""
         self.calls += 1
         prompt_tokens = self.field(usage, "prompt_tokens", "input_tokens")
         completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
@@ -323,11 +326,12 @@ class ModelUsage:
         self.total_tokens += total_tokens
         self.cached_prompt_tokens += cached_tokens
         self.cache_write_prompt_tokens += cache_write_tokens
-        self.last_prompt_tokens = prompt_tokens
-        if budget is not None:
-            self.last_prompt_budget = budget
-        self.last_cached_prompt_tokens = cached_tokens
-        self.last_cache_write_prompt_tokens = cache_write_tokens
+        if touch_last:
+            self.last_prompt_tokens = prompt_tokens
+            if budget is not None:
+                self.last_prompt_budget = budget
+            self.last_cached_prompt_tokens = cached_tokens
+            self.last_cache_write_prompt_tokens = cache_write_tokens
 
 
 @dataclass
