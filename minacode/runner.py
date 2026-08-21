@@ -265,7 +265,7 @@ class ToolRunner:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
-        self.live_start: Callable[[], None] | None = None
+        self.live_start: Callable[..., None] | None = None
         self.worker_rule: Callable | None = None
         # Renders the worker's interim and final model text like an agent answer (markdown), wired by the loop;
         # None lets the worker publish it through its ordinary output channel (headless).
@@ -539,7 +539,7 @@ class ToolRunner:
         if call.error:
             return "failed", self.reject(call, f"ToolError: {call.error}", d=ToolDisplay(batch_suffix=batch_suffix)), None
         tool = tool_class(self.session, call.args)
-        if isinstance(tool, BashTool):
+        if isinstance(tool, (BashTool, JobTool)):
             tool.live_output = self.live_output
         started = time.monotonic()
         d = ToolDisplay(batch_suffix=batch_suffix)
@@ -576,12 +576,21 @@ class ToolRunner:
                     self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     d.nested_display = True
                 self.live_start()
+            elif isinstance(tool, JobTool) and tool.blocks_agent() and self.live_start is not None:
+                # A blocking Job wait streams the job's log into the same live preview as Bash, so
+                # it draws the root line up front and hands the preview the wait budget for the
+                # countdown, exactly like Bash's pre-block.
+                if not d.nested_display:
+                    self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
+                    d.nested_display = True
+                self.live_start(tool.wait_budget(tool.payload()))
             elif tool.blocks_agent() and not d.nested_display:
-                # A blocking call (a Job wait) holds the agent with no live stream to show for it, so
-                # print the call line now -- as a leaf the finish block will hang children under --
-                # and the user sees the agent is waiting instead of a blank screen until the result
-                # lands. Skipped when something already drew a root (an approval block, an auto
-                # preview); a second copy of the same line is noise, not reassurance.
+                # A blocking call with no live preview wired up (e.g. headless, or a Job wait
+                # outside the runner) still prints its call line now -- as a leaf the finish block
+                # will hang children under -- so the user sees the agent is waiting instead of a
+                # blank screen until the result lands. Skipped when something already drew a root
+                # (an approval block, an auto preview); a second copy of the same line is noise,
+                # not reassurance.
                 self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                 d.nested_display = True
             output = self.call_tool(tool, planned_edit)

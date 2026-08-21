@@ -403,6 +403,11 @@ class JobTool(Tool):
     DEFAULT_WAIT: ClassVar[int] = 60
     MAX_WAIT: ClassVar[int] = 900
     POLL_INTERVAL: ClassVar[float] = 0.1
+    # How often the job's log tail is streamed into the live preview while a wait polls. Aligned
+    # with the preview's own TICK so the two repaint together; the poll slices stay finer because
+    # only the interrupt response needs POLL_INTERVAL resolution.
+    LIVE_INTERVAL: ClassVar[float] = 0.3
+    live_output: Callable[[str, str], None] | None = None
 
     def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
@@ -524,23 +529,54 @@ class JobTool(Tool):
     def _await_process(self, job: BackgroundJob, payload: Json) -> bool:
         """Wait for the job, in slices, so Ctrl-C lands within POLL_INTERVAL instead of after the
         whole budget. Returns whether the wait was interrupted. A single blocking process.wait()
-        would be simpler but unreachable from the cancelling thread."""
+        would be simpler but unreachable from the cancelling thread. While polling, the job's log
+        tail is streamed into the live preview on LIVE_INTERVAL slices; the throttle keeps the
+        disk re-read in `tail` from fighting the poll loop."""
         deadline = time.monotonic() + self.wait_budget(payload)
+        baseline = ""
+        last_stream = 0.0
         while job.process.poll() is None and time.monotonic() < deadline:
             if self._interrupted.wait(self.POLL_INTERVAL):
                 break
+            if self.live_output is None or time.monotonic() - last_stream < self.LIVE_INTERVAL:
+                continue
+            last_stream = time.monotonic()
+            # The tail is the diff source for the preview; 8000 matches BashLivePreview.MAX_CHARS.
+            text = job.tail(8000)
+            if text.endswith(baseline):
+                if len(text) > len(baseline):
+                    self.live_output("output", text[len(baseline) :])
+                    baseline = text
+            elif text:
+                # The suffix relation broke: the log outgrew the tail window, so `...` shifted the
+                # whole frame and the delta is not recoverable by suffix matching. Push the entire
+                # visible tail -- the preview keeps only its own last MAX_CHARS, so the overlap
+                # with what was already pushed falls off and the rolling window stays correct.
+                self.live_output("output", text)
+                baseline = text
         job.update_status()
         return self._interrupted.is_set()
 
     def _status(self, payload: Json) -> str:
-        job = self._resolve_job(payload)
-        interrupted = self._await_process(job, payload) if self.requested_timeout(payload) else False
-        return self._format(job, payload, interrupted=interrupted)
+        try:
+            job = self._resolve_job(payload)
+            interrupted = self._await_process(job, payload) if self.requested_timeout(payload) else False
+            return self._format(job, payload, interrupted=interrupted)
+        finally:
+            # Close the live region on every exit path (done, budget exhausted, Ctrl-C, a ToolError
+            # from _resolve_job): the runner has already started it, and leaving it open would leak
+            # a preview that keeps ticking. A non-blocking status never opened it, so this is a no-op.
+            if self.live_output is not None:
+                self.live_output("", "")
 
     def _wait(self, payload: Json) -> str:
-        job = self._resolve_job(payload)
-        interrupted = self._await_process(job, payload)
-        return self._format(job, payload, interrupted=interrupted)
+        try:
+            job = self._resolve_job(payload)
+            interrupted = self._await_process(job, payload)
+            return self._format(job, payload, interrupted=interrupted)
+        finally:
+            if self.live_output is not None:
+                self.live_output("", "")
 
     def _list(self) -> str:
         if not self.session.jobs:

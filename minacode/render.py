@@ -1099,6 +1099,9 @@ class BashLivePreview:
         self.rendered_rows: list[list[tuple[str, str]]] = []
         self.text = ""
         self.started_at = 0.0
+        # Monotonic absolute end of the current wait budget, for the `· Ns left` countdown; None
+        # for Bash, which has no budget to count down.
+        self.deadline: float | None = None
         self.lock = threading.Lock()
         self.timer: threading.Thread | None = None
 
@@ -1108,6 +1111,7 @@ class BashLivePreview:
         with self.lock:
             self.active, self.rendered_lines, self.rendered_rows, self.text = True, 0, [], ""
             self.started_at = time.monotonic()
+            self.deadline = None
             self.render()
         self.timer = threading.Thread(target=self.tick, daemon=True)
         self.timer.start()
@@ -1137,6 +1141,7 @@ class BashLivePreview:
             timer.join()
         with self.lock:
             self.rendered_lines, self.rendered_rows, self.text = 0, [], ""
+            self.deadline = None
 
     def render(self) -> None:
         if not self.active:
@@ -1174,12 +1179,13 @@ class BashLivePreview:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
         label = Text.elapsed_since(self.started_at, precise=True)
+        remaining = f" · {math.ceil(max(0.0, self.deadline - time.monotonic()))}s left" if self.deadline is not None else ""
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
         rail = LogBlock.prefix(2, LogEdge.CONTINUE)
         limit = max(1, width - get_cwidth(rail) - 1)
         # Always emit a status row so the frame is visible even before any output arrives.
-        status = f"output · {label}" if body else f"running… {label}"
+        status = f"output · {label}{remaining}" if body else f"running… {label}{remaining}"
         rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.glyph(self.started_at)), ("ansibrightblack", status)]]
         if body:
             # A blank row keeps the spark off the rail: the star caps the region, it does not sit on it.

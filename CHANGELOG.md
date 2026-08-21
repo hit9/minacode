@@ -10,6 +10,8 @@
   reads, the image stays stored under the session's assets, and you can keep asking `ViewImage`
   with a `question` for details. Configure it with `[vision] provider = "..."` in the config
   file; when the active provider can take images, the vision model is not used.
+- A blocking `Job` wait now streams the job's output into the same live preview as Bash, and the
+  status line shows the seconds left in the wait (e.g. `· 12s left`).
 
 ### Changed
 

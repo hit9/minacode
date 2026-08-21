@@ -817,7 +817,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             self.status_bar.stop()
         self.live_preview.start()
 
-    def tool_live_start(self) -> None:
+    def tool_live_start(self, budget: float | None = None) -> None:
         if not self.ui.color:
             return
         if self.tui is not None:
@@ -825,9 +825,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 self.live_preview.active = True
                 self.live_preview.text = ""
                 self.live_preview.started_at = time.monotonic()
+                self.live_preview.deadline = (time.monotonic() + budget) if budget else None
             self.tui.invalidate()
             return
         self._begin_cli_preview()
+        # The preview region is reused across calls, so a call without a budget (Bash) must clear
+        # any deadline a previous Job wait left behind.
+        with self.live_preview.lock:
+            self.live_preview.deadline = (time.monotonic() + budget) if budget else None
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:

@@ -489,6 +489,26 @@ def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_
     assert len(recording_output.events) > 0
 
 
+def test_bash_live_preview_status_shows_wait_countdown_when_deadline_set(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    preview = BashLivePreview()
+    preview.active = True
+    preview.started_at = 100.0
+
+    preview.deadline = 103.0
+    status = "".join(text for _style, text in preview.frame_rows()[0])
+    assert " · 3s left" in status
+
+    preview.deadline = 99.0  # 已过期的预算:剩余显示 0s,不出现负数
+    status = "".join(text for _style, text in preview.frame_rows()[0])
+    assert " · 0s left" in status
+
+    preview.deadline = None  # Bash 无预算:状态行与现状一致,不带倒计时
+    status = "".join(text for _style, text in preview.frame_rows()[0])
+    assert "s left" not in status
+
+
 def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.config.provider.model = "模型" * 20
