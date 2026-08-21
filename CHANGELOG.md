@@ -15,6 +15,10 @@
 
 - Worker replies printed between tool calls now render as markdown, like the worker's final
   report. Tool lines stay as the log tree.
+- The live stream preview now styles inline markdown in the streaming text: `**bold**`,
+  `` `code` ``, and `*italic*` render styled once their closing marker arrives, and plain text
+  stays gray. Block constructs and unclosed markers stay literal, so a stream mid-token never
+  flickers.
 
 ## 0.30.0 - 2026-08-21
 

@@ -8,6 +8,7 @@ its `loop` reference; it renders, it does not own behavior.
 from __future__ import annotations
 
 import heapq
+import re
 import shutil
 import time
 from collections.abc import Callable, Iterator
@@ -275,6 +276,11 @@ class View:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
 
+    # Line-level markdown tokens the live stream preview styles. Block constructs (headings,
+    # lists, fenced code) are deliberately not parsed: the preview shows partial streaming text,
+    # and only tokens that close on one line can render without flickering as the stream grows.
+    STREAM_INLINE_RE: ClassVar[re.Pattern[str]] = re.compile(r"(\*\*[^*\n]+\*\*|`[^`\n]+`|\*[^*\n]+\*)")
+
     def __init__(self, loop: CommandLoop) -> None:
         self.loop = loop
         self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/cli/hints.py
@@ -428,8 +434,32 @@ class View:
             ("", "\n"),
         ]
         for row in rows:
-            fragments.extend([("ansibrightblack", f"{rail}{row}"), ("", "\n")])
+            fragments.append(("ansibrightblack", rail))
+            fragments.extend(self._stream_inline_fragments(row))
+            fragments.append(("", "\n"))
         return fragments
+
+    @classmethod
+    def _stream_inline_fragments(cls, row: str) -> StyleAndTextTuples:
+        """One preview row as fragments: plain gray text with closed inline markdown tokens
+        styled. A marker without its closing partner stays literal, so a stream that has not
+        finished a token never toggles its style from frame to frame."""
+        fragments: StyleAndTextTuples = []
+        cursor = 0
+        for match in cls.STREAM_INLINE_RE.finditer(row):
+            if match.start() > cursor:
+                fragments.append(("ansibrightblack", row[cursor : match.start()]))
+            token = match.group(1)
+            if token.startswith("**"):
+                fragments.append(("bold", token[2:-2]))
+            elif token.startswith("`"):
+                fragments.append(("ansibrightcyan", token[1:-1]))
+            else:
+                fragments.append(("italic", token[1:-1]))
+            cursor = match.end()
+        if cursor < len(row):
+            fragments.append(("ansibrightblack", row[cursor:]))
+        return fragments or [("ansibrightblack", row)]
 
     def tui_input_hint(self) -> str:
         tui = self.loop.tui

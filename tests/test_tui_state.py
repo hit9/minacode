@@ -351,6 +351,23 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     assert "working" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
 
+def test_model_stream_preview_styles_inline_markdown(tmp_path):
+    """Closed inline markdown tokens in the live preview render with their own styles -- bold,
+    code, italic -- while plain text stays gray and an unclosed marker stays literal, so a
+    growing stream never toggles a token's style frame to frame."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+
+    loop.model_stream_output("reasoning", "**bold** `code` *italic* and **unclosed")
+
+    styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
+    assert ("bold", "bold") in styled
+    assert ("code", "ansibrightcyan") in styled
+    assert ("italic", "italic") in styled
+    assert (" and **unclosed", "ansibrightblack") in styled  # no closing marker: the tail stays literal
+
+
 def test_queue_divider_resuming_status_is_a_quiet_gray_line(tmp_path):
     """While a session is being restored the divider is one gray line: no sweep, no pulse, no
     elapsed time, because nothing is streaming and the replay that follows is the whole story."""
