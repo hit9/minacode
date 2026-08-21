@@ -118,6 +118,23 @@ def test_attachment_bridge_uses_default_question_for_image_only_input(tmp_path, 
     assert text_block["text"] == VISION_OBSERVE_DEFAULT_QUESTION
 
 
+def test_bridged_attachment_keeps_the_request_prefix_stable_across_turns(tmp_path, monkeypatch):
+    s = session(tmp_path, image_input="off")
+    shot = image_file(tmp_path / "shot.png")
+    agent, calls = bridged_agent(s, monkeypatch)
+
+    agent.run(s.images.recognize(f"look {shot.name}"))
+    agent.run("and now?")
+
+    # Prompt cache hits require the later request to carry every earlier request byte-identical as
+    # its prefix: the bridged message (with the observation text) must never be rewritten, and the
+    # image must not be re-observed on a later turn.
+    assert len(calls["vision"]) == 1
+    first, second = calls["main"][0], calls["main"][-1]
+    assert len(second) >= len(first)
+    assert second[: len(first)] == first
+
+
 # --- 多图一次请求（验收标准 2）---
 
 
