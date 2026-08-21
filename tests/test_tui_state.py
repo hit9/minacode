@@ -270,6 +270,15 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
     assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH
     clock[0] = LiveSpark.PERIOD / 3
     assert LiveSpark.glyph(started_at=0.0) != LiveSpark.GLYPH
+    # All three weights appear across one period (phases kept clear of the 1/3 and 2/3
+    # boundaries, where float rounding could land on either side), and the cycle wraps to GLYPH.
+    seen = set()
+    for fraction in (0.0, 0.4, 0.8):
+        clock[0] = fraction * LiveSpark.PERIOD
+        seen.add(LiveSpark.glyph(started_at=0.0))
+    assert seen == set(LiveSpark.GLYPHS)
+    clock[0] = LiveSpark.PERIOD
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH
 
     def luma(style):
         red, green, blue = Theme.rgb(style.split()[0])
