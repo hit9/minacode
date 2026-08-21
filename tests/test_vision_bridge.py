@@ -438,3 +438,72 @@ def test_vision_request_failure_surfaces_as_a_tool_error(tmp_path, monkeypatch):
 
     with pytest.raises(ToolError, match="Vision bridge failed: upstream 502"):
         ViewImageTool(s, [path.name]).call()
+
+
+# --- 观察请求后的主请求快照恢复（旗标 finally 清理，回归补充）---
+
+
+def _usage_main_response(prompt=100, cached=80):
+    return (
+        200,
+        {
+            "id": "m",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "main",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": prompt, "completion_tokens": 5, "total_tokens": prompt + 5, "prompt_tokens_details": {"cached_tokens": cached}},
+        },
+    )
+
+
+def _usage_obs_response():
+    return (
+        200,
+        {
+            "id": "v",
+            "object": "chat.completion",
+            "created": 2,
+            "model": "vision",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": OBSERVATION_TEXT}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        },
+    )
+
+
+def test_main_request_after_observation_re_touches_the_snapshot(tmp_path, monkeypatch):
+    """The flag must not linger: a main-model request after the observation still updates the
+    last-request ctx/cache snapshot the status bar reads (a stale `touch_last=False` would freeze
+    the readout on the pre-observation main request)."""
+    s = session(tmp_path, image_input="off", api="chat")
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory([_usage_main_response(), _usage_obs_response(), _usage_main_response(prompt=200, cached=150)])
+    monkeypatch.setattr(ModelClient, "client", factory)
+
+    model = ModelClient(s)
+    model.request([{"role": "user", "content": "hello"}])
+    ViewImageTool(s, [path.name]).call()
+    assert s.state.vision_observe_active is False
+    model.request([{"role": "user", "content": "again"}])
+
+    assert s.usage.last_prompt_tokens == 200
+    assert s.usage.last_cached_prompt_tokens == 150
+
+
+def test_failed_observation_clears_the_flag_and_next_main_request_touches(tmp_path, monkeypatch):
+    """An observation that fails mid-request (finally) must clear the flag, so the next main-model
+    request is not mislabeled as an observation and keeps updating the snapshot."""
+    s = session(tmp_path, image_input="off", api="chat")
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory([_usage_main_response(), 500, _usage_main_response(prompt=200, cached=150)])
+    monkeypatch.setattr(ModelClient, "client", factory)
+
+    model = ModelClient(s)
+    model.request([{"role": "user", "content": "hello"}])
+    with pytest.raises(ToolError, match="Vision bridge failed"):
+        ViewImageTool(s, [path.name]).call()
+    assert s.state.vision_observe_active is False
+    model.request([{"role": "user", "content": "again"}])
+
+    assert s.usage.last_prompt_tokens == 200
+    assert s.usage.last_cached_prompt_tokens == 150

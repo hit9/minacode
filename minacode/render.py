@@ -298,9 +298,19 @@ class UiPrinter:
         Outside a live application this drains any queued batch first and then prints
         immediately, exactly as before, so headless and pre-TUI output is unchanged and
         nothing queued is reordered or lost.
+
+        The batching path depends on the live application being reachable from this thread:
+        TuiApp.run never wraps create_app_session, so the app registers on the shared default
+        AppSession (prompt_toolkit's `_current_app_session` ContextVar default) and every
+        thread's get_app_or_none() sees it. Should a future caller wrap app.run in a private
+        create_app_session instead, this degrades gracefully to per-emit direct prints -- the
+        pre-batch behavior, correct but with the divider blink back.
         """
         app = get_app_or_none()
-        if app is None or not app._is_running or app._running_in_terminal:
+        # `_running_in_terminal` has no public accessor; it is the only way to see "a suspend is
+        # already in progress" so a nested emit prints inside it instead of rejoining the window
+        # (which would delay it past the suspend's wait-then-return contract).
+        if app is None or not app.is_running or app._running_in_terminal:
             self.drain_scrollback()
             print_formatted_text(fragment, end="", flush=True)
             return

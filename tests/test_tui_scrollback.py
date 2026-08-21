@@ -12,6 +12,7 @@ produces exactly one suspend.
 import asyncio
 import threading
 
+import pytest
 from prompt_toolkit.application import Application, create_app_session
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Size
@@ -20,6 +21,7 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.patch_stdout import patch_stdout
 from tui_harness import session
 
 from minacode.cli import CommandLoop, TuiRuntime
@@ -238,3 +240,97 @@ def test_tui_runtime_wires_scrollback_drain_on_app_stop(tmp_path, monkeypatch):
     tui.on_app_stop()
 
     assert drained == [True]
+
+
+def test_agent_thread_emit_batches_into_one_suspend(monkeypatch):
+    """The real calling shape: the application runs in its own thread under patch_stdout only.
+
+    TuiApp.run never wraps create_app_session, so the app registers on the shared default
+    AppSession and every thread's get_app_or_none() sees it -- the agent thread emits into the
+    live application. The burst must still coalesce into one print_formatted_text call with
+    every line present and the window drained, not fall back to per-emit direct prints.
+    """
+    printed = []
+    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    rec = RecordingOutput()
+    ui = UiPrinter(print)
+    ui.color = True
+    ready = threading.Event()
+    done = threading.Event()
+    errors = []
+
+    def tui_main():
+        try:
+            with create_pipe_input() as pipe:
+                layout = Layout(
+                    HSplit(
+                        [
+                            Window(
+                                FormattedTextControl([("class:divider", "--- \u25cf responding ... ---")]),
+                                dont_extend_height=True,
+                            ),
+                            Window(BufferControl(Buffer()), dont_extend_height=True),
+                        ]
+                    )
+                )
+                app = Application(layout=layout, output=rec, input=pipe, full_screen=False)
+
+                async def drive():
+                    await asyncio.sleep(0.05)  # let the first render land
+                    ready.set()
+                    done.wait(5)
+                    await asyncio.sleep(0.15)  # batching window + run_in_terminal round trip
+                    app.exit()
+
+                app.pre_run_callables.append(lambda: app.create_background_task(drive()))
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                with patch_stdout():
+                    loop.run_until_complete(app.run_async())
+        except BaseException as error:  # noqa: BLE001 - the thread must record every failure kind
+            errors.append(error)
+
+    t = threading.Thread(target=tui_main, name="tui", daemon=True)
+    t.start()
+    assert ready.wait(5)
+    ui.emit("tool line one\n")
+    ui.emit("tool line two\n")
+    ui.emit("tool line three\n")
+    done.set()
+    t.join(10)
+
+    assert errors == []
+    assert len(printed) == 1, "a burst of agent-thread emits must coalesce into one print"
+    text = "".join(fragment_text(part) for part in printed[0])
+    assert text.index("tool line one") < text.index("tool line two") < text.index("tool line three")
+    assert ui._scrollback_parts == []  # the window drained; nothing queued is left behind
+
+
+def test_flush_exception_drains_the_batch_and_keeps_the_printer_usable(monkeypatch):
+    """A throwing print during window flush must not double-print, deadlock, or wedge later emits.
+
+    The batch is dequeued before printing (print happens outside the lock), so a terminal failure
+    loses that batch but leaves the window consistent: nothing queued remains, no timer is pending,
+    and the next emit still prints.
+    """
+
+    def throw_once(*args, **kwargs):
+        raise RuntimeError("terminal failure")
+
+    monkeypatch.setattr("minacode.render.print_formatted_text", throw_once)
+    ui = UiPrinter(print)
+    ui.color = True
+    ui._scrollback_parts = [FormattedText([("", "queued line\n")])]
+
+    with pytest.raises(RuntimeError):
+        ui._flush_scrollback()
+
+    assert ui._scrollback_parts == []  # the batch is gone; no retry, no double print
+    assert ui._scrollback_timer is None
+
+    # The printer keeps working: the next emit falls through to a direct print.
+    printed = []
+    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    ui.emit("after failure\n")
+    assert len(printed) == 1
+    assert fragment_text(printed[0][0]) == "after failure\n"
