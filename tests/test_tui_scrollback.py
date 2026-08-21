@@ -1,14 +1,12 @@
-"""TUI scrollback output: a burst of emits prints into the scroll region above the application.
+"""TUI scrollback output: a burst of emits must suspend the application once, not once per line.
 
-Every UiPrinter print used to suspend prompt_toolkit's renderer (erase the live application, write
-above it, repaint), and the animated divider disappeared for that erase/repaint gap. Tool results
-publish several lines in quick succession, so the burst was batched into a single suspend -- but
-each suspend still blinked. The scrollback window now prints into the terminal's scroll region
-(DECSTBM) pinned above the app: the lines wrap and scroll only there, the divider never erases.
+Every UiPrinter print suspends prompt_toolkit's renderer (erase the live application, write above
+it, repaint), and the animated divider disappears for that erase/CPR gap. Tool results publish
+several lines in quick succession, so the burst must be batched into a single suspend.
 
 The tests drive a minimal prompt_toolkit Application (the same run_in_terminal machinery TuiApp
 uses) with a recording output, count the renderer.erase() fingerprint, and assert the burst
-produces no suspend at all.
+produces exactly one suspend.
 """
 
 import asyncio
@@ -74,12 +72,6 @@ class RecordingOutput(DummyOutput):
 
     def get_size(self):
         return Size(rows=24, columns=80)
-
-    def get_rows_below_cursor_position(self):
-        # A primary-screen app is pinned to the bottom, so the renderer's layout height is the
-        # app's real height. DummyOutput's default 40 would stretch the rendered app to the full
-        # 24 rows, leaving no scroll region above it to pin.
-        return 0
 
     def _record(self, name, args):
         with self.lock:
@@ -150,9 +142,8 @@ def _run_application_with_emit(rec, emit):
         loop.run_until_complete(asyncio.wait_for(app.run_async(), timeout=5))
 
 
-def test_tool_output_burst_prints_into_the_scroll_region_without_suspending():
-    """Three consecutive tool-log emits pin the rows above the app as the terminal's scroll
-    region and print there; the app is never erased, so the divider never blinks."""
+def test_tool_output_burst_suspends_the_application_once():
+    """Three consecutive tool-log emits erase the live application once, and the lines stay in order."""
     rec = RecordingOutput()
     ui = UiPrinter(print)
     ui.color = True  # the real TUI constructs the printer against a tty, so styling is on
@@ -165,13 +156,7 @@ def test_tool_output_burst_prints_into_the_scroll_region_without_suspending():
     _run_application_with_emit(rec, emit)
 
     burst = rec.snapshot()
-    assert suspend_count(burst) == 0, "scrollback prints must not erase the live application"
-    raw = "".join(args[0] for name, args in burst if name == "write_raw" and args)
-    assert "\x1b[1;21r" in raw, "the rows above the 2-row app become the scroll region"
-    assert "\x1b[r" in raw, "the scroll region is reset before the app repaints"
-    # The real cursor is put back where the renderer believes it is, so the next diff repaint
-    # stays aligned; a stray cursor would paint the app over the scrollback.
-    assert any(name == "cursor_goto" for name, _ in burst), "the cursor is restored after the print"
+    assert suspend_count(burst) == 1, "a burst of emits must suspend the application exactly once"
     text = written_text(burst)
     assert text.index("tool line one") < text.index("tool line two") < text.index("tool line three")
 
@@ -257,14 +242,16 @@ def test_tui_runtime_wires_scrollback_drain_on_app_stop(tmp_path, monkeypatch):
     assert drained == [True]
 
 
-def test_agent_thread_emit_batches_into_one_scroll_region_print():
+def test_agent_thread_emit_batches_into_one_suspend(monkeypatch):
     """The real calling shape: the application runs in its own thread under patch_stdout only.
 
     TuiApp.run never wraps create_app_session, so the app registers on the shared default
     AppSession and every thread's get_app_or_none() sees it -- the agent thread emits into the
-    live application. The burst must still coalesce into one scroll-region print with every
-    line present and the window drained, not fall back to per-emit direct prints.
+    live application. The burst must still coalesce into one print_formatted_text call with
+    every line present and the window drained, not fall back to per-emit direct prints.
     """
+    printed = []
+    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
     rec = RecordingOutput()
     ui = UiPrinter(print)
     ui.color = True
@@ -313,9 +300,8 @@ def test_agent_thread_emit_batches_into_one_scroll_region_print():
     t.join(10)
 
     assert errors == []
-    burst = rec.snapshot()
-    assert suspend_count(burst) == 0, "agent-thread emits must not erase the live application"
-    text = written_text(burst)
+    assert len(printed) == 1, "a burst of agent-thread emits must coalesce into one print"
+    text = "".join(fragment_text(part) for part in printed[0])
     assert text.index("tool line one") < text.index("tool line two") < text.index("tool line three")
     assert ui._scrollback_parts == []  # the window drained; nothing queued is left behind
 
