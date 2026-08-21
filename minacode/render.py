@@ -13,6 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
+from prompt_toolkit.application import get_app_or_none
 from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples
 from prompt_toolkit.output import create_output
 from prompt_toolkit.utils import get_cwidth
@@ -235,6 +236,10 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
+    # How long scrollback emits wait before printing as one batch. Each print suspends the live
+    # application (erase + repaint), so batching a burst of tool-result lines into one suspend
+    # keeps the animated divider on screen; 30ms is well below human perception.
+    SCROLLBACK_BATCH_WINDOW: ClassVar[float] = 0.03
     MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|connecting|disconnected|disconnecting|error|skipped)")
     MCP_STATUS_ANSI: ClassVar[dict[str, str]] = {
         "connected": "\x1b[32m",
@@ -261,6 +266,61 @@ class UiPrinter:
         # print_formatted_text call and flushes once. Under the TUI each call coordinates with the
         # renderer, so batching turns a hundred of those into one. Only the colored path batches.
         self._batch_parts: list[FormattedText | ANSI] | None = None
+        # Scrollback window: while a prompt_toolkit application is live, each print_formatted_text
+        # suspends it (erase the whole rendered output, print above it, repaint), which makes the
+        # animated divider visibly blink on every emit. A short window batches a burst of emits
+        # (a tool result's lines) into one suspend; outside a live application nothing changes.
+        self._scrollback_parts: list[FormattedText | ANSI] = []
+        self._scrollback_timer: Any | None = None  # asyncio.TimerHandle, created on the app loop
+        # Parts/timer are touched from the app loop (enqueue/flush) and the agent thread
+        # (drain on direct prints and at shutdown), so all access goes through this lock.
+        self._scrollback_lock = threading.Lock()
+
+    def drain_scrollback(self) -> None:
+        """Synchronously print anything still queued in the batching window.
+
+        Called before any direct print (so a later line never lands ahead of queued ones) and
+        at application shutdown (so a turn's last lines are not lost to an un-fired timer).
+        """
+        with self._scrollback_lock:
+            parts = self._scrollback_parts
+            self._scrollback_parts = []
+            timer = self._scrollback_timer
+            self._scrollback_timer = None
+        if timer is not None:
+            timer.cancel()
+        if parts:
+            print_formatted_text(*parts, sep="", end="", flush=True)
+
+    def _scrollback_print(self, fragment: FormattedText | ANSI) -> None:
+        """Print above a live application, batching a burst of emits into one suspend.
+
+        Outside a live application this drains any queued batch first and then prints
+        immediately, exactly as before, so headless and pre-TUI output is unchanged and
+        nothing queued is reordered or lost.
+        """
+        app = get_app_or_none()
+        if app is None or not app._is_running or app._running_in_terminal:
+            self.drain_scrollback()
+            print_formatted_text(fragment, end="", flush=True)
+            return
+        loop = app.loop
+        assert loop is not None  # a running application always has one; the checker cannot see it
+        loop.call_soon_threadsafe(self._enqueue_scrollback, app, fragment)
+
+    def _enqueue_scrollback(self, app: Any, fragment: FormattedText | ANSI) -> None:
+        with self._scrollback_lock:
+            self._scrollback_parts.append(fragment)
+            if self._scrollback_timer is None:
+                self._scrollback_timer = app.loop.call_later(self.SCROLLBACK_BATCH_WINDOW, self._flush_scrollback)
+
+    def _flush_scrollback(self) -> None:
+        with self._scrollback_lock:
+            self._scrollback_timer = None
+            parts = self._scrollback_parts
+            self._scrollback_parts = []
+        if parts:
+            print_formatted_text(*parts, sep="", end="", flush=True)
 
     @contextlib.contextmanager
     def batched(self):
@@ -295,7 +355,7 @@ class UiPrinter:
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(segments))
             return
-        print_formatted_text(FormattedText(segments), end="", flush=True)
+        self._scrollback_print(FormattedText(segments))
 
     @staticmethod
     def indent_segments(segments: list[tuple[str, str]], margin: str) -> list[tuple[str, str]]:
@@ -400,7 +460,7 @@ class UiPrinter:
         if self._batch_parts is not None:
             self._batch_parts.append(ANSI(cleaned))
             return
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        self._scrollback_print(ANSI(cleaned))
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
     # pushes it to the very edge, which reads as a stray label, not text on a rule) and not
@@ -434,7 +494,7 @@ class UiPrinter:
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(fragments))
             return
-        print_formatted_text(FormattedText(fragments), end="", flush=True)
+        self._scrollback_print(FormattedText(fragments))
 
     def emit_worker_rule(self, label: str) -> None:
         """Open or close a delegation with a full-width rule whose yellow label names the worker.
@@ -472,7 +532,7 @@ class UiPrinter:
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(fragments))
             return
-        print_formatted_text(FormattedText(fragments), end="", flush=True)
+        self._scrollback_print(FormattedText(fragments))
         self.emit()
 
     @staticmethod
@@ -517,7 +577,7 @@ class UiPrinter:
         if self._batch_parts is not None:
             self._batch_parts.append(ANSI(cleaned))
             return
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        self._scrollback_print(ANSI(cleaned))
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:

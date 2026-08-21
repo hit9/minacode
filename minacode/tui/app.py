@@ -178,6 +178,7 @@ class TuiApp:
         image_cwd: str = "",
         history: FileHistory | None = None,
         completer: Completer | None = None,
+        on_app_stop: Callable[[], None] | None = None,
     ) -> None:
         self.on_chat_submit = on_chat_submit or (lambda _: None)
         self.on_running_submit = on_running_submit or (lambda _: None)
@@ -188,6 +189,9 @@ class TuiApp:
         self.on_recall = on_recall or (lambda: "")
         self.on_expand_output = on_expand_output or (lambda: None)
         self.status_fragments_fn: Callable[[], StyleAndTextTuples] = status_fragments_fn or list
+        # Called once after the application stops, before the terminal is handed back, so the
+        # owner can flush anything still queued (see UiPrinter.drain_scrollback).
+        self.on_app_stop = on_app_stop or (lambda: None)
         self.activity_fragments_fn: Callable[[], StyleAndTextTuples] = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.quick_hints_fn: Callable[[], tuple[str, ...]] = quick_hints_fn or (lambda: ())
@@ -1317,6 +1321,9 @@ class TuiApp:
                 app.run(pre_run=start)
         finally:
             self.ready.set()
+            # Flush anything still queued in the scrollback batching window before the terminal
+            # is handed back; a timer fired inside the app loop would never get to run again.
+            self.on_app_stop()
             self.app = None
             # If the agent thread is still parked in request_input at exit, unblock it so its frame
             # unwinds instead of leaking a thread. It unblocks as a cancel: a pending approval must
