@@ -99,7 +99,7 @@ def test_attachment_bridge_injects_observation_and_strips_image_refs(tmp_path, m
     assert OBSERVATION_TEXT in user["content"]
     # The block closes with a bare capability fact, not an instruction: a nudge ("ask ViewImage
     # for detail") invites a reflexive second read on every attachment.
-    assert "These images remain available to ViewImage with a question." in user["content"]
+    assert "[hint] These images remain available to ViewImage with a question." in user["content"]
 
     # The wire projection carries no image content block either.
     projected = ModelClient(s).chat_messages(calls["main"][0])

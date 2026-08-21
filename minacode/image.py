@@ -339,8 +339,9 @@ class ImageInputs:
         # "this description is a lossy read I can re-query" is the step a weaker model skips. An
         # imperative or conditional "ask ViewImage..." invites a reflexive second read that doubles
         # the vision cost of every attachment, so state the capability as a bare fact and leave the
-        # decision entirely to the model.
-        lines.append("These images remain available to ViewImage with a question.")
+        # decision entirely to the model. The [hint] tag marks the line as harness-inserted, not
+        # user text.
+        lines.append("[hint] These images remain available to ViewImage with a question.")
         return "\n".join(lines)
 
     def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
