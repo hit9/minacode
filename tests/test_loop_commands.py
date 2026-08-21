@@ -34,7 +34,11 @@ from minacode.cli import CommandLoop
 from minacode.cli.commands import (
     name_command,
     session_label,
+    session_label_fn,
     session_preview,
+    session_rows,
+    session_summary,
+    session_table,
     sessions_command,
     skills_command,
     status,
@@ -584,6 +588,64 @@ def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
     assert len({get_cwidth(row[: row.find("3 rounds")]) for row in labels}) == 1
 
 
+def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_path, monkeypatch):
+    """The picker is exclusive (alternate screen) with a viewport cap, its rows are styled per
+    field, and the preview carries the session's recent messages."""
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.save_snapshot()
+    target = stored_session(tmp_path, "the one we want", name="picked")
+    target.messages.append({"role": "assistant", "content": "the latest answer"})
+    target.save_snapshot()
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.tui = TuiApp()
+    loop.interactive_input = True
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(args=args, kwargs=kwargs) or target.uid)
+
+    assert loop.command("/sessions") == (True, True)
+    assert captured["kwargs"]["exclusive"] is True
+    assert captured["kwargs"]["max_rows"] > 0
+    label_fn = captured["kwargs"]["label_fn"]
+    assert label_fn is not None
+    assert any(style == "class:choice.meta" for style, _text in label_fn(target.uid))
+    assert any(style == "class:choice.live" for style, _text in label_fn(s.uid))
+    preview = captured["kwargs"]["preview_fn"](target.uid)
+    assert "the latest answer" in preview
+
+
+def test_session_summary_tails_the_recent_messages(tmp_path):
+    other = stored_session(tmp_path, "opening")
+    other.messages.append({"role": "user", "content": "one"})
+    other.messages.append({"role": "assistant", "content": "two"})
+    other.messages.append({"role": "assistant", "content": "three"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert session_summary(entry) == ["three", "two", "one"]
+
+
+def test_session_label_fn_matches_the_text_layout(tmp_path):
+    """The styled rows line up exactly like the plain ones: the styled text of every field is the
+    padded table row, and the current marker takes the live colour."""
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.state.round_count = 2
+    s.save_snapshot()
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    entries = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)
+    rows, widths = session_table(loop, entries)
+    label_fn = session_label_fn({entry.uid: row for entry, row in zip(entries, rows)}, widths)
+
+    parts = label_fn(s.uid)
+    assert parts[0] == ("", rows[0][0] + "  ")  # name plain, padded to the column plus the gap
+    assert parts[1][0] == "class:choice.meta"  # age dim
+    assert parts[2][0] == "class:choice.meta"  # rounds dim
+    assert parts[-1] == ("class:choice.live", "current")
+    assert "".join(text for _style, text in parts) == session_rows(loop, entries)[0]
+
+
 def test_name_command_shows_and_sets_the_session_name(tmp_path):
     s = session(tmp_path)
     s.messages.append({"role": "user", "content": "make the divider smoother"})
@@ -905,7 +967,7 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     rendered = []
 
     class Modal:
-        def show_modal(self, fragments_fn, key_fn):
+        def show_modal(self, fragments_fn, key_fn, exclusive=False):
             rendered.extend(fragments_fn())
             return key_fn("enter", "")
 

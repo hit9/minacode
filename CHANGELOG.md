@@ -19,6 +19,10 @@
 - The `/sessions` / `/resume` list now lines up its columns: session name, age, and round count
   are padded to the widest value in each column (measured in terminal cells, so CJK names align
   too) instead of running together on one ragged line.
+- `/sessions` / `/resume` now opens full-screen like the other browsers: the session list scrolls
+  in a viewport and the preview below it shows the session's facts plus its most recent messages,
+  and the terminal restores your transcript when you leave. Rows carry colour -- the name plain,
+  age and round count dimmed, the current session marked in the live colour.
 
 ## 0.29.1 - 2026-08-20
 

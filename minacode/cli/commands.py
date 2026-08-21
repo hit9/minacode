@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import sys
 import time
 from collections.abc import Callable
@@ -55,9 +56,10 @@ from minacode.session import SessionEntry, SessionSnapshotStore
 from minacode.tools import CodeIndex
 
 if TYPE_CHECKING:
+    from prompt_toolkit.formatted_text import StyleAndTextTuples
+
     from minacode.cli import CommandLoop
     from minacode.session import Session
-
 
 # fmt: off
 
@@ -417,16 +419,32 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
     entries = SessionSnapshotStore.list_sessions(loop.session.config.data_dir, loop.session.cwd, all_projects=argument == "all")
     if not entries:
         return "No saved sessions yet."
+    table, widths = session_table(loop, entries, all_projects=argument == "all")
     rows = session_rows(loop, entries, all_projects=argument == "all")
     if loop.tui is None or not loop.interactive_input:
-        width = max(get_cwidth(entry.uid) for entry in entries)
-        return "\n".join(f"{entry.uid}{' ' * (width - get_cwidth(entry.uid))}  {label}" for entry, label in zip(entries, rows))
+        uid_width = max(get_cwidth(entry.uid) for entry in entries)
+        return "\n".join(f"{entry.uid}{' ' * (uid_width - get_cwidth(entry.uid))}  {label}" for entry, label in zip(entries, rows))
     labels = {entry.uid: label for entry, label in zip(entries, rows)}
     title = "Sessions" + (" · all projects" if argument == "all" else "")
-    # The preview renders on every frame, so it reads the list already in hand, never the store.
+    # The preview renders on every frame, so it reads the list already in hand, never the store;
+    # the summaries below are read once, up front, for the same reason.
     by_uid = {entry.uid: entry for entry in entries}
+    summaries = {entry.uid: session_summary(entry) for entry in entries}
+    fields_by_uid = {entry.uid: row for entry, row in zip(entries, table)}
+    height = shutil.get_terminal_size().lines
     chosen = choice_application(
-        loop, title, tuple(entry.uid for entry in entries), labels, loop.session.uid, set(), preview_fn=lambda uid: session_preview(loop, by_uid.get(uid))
+        loop,
+        title,
+        tuple(entry.uid for entry in entries),
+        labels,
+        loop.session.uid,
+        set(),
+        preview_fn=lambda uid: session_preview(loop, by_uid.get(uid), summary=summaries.get(uid)),
+        label_fn=session_label_fn(fields_by_uid, widths),
+        exclusive=True,
+        # A viewport over the list, like the Ctrl-O browser's: the picker fills the terminal, so
+        # beyond this many rows the list scrolls instead of pushing the preview off the screen.
+        max_rows=max(5, min(20, height - 12)),
     )
     if not isinstance(chosen, str) or chosen == loop.session.uid:
         return None
@@ -457,17 +475,22 @@ def session_label(loop: CommandLoop, entry: SessionEntry, *, all_projects: bool 
     return f"{entry.label()}  ·  " + " · ".join(parts)
 
 
+def session_table(loop: CommandLoop, entries: list[SessionEntry], *, all_projects: bool = False) -> tuple[list[list[str]], list[int]]:
+    """Each session's fields plus every column's display width, so the same table can be laid out
+    as plain text or as styled fragments without recomputing the padding."""
+    rows = [_session_fields(loop, entry, all_projects=all_projects) for entry in entries]
+    widths = [0] * max((len(row) for row in rows), default=0)
+    for row in rows:
+        for index, field in enumerate(row):
+            widths[index] = max(widths[index], get_cwidth(field))
+    return rows, widths
+
+
 def session_rows(loop: CommandLoop, entries: list[SessionEntry], *, all_projects: bool = False) -> list[str]:
     """The session list as table rows: every column padded to the widest value in it, so names,
     ages, and round counts line up in the picker instead of drifting with the label lengths.
     Padding is measured in display cells, so CJK names align too."""
-    rows = [_session_fields(loop, entry, all_projects=all_projects) for entry in entries]
-    if not rows:
-        return []
-    widths = [0] * max(len(row) for row in rows)
-    for row in rows:
-        for index, field in enumerate(row):
-            widths[index] = max(widths[index], get_cwidth(field))
+    rows, widths = session_table(loop, entries, all_projects=all_projects)
     lines = []
     for row in rows:
         cells = [field if index == len(row) - 1 else field + " " * max(0, widths[index] - get_cwidth(field)) for index, field in enumerate(row)]
@@ -475,10 +498,78 @@ def session_rows(loop: CommandLoop, entries: list[SessionEntry], *, all_projects
     return lines
 
 
-def session_preview(loop: CommandLoop, entry: SessionEntry | None) -> str:
+def session_label_fn(fields_by_uid: dict[str, list[str]], widths: list[int]) -> Callable[[str], StyleAndTextTuples]:
+    """Style one session row for the picker: the name plain, the age and round count dim, the
+    current session's marker in the live colour. Columns keep the same padding as the text layout."""
+
+    def label_fn(uid: str) -> StyleAndTextTuples:
+        fields = fields_by_uid[uid]
+        parts: StyleAndTextTuples = []
+        for index, field in enumerate(fields):
+            text = field + " " * max(0, widths[index] - get_cwidth(field))
+            if index == 0:
+                style = ""
+            elif field == "current":
+                style = "class:choice.live"
+            else:
+                style = "class:choice.meta"
+            parts.append((style, text + ("  " if index < len(fields) - 1 else "")))
+        return parts
+
+    return label_fn
+
+
+def session_summary(entry: SessionEntry, limit: int = 3) -> list[str]:
+    """The most recent messages' text, read from the tail of the log. A full decode of the session
+    is never needed for a preview, so only the last chunk of the file is parsed; every delta line
+    carries the messages it added, and the last few lines cover the newest messages."""
+    try:
+        size = os.path.getsize(entry.path)
+    except OSError:
+        return []
+    if size <= 0:
+        return []
+    lines: list[str] = []
+    try:
+        with open(entry.path, encoding="utf-8") as file:
+            file.seek(max(0, size - 65536))
+            file.readline()  # drop a first line that may start mid-record
+            for line in file:
+                line = line.strip()
+                if line:
+                    lines.append(line)
+    except OSError:
+        return []
+    picked: list[str] = []
+    for line in reversed(lines):
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        messages = parsed.get("messages")
+        if not isinstance(messages, list):
+            continue
+        for message in reversed(messages):
+            if message.get("role") not in {"user", "assistant"}:
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            picked.append(content)
+            if len(picked) >= limit:
+                break
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def session_preview(loop: CommandLoop, entry: SessionEntry | None, *, summary: list[str] | None = None) -> str:
     if entry is None:
         return ""
-    return "\n".join([f"uid   {entry.uid}", f"start {entry.opening or '(no message)'}", f"where {entry.cwd or '(unknown)'}"])
+    lines = [f"uid   {entry.uid}", f"start {entry.opening or '(no message)'}", f"where {entry.cwd or '(unknown)'}"]
+    for text in summary or []:
+        lines.append("… " + Text.clip_width(text.replace("\n", " "), 80))
+    return "\n".join(lines)
 
 
 def name_command(loop: CommandLoop, args: str) -> str:

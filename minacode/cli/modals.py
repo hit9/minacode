@@ -237,13 +237,16 @@ def choice_application(
     disabled: set[str],
     *,
     preview_fn: Callable[[str], str] | None = None,
+    label_fn: Callable[[str], StyleAndTextTuples] | None = None,
+    exclusive: bool = False,
+    max_rows: int = 0,
 ) -> str | object | None:
-    state = ChoiceViewState(choices, labels, disabled)
+    state = ChoiceViewState(choices, labels, disabled, max_rows=max_rows)
     options = state.enabled()
     state.selected = options.index(current) if current in options else 0
     if loop.tui is None:
         return None
-    result = loop.tui.show_modal(lambda: state.fragments(title, preview_fn), state.handle_key)
+    result = loop.tui.show_modal(lambda: state.fragments(title, preview_fn, label_fn), state.handle_key, exclusive=exclusive)
     if isinstance(result, KeyboardInterrupt):
         raise result
     return result
