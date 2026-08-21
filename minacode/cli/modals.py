@@ -589,6 +589,9 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
                     ),
                 )
             )
+        # A blank line sets the fields apart from the body below the rule, and the body from
+        # the result: three sections instead of one wall of text.
+        lines.append([])
         lines.append(separator(width))
         lines.extend(code_rows(view.text, view.lexer, width, margin) if view.lexer else markdown_rows(view.text, width))
         if view.result.strip():
