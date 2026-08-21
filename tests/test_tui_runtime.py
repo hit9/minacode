@@ -84,8 +84,10 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
     emitted_while_running = []
     history_emitted = threading.Event()
 
-    def print_formatted(value, *args, **kwargs):
-        text = fragment_list_to_text(to_formatted_text(value))
+    def print_formatted(*values, **kwargs):
+        # The batched resume replay arrives as one call with every fragment value as a positional
+        # argument (print_formatted_text accepts *values); scan them all, not just the first.
+        text = "".join(fragment_list_to_text(to_formatted_text(value)) for value in values)
         if "restored answer" in text:
             emitted_while_running.append(command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
             history_emitted.set()
@@ -957,7 +959,7 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     )
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
     command_loop.render_resumed_session()
 
@@ -978,7 +980,7 @@ def test_resume_redraws_only_the_recent_turns_and_says_so(tmp_path, monkeypatch)
     command_loop.session.messages.extend(messages)
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
     command_loop.render_resumed_session()
 
@@ -1010,7 +1012,7 @@ def test_resume_redraw_keeps_tool_pairing_after_truncation(tmp_path, monkeypatch
     command_loop.session.messages.extend(messages)
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
     command_loop.render_resumed_session()
 
@@ -1028,7 +1030,7 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     status_entry = replace(loop_module.COMMAND_LOOKUP["/status"], handler=lambda _loop, _args: "status marker")
     monkeypatch.setattr(loop_module, "COMMAND_LOOKUP", {**loop_module.COMMAND_LOOKUP, "/status": status_entry})
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
     assert command_loop.command("/help") == (True, False)
     assert command_loop.command("/status") == (True, False)

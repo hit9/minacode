@@ -256,6 +256,26 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
+        # Batch mode: while active, every emit appends its styled fragments instead of printing,
+        # so a burst of output (the restored-transcript replay) is printed by a single
+        # print_formatted_text call and flushes once. Under the TUI each call coordinates with the
+        # renderer, so batching turns a hundred of those into one. Only the colored path batches.
+        self._batch_parts: list[FormattedText | ANSI] | None = None
+
+    @contextlib.contextmanager
+    def batched(self):
+        """Collect every emit into one print_formatted_text call and flush once."""
+        if not self.color or self._batch_parts is not None:
+            yield
+            return
+        self._batch_parts = []
+        try:
+            yield
+        finally:
+            parts = self._batch_parts
+            self._batch_parts = None
+            if parts:
+                print_formatted_text(*parts, sep="", end="", flush=True)
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
         """Print one line or log block. `indent` moves plain text into a column; a LogBlock is
@@ -272,6 +292,9 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         if indent:
             segments = self.indent_segments(segments, LogBlock.margin(indent))
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(segments))
+            return
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
     @staticmethod
@@ -374,6 +397,9 @@ class UiPrinter:
             # every line that carries no visible characters.
             lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
             cleaned = "\n".join(lines) + "\n"
+        if self._batch_parts is not None:
+            self._batch_parts.append(ANSI(cleaned))
+            return
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
@@ -405,6 +431,9 @@ class UiPrinter:
             ("fg:default", label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(fragments))
+            return
         print_formatted_text(FormattedText(fragments), end="", flush=True)
 
     def emit_worker_rule(self, label: str) -> None:
@@ -440,6 +469,9 @@ class UiPrinter:
             (Theme.style("status.worker"), label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(fragments))
+            return
         print_formatted_text(FormattedText(fragments), end="", flush=True)
         self.emit()
 
@@ -482,6 +514,9 @@ class UiPrinter:
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        if self._batch_parts is not None:
+            self._batch_parts.append(ANSI(cleaned))
+            return
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod

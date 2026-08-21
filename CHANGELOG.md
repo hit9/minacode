@@ -8,6 +8,7 @@
   cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still closes it.
 - Resuming a long session no longer replays the whole transcript onto the terminal: only the
   twenty most recent turns are redrawn, with a line noting that the earlier ones stay in context.
+  The replay is printed in a single flush, so it appears at once instead of line by line.
 - The breathing spark on a streaming response and a running command now swaps between the
   fine star and a heavier one at the darkest point of its breath (so the change is barely
   visible) and is bold throughout: bigger and still continuous. A blank row now separates the
