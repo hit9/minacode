@@ -24,6 +24,9 @@
   for exit 0, a red ✗ for any other exit, and a blank cell for entries with no exit code (a
   script, an order). The list is mostly bash, so the failures become scannable by color, and it
   now lists every stored result (up to the session's 400) instead of the latest fifty.
+- Tool lines and reply paragraphs print into a scroll region pinned above the divider instead of
+  suspending the whole application, so the divider and input row stay on screen while content
+  flows above them. The blinking on every tool call is gone.
 - A divider label wider than the default rule (e.g. the worker's `[worker]` + status + elapsed
   + rate + queued line) widens the rule so both sides keep at least twelve dashes and the label
   stays whole, instead of squeezing the comet's track to two or three dashes; on a narrow

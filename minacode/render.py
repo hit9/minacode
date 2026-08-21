@@ -16,6 +16,8 @@ from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import get_app_or_none
 from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples
 from prompt_toolkit.output import create_output
+from prompt_toolkit.renderer import print_formatted_text as renderer_print_formatted_text
+from prompt_toolkit.styles import default_pygments_style, default_ui_style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
@@ -330,7 +332,65 @@ class UiPrinter:
             parts = self._scrollback_parts
             self._scrollback_parts = []
         if parts:
+            self._print_above(parts)
+
+    # The merged style print_formatted_text uses by default, reused so scroll-region prints
+    # resolve the same ansi*/fg: hex styles as the suspend path did.
+    _MERGED_STYLE: ClassVar[Any] = None
+
+    @classmethod
+    def _scrollback_style(cls) -> Any:
+        if cls._MERGED_STYLE is None:
+            cls._MERGED_STYLE = merge_styles([default_ui_style(), default_pygments_style()])
+        return cls._MERGED_STYLE
+
+    def _print_above(self, parts: list[FormattedText | ANSI]) -> None:
+        """Write scrollback lines above the live application without suspending it.
+
+        print_formatted_text suspends the application: renderer.erase() wipes the divider and
+        the input row off screen, the lines are written into the void, and the whole app is
+        repainted -- that wipe/repaint gap is the blink. Instead, the rows above the app are
+        pinned as the terminal's scroll region (DECSTBM), the lines are written into it and
+        wrap and scroll only there, and the app region is never erased or moved: the divider
+        stays on screen like a fixed footer under scrolling content. The app is then repainted
+        in place; nothing changed, so nothing visibly moves.
+
+        Runs on the application loop (from `_flush_scrollback`), so it may touch the output and
+        the renderer directly. Falls back to print_formatted_text when there is no live app to
+        pin a region under (stopped, already suspended, full-screen editor, or an app region
+        that fills the terminal).
+        """
+        app = get_app_or_none()
+        if app is None or not app._is_running or app._running_in_terminal:
             print_formatted_text(*parts, sep="", end="", flush=True)
+            return
+        renderer = app.renderer
+        last = renderer._last_screen
+        if renderer.full_screen or last is None:
+            print_formatted_text(*parts, sep="", end="", flush=True)
+            return
+        size = app.output.get_size()
+        top = size.rows - last.height  # 1-based first row of the app region
+        if top < 2:
+            print_formatted_text(*parts, sep="", end="", flush=True)
+            return
+        output = app.output
+        # Where the renderer believes the cursor is. The app region is never touched by the
+        # scroll-region print, so restoring the real cursor there keeps the next diff repaint
+        # aligned: its relative moves start from the same place the renderer thinks they do.
+        # (Reset-and-redraw would misplace the app by the print's row offset, which paints over
+        # the scrollback -- the blink's worse cousin.)
+        restore = renderer._cursor_pos
+        try:
+            output.write_raw(f"\x1b[1;{top - 1}r")  # the rows above the app become the scroll region
+            output.cursor_goto(top - 2, 0)
+            for part in parts:
+                renderer_print_formatted_text(output, part, self._scrollback_style())
+        finally:
+            output.write_raw("\x1b[r")  # back to a full-screen scroll region
+            output.cursor_goto(restore.y, restore.x)  # the real cursor rejoins the renderer's belief
+            output.flush()
+            app._redraw()
 
     @contextlib.contextmanager
     def batched(self):
