@@ -292,9 +292,9 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
 
 
 def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
-    """The preview has no heading: the divider under it already names the phase and times it, so
-    a `thinking` line here would print the same word twice on one screen. The spark caps the rail
-    instead, saying the region is live without words.
+    """The spark's row belongs to the spark: while the model thinks a gray `thinking` sits beside
+    it, and the streamed text starts on its own rail row below, so the first line never races for
+    whatever room the spark leaves -- with or without the word, the layout is the same.
 
     The rows carry CONTINUE and nothing carries BRANCH -- `├` is a T-junction, and there is no
     line above the block for one to join. Nothing closes it either: the stream is still arriving,
@@ -308,11 +308,11 @@ def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
 
     rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
     assert any(
-        lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + glyph + "weighing the two paths" for glyph in LiveSpark.GLYPHS
+        lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + glyph + "thinking" for glyph in LiveSpark.GLYPHS
     )  # either star may lead the preview: no anchor means the wall clock picks the phase
     assert lines[1] == ""  # the blank row lifts the spark off the rail below it
-    assert lines[2] == rail + "the second option is cleaner"
-    assert "thinking" not in "".join(lines)  # named on the divider, not repeated here
+    assert lines[2] == rail + "weighing the two paths"
+    assert lines[3] == rail + "the second option is cleaner"
     assert len(LiveSpark.GLYPH) == len(LogBlock.RAIL)  # so the spark sits in the rail's column
     assert all(len(glyph) == len(LogBlock.RAIL) for glyph in LiveSpark.GLYPHS)  # and its swapped partner does too
     assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
@@ -326,16 +326,18 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
-    # The phase is named once, on the divider. The preview carries only the text it is previewing.
+    # The phase word rides beside the spark while the model thinks, and leaves when it answers;
+    # the preview carries only the text it is previewing otherwise.
     loop.model_stream_output("reasoning", "checking the request")
     reasoning = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "checking the request" in reasoning
-    assert "thinking" not in reasoning
+    assert "thinking" in reasoning
     assert "thinking" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("output", "answering now")
     output = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "answering now" in output
+    assert "thinking" not in output  # the word names thinking only, not the answering stream
     assert "responding" not in output
     assert "checking the request" not in output
     assert "responding" in "".join(text for _style, text in loop.view.queue_divider_fragments())
