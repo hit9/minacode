@@ -15,13 +15,15 @@
 
 - Worker replies printed between tool calls now render as markdown, like the worker's final
   report. Tool lines stay as the log tree.
-- The live stream preview now styles inline markdown in the streaming text: `**bold**`,
-  `` `code` ``, and `*italic*` render styled once their closing marker arrives, and plain text
-  stays gray. Block constructs and unclosed markers stay literal, so a stream mid-token never
+- The live stream preview now marks inline markdown in the streaming text: `**bold**`,
+  `` `code` ``, and `*italic*` render with weight and underline once their closing marker
+  arrives. The marks stay in the preview's own gray tones, so the region keeps its all-gray
+  look; block constructs and unclosed markers stay literal, so a stream mid-token never
   flickers.
-- A divider label wider than the rule (e.g. the worker's `[worker]` + status + elapsed + rate +
-  queued line) is clipped instead of squeezing the comet's dash track to two or three dashes,
-  and the comet slows down on a short track so it never reads as frantic.
+- A divider label wider than the default rule (e.g. the worker's `[worker]` + status + elapsed
+  + rate + queued line) widens the rule so both sides keep at least twelve dashes and the label
+  stays whole, instead of squeezing the comet's track to two or three dashes; on a narrow
+  terminal the trail shrinks and the comet slows down so it never reads as frantic.
 
 ## 0.30.0 - 2026-08-21
 

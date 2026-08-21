@@ -345,18 +345,19 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     loop.model_stream_output("correcting malformed tool call 1/5 · Bash", "")
     assert loop.view.model_stream_fragments() == []
     divider = "".join(text for _style, text in loop.view.queue_divider_fragments())
-    assert "correcting malformed tool call" in divider  # the phase still names the correction
-    assert "..." in divider  # a label wider than the divider is clipped, not dropped
+    assert "correcting malformed tool call 1/5 · Bash" in divider  # the phase stays whole
 
     loop.model_stream_output("", "")
     assert loop.view.model_stream_fragments() == []
     assert "working" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
 
-def test_model_stream_preview_styles_inline_markdown(tmp_path):
+def test_model_stream_preview_styles_inline_markdown(tmp_path, monkeypatch):
     """Closed inline markdown tokens in the live preview render with their own styles -- bold,
-    code, italic -- while plain text stays gray and an unclosed marker stays literal, so a
-    growing stream never toggles a token's style frame to frame."""
+    code, italic -- marked in the preview's own gray tones (no color), while plain text stays
+    gray and an unclosed marker stays literal, so a growing stream never toggles a token's
+    style frame to frame."""
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 20)))
     config = Config()
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
@@ -364,15 +365,16 @@ def test_model_stream_preview_styles_inline_markdown(tmp_path):
     loop.model_stream_output("reasoning", "**bold** `code` *italic* and **unclosed")
 
     styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
-    assert ("bold", "bold") in styled
-    assert ("code", "ansibrightcyan") in styled
-    assert ("italic", "italic") in styled
+    assert ("bold", "ansibrightblack bold") in styled
+    assert ("code", "ansibrightblack underline") in styled
+    assert ("italic", "ansibrightblack italic") in styled
     assert (" and **unclosed", "ansibrightblack") in styled  # no closing marker: the tail stays literal
 
 
-def test_model_stream_preview_keeps_malformed_star_runs_literal(tmp_path):
+def test_model_stream_preview_keeps_malformed_star_runs_literal(tmp_path, monkeypatch):
     """A lone star can never be borrowed from a double-star run: `**a*` and `*a**` are unclosed
     markers, not italic, and stay gray instead of mis-rendering as `*a*`."""
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 20)))
     config = Config()
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
@@ -381,15 +383,16 @@ def test_model_stream_preview_keeps_malformed_star_runs_literal(tmp_path):
 
     styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
     assert ("**a* *a** **** ", "ansibrightblack") in styled  # unclosed and empty star runs stay literal
-    assert ("a", "bold") in styled  # the closed bold inside the last token still renders
+    assert ("a", "ansibrightblack bold") in styled  # the closed bold inside the last token still renders
     assert ("b**", "ansibrightblack") in styled  # the trailing unclosed run stays literal
-    assert not any(text == "a" and style == "italic" for text, style in styled)  # no italic borrowed from `**`
+    assert not any(text == "a" and "italic" in style for text, style in styled)  # no italic borrowed from `**`
 
 
-def test_sweep_divider_clips_long_labels_to_keep_the_comet_track(tmp_path):
-    """A label that would fill the width (the worker's `[worker]` + status + elapsed + rate +
-    queued) is clipped so the trail keeps enough dashes for the comet to read as motion instead
-    of bouncing across two or three dashes at the frame rate."""
+def test_sweep_divider_widens_for_long_labels_and_keeps_the_track(tmp_path, monkeypatch):
+    """A label that would fill the default rule is accommodated by widening the rule instead of
+    being clipped: both sides keep at least MIN_TRAIL dashes (up to the terminal width) and the
+    label text stays whole, so the comet reads as motion rather than a frantic bounce."""
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 20)))
     config = Config()
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
@@ -398,8 +401,8 @@ def test_sweep_divider_clips_long_labels_to_keep_the_comet_track(tmp_path):
     long_label = "[worker] thinking (5m07s · ↓ 75 tok/s) [ 1 queued ]"
     fragments = view.sweep_divider_fragments(long_label)
     dashes = sum(1 for _style, text in fragments if text == "-")
-    assert dashes >= 3 + 6  # lead + the minimum trail
-    assert any(".." in text for _style, text in fragments)  # the clip marked the cut
+    assert dashes >= 3 + 12  # lead + the minimum trail
+    assert any(text == long_label for _style, text in fragments)  # never clipped
 
     short_label = "working"
     plain = view.sweep_divider_fragments(short_label)

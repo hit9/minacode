@@ -306,23 +306,22 @@ class View:
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
         lead = 3
-        # A comet needs a track long enough to read as motion: a label that fills the width (the
-        # worker's `[worker]` + status + elapsed + rate + queued) squeezes the trail to a few
-        # dashes, and the head bouncing across them at the frame rate reads as frantic. Clip the
-        # label to whatever leaves MIN_TRAIL dashes on the trail side.
-        min_trail = 6
-        avail = max(1, width - lead - min_trail - 2 - prefix_len)
-        if get_cwidth(label) > avail:
-            label = Text.clip_width(label, avail)
+        # A comet needs a track long enough to read as motion. When the label is long (the
+        # worker's `[worker]` + status + elapsed + rate + queued), widen the rule so both sides
+        # keep at least MIN_TRAIL dashes instead of clipping the label; the terminal width is
+        # the ceiling, and the trail shrinks only when even that cannot fit.
+        min_trail = 12
         body_len = prefix_len + get_cwidth(label) + 2  # prefix + " label "
-        trail = max(min_trail, width - lead - body_len)
+        width = min(max(cols - 2, 20), max(width, lead + body_len + min_trail))
+        trail = max(3, width - lead - body_len)
         dash_count = lead + trail
         # The comet head bounces over the horizontal rule only. The label stays stable and readable
         # while the glow appears to pass through the dash track on either side.
         span = max(1, dash_count - 1)
-        # A short track (a clipped long label) must not make the head bounce faster than the eye
-        # can follow: hold each round trip to at least a second by lowering the sweep rate as the
-        # span shrinks; normal-length tracks keep the full frame-per-cell rate.
+        # A short track (a narrow terminal squeezing the trail) must not make the head bounce
+        # faster than the eye can follow: hold each round trip to at least a second by lowering
+        # the sweep rate as the span shrinks; normal-length tracks keep the full frame-per-cell
+        # rate.
         sweep = min(self.QUEUE_SWEEP_CELLS_PER_SEC, 2 * span / 1.0)
         phase = time.monotonic() * sweep % (2 * span)
         head = phase if phase <= span else 2 * span - phase
@@ -460,8 +459,9 @@ class View:
     @classmethod
     def _stream_inline_fragments(cls, row: str) -> StyleAndTextTuples:
         """One preview row as fragments: plain gray text with closed inline markdown tokens
-        styled. A marker without its closing partner stays literal, so a stream that has not
-        finished a token never toggles its style from frame to frame."""
+        marked in the same gray tones (weight and underline, no color), so the region stays
+        uniformly gray. A marker without its closing partner stays literal, so a stream that has
+        not finished a token never toggles its style from frame to frame."""
         fragments: StyleAndTextTuples = []
         cursor = 0
         for match in cls.STREAM_INLINE_RE.finditer(row):
@@ -469,11 +469,11 @@ class View:
                 fragments.append(("ansibrightblack", row[cursor : match.start()]))
             token = match.group(1)
             if token.startswith("**"):
-                fragments.append(("bold", token[2:-2]))
+                fragments.append(("ansibrightblack bold", token[2:-2]))
             elif token.startswith("`"):
-                fragments.append(("ansibrightcyan", token[1:-1]))
+                fragments.append(("ansibrightblack underline", token[1:-1]))
             else:
-                fragments.append(("italic", token[1:-1]))
+                fragments.append(("ansibrightblack italic", token[1:-1]))
             cursor = match.end()
         if cursor < len(row):
             fragments.append(("ansibrightblack", row[cursor:]))
