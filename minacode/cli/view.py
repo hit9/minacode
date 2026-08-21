@@ -416,8 +416,9 @@ class View:
                 # first chunk of each request and clears between them, so every response opens the
                 # spark at its crest instead of wherever the wall clock happened to be.
                 fragments.extend([(LiveSpark.style(self.loop.session.state.stream_started_at), spark), ("ansibrightblack", row), ("", "\n")])
-                if len(rows) > 1:
-                    # A blank row keeps the spark from sitting directly on the rail below it.
+                if rows:
+                    # A blank row keeps the spark from sitting directly on the rail below it; the
+                    # running-command frame draws the same gap whenever it has output.
                     fragments.extend([("", "\n")])
         return fragments
 

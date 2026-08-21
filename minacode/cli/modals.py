@@ -388,8 +388,8 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     under the list was never the whole answer; Delegate is here because judging the answer means
     reading the order again, and the transcript kept only the `Delegate send` line.
 
-    A detail's Esc (or q) returns to the list with the cursor where it was; Ctrl-O closes the
-    whole browser."""
+    A detail's Esc (or q, or Ctrl-C) returns to the list with the cursor where it was; Ctrl-O
+    closes the whole browser."""
     if loop.tui is None:
         return
     # Built once, on the way in: a record with nothing to show is also a record with no view, so
@@ -414,7 +414,7 @@ def tool_output_viewer(loop: CommandLoop) -> None:
         picked, state = _tool_output_list(loop, entries, state)
         if picked is None:
             return
-        # Esc or q in a detail goes back to the list; Ctrl-O closes the whole browser.
+        # Esc, q, or Ctrl-C in a detail goes back to the list; Ctrl-O closes the whole browser.
         if approval_text_viewer(loop, picked, back_on_escape=True) is not _TOOL_OUTPUT_BACK:
             return
 
@@ -528,8 +528,8 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
     anything. The same viewer is what the Ctrl-O browser opens after the fact, which is how a
     script is read under yolo, where no prompt ever stops to offer `v`.
 
-    With `back_on_escape`, Esc or q returns `_TOOL_OUTPUT_BACK` instead of closing, so the caller
-    can reopen the list; Ctrl-O still closes."""
+    With `back_on_escape`, Esc, q, or Ctrl-C returns `_TOOL_OUTPUT_BACK` instead of closing, so
+    the caller can reopen the list; Ctrl-O still closes."""
     if loop.tui is None:
         return
     margin = "  "
@@ -633,7 +633,7 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
 
     def handle_key(key: str, data: str) -> Any:
         nonlocal scroll
-        if back_on_escape and key in {"q", "escape"}:
+        if back_on_escape and key in {"q", "escape", "c-c"}:
             return _TOOL_OUTPUT_BACK
         if key in {"q", "c-o", "escape"}:
             return None

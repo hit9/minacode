@@ -4,8 +4,9 @@
 
 ### Fixed
 
-- In the Ctrl-O output browser, `Esc` or `q` inside a detail now returns to the list with the
-  cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still closes it.
+- In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
+  with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
+  closes it.
 - Resuming a long session no longer replays the whole transcript onto the terminal: only the
   twenty most recent turns are redrawn, with a line noting that the earlier ones stay in context.
   The replay is printed in a single flush, so it appears at once instead of line by line. In the

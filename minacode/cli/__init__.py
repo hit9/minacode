@@ -516,6 +516,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                     for message in turn.messages:
                         tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results, dry_run=True)
                 self.emit(f"… {hidden} earlier turn{'s' if hidden > 1 else ''} not redrawn (still in context)")
+                # The notice is its own paragraph, like the blank line between turns.
+                self.emit("")
                 turns = turns[hidden:]
             for i, turn in enumerate(turns):
                 if i:
