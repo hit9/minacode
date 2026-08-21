@@ -226,14 +226,16 @@ class Agent:
         return {"role": "user", "content": stored.display_text() + "\n\n" + content}
 
     def _observe_queued_input(self, item: QueuedInput) -> None:
-        """Turn one queued input's images into a text observation in place, so a mid-turn image
-        follow-up reads the same way as an opening attachment.
+        """Turn one queued input's images into a text observation for the vision bridge, so a
+        mid-turn image follow-up reads the same way as an opening attachment.
 
-        The images stay stored (and retained) for ViewImage follow-ups; clearing item.images makes
-        the transformation idempotent across request retries inside the claim/acknowledge
-        transaction, and item.message() then yields the plain-text form at both projection sites
-        (request and transcript). Mentions are resolved by the caller before this runs, so the
-        observation text is never scanned for @-references."""
+        The observation is stored on `item.observation`, not written into `item.text`: the text
+        stays the typed original, so the flush echo never prints model-facing injection text, and
+        item.message() joins the two at both projection sites (request and transcript). The images
+        stay stored (and retained) for ViewImage follow-ups; clearing item.images makes the
+        transformation idempotent across request retries inside the claim/acknowledge
+        transaction. Mentions are resolved by the caller before this runs, so the observation
+        text is never scanned for @-references."""
 
         if not item.images or not self.session.images.bridging():
             return
@@ -245,7 +247,7 @@ class Agent:
         except ModelError as error:
             raise ModelError(f"[vision] observation failed on `{entry}`: {error}") from error
         self.session.images.retain(images)
-        item.text = item.text + "\n\n" + self.session.images.attachment_observation_content(images, f"{entry}/{provider.model}", observation)
+        item.observation = self.session.images.attachment_observation_content(images, f"{entry}/{provider.model}", observation)
         item.images = ()
 
     def correct_textual_tool_calls(
@@ -505,6 +507,8 @@ class Agent:
     ) -> None:
         if not pending:
             return
+        # The typed original: the echo is for the human's screen; the observation joins only in
+        # message()'s projection below.
         texts = [item.text for item in pending]
         # Committed with the marker the provider was sent, not the bare text: dropping it here would
         # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.

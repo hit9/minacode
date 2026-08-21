@@ -313,6 +313,50 @@ def test_queued_observation_runs_once_across_request_retries(tmp_path, monkeypat
     assert first.pending == second.pending
 
 
+def test_queued_flush_echoes_the_typed_text_not_the_polished_message(tmp_path, monkeypatch):
+    s = session(tmp_path, image_input="off")
+    shot = image_file(tmp_path / "shot.png")
+    agent, _calls = bridged_agent(s, monkeypatch)
+
+    s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
+    typed = s.pending_user_inputs[0].text  # the queue's own form; the bridge must not rewrite it
+    turn = [{"role": "user", "content": "continue"}]
+    transcript = [agent.transcript_message(turn[0])]
+    request = agent.prepare_request(turn)
+    flushed = []
+    agent.on_queue_flush = flushed.append
+
+    agent.accept_pending_inputs(turn, transcript, request.pending, request.turn_messages)
+
+    # The echo is the human's typed follow-up in its queue form; the bridge's observation is
+    # model-facing and the standalone vision log line already covers it on screen.
+    assert flushed == [[typed]]
+    assert ATTACHMENT_VISION_OBSERVATION_PREFIX not in flushed[0][0]
+    # What the model saw is still the polished message.
+    assert any(OBSERVATION_TEXT in str(message.get("content")) for message in turn)
+
+
+def test_queued_observation_survives_snapshot_round_trip(tmp_path, monkeypatch):
+    s = session(tmp_path, image_input="off")
+    shot = image_file(tmp_path / "shot.png")
+    agent, _calls = bridged_agent(s, monkeypatch)
+
+    s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
+    turn = [{"role": "user", "content": "continue"}]
+    request = agent.prepare_request(turn)  # the observation runs here, before the flush
+    item = request.pending[0]
+    assert item.observation and not item.images
+
+    s.save_snapshot()
+    restored = Session.load_snapshot(s.uid, config=s.config)
+    [restored_item] = restored.pending_user_inputs
+    assert restored_item.text == item.text
+    assert restored_item.observation == item.observation
+    # The projection still joins the observation after the round trip.
+    assert restored_item.message() == item.message()
+    assert OBSERVATION_TEXT in restored_item.message()["content"]
+
+
 def test_enqueue_image_without_vision_still_refuses(tmp_path):
     s = session(tmp_path, image_input="off", vision=False)
     shot = image_file(tmp_path / "shot.png")
@@ -358,7 +402,7 @@ def test_bridged_view_image_logs_bridge_as_a_finish_child_under_the_call_root(tm
     assert root.label == "ViewImage"
     children = block.items[1]
     assert isinstance(children, LogBlock)
-    assert children.items[0] == LogLine("described by", "v/vision-model", LogRole.META, LogEdge.BRANCH)
+    assert children.items[0] == LogLine("described by", "v/vision-model", LogRole.TOOL, LogEdge.BRANCH)
     assert children.items[1].label == "stored"
     assert children.items[1].text.startswith("tr.")
     assert children.items[1].edge == LogEdge.END

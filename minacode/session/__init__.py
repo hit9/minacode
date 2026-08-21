@@ -323,14 +323,19 @@ class QueuedInput:
     images: tuple[ImageRef, ...] = ()
     draft: str = ""
     inflight: bool = False
+    # The vision bridge's observation text, stored separately so `text` always stays the typed
+    # original: the screen echo shows it verbatim, and only message()'s projection joins the two,
+    # so the human-facing echo and the model-facing message can never mix.
+    observation: str = ""
 
     def to_json(self) -> str | Json:
-        if not self.images:
+        if not self.images and not self.observation:
             return self.text
         return {
             "text": self.text,
             "draft": self.draft,
             IMAGE_REFS_KEY: [image.to_json() for image in self.images],
+            **({"observation": self.observation} if self.observation else {}),
         }
 
     @classmethod
@@ -343,17 +348,19 @@ class QueuedInput:
         raw_images = value.get(IMAGE_REFS_KEY)
         images = tuple(image for raw in raw_images if (image := ImageRef.from_json(raw)) is not None) if isinstance(raw_images, list) else ()
         draft = str(value.get("draft") or text)
+        observation = str(value.get("observation") or "")
         if not text.strip():
             return None
         if draft.count("\ufffc") != len(images):
-            return cls(text)
-        return cls(text, images, draft)
+            return cls(text, observation=observation)
+        return cls(text, images, draft, observation=observation)
 
     def user_input(self) -> UserInput:
         return UserInput(self.draft or self.text, self.images)
 
     def message(self, prefix: str = "") -> Json:
-        message: Json = {"role": "user", "content": prefix + self.text}
+        content = prefix + self.text + ("\n\n" + self.observation if self.observation else "")
+        message: Json = {"role": "user", "content": content}
         if self.images:
             message[IMAGE_REFS_KEY] = [image.to_json() for image in self.images]
         return message
