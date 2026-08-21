@@ -13,6 +13,7 @@ import shlex
 import shutil
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -52,7 +53,7 @@ from minacode.config import (
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED
 from minacode.providers.compat import builtin_tools_issue
 from minacode.render import markdown_table, progress_bar
-from minacode.session import SessionEntry, SessionSnapshotStore
+from minacode.session import SessionEntry, SessionSnapshotCodec, SessionSnapshotStore
 from minacode.tools import CodeIndex
 
 if TYPE_CHECKING:
@@ -426,12 +427,23 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
         return "\n".join(f"{entry.uid}{' ' * (uid_width - get_cwidth(entry.uid))}  {label}" for entry, label in zip(entries, rows))
     labels = {entry.uid: label for entry, label in zip(entries, rows)}
     title = "Sessions" + (" · all projects" if argument == "all" else "")
-    # The preview renders on every frame, so it reads the list already in hand, never the store;
-    # the summaries below are read once, up front, for the same reason.
+    # The preview renders on every frame, so it reads the list already in hand, never the store.
+    # Each session's summary is read lazily the first time the cursor lands on it and cached, so
+    # opening the picker costs nothing and a huge log is only read for sessions you actually look
+    # at.
     by_uid = {entry.uid: entry for entry in entries}
-    summaries = {entry.uid: session_summary(entry) for entry in entries}
     fields_by_uid = {entry.uid: row for entry, row in zip(entries, table)}
     height = shutil.get_terminal_size().lines
+    summaries: dict[str, list[tuple[str, str]]] = {}
+
+    def preview_fn(uid: str) -> StyleAndTextTuples:
+        entry = by_uid.get(uid)
+        if entry is None:
+            return []
+        if uid not in summaries:
+            summaries[uid] = session_summary(entry)
+        return session_preview(loop, entry, summary=summaries[uid])
+
     chosen = choice_application(
         loop,
         title,
@@ -439,7 +451,7 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
         labels,
         loop.session.uid,
         set(),
-        preview_fn=lambda uid: session_preview(loop, by_uid.get(uid), summary=summaries.get(uid)),
+        preview_fn=preview_fn,
         label_fn=session_label_fn(fields_by_uid, widths),
         exclusive=True,
         # A viewport over the list, like the Ctrl-O browser's: the picker fills the terminal, so
@@ -519,32 +531,39 @@ def session_label_fn(fields_by_uid: dict[str, list[str]], widths: list[int]) -> 
     return label_fn
 
 
-def session_summary(entry: SessionEntry, limit: int = 3) -> list[str]:
-    """The most recent messages' text, read from the tail of the log. A full decode of the session
-    is never needed for a preview, so only the last chunk of the file is parsed; every delta line
-    carries the messages it added, and the last few lines cover the newest messages."""
+# The preview starts from a small tail window and widens it geometrically until it has enough
+# text or hits the budget: most sessions are fully covered by the first small read, and only a
+# log whose newest turns are megabytes of tool output costs the bigger reads.
+TAIL_START = 64 * 1024
+TAIL_BUDGET = 8 * 1024 * 1024
+
+
+def _summary_from_tail(path: str, size: int, window: int, limit: int) -> tuple[list[tuple[str, str]], Counter[str]]:
+    """Parse the log's last `window` bytes into text messages and tool counts. The window may start
+    mid-record or inside a multi-byte character; the binary read and the dropped first slice make
+    that harmless."""
+    start = max(0, size - window)
     try:
-        size = os.path.getsize(entry.path)
+        with open(path, "rb") as file:
+            file.seek(start)
+            chunk = file.read()
     except OSError:
-        return []
-    if size <= 0:
-        return []
-    lines: list[str] = []
-    try:
-        with open(entry.path, encoding="utf-8") as file:
-            file.seek(max(0, size - 65536))
-            file.readline()  # drop a first line that may start mid-record
-            for line in file:
-                line = line.strip()
-                if line:
-                    lines.append(line)
-    except OSError:
-        return []
-    picked: list[str] = []
+        return [], Counter()
+    lines = chunk.split(b"\n")
+    if not lines:
+        return [], Counter()
+    # The first slice may start mid-record (the seek point, or a line cut by it); the rest are
+    # whole JSON lines.
+    lines = lines[1:]
+    picked: list[tuple[str, str]] = []
+    tool_counts: Counter[str] = Counter()
     for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
         try:
-            parsed = json.loads(line)
-        except ValueError:
+            parsed = json.loads(line.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
             continue
         messages = parsed.get("messages")
         if not isinstance(messages, list):
@@ -552,24 +571,80 @@ def session_summary(entry: SessionEntry, limit: int = 3) -> list[str]:
         for message in reversed(messages):
             if message.get("role") not in {"user", "assistant"}:
                 continue
-            content = message.get("content")
-            if not isinstance(content, str) or not content:
+            if SessionSnapshotCodec.is_internal_message(message):
                 continue
-            picked.append(content)
-            if len(picked) >= limit:
-                break
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                picked.append((str(message.get("role")), content))
+                if len(picked) >= limit:
+                    break
+            elif message.get("role") == "assistant":
+                # A turn that only ran tools has no text; count its tools and let one merged line
+                # summarise them, without crowding out the conversation.
+                calls = message.get("tool_calls")
+                if isinstance(calls, list):
+                    for call in calls:
+                        if isinstance(call, dict):
+                            name = str(call.get("function", {}).get("name") or "")
+                            if name:
+                                tool_counts[name] += 1
         if len(picked) >= limit:
             break
+    return picked, tool_counts
+
+
+def session_summary(entry: SessionEntry, limit: int = 5) -> list[tuple[str, str]]:
+    """The most recent messages as `(role, text)` pairs, newest first, read from the tail of the
+    log. A full decode of the session is never needed for a preview; the tail window starts small
+    and widens until it holds enough text or hits `TAIL_BUDGET`, so a tool-heavy log whose newest
+    turns run to megabytes still yields the conversation. A line that does not parse is skipped.
+    Text takes the preview: tool-only turns collapse into a single counted line (role `"tool"`)
+    so a tool-heavy session stays identifiable instead of reading as a wall of names."""
+    try:
+        size = os.path.getsize(entry.path)
+    except OSError:
+        return []
+    if size <= 0:
+        return []
+    window = min(size, TAIL_START)
+    while True:
+        picked, tool_counts = _summary_from_tail(entry.path, size, window, limit)
+        if len(picked) >= limit or window >= size or window >= TAIL_BUDGET:
+            break
+        window = min(TAIL_BUDGET, window * 4)
+    if len(picked) < limit and tool_counts:
+        tools = ", ".join(name if count == 1 else f"{name} ×{count}" for name, count in tool_counts.most_common())
+        picked.append(("tool", "→ " + tools))
     return picked
 
 
-def session_preview(loop: CommandLoop, entry: SessionEntry | None, *, summary: list[str] | None = None) -> str:
-    if entry is None:
-        return ""
-    lines = [f"uid   {entry.uid}", f"start {entry.opening or '(no message)'}", f"where {entry.cwd or '(unknown)'}"]
-    for text in summary or []:
-        lines.append("… " + Text.clip_width(text.replace("\n", " "), 80))
-    return "\n".join(lines)
+def session_preview(loop: CommandLoop, entry: SessionEntry | None, *, summary: list[tuple[str, str]] | None = None) -> StyleAndTextTuples:
+    """The picker's preview as fragments, laid out like the transcript itself: a user message is
+    its bullet plus the same warm tone the transcript uses, an assistant reply sits indented in
+    the default colour, and a collapsed tool line is dimmed. Newest exchange at the bottom, the
+    way a conversation reads."""
+    if not summary:
+        return []
+    width = max(40, shutil.get_terminal_size((120, 24)).columns - 4)
+    messages = list(summary)
+    # A tool-heavy session's newest turns are almost all assistant text; without a user message
+    # the preview gives no hint of what the conversation was about. Anchor it with the opening
+    # question when the recent window is all replies.
+    if not any(role == "user" for role, _text in messages) and entry is not None and entry.opening:
+        messages.append(("user", entry.opening))
+    parts: StyleAndTextTuples = []
+    for role, text in reversed(messages):
+        line = Text.clip_width(text.replace("\n", " "), width)
+        if role == "user":
+            parts.append(("", "\n"))
+            parts.append(("class:prompt", "• "))
+            parts.append(("class:choice.user", line))
+            parts.append(("", "\n"))
+        elif role == "tool":
+            parts.append(("class:choice.meta", "  " + line + "\n"))
+        else:
+            parts.append(("", "  " + line + "\n"))
+    return parts
 
 
 def name_command(loop: CommandLoop, args: str) -> str:

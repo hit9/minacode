@@ -477,6 +477,8 @@ class View:
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
+                # The preview's user messages take the same tone as the transcript's `• ` lines.
+                "choice.user": Theme.style("user.log"),
                 # The Ctrl-O browser's rows, coloured as the transcript colours the same call: the
                 # tr.N key dim, the tool name in the tool green, the arguments plain. A row that is
                 # still running takes the working divider's magenta instead of the dim key.

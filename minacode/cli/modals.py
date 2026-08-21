@@ -236,7 +236,7 @@ def choice_application(
     current: str,
     disabled: set[str],
     *,
-    preview_fn: Callable[[str], str] | None = None,
+    preview_fn: Callable[[str], StyleAndTextTuples | str] | None = None,
     label_fn: Callable[[str], StyleAndTextTuples] | None = None,
     exclusive: bool = False,
     max_rows: int = 0,

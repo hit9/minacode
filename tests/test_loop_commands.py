@@ -52,7 +52,7 @@ from minacode.engine import Agent
 from minacode.prompts import SYSTEM_PROMPT
 from minacode.render import StatusBar, UiPrinter
 from minacode.runner import ToolRunner
-from minacode.session import Session, SessionSnapshotStore, ToolResultRecord
+from minacode.session import Session, SessionEntry, SessionSnapshotStore, ToolResultRecord
 from minacode.skill import SkillLibrary
 from minacode.tools import AskSpec, CodeIndex, SkillTool, Tool
 from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TuiApp
@@ -560,7 +560,7 @@ def test_session_labels_carry_age_and_size(tmp_path):
     s.state.round_count = 1
     s.save_snapshot()
     assert "1 round " in session_label(loop, SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]) + " "
-    assert entry.uid in session_preview(loop, entry)
+    assert session_preview(loop, entry) == []  # no summary, no preview
 
 
 def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
@@ -611,8 +611,14 @@ def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_pat
     assert label_fn is not None
     assert any(style == "class:choice.meta" for style, _text in label_fn(target.uid))
     assert any(style == "class:choice.live" for style, _text in label_fn(s.uid))
-    preview = captured["kwargs"]["preview_fn"](target.uid)
+    preview = "".join(text for _style, text in captured["kwargs"]["preview_fn"](target.uid))
     assert "the latest answer" in preview
+    # The preview reads like the transcript: the user bullet takes the prompt colour and the
+    # message the transcript's warm tone, newest exchange at the bottom.
+    parts = captured["kwargs"]["preview_fn"](target.uid)
+    assert ("class:prompt", "• ") in parts
+    assert any(style == "class:choice.user" for style, _text in parts)
+    assert parts[-1] == ("", "  the latest answer\n")
 
 
 def test_session_summary_tails_the_recent_messages(tmp_path):
@@ -622,7 +628,98 @@ def test_session_summary_tails_the_recent_messages(tmp_path):
     other.messages.append({"role": "assistant", "content": "three"})
     other.save_snapshot()
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
-    assert session_summary(entry) == ["three", "two", "one"]
+    assert session_summary(entry) == [("assistant", "three"), ("assistant", "two"), ("user", "one"), ("user", "opening")]
+    assert session_summary(entry, limit=2) == [("assistant", "three"), ("assistant", "two")]
+
+
+def test_session_summary_skips_internal_events(tmp_path):
+    """Session-resume markers are stored as user-role messages; the preview must not show them as
+    conversation, or the 'recent messages' read as a wall of <session_event ...> lines."""
+    other = stored_session(tmp_path, "opening")
+    other.messages.append({SESSION_EVENT_KEY: "resumed", "content": '<session_event type="resumed" at="2026-08-20" />'})
+    other.messages.append({"role": "user", "content": "real question"})
+    other.messages.append({"role": "assistant", "content": "real answer"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    summary = session_summary(entry)
+    assert summary[:2] == [("assistant", "real answer"), ("user", "real question")]
+    assert all("<session_event" not in text for _role, text in summary)
+
+
+def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
+    """A tool-heavy session has almost no assistant text; the preview shows the tool names of
+    textless turns so it still says something useful."""
+    other = stored_session(tmp_path, "investigate")
+    other.messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "Bash", "arguments": "{}"}},
+                {"function": {"name": "Read", "arguments": "{}"}},
+            ],
+        }
+    )
+    other.messages.append({"role": "assistant", "content": "found it"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert session_summary(entry) == [("assistant", "found it"), ("user", "investigate"), ("tool", "→ Bash, Read")]
+
+
+def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
+    """Tool-only turns collapse into one counted line at the end, and when the preview is already
+    full of text no tool line is added at all."""
+    other = stored_session(tmp_path, "q")
+    for name in ("Bash", "Bash", "Read", "Bash"):
+        other.messages.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": name, "arguments": "{}"}}]})
+    other.messages.append({"role": "assistant", "content": "answer"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert session_summary(entry) == [("assistant", "answer"), ("user", "q"), ("tool", "→ Bash ×3, Read")]
+
+    full = stored_session(tmp_path, "t0")
+    for i in range(1, 6):
+        full.messages.append({"role": "user", "content": f"q{i}"})
+    full.messages.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Bash", "arguments": "{}"}}]})
+    full.save_snapshot()
+    full_entry = SessionSnapshotStore.list_sessions(full.config.data_dir, full.cwd)[0]
+    summary = session_summary(full_entry)
+    assert len(summary) == 5
+    assert all(not text.startswith("→") for _role, text in summary)
+
+
+def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
+    """A tool result can bury the conversation under hundreds of kilobytes; the summary widens its
+    tail window until it holds enough text, capped by the budget."""
+    other = stored_session(tmp_path, "q0")
+    for i in range(1, 6):
+        other.messages.append({"role": "user", "content": f"q{i}"})
+    other.messages.append({"role": "tool", "content": "x" * 200000})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert session_summary(entry) == [("user", f"q{i}") for i in range(5, 0, -1)]
+
+
+def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkeypatch):
+    """The tail read must never decode from an arbitrary byte: when the seek point lands inside a
+    multi-byte character, the old text-mode readline raised UnicodeDecodeError and took /sessions
+    down with it. The binary line split skips the torn line instead. The tail budget is shrunk so
+    the seek lands inside the character regardless of the default budget."""
+    monkeypatch.setattr(commands_mod, "TAIL_BUDGET", 65536)
+    header = json.dumps({"v": 4})
+    # The CJK character sits right at the start of a padding line whose tail pushes the seek point
+    # (size - budget) onto the character's second byte.
+    pad = '{"padding": "' + "中" + "a" * 65478 + '"}'
+    snapshot = '{"messages": [{"role": "user", "content": "latest"}]}'
+    line = header + "\n" + pad + "\n" + snapshot + "\n"
+    data = line.encode("utf-8")
+    cjk = data.find("中".encode())
+    seek = len(data) - 65536
+    assert seek - cjk in (1, 2)  # the seek point sits inside the multi-byte character
+    path = tmp_path / "torn.jsonl"
+    path.write_bytes(data)
+    entry = SessionEntry(uid="torn", name="", opening="", rounds=0, cwd=str(tmp_path), updated_at=time.time(), path=str(path))
+    assert session_summary(entry) == [("user", "latest")]
 
 
 def test_session_label_fn_matches_the_text_layout(tmp_path):

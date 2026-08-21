@@ -243,7 +243,7 @@ class ChoiceViewState:
     def fragments(
         self,
         title: str,
-        preview_fn: Callable[[str], str] | None = None,
+        preview_fn: Callable[[str], StyleAndTextTuples | str] | None = None,
         label_fn: Callable[[str], StyleAndTextTuples] | None = None,
     ) -> StyleAndTextTuples:
         """The list as fragments. `label_fn` styles one row's label in pieces instead of printing it
@@ -297,10 +297,13 @@ class ChoiceViewState:
         if end - start < len(visible):
             parts.append(("class:choice.disabled", f"  showing {start + 1}-{end} of {len(visible)}\n"))
         if preview_fn and options:
-            preview = preview_fn(options[self.selected]).replace("\\n", "\n")
+            preview = preview_fn(options[self.selected])
+            if isinstance(preview, str):
+                # A plain-text preview: every line takes the rail and the preview style.
+                preview = [("class:choice.preview", "  │ " + line + "\n") for line in preview.replace("\\n", "\n").splitlines()]
             if preview:
                 parts.append(("class:choice.disabled", "  ──────────────────────────────────\n"))
-                parts.extend(("class:choice.preview", "  │ " + line + "\n") for line in preview.splitlines())
+                parts.extend(preview)
         if self.searching:
             parts.append(("", "/" + self.query))
         return parts

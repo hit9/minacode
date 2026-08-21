@@ -23,6 +23,17 @@
   in a viewport and the preview below it shows the session's facts plus its most recent messages,
   and the terminal restores your transcript when you leave. Rows carry colour -- the name plain,
   age and round count dimmed, the current session marked in the live colour.
+- Fixed: opening `/sessions` / `/resume` no longer crashes with `UnicodeDecodeError` when the
+  session log's last chunk happens to cut a multi-byte (e.g. Chinese) character in half; the
+  recent-messages preview reads the tail in binary and skips the torn line, and it hides the
+  internal `<session_event ...>` resume markers so the preview shows real conversation; tool-only
+  turns collapse into one counted line (`→ Bash ×3, Read`) instead of a wall of tool names, and
+  the recent messages are laid out like the transcript -- a `• ` bullet in the prompt colour with
+  the message in the transcript's warm tone, replies indented in the default colour, newest
+  exchange at the bottom, anchored on the opening question when the recent turns are all replies.
+  The preview widens its tail window only until it holds the recent conversation (capped), so a
+  session whose tool output runs to megabytes no longer shows just the last message or two, and
+  it reads each session lazily when the cursor lands on it rather than scanning every log on open.
 
 ## 0.29.1 - 2026-08-20
 
