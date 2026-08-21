@@ -964,3 +964,41 @@ class TestCodeLogLines:
 
     def test_unknown_lexer_degrades_to_plain_text(self):
         assert self.rendered("a = 1\n", "no-such-lexer").splitlines() == ["  1  a = 1"]
+
+
+def test_ui_batched_collects_into_one_terminal_write(monkeypatch):
+    """The restored-transcript replay batches: one write and one flush, not one per line."""
+
+    class FakeStdout:
+        def __init__(self):
+            self.writes: list[str] = []
+            self.flushes = 0
+
+        def write(self, text: str) -> None:
+            self.writes.append(text)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    fake = FakeStdout()
+    ui = UiPrinter(print)
+    ui.color = True
+    monkeypatch.setattr(sys, "stdout", fake)
+    with ui.batched():
+        ui.emit("first")
+        with ui.batched():  # nested batches are a no-op, not a re-entry
+            ui.emit("second")
+    assert fake.flushes == 1
+    assert len(fake.writes) == 1
+    assert "first" in fake.writes[0] and "second" in fake.writes[0]
+
+
+def test_ui_batched_passthrough_when_plain():
+    """Without color there is nothing to batch; each emit still calls output_fn directly."""
+
+    calls: list[str] = []
+    ui = UiPrinter(output_fn=calls.append)
+    with ui.batched():
+        ui.emit("one")
+        ui.emit("two")
+    assert calls == ["one", "two"]

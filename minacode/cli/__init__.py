@@ -493,33 +493,37 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         }
         semantic_tool_results = any("status" in message for message in tool_results.values())
         messages = [message for message in transcript if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
-        self.emit(f"Restored session: {self.session.uid}")
-        if self.session.transcript_incomplete:
-            self.emit("Warning: this transcript may omit turns written by an older minacode version.")
-        if not messages:
-            return
-        transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
-        diffs = {diff.key: diff.diff for diff in transcript_diffs if diff.key and diff.diff}
-        tool_record_index = 0
-        turns = TurnBox.group(messages)
-        hidden = len(turns) - self.MAX_REDRAWN_TURNS
-        if hidden > 0:
-            # The earliest turns are not redrawn: on a long session they would flood the terminal
-            # and the prompt would scroll out of reach. They stay in the session, so the next
-            # request still sees them; only the redraw is skipped. Tool records still advance
-            # through them so the visible turns pair with their own results.
-            for turn in turns[:hidden]:
+        # The replay is a burst of independent emits; batch them into one terminal write so a
+        # long session restores in one flush instead of one per line (each flush coordinates
+        # with the TUI renderer when one is running).
+        with self.ui.batched():
+            self.emit(f"Restored session: {self.session.uid}")
+            if self.session.transcript_incomplete:
+                self.emit("Warning: this transcript may omit turns written by an older minacode version.")
+            if not messages:
+                return
+            transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
+            diffs = {diff.key: diff.diff for diff in transcript_diffs if diff.key and diff.diff}
+            tool_record_index = 0
+            turns = TurnBox.group(messages)
+            hidden = len(turns) - self.MAX_REDRAWN_TURNS
+            if hidden > 0:
+                # The earliest turns are not redrawn: on a long session they would flood the terminal
+                # and the prompt would scroll out of reach. They stay in the session, so the next
+                # request still sees them; only the redraw is skipped. Tool records still advance
+                # through them so the visible turns pair with their own results.
+                for turn in turns[:hidden]:
+                    for message in turn.messages:
+                        tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results, dry_run=True)
+                self.emit(f"… {hidden} earlier turn{'s' if hidden > 1 else ''} not redrawn (still in context)")
+                turns = turns[hidden:]
+            for i, turn in enumerate(turns):
+                if i:
+                    self.emit("")
                 for message in turn.messages:
-                    tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results, dry_run=True)
-            self.emit(f"… {hidden} earlier turn{'s' if hidden > 1 else ''} not redrawn (still in context)")
-            turns = turns[hidden:]
-        for i, turn in enumerate(turns):
-            if i:
-                self.emit("")
-            for message in turn.messages:
-                tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results)
-        if not semantic_tool_results:
-            self.render_remaining_tool_records(tool_record_index, diffs)
+                    tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results)
+            if not semantic_tool_results:
+                self.render_remaining_tool_records(tool_record_index, diffs)
 
     def render_transcript_message(
         self,

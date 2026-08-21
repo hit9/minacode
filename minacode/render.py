@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import math
 import os
 import re
@@ -13,8 +14,10 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples
 from prompt_toolkit.output import create_output
+from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
@@ -256,6 +259,35 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
+        # Batch mode collects every write into one buffer and flushes once, so a burst of emits
+        # (the restored-transcript replay) costs one terminal write instead of one per line. Only
+        # the colored path batches; the plain path already writes once per call.
+        self._batch_file: io.StringIO | None = None
+        self._batch_output: Vt100_Output | None = None
+
+    @contextlib.contextmanager
+    def batched(self):
+        """Collect everything this printer emits and write it out in a single flush."""
+        if not self.color or self._batch_output is not None:
+            yield
+            return
+        self._batch_file = io.StringIO()
+
+        def terminal_size() -> Size:
+            size = shutil.get_terminal_size((80, 24))
+            return Size(rows=size.lines, columns=size.columns)
+
+        self._batch_output = Vt100_Output(self._batch_file, get_size=terminal_size)
+        try:
+            yield
+        finally:
+            file = self._batch_file
+            self._batch_output = None
+            self._batch_file = None
+            text = file.getvalue()
+            if text:
+                sys.stdout.write(text)
+                sys.stdout.flush()
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
         """Print one line or log block. `indent` moves plain text into a column; a LogBlock is
@@ -272,7 +304,7 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         if indent:
             segments = self.indent_segments(segments, LogBlock.margin(indent))
-        print_formatted_text(FormattedText(segments), end="", flush=True)
+        print_formatted_text(FormattedText(segments), end="", flush=True, output=self._batch_output)
 
     @staticmethod
     def indent_segments(segments: list[tuple[str, str]], margin: str) -> list[tuple[str, str]]:
@@ -374,7 +406,7 @@ class UiPrinter:
             # every line that carries no visible characters.
             lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
             cleaned = "\n".join(lines) + "\n"
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        print_formatted_text(ANSI(cleaned), end="", flush=True, output=self._batch_output)
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
     # pushes it to the very edge, which reads as a stray label, not text on a rule) and not
@@ -405,7 +437,7 @@ class UiPrinter:
             ("fg:default", label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
-        print_formatted_text(FormattedText(fragments), end="", flush=True)
+        print_formatted_text(FormattedText(fragments), end="", flush=True, output=self._batch_output)
 
     def emit_worker_rule(self, label: str) -> None:
         """Open or close a delegation with a full-width rule whose yellow label names the worker.
@@ -440,7 +472,7 @@ class UiPrinter:
             (Theme.style("status.worker"), label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
-        print_formatted_text(FormattedText(fragments), end="", flush=True)
+        print_formatted_text(FormattedText(fragments), end="", flush=True, output=self._batch_output)
         self.emit()
 
     @staticmethod
@@ -482,7 +514,7 @@ class UiPrinter:
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        print_formatted_text(ANSI(cleaned), end="", flush=True, output=self._batch_output)
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
