@@ -274,8 +274,9 @@ class ToolRunner:
         # Injected by CommandLoop: opens a read-only viewer for the text behind a confirmation --
         # a Delegate order, a ToolScript body -- for the confirm-time `v`/`view` key (see
         # cli.modals.approval_text_viewer). None degrades the `v` key to printing the whole text
-        # (headless / non-CommandLoop runners).
-        self.text_viewer: Callable[[ApprovalView], None] | None = None
+        # (headless / non-CommandLoop runners). The return value is the viewer's close signal and is
+        # discarded here; the Ctrl-O browser's reopen loop reads it on its own.
+        self.text_viewer: Callable[[ApprovalView], object] | None = None
         # How many enclosing tool calls are running the calls being logged right now. Nested calls
         # (a ToolScript's call()) are printed one level deeper per enclosing call, so the log shows
         # who made them; see nested().

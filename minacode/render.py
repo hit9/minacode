@@ -256,6 +256,26 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
+        # Batch mode: while active, every emit appends its styled fragments instead of printing,
+        # so a burst of output (the restored-transcript replay) is printed by a single
+        # print_formatted_text call and flushes once. Under the TUI each call coordinates with the
+        # renderer, so batching turns a hundred of those into one. Only the colored path batches.
+        self._batch_parts: list[FormattedText | ANSI] | None = None
+
+    @contextlib.contextmanager
+    def batched(self):
+        """Collect every emit into one print_formatted_text call and flush once."""
+        if not self.color or self._batch_parts is not None:
+            yield
+            return
+        self._batch_parts = []
+        try:
+            yield
+        finally:
+            parts = self._batch_parts
+            self._batch_parts = None
+            if parts:
+                print_formatted_text(*parts, sep="", end="", flush=True)
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
         """Print one line or log block. `indent` moves plain text into a column; a LogBlock is
@@ -272,6 +292,9 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         if indent:
             segments = self.indent_segments(segments, LogBlock.margin(indent))
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(segments))
+            return
         print_formatted_text(FormattedText(segments), end="", flush=True)
 
     @staticmethod
@@ -374,6 +397,9 @@ class UiPrinter:
             # every line that carries no visible characters.
             lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
             cleaned = "\n".join(lines) + "\n"
+        if self._batch_parts is not None:
+            self._batch_parts.append(ANSI(cleaned))
+            return
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
@@ -405,6 +431,9 @@ class UiPrinter:
             ("fg:default", label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(fragments))
+            return
         print_formatted_text(FormattedText(fragments), end="", flush=True)
 
     def emit_worker_rule(self, label: str) -> None:
@@ -440,6 +469,9 @@ class UiPrinter:
             (Theme.style("status.worker"), label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(fragments))
+            return
         print_formatted_text(FormattedText(fragments), end="", flush=True)
         self.emit()
 
@@ -482,6 +514,9 @@ class UiPrinter:
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
+        if self._batch_parts is not None:
+            self._batch_parts.append(ANSI(cleaned))
+            return
         print_formatted_text(ANSI(cleaned), end="", flush=True)
 
     @staticmethod
@@ -915,6 +950,9 @@ class LiveSpark:
     # A text glyph rather than an emoji: terminals draw emoji in their own colors, so a breath put
     # on one lands on whatever is beside it instead, and emoji are two cells before the space.
     GLYPH: ClassVar[str] = "✦ "
+    # Two weights of the star, swapped at the trough of the breath so the change is almost
+    # invisible; each is the width of a rail. GLYPH is the phase-zero entry.
+    GLYPHS: ClassVar[tuple[str, ...]] = ("✦ ", "✶ ")
     # Twice the divider pulse's period: that dot marks a request in flight and should read as a
     # heartbeat, while this one sits over a wall of text and would nag at that rate.
     PERIOD: ClassVar[float] = 3.2
@@ -924,9 +962,11 @@ class LiveSpark:
     # How far the breath reaches past that color, as a fraction of the way to black at the trough
     # and to white at the crest. Wide on purpose: a shallow fade reads as the terminal mis-drawing
     # a cell rather than as a breath, and the crest has to clear the gray rows beside it.
+    # The star is thin in its own shape and the terminal has no font size, so it is bold for the
+    # whole ramp: that is the only way the mark reads heavier than the rows beside it. The breath
+    # survives as the color ramp alone.
     FLOOR: ClassVar[float] = 0.78
     CEILING: ClassVar[float] = 0.78
-    BOLD_STEPS: ClassVar[int] = 3
 
     @classmethod
     def ramp(cls) -> list[str]:
@@ -940,7 +980,7 @@ class LiveSpark:
         low = Theme.rgb(Theme.mix(hue, (0, 0, 0), cls.FLOOR))
         high = Theme.rgb(Theme.mix(hue, (255, 255, 255), cls.CEILING))
         span = max(1, cls.STEPS - 1)
-        return ["fg:" + Theme.mix(low, high, step / span) + (" bold" if step >= cls.STEPS - cls.BOLD_STEPS else "") for step in range(cls.STEPS)]
+        return ["fg:" + Theme.mix(low, high, step / span) + " bold" for step in range(cls.STEPS)]
 
     @classmethod
     def style(cls, started_at: float = 0.0) -> str:
@@ -961,6 +1001,15 @@ class LiveSpark:
         intensity = abs(2.0 * phase - 1.0)  # 1 at the start, 0 at the half-period, 1 again
         ramp = cls.ramp()
         return ramp[min(len(ramp) - 1, int(intensity * len(ramp)))]
+
+    @classmethod
+    def glyph(cls, started_at: float = 0.0) -> str:
+        """The spark's mark at this phase: the two stars swap at the darkest point of the breath,
+        so the change reads as the color fading rather than a flicker. Shares the phase clock
+        with `style`; `GLYPH` is the phase-zero entry."""
+        elapsed = (time.monotonic() - started_at) if started_at else time.monotonic()
+        phase = (elapsed % cls.PERIOD) / cls.PERIOD
+        return cls.GLYPHS[0 if phase < 0.5 else 1]
 
 
 class BashLivePreview:
@@ -1059,8 +1108,11 @@ class BashLivePreview:
         limit = max(1, width - get_cwidth(rail) - 1)
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
-        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.GLYPH), ("ansibrightblack", status)]]
-        rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
+        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.glyph(self.started_at)), ("ansibrightblack", status)]]
+        if body:
+            # A blank row keeps the spark off the rail: the star caps the region, it does not sit on it.
+            rows.append([("", "")])
+            rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
         return rows
 
 

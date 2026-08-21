@@ -71,8 +71,13 @@ def test_registry_names_and_aliases_appear_in_help():
 
 
 class ModalHarness:
-    def __init__(self, keys):
-        self.keys = keys
+    def __init__(self, keys, *, consumed=False):
+        self.keys = list(keys)
+        # consumed=True hands each key to the next modal in line instead of replaying the whole
+        # sequence for every modal, which is how a multi-modal flow (list -> detail -> list) is
+        # driven end to end.
+        self.consumed = consumed
+        self.pos = 0
         self.frames = []
         self.exclusive = []
 
@@ -80,7 +85,10 @@ class ModalHarness:
         self.exclusive.append(exclusive)
         self.frames.append(fragments_fn())
         result = TUI_MODAL_PENDING
-        for key in self.keys:
+        keys = self.keys[self.pos :] if self.consumed else self.keys
+        for key in keys:
+            if self.consumed:
+                self.pos += 1
             result = key_fn(key, key if len(key) == 1 else "")
             self.frames.append(fragments_fn())
             if result is not TUI_MODAL_PENDING:
@@ -121,6 +129,135 @@ def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_fu
     assert "stdout:" in viewer[0] and "line 0" in viewer[0]
     assert "stderr:" in viewer[-1] and "detail stderr" in viewer[-1]  # both streams, a scroll away
     assert modal.exclusive == [False, True]  # the list shares the screen; the viewer takes it
+
+
+def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_path, monkeypatch):
+    """Esc (or q) in a detail goes back to the list instead of closing the whole browser, and
+    the reopened list still points at the entry the reader came from."""
+    command_loop = loop(tmp_path)
+    for index in range(5):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # j moves to the second entry, enter opens it, escape returns to the list, enter opens the
+    # same entry again, c-o closes the whole browser.
+    modal = ModalHarness(["j", "enter", "escape", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert len(listings) == 5  # two list passes: three renders, then two on the reopened one
+    assert modal.exclusive == [False, True, False, True]  # list, detail, list, detail
+
+    def selected_line(listing: str) -> str:
+        return next(row for row in listing.splitlines() if row.startswith("> "))
+
+    assert "command-4" in selected_line(listings[0])  # first list starts at the newest entry
+    assert "command-3" in selected_line(listings[1])  # j moved to the second entry
+    # The reopened list still sits on the entry the escape came back from, not the top.
+    assert "command-3" in selected_line(listings[3])
+    # The same detail opened twice: once before the escape, once before the c-o, each rendering
+    # its title row twice (initial frame plus the frame after its closing key).
+    assert sum("read-only" in frame for frame in frames) == 4
+
+
+def test_tool_output_viewer_q_in_a_detail_also_returns_to_the_list(tmp_path, monkeypatch):
+    """q behaves exactly like Esc inside a detail: back to the list, not out of the browser."""
+    command_loop = loop(tmp_path)
+    for index in range(3):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # enter opens the top entry, q returns to the list, enter opens it again, c-o closes.
+    modal = ModalHarness(["enter", "q", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert modal.exclusive == [False, True, False, True]  # list, detail, list, detail
+    assert len(listings) == 4  # q came back to the list: two renders per list pass
+    assert sum("read-only" in frame for frame in frames) == 4  # the detail opened twice
+
+
+def test_tool_output_viewer_ctrl_c_in_a_detail_also_returns_to_the_list(tmp_path, monkeypatch):
+    """Ctrl-C behaves like Esc inside a detail: back to the list, not out of the browser."""
+    command_loop = loop(tmp_path)
+    for index in range(3):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # enter opens the top entry, c-c returns to the list, enter opens it again, c-o closes.
+    modal = ModalHarness(["enter", "c-c", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert modal.exclusive == [False, True, False, True]  # list, detail, list, detail
+    assert len(listings) == 4  # c-c came back to the list: two renders per list pass
+    assert sum("read-only" in frame for frame in frames) == 4  # the detail opened twice
+
+
+def test_tool_output_viewer_ctrl_o_in_a_detail_closes_the_browser(tmp_path, monkeypatch):
+    """Ctrl-O inside a detail still closes the whole browser: only Esc/q go back to the list."""
+    command_loop = loop(tmp_path)
+    for index in range(3):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    modal = ModalHarness(["j", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    assert modal.exclusive == [False, True]  # list, detail -- and no reopened list
+    assert sum("Tool output" in frame for frame in frames) == 3  # the list rendered its three frames once
+    assert sum("read-only" in frame for frame in frames) == 2  # the detail closed the browser
+
+
+def test_tool_output_viewer_keeps_the_search_filter_across_an_escape(tmp_path, monkeypatch):
+    """A `/` filter survives Esc back to the list: the reopened list is still filtered."""
+    command_loop = loop(tmp_path)
+    for index in range(5):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # Filter to the newest entry, open it, Esc back: the reopened list still shows just that
+    # entry, then the second enter opens it again and c-o closes the browser.
+    modal = ModalHarness(["/", *"command-4", "enter", "enter", "escape", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert modal.exclusive == [False, True, False, True]
+    assert "command-4" in listings[0] and "command-3" in listings[0]  # the full list first
+    # The reopened list is still filtered to the one matching entry, not the full list again.
+    assert "command-4" in listings[-1]
+    assert "command-3" not in listings[-1] and "command-0" not in listings[-1]
+    assert sum("read-only" in frame for frame in frames) == 4
 
 
 def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path):
@@ -291,7 +428,7 @@ def test_tool_output_viewer_reads_resumed_history(tmp_path):
     saved.save_snapshot()
     restored = Session.load_snapshot(saved.uid, config=saved.config)
     command_loop = CommandLoop(Agent(restored, output_fn=lambda _text: None), input_fn=lambda prompt="": "", output_fn=lambda _text: None)
-    modal = ModalHarness(["enter", "q"])
+    modal = ModalHarness(["enter", "c-o"], consumed=True)
     command_loop.tui = modal
 
     tool_output_viewer(command_loop)

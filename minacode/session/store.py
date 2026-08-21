@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
@@ -513,6 +514,12 @@ class SessionSnapshotStore:
     PROJECTS_DIR: ClassVar[str] = "projects"
     META_SUFFIX: ClassVar[str] = ".meta.json"
     _SLUG_RE: ClassVar[re.Pattern] = re.compile(r"[^A-Za-z0-9._-]+")
+    # A session preview reads only the tail of the log, starting from a small window and widening
+    # it geometrically until it holds enough text or hits the budget: most sessions are fully
+    # covered by the first small read, and only a log whose newest turns are megabytes of tool
+    # output costs the bigger reads.
+    TAIL_START: ClassVar[int] = 64 * 1024
+    TAIL_BUDGET: ClassVar[int] = 8 * 1024 * 1024
 
     def __init__(self, session: Session):
         self.session = session
@@ -965,3 +972,83 @@ class SessionSnapshotStore:
     @staticmethod
     def path_for(data_dir: str, *parts: str) -> str:
         return os.path.abspath(os.path.join(os.path.expanduser(data_dir), *parts))
+
+    @staticmethod
+    def _summary_from_tail(path: str, size: int, window: int, limit: int) -> tuple[list[tuple[str, str]], Counter[str]]:
+        """Parse the log's last `window` bytes into text messages and tool counts. The window may start
+        mid-record or inside a multi-byte character; the binary read and the dropped first slice make
+        that harmless."""
+        start = max(0, size - window)
+        try:
+            with open(path, "rb") as file:
+                file.seek(start)
+                chunk = file.read()
+        except OSError:
+            return [], Counter()
+        lines = chunk.split(b"\n")
+        if not lines:
+            return [], Counter()
+        # The first slice may start mid-record (the seek point, or a line cut by it); the rest are
+        # whole JSON lines.
+        lines = lines[1:]
+        picked: list[tuple[str, str]] = []
+        tool_counts: Counter[str] = Counter()
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            messages = parsed.get("messages")
+            if not isinstance(messages, list):
+                continue
+            for message in reversed(messages):
+                if message.get("role") not in {"user", "assistant"}:
+                    continue
+                if SessionSnapshotCodec.is_internal_message(message):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    picked.append((str(message.get("role")), content))
+                    if len(picked) >= limit:
+                        break
+                elif message.get("role") == "assistant":
+                    # A turn that only ran tools has no text; count its tools and let one merged line
+                    # summarise them, without crowding out the conversation.
+                    calls = message.get("tool_calls")
+                    if isinstance(calls, list):
+                        for call in calls:
+                            if isinstance(call, dict):
+                                name = str(call.get("function", {}).get("name") or "")
+                                if name:
+                                    tool_counts[name] += 1
+            if len(picked) >= limit:
+                break
+        return picked, tool_counts
+
+    @classmethod
+    def tail_summary(cls, path: str, limit: int = 5) -> list[tuple[str, str]]:
+        """The most recent messages as `(role, text)` pairs, newest first, read from the tail of the
+        log. A full decode of the session is never needed; the tail window starts small and widens
+        until it holds enough text or hits `TAIL_BUDGET`, so a tool-heavy log whose newest turns run
+        to megabytes still yields the conversation. A line that does not parse is skipped. Tool-only
+        turns collapse into a single counted line (role `"tool"`), so a tool-heavy session stays
+        identifiable instead of reading as a wall of names."""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return []
+        if size <= 0:
+            return []
+        window = min(size, cls.TAIL_START)
+        while True:
+            picked, tool_counts = cls._summary_from_tail(path, size, window, limit)
+            if len(picked) >= limit or window >= size or window >= cls.TAIL_BUDGET:
+                break
+            window = min(cls.TAIL_BUDGET, window * 4)
+        if len(picked) < limit and tool_counts:
+            tools = ", ".join(name if count == 1 else f"{name} ×{count}" for name, count in tool_counts.most_common())
+            picked.append(("tool", "→ " + tools))
+        return picked

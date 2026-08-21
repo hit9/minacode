@@ -79,6 +79,10 @@ class CommandLoop:
     HELP_HEADING_RE: ClassVar[re.Pattern] = re.compile(r"^### (.+)$", re.MULTILINE)
     HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
+    # Resume redraws at most this many recent turns. A long session would otherwise flood the
+    # terminal with the whole transcript and push the prompt out of reach; the earlier turns stay
+    # in the session, so the next request still sees them.
+    MAX_REDRAWN_TURNS: ClassVar[int] = 20
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     EDITOR_CONTEXT_ELLIPSIS: ClassVar[str] = "# [... earlier lines of this reply omitted ...]"
     EDITOR_CONTEXT_SEPARATOR: ClassVar[str] = "# --- (earlier reply) ---"
@@ -489,21 +493,39 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         }
         semantic_tool_results = any("status" in message for message in tool_results.values())
         messages = [message for message in transcript if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
-        self.emit(f"Restored session: {self.session.uid}")
-        if self.session.transcript_incomplete:
-            self.emit("Warning: this transcript may omit turns written by an older minacode version.")
-        if not messages:
-            return
-        transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
-        diffs = {diff.key: diff.diff for diff in transcript_diffs if diff.key and diff.diff}
-        tool_record_index = 0
-        for i, turn in enumerate(TurnBox.group(messages)):
-            if i:
+        # The replay is a burst of independent emits; batch them into a single print_formatted_text
+        # call so the whole session restores in one flush (and one TUI coordination) instead of one
+        # per line.
+        with self.ui.batched():
+            self.emit(f"Restored session: {self.session.uid}")
+            if self.session.transcript_incomplete:
+                self.emit("Warning: this transcript may omit turns written by an older minacode version.")
+            if not messages:
+                return
+            transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
+            diffs = {diff.key: diff.diff for diff in transcript_diffs if diff.key and diff.diff}
+            tool_record_index = 0
+            turns = TurnBox.group(messages)
+            hidden = len(turns) - self.MAX_REDRAWN_TURNS
+            if hidden > 0:
+                # The earliest turns are not redrawn: on a long session they would flood the terminal
+                # and the prompt would scroll out of reach. They stay in the session, so the next
+                # request still sees them; only the redraw is skipped. Tool records still advance
+                # through them so the visible turns pair with their own results.
+                for turn in turns[:hidden]:
+                    for message in turn.messages:
+                        tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results, dry_run=True)
+                self.emit(f"… {hidden} earlier turn{'s' if hidden > 1 else ''} not redrawn (still in context)")
+                # The notice is its own paragraph, like the blank line between turns.
                 self.emit("")
-            for message in turn.messages:
-                tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results)
-        if not semantic_tool_results:
-            self.render_remaining_tool_records(tool_record_index, diffs)
+                turns = turns[hidden:]
+            for i, turn in enumerate(turns):
+                if i:
+                    self.emit("")
+                for message in turn.messages:
+                    tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results)
+            if not semantic_tool_results:
+                self.render_remaining_tool_records(tool_record_index, diffs)
 
     def render_transcript_message(
         self,
@@ -511,17 +533,19 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         tool_record_index: int = 0,
         diffs: dict[str, str] | None = None,
         tool_results: dict[str, Json] | None = None,
+        *,
+        dry_run: bool = False,
     ) -> int:
         role = str(message.get("role") or "")
         content = ImageInputs.label_text(message).strip()
-        if role == "assistant" and content:
+        if role == "assistant" and content and not dry_run:
             # Every assistant message sits in the content column, final answer included, so a
             # resumed session reads exactly like the live one. The turn's own text all shares that
             # column with the user's message, whose `• ` bullet hangs in the same two-space margin.
             self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL)
         if role == "assistant":
-            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {})
-        if role == "user" and content and not ImageInputs.is_tool_observation(message):
+            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {}, dry_run=dry_run)
+        if role == "user" and content and not ImageInputs.is_tool_observation(message) and not dry_run:
             # The follow-up marker is model-facing context, part of history because it was sent.
             # The scrollback shows what the user typed, exactly as it looked when they typed it.
             self.ui.emit_answer(content.removeprefix(LIVE_FOLLOWUP_PREFIX.strip()).lstrip(), role=role, rule=False)
@@ -533,6 +557,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         tool_record_index: int,
         diffs: dict[str, str],
         tool_results: dict[str, Json] | None = None,
+        *,
+        dry_run: bool = False,
     ) -> int:
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
@@ -543,10 +569,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 continue
             result = (tool_results or {}).get(call.id)
             if result is not None and "status" in result:
-                self.emit_transcript_tool(call, str(result.get("result_key") or ""), diffs, failed=result.get("status") != "ok")
+                if not dry_run:
+                    self.emit_transcript_tool(call, str(result.get("result_key") or ""), diffs, failed=result.get("status") != "ok")
                 continue
             record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
-            self.emit_transcript_tool(call, record.key if record else "", diffs)
+            if not dry_run:
+                self.emit_transcript_tool(call, record.key if record else "", diffs)
         return tool_record_index
 
     def render_remaining_tool_records(self, tool_record_index: int, diffs: dict[str, str]) -> None:

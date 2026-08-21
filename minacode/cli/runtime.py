@@ -17,6 +17,11 @@ from minacode.render import search_sources_footer
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp
 
+# The TUI status label shown while a resumed session's transcript is being restored: a quiet
+# lead-in before the single-write replay, so the wait reads as a restore in progress rather than a
+# stuck prompt.
+RESUME_STATUS_LABEL = "resuming session…"
+
 if TYPE_CHECKING:
     from minacode.cli import CommandLoop
 
@@ -232,7 +237,12 @@ class TuiRuntime:
                 raise self.error
             # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
             # so the primary-screen application places them in native terminal/tmux scrollback.
+            resuming = self.loop.session.resumed
+            if resuming:
+                self.tui.set_running(RESUME_STATUS_LABEL)
             self.loop.start_session()
+            if resuming:
+                self.tui.set_idle()
             if self.loop.session.mentions is not None:
                 # Git discovery can cost hundreds of milliseconds in a large worktree. Warm its
                 # runtime-only snapshot after the prompt is live so the first picker need not wait.

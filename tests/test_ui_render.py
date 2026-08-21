@@ -964,3 +964,38 @@ class TestCodeLogLines:
 
     def test_unknown_lexer_degrades_to_plain_text(self):
         assert self.rendered("a = 1\n", "no-such-lexer").splitlines() == ["  1  a = 1"]
+
+
+def test_ui_batched_collects_into_one_print_formatted_text_call(monkeypatch):
+    """The restored-transcript replay batches: every emit feeds one print call, not one per line."""
+
+    calls: list[tuple[tuple, dict]] = []
+
+    def recording(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(render_module, "print_formatted_text", recording)
+    ui = UiPrinter(print)
+    ui.color = True
+    with ui.batched():
+        ui.emit("first")
+        with ui.batched():  # nested batches are a no-op, not a re-entry
+            ui.emit("second")
+        ui.emit_answer("**bold** answer", role="assistant", rule=False, indent=4)
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert kwargs["sep"] == "" and kwargs["flush"] is True
+    text = "".join(fragment for part in args for _style, fragment in to_formatted_text(part))
+    assert "first" in text and "second" in text and "bold" in text
+
+
+def test_ui_batched_passthrough_when_plain():
+    """Without color there is nothing to batch; each emit still calls output_fn directly."""
+
+    calls: list[str] = []
+    ui = UiPrinter(output_fn=calls.append)
+    with ui.batched():
+        ui.emit("one")
+        ui.emit("two")
+    assert calls == ["one", "two"]
