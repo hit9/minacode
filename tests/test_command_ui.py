@@ -152,6 +152,25 @@ def test_tool_output_browser_marks_bash_results_ok_and_fail(tmp_path, monkeypatc
     assert ("class:choice.output.fail", "✗ ") in pairs
 
 
+def test_tool_output_browser_lists_past_the_old_fifty_entry_cap(tmp_path, monkeypatch):
+    """The browser's list reaches as far back as the session stores: 400 results, not a page of
+    fifty. The viewport still shows one screenful with the counter saying how far there is to go."""
+    command_loop = loop(tmp_path)
+    for index in range(55):
+        command_loop.session.store_tool_result("Bash", [f"printf {index}"], Tool.process_result("BashToolResult", 0, f"out {index}", ""))
+    modal = ModalHarness(["q"])
+    command_loop.tui = modal
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert listing.startswith("\n──── Tool output · latest 55 ")
+    assert "showing 1-10 of 55" in listing
+    assert "Bash printf 54" in listing  # the newest is in view
+
+
 def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_path, monkeypatch):
     """Esc (or q) in a detail goes back to the list instead of closing the whole browser, and
     the reopened list still points at the entry the reader came from."""

@@ -351,11 +351,11 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     return ApprovalView(f"output · {record.key}", command, "bash", rows, streams)
 
 
-# How far back the browser lists. The session keeps 400 results (Session.store_tool_result), so this
-# is a reading bound, not a storage one: a list is scanned, and past a few dozen rows the `/` search
-# is the way through it rather than the cursor. The viewport (ChoiceViewState.max_rows) is what keeps
-# a list this long from filling the screen.
-MAX_OUTPUT_ENTRIES = 50
+# How far back the browser lists. The session keeps 400 results (Session.store_tool_result), so
+# this matches it: the browser shows every stored record, newest first. A list this long is read
+# through the viewport and the `/` search rather than the cursor; the viewport (ChoiceViewState.max_rows)
+# is what keeps it from filling the screen.
+MAX_OUTPUT_ENTRIES = 400
 
 
 @dataclass(frozen=True)
