@@ -87,7 +87,7 @@ An endpoint URL ending in `/chat/completions`, `/responses`, or `/messages` also
 Common optional provider settings:
 
 - `stream = true`: stream responses. Set `false` for endpoints that reject streaming.
-- `image_input = "auto"`: learn image support; use `"on"` or `"off"` to override it.
+- `image_input = "auto"`: learn image support; use `"on"` or `"off"` to override it. When the active model cannot take images, a `[vision] provider = "<entry>"` block routes them to a vision model instead (see `docs/configuration.md` "Vision model").
 - `reasoning = "medium"`: choose `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 - `available_models = [...]`: add entries to the `/model` picker.
 - `temperature`: omit it unless the provider or task needs a specific value.
@@ -180,7 +180,7 @@ Use `@server` or `@server.tool` to point the agent at an MCP server or tool. Use
 Core tools include:
 
 - `Read`, `Search`, and `InspectCode` for files, text, and indexed symbols.
-- `ViewImage` for supported local image files.
+- `ViewImage` for supported local image files, with an optional `question` answered by the vision model when one is configured.
 - `Edit` for anchored file changes.
 - `Bash` and `Job` for foreground and background commands.
 - `Recall` for complete stored tool results and `RecallContext` for compacted conversation segments.
@@ -224,7 +224,7 @@ Use the smallest relevant check:
 - Provider-side search appears stuck: preserve the exact error or stop reason. Anthropic `pause_turn` and configured Kimi `builtin_function` handshakes are continued automatically but remain bounded by `max_agent_steps` and `response_timeout`.
 - Streaming failure: set `provider.stream = false` temporarily and retry.
 - Stalled generation: distinguish `timeout` inactivity from total `response_timeout`; inspect the exact error before increasing either.
-- Image rejected: confirm the model accepts images and inspect `image_input`; forcing `on` cannot add provider capability.
+- Image rejected: confirm the model accepts images and inspect `image_input`; forcing `on` cannot add provider capability. A `[vision] provider = "<entry>"` block has a sibling vision model read images for a text-only main model.
 - Tool did not run: check whether approval was declined, whether yolo is off, and whether the tool reported a validation or stale-anchor error.
 - Missing earlier detail: use `Recall` for shortened tool output or `RecallContext` for compacted conversation.
 - Skill not found: run `/skills`, verify the directory and `SKILL.md` frontmatter, then check whether a higher-precedence source overrides the name.
