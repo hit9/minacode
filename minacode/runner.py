@@ -267,7 +267,7 @@ class ToolRunner:
         self.live_output: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
         self.worker_rule: Callable | None = None
-        # Renders the worker's final report like an agent answer (markdown), wired by the loop;
+        # Renders the worker's interim and final model text like an agent answer (markdown), wired by the loop;
         # None lets the worker publish it through its ordinary output channel (headless).
         self.worker_answer: Callable[[str], None] | None = None
         self.question_fn: Callable[[list[AskSpec]], list[str]] | None = None

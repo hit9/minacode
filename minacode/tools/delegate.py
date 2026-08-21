@@ -295,14 +295,16 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # Same pattern as Tool.resolved_schemas and Session's local imports.
             from minacode.engine import Agent
 
+            worker_output = _worker_output(runner)
             agent = Agent(
                 worker,
                 input_fn=runner.input_fn,
-                output_fn=_worker_output(runner),
-                # The final report renders like an agent answer (markdown) when the loop wired a
-                # worker_answer hook; otherwise it publishes through output_fn like interim text.
+                output_fn=runner.worker_answer or worker_output,
+                # Model text (interim and final) renders like an agent answer when the loop wired
+                # worker_answer; otherwise both publish through the ordinary log wrapper below.
                 final_output_fn=runner.worker_answer,
             )
+            agent.tools.output_fn = worker_output
             if runner.model_stream is not None:
                 # The parent loop's stream display; see ToolRunner.model_stream.
                 # _worker_stream swallows `output_done`: the worker's own output_fn

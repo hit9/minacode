@@ -806,8 +806,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
     def worker_answer_output(self, text: str) -> None:
-        """The worker's final report, rendered like an agent answer (markdown) rather than the
-        plain log lines its interim messages print as."""
+        """The worker's interim and final model text, rendered like an agent answer (markdown) rather than the
+        plain log lines tool execution prints as."""
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def _begin_cli_preview(self) -> None:

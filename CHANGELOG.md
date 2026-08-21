@@ -11,6 +11,11 @@
   with a `question` for details. Configure it with `[vision] provider = "..."` in the config
   file; when the active provider can take images, the vision model is not used.
 
+### Changed
+
+- Worker replies printed between tool calls now render as markdown, like the worker's final
+  report. Tool lines stay as the log tree.
+
 ## 0.30.0 - 2026-08-21
 
 ### Fixed
