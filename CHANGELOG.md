@@ -6,6 +6,8 @@
 
 - In the Ctrl-O output browser, `Esc` or `q` inside a detail now returns to the list with the
   cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still closes it.
+- Resuming a long session no longer replays the whole transcript onto the terminal: only the
+  twenty most recent turns are redrawn, with a line noting that the earlier ones stay in context.
 
 ## 0.29.1 - 2026-08-20
 

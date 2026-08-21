@@ -966,6 +966,60 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     assert "most recent answer" in text
 
 
+def test_resume_redraws_only_the_recent_turns_and_says_so(tmp_path, monkeypatch):
+    """A long session does not flood the terminal on resume: only the newest turns are redrawn,
+    with a line saying the earlier ones stayed in context."""
+    command_loop = loop(tmp_path)
+    command_loop.session.resumed = True
+    messages = []
+    for index in range(23):
+        messages.append({"role": "user", "content": f"question {index}"})
+        messages.append({"role": "assistant", "content": f"answer {index}"})
+    command_loop.session.messages.extend(messages)
+    command_loop.ui.color = True
+    printed = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+
+    command_loop.render_resumed_session()
+
+    text = "".join(printed)
+    assert "3 earlier turns not redrawn (still in context)" in text
+    assert "question 22" in text and "answer 22" in text  # the newest turn is redrawn
+    assert "question 3" in text  # the first visible turn is redrawn
+    assert "question 0" not in text and "answer 0" not in text  # the earliest turns are not
+
+
+def test_resume_redraw_keeps_tool_pairing_after_truncation(tmp_path, monkeypatch):
+    """Truncating the redraw still pairs the visible turns with their own tool results: the
+    folded turns advance the record cursor without rendering anything."""
+    command_loop = loop(tmp_path)
+    command_loop.session.resumed = True
+    command_loop.session.store_tool_result("Bash", ["printf old"], "old out")
+    command_loop.session.store_tool_result("Bash", ["printf new"], "new out")
+    messages = [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "Bash", "arguments": '["printf old"]'}}]},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for index in range(20):
+        messages.append({"role": "user", "content": f"question {index}"})
+        messages.append({"role": "assistant", "content": f"answer {index}"})
+    messages.append({"role": "user", "content": "new question"})
+    messages.append({"role": "assistant", "tool_calls": [{"id": "call-2", "type": "function", "function": {"name": "Bash", "arguments": '["printf new"]'}}]})
+    messages.append({"role": "assistant", "content": "new answer"})
+    command_loop.session.messages.extend(messages)
+    command_loop.ui.color = True
+    printed = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+
+    command_loop.render_resumed_session()
+
+    text = "".join(printed)
+    assert "2 earlier turns not redrawn (still in context)" in text
+    assert "tr.2" in text  # the newest call pairs with its own record
+    assert "tr.1" not in text  # the folded turn's record is not rendered
+
+
 def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
     command_loop.ui.color = True
@@ -1008,7 +1062,7 @@ def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch
     monkeypatch.setattr(
         CodeIndex,
         "status",
-        lambda _index, *, check=False, max_pending_files=20: (status_checks.append(check) or ("ready", "")),
+        lambda _index, *, check=False, max_pending_files=20: status_checks.append(check) or ("ready", ""),
     )
     monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: pytest.fail("startup refreshed the code index"))
 
