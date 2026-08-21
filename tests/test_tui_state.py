@@ -292,9 +292,9 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
 
 
 def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
-    """The spark's row belongs to the spark: while the model thinks a gray `thinking` sits beside
-    it, and the streamed text starts on its own rail row below, so the first line never races for
-    whatever room the spark leaves -- with or without the word, the layout is the same.
+    """The spark's row belongs to the spark: a gray phase word (`thinking`, then `responding`) sits
+    beside it, and the streamed text starts on its own rail row below, so the first line never
+    races for whatever room the spark leaves -- with or without the word, the layout is the same.
 
     The rows carry CONTINUE and nothing carries BRANCH -- `├` is a T-junction, and there is no
     line above the block for one to join. Nothing closes it either: the stream is still arriving,
@@ -326,8 +326,8 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
-    # The phase word rides beside the spark while the model thinks, and leaves when it answers;
-    # the preview carries only the text it is previewing otherwise.
+    # The phase word rides beside the spark and follows the stream: `thinking` while the model
+    # reasons, `responding` once it answers; the preview carries only the text besides that.
     loop.model_stream_output("reasoning", "checking the request")
     reasoning = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "checking the request" in reasoning
@@ -337,8 +337,8 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     loop.model_stream_output("output", "answering now")
     output = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "answering now" in output
-    assert "thinking" not in output  # the word names thinking only, not the answering stream
-    assert "responding" not in output
+    assert "thinking" not in output  # the word follows the phase instead of staying stale
+    assert "responding" in output
     assert "checking the request" not in output
     assert "responding" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 

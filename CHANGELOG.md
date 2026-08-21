@@ -15,8 +15,9 @@
   fine star and a heavier one at the darkest point of its breath (so the change is barely
   visible) and is bold throughout: bigger and still continuous. A blank row now separates the
   spark from the output rail below it, so the star reads as capping the region rather than
-  sitting on it. While the model thinks, a gray `thinking` rides beside the spark and the
-  streamed text starts on its own row below, so the first line no longer shares the spark's row.
+  sitting on it. A gray phase word rides beside the spark -- `thinking` while the model reasons,
+  `responding` once it answers -- and the streamed text starts on its own row below, so the first
+  line no longer shares the spark's row.
 - The `/sessions` / `/resume` list now lines up its columns: session name, age, and round count
   are padded to the widest value in each column (measured in terminal cells, so CJK names align
   too) instead of running together on one ragged line.

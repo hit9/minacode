@@ -405,18 +405,19 @@ class View:
         # arriving, and an end cap would say it had finished.
         rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
         rows = [Text.clip_width(line.expandtabs(4), max(1, width - len(rail) - 1)) for line in text.replace("\r", "\n").splitlines()[-6:]]
-        # The spark's row is the region's own, never the text's: while the model thinks, a gray
-        # `thinking` beside the spark names the region, and the first streamed line can arrive on
-        # the next row down instead of racing for whatever room the spark leaves. The rows are what
-        # the reader is actually reading, and breathing those would be a strobe rather than a sign
-        # of life.
+        # The spark's row is the region's own, never the text's: a gray word beside the spark names
+        # the phase (the same wording the divider below uses), and the first streamed line can arrive
+        # on the next row down instead of racing for whatever room the spark leaves. The rows are
+        # what the reader is actually reading, and breathing those would be a strobe rather than a
+        # sign of life.
         spark = LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.glyph(self.loop.session.state.stream_started_at)
+        label = {"reasoning": "thinking", "output": "responding"}.get(kind)
         fragments: StyleAndTextTuples = [
             # Anchored to the stream this preview is showing, which ModelClient stamps on the
             # first chunk of each request and clears between them, so every response opens the
             # spark at its crest instead of wherever the wall clock happened to be.
             (LiveSpark.style(self.loop.session.state.stream_started_at), spark),
-            *([("ansibrightblack", "thinking")] if kind == "reasoning" else []),
+            *([("ansibrightblack", label)] if label else []),
             ("", "\n"),
             # A blank row keeps the spark off the rail: the star caps the region, it does not sit
             # on it. The running-command frame draws the same gap whenever it has output.
