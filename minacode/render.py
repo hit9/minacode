@@ -914,7 +914,9 @@ class LiveSpark:
     # Exactly the width of a rail, so it sits in the rail's column and the rows keep their own.
     # A text glyph rather than an emoji: terminals draw emoji in their own colors, so a breath put
     # on one lands on whatever is beside it instead, and emoji are two cells before the space.
-    GLYPH: ClassVar[str] = "✦ "
+    # A solid six-pointed star rather than the thin four-pointed one: the terminal has no font
+    # size, so a heavier glyph is the only way the mark can read bigger than its neighbors.
+    GLYPH: ClassVar[str] = "✶ "
     # Twice the divider pulse's period: that dot marks a request in flight and should read as a
     # heartbeat, while this one sits over a wall of text and would nag at that rate.
     PERIOD: ClassVar[float] = 3.2
