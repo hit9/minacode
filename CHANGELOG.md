@@ -13,6 +13,10 @@
 
 ### Changed
 
+- Tool lines and reply paragraphs now enter native scrollback through the same renderer that owns
+  the live footer, so frequent output no longer erases or duplicates the divider and input rows.
+  In a small or narrow tmux pane, the live activity area also contracts instead of covering all
+  recent scrollback.
 - Worker replies printed between tool calls now render as markdown, like the worker's final
   report. Tool lines stay as the log tree.
 - The live stream preview now marks inline markdown in the streaming text: `**bold**`,

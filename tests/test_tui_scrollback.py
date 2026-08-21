@@ -1,16 +1,22 @@
-"""TUI scrollback output: a burst of emits must suspend the application once, not once per line.
+"""TUI scrollback output through the owned renderer and stock fallback.
 
-Every UiPrinter print suspends prompt_toolkit's renderer (erase the live application, write above
-it, repaint), and the animated divider disappears for that erase/CPR gap. Tool results publish
-several lines in quick succession, so the burst must be batched into a single suspend.
+The TUI renderer writes above its live layout without erasing it when CPR established the layout's
+terminal origin. Until then, UiPrinter falls back to prompt-toolkit's erase/write/repaint suspend.
+Consecutive result lines are batched in both cases.
 
-The tests drive a minimal prompt_toolkit Application (the same run_in_terminal machinery TuiApp
-uses) with a recording output, count the renderer.erase() fingerprint, and assert the burst
-produces exactly one suspend.
+The tests cover both paths with recording outputs, then exercise CPR, animation, synchronous and
+batched output, native history, and resize against a real tmux pane.
 """
 
 import asyncio
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import textwrap
 import threading
+import time
 
 import pytest
 from prompt_toolkit.application import Application, create_app_session
@@ -27,6 +33,7 @@ from tui_harness import session
 from minacode.cli import CommandLoop, TuiRuntime
 from minacode.engine import Agent
 from minacode.render import UiPrinter
+from minacode.tui.renderer import install_scrollback_renderer
 
 # Every terminal-writing method of prompt_toolkit's Output interface. The recorder logs the
 # method name and arguments, so the test can count the renderer.erase() fingerprint that marks
@@ -114,7 +121,7 @@ def fragment_text(fragments):
     return "".join(piece for _, piece in fragments)
 
 
-def _run_application_with_emit(rec, emit):
+def _run_application_with_emit(rec, emit, *, owned=False):
     """Run a minimal application; `emit` runs while it is live and must finish before exit."""
     layout = Layout(
         HSplit(
@@ -129,9 +136,12 @@ def _run_application_with_emit(rec, emit):
     )
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=rec):
         app = Application(layout=layout, output=rec, input=pipe, full_screen=False)
+        renderer = install_scrollback_renderer(app) if owned else app.renderer
 
         async def drive():
             await asyncio.sleep(0.05)  # let the first render land
+            if owned:
+                renderer.report_absolute_cursor_row(23)
             emit()
             await asyncio.sleep(0.3)  # batching window + run_in_terminal round trip
             app.exit()
@@ -159,6 +169,164 @@ def test_tool_output_burst_suspends_the_application_once():
     assert suspend_count(burst) == 1, "a burst of emits must suspend the application exactly once"
     text = written_text(burst)
     assert text.index("tool line one") < text.index("tool line two") < text.index("tool line three")
+
+
+def test_owned_renderer_prints_without_suspending_and_restores_the_absolute_cursor():
+    class BottomOutput(RecordingOutput):
+        def get_rows_below_cursor_position(self):
+            return 2
+
+    rec = BottomOutput()
+    ui = UiPrinter(print)
+    ui.color = True
+
+    _run_application_with_emit(rec, lambda: ui.emit("tool line\n"), owned=True)
+
+    burst = rec.snapshot()
+    assert suspend_count(burst) == 0
+    raw = "".join(args[0] for name, args in burst if name == "write_raw" and args)
+    assert "\x1b[1;22r" in raw
+    region = next(index for index, call in enumerate(burst) if call == ("write_raw", ("\x1b[1;22r",)))
+    assert burst[region + 1] == ("cursor_goto", (22, 1))
+    reset = next(index for index, call in enumerate(burst) if call == ("write_raw", ("\x1b[r",)))
+    assert burst[reset + 1] == ("cursor_goto", (24, 1))
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is required for the terminal integration boundary")
+def test_real_tmux_scrollback_keeps_one_footer_and_orders_sync_and_batched_output():
+    """Exercise CPR, the real tmux grid, synchronous promotion, and an ordinary queued emit."""
+    socket = f"minacode-scrollback-{os.getpid()}-{time.monotonic_ns()}"
+    script = textwrap.dedent(
+        """
+        import os
+        import threading
+        import time
+
+        from minacode.render import UiPrinter
+        from minacode.tui.app import TuiApp
+        from minacode.tui.renderer import ScrollbackRenderer
+
+        print("\\n".join(f"HISTORY_{index}" for index in range(12)), flush=True)
+        ui = UiPrinter(print)
+        tui = TuiApp(
+            status_fragments_fn=lambda: [("", "STATUS_SENTINEL")],
+            activity_fragments_fn=lambda: [("", "activity first row\\nACTIVITY_SENTINEL")],
+            flush_scrollback=ui.drain_scrollback,
+        )
+        tui.set_running("working")
+
+        def drive():
+            if not tui.ready.wait(5):
+                os._exit(2)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                app = tui.app
+                if app is not None and isinstance(app.renderer, ScrollbackRenderer) and app.renderer.scrollback_ready:
+                    break
+                time.sleep(0.01)
+            else:
+                os._exit(3)
+            tui.write_to_scrollback(lambda: ui.emit("PROMOTED_SENTINEL\\n"))
+            ui.emit("TOOL_SENTINEL\\n")
+            time.sleep(1)
+            ui.emit("SMALL_SENTINEL\\n")
+            time.sleep(1)
+            ui.emit("GROWN_SENTINEL\\n")
+            time.sleep(10)
+            tui.exit()
+
+        threading.Thread(target=drive, daemon=True).start()
+        tui.run()
+        """
+    )
+    command = shlex.join([sys.executable, "-c", script])
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "-x", "80", "-y", "20", command],
+            cwd=os.getcwd(),
+            check=True,
+            timeout=5,
+        )
+        pane = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        ).stdout.strip()
+        deadline = time.monotonic() + 5
+        captured = ""
+        while time.monotonic() < deadline:
+            captured = subprocess.run(
+                ["tmux", "-L", socket, "capture-pane", "-p", "-t", pane, "-S", "-50"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            ).stdout
+            if "TOOL_SENTINEL" in captured:
+                break
+            time.sleep(0.05)
+        assert "TOOL_SENTINEL" in captured
+        sibling = subprocess.run(
+            ["tmux", "-L", socket, "split-window", "-d", "-v", "-l", "14", "-P", "-F", "#{pane_id}", "sleep 10"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        ).stdout.strip()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            captured = subprocess.run(
+                ["tmux", "-L", socket, "capture-pane", "-p", "-t", pane, "-S", "-50"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            ).stdout
+            if "SMALL_SENTINEL" in captured:
+                break
+            time.sleep(0.05)
+        assert "SMALL_SENTINEL" in captured, captured
+        assert "HISTORY_11" in captured, captured
+        visible = subprocess.run(
+            ["tmux", "-L", socket, "capture-pane", "-p", "-t", pane],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        ).stdout
+        assert "SMALL_SENTINEL" in visible, visible
+        assert visible.count("ACTIVITY_SENTINEL") == 1
+        assert visible.count("STATUS_SENTINEL") == 1
+        subprocess.run(["tmux", "-L", socket, "kill-pane", "-t", sibling], check=True, timeout=2)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            captured = subprocess.run(
+                ["tmux", "-L", socket, "capture-pane", "-p", "-t", pane, "-S", "-50"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            ).stdout
+            if "GROWN_SENTINEL" in captured:
+                break
+            time.sleep(0.05)
+        assert "GROWN_SENTINEL" in captured, captured
+        visible = subprocess.run(
+            ["tmux", "-L", socket, "capture-pane", "-p", "-t", pane],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        ).stdout
+        assert "GROWN_SENTINEL" in visible, visible
+        assert "PROMOTED_SENTINEL" in captured, captured
+        assert visible.count("STATUS_SENTINEL") == 1
+        assert visible.count("ACTIVITY_SENTINEL") == 1
+        assert captured.index("PROMOTED_SENTINEL") < captured.index("TOOL_SENTINEL") < captured.index("SMALL_SENTINEL") < captured.index("GROWN_SENTINEL")
+    finally:
+        subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True, timeout=2, check=False)
 
 
 def test_emit_without_running_application_prints_directly(monkeypatch):
@@ -226,8 +394,8 @@ def test_drain_scrollback_prints_queued_output_at_shutdown(monkeypatch):
     assert ui._scrollback_parts == []
 
 
-def test_tui_runtime_wires_scrollback_drain_on_app_stop(tmp_path, monkeypatch):
-    """TuiApp calls UiPrinter.drain_scrollback once the application stops."""
+def test_tui_runtime_wires_scrollback_drain(tmp_path, monkeypatch):
+    """TuiApp can synchronously drain UiPrinter's queued scrollback."""
     loop = CommandLoop(
         Agent(session(tmp_path), output_fn=lambda text: None),
         input_fn=lambda prompt="": "",
@@ -237,7 +405,7 @@ def test_tui_runtime_wires_scrollback_drain_on_app_stop(tmp_path, monkeypatch):
     monkeypatch.setattr(loop.ui, "drain_scrollback", lambda: drained.append(True))
 
     tui = TuiRuntime(loop).build_tui()
-    tui.on_app_stop()
+    tui.flush_scrollback()
 
     assert drained == [True]
 
