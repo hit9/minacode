@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- In the Ctrl-O output browser, `Esc` inside a detail now returns to the list with the cursor on
+  the entry it came from instead of closing the whole browser; `q` (or Ctrl-O again) still closes
+  it.
+
 ## 0.29.1 - 2026-08-20
 
 ### Fixed
