@@ -401,7 +401,7 @@ class View:
         rows = [Text.clip_width(line.expandtabs(4), max(1, width - len(rail) - 1)) for line in text.replace("\r", "\n").splitlines()[-6:]]
         # The spark caps the rail and is the only thing that moves. The rows are what the reader is
         # actually reading, and breathing those would be a strobe rather than a sign of life.
-        spark = LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.glyph(self.loop.session.state.stream_started_at)
+        spark = LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.GLYPH
         fragments: StyleAndTextTuples = []
         for index, row in enumerate(rows):
             if index:

@@ -915,9 +915,6 @@ class LiveSpark:
     # A text glyph rather than an emoji: terminals draw emoji in their own colors, so a breath put
     # on one lands on whatever is beside it instead, and emoji are two cells before the space.
     GLYPH: ClassVar[str] = "✦ "
-    # Three weights of the same star, cycled with the breath so the region shows life through
-    # shape as well as color. Each is the width of a rail; GLYPH is the phase-zero entry.
-    GLYPHS: ClassVar[tuple[str, ...]] = ("✦ ", "✧ ", "❈ ")
     # Twice the divider pulse's period: that dot marks a request in flight and should read as a
     # heartbeat, while this one sits over a wall of text and would nag at that rate.
     PERIOD: ClassVar[float] = 3.2
@@ -966,15 +963,6 @@ class LiveSpark:
         intensity = abs(2.0 * phase - 1.0)  # 1 at the start, 0 at the half-period, 1 again
         ramp = cls.ramp()
         return ramp[min(len(ramp) - 1, int(intensity * len(ramp)))]
-
-    @classmethod
-    def glyph(cls, started_at: float = 0.0) -> str:
-        """The spark's mark at this phase: the three stars cycle with the breath, so a region
-        with nothing else moving still pulses through shape as well as color. Shares the phase
-        clock with `style`, and every entry is the width of a rail; `GLYPH` is the phase-zero one."""
-        elapsed = (time.monotonic() - started_at) if started_at else time.monotonic()
-        phase = (elapsed % cls.PERIOD) / cls.PERIOD
-        return cls.GLYPHS[int(phase * len(cls.GLYPHS)) % len(cls.GLYPHS)]
 
 
 class BashLivePreview:
@@ -1073,7 +1061,7 @@ class BashLivePreview:
         limit = max(1, width - get_cwidth(rail) - 1)
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
-        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.glyph(self.started_at)), ("ansibrightblack", status)]]
+        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.GLYPH), ("ansibrightblack", status)]]
         rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
         return rows
 

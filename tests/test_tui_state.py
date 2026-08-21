@@ -213,7 +213,7 @@ def test_bash_live_preview_frame_rows():
     # The spark caps the rail in place of the old BRANCH glyph, which hung off a root that the
     # frame never had: it is built as `hierarchy(None, ...)`. Same mark as the stream preview --
     # both say the same thing, that the region is live with nothing new to show yet.
-    assert lines[0].startswith(LogBlock.margin(2) + LiveSpark.glyph(preview.started_at))
+    assert lines[0].startswith(LogBlock.margin(2) + LiveSpark.GLYPH)
     assert rows[0][0][0] == LiveSpark.style(preview.started_at)  # the one fragment that breathes,
     # anchored to this command rather than the wall clock, so it opens at its crest.
     preview.started_at = time.monotonic()
@@ -265,21 +265,6 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
     clock[0] = 7.0  # no anchor: still breathing, just at whatever phase the clock is in
     assert LiveSpark.style() in ramp
 
-    # The three stars cycle with the breath: phase zero is GLYPH, a later phase is another weight.
-    clock[0] = 0.0
-    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH
-    clock[0] = LiveSpark.PERIOD / 3
-    assert LiveSpark.glyph(started_at=0.0) != LiveSpark.GLYPH
-    # All three weights appear across one period (phases kept clear of the 1/3 and 2/3
-    # boundaries, where float rounding could land on either side), and the cycle wraps to GLYPH.
-    seen = set()
-    for fraction in (0.0, 0.4, 0.8):
-        clock[0] = fraction * LiveSpark.PERIOD
-        seen.add(LiveSpark.glyph(started_at=0.0))
-    assert seen == set(LiveSpark.GLYPHS)
-    clock[0] = LiveSpark.PERIOD
-    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH
-
     def luma(style):
         red, green, blue = Theme.rgb(style.split()[0])
         return 0.299 * red + 0.587 * green + 0.114 * blue
@@ -309,13 +294,10 @@ def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
     lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
 
     rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
-    assert any(
-        lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + glyph + "weighing the two paths" for glyph in LiveSpark.GLYPHS
-    )  # any cycled star may lead the preview: no anchor means the wall clock picks the phase
+    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.GLYPH + "weighing the two paths"
     assert lines[1] == rail + "the second option is cleaner"
     assert "thinking" not in "".join(lines)  # named on the divider, not repeated here
     assert len(LiveSpark.GLYPH) == len(LogBlock.RAIL)  # so the spark sits in the rail's column
-    assert all(len(glyph) == len(LogBlock.RAIL) for glyph in LiveSpark.GLYPHS)  # every cycled star does too
     assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
     # The column a tool's own output lines are drawn in: the two trees share a grid.
     tool = str(LogBlock.hierarchy(LogLine("Bash", "pytest -q", LogRole.TOOL), [LogLine("", "output line", LogRole.OUTPUT, LogEdge.CONTINUE)]))
@@ -382,8 +364,8 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
 
     activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert activity.count("use black instead") == 1
-    # Any cycled star may lead the preview row; the text after it is what the order checks.
-    assert activity.index("• use black instead") < activity.index("checking the formatter") < activity.rindex("thinking")
+    preview = LiveSpark.GLYPH + "checking the formatter"
+    assert activity.index("• use black instead") < activity.index(preview) < activity.rindex("thinking")
     assert "+ use black instead" not in activity
     assert "queued" not in activity and "sent" not in activity
 

@@ -279,9 +279,8 @@ def test_bash_live_preview_skips_unchanged_redraws(monkeypatch):
     now[0] = 101.1
     p.render()
     assert len(printed) > first
-    # BashLivePreview uses sub-second precision (`1.1s`) so the ticker feels live. The spark may
-    # have cycled to another star by then, so match any of them.
-    assert any(any(glyph + "running… 1.1s" in line for glyph in LiveSpark.GLYPHS) for line in printed[first:])
+    # BashLivePreview uses sub-second precision (`1.1s`) so the ticker feels live.
+    assert any(LiveSpark.GLYPH + "running… 1.1s" in line for line in printed[first:])
 
 
 def test_bash_promoted_job_is_killable(tmp_path):
