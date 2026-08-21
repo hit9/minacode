@@ -166,6 +166,54 @@ def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_
     assert sum("read-only" in frame for frame in frames) == 4
 
 
+def test_tool_output_viewer_ctrl_o_in_a_detail_closes_the_browser(tmp_path, monkeypatch):
+    """Ctrl-O inside a detail still closes the whole browser: only Esc goes back to the list."""
+    command_loop = loop(tmp_path)
+    for index in range(3):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    modal = ModalHarness(["j", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    assert modal.exclusive == [False, True]  # list, detail -- and no reopened list
+    assert sum("Tool output" in frame for frame in frames) == 3  # the list rendered its three frames once
+    assert sum("read-only" in frame for frame in frames) == 2  # the detail closed the browser
+
+
+def test_tool_output_viewer_keeps_the_search_filter_across_an_escape(tmp_path, monkeypatch):
+    """A `/` filter survives Esc back to the list: the reopened list is still filtered."""
+    command_loop = loop(tmp_path)
+    for index in range(5):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # Filter to the newest entry, open it, Esc back: the reopened list still shows just that
+    # entry, then the second enter opens it again and q closes the browser.
+    modal = ModalHarness(["/", *"command-4", "enter", "enter", "escape", "enter", "q"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert modal.exclusive == [False, True, False, True]
+    assert "command-4" in listings[0] and "command-3" in listings[0]  # the full list first
+    # The reopened list is still filtered to the one matching entry, not the full list again.
+    assert "command-4" in listings[-1]
+    assert "command-3" not in listings[-1] and "command-0" not in listings[-1]
+    assert sum("read-only" in frame for frame in frames) == 4
+
+
 def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path):
     """A row is one row. `short_call` keeps a multi-line command whole for the transcript, and a
     `git commit -m` with a real message would otherwise spill its row over several lines, carrying
