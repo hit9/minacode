@@ -377,9 +377,14 @@ class View:
     def tui_activity_fragments(self) -> StyleAndTextTuples:
         sent, waiting = self.followup_fragments()
         fragments = sent
+        stream = self.model_stream_fragments()
         if fragments:
             fragments.append(("", "\n"))
-        stream = self.model_stream_fragments()
+            if stream:
+                # A blank row lifts the echoed follow-up off the streamed reply that follows, so
+                # the two do not sit pressed together. Only when there is a stream: an empty one
+                # must not leave a hanging blank row at the end of the activity region.
+                fragments.append(("", "\n"))
         fragments.extend(stream)
         if stream:
             fragments.append(("", "\n"))

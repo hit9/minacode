@@ -277,6 +277,36 @@ def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
     assert any(style == expected and "queued message" in text for style, text in [*sent, *waiting])
 
 
+def test_activity_blank_line_separates_flushed_followup_from_the_stream(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.enqueue_user_input("queued message")
+    command_loop.session.claim_user_inputs()  # inflight: renders as the sent (echoed) follow-up
+    command_loop.model_stream_kind = "output"
+    command_loop.model_stream_text = "streamed reply line"
+
+    text = "".join(fragment for _style, fragment in command_loop.view.tui_activity_fragments())
+    lines = text.splitlines()
+    echo = next(index for index, line in enumerate(lines) if "queued message" in line)
+    # Exactly one blank row separates the echoed follow-up from the stream's first row, so the
+    # two never sit pressed together.
+    assert lines[echo + 1] == ""
+    assert lines[echo + 2]
+    assert "streamed reply line" in text
+
+
+def test_activity_leaves_no_hanging_blank_row_when_nothing_streams(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.enqueue_user_input("queued message")
+    command_loop.session.claim_user_inputs()
+
+    text = "".join(fragment for _style, fragment in command_loop.view.tui_activity_fragments())
+    lines = text.splitlines()
+    echo = next(index for index, line in enumerate(lines) if "queued message" in line)
+    # Without a stream there is nothing for the blank row to separate, so the divider follows the
+    # echoed row directly instead of a trailing empty row.
+    assert lines[echo + 1]
+
+
 @pytest.mark.parametrize("width", [20, 40, 80])
 def test_styled_wrapping_respects_terminal_width_for_unicode(width):
     prefix = [("", "  Read  ")]
