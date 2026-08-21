@@ -1008,8 +1008,9 @@ class ToolRunner:
         elif call.name == "ViewImage" and d.vision_entry:
             # The bridged observation is a child of the call line, drawn before the stored row, so
             # the trace can never appear above its own call (the attachment path's standalone
-            # line is the engine's, not a tool's).
-            children.append(LogLine("described by", d.vision_entry, LogRole.META, LogEdge.BRANCH))
+            # line is the engine's, not a tool's). TOOL, not sibling children's META: the stored
+            # row is bookkeeping, this is a real request on another paid entry.
+            children.append(LogLine("described by", d.vision_entry, LogRole.TOOL, LogEdge.BRANCH))
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree and root is not None:
