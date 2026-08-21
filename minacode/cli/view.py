@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, ClassVar
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import LogBlock, LogEdge, Text, TurnBox
 from minacode.cli.commands import SET_KEYS, SET_VALUES
@@ -279,7 +280,12 @@ class View:
     # Line-level markdown tokens the live stream preview styles. Block constructs (headings,
     # lists, fenced code) are deliberately not parsed: the preview shows partial streaming text,
     # and only tokens that close on one line can render without flickering as the stream grows.
-    STREAM_INLINE_RE: ClassVar[re.Pattern[str]] = re.compile(r"(\*\*[^*\n]+\*\*|`[^`\n]+`|\*[^*\n]+\*)")
+    # Each token must hold a non-blank character, so whitespace-only runs (`** **`, `* *`) stay
+    # literal; the italic branch's `(?<!\*) ... (?!\*)` guards keep a lone star from borrowing
+    # itself out of a `**` run.
+    STREAM_INLINE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(\*\*[^*\n]*[^*\s\n][^*\n]*\*\*|`[^`\n]*[^`\s\n][^`\n]*`|(?<!\*)\*[^*\n]*[^*\s\n][^*\n]*\*(?!\*))"
+    )
 
     def __init__(self, loop: CommandLoop) -> None:
         self.loop = loop
@@ -299,14 +305,26 @@ class View:
         prefix_len = sum(len(fragment[1]) for fragment in prefix)
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
-        body_len = prefix_len + len(label) + 2  # prefix + " label "
         lead = 3
-        trail = max(3, width - lead - body_len)
+        # A comet needs a track long enough to read as motion: a label that fills the width (the
+        # worker's `[worker]` + status + elapsed + rate + queued) squeezes the trail to a few
+        # dashes, and the head bouncing across them at the frame rate reads as frantic. Clip the
+        # label to whatever leaves MIN_TRAIL dashes on the trail side.
+        min_trail = 6
+        avail = max(1, width - lead - min_trail - 2 - prefix_len)
+        if get_cwidth(label) > avail:
+            label = Text.clip_width(label, avail)
+        body_len = prefix_len + get_cwidth(label) + 2  # prefix + " label "
+        trail = max(min_trail, width - lead - body_len)
         dash_count = lead + trail
         # The comet head bounces over the horizontal rule only. The label stays stable and readable
         # while the glow appears to pass through the dash track on either side.
         span = max(1, dash_count - 1)
-        phase = time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC % (2 * span)
+        # A short track (a clipped long label) must not make the head bounce faster than the eye
+        # can follow: hold each round trip to at least a second by lowering the sweep rate as the
+        # span shrinks; normal-length tracks keep the full frame-per-cell rate.
+        sweep = min(self.QUEUE_SWEEP_CELLS_PER_SEC, 2 * span / 1.0)
+        phase = time.monotonic() * sweep % (2 * span)
         head = phase if phase <= span else 2 * span - phase
 
         def dashes(offset: int, count: int) -> StyleAndTextTuples:

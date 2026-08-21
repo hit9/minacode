@@ -989,8 +989,9 @@ def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, 
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     log_outputs = []
     answer_outputs = []
+    append_answer = answer_outputs.append
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=log_outputs.append)
-    runner.worker_answer = answer_outputs.append
+    runner.worker_answer = append_answer
 
     _delegate_call(parent, runner, action="send", order="o")
 
@@ -998,6 +999,12 @@ def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, 
     assert answer_outputs == ["**thinking out loud**", "done"]
     # Worker tool output still flows through the ordinary log stream as LogBlock.
     assert any(isinstance(block, LogBlock) for block in log_outputs)
+    # The bindings that make the split work: the worker agent's model text goes to the markdown
+    # hook, and its tool runner is pinned to the plain log wrapper -- dropping the pin would let
+    # tool output slip into the markdown channel.
+    agent = parent.worker._agent
+    assert agent.output_fn is append_answer
+    assert agent.tools.output_fn is not append_answer
 
 
 def test_worker_output_passes_memory_shaped_text_through_for_highlighting():

@@ -344,7 +344,9 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
 
     loop.model_stream_output("correcting malformed tool call 1/5 · Bash", "")
     assert loop.view.model_stream_fragments() == []
-    assert "correcting malformed tool call 1/5 · Bash" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    divider = "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "correcting malformed tool call" in divider  # the phase still names the correction
+    assert "..." in divider  # a label wider than the divider is clipped, not dropped
 
     loop.model_stream_output("", "")
     assert loop.view.model_stream_fragments() == []
@@ -366,6 +368,42 @@ def test_model_stream_preview_styles_inline_markdown(tmp_path):
     assert ("code", "ansibrightcyan") in styled
     assert ("italic", "italic") in styled
     assert (" and **unclosed", "ansibrightblack") in styled  # no closing marker: the tail stays literal
+
+
+def test_model_stream_preview_keeps_malformed_star_runs_literal(tmp_path):
+    """A lone star can never be borrowed from a double-star run: `**a*` and `*a**` are unclosed
+    markers, not italic, and stay gray instead of mis-rendering as `*a*`."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+
+    loop.model_stream_output("reasoning", "**a* *a** **** **a**b**")
+
+    styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
+    assert ("**a* *a** **** ", "ansibrightblack") in styled  # unclosed and empty star runs stay literal
+    assert ("a", "bold") in styled  # the closed bold inside the last token still renders
+    assert ("b**", "ansibrightblack") in styled  # the trailing unclosed run stays literal
+    assert not any(text == "a" and style == "italic" for text, style in styled)  # no italic borrowed from `**`
+
+
+def test_sweep_divider_clips_long_labels_to_keep_the_comet_track(tmp_path):
+    """A label that would fill the width (the worker's `[worker]` + status + elapsed + rate +
+    queued) is clipped so the trail keeps enough dashes for the comet to read as motion instead
+    of bouncing across two or three dashes at the frame rate."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    view = loop.view
+
+    long_label = "[worker] thinking (5m07s · ↓ 75 tok/s) [ 1 queued ]"
+    fragments = view.sweep_divider_fragments(long_label)
+    dashes = sum(1 for _style, text in fragments if text == "-")
+    assert dashes >= 3 + 6  # lead + the minimum trail
+    assert any(".." in text for _style, text in fragments)  # the clip marked the cut
+
+    short_label = "working"
+    plain = view.sweep_divider_fragments(short_label)
+    assert any(text == short_label for _style, text in plain)  # a short label is never clipped
 
 
 def test_queue_divider_resuming_status_is_a_quiet_gray_line(tmp_path):

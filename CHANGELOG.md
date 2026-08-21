@@ -19,6 +19,9 @@
   `` `code` ``, and `*italic*` render styled once their closing marker arrives, and plain text
   stays gray. Block constructs and unclosed markers stay literal, so a stream mid-token never
   flickers.
+- A divider label wider than the rule (e.g. the worker's `[worker]` + status + elapsed + rate +
+  queued line) is clipped instead of squeezing the comet's dash track to two or three dashes,
+  and the comet slows down on a short track so it never reads as frantic.
 
 ## 0.30.0 - 2026-08-21
 
