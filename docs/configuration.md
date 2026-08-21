@@ -116,7 +116,32 @@ With `image_input = "auto"`, minacode sends attached images using the selected s
 successful image request is remembered for that provider and model during the session; only an
 explicit image-not-supported response disables later image submissions. Set `on` or `off` when the
 endpoint's capability is already known. Historical images remain readable as text labels after
-switching to a provider or model with image input disabled.
+switching to a provider or model with image input disabled. When image input is disabled and a
+[vision model](#vision-model) is configured, images are handled by the vision model instead of
+being rejected.
+
+## Vision model
+
+Some text-only models ship a sibling vision model from the same vendor (for example DeepSeek's
+`deepseek-v4-flash-vision-exp` or GLM's `glm-4.5v`). Point minacode at one and images keep
+working even when the active provider cannot take them:
+
+```toml
+[vision]
+provider = "vision"
+
+[provider.vision]
+url = "https://api.deepseek.com"
+key = "sk-..."
+model = "deepseek-v4-flash-vision-exp"
+```
+
+With `[vision]` configured, an image you paste or attach, or a `ViewImage` call, is sent to the
+vision model when the active provider cannot take images. The vision model's plain-text
+description is what the main model reads, and the image stays stored under the session's assets
+so you can keep asking `ViewImage` with a `question` for details. When the active provider can
+take images, the vision model is not used. Each attached or viewed image costs one vision-model
+request, and every follow-up `question` is another one.
 
 ## Runtime
 

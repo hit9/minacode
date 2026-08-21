@@ -123,6 +123,19 @@ Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
 
+# The vision bridge hands one image and one question to a dedicated perception model whose answer
+# comes back as plain text. Perception only: the main (possibly text-only) model does the
+# reasoning, so the vision model must never drift into solving the coding task.
+VISION_OBSERVE_PROMPT = (
+    "You are a perception model. Describe the image factually and concisely: visible text "
+    "verbatim, layout, UI elements, colors, and anything the question asks about. Do not write "
+    "code, call tools, or solve the task the main agent is working on; only observe and report."
+).strip()
+
+# Sent when ViewImage is called without an explicit question: a plain descriptive observation is
+# still useful to the main model, and the request must not be silently skipped.
+VISION_OBSERVE_DEFAULT_QUESTION = ("Describe this image factually and concisely, quoting any visible text verbatim.").strip()
+
 LIVE_FOLLOWUP_PREFIX = """[Live follow-up received while you were working]
 REQUIRED: Answer this in visible text in your next assistant message. Keep the text in the same message as whatever tool calls you make next; a tool-calling message may carry text, so acknowledging costs you no extra step. The text is a brief progress update, not the final answer.
 """

@@ -350,6 +350,13 @@ class Config:
     compaction_reasoning: str = ""
     compaction_api: str = ""
 
+    # The provider entry whose model observes images when the active model cannot (the vision
+    # bridge): `[vision] provider = "<entry>"` names a base provider entry carrying the vision
+    # model's url/key/model, mirroring [worker]. The vision model only perceives -- it never
+    # receives tools or the coding task -- so it is a plain provider entry, not a worker
+    # session. Empty disables the bridge and ViewImage keeps today's behavior exactly.
+    vision_provider: str = ""
+
     # Backward compatibility: the data dir moved from ~/.nanocode to ~/.minacode.
     LEGACY_DATA_DIR: ClassVar[str] = "~/.nanocode"
 
@@ -398,6 +405,10 @@ class Config:
         compaction_api = cls.str(compaction_root, "api", "")
         if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
             raise ConfigError("compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
+        vision_root = cls.table(data, "vision")
+        vision_provider = cls.str(vision_root, "provider", "")
+        if vision_provider and vision_provider not in providers:
+            raise ConfigError(f"vision.provider `{vision_provider}` does not exist")
         return cls(
             active_provider=active,
             providers=providers,
@@ -411,6 +422,7 @@ class Config:
             compaction_model=cls.str(compaction_root, "model", ""),
             compaction_reasoning=compaction_reasoning,
             compaction_api=compaction_api,
+            vision_provider=vision_provider,
         )
 
     @staticmethod
@@ -541,6 +553,11 @@ model = ""
 # model = ""                  # optional: override the entry's model (inherit by default)
 # reasoning = ""              # optional: override the entry's reasoning; /worker reason at runtime
 # api = ""                    # optional: override the entry's api protocol; empty = inherit the entry's own
+# [vision]                     # optional: a vision model that reads images when the active
+# provider = "vision"          # provider cannot; names a provider entry carrying the vision
+                               # model's url/key/model. Attached images and ViewImage calls are
+                               # answered by it in plain text; unused when the active model
+                               # already takes images.
 # [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
 # auto_connect = false
@@ -602,3 +619,11 @@ def compaction_provider_config(config: Config) -> ProviderConfig:
         if value:
             setattr(provider, attr, value)
     return provider
+
+
+def vision_provider_config(config: Config) -> ProviderConfig:
+    """The provider entry vision requests run on; callers gate on `config.vision_provider` being
+    non-empty. Unlike compaction there are no per-field overrides, so the entry is used as-is and
+    never mutated. Resolved per call, never cached."""
+
+    return config.providers[config.vision_provider]

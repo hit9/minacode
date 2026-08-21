@@ -569,7 +569,9 @@ class Session:
 
     def enqueue_user_input(self, value: str | UserInput) -> None:
         if isinstance(value, UserInput) and value.images:
-            message = self.images.message(value)
+            # force: on a bridging session the queue holds the images and the turn observes them
+            # when it accepts the input; without a bridge the gate below still refuses.
+            message = self.images.message(value, force=self.images.bridging())
             text = str(message.get("content") or "").strip()
             images = self.images.refs(message)
             draft = str(value)

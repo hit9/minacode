@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A `[vision]` provider entry lets a text-only main model read images. When the active provider
+  cannot take images, images pasted or attached to a message, and `ViewImage` calls, are handled
+  by the configured vision model instead: its plain-text description is what the main model
+  reads, the image stays stored under the session's assets, and you can keep asking `ViewImage`
+  with a `question` for details. Configure it with `[vision] provider = "..."` in the config
+  file; when the active provider can take images, the vision model is not used.
+
 ## 0.30.0 - 2026-08-21
 
 ### Fixed

@@ -188,7 +188,9 @@ from the workspace; quoted paths and backslash-escaped spaces are accepted.
 
 PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends images using the selected
 standard API. If the provider explicitly rejects image input, that result is remembered for the
-session and later image submissions are blocked without clearing the draft. Queued follow-ups,
+session and later image submissions are blocked without clearing the draft — unless a
+[vision model](configuration.md#vision-model) is configured, in which case the image is described
+by the vision model instead. Queued follow-ups,
 resumed sessions, and providers with image input disabled keep readable image labels. See
 [`provider.image_input`](configuration.md#optional-provider-settings) to override automatic detection.
 

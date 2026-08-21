@@ -78,7 +78,15 @@ def responses_input(
             converted.append(
                 {
                     "role": role,
-                    "content": images.responses_content(message) if role == "user" and images.refs(message) else str(content),
+                    "content": (
+                        images.responses_content(message)
+                        if role == "user" and images.refs(message)
+                        # A pre-built content list (a vision-bridge request) is already in the
+                        # Responses wire shape; str() would flatten it into one text blob.
+                        else content
+                        if isinstance(content, list)
+                        else str(content)
+                    ),
                 }
             )
         if role == "assistant":

@@ -41,14 +41,17 @@ from minacode.base import (
 from minacode.config import (
     ProviderConfig,
     compaction_provider_config,
+    vision_provider_config,
 )
-from minacode.image import IMAGE_REFS_KEY, ImageInputs
+from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef
 from minacode.model import chat, resilience, responses
 from minacode.prompts import (
     COMPACTION_ECHO_RETRY,
     COMPACTION_PROMPT,
     COMPACTION_REQUEST_EVENT,
     COMPACTION_RETRY,
+    VISION_OBSERVE_DEFAULT_QUESTION,
+    VISION_OBSERVE_PROMPT,
 )
 from minacode.providers.catalog import THINKING_BUDGETS
 from minacode.providers.compat import (
@@ -671,6 +674,30 @@ class ModelClient:
     @staticmethod
     def dump_message_item(item: Any) -> Json:
         return responses.dump_message_item(item)
+
+    def vision_observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
+        """Ask the [vision]-configured entry to observe images, bypassing the active provider's
+        image gate.
+
+        Mirrors compact(): the [vision] entry is resolved per call and validated locally -- a
+        missing field would otherwise surface as a generic SDK credentials error naming nothing
+        the user can act on -- then served by one non-streaming api_request with pre-built image
+        blocks. Perception only: no tools, no coding task; the main model does the reasoning.
+        """
+
+        provider = vision_provider_config(self.session.config)
+        entry_name = self.session.config.vision_provider
+        if missing := provider.missing_fields():
+            raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
+        messages = [
+            {"role": "system", "content": VISION_OBSERVE_PROMPT},
+            {
+                "role": "user",
+                "content": self.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
+            },
+        ]
+        _, _, content = self.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
+        return content.strip()
 
     def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None, echo_source: str = "") -> Json:
         self.cancel_requested.clear()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -26,6 +27,7 @@ IMAGE_MARKER = "\ufffc"
 IMAGE_REFS_KEY = "_images"
 TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
 TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
+ATTACHMENT_VISION_OBSERVATION_PREFIX = "[Attachment image observation]"
 SUPPORTED_FORMATS = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -192,17 +194,22 @@ class ImageInputs:
             position += 1
         return UserInput("".join(output), tuple(found))
 
-    def prepare(self, value: str | UserInput) -> UserInput:
+    def prepare(self, value: str | UserInput, *, force: bool = False) -> UserInput:
+        """Validate and store a draft, raising when the active provider cannot take images.
+
+        `force` skips the support gate for the vision bridge: the image is still validated and
+        stored, but the caller attaches it to the vision request, not to the main model."""
+
         if not isinstance(value, UserInput) or not value.images:
             return UserInput(str(value))
-        if self.support() is False:
+        if self.support() is False and not force:
             raise ModelError("Image input is disabled for the active provider/model")
         if self.session is None:
             return value
         return UserInput(str(value), tuple(self._store(image) for image in value.images))
 
-    def message(self, value: str | UserInput) -> Json:
-        stored = self.prepare(value)
+    def message(self, value: str | UserInput, *, force: bool = False) -> Json:
+        stored = self.prepare(value, force=force)
         if not stored.images:
             return {"role": "user", "content": str(stored)}
         self.retained_refs.difference_update(image.ref for image in stored.images)
@@ -212,12 +219,13 @@ class ImageInputs:
             IMAGE_REFS_KEY: [image.to_json() for image in stored.images],
         }
 
-    def load(self, path: str, *, source_text: str = "") -> ImageRef:
-        """Validate and store one explicit local image for model input."""
+    def load(self, path: str, *, source_text: str = "", force: bool = False) -> ImageRef:
+        """Validate and store one explicit local image for model input.
 
+        `force` skips the support gate for the vision bridge (see prepare)."""
         image = self._inspect(path, source_text=source_text or path)
         assert image is not None
-        return self.prepare(UserInput(IMAGE_MARKER, (image,))).images[0]
+        return self.prepare(UserInput(IMAGE_MARKER, (image,)), force=force).images[0]
 
     def tool_observation(self, images: tuple[ImageRef, ...]) -> Json:
         """Build a durable multimodal user-role observation produced by a tool batch."""
@@ -263,28 +271,79 @@ class ImageInputs:
         return any(cls.refs(message) for message in messages)
 
     def chat_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(message, lambda image: {"type": "image_url", "image_url": {"url": self._data_url(image)}}, "text")
+        return self._protocol_content(message, self._chat_image_part, "text")
 
     def responses_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(message, lambda image: {"type": "input_image", "image_url": self._data_url(image)}, "input_text")
+        return self._protocol_content(message, self._responses_image_part, "input_text")
 
     def anthropic_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(
-            message,
-            lambda image: {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": image.media_type,
-                    "data": base64.b64encode(self._bytes(image)).decode("ascii"),
-                },
+        return self._protocol_content(message, self._anthropic_image_part, "text")
+
+    def _chat_image_part(self, image: ImageRef) -> Json:
+        return {"type": "image_url", "image_url": {"url": self._data_url(image)}}
+
+    def _responses_image_part(self, image: ImageRef) -> Json:
+        return {"type": "input_image", "image_url": self._data_url(image)}
+
+    def _anthropic_image_part(self, image: ImageRef) -> Json:
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": base64.b64encode(self._bytes(image)).decode("ascii"),
             },
-            "text",
-        )
+        }
+
+    def vision_content(self, images: tuple[ImageRef, ...], api: str, text: str) -> str | list[Json]:
+        """Content blocks for one vision-bridge request, built for the vision entry's protocol.
+
+        The active-provider support gate does not apply here: the [vision] entry always carries
+        the images, and the blocks are pre-built so the regular message projection leaves the
+        request untouched (the message carries no IMAGE_REFS_KEY). Perception only: `text` is the
+        question or the default observation instruction, never the coding task."""
+
+        if api == "anthropic":
+            parts = [self._anthropic_image_part(image) for image in images]
+            text_type = "text"
+        elif api == "responses":
+            parts = [self._responses_image_part(image) for image in images]
+            text_type = "input_text"
+        else:
+            parts = [self._chat_image_part(image) for image in images]
+            text_type = "text"
+        if text:
+            parts.append({"type": text_type, "text": text})
+        return parts
+
+    def bridging(self) -> bool:
+        """Whether image input routes through the [vision] bridge: a [vision] entry is configured
+        and the active provider cannot take images (support False or unknown). The one deterministic
+        routing rule shared by ViewImage, attachment observation, queued follow-ups, and the TUI
+        input precheck."""
+
+        return bool(self.session is not None and self.session.config.vision_provider) and self.support() is not True
+
+    @staticmethod
+    def attachment_observation_content(images: tuple[ImageRef, ...], entry_label: str, observation: str) -> str:
+        """The plain-text observation block appended to a bridged user message.
+
+        The header names the vision entry and every attached file so the main model knows it can
+        keep asking about them with ViewImage; the body is the vision model's description. The
+        message itself carries no IMAGE_REFS_KEY, so the main model never sees image blocks."""
+
+        lines = [f"{ATTACHMENT_VISION_OBSERVATION_PREFIX} vision={json.dumps(entry_label)}"]
+        lines.extend(f"[Image #{index} · {image.name}]" for index, image in enumerate(images, 1))
+        lines.append(observation)
+        return "\n".join(lines)
 
     def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
         images = self.refs(message)
         if not images or self.support() is False:
+            # A pre-built content list (a vision-bridge request) is already in the wire shape and
+            # must pass through untouched; the label path would stringify it.
+            if isinstance(message.get("content"), list):
+                return message["content"]
             return self.label_text(message)
         parts = [image_part(image) for image in images]
         if text := str(message.get("content") or ""):

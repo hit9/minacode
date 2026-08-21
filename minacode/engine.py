@@ -19,13 +19,14 @@ from minacode.base import (
     ToolCall,
 )
 from minacode.context import ContextManager
-from minacode.image import UserInput
+from minacode.image import IMAGE_MARKER, UserInput
 from minacode.model import ModelClient, PreparedRequest
 from minacode.prompts import (
     FAILED_TOOL_CALL_RESULT,
     FAILED_TURN_MARKER,
     INTERRUPT_MARKER,
     LIVE_FOLLOWUP_PREFIX,
+    VISION_OBSERVE_DEFAULT_QUESTION,
 )
 from minacode.runner import ToolRunner
 from minacode.session import QueuedInput, Session, SessionSnapshotCodec
@@ -96,7 +97,7 @@ class Agent:
         self.session.state.turn_step = 0
         tool_batches = 0
         malformed_tool_names: list[str] = []
-        user_message = self.session.images.message(user_input)
+        user_message = self._initial_user_message(user_input)
         user_text = self.session.images.label_text(user_message)
         turn_messages = [user_message, *self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
@@ -201,6 +202,51 @@ class Agent:
             self.session.state.turn_messages = 0
             self.session.save_snapshot()
             raise
+
+    def _initial_user_message(self, user_input: str | UserInput) -> Json:
+        """Build the turn's opening user message.
+
+        When the vision bridge is active (the deterministic rule shared with ViewImage) and the
+        input carries images, run one observation request covering all of them and inject the
+        description as plain text, so the main model never sees image blocks yet can still
+        ViewImage the stored assets for follow-up detail."""
+
+        if not (isinstance(user_input, UserInput) and user_input.images) or not self.session.images.bridging():
+            return self.session.images.message(user_input)
+        stored = self.session.images.prepare(user_input, force=True)
+        self.session.images.retain(stored.images)
+        entry = self.session.config.vision_provider
+        provider = self.session.config.providers[entry]
+        question = stored.original_text() if str(stored).replace(IMAGE_MARKER, "").strip() else VISION_OBSERVE_DEFAULT_QUESTION
+        try:
+            observation = self.model.vision_observe(stored.images, question)
+        except ModelError as error:
+            raise ModelError(f"[vision] observation failed on `{entry}`: {error}") from error
+        content = self.session.images.attachment_observation_content(stored.images, f"{entry}/{provider.model}", observation)
+        return {"role": "user", "content": stored.display_text() + "\n\n" + content}
+
+    def _observe_queued_input(self, item: QueuedInput) -> None:
+        """Turn one queued input's images into a text observation in place, so a mid-turn image
+        follow-up reads the same way as an opening attachment.
+
+        The images stay stored (and retained) for ViewImage follow-ups; clearing item.images makes
+        the transformation idempotent across request retries inside the claim/acknowledge
+        transaction, and item.message() then yields the plain-text form at both projection sites
+        (request and transcript). Mentions are resolved by the caller before this runs, so the
+        observation text is never scanned for @-references."""
+
+        if not item.images or not self.session.images.bridging():
+            return
+        images = item.images
+        entry = self.session.config.vision_provider
+        provider = self.session.config.providers[entry]
+        try:
+            observation = self.model.vision_observe(images, item.text or VISION_OBSERVE_DEFAULT_QUESTION)
+        except ModelError as error:
+            raise ModelError(f"[vision] observation failed on `{entry}`: {error}") from error
+        self.session.images.retain(images)
+        item.text = item.text + "\n\n" + self.session.images.attachment_observation_content(images, f"{entry}/{provider.model}", observation)
+        item.images = ()
 
     def correct_textual_tool_calls(
         self,
@@ -365,8 +411,10 @@ class Agent:
         if pending:
             request_turn = [*turn_messages]
             for item in pending:
+                mentions = self.mention_messages(item.text)
+                self._observe_queued_input(item)
                 request_turn.append(item.message(LIVE_FOLLOWUP_PREFIX))
-                request_turn.extend(self.mention_messages(item.text))
+                request_turn.extend(mentions)
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)

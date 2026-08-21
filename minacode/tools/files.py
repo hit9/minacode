@@ -192,20 +192,37 @@ class ViewImageTool(Tool):
     def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
         self.image: ImageRef | None = None
+        self._bridged = False
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({"path": {"type": "string", "minLength": 1, "description": "Local image path to view"}}, ["path"])
+        return cls.object_schema(
+            {
+                "path": {"type": "string", "minLength": 1, "description": "Local image path to view"},
+                "question": {"type": "string", "description": "Optional question for the vision model to answer about the image"},
+            },
+            ["path"],
+        )
 
     @classmethod
     def payload_args(cls, payload: Json) -> ToolArgs:
-        return [payload.get("path")]
+        return [payload.get("path"), payload.get("question")]
 
     def path(self) -> str:
-        path = self.strings(min_count=1, max_count=1)[0].strip()
+        raw = self.args[0] if self.args else None
+        if not isinstance(raw, str):
+            raise ToolError("ViewImage requires a path string")
+        path = raw.strip()
         if not path:
             raise ToolError("ViewImage path must be non-empty")
         return self.session.resolve_path(path)
+
+    def question(self) -> str:
+        if len(self.args) < 2 or self.args[1] is None:
+            return ""
+        if not isinstance(self.args[1], str):
+            raise ToolError("ViewImage question must be a string")
+        return self.args[1].strip()
 
     def needs_confirmation(self) -> bool:
         return not self.session.in_cwd(self.path())
@@ -213,20 +230,42 @@ class ViewImageTool(Tool):
     def short_args(self) -> list[str]:
         return [self.session.relpath(self.path())]
 
+    def _vision_label(self) -> str:
+        provider = self.session.config.providers[self.session.config.vision_provider]
+        return f"{self.session.config.vision_provider}/{provider.model}"
+
+    def _vision_observe(self, question: str) -> str:
+        assert self.image is not None  # call() loaded it before bridging
+        from minacode.model import ModelClient  # local import: model.py imports the tool registry
+
+        return ModelClient(self.session).vision_observe((self.image,), question)
+
     def call(self) -> str:
         path = self.path()
+        # Deterministic harness routing, never a model choice (see ImageInputs.bridging).
+        bridging = self.session.images.bridging()
         try:
-            self.image = self.session.images.load(path, source_text=self.session.relpath(path))
+            self.image = self.session.images.load(path, source_text=self.session.relpath(path), force=bridging)
         except ModelError as error:
             raise ToolError(str(error)) from error
-        return (
+        header = (
             f"<ViewImage path={json.dumps(self.session.relpath(path))} "
             f"media_type={json.dumps(self.image.media_type)} width={self.image.width} "
-            f"height={self.image.height} bytes={self.image.size}/>"
+            f"height={self.image.height} bytes={self.image.size}"
         )
+        if not bridging:
+            return header + "/>"
+        self._bridged = True
+        try:
+            observation = self._vision_observe(self.question())
+        except ModelError as error:
+            raise ToolError(f"Vision bridge failed: {error}") from error
+        return header + f" vision={json.dumps(self._vision_label())}/>" + "\n" + observation
 
     def model_observation(self) -> Json | None:
-        return self.session.images.tool_observation((self.image,)) if self.image is not None else None
+        if self._bridged or self.image is None:
+            return None
+        return self.session.images.tool_observation((self.image,))
 
 
 @dataclass

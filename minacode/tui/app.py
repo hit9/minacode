@@ -449,7 +449,7 @@ class TuiApp:
     def _submitted_input(self) -> UserInput | None:
         value = self._recognize_input()
         try:
-            value = self.images.prepare(value)
+            value = self.images.prepare(value, force=self.images.bridging())
         except MinacodeError as error:
             self.input_error = str(error)
             self.invalidate()
@@ -888,7 +888,7 @@ class TuiApp:
 
     def input_error_fragments(self) -> StyleAndTextTuples:
         error = self.input_error
-        if not error and self.input_images and self.input_mode in {"chat", "running"} and self.images.support() is False:
+        if not error and self.input_images and self.input_mode in {"chat", "running"} and self.images.support() is False and not self.images.bridging():
             error = "Image input is disabled for the active provider/model"
         return [("class:input.error", f"Error: {error}")] if error else []
 
