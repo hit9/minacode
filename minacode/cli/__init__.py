@@ -225,6 +225,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.output_fn = self.agent_output
         self.agent.model.on_stream = self.model_stream_output
         self.agent.model.on_builtin_call = self.builtin_call_output
+        self.agent.model.on_vision_observe = self.vision_observe_output
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
         self.agent.model.on_retry_wait = self.model_retry_wait_status
@@ -711,6 +712,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         A provider-side search leaves no local tool call to log, and the running status label is gone
         the moment the turn ends. Without this line the transcript would credit the model with
         knowledge it went and looked up."""
+        self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.BRANCH)]))
+
+    def vision_observe_output(self, label: str, detail: str) -> None:
+        """Log one vision-bridge observation, so a bridged image shows as a real request.
+
+        The bridge fires before the turn's first model call (attachments) or inside ViewImage;
+        without this line the vision request -- real latency and cost on another entry -- is
+        invisible, and the image's text description seems to come from nowhere."""
         self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.BRANCH)]))
 
     @staticmethod

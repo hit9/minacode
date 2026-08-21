@@ -292,3 +292,18 @@ def test_enqueue_image_without_vision_still_refuses(tmp_path):
 
     with pytest.raises(ModelError, match="Image input is disabled"):
         s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
+
+
+def test_bridge_logs_one_transcript_line_per_observation(tmp_path, monkeypatch):
+    s = session(tmp_path, image_input="off")
+    shot = image_file(tmp_path / "shot.png")
+    agent, calls = bridged_agent(s, monkeypatch)
+    logged = []
+    agent.model.on_vision_observe = lambda label, detail: logged.append((label, detail))
+
+    agent.run(s.images.recognize(f"look {shot.name}"))
+
+    # One line per observation, naming the vision entry and the image count; fired before the
+    # request, so a failure to observe still leaves the line in the log.
+    assert logged == [("v/vision-model", "observing 1 image via the vision bridge")]
+    assert len(calls["vision"]) == 1
