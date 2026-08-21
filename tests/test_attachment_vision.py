@@ -300,6 +300,8 @@ def test_bridge_logs_one_transcript_line_per_observation(tmp_path, monkeypatch):
     agent, calls = bridged_agent(s, monkeypatch)
     logged = []
     agent.model.on_vision_observe = lambda label, detail: logged.append((label, detail))
+    # The runner hands the agent's hook to a bridged ViewImage, whose fresh client would drop it.
+    agent.tools.vision_observe_hook = agent.model.on_vision_observe
 
     agent.run(s.images.recognize(f"look {shot.name}"))
 
@@ -307,3 +309,24 @@ def test_bridge_logs_one_transcript_line_per_observation(tmp_path, monkeypatch):
     # request, so a failure to observe still leaves the line in the log.
     assert logged == [("v/vision-model", "observing 1 image via the vision bridge")]
     assert len(calls["vision"]) == 1
+
+
+def test_view_image_bridge_logs_through_the_runner_hook(tmp_path, monkeypatch):
+    s = session(tmp_path, image_input="off")
+    shot = image_file(tmp_path / "shot.png")
+    logged = []
+    # The tool is constructed directly, as run_one does, with the hook the runner injected.
+    tool = ViewImageTool(s, [str(shot), ""])
+    tool.vision_observe_hook = lambda label, detail: logged.append((label, detail))
+
+    def fake_observe(self, images, question=""):
+        assert self.on_vision_observe is not None
+        self.on_vision_observe("v/vision-model", "observing 1 image via the vision bridge")
+        return OBSERVATION_TEXT
+
+    monkeypatch.setattr(ModelClient, "vision_observe", fake_observe)
+    result = tool.call()
+
+    assert logged == [("v/vision-model", "observing 1 image via the vision bridge")]
+    assert OBSERVATION_TEXT in result and 'vision="v/vision-model"' in result
+    assert tool.model_observation() is None

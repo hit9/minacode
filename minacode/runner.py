@@ -42,6 +42,7 @@ from minacode.tools import (
     ReadTool,
     Tool,
     ToolScript,
+    ViewImageTool,
 )
 
 if TYPE_CHECKING:
@@ -261,6 +262,10 @@ class ToolRunner:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
+        # Injected by CommandLoop: the transcript hook for vision-bridge observations, handed to a
+        # bridged ViewImage whose fresh ModelClient would otherwise drop it (attachments observe
+        # through the agent's own wired client). None logs nothing, e.g. in tests.
+        self.vision_observe_hook: Callable[[str, str], None] | None = None
         self.live_start: Callable[[], None] | None = None
         self.worker_rule: Callable | None = None
         # Renders the worker's final report like an agent answer (markdown), wired by the loop;
@@ -537,6 +542,8 @@ class ToolRunner:
         tool = tool_class(self.session, call.args)
         if isinstance(tool, BashTool):
             tool.live_output = self.live_output
+        if isinstance(tool, ViewImageTool):
+            tool.vision_observe_hook = self.vision_observe_hook
         started = time.monotonic()
         d = ToolDisplay(batch_suffix=batch_suffix)
         if isinstance(tool, AskTool):
