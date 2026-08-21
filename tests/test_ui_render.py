@@ -18,6 +18,7 @@ from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
     LogBlock,
+    LogEdge,
     LogLine,
     LogRole,
     Text,
@@ -219,6 +220,31 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
     assert rendered[0][1] != rendered[1][1]
 
 
+def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
+    """Standalone turn-level rows must not draw an edge. A BRANCH on a row with no parent line
+    above it dangles (`├` joined to nothing) and shifts the label two columns past every sibling
+    row -- a defect the live preview committed once and, after that, the vision observation and
+    provider builtin-call lines each committed again. Every flat tool_output block is covered
+    here so the next standalone row cannot reintroduce it."""
+    loop_ = loop(tmp_path)
+    captured = []
+    monkeypatch.setattr(loop_.ui, "emit", lambda text="", indent=0: captured.append(text))
+    loop_.vision_observe_output("deepseek-vision/deepseek-v4-flash-vision-exp", "described 1 attached image")
+    loop_.builtin_call_output("search", "cache wiring")
+    blocks = [item for item in captured if isinstance(item, LogBlock)]
+    assert len(blocks) == 2
+    for block in blocks:
+        assert all(isinstance(line, LogLine) for line in block.items)
+        assert all(line.edge is LogEdge.NONE for line in block.items)
+
+    ui = UiPrinter(output_fn=lambda text: None)
+    observe = "".join(text for _style, text in ui.log_segments(blocks[0])).splitlines()[0]
+    tool_root = "".join(text for _style, text in ui.log_segments(LogBlock([LogLine("Bash", "rg -n cache minacode/", LogRole.TOOL)]))).splitlines()[0]
+    user_echo = "\u2022 [Image #1 \u00b7 ef739e37-....png]"
+    # All three rows start their content in the same column (two-cell indent, no edge).
+    assert observe.index("deepseek-vision/") == tool_root.index("Bash") == user_echo.index("[Image") == 2
+
+
 def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
@@ -302,9 +328,11 @@ def test_activity_leaves_no_hanging_blank_row_when_nothing_streams(tmp_path):
     text = "".join(fragment for _style, fragment in command_loop.view.tui_activity_fragments())
     lines = text.splitlines()
     echo = next(index for index, line in enumerate(lines) if "queued message" in line)
-    # Without a stream there is nothing for the blank row to separate, so the divider follows the
-    # echoed row directly instead of a trailing empty row.
-    assert lines[echo + 1]
+    # The blank row between the echo and the divider is separation, not a hanging row: the
+    # divider always follows it, so the activity region never ends on an empty line.
+    assert lines[echo + 1] == ""
+    assert lines[echo + 2]
+    assert lines[-1]  # the divider closes the region; nothing streams below it
 
 
 @pytest.mark.parametrize("width", [20, 40, 80])

@@ -410,6 +410,24 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
     assert "use black instead" not in committed
 
 
+def test_activity_echo_gets_a_blank_row_before_the_divider(tmp_path):
+    """The echoed follow-up sits directly above the standing divider while no stream exists.
+    Without a blank row it presses against the divider; the same gap the stream path already
+    draws must separate it from the divider too."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    session = Session(cwd=str(tmp_path), config=config)
+    loop = CommandLoop(Agent(session), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    session.enqueue_user_input("\u770b\u770b shot.png")
+    session.claim_user_inputs()  # in-flight: the echo renders above the divider
+
+    activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
+    lines = activity.splitlines()
+    echo = next(index for index, line in enumerate(lines) if line.startswith("\u2022 \u770b\u770b shot.png"))
+    divider = next(index for index, line in enumerate(lines) if "working" in line)
+    assert divider == echo + 2  # one blank row between the echo and the divider
+
+
 def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypatch):
     config = Config()
     config.data_dir = str(tmp_path / "data")

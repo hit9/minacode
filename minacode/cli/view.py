@@ -380,11 +380,10 @@ class View:
         stream = self.model_stream_fragments()
         if fragments:
             fragments.append(("", "\n"))
-            if stream:
-                # A blank row lifts the echoed follow-up off the streamed reply that follows, so
-                # the two do not sit pressed together. Only when there is a stream: an empty one
-                # must not leave a hanging blank row at the end of the activity region.
-                fragments.append(("", "\n"))
+            # A blank row lifts the echoed follow-up off whatever follows it: the streamed reply,
+            # or the standing divider when no stream exists yet. The divider always sits below,
+            # so the gap can never leave a hanging blank row at the end of the activity region.
+            fragments.append(("", "\n"))
         fragments.extend(stream)
         if stream:
             fragments.append(("", "\n"))
