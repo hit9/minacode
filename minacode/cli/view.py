@@ -542,6 +542,8 @@ class View:
                 "choice.meta": "ansibrightblack",
                 "choice.tool": "ansigreen",
                 "choice.live": "ansimagenta bold",
+                "choice.output.ok": "ansigreen bold",
+                "choice.output.fail": "ansired bold",
                 "choice.status.connected": "ansigreen bold",
                 "choice.status.connecting": "ansigreen bold",
                 "choice.status.disconnected": "ansiyellow bold",

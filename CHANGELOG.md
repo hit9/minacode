@@ -20,6 +20,9 @@
   arrives. The marks stay in the preview's own gray tones, so the region keeps its all-gray
   look; block constructs and unclosed markers stay literal, so a stream mid-token never
   flickers.
+- The Ctrl-O browser marks each Bash row with its exit verdict in the first column: a green ✓
+  for exit 0, a red ✗ for any other exit, and a blank cell for entries with no exit code (a
+  script, an order). The list is mostly bash, so the failures become scannable by color.
 - A divider label wider than the default rule (e.g. the worker's `[worker]` + status + elapsed
   + rate + queued line) widens the rule so both sides keep at least twelve dashes and the label
   stays whole, instead of squeezing the comet's track to two or three dashes; on a narrow

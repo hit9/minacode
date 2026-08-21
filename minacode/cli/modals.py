@@ -367,6 +367,10 @@ class OutputEntry:
     detail: str
     view: ApprovalView
     live: bool = False
+    # The Bash result's verdict for the row's first column: "ok" (exit 0), "fail" (nonzero
+    # exit), or "" when the entry is not a Bash result (a script or an order has no exit code
+    # to promise). Computed once, at browse time, next to `record_view`.
+    status: str = ""
 
 
 def running_script_entry(loop: CommandLoop) -> OutputEntry | None:
@@ -405,7 +409,11 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     for record in reversed(loop.session.tool_records):
         view = record_view(loop, record)
         if view is not None:
-            entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view))
+            status = ""
+            if record.name == "Bash":
+                code = loop.agent.tools.bash_exit_code(record.output)
+                status = "ok" if code == "0" else ("fail" if code else "")
+            entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view, status=status))
         if len(entries) == MAX_OUTPUT_ENTRIES:
             break
     if not entries:
@@ -459,22 +467,32 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: Choi
     the return so the caller can pass it to the next opening.
 
     Rows are coloured the way the transcript colours the same call -- dim key, green tool name,
-    plain arguments -- so a row is scannable by shape instead of read word by word. The label is
-    still the flat text, which is what `/` searches over."""
+    plain arguments -- so a row is scannable by shape instead of read word by word. The first
+    column is the Bash verdict where one exists: a green ✓ for exit 0, a red ✗ for any other
+    exit, and a blank cell for entries that have no exit code (a script, an order, a running
+    batch). The label is still the flat text, which is what `/` searches over."""
     assert loop.tui is not None
     width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
     parts: dict[str, StyleAndTextTuples] = {}
     labels: dict[str, str] = {}
+    # Two cells wide so the verdict column lines up whether or not a row has one.
+    status_marks = {
+        "ok": ("class:choice.output.ok", "✓ "),
+        "fail": ("class:choice.output.fail", "✗ "),
+        "": ("", "  "),
+    }
     for index, entry in enumerate(entries):
+        mark = status_marks[entry.status]
         head = f"{entry.key}  "
         # Folded to one line before it is measured. `short_call` keeps a multi-line command whole,
         # which is right in the transcript and wrong here: a row is one row, and an embedded newline
         # spills it over several, taking the numbering and the selection bar with it. `git commit -m`
         # with a real message is the everyday case. The full command is a keypress away in the viewer.
         detail = loop.agent.tools.oneline(entry.detail.removeprefix(entry.name).strip(), 400)
-        detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1))
+        detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1 - 2))
         labels[str(index)] = f"{head}{entry.name} {detail}".rstrip()
         parts[str(index)] = [
+            mark,
             ("class:choice.live" if entry.live else "class:choice.meta", head),
             ("class:choice.tool", entry.name + " "),
             ("", detail),

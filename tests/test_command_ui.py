@@ -131,6 +131,27 @@ def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_fu
     assert modal.exclusive == [False, True]  # the list shares the screen; the viewer takes it
 
 
+def test_tool_output_browser_marks_bash_results_ok_and_fail(tmp_path, monkeypatch):
+    """A Bash row's first column carries its verdict: a green ✓ for exit 0, a red ✗ for any other
+    exit. The list is mostly bash, so the failures should be scannable by color; entries with no
+    exit code (a script, an order) keep the cell blank instead of guessing."""
+    command_loop = loop(tmp_path)
+    command_loop.session.store_tool_result("Bash", ["printf ok"], Tool.process_result("BashToolResult", 0, "ok output", ""))
+    command_loop.session.store_tool_result("Bash", ["make check"], Tool.process_result("BashToolResult", 2, "", "target failed"))
+    modal = ModalHarness(["j", "q"])
+    command_loop.tui = modal
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    # The selected row is reversed as a whole, which hides its mark's own color, so the two frames
+    # (cursor on the failure, then on the success) each expose one verdict column in its color.
+    pairs = [(style, value) for frame in modal.frames for style, value in frame]
+    assert ("class:choice.output.ok", "✓ ") in pairs
+    assert ("class:choice.output.fail", "✗ ") in pairs
+
+
 def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_path, monkeypatch):
     """Esc (or q) in a detail goes back to the list instead of closing the whole browser, and
     the reopened list still points at the entry the reader came from."""
@@ -1056,7 +1077,12 @@ def test_worker_command_completion(tmp_path):
         providers=lambda: tuple(sorted(command_loop.session.config.providers)),
         worker_models=lambda: tuple(
             dict.fromkeys(
-                (*command_loop.session.config.providers[command_loop.session.config.worker_provider or command_loop.session.config.active_provider].available_models, "default")
+                (
+                    *command_loop.session.config.providers[
+                        command_loop.session.config.worker_provider or command_loop.session.config.active_provider
+                    ].available_models,
+                    "default",
+                )
             )
         ),
     )
