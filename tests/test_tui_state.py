@@ -308,14 +308,15 @@ def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
     assert any(
         lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + glyph + "weighing the two paths" for glyph in LiveSpark.GLYPHS
     )  # either star may lead the preview: no anchor means the wall clock picks the phase
-    assert lines[1] == rail + "the second option is cleaner"
+    assert lines[1] == ""  # the blank row lifts the spark off the rail below it
+    assert lines[2] == rail + "the second option is cleaner"
     assert "thinking" not in "".join(lines)  # named on the divider, not repeated here
     assert len(LiveSpark.GLYPH) == len(LogBlock.RAIL)  # so the spark sits in the rail's column
     assert all(len(glyph) == len(LogBlock.RAIL) for glyph in LiveSpark.GLYPHS)  # and its swapped partner does too
     assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
     # The column a tool's own output lines are drawn in: the two trees share a grid.
     tool = str(LogBlock.hierarchy(LogLine("Bash", "pytest -q", LogRole.TOOL), [LogLine("", "output line", LogRole.OUTPUT, LogEdge.CONTINUE)]))
-    assert tool.splitlines()[1].index(LogEdge.CONTINUE.value) == lines[1].index(LogEdge.CONTINUE.value)
+    assert tool.splitlines()[1].index(LogEdge.CONTINUE.value) == lines[2].index(LogEdge.CONTINUE.value)
 
 
 def test_model_stream_preview_switches_phase_and_clears(tmp_path):

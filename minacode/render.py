@@ -1074,7 +1074,10 @@ class BashLivePreview:
         # Always emit a status row so the frame is visible even before any output arrives.
         status = f"output · {label}" if body else f"running… {label}"
         rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.glyph(self.started_at)), ("ansibrightblack", status)]]
-        rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
+        if body:
+            # A blank row keeps the spark off the rail: the star caps the region, it does not sit on it.
+            rows.append([("", "")])
+            rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
         return rows
 
 

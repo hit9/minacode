@@ -10,7 +10,9 @@
   twenty most recent turns are redrawn, with a line noting that the earlier ones stay in context.
 - The breathing spark on a streaming response and a running command now swaps between the
   fine star and a heavier one at the darkest point of its breath (so the change is barely
-  visible) and is bold throughout: bigger and still continuous.
+  visible) and is bold throughout: bigger and still continuous. A blank row now separates the
+  spark from the output rail below it, so the star reads as capping the region rather than
+  sitting on it.
 
 ## 0.29.1 - 2026-08-20
 
