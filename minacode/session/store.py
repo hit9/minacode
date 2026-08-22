@@ -10,7 +10,7 @@ import re
 import shutil
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -291,9 +291,18 @@ class SessionSnapshotCodec:
                 "name_source",
                 "compaction_count",
                 "round_count",
-                "image_support",
             )
         }
+
+    @staticmethod
+    def agent_state(value: object) -> AgentState:
+        """Decode known state fields and ignore fields retired by newer versions."""
+
+        from minacode.session import AgentState
+
+        data = value if isinstance(value, dict) else {}
+        known = {item.name for item in fields(AgentState)}
+        return AgentState(**{key: item for key, item in data.items() if key in known})
 
     @staticmethod
     def usage(usage: ModelUsage) -> Json:
@@ -820,7 +829,7 @@ class SessionSnapshotStore:
 
     @classmethod
     def load(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> Session:
-        from minacode.session import AgentState, QueuedInput, Session, local_timestamp
+        from minacode.session import QueuedInput, Session, local_timestamp
 
         if config is None:
             config = Config.from_dict(ConfigFile.load())
@@ -868,7 +877,7 @@ class SessionSnapshotStore:
             provider_overrides=data.get("provider_overrides") or {},
             messages=messages,
             transcript_messages=transcript_messages,
-            state=AgentState(**data.get("state", {})),
+            state=SessionSnapshotCodec.agent_state(data.get("state", {})),
             usage=SessionSnapshotCodec.model_usage(data.get("usage", {})),
             compaction_usage=SessionSnapshotCodec.model_usage(data.get("compaction_usage", {})),
             tool_counter=data.get("tool_counter", 0),

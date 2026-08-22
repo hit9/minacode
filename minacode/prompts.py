@@ -126,7 +126,7 @@ Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
 
-# The vision bridge hands one image and one question to a dedicated perception model whose answer
+# An explicit ViewImage call hands one image and one question to a dedicated perception model whose answer
 # comes back as plain text. Perception only: the main (possibly text-only) model does the
 # reasoning, so the vision model must never drift into solving the coding task.
 VISION_OBSERVE_PROMPT = (

@@ -177,9 +177,7 @@ def test_tool_output_browser_keeps_every_stored_record_with_a_running_script(tmp
     bounds the screen."""
     command_loop = loop(tmp_path)
     for index in range(400):
-        command_loop.session.store_tool_result(
-            "Bash", [f"printf {index}"], Tool.process_result("BashToolResult", 0, f"out {index}", "")
-        )
+        command_loop.session.store_tool_result("Bash", [f"printf {index}"], Tool.process_result("BashToolResult", 0, f"out {index}", ""))
     command_loop.script_running_code = "print('hi')\n"
     modal = ModalHarness(["q"])
     command_loop.tui = modal
@@ -616,9 +614,7 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.session.config.provider.stream is False
     stream_values = [item.text for item in CommandCompleter().get_completions(Document("/set provider.stream "), None)]
     assert stream_values == ["on", "off"]
-    assert set_value(command_loop, "provider.image_input maybe") == "Invalid value for provider.image_input"
-    assert set_value(command_loop, "provider.image_input off") == "Set provider.image_input"
-    assert command_loop.session.config.provider.image_input == "off"
+    assert set_value(command_loop, "provider.image_input off") == "Unknown config key: provider.image_input"
 
 
 def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):

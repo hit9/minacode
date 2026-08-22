@@ -52,7 +52,6 @@ Most users can leave these unset.
 |---|---|---|
 | `api` | `auto` | API protocol shown above |
 | `stream` | `true` | Stream model output; disable for endpoints that reject streaming or Chat `stream_options` |
-| `image_input` | `auto` | Image capability: learn automatically, force `on`, or disable with `off` |
 | `reasoning` | `medium` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; change it during a session with `/reason` |
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
@@ -112,18 +111,9 @@ keeps the setting but does not send those tools; switching back enables them aga
 to check whether they are active. If minacode reports an unsupported entry, compare it with the
 example for your provider.
 
-With `image_input = "auto"`, minacode first sends images using the selected standard API. Success
-is remembered for that provider and model. If the request is rejected and a [vision
-model](#vision-model) is configured, minacode describes the image there and retries the same turn
-without image blocks; a successful retry remembers the main model as text-only. Set `on` or `off`
-when the endpoint's capability is already known. Historical images remain readable as text labels
-after switching to a provider or model with image input disabled.
-
 ## Vision model
 
-Some text-only models ship a sibling vision model from the same vendor (for example DeepSeek's
-`deepseek-v4-flash-vision-exp` or GLM's `glm-4.5v`). Configure one as a fallback and images keep
-working even when the active provider cannot take them:
+Configure an optional perception model for explicit `ViewImage` calls:
 
 ```toml
 [vision]
@@ -135,12 +125,9 @@ key = "sk-..."
 model = "deepseek-v4-flash-vision-exp"
 ```
 
-With `[vision]` configured, an image you paste or attach, or a `ViewImage` call, is sent to the
-vision model when the active provider cannot take images. The vision model's plain-text
-description is what the main model reads, and the image stays stored under the session's assets
-so you can keep asking `ViewImage` with a `question` for details. When the active provider can
-take images, the vision model is not used. Each attached or viewed image costs one vision-model
-request, and every follow-up `question` is another one.
+Attachments always go directly to the active model; `[vision]` never changes that routing. An
+explicit `ViewImage` call sends the local image and optional question to this provider and returns
+its plain-text observation to the active model. Each call costs one vision-model request.
 
 ## Runtime
 

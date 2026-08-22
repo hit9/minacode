@@ -214,8 +214,8 @@ generic standards path.
   and results to `function_call`/`function_call_output` items.
 - Reasoning is continuation data: preserve what the provider returns, choose replay policy at
   projection, estimate the same wire payload.
-- Capability discovery is conservative and session-local: a successful image request can establish
-  support; only an explicit modality rejection establishes non-support.
+- Image routing carries no learned capability state: new attachments always go to the active model,
+  while a configured perception provider is reached only through an explicit `ViewImage` call.
 
 ## Context is a projection
 

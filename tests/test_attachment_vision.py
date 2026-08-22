@@ -1,479 +1,158 @@
-"""Attachment vision bridge: images pasted or referenced in a user message get one automatic
-observation pass when the main model cannot see, mirroring ViewImage's bridge routing.
+"""Direct attachment routing and occurrence-local failed-image settlement."""
 
-Black-box acceptance per the bridge spec: the routing rule is identical to ViewImage
-(configured [vision] entry and `images.support() is False`); one request carries all attached
-images; the observation is injected into the user message as plain text. Durable image refs keep
-the local assets addressable, while a text-only marker keeps image blocks off the main-model wire.
-"""
-
-import json
 import os
 
 import pytest
 from PIL import Image
 
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ModelError, ToolCall
+from minacode.base import ModelError, ToolCall
 from minacode.config import Config, ProviderConfig
-from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.image import (
-    ATTACHMENT_VISION_OBSERVATION_PREFIX,
-    IMAGE_REFS_KEY,
-    IMAGE_TEXT_ONLY_KEY,
-)
-from minacode.model import ModelClient
-from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION
-from minacode.runner import ToolRunner
-from minacode.session import Session
-from minacode.tools import ViewImageTool
-from minacode.tui import TuiApp
-
-OBSERVATION_TEXT = "The screenshot shows a terminal with a red error line."
+from minacode.image import FAILED_IMAGE_CONTEXT_PREFIX, IMAGE_TEXT_ONLY_KEY, ImageInputs
+from minacode.session import Session, SessionSnapshotCodec
 
 
-def image_file(path, *, size=(32, 24), image_format="PNG", color=(12, 34, 56)):
-    Image.new("RGB", size, color).save(path, format=image_format)
+def image_file(path, *, color=(12, 34, 56)):
+    Image.new("RGB", (32, 24), color).save(path, format="PNG")
     return path
 
 
-def session(tmp_path, *, image_input="auto", vision=True, api="chat"):
+def session(tmp_path, *, vision=True):
     config = Config(data_dir=str(tmp_path / "data"))
     config.providers = {"default": ProviderConfig(url="http://main.test", key="key", model="main-model")}
     if vision:
-        config.providers["v"] = ProviderConfig(url="http://vision.test", key="vkey", model="vision-model", api=api)
+        config.providers["v"] = ProviderConfig(url="http://vision.test", key="vkey", model="vision-model")
         config.vision_provider = "v"
-    config.provider.image_input = image_input
     return Session(cwd=str(tmp_path), config=config)
 
 
-def bridged_agent(s, monkeypatch, *, observation=OBSERVATION_TEXT):
-    """Wire up an agent whose main-model request is faked (recorded, answers immediately) and
-    whose vision requests are captured; the network is never touched."""
+class SequenceModel:
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+        self.requests = []
 
-    calls = {"vision": [], "main": []}
+    def request(self, messages, tools=None):
+        self.requests.append(messages)
+        outcome = next(self.outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"role": "assistant", "content": outcome}, [], outcome
 
-    def fake_api_request(self, messages, tools, *, allow_stream=True, response_timeout=None, provider=None, json_object=False):
-        calls["vision"].append((messages, provider, allow_stream))
-        return {"role": "assistant", "content": observation}, [], observation
-
-    def fake_main_request(self, messages, tools=None):
-        calls["main"].append(messages)
-        return {"role": "assistant", "content": "done"}, [], "done"
-
-    monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
-    monkeypatch.setattr(ModelClient, "request", fake_main_request)
-    return Agent(s, output_fn=lambda _text: None), calls
+    def cancel(self):
+        pass
 
 
-# --- 桥接注入（验收标准 1、4）---
+@pytest.mark.parametrize("vision", [False, True])
+def test_attachment_always_goes_to_main_model_and_never_calls_vision(tmp_path, vision):
+    s = session(tmp_path, vision=vision)
+    image_file(tmp_path / "shot.png")
+    model = SequenceModel(["done"])
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model = model
+
+    assert agent.run(s.images.recognize("inspect shot.png")) == "done"
+
+    sent = [message for message in model.requests[0] if ImageInputs.input_refs(message)]
+    assert len(sent) == 1
+    assert sent[0]["content"] == "inspect [Image #1 · shot.png]"
+    assert not hasattr(s.state, "image_support")
 
 
-def test_attachment_bridge_injects_observation_and_keeps_refs_text_only(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    assert s.images.support() is False
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
+def test_failed_image_turn_is_replay_safe_and_next_text_turn_succeeds(tmp_path):
+    s = session(tmp_path)
+    source = image_file(tmp_path / "shot.png")
+    rejected = ModelError("provider rejected the image")
+    model = SequenceModel([rejected, "recovered"])
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model = model
 
-    agent.run(s.images.recognize(f"看看 {shot.name} 里的报错"))
+    with pytest.raises(ModelError) as caught:
+        agent.run(s.images.recognize("inspect shot.png"))
+    assert caught.value is rejected
+    assert len(model.requests) == 1
 
-    # One vision request: image block + the user's own words as the question.
-    assert len(calls["vision"]) == 1
-    vision_messages, provider, allow_stream = calls["vision"][0]
-    assert provider is s.config.providers["v"]
-    assert allow_stream is False
-    vision_user = vision_messages[1]
-    assert [part["type"] for part in vision_user["content"]] == ["image_url", "text"]
-    assert vision_user["content"][-1]["text"] == f"看看 {shot.name} 里的报错"
-    assert IMAGE_REFS_KEY not in json.dumps(vision_messages)
+    failed = s.messages[0]
+    assert failed[IMAGE_TEXT_ONLY_KEY] is True
+    assert ImageInputs.refs(failed) and not ImageInputs.input_refs(failed)
+    assert FAILED_IMAGE_CONTEXT_PREFIX in failed["content"]
+    [image] = ImageInputs.refs(failed)
+    assert s.images.asset_path(image) in failed["content"]
+    assert os.path.isfile(s.images.asset_path(image))
+    assert FAILED_IMAGE_CONTEXT_PREFIX not in s.transcript_messages[0]["content"]
 
-    # The semantic message owns the asset, but its text-only marker keeps pixels off the wire.
-    assert len(calls["main"]) == 1
-    user = s.messages[0]
-    assert user["role"] == "user"
-    assert IMAGE_REFS_KEY in user
-    assert user[IMAGE_TEXT_ONLY_KEY] is True
-    # The image renders as its inline label (as on the direct path), the words are kept, and the
-    # observation block follows after a blank line.
-    assert "看看 [Image #1 · shot.png] 里的报错" in user["content"].split("\n\n")[0]
-    assert f'{ATTACHMENT_VISION_OBSERVATION_PREFIX} vision="v/vision-model"' in user["content"]
-    assert OBSERVATION_TEXT in user["content"]
-    # The block closes with a bare capability fact, not an instruction: a nudge ("ask ViewImage
-    # for detail") invites a reflexive second read on every attachment.
-    assert "[hint] These images remain available to ViewImage with a question." in user["content"]
-
-    # The wire projection carries no image content block either.
-    projected = ModelClient(s).chat_messages(calls["main"][0])
-    assert not any(isinstance(m.get("content"), list) and any(p.get("type") == "image_url" for p in m["content"]) for m in projected)
+    source.unlink()
+    assert agent.run("continue without replaying pixels") == "recovered"
+    assert not any(ImageInputs.input_refs(message) for message in model.requests[1])
 
 
-def test_attachment_bridge_uses_default_question_for_image_only_input(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
+def test_later_new_image_is_attempted_after_an_earlier_image_failure(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "first.png")
+    image_file(tmp_path / "second.png", color=(65, 43, 21))
+    model = SequenceModel([ModelError("first failed"), "second worked"])
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model = model
 
-    agent.run(s.images.recognize(shot.name))  # path only, no words
+    with pytest.raises(ModelError):
+        agent.run(s.images.recognize("first.png"))
+    assert agent.run(s.images.recognize("second.png")) == "second worked"
 
-    assert len(calls["vision"]) == 1
-    text_block = calls["vision"][0][0][1]["content"][-1]
-    assert text_block["text"] == VISION_OBSERVE_DEFAULT_QUESTION
-
-
-def test_bridged_attachment_keeps_the_request_prefix_stable_across_turns(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
-
-    agent.run(s.images.recognize(f"look {shot.name}"))
-    agent.run("and now?")
-
-    # Prompt cache hits require the later request to carry every earlier request byte-identical as
-    # its prefix: the bridged message (with the observation text) must never be rewritten, and the
-    # image must not be re-observed on a later turn.
-    assert len(calls["vision"]) == 1
-    first, second = calls["main"][0], calls["main"][-1]
-    assert len(second) >= len(first)
-    assert second[: len(first)] == first
+    second_refs = [image for message in model.requests[1] for image in ImageInputs.input_refs(message)]
+    assert [image.name for image in second_refs] == ["second.png"]
 
 
-# --- 多图一次请求（验收标准 2）---
+def test_failed_queued_image_is_committed_text_only_instead_of_requeued(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "queued.png")
+
+    class QueuingModel:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                s.enqueue_user_input(s.images.recognize("look queued.png"))
+                return {}, [ToolCall("read", "Read", ["missing.txt"])], ""
+            raise ModelError("queued image rejected")
+
+        def cancel(self):
+            pass
+
+    model = QueuingModel()
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model = model
+
+    with pytest.raises(ModelError, match="queued image rejected"):
+        agent.run("start")
+
+    assert s.pending_user_inputs == []
+    settled = [message for message in s.messages if ImageInputs.refs(message)]
+    assert len(settled) == 1
+    assert settled[0][IMAGE_TEXT_ONLY_KEY] is True
+    assert FAILED_IMAGE_CONTEXT_PREFIX in settled[0]["content"]
 
 
-def test_attachment_bridge_sends_all_images_in_one_request(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    first = image_file(tmp_path / "first.png")
-    second = image_file(tmp_path / "second.png", color=(65, 43, 21))
-    agent, calls = bridged_agent(s, monkeypatch)
+def test_multiple_failed_images_survive_snapshot_as_text_only_assets(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "one.png")
+    image_file(tmp_path / "two.png", color=(65, 43, 21))
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model = SequenceModel([ModelError("no images")])
 
-    agent.run(s.images.recognize(f"{first.name} 和 {second.name} 对比一下"))
-
-    assert len(calls["vision"]) == 1
-    content = calls["vision"][0][0][1]["content"]
-    assert [part["type"] for part in content] == ["image_url", "image_url", "text"]
-    assert content[-1]["text"] == f"{first.name} 和 {second.name} 对比一下"
-    # Both file names surface in the injected block header.
-    user = s.messages[0]
-    assert "[Image #1 · first.png]" in user["content"]
-    assert "[Image #2 · second.png]" in user["content"]
-
-
-# --- 追问闭环（验收标准 4）---
-
-
-def test_attachment_bridge_persists_assets_for_view_image_followup(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    nested = tmp_path / "nested"
-    nested.mkdir()
-    shot = image_file(nested / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
-
-    agent.run(s.images.recognize(str(shot.relative_to(tmp_path))))
-
-    [image] = s.images.refs(s.messages[0])
-    asset = s.images.asset_path(image)
-    assert os.path.isfile(asset)
-    assert f"path={json.dumps(asset)}" in s.messages[0]["content"]
-    assert "[Image #1 · shot.png]" in s.messages[0]["content"]
-
-    # Resume after the source moved away: the stable session-owned path still works and does not
-    # require an out-of-workspace confirmation.
-    os.unlink(shot)
+    with pytest.raises(ModelError):
+        agent.run(s.images.recognize("compare one.png two.png"))
     s.save_snapshot()
     resumed = Session.load_snapshot(s.uid, config=s.config)
-    resumed.save_snapshot()  # a resumed save must derive ownership from history, not ephemeral refs
-    assert os.path.isfile(asset)
-    tool = ViewImageTool(resumed, [asset, "报错原文是什么"])
-    assert not tool.needs_confirmation()
-    output = ToolRunner(resumed, ContextManager(resumed), output_fn=lambda _text: None).call_tool(tool)
-    assert 'vision="v/vision-model"' in output.splitlines()[0]
-    assert OBSERVATION_TEXT in output
-    assert len(calls["vision"]) == 2
 
+    failed = resumed.messages[0]
+    assert [image.name for image in resumed.images.refs(failed)] == ["one.png", "two.png"]
+    assert resumed.images.input_refs(failed) == ()
+    for image in resumed.images.refs(failed):
+        assert os.path.isfile(resumed.images.asset_path(image))
 
-def test_bridged_asset_is_collected_after_owning_message_is_pruned(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, _calls = bridged_agent(s, monkeypatch)
 
-    agent.run(s.images.recognize(shot.name))
-    [image] = s.images.refs(s.messages[0])
-    asset = s.images.asset_path(image)
-    assert os.path.isfile(asset)
-
-    s.messages.clear()
-    s.save_snapshot()
-
-    assert not os.path.exists(asset)
-
-
-# --- 不桥接的两态不变（验收标准 5）---
-
-
-def test_attachment_stays_inline_when_main_model_supports_images(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="on")
-    assert s.images.support() is True
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
-
-    agent.run(s.images.recognize(f"看看 {shot.name}"))
-
-    assert calls["vision"] == []
-    user = s.messages[0]
-    assert IMAGE_REFS_KEY in user
-    assert s.images.chat_content(user)[0]["type"] == "image_url"
-    assert ATTACHMENT_VISION_OBSERVATION_PREFIX not in user["content"]
-
-
-def test_attachment_stays_disabled_without_vision_config(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off", vision=False)
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
-
-    with pytest.raises(ModelError, match="Image input is disabled"):
-        agent.run(s.images.recognize(shot.name))
-
-    assert calls["vision"] == []
-
-
-# --- vision 失败可定位（验收标准 6）---
-
-
-def test_attachment_vision_failure_preserves_submitted_turn_for_retry(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-
-    def failing(self, messages, tools, **kwargs):
-        raise ModelError("upstream 502")
-
-    monkeypatch.setattr(ModelClient, "api_request", failing)
-    monkeypatch.setattr(ModelClient, "request", lambda self, messages, tools=None: ({"role": "assistant", "content": "done"}, [], "done"))
-
-    logged = []
-    agent = Agent(s, output_fn=lambda _text: None)
-    agent.model.on_vision_observe = lambda label, detail: logged.append((label, detail))
-    assert agent.run(s.images.recognize(shot.name)) == "done"
-
-    message = s.messages[0]
-    assert "[Vision observation failed:" in message["content"]
-    assert "upstream 502" in message["content"]
-    assert message[IMAGE_TEXT_ONLY_KEY] is True
-    [image] = s.images.refs(message)
-    assert f"path={json.dumps(s.images.asset_path(image))}" in message["content"]
-    # The line fires before the request with a progressive state, so a failed observation still
-    # leaves it without claiming the images were described.
-    assert logged == [("v/vision-model", "observing 1 attached image")]
-
-
-# --- UI 输入区预检（验收标准 7）---
-
-
-def test_tui_precheck_still_blocks_without_vision(tmp_path):
-    s = session(tmp_path, image_input="off", vision=False)
-    shot = image_file(tmp_path / "shot.png")
-    app = TuiApp(images=s.images)
-
-    app.input_buffer.insert_text(shot.name + " ")
-
-    assert app.input_error_fragments() == [("class:input.error", "Error: Image input is disabled for the active provider/model")]
-
-
-def test_tui_precheck_suppresses_error_when_vision_is_configured(tmp_path):
-    s = session(tmp_path, image_input="off", vision=True)
-    shot = image_file(tmp_path / "shot.png")
-    app = TuiApp(images=s.images)
-
-    app.input_buffer.insert_text(shot.name + " ")
-
-    assert app.input_error_fragments() == []
-
-
-def test_tui_submit_allows_bridged_attachment(tmp_path):
-    s = session(tmp_path, image_input="off", vision=True)
-    shot = image_file(tmp_path / "shot.png")
-    received = []
-    app = TuiApp(on_chat_submit=received.append, images=s.images)
-
-    app.input_buffer.insert_text(shot.name + " ")
-    app.input_buffer.validate_and_handle()
-
-    assert len(received) == 1
-    assert received[0].images
-
-
-# --- 回合中途排队的带图输入（live follow-up）---
-
-
-def test_queued_image_followup_is_observed_not_inlined(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
-
-    queued = s.images.recognize(f"second look {shot.name}")
-    s.enqueue_user_input(queued)  # must not raise on a bridging session
-    assert len(s.pending_user_inputs) == 1
-
-    agent.run("continue")
-
-    # One observation request for the queued image, never an inline image block for the main model.
-    assert len(calls["vision"]) == 1
-    assert not any(s.images.input_refs(message) for message in calls["main"][0])
-    followup = next(message for message in calls["main"][0] if OBSERVATION_TEXT in str(message.get("content")))
-    assert followup["role"] == "user"
-    assert "second look" in followup["content"]
-    assert f'{ATTACHMENT_VISION_OBSERVATION_PREFIX} vision="v/vision-model"' in followup["content"]
-    assert OBSERVATION_TEXT in followup["content"]
-
-
-def test_queued_observation_runs_once_across_request_retries(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
-
-    s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
-    turn = [{"role": "user", "content": "continue"}]
-    first = agent.prepare_request(turn)
-    second = agent.prepare_request(turn)  # a retry claims the same pending input again
-
-    assert len(calls["vision"]) == 1
-    observed = [message for message in second.messages if OBSERVATION_TEXT in str(message.get("content"))]
-    assert observed and not any(s.images.input_refs(message) for message in second.messages)
-    assert first.pending == second.pending
-
-
-def test_queued_vision_failure_is_preserved_and_not_retried(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    calls = []
-
-    def failing(self, messages, tools, **kwargs):
-        calls.append(messages)
-        raise ModelError("upstream 502")
-
-    monkeypatch.setattr(ModelClient, "api_request", failing)
-    agent = Agent(s, output_fn=lambda _text: None)
-    s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
-    turn = [{"role": "user", "content": "continue"}]
-
-    first = agent.prepare_request(turn)
-    second = agent.prepare_request(turn)
-
-    assert len(calls) == 1
-    [item] = second.pending
-    assert "[Vision observation failed:" in item.observation
-    assert "upstream 502" in item.observation
-    assert item.images
-    assert item.message()[IMAGE_TEXT_ONLY_KEY] is True
-    assert not any(s.images.input_refs(message) for message in first.messages)
-
-
-def test_queued_flush_echoes_the_typed_text_not_the_polished_message(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, _calls = bridged_agent(s, monkeypatch)
-
-    s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
-    typed = s.pending_user_inputs[0].text  # the queue's own form; the bridge must not rewrite it
-    turn = [{"role": "user", "content": "continue"}]
-    transcript = [agent.transcript_message(turn[0])]
-    request = agent.prepare_request(turn)
-    flushed = []
-    agent.on_queue_flush = flushed.append
-
-    agent.accept_pending_inputs(turn, transcript, request.pending, request.turn_messages)
-
-    # The echo is the human's typed follow-up in its queue form; the bridge's observation is
-    # model-facing and the standalone vision log line already covers it on screen.
-    assert flushed == [[typed]]
-    assert ATTACHMENT_VISION_OBSERVATION_PREFIX not in flushed[0][0]
-    # What the model saw is still the polished message.
-    assert any(OBSERVATION_TEXT in str(message.get("content")) for message in turn)
-
-
-def test_queued_observation_survives_snapshot_round_trip(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, _calls = bridged_agent(s, monkeypatch)
-
-    s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
-    turn = [{"role": "user", "content": "continue"}]
-    request = agent.prepare_request(turn)  # the observation runs here, before the flush
-    item = request.pending[0]
-    assert item.observation and item.images
-
-    s.save_snapshot()
-    restored = Session.load_snapshot(s.uid, config=s.config)
-    [restored_item] = restored.pending_user_inputs
-    assert restored_item.text == item.text
-    assert restored_item.observation == item.observation
-    assert restored_item.images == item.images
-    # The projection still joins the observation after the round trip.
-    assert restored_item.message() == item.message()
-    assert OBSERVATION_TEXT in restored_item.message()["content"]
-
-
-def test_enqueue_image_without_vision_still_refuses(tmp_path):
-    s = session(tmp_path, image_input="off", vision=False)
-    shot = image_file(tmp_path / "shot.png")
-
-    with pytest.raises(ModelError, match="Image input is disabled"):
-        s.enqueue_user_input(s.images.recognize(f"look {shot.name}"))
-
-
-def test_bridge_logs_one_transcript_line_per_observation(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    agent, calls = bridged_agent(s, monkeypatch)
-    logged = []
-    agent.model.on_vision_observe = lambda label, detail: logged.append((label, detail))
-
-    agent.run(s.images.recognize(f"look {shot.name}"))
-
-    # One line per observation, naming the vision entry and the image count; fired before the
-    # request with a progressive state, so a failure to observe still leaves an honest line.
-    assert logged == [("v/vision-model", "observing 1 attached image")]
-    assert len(calls["vision"]) == 1
-
-
-def test_bridged_view_image_logs_bridge_as_a_finish_child_under_the_call_root(tmp_path, monkeypatch):
-    s = session(tmp_path, image_input="off")
-    shot = image_file(tmp_path / "shot.png")
-    emitted = []
-    runner = ToolRunner(s, ContextManager(s, ModelClient(s)), output_fn=emitted.append)
-    monkeypatch.setattr(ModelClient, "vision_observe", lambda self, images, question="": OBSERVATION_TEXT)
-
-    status, _message, observation = runner.run_one(ToolCall(id="t1", name="ViewImage", args=[str(shot), "报错原文是什么"]))
-
-    assert status == "ok"
-    assert observation is None  # bridged: no image observation rides back to the main model
-    # The finish block is the only emitted block, so no standalone bridge line precedes it; the
-    # root is the call line and the bridge trace is a child below it, by construction.
-    assert len(emitted) == 1
-    block = emitted[0]
-    assert isinstance(block, LogBlock)
-    rendered = str(block)
-    assert rendered.index("ViewImage") < rendered.index("described by")
-    root = block.items[0]
-    assert root.label == "ViewImage"
-    children = block.items[1]
-    assert isinstance(children, LogBlock)
-    assert children.items[0] == LogLine("described by", "v/vision-model", LogRole.TOOL, LogEdge.BRANCH)
-    assert children.items[1].label == "stored"
-    assert children.items[1].text.startswith("tr.")
-    assert children.items[1].edge == LogEdge.END
-
-
-def test_direct_view_image_finish_block_has_no_bridge_child(tmp_path):
-    s = session(tmp_path, image_input="on")
-    shot = image_file(tmp_path / "shot.png")
-    emitted = []
-    runner = ToolRunner(s, ContextManager(s, ModelClient(s)), output_fn=emitted.append)
-
-    status, _message, observation = runner.run_one(ToolCall(id="t1", name="ViewImage", args=[str(shot)]))
-
-    assert status == "ok"
-    assert observation is not None  # direct: the image rides back to the main model
-    assert len(emitted) == 1
-    block = emitted[0]
-    assert isinstance(block, LogBlock)
-    assert len(block.items) == 1  # root only; no bridge child, no stored child (meta tail)
-    assert "described by" not in str(block)
+def test_obsolete_snapshot_state_is_ignored_and_not_written():
+    state = SessionSnapshotCodec.agent_state({"goal": "keep", "image_support": {"old": False}})
+    assert state.goal == "keep"
+    assert not hasattr(state, "image_support")

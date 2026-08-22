@@ -405,6 +405,9 @@ class ContextManager:
             f"- arch: {info.arch}",
             f"- shell_timeout: {self.session.settings.shell_timeout}s",
         ]
+        if (entry := self.session.config.vision_provider) and (not self.session.tool_names or "ViewImage" in self.session.tool_names):
+            provider = self.session.config.providers[entry]
+            rows.append(f"- vision: {entry}/{provider.model or '(empty)'} (available through ViewImage)")
         if self.session.settings.agents_md and info.agents_md:
             content = info.agents_md
             total = self.estimated_text_tokens(content)
@@ -762,7 +765,7 @@ class ContextManager:
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
+        images = ImageInputs.estimated_tokens(messages)
         return (chars + 3) // 4 + images
 
     @staticmethod

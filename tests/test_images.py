@@ -1,10 +1,6 @@
 import base64
 import json
 import os
-import shlex
-import shutil
-import subprocess
-import sys
 import time
 from types import SimpleNamespace
 
@@ -322,17 +318,12 @@ def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path)
     assert ContextManager(s).estimated_tokens([observation]) == ContextManager(s).estimated_tokens([without_marker])
 
 
-def test_view_image_tool_rejects_invalid_or_disabled_input(tmp_path):
+def test_view_image_tool_rejects_invalid_input(tmp_path):
     s = session(tmp_path)
     (tmp_path / "not-image.png").write_text("not pixels", encoding="utf-8")
 
     with pytest.raises(ToolError, match="Cannot read image"):
         ViewImageTool(s, ["not-image.png"]).call()
-
-    path = image_file(tmp_path / "disabled.png")
-    s.config.provider.image_input = "off"
-    with pytest.raises(ToolError, match="Image input is disabled"):
-        ViewImageTool(s, [path.name]).call()
 
 
 def test_view_image_tool_requires_confirmation_outside_workspace(tmp_path):
@@ -428,17 +419,6 @@ def test_agent_persists_view_image_observation_without_replaying_it_as_user_inpu
     assert restored.images.chat_content(restored_observation)[0]["type"] == "image_url"
 
 
-def test_disabled_image_input_degrades_historical_messages_to_labels(tmp_path):
-    s = session(tmp_path)
-    image_file(tmp_path / "past.png")
-    message = s.images.message(s.images.recognize("review past.png"))
-    s.config.provider.image_input = "off"
-
-    assert s.images.chat_content(message) == "review [Image #1 · past.png]"
-    assert s.images.responses_content(message) == "review [Image #1 · past.png]"
-    assert s.images.anthropic_content(message) == "review [Image #1 · past.png]"
-
-
 def test_text_only_image_refs_never_reenter_provider_projection(tmp_path):
     s = session(tmp_path)
     image_file(tmp_path / "bridged.png")
@@ -446,132 +426,13 @@ def test_text_only_image_refs_never_reenter_provider_projection(tmp_path):
     message[IMAGE_TEXT_ONLY_KEY] = True
     plain = {"role": "user", "content": message["content"]}
 
-    # Even a later positive capability verdict or provider switch cannot silently add pixels to a
-    # historical request whose bridge already replaced them with text.
-    s.config.provider.image_input = "on"
+    # A settled failed occurrence stays text-only even if the provider changes later.
     assert s.images.refs(message)
     assert s.images.input_refs(message) == ()
     assert s.images.chat_content(message) == message["content"]
     assert s.images.responses_content(message) == message["content"]
     assert s.images.anthropic_content(message) == message["content"]
     assert ContextManager(s).estimated_tokens([message]) == ContextManager(s).estimated_tokens([plain])
-    assert not s.images.note_error([message], ModelError("Error code: 400 - image input is not supported"))
-
-
-def test_successful_image_request_is_learned_per_provider_and_model(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    image_file(tmp_path / "learn.png")
-    message = s.images.message(s.images.recognize("learn.png"))
-    model = ModelClient(s)
-    monkeypatch.setattr(model, "api_request", lambda _messages, _tools: ({"role": "assistant", "content": "ok"}, [], "ok"))
-
-    assert s.images.support() is None
-    model.request([message], [])
-    assert s.images.support() is True
-
-    app = TuiApp(images=s.images)
-    app.input_buffer.insert_text("learn.png ")
-    assert app.status_fragments() == [("class:prompt", app.input_prompt)]
-    assert app.input_error_fragments() == []
-
-    s.config.provider.model = "another-model"
-    assert s.images.support() is None
-    assert app.status_fragments() == [("class:prompt", app.input_prompt)]
-    assert app.input_error_fragments() == []
-
-
-def test_only_explicit_image_unsupported_error_is_learned(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    image_file(tmp_path / "reject.png")
-    value = s.images.prepare(s.images.recognize("reject.png"))
-    message = s.images.message(value)
-    model = ModelClient(s)
-
-    def reject(_messages, _tools):
-        raise ModelError("Error code: 400 - Failed to deserialize messages[4]: unknown variant `image_url`, expected `text`")
-
-    monkeypatch.setattr(model, "api_request", reject)
-    with pytest.raises(ModelError) as caught:
-        model.request([message], [])
-    assert str(caught.value) == ("default/vision does not support image input. Switch to an image-capable model, or continue with image labels only.")
-    assert "unknown variant `image_url`" in str(caught.value.__cause__)
-    assert s.images.support() is False
-    with pytest.raises(ModelError, match="Image input is disabled"):
-        s.images.prepare(value)
-
-    s.config.provider.model = "unrelated-error-model"
-
-    def unrelated(_messages, _tools):
-        raise ModelError("status code: 400 unknown variant `text`, expected `image_url`")
-
-    monkeypatch.setattr(model, "api_request", unrelated)
-    with pytest.raises(ModelError, match="expected `image_url`"):
-        model.request([message], [])
-    assert s.images.support() is None
-
-    s.config.provider.model = "text-format-error-model"
-
-    def text_format_error(_messages, _tools):
-        raise ModelError("Error code: 400 - response_format only supports text input")
-
-    monkeypatch.setattr(model, "api_request", text_format_error)
-    with pytest.raises(ModelError, match="response_format only supports text input"):
-        model.request([message], [])
-    assert s.images.support() is None
-
-
-def test_non_numeric_sdk_code_does_not_bypass_image_error_status_gate(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    image_file(tmp_path / "denied.png")
-    message = s.images.message(s.images.recognize("denied.png"))
-    model = ModelClient(s)
-
-    class ProviderError(Exception):
-        code = "permission_error"
-
-    def denied(_messages, _tools):
-        try:
-            raise ProviderError
-        except ProviderError as cause:
-            raise ModelError("Error code: 403 - vision is not enabled for this key") from cause
-
-    monkeypatch.setattr(model, "api_request", denied)
-    with pytest.raises(ModelError) as caught:
-        model.request([message], [])
-
-    assert str(caught.value) == "Error code: 403 - vision is not enabled for this key"
-    assert s.images.support() is None
-
-
-def test_timeout_value_is_not_mistaken_for_an_image_http_status(tmp_path):
-    s = session(tmp_path)
-    s.config.providers["vision"] = ProviderConfig(url="http://vision", key="test", model="vision")
-    s.config.vision_provider = "vision"
-    image_file(tmp_path / "slow.png")
-    message = s.images.message(s.images.recognize("slow.png"))
-
-    assert not s.images.can_retry_with_bridge(
-        [message],
-        ModelError("Model response exceeded provider.response_timeout=400s"),
-    )
-
-
-def test_error_is_not_reclassified_when_historical_images_are_degraded(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    image_file(tmp_path / "history.png")
-    message = s.images.message(s.images.recognize("history.png"))
-    s.config.provider.image_input = "off"
-    model = ModelClient(s)
-
-    def reject(_messages, _tools):
-        raise ModelError("Error code: 400 - vision modality is not supported for this deployment")
-
-    monkeypatch.setattr(model, "api_request", reject)
-    with pytest.raises(ModelError) as caught:
-        model.request([message], [])
-
-    assert str(caught.value) == "Error code: 400 - vision modality is not supported for this deployment"
-    assert s.images.chat_content(message) == "[Image #1 · history.png]"
 
 
 def test_anthropic_merges_text_mention_after_image_user_message(tmp_path):
@@ -620,8 +481,9 @@ def test_context_estimates_image_from_dimensions_without_base64(tmp_path):
     assert difference == 85 + 170 * 4
     assert difference < len(s.images.chat_content(message)[0]["image_url"]["url"]) // 4
 
-    assert s.images.note_error([message], ModelError("Error code: 400 - image input is not supported")) is True
-    assert context.estimated_tokens([message]) == context.estimated_tokens([plain])
+    s.images.settle_failed_messages([message])
+    settled_plain = {"role": "user", "content": message["content"]}
+    assert context.estimated_tokens([message]) == context.estimated_tokens([settled_plain])
 
 
 def test_tui_replaces_image_path_with_atomic_label_and_keeps_history_readable(tmp_path):
@@ -642,9 +504,8 @@ def test_tui_replaces_image_path_with_atomic_label_and_keeps_history_readable(tm
     assert list(history.load_history_strings())[-1] == "inspect ui.png "
 
 
-def test_tui_reports_and_blocks_disabled_image_input_without_clearing_draft(tmp_path):
+def test_tui_submits_images_without_a_capability_precheck(tmp_path):
     s = session(tmp_path)
-    s.config.provider.image_input = "off"
     path = image_file(tmp_path / "disabled.png")
     received = []
     app = TuiApp(on_chat_submit=received.append, images=s.images)
@@ -652,11 +513,10 @@ def test_tui_reports_and_blocks_disabled_image_input_without_clearing_draft(tmp_
     app.input_buffer.insert_text(path.name + " ")
 
     assert app.status_fragments() == [("class:prompt", app.input_prompt)]
-    assert app.input_error_fragments() == [("class:input.error", "Error: Image input is disabled for the active provider/model")]
+    assert app.input_error_fragments() == []
     app.input_buffer.validate_and_handle()
-    assert received == []
-    assert app.input_buffer.text == IMAGE_MARKER + " "
-    assert "Image input is disabled" in app.input_error
+    assert received and received[0].images
+    assert app.input_buffer.text == ""
 
 
 def test_tui_deleting_first_atomic_label_removes_the_matching_image(tmp_path):
@@ -699,39 +559,3 @@ def test_missing_recognized_image_keeps_tui_draft_on_submit(tmp_path):
     assert received == []
     assert app.input_buffer.text == IMAGE_MARKER + " "
     assert "Cannot read image" in app.input_error
-
-
-def test_tmux_renders_image_error_above_inline_label_without_control_character(tmp_path):
-    executable = shutil.which("tmux")
-    if executable is None:
-        return
-    image_file(tmp_path / "tmux.png")
-    probe = tmp_path / "image_tui_probe.py"
-    probe.write_text(
-        "from minacode.session import Session\n"
-        "from minacode.tui import TuiApp\n"
-        f"session = Session(cwd={str(tmp_path)!r})\n"
-        'session.config.provider.image_input = "off"\n'
-        "TuiApp(images=session.images).run()\n"
-    )
-    socket = "minacode-image-test-" + tmp_path.name
-    command = [executable, "-L", socket]
-    pane_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))}"
-    try:
-        subprocess.run([*command, "new-session", "-d", "-s", "probe", "-x", "100", "-y", "20", pane_command], check=True)
-        time.sleep(0.1)
-        subprocess.run([*command, "send-keys", "-t", "probe", "-l", "tmux.png "], check=True)
-        deadline = time.monotonic() + 3
-        screen = ""
-        while "[Image #1 · tmux.png]" not in screen and time.monotonic() < deadline:
-            time.sleep(0.02)
-            screen = subprocess.run([*command, "capture-pane", "-p", "-t", "probe"], check=True, capture_output=True, text=True).stdout
-        assert "[Image #1 · tmux.png]" in screen
-        assert "Error: Image input is disabled for the active provider/model" in screen
-        assert "^J" not in screen
-        lines = screen.splitlines()
-        error_line = next(index for index, line in enumerate(lines) if "Error: Image input" in line)
-        prompt_line = next(index for index, line in enumerate(lines) if "> [Image #1" in line)
-        assert prompt_line == error_line + 1
-    finally:
-        subprocess.run([*command, "kill-server"], check=False, capture_output=True)

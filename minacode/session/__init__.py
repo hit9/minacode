@@ -25,7 +25,7 @@ from minacode.base import (
     UpdateStatus,
 )
 from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
-from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, ImageInputs, ImageRef, UserInput
+from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
 from minacode.session.store import (
     CONTEXT_LAYOUT_VERSION,
@@ -113,15 +113,11 @@ class AgentState:
     # is. Live display state, like the retry and index fields above: set around the request in
     # ModelClient.compact and never persisted.
     compaction_entry: str = ""
-    # True while a vision-bridge observation request is in flight. Its usage joins the session
+    # True while an explicit ViewImage vision request is in flight. Its usage joins the session
     # totals but it is not a main-model request, so `_record_usage` must not let it overwrite the
     # last-request ctx/cache snapshot the status bar reads. Live request state, like
     # compaction_entry: never persisted.
     vision_observe_active: bool = False
-    # Learned image-input support per capability key (active provider/model), persisted across
-    # snapshots: in auto mode one real outcome decides whether images may go to the main model,
-    # so a vision-capable model is not re-probed into the [vision] bridge on every session.
-    image_support: dict[str, bool] = field(default_factory=dict)
     # The last delegation that failed on this worker, for `Delegate status` to tell the parent
     # (which cannot see the worker) why it stopped, instead of the parent having to remember.
     # Live display state, like compaction_entry: never persisted.
@@ -332,19 +328,14 @@ class QueuedInput:
     images: tuple[ImageRef, ...] = ()
     draft: str = ""
     inflight: bool = False
-    # The vision bridge's observation text, stored separately so `text` always stays the typed
-    # original: the screen echo shows it verbatim, and only message()'s projection joins the two,
-    # so the human-facing echo and the model-facing message can never mix.
-    observation: str = ""
 
     def to_json(self) -> str | Json:
-        if not self.images and not self.observation:
+        if not self.images:
             return self.text
         return {
             "text": self.text,
             "draft": self.draft,
             IMAGE_REFS_KEY: [image.to_json() for image in self.images],
-            **({"observation": self.observation} if self.observation else {}),
         }
 
     @classmethod
@@ -357,23 +348,19 @@ class QueuedInput:
         raw_images = value.get(IMAGE_REFS_KEY)
         images = tuple(image for raw in raw_images if (image := ImageRef.from_json(raw)) is not None) if isinstance(raw_images, list) else ()
         draft = str(value.get("draft") or text)
-        observation = str(value.get("observation") or "")
         if not text.strip():
             return None
         if draft.count("\ufffc") != len(images):
-            return cls(text, observation=observation)
-        return cls(text, images, draft, observation=observation)
+            return cls(text)
+        return cls(text, images, draft)
 
     def user_input(self) -> UserInput:
         return UserInput(self.draft or self.text, self.images)
 
     def message(self, prefix: str = "") -> Json:
-        content = prefix + self.text + ("\n\n" + self.observation if self.observation else "")
-        message: Json = {"role": "user", "content": content}
+        message: Json = {"role": "user", "content": prefix + self.text}
         if self.images:
             message[IMAGE_REFS_KEY] = [image.to_json() for image in self.images]
-            if self.observation:
-                message[IMAGE_TEXT_ONLY_KEY] = True
         return message
 
 
@@ -588,9 +575,7 @@ class Session:
 
     def enqueue_user_input(self, value: str | UserInput) -> None:
         if isinstance(value, UserInput) and value.images:
-            # force: on a bridging session the queue holds the images and the turn observes them
-            # when it accepts the input; without a bridge the gate below still refuses.
-            message = self.images.message(value, force=self.images.bridging())
+            message = self.images.message(value)
             text = str(message.get("content") or "").strip()
             images = self.images.refs(message)
             draft = str(value)

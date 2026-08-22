@@ -188,12 +188,11 @@ from the workspace; quoted paths and backslash-escaped spaces are accepted.
 
 <div class="term-shot" role="img" aria-label="The input prompt after recognizing a local screenshot path as an editable inline image label."><span class="fs-prompt">&gt; explain <span class="fs-i fs-sel">[Image #1 · screenshot.png]</span> and fix the layout<span class="fs-caret">▏</span></span></div>
 
-PNG, JPEG, WebP, and single-frame GIF files are supported. minacode first sends images using the
-selected standard API. If that request is rejected and a [vision
-model](configuration.md#vision-model) is configured, the image is described there and the same
-turn retries without image blocks; a successful retry is remembered for later images. Queued follow-ups,
-resumed sessions, and providers with image input disabled keep readable image labels. See
-[`provider.image_input`](configuration.md#optional-provider-settings) to override automatic detection.
+PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends each new attachment to
+the active model using the selected standard API. If the provider rejects that turn, the image
+remains stored at a session-owned path and later requests replay a readable label instead of the
+same image blocks; the agent can inspect the stored path explicitly with `ViewImage`. A configured
+[vision model](configuration.md#vision-model) is used only by `ViewImage`, never automatically.
 
 ## Sessions
 

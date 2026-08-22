@@ -4,12 +4,8 @@
 
 ### Added
 
-- A `[vision]` provider entry lets a text-only main model read images. When the active provider
-  cannot take images, images pasted or attached to a message, and `ViewImage` calls, are handled
-  by the configured vision model instead: its plain-text description is what the main model
-  reads, the image stays stored under the session's assets, and you can keep asking `ViewImage`
-  with a `question` for details. Configure it with `[vision] provider = "..."` in the config
-  file; when the active provider can take images, the vision model is not used.
+- A `[vision]` provider entry lets explicit `ViewImage` calls use a dedicated perception model and
+  return its text observation to the active model.
 - A blocking `Job` wait now streams the job's output into the same live preview as Bash, and the
   status line shows the seconds left in the wait (e.g. `· 12s left`).
 
@@ -40,6 +36,10 @@
 - **Breaking:** Quick hints are now always available in the TUI. The `/hints` command and
   `[runtime] quick_hints` setting have been removed; existing config values are ignored and
   `/hints` is now an unknown command.
+- **Breaking:** Attachments are always sent directly to the active model, and `[vision]` is used
+  only by explicit `ViewImage` calls. The removed `provider.image_input` setting is ignored in old
+  configs; `off` no longer disables submission and `auto` no longer learns or retries through a
+  vision model.
 - Quick-hint chips flow left to right, up to three per line, and wrap to new lines only
   between chips when the terminal is too narrow, so every suggestion stays visible instead of
   being clipped off the side.
@@ -49,38 +49,21 @@
 
 ### Fixed
 
-- When an attached image or direct `ViewImage` observation gets a 400, 415, or 422 response, a
-  configured vision bridge now retries that same turn with a text observation. A successful retry
-  remembers the model as text-only; an unrelated failure does not. Explicit errors such as
-  `only support text input` still provide an immediate capability verdict.
+- A rejected image no longer makes every later request replay the same unsupported image. The
+  failed occurrence is retained as readable text with stable session asset paths for `ViewImage`,
+  while a newly submitted image is still attempted normally.
 - A stale `Edit` anchor now returns a small, freshly anchored file neighborhood in the failed
   result, so a verified nearby target can be retried without another `Read`; ambiguous targets
   still require a read and are never guessed. Batched edits now also return the same duplicate-line
   and large-edit warnings as direct edits, and the tool guidance no longer tells models to copy
   unchanged boundary lines into replacement content.
-- After a `Ctrl-C` on one turn, the next turn with attached images no longer dies with a
-  `KeyboardInterrupt` before it reaches the model: that message and its images used to be dropped
-  before the turn checkpointed, and are now processed normally.
-- Text the vision model reads out of an image is no longer scanned for `@file:` mentions: a
-  screenshot that happens to show an `@file:...` reference used to inline that file's contents
-  into the conversation, and now only the `@file:` references you actually type are resolved.
-- Pressing `Ctrl-C` while a bridged `ViewImage` is reading an image now cancels the read at once,
+- Pressing `Ctrl-C` while a `ViewImage` vision request is running now cancels the read at once,
   instead of hanging until the vision provider's response timeout; the turn then settles like any
   other interrupted model call.
 - A failed `NextHints` batch counts as a tool batch, so the next ordinary tool batch shows the
   `·2` suffix instead of presenting as the first batch.
-- With the default `image_input = auto`, a configured `[vision]` model is now used only when the
-  main model is actually text-only: the first image is sent to the main model, the outcome is
-  remembered across sessions, and a vision-capable model no longer pays an extra vision round-trip
-  or loses image resolution to the bridge.
-- A bridged attachment now remains available to `ViewImage` by a stable session-owned path after
-  its original file is moved or the session is resumed. It expires with the history message that
-  owns it, and a failed initial observation preserves the submitted turn so the read can be retried.
 - The live preview of a short `Job` log no longer repeats already-shown lines when the command
   writes more output: each new line is streamed once instead of the whole tail again.
-- The transcript no longer claims images were "described" when the vision observation failed: the
-  bridge line reports the read as in progress, so a timeout or provider error cannot leave a false
-  completion line behind.
 - Crash residue in the session's assets directory -- a `.image-*` staging file left behind by an
   interrupted save -- is cleaned up once it is old enough, so abandoned files no longer pile up or
   keep the directory around.

@@ -41,7 +41,6 @@ from minacode.cli.modals import (
 )
 from minacode.cli.update import UpdateChecker
 from minacode.config import (
-    IMAGE_INPUT_CHOICES,
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
     Config,
@@ -74,7 +73,6 @@ SET_HANDLERS: dict[str, SetHandler] = {
     "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
     "provider.response_timeout": ("provider", "response_timeout", lambda v: max(0, int(v))),
     "provider.stream": ("provider", "stream", lambda v: v == "on"),
-    "provider.image_input": ("provider", "image_input", None),
     "runtime.max_agent_steps": ("settings", "max_steps", lambda v: max(1, int(v))),
     "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
     "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
@@ -86,7 +84,6 @@ SET_KEYS = tuple(SET_HANDLERS)
 # Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
 SET_CHOICES: dict[str, tuple[str, ...]] = {
     "provider.stream": ("on", "off"),
-    "provider.image_input": IMAGE_INPUT_CHOICES,
     "runtime.worker": ("on", "off"),
 }
 SET_VALUES: dict[str, tuple[str, ...]] = {
@@ -369,7 +366,6 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.model: {provider.model or '(empty)'}",
             f"provider.api: {provider.api}",
             f"provider.stream: {'on' if provider.stream else 'off'}",
-            f"provider.image_input: {provider.image_input}",
             f"provider.resolved_api: {resolved.api}",
             f"provider.prompt_cache_key: {provider.prompt_cache_key}",
             f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",

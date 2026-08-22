@@ -19,14 +19,13 @@ from minacode.base import (
     ToolCall,
 )
 from minacode.context import ContextManager
-from minacode.image import IMAGE_MARKER, UserInput
+from minacode.image import UserInput
 from minacode.model import ModelClient, PreparedRequest
 from minacode.prompts import (
     FAILED_TOOL_CALL_RESULT,
     FAILED_TURN_MARKER,
     INTERRUPT_MARKER,
     LIVE_FOLLOWUP_PREFIX,
-    VISION_OBSERVE_DEFAULT_QUESTION,
 )
 from minacode.runner import ToolRunner
 from minacode.session import QueuedInput, Session, SessionSnapshotCodec
@@ -98,15 +97,12 @@ class Agent:
         tool_batches = 0
         malformed_tool_names: list[str] = []
         user_message = self._initial_user_message(user_input)
-        # Mentions belong to user input, never to a request transform. A bridged message appends
-        # model-produced observation text, while a direct image message does not; deriving mention
-        # input from UserInput keeps both paths under one rule and prevents text read from an image
-        # from acquiring file-read authority.
+        # Mentions belong to the user's typed input, never to projected image content.
         user_text = user_input.display_text() if isinstance(user_input, UserInput) else self.session.images.label_text(user_message)
         turn_messages = [user_message, *self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
         self.checkpoint_turn(turn_messages, transcript_messages)
-        bridge_retry_pending = False
+        failed_request: PreparedRequest | None = None
         try:
             for step in range(self.session.settings.max_steps):
                 self.session.state.turn_step = step + 1
@@ -115,16 +111,15 @@ class Agent:
                     try:
                         self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
+                        failed_request = request
                         assistant, tool_calls, content = self.model.request(request.messages, request.tools)
-                        if bridge_retry_pending:
-                            self.session.images.note_bridge_retry_success()
-                            bridge_retry_pending = False
                         self.record_sources(assistant)
                         self.raise_if_cancelled()
                         # The request reached the provider, so its follow-ups belong to history from
                         # here on, and any correction sent next lands after them — history keeps the
                         # order the provider saw, because a sent message can never be taken back.
                         self.accept_pending_inputs(turn_messages, transcript_messages, request.pending, request.turn_messages)
+                        failed_request = None
                         assistant, tool_calls, content = self.correct_textual_tool_calls(
                             assistant,
                             tool_calls,
@@ -136,16 +131,6 @@ class Agent:
                             transcript_messages=transcript_messages,
                         )
                         break
-                    except ModelError as error:
-                        if (
-                            not bridge_retry_pending
-                            and self.session.images.can_retry_with_bridge(request.messages, error)
-                            and self._bridge_turn_images(turn_messages, transcript_messages, user_input)
-                        ):
-                            bridge_retry_pending = True
-                            self.checkpoint_turn(turn_messages, transcript_messages)
-                            continue
-                        raise
                     except ModelRequestRetry:
                         continue
                 if assistant.get(PAUSED_TURN_KEY) and not tool_calls:
@@ -211,6 +196,18 @@ class Agent:
             self.session.save_snapshot()
             raise
         except Exception as error:
+            if isinstance(error, ModelError):
+                # A queued follow-up was part of the rejected request too. Commit the exact sent
+                # turn before settling its images, rather than releasing it to repeat the same
+                # rejected image on every later request.
+                if failed_request is not None and failed_request.pending:
+                    self.accept_pending_inputs(
+                        turn_messages,
+                        transcript_messages,
+                        failed_request.pending,
+                        failed_request.turn_messages,
+                    )
+                self.session.images.settle_failed_messages(turn_messages)
             self.session.release_user_inputs()
             # A turn that died from an error still has to leave a legal, marked history: tool
             # calls that never got results are settled so the next request is not rejected for a
@@ -232,81 +229,9 @@ class Agent:
             raise
 
     def _initial_user_message(self, user_input: str | UserInput) -> Json:
-        """Build the turn's opening user message.
+        """Build the turn's opening user message, preserving image refs for direct projection."""
 
-        When the vision bridge is active (the deterministic rule shared with ViewImage) and the
-        input carries images, run one observation request covering all of them and inject the
-        description as plain text, so the main model never sees image blocks yet can still
-        ViewImage the stored assets for follow-up detail."""
-
-        if not (isinstance(user_input, UserInput) and user_input.images) or not self.session.images.bridging():
-            return self.session.images.message(user_input)
-        return self._bridged_user_message(user_input)
-
-    def _bridged_user_message(self, user_input: UserInput) -> Json:
-        """Replace one image-bearing opening message with a vision observation."""
-
-        message = self.session.images.message(user_input, force=True)
-        return self._bridged_image_message(message, self._user_image_question(user_input))
-
-    @staticmethod
-    def _user_image_question(user_input: UserInput) -> str:
-        return user_input.original_text() if str(user_input).replace(IMAGE_MARKER, "").strip() else ""
-
-    def _bridged_image_message(self, message: Json, question: str) -> Json:
-        images = self.session.images.input_refs(message)
-        entry = self.session.config.vision_provider
-        provider = self.session.config.providers[entry]
-        try:
-            observation = self.model.vision_observe(images, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION)
-        except ModelError as error:
-            # The attachment is already submitted and stored. Preserve the turn with a truthful
-            # text observation instead of failing before its first checkpoint; the stable asset
-            # path lets the main model or user retry through ViewImage.
-            observation = f"[Vision observation failed: {ToolRunner.oneline(str(error), 300)}]"
-        return self.session.images.bridged_observation_message(message, f"{entry}/{provider.model}", observation)
-
-    def _bridge_turn_images(self, turn_messages: list[Json], transcript_messages: list[Json], user_input: str | UserInput) -> bool:
-        """Replace image-bearing messages from this turn before one controlled main-model retry."""
-
-        changed = False
-        for index, message in enumerate(turn_messages):
-            if not self.session.images.input_refs(message):
-                continue
-            if index == 0 and isinstance(user_input, UserInput):
-                question = self._user_image_question(user_input)
-            else:
-                question = self.session.images.tool_observation_question(message)
-            bridged = self._bridged_image_message(message, question)
-            turn_messages[index] = bridged
-            changed = True
-        if changed:
-            transcript_messages[:] = SessionSnapshotCodec.transcript_messages(turn_messages)
-        return changed
-
-    def _observe_queued_input(self, item: QueuedInput) -> None:
-        """Turn one queued input's images into a text observation for the vision bridge, so a
-        mid-turn image follow-up reads the same way as an opening attachment.
-
-        The observation is stored on `item.observation`, not written into `item.text`: the text
-        stays the typed original, so the flush echo never prints model-facing injection text, and
-        item.message() joins the two at both projection sites (request and transcript). The images
-        remain on the queued semantic message so snapshot ownership, resume, and asset collection
-        all follow the normal image lifecycle; `item.observation` makes the transform idempotent
-        across request retries, and the text-only marker prevents the refs from reaching the main
-        provider. Mentions are resolved by the caller before this runs, so observation text is
-        never scanned for @-references."""
-
-        if not item.images or item.observation or not self.session.images.bridging():
-            return
-        images = item.images
-        entry = self.session.config.vision_provider
-        provider = self.session.config.providers[entry]
-        try:
-            observation = self.model.vision_observe(images, item.text or VISION_OBSERVE_DEFAULT_QUESTION)
-        except ModelError as error:
-            observation = f"[Vision observation failed: {ToolRunner.oneline(str(error), 300)}]"
-        item.observation = self.session.images.attachment_observation_content(images, f"{entry}/{provider.model}", observation)
+        return self.session.images.message(user_input)
 
     def correct_textual_tool_calls(
         self,
@@ -494,7 +419,6 @@ class Agent:
             request_turn = [*turn_messages]
             for item in pending:
                 mentions = self.mention_messages(item.text)
-                self._observe_queued_input(item)
                 request_turn.append(item.message(LIVE_FOLLOWUP_PREFIX))
                 request_turn.extend(mentions)
         self.session.state.turn_messages = len(request_turn)
@@ -587,8 +511,6 @@ class Agent:
     ) -> None:
         if not pending:
             return
-        # The typed original: the echo is for the human's screen; the observation joins only in
-        # message()'s projection below.
         texts = [item.text for item in pending]
         # Committed with the marker the provider was sent, not the bare text: dropping it here would
         # rewrite a message already in the prefix and leave the model's acknowledgement unexplained.

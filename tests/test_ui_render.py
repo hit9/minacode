@@ -223,26 +223,23 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
 def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
     """Standalone turn-level rows must not draw an edge. A BRANCH on a row with no parent line
     above it dangles (`├` joined to nothing) and shifts the label two columns past every sibling
-    row -- a defect the live preview committed once and, after that, the vision observation and
-    provider builtin-call lines each committed again. Every flat tool_output block is covered
-    here so the next standalone row cannot reintroduce it."""
+    row. Cover the provider builtin-call row so it cannot reintroduce that defect."""
     loop_ = loop(tmp_path)
     captured = []
     monkeypatch.setattr(loop_.ui, "emit", lambda text="", indent=0: captured.append(text))
-    loop_.vision_observe_output("deepseek-vision/deepseek-v4-flash-vision-exp", "observing 1 attached image")
     loop_.builtin_call_output("search", "cache wiring")
     blocks = [item for item in captured if isinstance(item, LogBlock)]
-    assert len(blocks) == 2
+    assert len(blocks) == 1
     for block in blocks:
         assert all(isinstance(line, LogLine) for line in block.items)
         assert all(line.edge is LogEdge.NONE for line in block.items)
 
     ui = UiPrinter(output_fn=lambda text: None)
-    observe = "".join(text for _style, text in ui.log_segments(blocks[0])).splitlines()[0]
+    builtin = "".join(text for _style, text in ui.log_segments(blocks[0])).splitlines()[0]
     tool_root = "".join(text for _style, text in ui.log_segments(LogBlock([LogLine("Bash", "rg -n cache minacode/", LogRole.TOOL)]))).splitlines()[0]
     user_echo = "\u2022 [Image #1 \u00b7 ef739e37-....png]"
     # All three rows start their content in the same column (two-cell indent, no edge).
-    assert observe.index("deepseek-vision/") == tool_root.index("Bash") == user_echo.index("[Image") == 2
+    assert builtin.index("search") == tool_root.index("Bash") == user_echo.index("[Image") == 2
 
 
 def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypatch):
@@ -945,9 +942,7 @@ def test_ask_view_keys_navigate_advance_and_submit():
 def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
     """Tabbing to the last page and Enter must not submit a half-answered batch: it records the
     pick and jumps back to the first unanswered page."""
-    state = AskViewState.build(
-        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
-    )
+    state = AskViewState.build([AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])])
     assert state.handle_key("tab") is TUI_MODAL_PENDING
     assert state.handle_key("tab") is TUI_MODAL_PENDING
     assert state.active == 2
@@ -958,9 +953,7 @@ def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
 
 def test_ask_view_out_of_order_answers_submit_when_all_answered():
     """Answers may land in any order; the batch only submits once every page has a pick."""
-    state = AskViewState.build(
-        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
-    )
+    state = AskViewState.build([AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])])
     state.handle_key("tab")
     state.handle_key("tab")
     assert state.handle_key("enter") is TUI_MODAL_PENDING  # last page answered, batch not done

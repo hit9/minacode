@@ -22,7 +22,6 @@ from minacode.providers.compat import (
 
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
-IMAGE_INPUT_CHOICES = ("auto", "on", "off")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = (
     "auto",
@@ -110,7 +109,6 @@ class ProviderConfig:
     model: str = ""
     api: str = "auto"
     stream: bool = True
-    image_input: str = "auto"
     prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
@@ -136,13 +134,11 @@ class ProviderConfig:
     @classmethod
     def from_dict(cls, data: Json) -> ProviderConfig:
         api = Config.str(data, "api", "auto")
-        image_input = Config.str(data, "image_input", "auto")
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
         for key, value, choices in (
             ("api", api, PROVIDER_API_CHOICES),
-            ("image_input", image_input, IMAGE_INPUT_CHOICES),
             ("reasoning", reasoning, REASONING_CHOICES),
             ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES),
         ):
@@ -161,7 +157,6 @@ class ProviderConfig:
             model=Config.str(data, "model"),
             api=api,
             stream=Config.bool(data, "stream", True),
-            image_input=image_input,
             prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
@@ -348,11 +343,8 @@ class Config:
     compaction_reasoning: str = ""
     compaction_api: str = ""
 
-    # The provider entry whose model observes images when the active model cannot (the vision
-    # bridge): `[vision] provider = "<entry>"` names a base provider entry carrying the vision
-    # model's url/key/model, mirroring [worker]. The vision model only perceives -- it never
-    # receives tools or the coding task -- so it is a plain provider entry, not a worker
-    # session. Empty disables the bridge and ViewImage keeps today's behavior exactly.
+    # The provider entry used by explicit ViewImage calls. It only perceives an image and question;
+    # attachments still go directly to the active provider and never route here implicitly.
     vision_provider: str = ""
 
     # Backward compatibility: the data dir moved from ~/.nanocode to ~/.minacode.
@@ -512,7 +504,6 @@ key = ""
 model = ""
 # api = "auto"                 # auto | chat | responses | anthropic
 # stream = true
-# image_input = "auto"         # auto | on | off
 # reasoning = "medium"
 # max_context_tokens = 0       # how much of THIS model's window to use; 0 inherits runtime.max_context_tokens.
                                # Set it per entry when models differ: 1048576 for a 1M-window model,
@@ -550,11 +541,9 @@ model = ""
 # model = ""                  # optional: override the entry's model (inherit by default)
 # reasoning = ""              # optional: override the entry's reasoning; /worker reason at runtime
 # api = ""                    # optional: override the entry's api protocol; empty = inherit the entry's own
-# [vision]                     # optional: a fallback vision model, used only when the active
-# provider = "vision"          # provider cannot take images; names a provider entry carrying
-                               # the vision model's url/key/model. Attached images and ViewImage
-                               # calls are answered by it in plain text; never used while the
-                               # active model takes images itself.
+# [vision]                     # optional: provider entry used only by explicit ViewImage calls
+# provider = "vision"          # its model receives the local image and optional question, then
+                               # returns a text observation to the active model
 # [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
 # auto_connect = false

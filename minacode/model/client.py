@@ -119,11 +119,6 @@ class ModelClient:
         # from the parsed result rather than the stream, so a search is logged the same way when
         # streaming is off and on a frontend that shows no live status at all.
         self.on_builtin_call: Callable[[str, str], None] | None = None
-        # Called with (label, detail) when a vision-bridge observation runs, before the request is
-        # sent: the attachment bridge fires before the turn's first model call, a stretch where
-        # nothing else reports, so without it the vision request is invisible in the transcript.
-        # (A bridged ViewImage draws its trace inside the tool's own finish block instead.)
-        self.on_vision_observe: Callable[[str, str], None] | None = None
         # Lifecycle hook, mirroring ContextManager.on_compaction: True while a retry backoff wait is in
         # progress, False in a finally block. Lets the orchestration label the phase without model
         # depending on a renderer.
@@ -255,7 +250,7 @@ class ModelClient:
             return clean
 
         chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
+        images = ImageInputs.estimated_tokens(messages)
         return (chars + 3) // 4 + images
 
     def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT], *, response_timeout: float | None = None) -> _ResultT:
@@ -339,21 +334,13 @@ class ModelClient:
                 state.current_model_call_started_at = time.monotonic()
                 state.stream_started_at = state.stream_chars = 0
                 try:
-                    result = self.api_request(messages, tools)
-                    self.session.images.note_success(messages)
-                    return result
+                    return self.api_request(messages, tools)
                 except KeyboardInterrupt:
                     if state.manual_model_retry_requested:
                         state.manual_model_retry_requested = False
                         raise ModelRequestRetry() from None
                     raise
                 except ModelError as error:
-                    if self.session.images.note_error(messages, error):
-                        provider = self.session.config.provider
-                        identity = f"{self.session.config.active_provider}/{provider.model or '(no model)'}"
-                        raise ModelError(
-                            f"{identity} does not support image input. Switch to an image-capable model, or continue with image labels only."
-                        ) from error
                     retryable = resilience.retryable_error(error)
                     if attempt >= MODEL_REQUEST_RETRIES or not retryable:
                         if attempt:
@@ -677,17 +664,15 @@ class ModelClient:
         return responses.dump_message_item(item)
 
     def vision_observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
-        """Ask the [vision]-configured entry to observe images, bypassing the active provider's
-        image gate.
+        """Ask the [vision]-configured entry to observe images for an explicit ViewImage call.
 
         Mirrors compact(): the [vision] entry is resolved per call and validated locally -- a
         missing field would otherwise surface as a generic SDK credentials error naming nothing
         the user can act on -- then served by one non-streaming api_request with pre-built image
         blocks. Perception only: no tools, no coding task; the main model does the reasoning.
 
-        Like request() and compact(), the entry clears the cancel flag: a stale flag left by a
-        previous turn's Ctrl-C must not abort a fresh observation (the attachment bridge runs it
-        before the turn's first request).
+        Like request() and compact(), the entry clears the cancel flag so a stale flag left by a
+        previous turn's Ctrl-C cannot abort a fresh observation.
         """
 
         self.cancel_requested.clear()
@@ -695,11 +680,6 @@ class ModelClient:
         provider = self.session.config.providers[entry_name]
         if missing := provider.missing_fields():
             raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
-        if self.on_vision_observe is not None:
-            self.on_vision_observe(
-                f"{entry_name}/{provider.model}",
-                f"observing {len(images)} attached image{'s' if len(images) != 1 else ''}",
-            )
         messages = [
             {"role": "system", "content": VISION_OBSERVE_PROMPT},
             {

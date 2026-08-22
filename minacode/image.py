@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
-import json
 import os
 import re
 import shlex
@@ -32,7 +30,7 @@ IMAGE_TEXT_ONLY_KEY = "_images_text_only"
 TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
 TOOL_IMAGE_QUESTION_KEY = "_tool_image_question"
 TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
-ATTACHMENT_VISION_OBSERVATION_PREFIX = "[Attachment image observation]"
+FAILED_IMAGE_CONTEXT_PREFIX = "[Image input failed; local assets remain available through ViewImage]"
 SUPPORTED_FORMATS = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -115,24 +113,16 @@ class UserInput(str):
 
 
 class ImageInputs:
-    """Own image recognition, storage, transport, and learned model capability for a session."""
+    """Own image recognition, storage, semantic references, and wire projection for a session."""
 
     _TOKEN_RE = re.compile(r"(?:'[^'\n]*'|\"(?:\\.|[^\"\n])*\"|(?:\\.|[^\s])+)")
-    _IMAGE_STATUS_RE = re.compile(r"\b(?:error|status)(?:\s+code)?\s*[:=]?\s*(400|415|422)\b", re.IGNORECASE)
-    _IMAGE_VARIANT_REJECTION_RE = re.compile(r"\bunknown variant\b\s*[`'\"]?(?:image_url|input_image|image)\b[`'\"]?[\s\S]*\bexpected\b[\s\S]*\btext\b")
-    _TEXT_ONLY_MODEL_RE = re.compile(r"\bmodel\b[^\n.!?]{0,80}\bonly supports?\s+text(?:\s+input)?\b")
     _LEADING_PUNCTUATION = "([{<"
     _TRAILING_PUNCTUATION = ",;:!?)]}>"
-    _MODALITY_TERMS = ("image", "vision", "multimodal", "input_image", "image_url", "modality")
-    _UNSUPPORTED_TERMS = ("unsupported", "not supported", "does not support", "only supports text", "not enabled")
 
     def __init__(self, session: Session | None = None, *, cwd: str = "") -> None:
         self.session = session
         self.cwd = session.cwd if session is not None else cwd or os.getcwd()
         self.retained_refs: set[str] = set()
-        self._learned_support: dict[tuple[str, str, str, str], bool] = {}
-        if session is not None:
-            self._learned_support.update(self._restore_support(session.state.image_support))
 
     @staticmethod
     def refs(message: Json) -> tuple[ImageRef, ...]:
@@ -208,22 +198,17 @@ class ImageInputs:
             position += 1
         return UserInput("".join(output), tuple(found))
 
-    def prepare(self, value: str | UserInput, *, force: bool = False) -> UserInput:
-        """Validate and store a draft, raising when the active provider cannot take images.
-
-        `force` skips the support gate for the vision bridge: the image is still validated and
-        stored, but the caller attaches it to the vision request, not to the main model."""
+    def prepare(self, value: str | UserInput) -> UserInput:
+        """Validate and store a draft's images as session-owned assets."""
 
         if not isinstance(value, UserInput) or not value.images:
             return UserInput(str(value))
-        if self.support() is False and not force:
-            raise ModelError("Image input is disabled for the active provider/model")
         if self.session is None:
             return value
         return UserInput(str(value), tuple(self._store(image) for image in value.images))
 
-    def message(self, value: str | UserInput, *, force: bool = False) -> Json:
-        stored = self.prepare(value, force=force)
+    def message(self, value: str | UserInput) -> Json:
+        stored = self.prepare(value)
         if not stored.images:
             return {"role": "user", "content": str(stored)}
         self.retained_refs.difference_update(image.ref for image in stored.images)
@@ -233,13 +218,11 @@ class ImageInputs:
             IMAGE_REFS_KEY: [image.to_json() for image in stored.images],
         }
 
-    def load(self, path: str, *, source_text: str = "", force: bool = False) -> ImageRef:
-        """Validate and store one explicit local image for model input.
-
-        `force` skips the support gate for the vision bridge (see prepare)."""
+    def load(self, path: str, *, source_text: str = "") -> ImageRef:
+        """Validate and store one explicit local image for model input."""
         image = self._inspect(path, source_text=source_text or path)
         assert image is not None
-        return self.prepare(UserInput(IMAGE_MARKER, (image,)), force=force).images[0]
+        return self.prepare(UserInput(IMAGE_MARKER, (image,))).images[0]
 
     def tool_observation(self, images: tuple[ImageRef, ...], question: str = "") -> Json:
         """Build a durable multimodal user-role observation produced by a tool batch."""
@@ -267,70 +250,6 @@ class ImageInputs:
     def retain(self, images: tuple[ImageRef, ...]) -> None:
         self.retained_refs.update(image.ref for image in images)
 
-    def support(self) -> bool | None:
-        if self.session is None:
-            return None
-        configured = self.session.config.provider.image_input
-        if configured == "on":
-            return True
-        if configured == "off":
-            return False
-        return self._learned_support.get(self._capability_key())
-
-    def note_success(self, messages: list[Json]) -> None:
-        if self.session is not None and self.session.config.provider.image_input == "auto" and self.support() is not False and self.has_images(messages):
-            self._remember(self._capability_key(), True)
-
-    def note_error(self, messages: list[Json], error: Exception) -> bool:
-        unsupported = self.has_images(messages) and self.support() is not False and self._explicit_unsupported_error(error)
-        if unsupported and self.session is not None and self.session.config.provider.image_input == "auto":
-            self._remember(self._capability_key(), False)
-        return unsupported
-
-    def can_retry_with_bridge(self, messages: list[Json], error: Exception) -> bool:
-        """Whether one text-only retry can isolate image transport as the failed variable."""
-
-        return bool(
-            self.session is not None
-            and self.session.config.vision_provider
-            and self.session.config.provider.image_input == "auto"
-            and self.support() is not True
-            and self.has_images(messages)
-            and self._error_status(error) in {400, 415, 422}
-        )
-
-    def note_bridge_retry_success(self) -> None:
-        """A matching text-only retry succeeded, proving the direct image shape was rejected."""
-
-        if self.session is not None and self.session.config.provider.image_input == "auto" and self.support() is None:
-            self._remember(self._capability_key(), False)
-
-    def _remember(self, key: tuple[str, str, str, str], value: bool) -> None:
-        """Record a learned support verdict, persisted so the next session does not re-probe."""
-        self._learned_support[key] = value
-        if self.session is not None:
-            self.session.state.image_support[self._support_key(key)] = value
-
-    @staticmethod
-    def _support_key(key: tuple[str, str, str, str]) -> str:
-        return json.dumps(key)
-
-    @classmethod
-    def _restore_support(cls, persisted: dict[str, bool]) -> dict[tuple[str, str, str, str], bool]:
-        restored: dict[tuple[str, str, str, str], bool] = {}
-        for raw, value in (persisted or {}).items():
-            try:
-                parts = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if isinstance(value, bool) and isinstance(parts, list) and len(parts) == 4 and all(isinstance(part, str) for part in parts):
-                restored[tuple(parts)] = value
-        return restored
-
-    @classmethod
-    def has_images(cls, messages: list[Json]) -> bool:
-        return any(cls.input_refs(message) for message in messages)
-
     def chat_content(self, message: Json) -> str | list[Json]:
         return self._protocol_content(message, self._chat_image_part, "text")
 
@@ -357,10 +276,9 @@ class ImageInputs:
         }
 
     def vision_content(self, images: tuple[ImageRef, ...], api: str, text: str) -> list[Json]:
-        """Content blocks for one vision-bridge request, built for the vision entry's protocol.
+        """Content blocks for one explicit vision-provider request.
 
-        The active-provider support gate does not apply here: the [vision] entry always carries
-        the images, and the blocks are pre-built so the regular message projection leaves the
+        The [vision] entry always carries the images, and the blocks are pre-built so projection leaves the
         request untouched (the message carries no IMAGE_REFS_KEY). Perception only: `text` is the
         question or the default observation instruction, never the coding task."""
 
@@ -377,50 +295,26 @@ class ImageInputs:
             parts.append({"type": text_type, "text": text})
         return parts
 
-    def bridging(self) -> bool:
-        """Whether image input routes through the [vision] bridge: a [vision] entry is configured
-        and the active provider is known not to take images (support False). In auto mode an
-        unknown provider routes images to the main model first and learns from the outcome, so the
-        bridge engages only once the model is known to reject them. The one deterministic routing
-        rule shared by ViewImage, attachment observation, queued follow-ups, and the TUI input
-        precheck."""
+    def settle_failed_messages(self, messages: list[Json]) -> None:
+        """Make image occurrences in one failed turn safe to replay as text.
 
-        return bool(self.session is not None and self.session.config.vision_provider) and self.support() is False
+        The refs remain on the semantic message to retain their session-owned assets, while the
+        text-only marker prevents those same failed occurrences from being resent as image blocks.
+        New images in later turns are unaffected.
+        """
 
-    def attachment_observation_content(self, images: tuple[ImageRef, ...], entry_label: str, observation: str) -> str:
-        """The plain-text observation block appended to a bridged user message.
-
-        The header names the vision entry and every attached file so the main model knows it can
-        keep asking about them with ViewImage; the body is the vision model's description. The
-        message carries text-only image refs, so the assets remain addressable without sending
-        image blocks to the main model."""
-
-        lines = [f"{ATTACHMENT_VISION_OBSERVATION_PREFIX} vision={json.dumps(entry_label)}"]
-        lines.extend(f"[Image #{index} · {image.name} · path={json.dumps(self.asset_path(image))}]" for index, image in enumerate(images, 1))
-        lines.append(observation)
-        # Provenance only, no nudge: the model sees ViewImage in its tool list, but connecting
-        # "this description is a lossy read I can re-query" is the step a weaker model skips. An
-        # imperative or conditional "ask ViewImage..." invites a reflexive second read that doubles
-        # the vision cost of every attachment, so state the capability as a bare fact and leave the
-        # decision entirely to the model. The [hint] tag marks the line as harness-inserted, not
-        # user text.
-        lines.append("[hint] These images remain available to ViewImage with a question.")
-        return "\n".join(lines)
-
-    def bridged_observation_message(self, message: Json, entry_label: str, observation: str) -> Json:
-        """Replace one semantic image message with a durable text-only vision observation."""
-
-        images = self.input_refs(message)
-        bridged = dict(message)
-        bridged["content"] = self.label_text(message) + "\n\n" + self.attachment_observation_content(images, entry_label, observation)
-        bridged[IMAGE_TEXT_ONLY_KEY] = True
-        return bridged
+        for message in messages:
+            images = self.input_refs(message)
+            if not images:
+                continue
+            paths = "\n".join(f"- {image.name}: {self.asset_path(image)}" for image in images)
+            message["content"] = f"{self.label_text(message)}\n\n{FAILED_IMAGE_CONTEXT_PREFIX}\n{paths}"
+            message[IMAGE_TEXT_ONLY_KEY] = True
 
     def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
         images = self.input_refs(message)
-        if not images or self.support() is False:
-            # A pre-built content list (a vision-bridge request) is already in the wire shape and
-            # must pass through untouched; the label path would stringify it.
+        if not images:
+            # A pre-built content list for the explicit vision provider is already in wire shape.
             if isinstance(message.get("content"), list):
                 return message["content"]
             return self.label_text(message)
@@ -504,39 +398,6 @@ class ImageInputs:
         """Stable path of one stored image, suitable for a later ViewImage call."""
 
         return os.path.join(self.assets_dir(), image.ref)
-
-    def _capability_key(self) -> tuple[str, str, str, str]:
-        session = self._session()
-        provider = session.config.provider
-        resolved = provider.resolve()
-        return session.config.active_provider, resolved.api, resolved.base_url, provider.model
-
-    @classmethod
-    def _explicit_unsupported_error(cls, error: Exception) -> bool:
-        text = str(error).lower()
-        if cls._error_status(error) not in {400, 415, 422}:
-            return False
-        mentions_image = any(term in text for term in cls._MODALITY_TERMS)
-        rejects_modality = any(term in text for term in cls._UNSUPPORTED_TERMS)
-        rejects_image_schema = cls._IMAGE_VARIANT_REJECTION_RE.search(text) is not None
-        rejects_text_only_model = cls._TEXT_ONLY_MODEL_RE.search(text) is not None
-        return (mentions_image and rejects_modality) or rejects_image_schema or rejects_text_only_model
-
-    @classmethod
-    def _error_status(cls, error: Exception) -> int | None:
-        """Prefer an SDK status on the exception chain; accept rendered status as a fallback."""
-
-        current: BaseException | None = error
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            seen.add(id(current))
-            status = getattr(current, "status_code", None) or getattr(current, "code", None)
-            with contextlib.suppress(TypeError, ValueError):
-                if status is not None:
-                    return int(status)
-            current = current.__cause__
-        match = cls._IMAGE_STATUS_RE.search(str(error))
-        return int(match.group(1)) if match is not None else None
 
     def _session(self) -> Session:
         if self.session is None:

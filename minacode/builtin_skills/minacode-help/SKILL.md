@@ -87,7 +87,7 @@ An endpoint URL ending in `/chat/completions`, `/responses`, or `/messages` also
 Common optional provider settings:
 
 - `stream = true`: stream responses. Set `false` for endpoints that reject streaming.
-- `image_input = "auto"`: learn image support; use `"on"` or `"off"` to override it. When the active model cannot take images, a `[vision] provider = "<entry>"` block routes them to a vision model instead (see `docs/configuration.md` "Vision model").
+- `[vision] provider = "<entry>"`: use that provider for explicit `ViewImage` calls. Attachments still go directly to the active model.
 - `reasoning = "medium"`: choose `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 - `available_models = [...]`: add entries to the `/model` picker.
 - `temperature`: omit it unless the provider or task needs a specific value.
@@ -222,7 +222,7 @@ Use the smallest relevant check:
 - Provider-side search appears stuck: preserve the exact error or stop reason. Anthropic `pause_turn` and configured Kimi `builtin_function` handshakes are continued automatically but remain bounded by `max_agent_steps` and `response_timeout`.
 - Streaming failure: set `provider.stream = false` temporarily and retry.
 - Stalled generation: distinguish `timeout` inactivity from total `response_timeout`; inspect the exact error before increasing either.
-- Image rejected: confirm the model accepts images and inspect `image_input`; forcing `on` cannot add provider capability. A `[vision] provider = "<entry>"` block has a sibling vision model read images for a text-only main model.
+- Image rejected: the failed image remains available at its session-owned path. Use `ViewImage` explicitly; configure `[vision] provider = "<entry>"` when the active model cannot inspect it directly.
 - Tool did not run: check whether approval was declined, whether yolo is off, and whether the tool reported a validation or stale-anchor error.
 - Missing earlier detail: use `Recall` for shortened tool output or `RecallContext` for compacted conversation.
 - Skill not found: run `/skills`, verify the directory and `SKILL.md` frontmatter, then check whether a higher-precedence source overrides the name.

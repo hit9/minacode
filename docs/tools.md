@@ -40,10 +40,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     editor, tracebacks, and diffs show, so `Read`, `Search`, and `InspectCode` all agree on which
     line is which.
 * - **`ViewImage`**
-  - Opens one local PNG, JPEG, WebP, or single-frame GIF as visual input for the active model.
-    The agent can use it proactively for screenshots, mockups, diagrams, and generated assets.
-    Images outside the workspace require confirmation. When the active provider/model cannot take
-    images, a configured [vision model](configuration.md#vision-model) describes them instead.
+  - Opens one local PNG, JPEG, WebP, or single-frame GIF. With a configured [vision
+    model](configuration.md#vision-model), it returns that model's text observation; otherwise the
+    image becomes visual input for the active model. Images outside the workspace require confirmation.
 * - **`Search`**
   - Finds text with case-insensitive regular expressions, optionally limited by path or filename
     pattern. It skips hidden, binary, and gitignored files and returns editable anchors.

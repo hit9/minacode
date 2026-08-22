@@ -317,7 +317,7 @@ class ToolRunner:
         self._active_job: ActiveResource[JobTool] = ActiveResource()
         # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
         self._active_worker: ActiveResource[Agent] = ActiveResource()
-        # The client behind tool-side vision requests (a bridged ViewImage observation), owned
+        # The client behind explicit ViewImage vision requests, owned
         # here so cancel() reaches the in-flight request. Created lazily -- most sessions never
         # bridge an image tool call -- and shared across calls, since tool calls never overlap a
         # main-model request. See vision_client().
@@ -364,7 +364,7 @@ class ToolRunner:
     def vision_client(self) -> ModelClient:
         """The client behind tool-side vision requests, owned here so cancel() can abort one.
 
-        The bridged ViewImage observation would otherwise run on a throwaway client nobody can
+        The ViewImage observation would otherwise run on a throwaway client nobody can
         reach, leaving Ctrl-C dead until the provider timeout. Created lazily because most
         sessions never bridge an image tool call."""
         if self._vision_client is None:
@@ -388,7 +388,7 @@ class ToolRunner:
             tool.runner = self
             return tool.call()
         if isinstance(tool, ViewImageTool):
-            # The runner owns the vision client, so Agent.cancel() reaches an in-flight bridged
+            # The runner owns the vision client, so Agent.cancel() reaches an in-flight
             # observation instead of leaving it to wait out the provider timeout.
             tool.vision_observe = lambda images, question: self.vision_client().vision_observe(images, question)
             return tool.call()
@@ -1046,7 +1046,7 @@ class ToolRunner:
                     if preview:
                         children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
         elif call.name == "ViewImage" and d.vision_entry:
-            # The bridged observation is a child of the call line, drawn before the stored row, so
+            # The vision-provider observation is a child of the call line, drawn before the stored row, so
             # the trace can never appear above its own call (the attachment path's standalone
             # line is the engine's, not a tool's). TOOL, not sibling children's META: the stored
             # row is bookkeeping, this is a real request on another paid entry.

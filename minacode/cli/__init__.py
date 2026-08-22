@@ -224,7 +224,6 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.output_fn = self.agent_output
         self.agent.model.on_stream = self.model_stream_output
         self.agent.model.on_builtin_call = self.builtin_call_output
-        self.agent.model.on_vision_observe = self.vision_observe_output
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
         self.agent.model.on_retry_wait = self.model_retry_wait_status
@@ -711,19 +710,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         A provider-side search leaves no local tool call to log, and the running status label is gone
         the moment the turn ends. Without this line the transcript would credit the model with
         knowledge it went and looked up. No edge: a standalone row, nothing above it to join (a
-        branch glyph would dangle; see vision_observe_output below)."""
-        self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.NONE)]))
-
-    def vision_observe_output(self, label: str, detail: str) -> None:
-        """Log one vision-bridge observation, so a bridged image shows as a real request.
-
-        The attachment bridge fires before the turn's first model call (a bridged ViewImage draws
-        its trace inside the tool's own finish block); without this line the vision request --
-        real latency and cost on another entry -- is invisible, and the image's text description
-        seems to come from nowhere.
-
-        No edge: the line is a standalone turn-level row (nothing above it to join), so a branch
-        glyph would dangle and push the label two columns past its sibling rows."""
+        branch glyph would dangle."""
         self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.NONE)]))
 
     @staticmethod

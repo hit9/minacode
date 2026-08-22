@@ -184,9 +184,7 @@ class ReadTool(Tool):
 
 class ViewImageTool(Tool):
     NAME = "ViewImage"
-    DESCRIPTION = (
-        "View one local image as visual model input. Supports PNG, JPEG, WebP, and single-frame GIF; paths outside the workspace require confirmation."
-    )
+    DESCRIPTION = "View one local image. With a configured vision provider, it returns that provider's text observation, so it works even when the active model cannot consume images directly; otherwise it sends the image to the active model. Supports PNG, JPEG, WebP, and single-frame GIF; paths outside the workspace require confirmation."
     PRODUCES_MODEL_OBSERVATION = True
 
     def __init__(self, session: Session, args: ToolArgs):
@@ -195,10 +193,8 @@ class ViewImageTool(Tool):
         # Injected by ToolRunner.call_tool. The tool owns validation and result shape; orchestration
         # owns the model-client lifecycle so Ctrl-C can reach every provider request.
         self.vision_observe: Callable[[tuple[ImageRef, ...], str], str] | None = None
-        self._bridged = False
-        # Set when call() bridged to the [vision] entry, so the runner can draw the bridge trace
-        # under the call line in the finish block (the attachment path's standalone log line does
-        # not apply inside a tool call).
+        self._uses_vision_provider = False
+        # Set when the explicit call uses [vision], so the runner can render that paid request.
         self.vision_entry_label = ""
 
     @classmethod
@@ -206,7 +202,7 @@ class ViewImageTool(Tool):
         return cls.object_schema(
             {
                 "path": {"type": "string", "minLength": 1, "description": "Local image path to view"},
-                "question": {"type": "string", "description": "Optional question for the vision model to answer about the image"},
+                "question": {"type": "string", "description": "Optional question to answer about the image"},
             },
             ["path"],
         )
@@ -245,15 +241,13 @@ class ViewImageTool(Tool):
     def _vision_observe(self, question: str) -> str:
         assert self.image is not None  # call() loaded it before bridging
         if self.vision_observe is None:
-            raise ToolError("ViewImage vision bridge requires ToolRunner")
+            raise ToolError("ViewImage with a configured vision provider requires ToolRunner")
         return self.vision_observe((self.image,), question)
 
     def call(self) -> str:
         path = self.path()
-        # Deterministic harness routing, never a model choice (see ImageInputs.bridging).
-        bridging = self.session.images.bridging()
         try:
-            self.image = self.session.images.load(path, source_text=self.session.relpath(path), force=bridging)
+            self.image = self.session.images.load(path, source_text=self.session.relpath(path))
         except ModelError as error:
             raise ToolError(str(error)) from error
         header = (
@@ -261,18 +255,18 @@ class ViewImageTool(Tool):
             f"media_type={json.dumps(self.image.media_type)} width={self.image.width} "
             f"height={self.image.height} bytes={self.image.size}"
         )
-        if not bridging:
+        if not self.session.config.vision_provider:
             return header + "/>"
-        self._bridged = True
+        self._uses_vision_provider = True
         self.vision_entry_label = self._vision_label()
         try:
             observation = self._vision_observe(self.question())
         except ModelError as error:
-            raise ToolError(f"Vision bridge failed: {error}") from error
+            raise ToolError(f"Vision observation failed: {error}") from error
         return header + f" vision={json.dumps(self.vision_entry_label)}/>" + "\n" + observation
 
     def model_observation(self) -> Json | None:
-        if self._bridged or self.image is None:
+        if self._uses_vision_provider or self.image is None:
             return None
         return self.session.images.tool_observation((self.image,), self.question())
 
