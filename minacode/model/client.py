@@ -81,6 +81,11 @@ class PreparedRequest:
     tools: list[Json]
     pending: list[QueuedInput]
     turn_messages: list[Json]
+    # Exact semantic messages whose raw image occurrences entered this request since the last
+    # accepted main-model request (opening attachment, claimed queued attachment, or a ViewImage
+    # observation from the current tool loop). Eligibility for 400 learning requires at least one
+    # of these; the fallback observes exactly these and nothing older.
+    current_image_messages: tuple[Json, ...] = ()
 
 
 class _RequestLease:
@@ -179,11 +184,17 @@ class ModelClient:
             default=-1,
         )
 
-    def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None) -> list[Json]:
-        """Build Chat Completions history using the provider's documented replay contract."""
+    def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None, *, text_only: bool | None = None) -> list[Json]:
+        """Build Chat Completions history using the provider's documented replay contract.
+
+        `text_only` defaults to the session's current main-route image verdict; pass an explicit
+        value to override it (the main request path recomputes it per call).
+        """
 
         provider = provider if provider is not None else self.session.config.provider
-        return chat.chat_messages(messages, provider, provider.resolve(), self.session.images, self.latest_user_position)
+        if text_only is None:
+            text_only = self.session.image_route.is_text_only()
+        return chat.chat_messages(messages, provider, provider.resolve(), self.session.images, self.latest_user_position, text_only=text_only)
 
     def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
@@ -250,7 +261,9 @@ class ModelClient:
             return clean
 
         chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        images = self.session.images.estimated_tokens(messages)
+        # A text-only route never projects raw image blocks, so its tiles must not count against
+        # the budget either; labels and the asset-context line are already inside `chars`.
+        images = self.session.images.estimated_tokens(messages) if not self.session.image_route.is_text_only() else 0
         return (chars + 3) // 4 + images
 
     def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT], *, response_timeout: float | None = None) -> _ResultT:
@@ -542,6 +555,7 @@ class ModelClient:
                 provider_origin=self.provider_origin,
                 replayable_echo=self.replayable_echo,
                 images=self.session.images,
+                text_only=self.session.image_route.is_text_only(),
             ),
             "stream": stream,
             "store": False,
@@ -616,13 +630,15 @@ class ModelClient:
         if self.on_stream is not None:
             self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
 
-    def responses_input(self, messages: list[Json], origin: str = "") -> list[Json]:
+    def responses_input(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
+        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
         return responses.responses_input(
             messages,
             origin,
             provider_origin=self.provider_origin,
             replayable_echo=self.replayable_echo,
             images=self.session.images,
+            text_only=text_only,
         )
 
     @staticmethod
@@ -1006,6 +1022,7 @@ class ModelClient:
             replayable_echo=self.replayable_echo,
             images=self.session.images,
             builtin_tools=self.builtin_tools,
+            text_only=self.session.image_route.is_text_only(),
         )
 
     @staticmethod
@@ -1022,13 +1039,15 @@ class ModelClient:
                   https://docs.qwencloud.com/api-reference/chat/openai-chat"""
         return anthropic_module.manual_thinking_budget(effort, max_tokens)
 
-    def anthropic_messages(self, messages: list[Json], origin: str = "") -> list[Json]:
+    def anthropic_messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
+        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
         return anthropic_module.anthropic_messages(
             messages,
             origin,
             provider_origin=self.provider_origin,
             replayable_echo=self.replayable_echo,
             images=self.session.images,
+            text_only=text_only,
         )
 
     @staticmethod

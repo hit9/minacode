@@ -108,6 +108,14 @@ def builtin_tool_label(name: str) -> str:
 SESSION_EVENT_KEY = "_session_event"
 
 
+# Image-delivery states of the active main route (REQUIREMENT-3 main-first image fallback).
+# UNKNOWN routes optimistically receive raw images first; TEXT_ONLY_STATIC comes from the
+# provider compatibility catalog; TEXT_ONLY_LEARNED is session-local evidence created when an
+# eligible main request returns HTTP 400 for a request carrying a current-turn raw image.
+IMAGE_ROUTE_UNKNOWN = "unknown"
+IMAGE_ROUTE_TEXT_ONLY_STATIC = "text_only_static"
+IMAGE_ROUTE_TEXT_ONLY_LEARNED = "text_only_learned"
+
 SELECTION_BACK = object()
 SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"

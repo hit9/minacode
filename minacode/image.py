@@ -31,6 +31,10 @@ IMAGE_TEXT_ONLY_KEY = "_images_text_only"
 TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
 TOOL_IMAGE_QUESTION_KEY = "_tool_image_question"
 TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
+# Durable plain-text block a text-only route receives after the configured [vision] provider
+# perceives an attachment. Never projected as provider image blocks; the refs stay on the
+# message only for asset ownership.
+ATTACHMENT_VISION_OBSERVATION_PREFIX = "[Attachment image observation]"
 FAILED_IMAGE_CONTEXT_PREFIX = "[Image input failed; local assets remain available through ViewImage]"
 IMAGE_ASSET_CONTEXT_PREFIX = "[Attached image assets]"
 SUPPORTED_FORMATS = {
@@ -252,14 +256,14 @@ class ImageInputs:
     def retain(self, images: tuple[ImageRef, ...]) -> None:
         self.retained_refs.update(image.ref for image in images)
 
-    def chat_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(message, self._chat_image_part, "text")
+    def chat_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
+        return self._protocol_content(message, self._chat_image_part, "text", text_only=text_only)
 
-    def responses_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(message, self._responses_image_part, "input_text")
+    def responses_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
+        return self._protocol_content(message, self._responses_image_part, "input_text", text_only=text_only)
 
-    def anthropic_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(message, self._anthropic_image_part, "text")
+    def anthropic_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
+        return self._protocol_content(message, self._anthropic_image_part, "text", text_only=text_only)
 
     def _chat_image_part(self, image: ImageRef) -> Json:
         return {"type": "image_url", "image_url": {"url": self._data_url(image)}}
@@ -297,6 +301,53 @@ class ImageInputs:
             parts.append({"type": text_type, "text": text})
         return parts
 
+    def text_observation(self, images: tuple[ImageRef, ...], observation: str, question: str = "") -> Json:
+        """Build a durable text-only observation produced by the [vision] provider.
+
+        Same shape as `tool_observation` (a user-role tool observation), but the content is the
+        plain vision text instead of image markers, and the occurrence-level text-only marker
+        keeps those refs from ever being projected as provider image blocks — on this route and
+        on any later one, including after a resume that lost the learned evidence.
+        """
+
+        message = self.tool_observation(images, question)
+        message["content"] = f"{TOOL_IMAGE_OBSERVATION_PREFIX}\n{observation}"
+        message[IMAGE_TEXT_ONLY_KEY] = True
+        return message
+
+    def observe_current(
+        self,
+        messages: list[Json],
+        current: list[Json],
+        observe: Callable[[tuple[ImageRef, ...], str], str],
+    ) -> list[Json]:
+        """Convert each current raw image occurrence in `messages` to a durable text observation.
+
+        `current` lists the exact semantic message objects that entered the active turn since the
+        last accepted main-model request (opening attachment, claimed queued attachment, ViewImage
+        observation). Each is observed through `observe(refs, question)` — the vision provider —
+        exactly once, with its own question (ViewImage) or the bounded default perception
+        question (attachments). Older successful image history is never redescribed.
+        """
+
+        result = list(messages)
+        for index, message in enumerate(result):
+            if not any(message is item for item in current):
+                continue
+            images = self.input_refs(message)
+            if not images:
+                continue
+            question = self.tool_observation_question(message)
+            observation = observe(images, question)
+            if message.get(TOOL_IMAGE_OBSERVATION_KEY):
+                result[index] = self.text_observation(images, observation, question)
+            else:
+                converted = dict(message)
+                converted["content"] = f"{self.label_text(message)}\n\n{ATTACHMENT_VISION_OBSERVATION_PREFIX}\n{observation}"
+                converted[IMAGE_TEXT_ONLY_KEY] = True
+                result[index] = converted
+        return result
+
     def settle_failed_messages(self, messages: list[Json]) -> None:
         """Make image occurrences in one failed turn safe to replay as text.
 
@@ -322,15 +373,22 @@ class ImageInputs:
         )
         return "\n".join(rows)
 
-    def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
+    def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str, *, text_only: bool = False) -> str | list[Json]:
         images = self.input_refs(message)
         if not images:
             # A pre-built content list for the explicit vision provider is already in wire shape.
             if isinstance(message.get("content"), list):
                 return message["content"]
             return self.label_text(message)
-        parts = [image_part(image) for image in images]
         text = self.label_text(message)
+        if text_only:
+            # Route-specific projection for a static/learned text-only route: raw blocks are
+            # suppressed but readable labels and the stable asset paths stay, so the model can
+            # still ViewImage the stored files. The semantic message is not mutated.
+            asset_context = self.asset_context(images)
+            block: Json = {"type": text_type, "text": "\n\n".join(part for part in (text, asset_context) if part)}
+            return [block]
+        parts = [image_part(image) for image in images]
         asset_context = self.asset_context(images)
         parts.append({"type": text_type, "text": "\n\n".join(part for part in (text, asset_context) if part)})
         return parts

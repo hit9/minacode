@@ -214,8 +214,11 @@ generic standards path.
   and results to `function_call`/`function_call_output` items.
 - Reasoning is continuation data: preserve what the provider returns, choose replay policy at
   projection, estimate the same wire payload.
-- Image routing carries no learned capability state: new attachments always go to the active model,
-  while a configured perception provider is reached only through an explicit `ViewImage` call.
+- Image routing is main-first with a bounded vision fallback. An unknown route sends raw image
+  blocks to the active model; static evidence (a catalog of documented text-only families) or a
+  session-learned HTTP-400 rule switches the route to text-only, where `[vision]` observes current
+  occurrences once and the request retries without raw blocks. Learned evidence is session-local
+  and never serialized; a 400 with no current image occurrence never learns.
 
 ## Context is a projection
 

@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 
 from minacode.base import (
+    IMAGE_ROUTE_UNKNOWN,
     PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
@@ -19,8 +20,8 @@ from minacode.base import (
     ToolCall,
 )
 from minacode.context import ContextManager
-from minacode.image import UserInput
-from minacode.model import ModelClient, PreparedRequest
+from minacode.image import ImageInputs, UserInput
+from minacode.model import ModelClient, PreparedRequest, resilience
 from minacode.prompts import (
     FAILED_TOOL_CALL_RESULT,
     FAILED_TURN_MARKER,
@@ -68,6 +69,14 @@ class Agent:
         # text (e.g. markdown rendering). None publishes through output_fn like interim text.
         self.final_output_fn = final_output_fn
         self.cancel_requested = threading.Event()
+        # Image-bearing semantic messages introduced into the active turn since its last accepted
+        # main-model request (opening attachment, claimed queued attachment, ViewImage
+        # observation). Cleared when a request is accepted; used to decide 400 eligibility and to
+        # observe exactly the current occurrences, never older accepted history.
+        self._current_image_messages: list[Json] = []
+        # Presentation hook for image-routing notices (one gray line per unknown->learned
+        # transition). Wired by the CLI; never enters model context.
+        self.on_image_route_notice: Callable[[str], None] | None = None
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
@@ -96,7 +105,11 @@ class Agent:
         self.session.state.turn_step = 0
         tool_batches = 0
         malformed_tool_names: list[str] = []
+        self._current_image_messages = []
         user_message = self._initial_user_message(user_input)
+        if ImageInputs.input_refs(user_message):
+            # The opening attachment is a current image occurrence for the first request of the turn.
+            self._current_image_messages.append(user_message)
         # Mentions belong to the user's typed input, never to projected image content.
         user_text = user_input.display_text() if isinstance(user_input, UserInput) else self.session.images.label_text(user_message)
         turn_messages = [user_message, *self.mention_messages(user_text)]
@@ -112,20 +125,23 @@ class Agent:
                         self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
                         failed_request = request
-                        assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                        # One main-model request, with an eligible 400 converting into exactly one
+                        # vision fallback (see _image_fallback). `accepted` is the request whose
+                        # acceptance commits the turn — the retry on a recovered 400.
+                        assistant, tool_calls, content, accepted = self._main_request(request, turn_messages)
                         self.record_sources(assistant)
                         self.raise_if_cancelled()
                         # The request reached the provider, so its follow-ups belong to history from
                         # here on, and any correction sent next lands after them — history keeps the
                         # order the provider saw, because a sent message can never be taken back.
-                        self.accept_pending_inputs(turn_messages, transcript_messages, request.pending, request.turn_messages)
+                        self.accept_pending_inputs(turn_messages, transcript_messages, accepted.pending, accepted.turn_messages)
                         failed_request = None
                         assistant, tool_calls, content = self.correct_textual_tool_calls(
                             assistant,
                             tool_calls,
                             content,
-                            base_messages=request.messages,
-                            tools=request.tools,
+                            base_messages=accepted.messages,
+                            tools=accepted.tools,
                             names=malformed_tool_names,
                             turn_messages=turn_messages,
                             transcript_messages=transcript_messages,
@@ -182,6 +198,10 @@ class Agent:
                 tool_batches += 1
                 tool_messages = self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
                 turn_messages.extend(tool_messages)
+                # ViewImage observations produced by this batch are current image occurrences for
+                # the next main-model request; their refs feed the 400-eligibility check and the
+                # fallback observation, never older accepted history.
+                self._current_image_messages.extend(message for message in tool_messages if ImageInputs.input_refs(message))
                 transcript_messages.extend(SessionSnapshotCodec.transcript_messages(tool_messages))
                 self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages, transcript_messages)
@@ -415,17 +435,99 @@ class Agent:
         # rewrites it in place, and a throwaway copy would make the next step compact the same prefix
         # again. Pending input stays transactional in a copy until the provider accepts it.
         request_turn = turn_messages
+        current: list[Json] = list(self._current_image_messages)
         if pending:
             request_turn = [*turn_messages]
             for item in pending:
                 mentions = self.mention_messages(item.text)
-                request_turn.append(item.message(LIVE_FOLLOWUP_PREFIX))
+                pending_message = item.message(LIVE_FOLLOWUP_PREFIX)
+                request_turn.append(pending_message)
                 request_turn.extend(mentions)
+                if ImageInputs.input_refs(pending_message):
+                    # A claimed queued attachment is a current image occurrence.
+                    current.append(pending_message)
+        # On a text-only route with [vision], observe the current image occurrences before the
+        # main request: no doomed raw image is ever sent, and the observation is durable text.
+        # Older accepted image history is never redescribed.
+        current_raw = [message for message in current if ImageInputs.input_refs(message)]
+        if self.session.image_route.delivery() == "vision" and current_raw:
+            request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
+            if not pending:
+                # No accept_pending_inputs will commit the copy later, so keep the live list in
+                # sync: a failure after the paid observation must settle the converted message,
+                # not the raw one whose observation text would be lost.
+                turn_messages[:] = request_turn
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
-        return PreparedRequest(messages, tools, pending, request_turn)
+        return PreparedRequest(messages, tools, pending, request_turn, tuple(current_raw))
+
+    def _main_request(
+        self,
+        request: PreparedRequest,
+        turn_messages: list[Json],
+    ) -> tuple[Json, list[ToolCall], str, PreparedRequest]:
+        """Send one main-model request; an eligible 400 converts into exactly one vision fallback.
+
+        Returns `(assistant, tool_calls, content, accepted)`, where `accepted` is the request
+        whose acceptance commits the turn — the text-only retry when an eligible 400 recovered,
+        otherwise `request` itself. The fallback retry cannot trigger another fallback: its route
+        is now learned and it carries no current raw image, so both eligibility gates fail.
+        """
+
+        try:
+            assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+            return assistant, tool_calls, content, request
+        except ModelError as error:
+            if not self._eligible_image_fallback(error, request):
+                raise
+            self.session.image_route.learn_text_only()
+            vision_entry = self.session.config.vision_provider
+            if not vision_entry:
+                self._emit_image_route_notice("main model rejected image input (400); no vision provider configured")
+                # No fallback is available: the original error propagates and the normal
+                # replay-safe failure settlement runs, exactly as for any other rejected request.
+                raise
+            provider = self.session.config.providers[vision_entry]
+            self._emit_image_route_notice(f"main model rejected image input (400); using {vision_entry}/{provider.model or '(empty)'}")
+            # Observe the eligible current occurrences through [vision] and convert them to
+            # durable text observations in the turn, then retry once without raw image blocks
+            # (the route is now learned text-only, so projection suppresses every older raw
+            # image as well, not only the failed occurrence).
+            converted = self.session.images.observe_current(request.turn_messages, list(request.current_image_messages), self.model.vision_observe)
+            turn_messages[:] = converted
+            tools = Tool.resolved_schemas(self.session)
+            messages = self.context.prepare_messages(self.model, self.session.system_prompt, turn_messages, tools)
+            self.context.update_percent(messages, tools)
+            retry = PreparedRequest(messages, tools, request.pending, turn_messages)
+            self.session.state.turn_messages = len(turn_messages)
+            # The successful fallback request is the one accepted for transaction ordering: current
+            # and queued messages commit once, checkpoint once, and the loop continues normally —
+            # no failed-turn marker is appended for a recovered 400.
+            assistant, tool_calls, content = self.model.request(messages, tools)
+            return assistant, tool_calls, content, retry
+
+    def _eligible_image_fallback(self, error: ModelError, request: PreparedRequest) -> bool:
+        """Whether a failed main request may learn text-only and fall back through [vision].
+
+        All conditions must hold: the exhausted request failed with HTTP status exactly 400; it
+        projected at least one current image occurrence as a raw image block; the active route
+        was unknown when it was sent; and the request has not already consumed its one vision
+        fallback (the retry fails the first two gates, so no explicit budget flag is needed).
+        """
+
+        if resilience.error_status(error) != 400:
+            return False
+        if not request.current_image_messages:
+            return False
+        return self.session.image_route.state() == IMAGE_ROUTE_UNKNOWN
+
+    def _emit_image_route_notice(self, text: str) -> None:
+        """Publish one gray, non-model routing notice; never enters model context."""
+
+        if self.on_image_route_notice is not None:
+            self.on_image_route_notice(text)
 
     def mention_messages(self, text: str) -> list[Json]:
         """Session-event context blocks attached after one user message, initial or queued."""
@@ -509,6 +611,9 @@ class Agent:
         pending: list[QueuedInput],
         prepared_turn_messages: list[Json],
     ) -> None:
+        # A request reached the provider: whatever current image occurrences it carried are no
+        # longer current, whether or not queued input was part of it.
+        self._current_image_messages = []
         if not pending:
             return
         texts = [item.text for item in pending]

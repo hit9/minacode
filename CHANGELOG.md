@@ -4,8 +4,9 @@
 
 ### Added
 
-- A `[vision]` provider entry lets explicit `ViewImage` calls use a dedicated perception model and
-  return its text observation to the active model.
+- A `[vision]` provider entry gives image input a fallback: when the active model rejects an
+  attached image or is known to be text-only, `[vision]` produces one plain-text observation that
+  replaces the raw image in the conversation.
 - A blocking `Job` wait now streams the job's output into the same live preview as Bash, and the
   status line shows the seconds left in the wait (e.g. `· 12s left`).
 
@@ -36,10 +37,15 @@
 - **Breaking:** Quick hints are now always available in the TUI. The `/hints` command and
   `[runtime] quick_hints` setting have been removed; existing config values are ignored and
   `/hints` is now an unknown command.
-- **Breaking:** Attachments are always sent directly to the active model, and `[vision]` is used
-  only by explicit `ViewImage` calls. The removed `provider.image_input` setting is ignored in old
-  configs; `off` no longer disables submission and `auto` no longer learns or retries through a
-  vision model.
+- **Breaking:** Image routing is main-first with a bounded `[vision]` fallback. A raw image is
+  always tried on the active model first unless minacode knows the route is text-only; when that
+  request fails with HTTP 400, the image is described once through `[vision]` and the turn retries
+  without raw image blocks. Text-only knowledge comes from a static catalog of documented
+  text-only model families (DeepSeek chat/reasoner, GLM 5 and 4.x, Kimi K3, Moonshot v1, gpt-oss,
+  and a few others) or is learned for the session from that first 400; learned evidence is never
+  saved, so a resumed session starts unknown again while the text observation itself stays in
+  history. The removed `provider.image_input` setting is ignored in old configs; `off` no longer
+  disables submission and `auto` no longer manages vision routing.
 - Each `Job(action="wait")` call now waits at most 20 seconds, including the default wait; a
   still-running job remains available for a later status check or another wait.
 - Quick-hint chips flow left to right, up to three per line, and wrap to new lines only

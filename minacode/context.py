@@ -407,7 +407,7 @@ class ContextManager:
         ]
         if (entry := self.session.config.vision_provider) and (not self.session.tool_names or "ViewImage" in self.session.tool_names):
             provider = self.session.config.providers[entry]
-            rows.append(f"- vision: {entry}/{provider.model or '(empty)'} (available through ViewImage)")
+            rows.append(f"- vision: {entry}/{provider.model or '(empty)'} (available as image fallback)")
         if self.session.settings.agents_md and info.agents_md:
             content = info.agents_md
             total = self.estimated_text_tokens(content)

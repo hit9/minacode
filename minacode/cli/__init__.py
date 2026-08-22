@@ -227,6 +227,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
         self.agent.model.on_retry_wait = self.model_retry_wait_status
+        self.agent.on_image_route_notice = self.image_route_notice
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
@@ -244,6 +245,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.builtin_call = self.builtin_call_output
         self.agent.tools.compaction = self.automatic_compaction_status
         self.agent.tools.script_status = self.toolscript_run_status
+
+    def image_route_notice(self, text: str) -> None:
+        """Show the one-time gray routing notice when a route learns text-only from a 400.
+
+        Presentation only: the engine already decided; this line must never enter model context.
+        """
+
+        self.tool_output(LogBlock([LogLine("", text, LogRole.META, LogEdge.NONE)]))
 
     def automatic_compaction_status(self, active: bool, error: str = "") -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""

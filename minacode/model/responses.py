@@ -35,13 +35,15 @@ def responses_input(
     provider_origin: Callable[[ProviderConfig | None], str],
     replayable_echo: Callable[[Json, str], bool],
     images: ImageInputs,
+    text_only: bool = False,
 ) -> list[Json]:
     """Convert normalized messages to Responses input items.
 
     Replays saved output items when the origin still matches the endpoint, rebuilds function
     calls from normalized tool_calls, and substitutes image content for local image refs.
     `provider_origin` is the caller's endpoint identity (ModelClient.provider_origin) and
-    `replayable_echo` its replay gate (ModelClient.replayable_echo).
+    `replayable_echo` its replay gate (ModelClient.replayable_echo). `text_only` is the route's
+    image-delivery verdict: raw blocks are suppressed but readable labels and asset paths stay.
     """
     origin = origin or provider_origin(None)
     converted: list[Json] = []
@@ -79,7 +81,7 @@ def responses_input(
                 {
                     "role": role,
                     "content": (
-                        images.responses_content(message)
+                        images.responses_content(message, text_only=text_only)
                         if role == "user" and images.refs(message)
                         # A pre-built content list (a vision-bridge request) is already in the
                         # Responses wire shape; str() would flatten it into one text blob.

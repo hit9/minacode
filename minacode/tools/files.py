@@ -184,7 +184,7 @@ class ReadTool(Tool):
 
 class ViewImageTool(Tool):
     NAME = "ViewImage"
-    DESCRIPTION = "View a local PNG, JPEG, WebP, or single-frame GIF. Use an attachment's session-owned path when provided. A configured vision provider returns text; otherwise the active model receives the image. Outside-workspace paths require confirmation."
+    DESCRIPTION = "View a local PNG, JPEG, WebP, or single-frame GIF. Uses the active model when possible and the configured vision provider as fallback. Use an attachment's session-owned path when provided; outside-workspace paths require confirmation."
     PRODUCES_MODEL_OBSERVATION = True
 
     def __init__(self, session: Session, args: ToolArgs):
@@ -194,6 +194,7 @@ class ViewImageTool(Tool):
         # owns the model-client lifecycle so Ctrl-C can reach every provider request.
         self.vision_observe: Callable[[tuple[ImageRef, ...], str], str] | None = None
         self._uses_vision_provider = False
+        self._observation_text = ""
         # Set when the explicit call uses [vision], so the runner can render that paid request.
         self.vision_entry_label = ""
 
@@ -255,7 +256,10 @@ class ViewImageTool(Tool):
             f"media_type={json.dumps(self.image.media_type)} width={self.image.width} "
             f"height={self.image.height} bytes={self.image.size}"
         )
-        if not self.session.config.vision_provider:
+        # Main-first: only a text-only route (static catalog or session-learned 400) with a
+        # configured [vision] entry bridges here; an unknown route keeps the raw observation so
+        # the active multimodal model receives the original pixels even when [vision] exists.
+        if self.session.image_route.delivery() != "vision":
             return header + "/>"
         self._uses_vision_provider = True
         self.vision_entry_label = self._vision_label()
@@ -263,11 +267,16 @@ class ViewImageTool(Tool):
             observation = self._vision_observe(self.question())
         except ModelError as error:
             raise ToolError(f"Vision observation failed: {error}") from error
+        self._observation_text = observation
         return header + f" vision={json.dumps(self.vision_entry_label)}/>" + "\n" + observation
 
     def model_observation(self) -> Json | None:
-        if self._uses_vision_provider or self.image is None:
+        if self.image is None:
             return None
+        if self._uses_vision_provider:
+            # Durable text observation for a text-only route: no raw block ever reaches the main
+            # route, and the refs stay only for asset ownership across resume.
+            return self.session.images.text_observation((self.image,), self._observation_text, self.question())
         return self.session.images.tool_observation((self.image,), self.question())
 
 

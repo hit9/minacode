@@ -113,7 +113,7 @@ example for your provider.
 
 ## Vision model
 
-Configure an optional perception model for explicit `ViewImage` calls:
+An optional `[vision]` entry gives image input a fallback when the active model is text-only:
 
 ```toml
 [vision]
@@ -125,9 +125,12 @@ key = "sk-..."
 model = "deepseek-v4-flash-vision-exp"
 ```
 
-Attachments always go directly to the active model; `[vision]` never changes that routing. An
-explicit `ViewImage` call sends the local image and optional question to this provider and returns
-its plain-text observation to the active model. Each call costs one vision-model request.
+An attached image is first sent to the active model unless minacode knows it rejects images:
+documented text-only families from a static catalog, or the same model returning HTTP 400 for an
+image in this session. In those cases `[vision]` describes the image once and its text replaces
+the raw image, and `ViewImage` falls back the same way. Each fallback description costs one
+vision-model request. Without `[vision]`, a text-only route keeps sending to the active model and
+you see the provider's own error.
 
 ## Runtime
 

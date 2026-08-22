@@ -18,6 +18,7 @@ from minacode.providers.compat import (
     CompatibilityProfile,
     ResolvedProvider,
     compatibility_for_host,
+    is_text_only_model,
 )
 
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
@@ -236,6 +237,7 @@ class ProviderConfig:
             strict_tools_active=strict_tools_active,
             builtin_tools_by_wire=profile.builtin_tools_by_wire,
             json_response_format=profile.json_response_format,
+            text_only=is_text_only_model(model, profile),
         )
 
     def reasoning_effort(self) -> str:
