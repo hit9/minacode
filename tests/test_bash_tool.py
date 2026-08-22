@@ -150,6 +150,25 @@ def test_job_wait_streams_log_tail_to_live_output(tmp_path, monkeypatch):
     JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
 
 
+def test_job_wait_streams_short_log_incrementally_without_duplicates(tmp_path, monkeypatch):
+    """A short log appended in two phases spaced past the live interval streams each increment
+    exactly once: the second tail is a continuation of the first, never a repeat of the whole
+    frame."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(JobTool, "LIVE_INTERVAL", 0.01)
+    JobTool(s, [{"action": "start", "command": "printf 'one\\n'; sleep 0.6; printf 'two\\n'; sleep 30"}]).call()
+    events = []
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}])
+    tool.live_output = lambda stream, text: events.append((stream, text))
+
+    tool.call()
+
+    deltas = [text for stream, text in events if stream == "output"]
+    assert "".join(deltas) == "one\ntwo\n"
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
 def test_job_wait_keeps_streaming_after_log_outgrows_tail_window(tmp_path, monkeypatch):
     """Once the log passes the 8000-char tail window the `...` prefix breaks suffix matching;
     the wait then pushes the whole visible tail so the preview keeps rolling instead of freezing."""

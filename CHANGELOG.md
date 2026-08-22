@@ -47,6 +47,8 @@
   main model is actually text-only: the first image is sent to the main model, the outcome is
   remembered across sessions, and a vision-capable model no longer pays an extra vision round-trip
   or loses image resolution to the bridge.
+- The live preview of a short `Job` log no longer repeats already-shown lines when the command
+  writes more output: each new line is streamed once instead of the whole tail again.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.

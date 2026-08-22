@@ -543,13 +543,13 @@ class JobTool(Tool):
             last_stream = time.monotonic()
             # The tail is the diff source for the preview; 8000 matches BashLivePreview.MAX_CHARS.
             text = job.tail(8000)
-            if text.endswith(baseline):
+            if text.startswith(baseline):
                 if len(text) > len(baseline):
                     self.live_output("output", text[len(baseline) :])
                     baseline = text
             elif text:
-                # The suffix relation broke: the log outgrew the tail window, so `...` shifted the
-                # whole frame and the delta is not recoverable by suffix matching. Push the entire
+                # The prefix relation broke: the log outgrew the tail window, so `...` shifted the
+                # whole frame and the delta is not recoverable by prefix matching. Push the entire
                 # visible tail -- the preview keeps only its own last MAX_CHARS, so the overlap
                 # with what was already pushed falls off and the rolling window stays correct.
                 self.live_output("output", text)
