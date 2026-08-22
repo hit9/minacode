@@ -287,6 +287,7 @@ class SessionSnapshotCodec:
                 "name_source",
                 "compaction_count",
                 "round_count",
+                "image_support",
             )
         }
 

@@ -2,10 +2,12 @@
 
 Black-box acceptance per the bridge spec. Routing is a harness decision made from
 ImageInputs.support() plus the [vision] config, never a model choice: main model supports
-images -> direct attach (vision config ignored); support False or None + vision configured
--> bridge; support False + no vision -> today's disabled error. The vision request is a
-tool-less, non-streaming api_request carrying the image by the vision entry's protocol, and
-a bridged ViewImage call attaches no image to the next main-model request.
+images -> direct attach (vision config ignored); support False + vision configured -> bridge;
+support False + no vision -> today's disabled error. In auto mode an unknown provider routes
+images to the main model first and learns from the outcome, so the bridge engages only once
+the model is known to reject images. The vision request is a tool-less, non-streaming
+api_request carrying the image by the vision entry's protocol, and a bridged ViewImage call
+attaches no image to the next main-model request.
 """
 
 import base64
@@ -121,13 +123,16 @@ def test_view_image_bridges_observation_when_main_model_cannot_see(tmp_path, mon
     assert IMAGE_REFS_KEY not in json.dumps(captured["messages"])
 
 
-def test_view_image_bridges_when_support_is_unknown(tmp_path, monkeypatch):
+def test_view_image_with_unknown_support_does_not_bridge(tmp_path):
+    # auto + [vision] with unknown support routes to the main model (and learns from the
+    # outcome) instead of bridging; only a known text-only model uses the bridge.
     s = session(tmp_path)  # auto, nothing learned yet -> support() is None
     assert s.images.support() is None
     path = image_file(tmp_path / "shot.png")
-    monkeypatch.setattr(ModelClient, "api_request", lambda self, messages, tools, **kwargs: ({"role": "assistant", "content": "o"}, [], "o"))
-    output = ViewImageTool(s, [path.name]).call()
-    assert 'vision="v/vision-model"' in output.splitlines()[0]
+    tool = ViewImageTool(s, [path.name])
+    output = tool.call()
+    assert "vision=" not in output
+    assert tool.model_observation() is not None  # the image rides the next main-model request
 
 
 def test_bridged_view_image_attaches_no_image_to_the_next_main_request(tmp_path, monkeypatch):
@@ -160,7 +165,7 @@ def test_bridged_attachment_turn_survives_a_stale_cancel_from_the_previous_turn(
     # turn's first request() and was the only client entry that never cleared the flag, so the next
     # bridged attachment turn raised KeyboardInterrupt before its first request and lost the input
     # (checkpoint_turn never ran). A fresh observation must start with a clean flag, like request().
-    s = session(tmp_path)  # image_input="auto" + [vision], support unknown -> bridge
+    s = session(tmp_path, image_input="off")  # known text-only main model -> bridge
     path = image_file(tmp_path / "shot.png")
     factory = _MockClientFactory(
         [
@@ -238,7 +243,7 @@ class _BlockingMockClientFactory(_MockClientFactory):
 def test_bridged_observation_text_is_not_scanned_for_mentions(tmp_path, monkeypatch):
     # The observation is the vision model's output, not the user's typing: an @file: reference
     # shown in a screenshot must not inline that file into the turn's context.
-    s = session(tmp_path)
+    s = session(tmp_path, image_input="off")
     (tmp_path / "secrets.toml").write_text("token = 'super-secret'")
     path = image_file(tmp_path / "shot.png")
     factory = _MockClientFactory([_observation_response("The screenshot shows @file:secrets.toml"), _main_answer_response("done")])
@@ -253,7 +258,7 @@ def test_bridged_observation_text_is_not_scanned_for_mentions(tmp_path, monkeypa
 
 def test_bridged_typed_text_mentions_still_resolve(tmp_path, monkeypatch):
     # The fix must not quiet mentions the user actually typed.
-    s = session(tmp_path)
+    s = session(tmp_path, image_input="off")
     (tmp_path / "secrets.toml").write_text("token = 'super-secret'")
     path = image_file(tmp_path / "shot.png")
     factory = _MockClientFactory([_observation_response("plain description"), _main_answer_response("done")])
@@ -269,7 +274,7 @@ def test_bridged_typed_text_mentions_still_resolve(tmp_path, monkeypatch):
 def test_bridged_view_image_aborts_when_the_agent_is_cancelled(tmp_path, monkeypatch):
     # The bridged observation runs on the runner-owned vision client, so Agent.cancel() reaches
     # the in-flight request and the tool aborts instead of waiting out the provider timeout.
-    s = session(tmp_path)
+    s = session(tmp_path, image_input="off")
     path = image_file(tmp_path / "shot.png")
     entered = threading.Event()
     release = threading.Event()
@@ -295,6 +300,58 @@ def test_bridged_view_image_aborts_when_the_agent_is_cancelled(tmp_path, monkeyp
         assert outcome == ["cancelled"]
     finally:
         release.set()  # let the blocked mock read return so the worker thread drains
+
+
+def test_auto_unknown_with_vision_direct_attaches_and_learns_support(tmp_path, monkeypatch):
+    # auto + [vision] with unknown support must route to the main model once, so a vision-capable
+    # model is never permanently hijacked into the bridge: the old rule bridged on None, and the
+    # bridge starved the learning that could have disproved it.
+    s = session(tmp_path)  # auto, support unknown
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory([_main_answer_response("done")])
+    monkeypatch.setattr(ModelClient, "client", factory)
+    agent = Agent(s, output_fn=lambda _text: None)
+    image = s.images.load(str(path), force=True)
+
+    assert s.images.bridging() is False
+    assert agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,))) == "done"
+    assert len(factory.calls) == 1  # the vision entry was never asked
+    assert s.images.support() is True  # learned from the successful main-model request
+    assert s.images.bridging() is False
+
+
+def test_auto_unknown_learns_false_and_then_bridges(tmp_path, monkeypatch):
+    # A main model that explicitly rejects images teaches support False; the bridge then engages
+    # (and stays engaged, since the main model is no longer asked for images).
+    s = session(tmp_path)  # auto, support unknown
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory([(400, {"error": {"message": "This model does not support image input", "type": "invalid_request_error"}})])
+    monkeypatch.setattr(ModelClient, "client", factory)
+    agent = Agent(s, output_fn=lambda _text: None)
+    image = s.images.load(str(path), force=True)
+
+    with pytest.raises(ModelError, match="does not support image input"):
+        agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,)))
+    assert s.images.support() is False
+    assert s.images.bridging() is True
+
+
+def test_learned_support_survives_a_snapshot_reload(tmp_path, monkeypatch):
+    # Persistence is what keeps a text-only main model from re-taking the failed first turn on
+    # every new session: the verdict rides the snapshot like the rest of the session state.
+    s = session(tmp_path)  # auto, support unknown
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory([_main_answer_response("done")])
+    monkeypatch.setattr(ModelClient, "client", factory)
+    agent = Agent(s, output_fn=lambda _text: None)
+    image = s.images.load(str(path), force=True)
+    assert agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,))) == "done"
+    assert s.images.support() is True
+
+    s.save_snapshot()
+    resumed = Session.load_snapshot(s.uid, config=s.config, cwd=s.cwd)
+    assert resumed.images.support() is True
+    assert resumed.images.bridging() is False
 
 
 # --- 三条协议 wire 形状（验收标准 7）---

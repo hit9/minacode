@@ -118,6 +118,10 @@ class AgentState:
     # last-request ctx/cache snapshot the status bar reads. Live request state, like
     # compaction_entry: never persisted.
     vision_observe_active: bool = False
+    # Learned image-input support per capability key (active provider/model), persisted across
+    # snapshots: in auto mode one real outcome decides whether images may go to the main model,
+    # so a vision-capable model is not re-probed into the [vision] bridge on every session.
+    image_support: dict[str, bool] = field(default_factory=dict)
     # The last delegation that failed on this worker, for `Delegate status` to tell the parent
     # (which cannot see the worker) why it stopped, instead of the parent having to remember.
     # Live display state, like compaction_entry: never persisted.

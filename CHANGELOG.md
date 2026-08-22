@@ -43,6 +43,10 @@
 - Pressing `Ctrl-C` while a bridged `ViewImage` is reading an image now cancels the read at once,
   instead of hanging until the vision provider's response timeout; the turn then settles like any
   other interrupted model call.
+- With the default `image_input = auto`, a configured `[vision]` model is now used only when the
+  main model is actually text-only: the first image is sent to the main model, the outcome is
+  remembered across sessions, and a vision-capable model no longer pays an extra vision round-trip
+  or loses image resolution to the bridge.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.

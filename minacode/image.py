@@ -125,6 +125,8 @@ class ImageInputs:
         self.cwd = session.cwd if session is not None else cwd or os.getcwd()
         self.retained_refs: set[str] = set()
         self._learned_support: dict[tuple[str, str, str, str], bool] = {}
+        if session is not None:
+            self._learned_support.update(self._restore_support(session.state.image_support))
 
     @staticmethod
     def refs(message: Json) -> tuple[ImageRef, ...]:
@@ -258,13 +260,35 @@ class ImageInputs:
 
     def note_success(self, messages: list[Json]) -> None:
         if self.session is not None and self.session.config.provider.image_input == "auto" and self.support() is not False and self.has_images(messages):
-            self._learned_support[self._capability_key()] = True
+            self._remember(self._capability_key(), True)
 
     def note_error(self, messages: list[Json], error: Exception) -> bool:
         unsupported = self.has_images(messages) and self.support() is not False and self._explicit_unsupported_error(error)
         if unsupported and self.session is not None and self.session.config.provider.image_input == "auto":
-            self._learned_support[self._capability_key()] = False
+            self._remember(self._capability_key(), False)
         return unsupported
+
+    def _remember(self, key: tuple[str, str, str, str], value: bool) -> None:
+        """Record a learned support verdict, persisted so the next session does not re-probe."""
+        self._learned_support[key] = value
+        if self.session is not None:
+            self.session.state.image_support[self._support_key(key)] = value
+
+    @staticmethod
+    def _support_key(key: tuple[str, str, str, str]) -> str:
+        return json.dumps(key)
+
+    @classmethod
+    def _restore_support(cls, persisted: dict[str, bool]) -> dict[tuple[str, str, str, str], bool]:
+        restored: dict[tuple[str, str, str, str], bool] = {}
+        for raw, value in (persisted or {}).items():
+            try:
+                parts = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parts, list) and len(parts) == 4 and all(isinstance(part, str) for part in parts):
+                restored[tuple(parts)] = value
+        return restored
 
     @classmethod
     def has_images(cls, messages: list[Json]) -> bool:
@@ -318,11 +342,13 @@ class ImageInputs:
 
     def bridging(self) -> bool:
         """Whether image input routes through the [vision] bridge: a [vision] entry is configured
-        and the active provider cannot take images (support False or unknown). The one deterministic
-        routing rule shared by ViewImage, attachment observation, queued follow-ups, and the TUI
-        input precheck."""
+        and the active provider is known not to take images (support False). In auto mode an
+        unknown provider routes images to the main model first and learns from the outcome, so the
+        bridge engages only once the model is known to reject them. The one deterministic routing
+        rule shared by ViewImage, attachment observation, queued follow-ups, and the TUI input
+        precheck."""
 
-        return bool(self.session is not None and self.session.config.vision_provider) and self.support() is not True
+        return bool(self.session is not None and self.session.config.vision_provider) and self.support() is False
 
     @staticmethod
     def attachment_observation_content(images: tuple[ImageRef, ...], entry_label: str, observation: str) -> str:
