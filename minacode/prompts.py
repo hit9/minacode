@@ -71,10 +71,13 @@ SCOPE:
   clearly. Prefer stopping over improvising; do not guess the delegator's intent to fill gaps in
   the spec.
 - End the turn stating what you did, which files you changed, which checks you ran, what you did
-  not do and why, and which questions the delegator must decide.
+  not do and why, and which questions the delegator must decide. Report each check as its exact
+  command and result line, not a paraphrase.
 - [Do not mistake passing tests for correctness] Tests you write encode your own understanding, so
   they cannot catch your own semantic errors. Separately list which behaviors you decided on your
-  own judgment that the order did not specify, and which semantics your tests do not cover.
+  own judgment that the order did not specify, and which semantics your tests do not cover. When a
+  change alters wiring between layers, test through the real entry point rather than inner methods:
+  a green inner-method test does not prove the wiring.
 - When an existing constraint (DESIGN.md, existing layering, existing patterns) conflicts with
   your approach, do not write a rationalizing comment to bypass it; stop and write the conflict out.
 - Change only what the order mentions; to touch anything else, stop and ask first.
