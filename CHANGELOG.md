@@ -36,6 +36,8 @@
 - **Breaking:** Quick hints are now always available in the TUI. The `/hints` command and
   `[runtime] quick_hints` setting have been removed; existing config values are ignored and
   `/hints` is now an unknown command.
+- Quick-hint chips now each take their own line under the prompt, so every suggestion stays
+  visible on narrow terminals instead of being clipped off the side.
 
 ### Fixed
 
@@ -80,6 +82,9 @@
 - Anthropic requests with a configured `temperature` no longer crash with
   `unexpected keyword argument 'temperature'` on anthropic SDK 1.0 or newer, which removed the
   top-level parameter; the value still reaches the request body as before.
+- An all-`NextHints` tool batch now ends the turn even when the model returns no answer text:
+  the suggestions stay at the idle prompt instead of being cleared by a follow-up model request,
+  and no blank answer line is printed.
 
 ## 0.30.0 - 2026-08-21
 

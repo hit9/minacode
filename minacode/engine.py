@@ -170,7 +170,7 @@ class Agent:
                     (self.final_output_fn or self.output_fn)(answer)
                     self.finish_turn(turn_messages, transcript_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
-                if content.strip() and self.terminal_next_hints(tool_calls):
+                if self.terminal_next_hints(tool_calls):
                     return self.finish_with_next_hints(
                         turn_messages,
                         assistant,
@@ -348,9 +348,13 @@ class Agent:
         self.session._active_transcript_messages = list(transcript_messages)
         self.session.save_snapshot()
 
-    def finish_turn(self, turn_messages: list[Json], transcript_messages: list[Json], assistant: Json) -> None:
-        self.session.messages.extend([*turn_messages, assistant])
-        self.session.transcript_messages.extend([*transcript_messages, self.transcript_message(assistant)])
+    def finish_turn(self, turn_messages: list[Json], transcript_messages: list[Json], assistant: Json | None = None) -> None:
+        if assistant is not None:
+            self.session.messages.extend([*turn_messages, assistant])
+            self.session.transcript_messages.extend([*transcript_messages, self.transcript_message(assistant)])
+        else:
+            self.session.messages.extend(turn_messages)
+            self.session.transcript_messages.extend(transcript_messages)
         self.session._active_turn_messages.clear()
         self.session._active_transcript_messages.clear()
         self.session.state.turn_messages = 0
@@ -369,10 +373,11 @@ class Agent:
         *,
         transcript_messages: list[Json] | None = None,
     ) -> str:
-        """Run an all-NextHints batch and finish the turn with `content` in a single model call.
+        """Run an all-NextHints batch and finish the turn in a single model call.
 
-        The tool-bearing assistant message keeps only the calls; the answer becomes its own final
-        message so it appears exactly once in history."""
+        The tool-bearing assistant message keeps only the calls; with answer text, the answer
+        becomes its own final message so it appears exactly once in history. Without answer
+        text the tool result ends the history and the turn returns an empty string."""
         answer = content.strip()
         transcript_messages = transcript_messages if transcript_messages is not None else SessionSnapshotCodec.transcript_messages(turn_messages)
         tool_message = dict(assistant or {})
@@ -386,11 +391,17 @@ class Agent:
         turn_messages.extend(result_messages)
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(result_messages))
         self.raise_if_cancelled()
-        self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
-        # Same publishing rule as the plain final-answer path: the answer goes out through
-        # final_output_fn (or output_fn); a stream promotion that already wrote it is skipped
-        # by the consumer.
-        (self.final_output_fn or self.output_fn)(answer)
+        if answer:
+            # Text exists: the answer becomes its own final message and is published exactly
+            # once, unchanged from the plain final-answer path.
+            self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
+            (self.final_output_fn or self.output_fn)(answer)
+        else:
+            # Tool-only terminal batch: the NextHints tool result ends the history. All three
+            # adapters replay a turn whose last message is that tool result once the next
+            # user message is appended, so no empty closing assistant message is stored, and
+            # nothing is published (an empty answer must not reach the visible output).
+            self.finish_turn(turn_messages, transcript_messages)
         return answer
 
     def settle_interrupted_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:

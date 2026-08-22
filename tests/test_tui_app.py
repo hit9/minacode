@@ -649,10 +649,7 @@ def test_interactive_tui_ctrl_r_search_enter_fills_input_without_submitting(monk
         wait_until(lambda: app.input_buffer.text == "earlier prompt")
         # Enter accepts the match into the input box and ends the search without submitting.
         pipe_input.send_text("\r")
-        wait_until(
-            lambda: app.app.layout.current_control is not app.search_toolbar.control
-            and app.input_buffer.text == "earlier prompt"
-        )
+        wait_until(lambda: app.app.layout.current_control is not app.search_toolbar.control and app.input_buffer.text == "earlier prompt")
         assert len(received) == 1
         # The second Enter sends the accepted text.
         pipe_input.send_text("\r")
@@ -692,10 +689,7 @@ def test_interactive_tui_search_abort_keys_restore_pre_search_input(monkeypatch,
         pipe_input.send_text("\x12")
         wait_until(lambda: app.input_buffer.text == "earlier prompt")
         pipe_input.send_text(abort_key)
-        wait_until(
-            lambda: app.input_buffer.text == "draft text"
-            and app.app.layout.current_control is not app.search_toolbar.control
-        )
+        wait_until(lambda: app.input_buffer.text == "draft text" and app.app.layout.current_control is not app.search_toolbar.control)
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
@@ -1828,9 +1822,65 @@ def test_quick_hint_fragments_mark_picked_chips():
 
 def test_quick_hint_fragments_highlight_focused_chip():
     app, _ = quick_hint_app(("a", "b"))
-    assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint.sep", " │ "), ("class:quickhint", " b ")]
+    # One chip per visual line: every hint starts its own row, so no chip is ever clipped
+    # or fused with its neighbor.
+    assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint", "\n"), ("class:quickhint", " b ")]
     app.quick_hint_focus = 0
     assert ("class:quickhint.focused", " a ") in app.quick_hint_fragments()
+
+
+def test_quick_hints_all_visible_at_narrow_width(monkeypatch):
+    """Every hint occupies its own visual line, so all three stay fully visible — wrapped onto
+    extra lines when they exceed the width — at a narrow terminal. Exercises the real
+    prompt_toolkit layout/render boundary, not just quick_hint_fragments()."""
+    hints = ("run the tests and check the coverage", "构建文档并同步中文 locale 目录", "commit the work with a clear message")
+    app = TuiApp(quick_hints_fn=lambda: hints)
+    output = ResizableOutput(rows=14, columns=30)
+    frames = []
+    rendered = threading.Event()
+
+    def after_render(application):
+        frames.append(rendered_screen_text(application, output))
+        rendered.set()
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        assert rendered.wait(timeout=1)
+        pipe_input.send_text("\x04")
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive, output=output, after_render=after_render)
+
+    assert frames, "the app rendered at least one frame"
+    # Wrapping splits a long hint across visual lines and eats the whitespace at the break, so
+    # compare compact forms: every hint's full text must be on screen, never truncated or
+    # clipped, even when it wraps onto several rows.
+    compact_frames = ["".join(frame.split()) for frame in frames]
+    for hint in hints:
+        assert any("".join(hint.split()) in screen for screen in compact_frames), f"hint missing from every rendered frame: {hint!r}"
+
+
+def test_quick_hint_pick_and_send_still_work_after_wrapping(monkeypatch):
+    """Chips that wrap onto multiple visual lines keep Tab focus, Enter pick/unpick, and the
+    final Enter submission."""
+    received = []
+    app = None
+
+    def submit(text):
+        received.append(str(text))
+        app.set_idle()
+
+    app = TuiApp(
+        on_chat_submit=submit,
+        quick_hints_fn=lambda: ("run the tests and check the coverage", "构建文档并同步中文 locale 目录", "commit the work"),
+    )
+    app.set_idle()
+
+    # Tab focuses chip 0, Enter picks it; one Tab reaches chip 1, Enter picks it; the final
+    # Enter, with focus back on the input line, sends the combined text.
+    run_interactive_tui(monkeypatch, app, text="\t\r\t\r\r\x04")
+
+    assert received == ["run the tests and check the coverage\n构建文档并同步中文 locale 目录"]
 
 
 def test_quick_hint_placeholder_hints_keys_until_focused():

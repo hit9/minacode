@@ -105,12 +105,13 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     Pressing `Esc` declines the question; typing instead of choosing answers in free text.
 * - **`NextHints`**
   - Offers 2–3 short next-step prompts the model suggests after its answer. They appear as
-    selectable chips at the idle prompt; `Tab` cycles focus, `Enter` picks a chip into the
+    selectable chips at the idle prompt, one per line so every suggestion stays visible even on
+    a narrow terminal; `Tab` cycles focus, `Enter` picks a chip into the
     input and returns to the prompt, so `Tab` to the next chip and
     `Enter` again combines several before sending. An
     all-`NextHints` batch ends the turn in a single model call.
 
-    <div class="term-shot" role="img" aria-label="A terminal at the idle prompt after a NextHints call: the answer text above, then an empty prompt with a caret, a gap line, and one horizontal row of three cyan suggestion chips separated by grey bars with the middle chip highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
+    <div class="term-shot" role="img" aria-label="A terminal at the idle prompt after a NextHints call: the answer text above, then an empty prompt with a caret, a gap line, and three suggestion chips each on its own line, the middle one highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span></span><span><span class="fs-i fs-tab-on"> show the diff </span></span><span><span class="fs-i fs-sel"> commit the work </span></span></div>
 
     `Tab` moves the highlight; `Enter` picks the focused chip into the input line and returns
     to the prompt, so `Tab` to the next chip and `Enter` again combines several; a final

@@ -101,9 +101,10 @@ still an estimate, and it disappears between requests and on providers that do n
 ## Quick hints
 
 After an answer, the model may suggest two or three next steps as chips under the prompt. They are
-suggestions, not commands: ignore them and keep typing, or take one.
+suggestions, not commands: ignore them and keep typing, or take one. Each suggestion sits on its
+own line, so every one stays visible even on a narrow terminal.
 
-<div class="term-shot" role="img" aria-label="The idle prompt after an answer: the answer text, an empty prompt with a caret, and one row of three suggestion chips separated by grey bars, the middle one highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
+<div class="term-shot" role="img" aria-label="The idle prompt after an answer: the answer text, an empty prompt with a caret, and three suggestion chips each on its own line, the middle one highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span></span><span><span class="fs-i fs-tab-on"> show the diff </span></span><span><span class="fs-i fs-sel"> commit the work </span></span></div>
 
 `Tab` cycles between the input and the chips. `Enter` on a chip picks it into the input and
 returns to the prompt, so `Tab` to the next chip and `Enter` again combines several suggestions;

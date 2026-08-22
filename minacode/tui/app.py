@@ -536,9 +536,9 @@ class TuiApp:
         parts: StyleAndTextTuples = []
         for index, hint in enumerate(hints):
             if index:
-                parts.append(("class:quickhint.sep", " │ "))
+                parts.append(("class:quickhint", "\n"))
             style = "class:quickhint.focused" if index == self.quick_hint_focus else "class:quickhint"
-            parts.append((style, f" ✓ {hint} " if hint in self.quick_hint_picked else f" {hint} "))
+            parts.append((style, f" \u2713 {hint} " if hint in self.quick_hint_picked else f" {hint} "))
         return parts
 
     def cycle_quick_hint_focus(self, reverse: bool = False) -> None:
