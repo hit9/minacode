@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 
 CONTEXT_LAYOUT_VERSION = 2
 TRANSCRIPT_SYNC_VERSION = 1
+# A ".image-*" staging file older than this is crash residue, not an in-flight write: the
+# copy+replace window in ImageInputs._store is milliseconds, so GC may collect it (and clear
+# the way for the assets directory's removal) without racing a real save.
+IMAGE_STAGING_MAX_AGE = 60.0
 
 
 def local_timestamp(value: float | None = None) -> str:
@@ -585,9 +589,14 @@ class SessionSnapshotStore:
         refs.update(key + TOOL_OUTPUT_ASSET_SUFFIX for key in self.session.tool_results)
         with contextlib.suppress(OSError):
             for entry in os.scandir(directory):
-                # Dotfiles are never assets: ImageInputs._store stages uploads as ".image-*"
-                # (mkstemp in this dir) before os.replace, and deleting one mid-flight breaks the rename.
                 if entry.name.startswith("."):
+                    # ImageInputs._store stages uploads as ".image-*" (mkstemp in this dir) before
+                    # os.replace; deleting one mid-flight breaks the rename, so a recent staging
+                    # file is spared. One older than IMAGE_STAGING_MAX_AGE is crash residue -- the
+                    # copy+replace window is milliseconds -- and is collected so it cannot pile up
+                    # or block the assets directory's removal.
+                    if entry.name.startswith(".image-") and entry.is_file() and time.time() - entry.stat().st_mtime > IMAGE_STAGING_MAX_AGE:
+                        os.unlink(entry.path)
                     continue
                 if entry.is_file() and entry.name not in refs:
                     os.unlink(entry.path)

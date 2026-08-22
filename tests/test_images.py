@@ -169,6 +169,31 @@ def test_garbage_collect_spares_dotfile_staging_and_drops_stray_files(tmp_path):
     assert os.listdir(assets)  # the referenced asset is kept
 
 
+def test_garbage_collect_clears_stale_image_staging_and_spares_fresh(tmp_path):
+    """GC clears a .image-* staging file left by a crashed save, but spares one that could still
+    be inside the copy+replace window: residue cannot pile up (or block the assets directory's
+    removal) without racing a real write."""
+    s = session(tmp_path)
+    path = image_file(tmp_path / "kept.png")
+    s.messages.append(s.images.message(s.images.recognize(path.name)))
+    s.save_snapshot()
+
+    assets = os.path.join(SessionSnapshotStore.project_dir(s.config.data_dir, s.cwd), s.uid + ".assets")
+    stale = os.path.join(assets, ".image-93e8u1vn")
+    fresh = os.path.join(assets, ".image-93e8u1vo")
+    with open(stale, "w") as file:
+        file.write("residue")
+    with open(fresh, "w") as file:
+        file.write("in flight")
+    os.utime(stale, (time.time() - 3600, time.time() - 3600))
+
+    s.save_snapshot()
+
+    assert not os.path.exists(stale)  # crash residue is collected
+    assert os.path.isfile(fresh)  # a staging file inside the copy+replace window is spared
+    assert any(name for name in os.listdir(assets) if not name.startswith("."))  # the referenced asset is kept
+
+
 def test_store_survives_snapshot_gc_between_mkstemp_and_replace(tmp_path, monkeypatch):
     s = session(tmp_path)
     settled = image_file(tmp_path / "settled.png", color=(1, 2, 3))

@@ -52,6 +52,9 @@
 - The transcript no longer claims images were "described" when the vision observation failed: the
   bridge line reports the read as in progress, so a timeout or provider error cannot leave a false
   completion line behind.
+- Crash residue in the session's assets directory -- a `.image-*` staging file left behind by an
+  interrupted save -- is cleaned up once it is old enough, so abandoned files no longer pile up or
+  keep the directory around.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.
