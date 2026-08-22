@@ -409,6 +409,7 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[QueuedInput] = field(default_factory=list)
     quick_hints: tuple[str, ...] = field(default_factory=tuple)  # transient offered next-step inputs; never serialized, cleared each turn
+    next_hints_available: bool = True  # transient frontend capability; false for the simple REPL, which has no chip UI
     # Worker handoff (see DESIGN.md): the second session this one delegates to, and its per-session
     # projection knobs. None of these are persisted — SessionSnapshotCodec.snapshot is an explicit
     # whitelist, so they return to their defaults on load and must be re-set by the delegate caller.

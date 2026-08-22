@@ -107,7 +107,7 @@ class TuiRuntime:
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
             activity_fragments_fn=self.loop.view.tui_activity_fragments,
             input_hint_fn=self.loop.view.tui_input_hint,
-            quick_hints_fn=lambda: self.loop.session.quick_hints if self.loop.session.settings.quick_hints else (),
+            quick_hints_fn=lambda: self.loop.session.quick_hints,
             file_picker_available_fn=self.loop.session.mentions.picker.available if self.loop.session.mentions else None,
             file_picker_fn=self.loop.session.mentions.picker.pick if self.loop.session.mentions else None,
             file_complete_fn=self.loop.session.mentions.complete_async if self.loop.session.mentions else None,

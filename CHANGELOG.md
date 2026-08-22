@@ -33,11 +33,12 @@
 - Quick-hint chips are picked with `Enter` instead of `Space`: the pick returns focus to the
   prompt, so one `Tab` advances to the next chip, `Enter` again combines it, and a final
   `Enter` sends. Refocus a picked chip and press `Enter` to unpick it; `Space` is plain again.
+- **Breaking:** Quick hints are now always available in the TUI. The `/hints` command and
+  `[runtime] quick_hints` setting have been removed; existing config values are ignored and
+  `/hints` is now an unknown command.
 
 ### Fixed
 
-- `/hints` now says that it toggled quick hints on or off, so its first reply is not mistaken for
-  the state that existed before the command ran.
 - When an attached image or direct `ViewImage` observation gets a 400, 415, or 422 response, a
   configured vision bridge now retries that same turn with a text observation. A successful retry
   remembers the model as text-only; an unrelated failure does not. Explicit errors such as

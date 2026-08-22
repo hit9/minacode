@@ -136,7 +136,6 @@ Two longer-lived flows are automatic:
 Common runtime settings live under `[runtime]`:
 
 - `yolo = false`: keep mutating-tool confirmations enabled.
-- `quick_hints = true`: allow next-step suggestion chips.
 - `max_context_tokens = 245760`: context ceiling used for compaction budgeting.
 - `max_agent_steps = 400`: maximum tool steps in one turn.
 - `shell_timeout = 60`: maximum shell command lifetime.
@@ -168,7 +167,6 @@ Use these commands at the interactive prompt:
 - `/compact`: compact context now.
 - `/resend`: cancel and resend an in-flight model request.
 - `/yolo`: toggle mutating-tool confirmations.
-- `/hints`: toggle next-step suggestions.
 - `/strict`: toggle strict tool schemas.
 - `/mcp`: list and manage MCP connections.
 - `/exit` or `/quit`: save and exit.

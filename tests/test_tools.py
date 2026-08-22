@@ -1040,20 +1040,24 @@ def test_quick_hints_are_transient_and_never_serialized(tmp_path):
     assert s.quick_hints == ()
 
 
-def test_runtime_settings_quick_hints_default_and_override():
-    assert RuntimeSettings.from_dict({}).quick_hints is True
-    assert RuntimeSettings.from_dict({"runtime": {"quick_hints": False}}).quick_hints is False
-    assert "# quick_hints = true" in ConfigFile.DEFAULT_TEXT
+def test_runtime_settings_no_longer_exposes_quick_hints_config(tmp_path):
+    settings = RuntimeSettings.from_dict({"runtime": {"quick_hints": False}})
+    s = session(tmp_path)
+    s.settings = settings
+
+    assert not hasattr(settings, "quick_hints")
+    assert "quick_hints" not in ConfigFile.DEFAULT_TEXT
+    assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
 
-def test_resolved_schemas_hide_next_hints_when_disabled(tmp_path):
+def test_resolved_schemas_follow_frontend_next_hints_capability(tmp_path):
     s = session(tmp_path)
 
     def names():
         return {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
     assert "NextHints" in names()
-    s.settings.quick_hints = False
+    s.next_hints_available = False
     assert "NextHints" not in names()
 
 

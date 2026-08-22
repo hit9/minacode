@@ -212,9 +212,11 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     """Unconsumed pending_user_inputs are auto-submitted as next input."""
     s = session(tmp_path)
     queue(s, "leftover instruction")
+    requested_tools = []
 
     class FakeModel:
         def request(self, messages, tools=None):
+            requested_tools.extend(tools or [])
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = Agent(s, output_fn=lambda text: None)
@@ -228,6 +230,8 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     loop.run()
 
     assert s.pending_user_inputs == []
+    assert s.next_hints_available is False
+    assert "NextHints" not in {tool["function"]["name"] for tool in requested_tools}
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
 
 
@@ -384,21 +388,16 @@ def test_queue_command_runs_yolo_toggle(tmp_path):
     assert s.pending_user_inputs == []
 
 
-def test_queue_command_runs_hints_toggle(tmp_path):
-    """/hints reports the state it toggled to, not an ambiguous initial-state reading."""
+def test_hints_command_is_removed(tmp_path):
     s = session(tmp_path)
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    assert s.settings.quick_hints is True
-    loop.run_queued_command("/hints")
-    assert s.settings.quick_hints is False
-    assert out[-1].endswith("quick hints toggled off")
+    handled, _exit = loop.command("/hints")
 
-    loop.run_queued_command("/hints")
-    assert s.settings.quick_hints is True
-    assert out[-1].endswith("quick hints toggled on")
-    assert s.pending_user_inputs == []
+    assert handled is True
+    assert out[-1].endswith("Unknown command: /hints")
+    assert "/hints" not in loop_module.COMMAND_LOOKUP
 
 
 def test_queue_command_rejects_mutating(tmp_path):

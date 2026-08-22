@@ -112,7 +112,6 @@ and, where the values are a fixed set, the values. Example: `/set provider.respo
 | Command | Effect |
 |---|---|
 | `/yolo` | Toggle confirmation prompts — read [Safety](safety.md) before leaving them off |
-| `/hints` | Toggle the model's next-step chips at the idle prompt (the `NextHints` tool) |
 | `/strict` | Toggle strict tool-call schemas (OpenAI / DeepSeek) |
 
 ## While a turn runs

@@ -113,7 +113,6 @@ class CommandLoop:
 - `/set KEY VALUE` — Set `provider.*` and `runtime.*`.
 - `/language [NAME]` — Force or show the reply language; auto follows your messages.
 - `/yolo` — Toggle tool confirmations.
-- `/hints` — Toggle next-step quick hints.
 - `/strict` — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 - `/mcp` — Manage MCP server connections.
 - `/exit`, `/quit` — Exit.
@@ -385,7 +384,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
         if self.interactive_input:
             return self.run_tui()
-        self.session.settings.quick_hints = False  # the simple REPL has no hint UI; don't invite the model to offer them
+        self.session.next_hints_available = False  # the simple REPL has no chip UI; don't offer an invisible terminal tool
         self.start_session()
         while True:
             try:
@@ -898,7 +897,6 @@ COMMANDS: tuple[Command, ...] = (
     Command("/set", commands.set_value),
     Command("/yolo", commands.yolo, queue_safe=True),
     Command("/strict", commands.strict),
-    Command("/hints", commands.hints, queue_safe=True),
     Command("/mcp", commands.mcp_command, queue_safe=True, render="answer"),
     Command("/resend", commands.resend_command, queue_safe=True),
     Command("/name", commands.name_command),

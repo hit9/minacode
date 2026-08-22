@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.16\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-17 04:15-0700\n"
+"POT-Creation-Date: 2026-08-21 23:24-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -353,16 +353,6 @@ msgid ""
 msgstr "切换操作确认——在长期关闭之前请阅读[安全](safety.md)"
 
 #: ../../commands.md:60
-msgid "`/hints`"
-msgstr "`/hints`"
-
-#: ../../commands.md:60
-msgid ""
-"Toggle the model's next-step chips at the idle prompt (the `NextHints` "
-"tool)"
-msgstr "切换 idle 提示符处模型给出的下一步 chip（`NextHints` 工具）"
-
-#: ../../commands.md:60
 msgid "`/strict`"
 msgstr "`/strict`"
 
@@ -370,11 +360,11 @@ msgstr "`/strict`"
 msgid "Toggle strict tool-call schemas (OpenAI / DeepSeek)"
 msgstr "切换严格 tool-call schema（OpenAI / DeepSeek）"
 
-#: ../../commands.md:118
+#: ../../commands.md:117
 msgid "While a turn runs"
 msgstr "回合进行中"
 
-#: ../../commands.md:120
+#: ../../commands.md:119
 msgid ""
 "**`/resend`** — Cancel and re-send the model request in flight, without "
 "restarting the turn. Use it when a response stalls. It only applies while"
@@ -386,11 +376,11 @@ msgstr ""
 "正在跑工具时无效。分隔线会显示这次重试，然后回到 `working`；自动重试看起来一样，并带上尝试次数和原因，例如 `retrying 2/6 "
 "· timeout`："
 
-#: ../../commands.md:127
+#: ../../commands.md:126
 msgid "MCP"
 msgstr "MCP"
 
-#: ../../commands.md:129
+#: ../../commands.md:128
 msgid "**`/mcp`** — Manage [MCP](mcp.md) server connections. Sub-commands:"
 msgstr "**`/mcp`** — 管理 [MCP](mcp.md) server 连接。子命令如下："
 
@@ -430,15 +420,15 @@ msgstr "`/mcp tools [server]`"
 msgid "List tools from a connected server"
 msgstr "列出已连接 server 的工具"
 
-#: ../../commands.md:138
+#: ../../commands.md:137
 msgid "Help and exit"
 msgstr "帮助与退出"
 
-#: ../../commands.md:140
+#: ../../commands.md:139
 msgid "**`/help`** — Show the built-in command and tool reference."
 msgstr "**`/help`** — 显示内置命令和工具参考。"
 
-#: ../../commands.md:142
+#: ../../commands.md:141
 msgid ""
 "**`/exit`, `/quit`** — Leave minacode. Your session is saved "
 "automatically and can be resumed with `-c` or `--resume`."
@@ -604,4 +594,13 @@ msgstr "**`/exit`, `/quit`** — 退出 minacode。Session 会自动保存，可
 #~ "在 prompt 中输入 `/` 命令，可以查看状态、切换模型、管理 "
 #~ "session 或即时修改 runtime 行为。运行 `/help` "
 #~ "查看内置参考。"
+
+#~ msgid "`/hints`"
+#~ msgstr "`/hints`"
+
+#~ msgid ""
+#~ "Toggle the model's next-step chips "
+#~ "at the idle prompt (the `NextHints` "
+#~ "tool)"
+#~ msgstr "切换 idle 提示符处模型给出的下一步 chip（`NextHints` 工具）"
 

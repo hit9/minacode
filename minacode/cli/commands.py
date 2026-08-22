@@ -865,11 +865,6 @@ def yolo(loop: CommandLoop, args: str) -> str:
     return "yolo: " + ("on" if loop.session.settings.yolo else "off")
 
 
-def hints(loop: CommandLoop, args: str) -> str:
-    loop.session.settings.quick_hints = not loop.session.settings.quick_hints
-    return "quick hints toggled " + ("on" if loop.session.settings.quick_hints else "off")
-
-
 def strict(loop: CommandLoop, args: str) -> str:
     if args:
         return "Usage: /strict"

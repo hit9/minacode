@@ -287,7 +287,6 @@ class RuntimeSettings:
     # Max read-only tool calls from one model batch to execute concurrently; 1 disables parallelism.
     max_parallel_tools: int = 4
     yolo: bool = False
-    quick_hints: bool = True
     worker: bool = False  # register the Delegate tool (see [worker] in ConfigFile.DEFAULT_TEXT)
     theme: str = "auto"
     language: str = "auto"  # forced reply language; "auto" injects nothing (see /language)
@@ -304,7 +303,6 @@ class RuntimeSettings:
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
-            quick_hints=Config.bool(runtime, "quick_hints", True),
             worker=Config.bool(runtime, "worker", False),
             theme=theme or Config.str(runtime, "theme", "auto"),
             language=RuntimeSettings.clean_language(Config.str(runtime, "language", "auto")),
@@ -534,7 +532,6 @@ model = ""
 
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false
-# quick_hints = true           # model-suggested next-step chips; toggle with /hints
 # max_context_tokens = 262144      # 256K; how much of the model's window to use, not its size.
                                # Raise it for a 1M-window model; lower it for a smaller one.
 # max_agent_steps = 400

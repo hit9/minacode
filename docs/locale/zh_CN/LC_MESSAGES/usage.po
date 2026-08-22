@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-21 23:21-0700\n"
+"POT-Creation-Date: 2026-08-21 23:24-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -292,19 +292,18 @@ msgid ""
 "into the input and returns to the prompt, so `Tab` to the next chip and "
 "`Enter` again combines several suggestions; a final `Enter` sends. Focus "
 "a picked chip and press `Enter` to unpick it. Editing the text normally "
-"clears the chip selection state. `/hints` toggles suggestions for the "
-"session, `[runtime] quick_hints` for good."
+"clears the chip selection state. Quick hints are always available at the "
+"TUI prompt."
 msgstr ""
 "`Tab` 在输入框和 chip 之间循环切换。在 chip 上按 `Enter` 可将它选入输入框并返回提示符，因此 `Tab` 移到下一个 "
 "chip 再按 `Enter` 即可组合多条建议；最后按一次 `Enter` 发送。重新聚焦已选中的 chip 并按 `Enter` "
-"可取消选中。正常编辑文本会清除 chip 选择状态。`/hints` 可在当前 session 切换建议，`[runtime] "
-"quick_hints` 可永久设置。"
+"可取消选中。正常编辑文本会清除 chip 选择状态。快速建议会在 TUI 提示符中始终可用。"
 
-#: ../../usage.md:114
+#: ../../usage.md:113
 msgid "Commands"
 msgstr "命令"
 
-#: ../../usage.md:116
+#: ../../usage.md:115
 msgid ""
 "Type `/` commands at the prompt to inspect state, switch models, manage "
 "the session, or configure runtime behavior on the fly. See the [command "
@@ -313,11 +312,11 @@ msgstr ""
 "在 prompt 中输入 `/` 命令，可以查看状态、切换模型、管理 session 或即时修改 runtime "
 "行为。完整列表见[命令参考](commands.md)，或在 session 中运行 `/help`。"
 
-#: ../../usage.md:120
+#: ../../usage.md:119
 msgid "Mentions"
 msgstr "引用"
 
-#: ../../usage.md:122
+#: ../../usage.md:121
 msgid ""
 "Mentions pull something into the turn. Type `@` at the prompt for a list "
 "of the three kinds; picking one opens its candidates, which narrow as you"
@@ -373,7 +372,7 @@ msgstr ""
 msgid "Injects a [skill](skills.md)'s full instructions into the current turn"
 msgstr "将 [skill](skills.md) 的完整指令注入当前一轮"
 
-#: ../../usage.md:133
+#: ../../usage.md:132
 msgid ""
 "**Files.** Small in-workspace files are inlined as a FILE MENTIONS block;"
 " large ones and anything outside the workspace become a pointer telling "
@@ -383,7 +382,7 @@ msgstr ""
 "**文件。** 工作区内的小文件会以内联形式作为 FILE MENTIONS 块进入本轮对话；大文件以及工作区之外的文件会变成提示，告诉 "
 "agent 用 Read 读取。路径缺失时会自行报告，而不会静默丢弃。"
 
-#: ../../usage.md:137
+#: ../../usage.md:136
 msgid ""
 "**Picking files.** Files stay out of the first `@` list: typing or "
 "selecting `@file:` opens fzf immediately, and `Tab` does the same from an"
@@ -401,71 +400,71 @@ msgstr ""
 "规则。带空格、Unicode 或歧义标点的路径会以可往返解析的引号形式插入，例如 `@file:\"docs/design "
 "notes/中文.txt\"`。"
 
-#: ../../usage.md:144
+#: ../../usage.md:143
 msgid ""
 "Mentions are expanded in follow-ups queued while the agent is working, "
 "too."
 msgstr "Agent 工作期间排队的 follow-up 中，引用同样会被展开。"
 
-#: ../../usage.md:146
+#: ../../usage.md:145
 msgid "Keys and input editing"
 msgstr "按键与输入编辑"
 
-#: ../../usage.md:148
+#: ../../usage.md:147
 msgid ""
 "**Interactive selectors** (model picker, MCP manager, diff viewer) "
 "support:"
 msgstr "**交互式选择器**（模型选择器、MCP 管理器、diff viewer）支持："
 
-#: ../../usage.md:150
+#: ../../usage.md:149
 msgid "`j` / `k` or arrow keys to move"
 msgstr "使用 `j` / `k` 或方向键移动"
 
-#: ../../usage.md:151
+#: ../../usage.md:150
 msgid "`g` / `G` to jump to top / bottom"
 msgstr "使用 `g` / `G` 跳到顶部或底部"
 
-#: ../../usage.md:152
+#: ../../usage.md:151
 msgid "`/` to search, `Enter` to accept, `Esc` to cancel"
 msgstr "使用 `/` 搜索，`Enter` 确认，`Esc` 取消"
 
-#: ../../usage.md:154
+#: ../../usage.md:153
 msgid "**The input line** supports:"
 msgstr "**输入行**支持："
 
-#: ../../usage.md:156
+#: ../../usage.md:155
 msgid "history recall and completion"
 msgstr "历史记录与补全"
 
-#: ../../usage.md:157
+#: ../../usage.md:156
 msgid ""
 "`Ctrl-C` — clear the current input; with the input empty while running, "
 "interrupt the turn (retracting it if the agent has not answered yet)"
 msgstr "`Ctrl-C` — 清空当前输入；运行时若输入为空则中断当前轮（若 agent 尚未回答则撤回它）"
 
-#: ../../usage.md:158
+#: ../../usage.md:157
 msgid ""
 "`Ctrl-U` — clear the whole input line, in the idle prompt and the follow-"
 "up editor alike"
 msgstr "`Ctrl-U` — 清空整行输入，空闲提示符和后续消息编辑器中行为一致"
 
-#: ../../usage.md:159
+#: ../../usage.md:158
 msgid "`Ctrl-D` — exit from an empty prompt"
 msgstr "`Ctrl-D` — 在空 prompt 中退出"
 
-#: ../../usage.md:160
+#: ../../usage.md:159
 msgid ""
 "`Ctrl-R` — reverse-search your history; `Enter` puts the match in the "
 "input to edit, a second `Enter` sends it"
 msgstr "`Ctrl-R` —— 反向搜索历史；`Enter` 把匹配放进输入框供你修改，再按一次 `Enter` 才发送"
 
-#: ../../usage.md:162
+#: ../../usage.md:161
 msgid ""
 "`Ctrl-O` — browse recent Bash outputs, ToolScript scripts, and delegation"
 " orders in full; press it again to close"
 msgstr "`Ctrl-O` — 完整浏览最近的 Bash 输出、ToolScript 脚本与委派 order；再次按下即可关闭"
 
-#: ../../usage.md:164
+#: ../../usage.md:163
 msgid ""
 "`Ctrl-X Ctrl-E` or `Ctrl-G` — edit the current input in `$VISUAL` / "
 "`$EDITOR` (falls back to vim), as a temporary Markdown file"
@@ -473,15 +472,15 @@ msgstr ""
 "`Ctrl-X Ctrl-E` 或 `Ctrl-G` —— 在 `$VISUAL` / `$EDITOR`（回退到 "
 "vim）里编辑当前输入，内容是一个临时的 Markdown 文件"
 
-#: ../../usage.md:167
+#: ../../usage.md:166
 msgid "Editing a follow-up message in an external editor"
 msgstr "在外部编辑器中编辑追加指令"
 
-#: ../../usage.md:172
+#: ../../usage.md:171
 msgid "Typing a follow-up message in an external editor."
 msgstr "在外部编辑器中输入追加指令。"
 
-#: ../../usage.md:175
+#: ../../usage.md:174
 msgid ""
 "When you open the editor in reply to the agent, its most recent reply is "
 "appended below a git-style scissors line, so you can read what you are "
@@ -491,18 +490,18 @@ msgstr ""
 "当你在回复 agent 时打开编辑器，它最近一次的回复会被追加到一条 git "
 "风格剪刀线下方，方便你在撰写时阅读所要回答的内容（全屏编辑器会遮住那部分滚动历史）："
 
-#: ../../usage.md:179
+#: ../../usage.md:178
 msgid ""
 "Everything from the scissors line down is stripped before the message is "
 "sent; a scissors line you type yourself is left untouched. Long replies "
 "are capped to their most recent lines."
 msgstr "剪刀线及其下方的所有内容都会在消息发送前被剥离；你自己输入的剪刀线则原样保留。过长的回复只保留最近的若干行。"
 
-#: ../../usage.md:181
+#: ../../usage.md:180
 msgid "Image input"
 msgstr "图片输入"
 
-#: ../../usage.md:183
+#: ../../usage.md:182
 msgid ""
 "Paste or type the path of an existing local image directly into the "
 "prompt. minacode replaces the path with an inline label such as `[Image "
@@ -515,7 +514,7 @@ msgstr ""
 "screenshot.png]` 的内联标签，因此你可以清楚看到将要提交哪些图片，并继续编辑周围的文字。相对路径以 workspace "
 "为基准；带引号的路径和使用反斜杠转义空格的路径也可以识别。"
 
-#: ../../usage.md:190
+#: ../../usage.md:189
 #, fuzzy
 msgid ""
 "PNG, JPEG, WebP, and single-frame GIF files are supported. minacode first"
@@ -529,16 +528,17 @@ msgid ""
 "override automatic detection."
 msgstr ""
 "支持 PNG、JPEG、WebP 和单帧 GIF。minacode 会先使用所选的标准 API 发送图片。如果请求被拒绝且配置了 [vision "
-"model](configuration.md#vision-model)，图片会由视觉模型描述，并在不包含图片块的情况下重试同一回合；重试成功后会"
-"用于后续图片。排队的追加指令、恢复后的 session，以及禁用图片输入的 provider 都会保留可读的图片标签。可以通过 "
+"model](configuration.md#vision-"
+"model)，图片会由视觉模型描述，并在不包含图片块的情况下重试同一回合；重试成功后会用于后续图片。排队的追加指令、恢复后的 "
+"session，以及禁用图片输入的 provider 都会保留可读的图片标签。可以通过 "
 "[`provider.image_input`](configuration.md#optional-provider-settings) "
 "覆盖自动检测。"
 
-#: ../../usage.md:197
+#: ../../usage.md:196
 msgid "Sessions"
 msgstr "Session"
 
-#: ../../usage.md:199
+#: ../../usage.md:198
 msgid ""
 "<span class=\"marker\">Your work is saved automatically</span> — the "
 "conversation, edits, and diffs are tied to the project directory you "
@@ -553,11 +553,11 @@ msgstr ""
 "启动时于后台进行，并会报告删除了多少个。恢复某个 session 会重置它的计时，因此经常使用的 session 不会被删除。设置 "
 "`runtime.session_retention_days = 0` 可永久保留。"
 
-#: ../../usage.md:206
+#: ../../usage.md:205
 msgid "Resume from the command line:"
 msgstr "从命令行恢复："
 
-#: ../../usage.md:215
+#: ../../usage.md:214
 msgid ""
 "Sessions are stored per project, so `-c` and a bare `--resume` never "
 "reach into another project's history — even when your most recent session"
@@ -567,7 +567,7 @@ msgstr ""
 "Session 按项目分开存储，因此 `-c` 和不带参数的 `--resume` 不会读取其他项目的历史，即使你最近一次 session "
 "发生在别处也是如此。而 `UID` 会在所有项目中查找，所以你可以在任意目录下按 id 恢复某个 session。"
 
-#: ../../usage.md:219
+#: ../../usage.md:218
 msgid ""
 "A name or id prefix is searched in the current project first, then "
 "everywhere — you can resume a session by name after moving directories. "
@@ -578,7 +578,7 @@ msgstr ""
 "名称或 id 前缀会先在当前项目内查找，再扩大到全部项目——因此换了目录之后仍可以按名称恢复。当一个查询匹配到多个 session "
 "时，minacode 会<span class=\"marker\">列出候选而不是替你猜</span>。"
 
-#: ../../usage.md:223
+#: ../../usage.md:222
 msgid ""
 "Resuming replays the conversation into your scrollback, including the "
 "diff each edit made. Long diffs are trimmed there; `/diff` always has the"
@@ -587,11 +587,11 @@ msgstr ""
 "恢复 session 时会把对话重新输出到终端回滚缓冲区，其中也包含每次编辑产生的 diff。这里的长 diff 会被截断；`/diff` "
 "中始终保留完整内容。"
 
-#: ../../usage.md:226
+#: ../../usage.md:225
 msgid "Names"
 msgstr "名称"
 
-#: ../../usage.md:228
+#: ../../usage.md:227
 msgid ""
 "Every session has a name, so you have something to recognize it by later."
 " It starts as the first line you typed, becomes the agent's current goal "
@@ -600,7 +600,7 @@ msgstr ""
 "每个 session 都有名称，方便日后辨认。它最初取自你输入的第一行，在 agent 确定目标之后改用该目标，一旦你用 `/name` "
 "设置过，就固定为你设置的名称："
 
-#: ../../usage.md:237
+#: ../../usage.md:236
 msgid ""
 "A name is a label, not an identity — sessions may share one, and the id "
 "is what makes each unique. Names are decided once rather than re-read "
@@ -611,11 +611,11 @@ msgstr ""
 "名称是标签而非身份：多个 session 可以同名，真正唯一的是 id。名称只决定一次，不会每次都从对话里重新推导，所以昨天以某个名称找到的 "
 "session，今天仍在那个名称下，即使它早期的消息已被压缩清理。"
 
-#: ../../usage.md:241
+#: ../../usage.md:240
 msgid "Switching sessions"
 msgstr "切换 session"
 
-#: ../../usage.md:243
+#: ../../usage.md:242
 msgid ""
 "`/sessions` — or `/resume`, the same command — lists what is saved, "
 "newest first, with how long ago each was touched and how many rounds it "
@@ -625,7 +625,7 @@ msgstr ""
 "`/sessions`——或者 `/resume`，同一条命令——按最近使用顺序列出已保存的 "
 "session，并显示各自的最后活动时间与轮数。输入内容即可在名称和开场消息中过滤，回车进入选中的 session："
 
-#: ../../usage.md:249
+#: ../../usage.md:248
 msgid ""
 "`/sessions all` widens the list past the current project, adding each "
 "session's directory to its row. Choosing a session ends the current one —"
@@ -637,7 +637,7 @@ msgstr ""
 "session（先保存），再以它开始下一个，效果与用 `--resume` 启动完全一致。选中你已经身处的那个 session，或者按 "
 "`Esc`，都不会有任何变化。"
 
-#: ../../usage.md:254
+#: ../../usage.md:253
 msgid ""
 "Run it from the prompt between turns. While the agent is working, "
 "minacode says so and asks you to press `Ctrl-C` first: switching sessions"
@@ -646,53 +646,53 @@ msgstr ""
 "请在两轮任务之间于提示符处运行它。agent 正在工作时，minacode 会提示你先按 `Ctrl-C`：在一轮任务进行中切换 "
 "session，会丢弃已经发出的请求。"
 
-#: ../../usage.md:257
+#: ../../usage.md:256
 msgid ""
 "Sessions saved before names existed list under their id until the next "
 "time they are saved."
 msgstr "在名称功能出现之前保存的 session 会以 id 列出，直到它们下一次被保存。"
 
-#: ../../usage.md:259
+#: ../../usage.md:258
 msgid "Reviewing changes"
 msgstr "审查修改"
 
-#: ../../usage.md:261
+#: ../../usage.md:260
 msgid "`/diff` opens an interactive, tabbed viewer with two views:"
 msgstr "`/diff` 会打开带 tab 的交互式 viewer，包含两个视图："
 
-#: ../../usage.md:263
+#: ../../usage.md:262
 msgid "**Latest** — what changed during the most recent round of your requests"
 msgstr "**Latest** — 最近一轮请求产生的修改"
 
-#: ../../usage.md:264
+#: ../../usage.md:263
 msgid "**Session** — the net diff for everything since the session began"
 msgstr "**Session** — 从 session 开始至今的净 diff"
 
-#: ../../usage.md:266
+#: ../../usage.md:265
 msgid "Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close."
 msgstr "使用 `j`/`k`、`g`/`G` 和 `/` 搜索进行导航；按 `Esc` 关闭。"
 
-#: ../../usage.md:268
+#: ../../usage.md:267
 msgid "Interactive diff list showing changed files from the latest turn"
 msgstr "交互式 diff 列表显示最近一轮修改的文件"
 
-#: ../../usage.md:273
+#: ../../usage.md:272
 msgid "Choosing a file to diff."
 msgstr "选择要查看 diff 的文件。"
 
-#: ../../usage.md:276
+#: ../../usage.md:275
 msgid "Side-by-side file diff with syntax highlighting"
 msgstr "带语法高亮的并排文件 diff"
 
-#: ../../usage.md:281
+#: ../../usage.md:280
 msgid "Side-by-side detail view of a changed file."
 msgstr "文件 diff 的并排详情视图。"
 
-#: ../../usage.md:284
+#: ../../usage.md:283
 msgid "Long sessions"
 msgstr "长 session"
 
-#: ../../usage.md:286
+#: ../../usage.md:285
 msgid ""
 "minacode keeps long conversations within a working budget on its own, "
 "summarizing older context as needed so a session can run indefinitely. "
