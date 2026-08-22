@@ -379,7 +379,9 @@ class EditTool(Tool):
         "Create or patch one UTF-8 file. op=create writes a new file; replace/delete cover the inclusive "
         "start..end range (the line at end is itself replaced or deleted); insert_before/insert_after keep "
         "the anchor line and only add content beside it; replace_unique replaces text that occurs exactly "
-        "once and refuses when it does not; never restate lines that already exist in the file. "
+        "once and refuses when it does not. Do not copy unchanged surrounding context into replacement or "
+        "insertion content; Edit preserves it automatically. Prefer replace_unique for a small edit when the "
+        "exact old text is unique, because it does not depend on anchors. "
         "Work in small steps: one call per cohesive change, and split a large rewrite across several "
         "calls, because everything one call writes is generated inside a single assistant message "
         "and a timeout partway through loses all of it."
@@ -387,6 +389,8 @@ class EditTool(Tool):
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
+        'insert after an anchored line without copying the anchor as context. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"10:1ab2c","content":"new_value = 1\\n"}]}',
+        'replace one exact block without anchors. Example: {"path":"src/app.py","edits":[{"op":"replace_unique","old":"value = 1\\n","new":"value = 2\\n"}]}',
         'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
     )
     MUTATES = True
@@ -400,7 +404,8 @@ class EditTool(Tool):
                 "type": "string",
                 "description": (
                     "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; re-read after any file change or stale-anchor error; "
+                    "never invent or calculate it; after a stale-anchor error use a returned context anchor only after "
+                    "verifying its content, otherwise Read again; use replace_unique when the old text is exact and unique; "
                     "a file viewed through Bash carries no anchors"
                 ),
             },
@@ -408,7 +413,8 @@ class EditTool(Tool):
                 "type": "string",
                 "description": (
                     "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; re-read after any file change or stale-anchor error; "
+                    "never invent or calculate it; after a stale-anchor error use a returned context anchor only after "
+                    "verifying its content, otherwise Read again; use replace_unique when the old text is exact and unique; "
                     "a file viewed through Bash carries no anchors; "
                     "inclusive — the line at end is itself replaced or deleted"
                 ),
@@ -416,10 +422,11 @@ class EditTool(Tool):
             "content": {
                 "type": "string",
                 "description": (
-                    "New text for create/replace/insert. For replace: the complete new text of the inclusive range; "
-                    "for insert_before/insert_after: only the new lines — the anchor line is kept and must not be "
-                    "restated; for create: the whole file. The first and last content lines must correspond exactly "
-                    "to the start/end anchor lines."
+                    "New text for create/replace/insert. For replace: only the final replacement text for the inclusive "
+                    "start..end range; lines before start and after end are preserved automatically and must not be "
+                    "copied into content merely as context. For insert_before/insert_after: only the new text; the anchor "
+                    "line is preserved automatically, so do not copy it merely to keep it. The new text may independently "
+                    "equal neighboring text when that is the intended result. For create: the whole file."
                 ),
             },
             "old": {"type": "string", "description": "Text to find for replace_all/replace_unique"},
@@ -795,8 +802,26 @@ class EditTool(Tool):
         if relocated is not None:
             return relocated
         if not 0 <= index < len(lines):
-            raise ToolError(f"anchor line {index + 1} out of range; file has {len(lines)} lines")
+            raise ToolError(
+                f"anchor line {index + 1} out of range; file has {len(lines)} lines; Read again unless the returned context verifies the intended line\n"
+                + self.current_file_context(lines, index)
+            )
         current = ReadTool.anchor_line(index, lines[index])
         raise ToolError(
-            f"stale anchor {anchor}; current is {current}; retry with the current anchor only if its content is the line you meant, otherwise re-read"
+            f"stale anchor {anchor}; current is {current}; retry with a returned anchor only if its content is the line you meant; "
+            "otherwise Read again; for a small exact edit whose old text is unique, prefer replace_unique\n" + self.current_file_context(lines, index)
         )
+
+    @staticmethod
+    def current_file_context(lines: list[str], index: int) -> str:
+        """Return bounded factual context near a rejected anchor, without claiming a target."""
+        out = ["<current-file-context hashline-numbered>", "(near the requested line; not an inferred target)"]
+        if not lines:
+            out.append("(empty file)")
+        else:
+            center = min(max(index, 0), len(lines) - 1)
+            start = max(0, center - 3)
+            end = min(len(lines), center + 4)
+            out.extend(ReadTool.anchor_line(current, lines[current]) for current in range(start, end))
+        out.append("</current-file-context>")
+        return "\n".join(out)

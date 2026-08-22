@@ -106,6 +106,7 @@ class EditBatchPlan:
         after: str
         created: bool
         changes: list[tuple[int, int, int, int]]
+        warnings: str
 
         def preview(self, tool: EditTool) -> str:
             return tool.diff(self.path, self.before, self.after) or f"Edit({self.path})"
@@ -130,15 +131,11 @@ class EditBatchPlan:
             tool.last_diff = tool.diff(self.path, self.before, self.after)
             tool.last_before = self.before
             tool.last_after = self.after
-            return "\n".join(
-                [
-                    f"<Edit path={json.dumps(tool.last_path)}>",
-                    tool.file_stat(self.path),
-                    tool.last_diff.rstrip(),
-                    tool.edit_context(self.after, self.changes),
-                    "</Edit>",
-                ]
-            )
+            parts = [f"<Edit path={json.dumps(tool.last_path)}>", tool.file_stat(self.path), tool.last_diff.rstrip()]
+            if self.warnings:
+                parts.append(self.warnings)
+            parts.extend((tool.edit_context(self.after, self.changes), "</Edit>"))
+            return "\n".join(parts)
 
     def __init__(self, session: Session):
         self.session = session
@@ -165,7 +162,7 @@ class EditBatchPlan:
         after = "".join(line.text for line in result.lines)
         if after == before and not created:
             raise ToolError(EditTool.no_changes_error_from_lines(before_lines, result.replacements, result.replace_all))
-        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes)
+        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes, tool.warnings_block(before, after, edits))
         state.lines, state.exists = result.lines, True
 
     def file_state(self, tool: EditTool, path: str, creating: bool) -> FileState:
@@ -206,16 +203,25 @@ class EditBatchPlan:
             current = state.current_origin(index)
             if current is not None:
                 return current
-            raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
+            raise ToolError(
+                f"stale anchor {anchor}; original line was changed in this batch; Read again unless the returned context verifies the intended line; "
+                "for a small exact edit whose old text is unique, prefer replace_unique\n"
+                + EditTool.current_file_context([line.text for line in state.lines], index)
+            )
         relocated = ReadTool.relocated_anchor([line.text for line in state.lines], index, expected)
         if relocated is not None:
             return relocated
         if 0 <= index < len(state.lines):
             current_line = ReadTool.anchor_line(index, state.lines[index].text)
             raise ToolError(
-                f"stale anchor {anchor}; current is {current_line}; retry with the current anchor only if its content is the line you meant, otherwise re-read"
+                f"stale anchor {anchor}; current is {current_line}; retry with a returned anchor only if its content is the line you meant; "
+                "otherwise Read again; for a small exact edit whose old text is unique, prefer replace_unique\n"
+                + EditTool.current_file_context([line.text for line in state.lines], index)
             )
-        raise ToolError(f"anchor line {index + 1} out of range; file has {len(state.lines)} lines")
+        raise ToolError(
+            f"anchor line {index + 1} out of range; file has {len(state.lines)} lines; "
+            "Read again unless the returned context verifies the intended line\n" + EditTool.current_file_context([line.text for line in state.lines], index)
+        )
 
 
 @dataclass

@@ -33,6 +33,11 @@
 
 ### Fixed
 
+- A stale `Edit` anchor now returns a small, freshly anchored file neighborhood in the failed
+  result, so a verified nearby target can be retried without another `Read`; ambiguous targets
+  still require a read and are never guessed. Batched edits now also return the same duplicate-line
+  and large-edit warnings as direct edits, and the tool guidance no longer tells models to copy
+  unchanged boundary lines into replacement content.
 - After a `Ctrl-C` on one turn, the next turn with attached images no longer dies with a
   `KeyboardInterrupt` before it reaches the model: that message and its images used to be dropped
   before the turn checkpointed, and are now processed normally.
