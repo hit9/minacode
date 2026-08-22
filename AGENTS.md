@@ -60,10 +60,6 @@ Keep this file short. It is an entry point, not a second design document.
 - Make the smallest cohesive change; no pass-through wrappers or speculative specialization.
 - Prefer black-box tests at the narrowest stable public boundary; bug fixes cover the reproduced
   failure, intended result, and important rejection paths (see `DESIGN.md` for the full policy).
-- **Delegated work:** the parent owns acceptance; a worker's report is a claim, not evidence.
-  Re-run its checks yourself at the layer that carries the risk (real key bindings, real request
-  path - not method calls), and wider than the order's file list: the worker cannot cover files
-  its order never named (full policy in `DESIGN.md` "Worker handoff").
 - Mock external uncertainty, not the core behavior under test; keep tests deterministic and fast.
 - Keep `CHANGELOG.md` aligned with user-visible behavior.
 - Never rebuild or re-sync the project `.venv` (no `uv run --python X` / `uv sync --python X`
