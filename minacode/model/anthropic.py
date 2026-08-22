@@ -80,8 +80,10 @@ def anthropic_params(
     params.update(thinking_params)
     thinking = thinking_params.get("thinking")
     thinking_active = anthropic_thinking_always_on(provider.model) or (isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive"))
+    # Anthropic SDK 1.0 removed the top-level `temperature` parameter; `extra_body` is merged
+    # into the wire body by both 0.104.1 and 1.0.0, so the value still goes out the same way.
     if provider.temperature is not None and not thinking_active:
-        params["temperature"] = provider.temperature
+        params.setdefault("extra_body", {})["temperature"] = provider.temperature
     return params
 
 

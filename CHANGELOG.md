@@ -67,6 +67,10 @@
 - The Ctrl-O output browser no longer hides the oldest stored result while a ToolScript is running:
   the live running entry is listed on top of all stored records instead of counting against them.
 
+- Anthropic requests with a configured `temperature` no longer crash with
+  `unexpected keyword argument 'temperature'` on anthropic SDK 1.0 or newer, which removed the
+  top-level parameter; the value still reaches the request body as before.
+
 ## 0.30.0 - 2026-08-21
 
 ### Fixed

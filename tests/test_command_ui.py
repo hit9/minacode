@@ -323,7 +323,7 @@ def test_tool_output_viewer_keeps_the_search_filter_across_an_escape(tmp_path, m
     assert sum("read-only" in frame for frame in frames) == 4
 
 
-def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path):
+def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path, monkeypatch):
     """A row is one row. `short_call` keeps a multi-line command whole for the transcript, and a
     `git commit -m` with a real message would otherwise spill its row over several lines, carrying
     the numbering and the selection bar with it."""
@@ -336,7 +336,11 @@ def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path):
     modal = ModalHarness([])
     command_loop.tui = modal
 
-    tool_output_viewer(command_loop)
+    # ``shutil`` is a shared module object also used by pytest's terminal reporter. Restore the
+    # patch before pytest reports this test result, rather than waiting for fixture teardown.
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((120, 20)))
+        tool_output_viewer(command_loop)
 
     listing = "".join(value for _style, value in modal.frames[0])
     rows = [row for row in listing.splitlines() if "tr.1" in row]

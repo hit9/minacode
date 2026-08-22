@@ -314,7 +314,8 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     provider.reasoning = "off"
     params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
     assert "thinking" not in params
-    assert params["temperature"] == 0.3
+    assert "temperature" not in params
+    assert params["extra_body"]["temperature"] == 0.3
 
     provider.model = "claude-fable-5"
     params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
@@ -324,7 +325,8 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     provider.model, provider.reasoning = "claude-sonnet", "medium"
     params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
     assert "thinking" not in params
-    assert params["temperature"] == 0.3
+    assert "temperature" not in params
+    assert params["extra_body"]["temperature"] == 0.3
 
 
 @pytest.mark.parametrize(
