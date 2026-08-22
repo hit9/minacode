@@ -108,7 +108,7 @@ suggestions, not commands: ignore them and keep typing, or take one.
 `Tab` cycles between the input and the chips. `Enter` on a chip picks it into the input and
 returns to the prompt, so `Tab` to the next chip and `Enter` again combines several suggestions;
 a final `Enter` sends. Focus a picked chip and press `Enter` to unpick it. Editing the text
-normally clears the chip selection state. `/hints` turns suggestions off for the session,
+normally clears the chip selection state. `/hints` toggles suggestions for the session,
 `[runtime] quick_hints` for good.
 
 ## Commands

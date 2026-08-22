@@ -36,6 +36,8 @@
 
 ### Fixed
 
+- `/hints` now says that it toggled quick hints on or off, so its first reply is not mistaken for
+  the state that existed before the command ran.
 - Text-only model errors phrased as `only support text input` now activate a configured vision
   bridge after the failed capability probe, instead of sending each later image to the same model
   and repeating the provider error.
