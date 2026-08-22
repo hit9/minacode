@@ -40,6 +40,8 @@
   only by explicit `ViewImage` calls. The removed `provider.image_input` setting is ignored in old
   configs; `off` no longer disables submission and `auto` no longer learns or retries through a
   vision model.
+- Each `Job(action="wait")` call now waits at most 20 seconds, including the default wait; a
+  still-running job remains available for a later status check or another wait.
 - Quick-hint chips flow left to right, up to three per line, and wrap to new lines only
   between chips when the terminal is too narrow, so every suggestion stays visible instead of
   being clipped off the side.

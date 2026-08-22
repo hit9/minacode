@@ -105,6 +105,18 @@ def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, mon
     assert JobTool(s, [{"action": "wait", "job": "job.1", "timeout": "1m"}]).blocks_agent() is False
 
 
+def test_job_wait_budget_is_always_capped_at_twenty_seconds(tmp_path):
+    tool = JobTool(session(tmp_path), [{"action": "wait", "job": "job.1"}])
+
+    assert tool.wait_budget({}) == 20
+    assert tool.wait_budget({"timeout": 0}) == 20
+    assert tool.wait_budget({"timeout": 19}) == 19
+    assert tool.wait_budget({"timeout": 20}) == 20
+    assert tool.wait_budget({"timeout": 21}) == 20
+    assert tool.wait_budget({"timeout": 3600}) == 20
+    assert "capped at 20s" in JobTool.params_schema()["properties"]["timeout"]["description"]
+
+
 def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypatch):
     """Ctrl-C during a wait reaches JobTool through the runner and abandons the wait only: the
     command keeps running, so the agent gets control back without losing the job."""
@@ -276,13 +288,11 @@ def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
     assert "wait" in root.text and "job.1" in root.text
     # The finish block comes after, with no root of its own (the pre-block already drew it) and a
     # stored/done child hanging underneath.
-    finish_blocks = [block for block in blocks[1:] if isinstance(block, LogBlock) and not any(isinstance(item, LogLine) and item.label == "Job" for item in block.items)]
+    finish_blocks = [
+        block for block in blocks[1:] if isinstance(block, LogBlock) and not any(isinstance(item, LogLine) and item.label == "Job" for item in block.items)
+    ]
     assert finish_blocks, "no rootless finish block after the pre-block call line"
-    assert any(
-        line[0].label in {"stored", "done"}
-        for block in finish_blocks
-        for line in block.walk()
-    )
+    assert any(line[0].label in {"stored", "done"} for block in finish_blocks for line in block.walk())
     # A non-blocking action (list) prints no pre-block call line: only the finish block appears.
     blocks.clear()
     runner.run([ToolCall("call_2", "Job", [{"action": "list"}])])

@@ -398,10 +398,10 @@ class JobTool(Tool):
     DEFAULT_LIMIT: ClassVar[int] = 4096
     # How long one wait may hold the agent. Backgrounding hands control back and waiting is the one
     # way to give it away again, so a wait always ends: at the model's timeout, at MAX_WAIT, or at
-    # Ctrl-C. The default is short because parking the agent should be a deliberate choice; a model
-    # that knows the job is long asks for longer, up to the ceiling.
-    DEFAULT_WAIT: ClassVar[int] = 60
-    MAX_WAIT: ClassVar[int] = 900
+    # Ctrl-C. Keep every individual wait short; a still-running job remains addressable and can be
+    # checked again later without parking the agent for minutes at a time.
+    DEFAULT_WAIT: ClassVar[int] = 20
+    MAX_WAIT: ClassVar[int] = 20
     POLL_INTERVAL: ClassVar[float] = 0.1
     # How often the job's log tail is streamed into the live preview while a wait polls. Aligned
     # with the preview's own TICK so the two repaint together; the poll slices stay finer because
@@ -425,7 +425,7 @@ class JobTool(Tool):
             "action": {"type": "string", "enum": list(cls.ACTIONS), "description": "Operation to perform"},
             "command": {"type": "string", "minLength": 1, "description": "Shell command to run for action=start"},
             "job": {"type": "string", "description": "Job id for action=status, wait, or kill"},
-            "timeout": {"type": "integer", "minimum": 0, "description": f"Seconds to wait for action=wait; omit or 0 waits {cls.DEFAULT_WAIT}s, and {cls.MAX_WAIT}s is the maximum. Ask for longer when the job is known to be slow; a wait that ends with the job still running says so, and waiting again is fine"},
+            "timeout": {"type": "integer", "minimum": 0, "description": f"Seconds to wait for action=wait; omit or 0 waits {cls.DEFAULT_WAIT}s, and every wait is capped at {cls.MAX_WAIT}s. A wait that ends with the job still running says so; check it again later"},
             "limit": {"type": "integer", "minimum": 1, "description": "Max characters of stdout/stderr to return; default 4096"},
         }, ["action"])
         # fmt: on
