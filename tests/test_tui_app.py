@@ -1681,8 +1681,7 @@ def test_quick_hint_enter_picks_chips_one_per_tab_and_sends():
     assert app._pick_quick_hint(app.input_buffer)  # Enter picks "run the tests"
     assert app.input_buffer.text == "run the tests"
     assert app.quick_hint_focus == -1  # focus is back on the input line
-    app.tab_or_complete(app.input_buffer, reverse=False)  # -1 -> 0
-    app.tab_or_complete(app.input_buffer, reverse=False)  # 0 -> 1
+    app.tab_or_complete(app.input_buffer, reverse=False)  # resumes after picked chip 0 -> 1
     assert app._pick_quick_hint(app.input_buffer)  # Enter picks "show the diff"
     assert app.input_buffer.text == "run the tests\nshow the diff"
     assert app.quick_hint_picked == ["run the tests", "show the diff"]
@@ -1704,9 +1703,9 @@ def test_quick_hint_enter_keys_pick_and_send_through_real_bindings(monkeypatch):
     app = TuiApp(on_chat_submit=submit, quick_hints_fn=lambda: ("run the tests", "show the diff", "commit"))
     app.set_idle()
 
-    # Tab focuses chip 0, Enter picks it; Tab twice reaches chip 1, Enter picks it; the final
+    # Tab focuses chip 0, Enter picks it; one Tab reaches chip 1, Enter picks it; the final
     # Enter, with focus back on the input line, sends the combined text.
-    run_interactive_tui(monkeypatch, app, text="\t\r\t\t\r\r\x04")
+    run_interactive_tui(monkeypatch, app, text="\t\r\t\r\r\x04")
 
     assert received == ["run the tests\nshow the diff"]
 
@@ -1734,7 +1733,7 @@ def test_quick_hint_enter_again_unpicks_chip():
     app.quick_hint_focus = 0
     app._pick_quick_hint(app.input_buffer)  # pick "run the tests", focus back on the input
     assert app.input_buffer.text == "run the tests"
-    app.tab_or_complete(app.input_buffer, reverse=False)  # -1 -> 0: back on the same chip
+    app.quick_hint_focus = 0  # cycling back to a picked chip makes Enter a toggle
     assert app._pick_quick_hint(app.input_buffer)  # Enter toggles it off
     assert app.quick_hint_picked == []
     assert app.input_buffer.text == ""
@@ -1754,7 +1753,7 @@ def test_quick_hint_tab_cycles_while_picked():
     app, _ = quick_hint_app()
     app.quick_hint_focus = 0
     app._pick_quick_hint(app.input_buffer)  # pick -> focus back on the input
-    for expected in (0, 1, 2, -1):
+    for expected in (1, 2, -1, 0):
         app.tab_or_complete(app.input_buffer, reverse=False)
         assert app.quick_hint_focus == expected
 
@@ -1836,7 +1835,7 @@ def test_quick_hint_fragments_highlight_focused_chip():
 
 def test_quick_hint_placeholder_hints_keys_until_focused():
     app, _ = quick_hint_app()
-    assert app.placeholder_text() == "Tab cycles suggestions \u00b7 Enter picks (again unpicks) \u00b7 Enter sends"
+    assert app.placeholder_text() == "Tab cycles suggestions \u00b7 Enter picks \u00b7 Enter sends"
     app.quick_hint_focus = 0
     assert app.placeholder_text() == ""
 

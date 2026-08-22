@@ -220,6 +220,7 @@ class TuiApp:
         self.ready = threading.Event()
         self.input_mode = "chat"  # chat | dispatch | running | approval
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
+        self._quick_hint_resume_focus = -1  # last picked chip; Tab resumes after it once
         self.quick_hint_picked: list[str] = []  # chips picked into the input, in pick order
         self._last_quick_hints: tuple[str, ...] | None = None  # hints seen by the last quick_hints() call
         self._file_picker_active = False
@@ -525,6 +526,7 @@ class TuiApp:
 
     def _clear_quick_hint_selection(self) -> None:
         self.quick_hint_focus = -1
+        self._quick_hint_resume_focus = -1
         self.quick_hint_picked = []
 
     def quick_hint_fragments(self) -> StyleAndTextTuples:
@@ -543,7 +545,11 @@ class TuiApp:
         count = len(self.quick_hints())
         if not count:
             return
-        focus = self.quick_hint_focus + (-1 if reverse else 1)
+        origin = self.quick_hint_focus
+        if origin == -1 and self._quick_hint_resume_focus >= 0:
+            origin = self._quick_hint_resume_focus
+            self._quick_hint_resume_focus = -1
+        focus = origin + (-1 if reverse else 1)
         if focus >= count or focus < -1:
             focus = count - 1 if reverse else -1
         self.quick_hint_focus = focus
@@ -590,18 +596,20 @@ class TuiApp:
         hints = self._live_quick_hints(buffer)
         if not hints or not 0 <= self.quick_hint_focus < len(hints):
             return False
-        hint = hints[self.quick_hint_focus]
+        picked_focus = self.quick_hint_focus
+        hint = hints[picked_focus]
         if hint in self.quick_hint_picked:
             self.quick_hint_picked.remove(hint)
         else:
             self.quick_hint_picked.append(hint)
         self._reset_input("\n".join(self.quick_hint_picked), preserve_quick_hints=True)
         self.quick_hint_focus = -1
+        self._quick_hint_resume_focus = picked_focus
         return True
 
     def placeholder_text(self) -> str:
         if self.input_mode == "chat" and self.quick_hints():
-            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter picks (again unpicks) \u00b7 Enter sends"
+            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter picks \u00b7 Enter sends"
         return self.input_hint_fn()
 
     def _on_input_text_changed(self, buffer: Buffer) -> None:
