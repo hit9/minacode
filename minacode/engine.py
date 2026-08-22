@@ -451,6 +451,12 @@ class Agent:
         # Older accepted image history is never redescribed.
         current_raw = [message for message in current if ImageInputs.input_refs(message)]
         if self.session.image_route.delivery() == "vision" and current_raw:
+            # Gray, non-model routing notices: the main model is text-only, so the current image
+            # occurrences are described through [vision] instead of being sent raw (which would
+            # fail). The described-by line mirrors the ViewImage tool's rendering. Presentation
+            # only; never enters model context.
+            self._emit_image_route_notice(f"main model is text-only; image described through {self._vision_entry_label()}")
+            self._emit_image_route_notice(f"described by {self._vision_entry_label()}")
             request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
             if not pending:
                 # No accept_pending_inputs will commit the copy later, so keep the live list in
@@ -491,6 +497,7 @@ class Agent:
                 raise
             provider = self.session.config.providers[vision_entry]
             self._emit_image_route_notice(f"main model rejected image input (400); using {vision_entry}/{provider.model or '(empty)'}")
+            self._emit_image_route_notice(f"described by {self._vision_entry_label()}")
             # Observe the eligible current occurrences through [vision] and convert them to
             # durable text observations in the turn, then retry once without raw image blocks
             # (the route is now learned text-only, so projection suppresses every older raw
@@ -528,6 +535,13 @@ class Agent:
 
         if self.on_image_route_notice is not None:
             self.on_image_route_notice(text)
+
+    def _vision_entry_label(self) -> str:
+        """The `[vision]` entry label shown in routing notices, matching ViewImage's rendering."""
+
+        entry = self.session.config.vision_provider
+        provider = self.session.config.providers[entry]
+        return f"{entry}/{provider.model or '(empty)'}"
 
     def mention_messages(self, text: str) -> list[Json]:
         """Session-event context blocks attached after one user message, initial or queued."""

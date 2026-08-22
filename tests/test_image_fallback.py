@@ -194,7 +194,7 @@ def test_eligible_400_attachment_falls_back_through_vision_once(tmp_path):
     # exactly one vision observation of the current attachment, with the bounded default question
     assert model.vision_calls == [(("shot.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_learned"
-    assert notices == ["main model rejected image input (400); using v/vision-model"]
+    assert notices == ["main model rejected image input (400); using v/vision-model", "described by v/vision-model"]
 
     # durable text observation replaces the failed raw occurrence; refs stay for asset ownership
     message = s.messages[0]
@@ -209,7 +209,7 @@ def test_static_text_only_attachment_goes_directly_to_vision(tmp_path):
     s = session(tmp_path, model="deepseek-chat", vision=True)
     image_file(tmp_path / "shot.png")
     model = FallbackModel([("done", [])])
-    agent, _notices = run_with(s, model)
+    agent, notices = run_with(s, model)
 
     assert agent.run(s.images.recognize("inspect shot.png")) == "done"
 
@@ -217,6 +217,8 @@ def test_static_text_only_attachment_goes_directly_to_vision(tmp_path):
     assert not any(ImageInputs.input_refs(message) for message in model.requests[0])
     assert model.vision_calls == [(("shot.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_static"
+    # one gray routing notice plus the described-by line, like ViewImage's rendering
+    assert notices == ["main model is text-only; image described through v/vision-model", "described by v/vision-model"]
 
 
 def test_static_text_only_without_vision_keeps_raw_attempt_and_original_error(tmp_path):
