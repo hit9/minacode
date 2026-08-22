@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -31,6 +32,7 @@ TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
 TOOL_IMAGE_QUESTION_KEY = "_tool_image_question"
 TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
 FAILED_IMAGE_CONTEXT_PREFIX = "[Image input failed; local assets remain available through ViewImage]"
+IMAGE_ASSET_CONTEXT_PREFIX = "[Attached image assets]"
 SUPPORTED_FORMATS = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -311,6 +313,15 @@ class ImageInputs:
             message["content"] = f"{self.label_text(message)}\n\n{FAILED_IMAGE_CONTEXT_PREFIX}\n{paths}"
             message[IMAGE_TEXT_ONLY_KEY] = True
 
+    def asset_context(self, images: tuple[ImageRef, ...]) -> str:
+        """Deterministic model-facing mapping from image labels to session-owned tool paths."""
+
+        rows = [IMAGE_ASSET_CONTEXT_PREFIX]
+        rows.extend(
+            "- " + json.dumps({"image": index, "name": image.name, "path": self.asset_path(image)}, ensure_ascii=False) for index, image in enumerate(images, 1)
+        )
+        return "\n".join(rows)
+
     def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
         images = self.input_refs(message)
         if not images:
@@ -319,13 +330,19 @@ class ImageInputs:
                 return message["content"]
             return self.label_text(message)
         parts = [image_part(image) for image in images]
-        if text := str(message.get("content") or ""):
-            parts.append({"type": text_type, "text": text})
+        text = self.label_text(message)
+        asset_context = self.asset_context(images)
+        parts.append({"type": text_type, "text": "\n\n".join(part for part in (text, asset_context) if part)})
         return parts
 
-    @classmethod
-    def estimated_tokens(cls, messages: list[Json]) -> int:
-        return sum(cls._estimated_tokens(image) for message in messages for image in cls.input_refs(message))
+    def estimated_tokens(self, messages: list[Json]) -> int:
+        total = 0
+        for message in messages:
+            images = self.input_refs(message)
+            total += sum(self._estimated_tokens(image) for image in images)
+            if images:
+                total += (len("\n\n" + self.asset_context(images)) + 3) // 4
+        return total
 
     def assets_dir(self) -> str:
         session = self._session()

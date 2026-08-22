@@ -250,7 +250,7 @@ class ModelClient:
             return clean
 
         chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        images = ImageInputs.estimated_tokens(messages)
+        images = self.session.images.estimated_tokens(messages)
         return (chars + 3) // 4 + images
 
     def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT], *, response_timeout: float | None = None) -> _ResultT:

@@ -277,18 +277,23 @@ def test_protocol_payloads_use_each_standard_image_shape(tmp_path):
     message = s.images.message(s.images.recognize("what is this? pixel.png"))
     encoded = base64.b64encode(path.read_bytes()).decode()
     data_url = "data:image/png;base64," + encoded
+    [image] = s.images.refs(message)
+    model_text = (
+        "what is this? [Image #1 · pixel.png]\n\n"
+        f'[Attached image assets]\n- {{"image": 1, "name": "pixel.png", "path": {json.dumps(s.images.asset_path(image))}}}'
+    )
 
     assert s.images.chat_content(message) == [
         {"type": "image_url", "image_url": {"url": data_url}},
-        {"type": "text", "text": "what is this? [Image #1 · pixel.png]"},
+        {"type": "text", "text": model_text},
     ]
     assert s.images.responses_content(message) == [
         {"type": "input_image", "image_url": data_url},
-        {"type": "input_text", "text": "what is this? [Image #1 · pixel.png]"},
+        {"type": "input_text", "text": model_text},
     ]
     assert s.images.anthropic_content(message) == [
         {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": encoded}},
-        {"type": "text", "text": "what is this? [Image #1 · pixel.png]"},
+        {"type": "text", "text": model_text},
     ]
 
     model = ModelClient(s)
@@ -478,7 +483,9 @@ def test_context_estimates_image_from_dimensions_without_base64(tmp_path):
     context = ContextManager(s)
     difference = context.estimated_tokens([message]) - context.estimated_tokens([plain])
 
-    assert difference == 85 + 170 * 4
+    [image] = s.images.refs(message)
+    asset_tokens = (len("\n\n" + s.images.asset_context((image,))) + 3) // 4
+    assert difference == 85 + 170 * 4 + asset_tokens
     assert difference < len(s.images.chat_content(message)[0]["image_url"]["url"]) // 4
 
     s.images.settle_failed_messages([message])

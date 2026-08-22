@@ -184,7 +184,7 @@ class ReadTool(Tool):
 
 class ViewImageTool(Tool):
     NAME = "ViewImage"
-    DESCRIPTION = "View one local image. With a configured vision provider, it returns that provider's text observation, so it works even when the active model cannot consume images directly; otherwise it sends the image to the active model. Supports PNG, JPEG, WebP, and single-frame GIF; paths outside the workspace require confirmation."
+    DESCRIPTION = "View a local PNG, JPEG, WebP, or single-frame GIF. Use an attachment's session-owned path when provided. A configured vision provider returns text; otherwise the active model receives the image. Outside-workspace paths require confirmation."
     PRODUCES_MODEL_OBSERVATION = True
 
     def __init__(self, session: Session, args: ToolArgs):

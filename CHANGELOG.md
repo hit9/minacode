@@ -51,6 +51,8 @@
 
 ### Fixed
 
+- Attached images now include their stable session-owned paths in model context, so a model that
+  silently ignores image input can call `ViewImage` directly instead of searching the filesystem.
 - A rejected image no longer makes every later request replay the same unsupported image. The
   failed occurrence is retained as readable text with stable session asset paths for `ViewImage`,
   while a newly submitted image is still attempted normally.

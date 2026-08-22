@@ -765,7 +765,7 @@ class ContextManager:
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        images = ImageInputs.estimated_tokens(messages)
+        images = self.session.images.estimated_tokens(messages)
         return (chars + 3) // 4 + images
 
     @staticmethod

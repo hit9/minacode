@@ -1,5 +1,6 @@
 """Direct attachment routing and occurrence-local failed-image settlement."""
 
+import json
 import os
 
 import pytest
@@ -8,7 +9,14 @@ from PIL import Image
 from minacode.base import ModelError, ToolCall
 from minacode.config import Config, ProviderConfig
 from minacode.engine import Agent
-from minacode.image import FAILED_IMAGE_CONTEXT_PREFIX, IMAGE_TEXT_ONLY_KEY, ImageInputs
+from minacode.image import (
+    FAILED_IMAGE_CONTEXT_PREFIX,
+    IMAGE_ASSET_CONTEXT_PREFIX,
+    IMAGE_MARKER,
+    IMAGE_TEXT_ONLY_KEY,
+    ImageInputs,
+    UserInput,
+)
 from minacode.session import Session, SessionSnapshotCodec
 
 
@@ -57,6 +65,34 @@ def test_attachment_always_goes_to_main_model_and_never_calls_vision(tmp_path, v
     assert sent[0]["content"] == "inspect [Image #1 · shot.png]"
     assert not hasattr(s.state, "image_support")
 
+    [image] = ImageInputs.refs(sent[0])
+    wire = s.images.responses_content(sent[0])
+    assert wire[-1]["text"] == (
+        f'inspect [Image #1 · shot.png]\n\n{IMAGE_ASSET_CONTEXT_PREFIX}\n- {{"image": 1, "name": "shot.png", "path": "{s.images.asset_path(image)}"}}'
+    )
+    # The mapping belongs only to request projection: stored history and the visible transcript
+    # stay byte-identical to what the user submitted.
+    assert IMAGE_ASSET_CONTEXT_PREFIX not in s.messages[0]["content"]
+    assert IMAGE_ASSET_CONTEXT_PREFIX not in s.transcript_messages[0]["content"]
+
+
+def test_projected_asset_mapping_is_structured_and_complete_for_multiple_images(tmp_path):
+    s = session(tmp_path)
+    first_path = image_file(tmp_path / 'odd "name".png')
+    second_path = image_file(tmp_path / "second.png", color=(65, 43, 21))
+    images = (s.images.load(str(first_path)), s.images.load(str(second_path)))
+    message = s.images.message(UserInput(f"compare {IMAGE_MARKER} and {IMAGE_MARKER}", images))
+
+    projected = s.images.responses_content(message)
+    asset_lines = projected[-1]["text"].split(IMAGE_ASSET_CONTEXT_PREFIX + "\n", 1)[1].splitlines()
+    assets = [json.loads(line.removeprefix("- ")) for line in asset_lines]
+
+    assert assets == [
+        {"image": 1, "name": 'odd "name".png', "path": s.images.asset_path(images[0])},
+        {"image": 2, "name": "second.png", "path": s.images.asset_path(images[1])},
+    ]
+    assert IMAGE_ASSET_CONTEXT_PREFIX not in message["content"]
+
 
 def test_failed_image_turn_is_replay_safe_and_next_text_turn_succeeds(tmp_path):
     s = session(tmp_path)
@@ -79,6 +115,7 @@ def test_failed_image_turn_is_replay_safe_and_next_text_turn_succeeds(tmp_path):
     assert s.images.asset_path(image) in failed["content"]
     assert os.path.isfile(s.images.asset_path(image))
     assert FAILED_IMAGE_CONTEXT_PREFIX not in s.transcript_messages[0]["content"]
+    assert failed["content"].count(s.images.asset_path(image)) == 1
 
     source.unlink()
     assert agent.run("continue without replaying pixels") == "recovered"

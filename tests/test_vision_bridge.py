@@ -141,7 +141,9 @@ def test_environment_advertises_configured_vision_once_and_schema_is_stable(tmp_
         return next(item for item in Tool.resolved_schemas(s) if item["function"]["name"] == "ViewImage")
 
     assert schema(with_vision) == schema(without_vision)
-    assert "active model cannot consume images directly" in schema(with_vision)["function"]["description"]
+    description = schema(with_vision)["function"]["description"]
+    assert "session-owned path" in description
+    assert "configured vision provider returns text" in description
 
     with_vision.tool_names = ("Read",)
     assert "- vision:" not in ContextManager(with_vision).environment()
