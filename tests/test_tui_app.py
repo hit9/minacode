@@ -1853,10 +1853,9 @@ def test_quick_hints_all_visible_at_narrow_width(monkeypatch):
 
     assert frames, "the app rendered at least one frame"
     # A chip wider than the terminal wraps onto extra visual lines and eats the whitespace at
-    # the break, so compare compact forms: every hint's full text must be on screen.
+    # the break, so compare compact forms: one frame must show every hint's full text.
     compact_frames = ["".join(frame.split()) for frame in frames]
-    for hint in hints:
-        assert any("".join(hint.split()) in screen for screen in compact_frames), f"hint missing from every rendered frame: {hint!r}"
+    assert any(all("".join(hint.split()) in screen for hint in hints) for screen in compact_frames), "no single rendered frame showed every hint"
 
 
 def test_quick_hint_flow_lays_chips_horizontally_and_wraps_between_chips():
@@ -1895,6 +1894,16 @@ def test_quick_hint_flow_lays_chips_horizontally_and_wraps_between_chips():
     picked = flow(("a", "b"), columns=100, focus=1, picked=("a",))
     assert ("class:quickhint", " \u2713 a ") in picked
     assert ("class:quickhint.focused", " b ") in picked
+
+    # At most MAX_QUICK_HINTS_PER_ROW chips per row even when the terminal is wide: the fourth
+    # short hint starts its own line instead of crowding one row.
+    four = flow(("a", "b", "c", "d"), columns=100, focus=-1, picked=())
+    lines = "".join(text for _style, text in four)
+    assert lines == " a  \u2502  b  \u2502  c \n d "
+
+    # Width and the per-row cap both end a row; the width check still wins on a narrow column.
+    cap_and_width = flow(("a", "b", "c", "d"), columns=5, focus=-1, picked=())
+    assert "".join(text for _style, text in cap_and_width) == " a \n b \n c \n d "
 
 
 def test_quick_hint_pick_and_send_still_work_after_wrapping(monkeypatch):

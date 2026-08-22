@@ -171,7 +171,7 @@ class Agent:
                     self.finish_turn(turn_messages, transcript_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
                 if self.terminal_next_hints(tool_calls):
-                    return self.finish_with_next_hints(
+                    answer = self.finish_with_next_hints(
                         turn_messages,
                         assistant,
                         tool_calls,
@@ -179,6 +179,13 @@ class Agent:
                         tool_batches,
                         transcript_messages=transcript_messages,
                     )
+                    if answer is not None:
+                        return answer
+                    # The batch produced neither text nor hints (every call failed). Its error
+                    # results are already in the turn history; continue so the model reads them
+                    # and corrects, instead of ending on a blank turn.
+                    self.checkpoint_turn(turn_messages, transcript_messages)
+                    continue
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)
                 turn_messages.append(assistant)
                 transcript_messages.append(self.transcript_message(assistant))
@@ -372,8 +379,14 @@ class Agent:
         tool_batches: int,
         *,
         transcript_messages: list[Json] | None = None,
-    ) -> str:
-        """Run an all-NextHints batch and finish the turn in a single model call.
+    ) -> str | None:
+        """Run an all-NextHints batch, finishing the turn when it actually produced output.
+
+        Returns the turn's answer (possibly "") when the turn ends: the answer text, or — with
+        no text — the NextHints tool result that stored suggestions. Returns None when neither
+        happened, i.e. every call failed: the error results stay in the turn history and the
+        caller must continue to the next step so the model can correct instead of ending on a
+        blank turn.
 
         The tool-bearing assistant message keeps only the calls; with answer text, the answer
         becomes its own final message so it appears exactly once in history. Without answer
@@ -391,6 +404,11 @@ class Agent:
         turn_messages.extend(result_messages)
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(result_messages))
         self.raise_if_cancelled()
+        if not answer and not self.session.quick_hints:
+            # The batch produced neither text nor suggestions (every call failed). Ending here
+            # would be a blank turn the user sees as nothing happening; keep the error results
+            # in history and let the next step read them and correct.
+            return None
         if answer:
             # Text exists: the answer becomes its own final message and is published exactly
             # once, unchanged from the plain final-answer path.

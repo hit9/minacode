@@ -101,8 +101,9 @@ still an estimate, and it disappears between requests and on providers that do n
 ## Quick hints
 
 After an answer, the model may suggest two or three next steps as chips under the prompt. They are
-suggestions, not commands: ignore them and keep typing, or take one. Chips flow left to right
-and wrap to new lines only when the terminal is too narrow, so every suggestion stays visible.
+suggestions, not commands: ignore them and keep typing, or take one. Chips flow left to right,
+up to three per line, and wrap to new lines when the terminal is too narrow, so every
+suggestion stays visible.
 
 <div class="term-shot" role="img" aria-label="The idle prompt after an answer: the answer text, an empty prompt with a caret, and one row of three suggestion chips separated by grey bars, the middle one highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
 

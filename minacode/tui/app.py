@@ -155,6 +155,9 @@ class TuiApp:
     # Debounce inline second-stage candidate refreshes while the user is still typing. The external
     # file picker overrides this with a zero-delay handoff at the namespace boundary.
     MENTION_TRANSITION_DELAY: ClassVar[float] = 0.12
+    # Quick-hint chips wrap to a new line after this many per row, matching the tool's 2-4 range
+    # with the upper end always reachable: four short hints never crowd one line.
+    MAX_QUICK_HINTS_PER_ROW: ClassVar[int] = 3
 
     def __init__(
         self,
@@ -548,27 +551,32 @@ class TuiApp:
 
     @staticmethod
     def _flow_quick_hints(hints: tuple[str, ...], columns: int, focus: int, picked: tuple[str, ...]) -> StyleAndTextTuples:
-        """Lay chips out left to right, wrapping only between chips once the row is full.
+        """Lay chips out left to right, at most three per row, wrapping only between chips.
 
-        `columns` is the width in cells (0 = unknown: keep every chip on one row and let the
-        window wrap as a fallback). A chip is never split mid-text: when it would not fit the
-        remaining row it starts a new line, so every hint stays whole and distinguishable.
+        A row ends when it holds `MAX_QUICK_HINTS_PER_ROW` chips or the next chip would not fit
+        in the remaining width. `columns` is the width in cells (0 = unknown: ignore width and
+        let the window wrap as a fallback). Chips never wrap mid-text except for one extreme:
+        a single chip wider than the whole terminal overflows its own row and the window's own
+        `wrap_lines` splits it; every ordinary chip stays whole and distinguishable.
         """
         parts: StyleAndTextTuples = []
         line_width = 0
+        chips_on_row = 0
         for index, hint in enumerate(hints):
             chip = f" \u2713 {hint} " if hint in picked else f" {hint} "
             chip_width = get_cwidth(chip)
             if index:
-                if columns and line_width + 3 + chip_width > columns:
+                if chips_on_row >= TuiApp.MAX_QUICK_HINTS_PER_ROW or (columns and line_width + 3 + chip_width > columns):
                     parts.append(("class:quickhint", "\n"))
                     line_width = 0
+                    chips_on_row = 0
                 else:
                     parts.append(("class:quickhint.sep", " \u2502 "))
                     line_width += 3
             style = "class:quickhint.focused" if index == focus else "class:quickhint"
             parts.append((style, chip))
             line_width += chip_width
+            chips_on_row += 1
         return parts
 
     def cycle_quick_hint_focus(self, reverse: bool = False) -> None:

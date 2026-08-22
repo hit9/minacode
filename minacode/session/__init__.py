@@ -628,6 +628,14 @@ class Session:
         with self._queue_lock:
             self.quick_hints = tuple(hints)
 
+    def add_quick_hints(self, hints: list[str], *, limit: int = 4) -> None:
+        """Merge more offered inputs into the current set: appended in call order, deduplicated,
+        and capped at `limit`. Several `NextHints` calls in one batch must not overwrite each
+        other, so the batch's suggestions accumulate instead of the last call winning."""
+        with self._queue_lock:
+            merged = [*self.quick_hints, *(hint for hint in hints if hint not in self.quick_hints)]
+            self.quick_hints = tuple(merged[:limit])
+
     def clear_quick_hints(self) -> None:
         with self._queue_lock:
             self.quick_hints = ()

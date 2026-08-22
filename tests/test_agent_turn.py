@@ -1166,6 +1166,67 @@ def test_tool_only_history_replays_across_all_protocols(tmp_path):
     assert len(tool_use_ids) == 2
     assert tool_result_ids == tool_use_ids == call_ids
 
+    # Several legal NextHints calls in one batch merge their suggestions instead of the last
+    # call overwriting the rest.
+    assert s.quick_hints == ("run the tests", "show the diff")
+
+
+def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
+    """An all-NextHints batch whose calls all fail (no answer text, no suggestions) must not end
+    the turn as a blank reply: the error results stay in history and the next step gets to
+    correct them."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    outputs: list[str] = []
+    agent = Agent(s, output_fn=outputs.append)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
+            if len(self.messages) == 1:
+                # Empty inputs: the NextHints call fails, so no hints are produced.
+                return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": []}])], ""
+            return {"role": "assistant", "content": "here is the answer"}, [], "here is the answer"
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == "here is the answer"
+    assert len(agent.model.messages) == 2  # the turn continued past the failed batch
+    # The failed batch surfaced its own rejection line; nothing blank was published.
+    assert outputs[-1] == "here is the answer"
+    assert any(isinstance(item, LogBlock) and "rejected" in str(item) for item in outputs)
+    assert s.quick_hints == ()  # no hints were stored
+    # The failed tool result reached the second request, so the model could read and correct.
+    second_context = "\n\n".join(str(message.get("content") or "") for message in agent.model.messages[1])
+    assert "status: failed" in second_context
+    assert "at least one non-empty" in second_context
+
+
+def test_all_next_hints_batch_with_whitespace_content_ends_turn(tmp_path):
+    """Whitespace-only content counts as no answer text: the all-NextHints batch still ends the
+    turn in one model call, storing no empty closing message and publishing nothing."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    outputs: list[str] = []
+    agent = Agent(s, output_fn=outputs.append)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
+            return {"role": "assistant", "content": "   \n\t "}, [call("NextHints", [{"inputs": ["run the tests"]}])], "   \n\t "
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == ""
+    assert len(agent.model.messages) == 1
+    assert s.quick_hints == ("run the tests",)
+    assert outputs == []
+    assert [m["role"] for m in s.messages] == ["user", "assistant", "tool"]
+
 
 def test_mixed_next_hints_batch_do_not_leak_into_a_later_answer(tmp_path):
     """A batch mixing NextHints with another tool is not terminal; its hints are transient

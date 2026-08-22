@@ -1024,6 +1024,28 @@ def test_suggest_tool_does_not_store_result():
     assert NextHintsTool.STORES_RESULT is False
 
 
+def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
+    """Several legal NextHints calls in one batch accumulate their inputs in call order,
+    deduplicated and capped at MAX_HINTS, instead of the last call replacing the rest."""
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
+    messages = runner.run(
+        [
+            ToolCall("n1", "NextHints", [{"inputs": ["run the tests", "show the diff"]}]),
+            ToolCall("n2", "NextHints", [{"inputs": ["commit the work", "run the tests"]}]),
+        ]
+    )
+    assert len(messages) == 2  # each call still gets its own tool result
+    assert s.quick_hints == ("run the tests", "show the diff", "commit the work")
+
+    # The cap applies to the merged total, not per call.
+    s.clear_quick_hints()
+    first = [f"a{index}" for index in range(4)]
+    second = [f"b{index}" for index in range(4)]
+    runner.run([ToolCall("n3", "NextHints", [{"inputs": first}]), ToolCall("n4", "NextHints", [{"inputs": second}])])
+    assert s.quick_hints == (*first, *second)[: NextHintsTool.MAX_HINTS]
+
+
 def test_suggest_tool_short_args(tmp_path):
     tool = NextHintsTool(session(tmp_path), [{"inputs": ["run the tests", "show the diff"]}])
     assert tool.short_args() == ['inputs: "run the tests", "show the diff"']

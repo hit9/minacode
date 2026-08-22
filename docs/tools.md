@@ -105,8 +105,8 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     Pressing `Esc` declines the question; typing instead of choosing answers in free text.
 * - **`NextHints`**
   - Offers 2–3 short next-step prompts the model suggests after its answer. They appear as
-    selectable chips at the idle prompt, flowing left to right and wrapping to new lines only
-    when the terminal is too narrow so every suggestion stays visible; `Tab` cycles focus, `Enter` picks a chip into the
+    selectable chips at the idle prompt, flowing left to right with up to three per line and
+    wrapping when the terminal is too narrow so every suggestion stays visible; `Tab` cycles focus, `Enter` picks a chip into the
     input and returns to the prompt, so `Tab` to the next chip and
     `Enter` again combines several before sending. An
     all-`NextHints` batch ends the turn in a single model call.

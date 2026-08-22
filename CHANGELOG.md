@@ -40,9 +40,9 @@
 - **Breaking:** Quick hints are now always available in the TUI. The `/hints` command and
   `[runtime] quick_hints` setting have been removed; existing config values are ignored and
   `/hints` is now an unknown command.
-- Quick-hint chips flow left to right and wrap to new lines only between chips when the
-  terminal is too narrow, so every suggestion stays visible instead of being clipped off the
-  side.
+- Quick-hint chips flow left to right, up to three per line, and wrap to new lines only
+  between chips when the terminal is too narrow, so every suggestion stays visible instead of
+  being clipped off the side.
 
 ### Fixed
 
@@ -89,7 +89,10 @@
   top-level parameter; the value still reaches the request body as before.
 - An all-`NextHints` tool batch now ends the turn even when the model returns no answer text:
   the suggestions stay at the idle prompt instead of being cleared by a follow-up model request,
-  and no blank answer line is printed.
+  and no blank answer line is printed. If every `NextHints` call in such a batch fails (no
+  answer text, no suggestions), the turn continues instead of ending as a blank reply, and
+  several `NextHints` calls in one batch merge their suggestions rather than the last call
+  overwriting the rest.
 
 ## 0.30.0 - 2026-08-21
 

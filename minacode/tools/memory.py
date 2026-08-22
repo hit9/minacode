@@ -430,7 +430,9 @@ class NextHintsTool(Tool):
         hints = list(dict.fromkeys(Tool.compact(item, self.MAX_LEN) for item in raw if item.strip()))[: self.MAX_HINTS]
         if not hints:
             raise ToolError("NextHints inputs must contain at least one non-empty string")
-        self.session.set_quick_hints(hints)
+        # Merge rather than replace: a batch of several NextHints calls offers every suggestion,
+        # not just the last call's.
+        self.session.add_quick_hints(hints, limit=self.MAX_HINTS)
         return f"Offered {len(hints)} quick input(s)"
 
     def short_args(self) -> list[str]:
