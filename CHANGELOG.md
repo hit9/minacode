@@ -43,6 +43,9 @@
 - Quick-hint chips flow left to right, up to three per line, and wrap to new lines only
   between chips when the terminal is too narrow, so every suggestion stays visible instead of
   being clipped off the side.
+- Documentation is English-only now: the Simplified Chinese pages, their gettext catalogs and
+  `sphinx-intl` tooling, the language switcher, and the Chinese README have been removed. The
+  README screenshots now use absolute GitHub URLs so they render on PyPI instead of breaking.
 
 ### Fixed
 

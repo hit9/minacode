@@ -32,10 +32,8 @@ Keep this file short. It is an entry point, not a second design document.
 
 - **Tests:** run targeted tests while iterating and `uv run pytest` before completing behavior changes.
 - **Quality:** run `uv run ruff check minacode`, `uv run ruff format --check minacode`, and `uv run pyright`.
-- **Docs:** on user-facing doc changes, update the English source, run `make -C docs locale-zh`,
-  update the Chinese catalog, then build `html` and `html-zh`. The Chinese pages are gettext
-  catalogs keyed on the English text, so editing English without this step renders those
-  paragraphs in English on a Chinese page.
+- **Docs:** on user-facing doc changes, update the English source and build `html`
+  (`make -C docs html`).
 - **Docs standard:** `docs/` is written for users, not for the people who changed the code.
   - Say what the reader gets and what it costs them. Leave out how it is implemented, why an
     alternative was rejected, and the taxonomy of ways it can fail.

@@ -1,14 +1,12 @@
 <h1 align="center">minacode</h1>
 
 <p align="center">
-  <img src="snapshots/minacode1.gif" alt="minacode editing code and running tools" width="600">
+  <img src="https://raw.githubusercontent.com/hit9/minacode/master/snapshots/minacode1.gif" alt="minacode editing code and running tools" width="600">
 </p>
 
 <p align="center">
   A coding agent I use, maintain, and customize, shipped as a small, focused Python package.
 </p>
-
-<p align="center"><a href="README.zh-CN.md">中文</a></p>
 
 ## Safety
 
@@ -23,7 +21,7 @@ It works on real repositories, including its own: I use minacode to build and ma
 minacode is the former nanocode. It started as a single-file agent small enough to be called *nano*, but has since grown beyond a single file, so it now goes by minacode.
 
 <p align="center">
-  <img src="snapshots/minacode2.gif" alt="minacode resuming a saved session" width="600">
+  <img src="https://raw.githubusercontent.com/hit9/minacode/master/snapshots/minacode2.gif" alt="minacode resuming a saved session" width="600">
 </p>
 <p align="center"><sub>Resuming a saved session with its conversation and tool history.</sub></p>
 
