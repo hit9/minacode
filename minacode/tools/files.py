@@ -274,7 +274,7 @@ class ViewImageTool(Tool):
     def model_observation(self) -> Json | None:
         if self._bridged or self.image is None:
             return None
-        return self.session.images.tool_observation((self.image,))
+        return self.session.images.tool_observation((self.image,), self.question())
 
 
 @dataclass

@@ -38,9 +38,10 @@
 
 - `/hints` now says that it toggled quick hints on or off, so its first reply is not mistaken for
   the state that existed before the command ran.
-- Text-only model errors phrased as `only support text input` now activate a configured vision
-  bridge after the failed capability probe, instead of sending each later image to the same model
-  and repeating the provider error.
+- When an attached image or direct `ViewImage` observation gets a 400, 415, or 422 response, a
+  configured vision bridge now retries that same turn with a text observation. A successful retry
+  remembers the model as text-only; an unrelated failure does not. Explicit errors such as
+  `only support text input` still provide an immediate capability verdict.
 - A stale `Edit` anchor now returns a small, freshly anchored file neighborhood in the failed
   result, so a verified nearby target can be retried without another `Read`; ambiguous targets
   still require a read and are never guessed. Batched edits now also return the same duplicate-line

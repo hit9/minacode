@@ -303,7 +303,7 @@ def test_protocol_payloads_use_each_standard_image_shape(tmp_path):
 def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path):
     s = session(tmp_path)
     path = image_file(tmp_path / "screen shot.png", size=(640, 480))
-    tool = ViewImageTool(s, [path.name])
+    tool = ViewImageTool(s, [path.name, "read the error"])
 
     output = tool.call()
     observation = tool.model_observation()
@@ -314,6 +314,7 @@ def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path)
     assert observation is not None
     assert ImageInputs.is_tool_observation(observation)
     assert observation["content"] == TOOL_IMAGE_OBSERVATION_PREFIX + "\n[Image #1 · screen shot.png]"
+    assert s.images.tool_observation_question(observation) == "read the error"
     assert s.images.chat_content(observation)[0]["type"] == "image_url"
     assert ImageInputs.is_tool_observation({key: value for key, value in observation.items() if key != IMAGE_REFS_KEY})
     assert not ImageInputs.is_tool_observation({"role": "user", "content": observation["content"]})
@@ -540,6 +541,19 @@ def test_non_numeric_sdk_code_does_not_bypass_image_error_status_gate(tmp_path, 
 
     assert str(caught.value) == "Error code: 403 - vision is not enabled for this key"
     assert s.images.support() is None
+
+
+def test_timeout_value_is_not_mistaken_for_an_image_http_status(tmp_path):
+    s = session(tmp_path)
+    s.config.providers["vision"] = ProviderConfig(url="http://vision", key="test", model="vision")
+    s.config.vision_provider = "vision"
+    image_file(tmp_path / "slow.png")
+    message = s.images.message(s.images.recognize("slow.png"))
+
+    assert not s.images.can_retry_with_bridge(
+        [message],
+        ModelError("Model response exceeded provider.response_timeout=400s"),
+    )
 
 
 def test_error_is_not_reclassified_when_historical_images_are_degraded(tmp_path, monkeypatch):

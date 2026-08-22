@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-21 23:10-0700\n"
+"POT-Creation-Date: 2026-08-21 23:21-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -287,7 +287,6 @@ msgid ""
 msgstr "回答之后，模型可能会在提示符下面以 chip 的形式给出两三个下一步。它们只是建议，不是命令：可以不理会继续打字，也可以选一个。"
 
 #: ../../usage.md:108
-#, fuzzy
 msgid ""
 "`Tab` cycles between the input and the chips. `Enter` on a chip picks it "
 "into the input and returns to the prompt, so `Tab` to the next chip and "
@@ -517,29 +516,29 @@ msgstr ""
 "为基准；带引号的路径和使用反斜杠转义空格的路径也可以识别。"
 
 #: ../../usage.md:190
+#, fuzzy
 msgid ""
-"PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends"
-" images using the selected standard API. If the provider explicitly "
-"rejects image input, that result is remembered for the session and later "
-"image submissions are blocked without clearing the draft — unless a "
-"[vision model](configuration.md#vision-model) is configured, in which "
-"case the image is described by the vision model instead. Queued follow-"
-"ups, resumed sessions, and providers with image input disabled keep "
-"readable image labels. See [`provider.image_input`](configuration.md"
-"#optional-provider-settings) to override automatic detection."
+"PNG, JPEG, WebP, and single-frame GIF files are supported. minacode first"
+" sends images using the selected standard API. If that request is "
+"rejected and a [vision model](configuration.md#vision-model) is "
+"configured, the image is described there and the same turn retries "
+"without image blocks; a successful retry is remembered for later images. "
+"Queued follow-ups, resumed sessions, and providers with image input "
+"disabled keep readable image labels. See "
+"[`provider.image_input`](configuration.md#optional-provider-settings) to "
+"override automatic detection."
 msgstr ""
-"支持 PNG、JPEG、WebP 和单帧 GIF。minacode 使用所选的标准 API 发送图片。如果 provider "
-"明确拒绝图片输入，会在当前 session 中记住该结果，后续图片提交将被阻止且不会清空草稿——除非配置了 [vision "
-"model](configuration.md#vision-model)，此时改由视觉模型描述图片。排队的追加指令、恢复后的 "
-"session，以及禁用图片输入的 provider 都会保留可读的图片标签。可以通过 "
+"支持 PNG、JPEG、WebP 和单帧 GIF。minacode 会先使用所选的标准 API 发送图片。如果请求被拒绝且配置了 [vision "
+"model](configuration.md#vision-model)，图片会由视觉模型描述，并在不包含图片块的情况下重试同一回合；重试成功后会"
+"用于后续图片。排队的追加指令、恢复后的 session，以及禁用图片输入的 provider 都会保留可读的图片标签。可以通过 "
 "[`provider.image_input`](configuration.md#optional-provider-settings) "
 "覆盖自动检测。"
 
-#: ../../usage.md:198
+#: ../../usage.md:197
 msgid "Sessions"
 msgstr "Session"
 
-#: ../../usage.md:200
+#: ../../usage.md:199
 msgid ""
 "<span class=\"marker\">Your work is saved automatically</span> — the "
 "conversation, edits, and diffs are tied to the project directory you "
@@ -554,11 +553,11 @@ msgstr ""
 "启动时于后台进行，并会报告删除了多少个。恢复某个 session 会重置它的计时，因此经常使用的 session 不会被删除。设置 "
 "`runtime.session_retention_days = 0` 可永久保留。"
 
-#: ../../usage.md:207
+#: ../../usage.md:206
 msgid "Resume from the command line:"
 msgstr "从命令行恢复："
 
-#: ../../usage.md:216
+#: ../../usage.md:215
 msgid ""
 "Sessions are stored per project, so `-c` and a bare `--resume` never "
 "reach into another project's history — even when your most recent session"
@@ -568,7 +567,7 @@ msgstr ""
 "Session 按项目分开存储，因此 `-c` 和不带参数的 `--resume` 不会读取其他项目的历史，即使你最近一次 session "
 "发生在别处也是如此。而 `UID` 会在所有项目中查找，所以你可以在任意目录下按 id 恢复某个 session。"
 
-#: ../../usage.md:220
+#: ../../usage.md:219
 msgid ""
 "A name or id prefix is searched in the current project first, then "
 "everywhere — you can resume a session by name after moving directories. "
@@ -579,7 +578,7 @@ msgstr ""
 "名称或 id 前缀会先在当前项目内查找，再扩大到全部项目——因此换了目录之后仍可以按名称恢复。当一个查询匹配到多个 session "
 "时，minacode 会<span class=\"marker\">列出候选而不是替你猜</span>。"
 
-#: ../../usage.md:224
+#: ../../usage.md:223
 msgid ""
 "Resuming replays the conversation into your scrollback, including the "
 "diff each edit made. Long diffs are trimmed there; `/diff` always has the"
@@ -588,11 +587,11 @@ msgstr ""
 "恢复 session 时会把对话重新输出到终端回滚缓冲区，其中也包含每次编辑产生的 diff。这里的长 diff 会被截断；`/diff` "
 "中始终保留完整内容。"
 
-#: ../../usage.md:227
+#: ../../usage.md:226
 msgid "Names"
 msgstr "名称"
 
-#: ../../usage.md:229
+#: ../../usage.md:228
 msgid ""
 "Every session has a name, so you have something to recognize it by later."
 " It starts as the first line you typed, becomes the agent's current goal "
@@ -601,7 +600,7 @@ msgstr ""
 "每个 session 都有名称，方便日后辨认。它最初取自你输入的第一行，在 agent 确定目标之后改用该目标，一旦你用 `/name` "
 "设置过，就固定为你设置的名称："
 
-#: ../../usage.md:238
+#: ../../usage.md:237
 msgid ""
 "A name is a label, not an identity — sessions may share one, and the id "
 "is what makes each unique. Names are decided once rather than re-read "
@@ -612,11 +611,11 @@ msgstr ""
 "名称是标签而非身份：多个 session 可以同名，真正唯一的是 id。名称只决定一次，不会每次都从对话里重新推导，所以昨天以某个名称找到的 "
 "session，今天仍在那个名称下，即使它早期的消息已被压缩清理。"
 
-#: ../../usage.md:242
+#: ../../usage.md:241
 msgid "Switching sessions"
 msgstr "切换 session"
 
-#: ../../usage.md:244
+#: ../../usage.md:243
 msgid ""
 "`/sessions` — or `/resume`, the same command — lists what is saved, "
 "newest first, with how long ago each was touched and how many rounds it "
@@ -626,7 +625,7 @@ msgstr ""
 "`/sessions`——或者 `/resume`，同一条命令——按最近使用顺序列出已保存的 "
 "session，并显示各自的最后活动时间与轮数。输入内容即可在名称和开场消息中过滤，回车进入选中的 session："
 
-#: ../../usage.md:250
+#: ../../usage.md:249
 msgid ""
 "`/sessions all` widens the list past the current project, adding each "
 "session's directory to its row. Choosing a session ends the current one —"
@@ -638,7 +637,7 @@ msgstr ""
 "session（先保存），再以它开始下一个，效果与用 `--resume` 启动完全一致。选中你已经身处的那个 session，或者按 "
 "`Esc`，都不会有任何变化。"
 
-#: ../../usage.md:255
+#: ../../usage.md:254
 msgid ""
 "Run it from the prompt between turns. While the agent is working, "
 "minacode says so and asks you to press `Ctrl-C` first: switching sessions"
@@ -647,53 +646,53 @@ msgstr ""
 "请在两轮任务之间于提示符处运行它。agent 正在工作时，minacode 会提示你先按 `Ctrl-C`：在一轮任务进行中切换 "
 "session，会丢弃已经发出的请求。"
 
-#: ../../usage.md:258
+#: ../../usage.md:257
 msgid ""
 "Sessions saved before names existed list under their id until the next "
 "time they are saved."
 msgstr "在名称功能出现之前保存的 session 会以 id 列出，直到它们下一次被保存。"
 
-#: ../../usage.md:260
+#: ../../usage.md:259
 msgid "Reviewing changes"
 msgstr "审查修改"
 
-#: ../../usage.md:262
+#: ../../usage.md:261
 msgid "`/diff` opens an interactive, tabbed viewer with two views:"
 msgstr "`/diff` 会打开带 tab 的交互式 viewer，包含两个视图："
 
-#: ../../usage.md:264
+#: ../../usage.md:263
 msgid "**Latest** — what changed during the most recent round of your requests"
 msgstr "**Latest** — 最近一轮请求产生的修改"
 
-#: ../../usage.md:265
+#: ../../usage.md:264
 msgid "**Session** — the net diff for everything since the session began"
 msgstr "**Session** — 从 session 开始至今的净 diff"
 
-#: ../../usage.md:267
+#: ../../usage.md:266
 msgid "Navigate with `j`/`k`, `g`/`G`, and `/` search; press `Esc` to close."
 msgstr "使用 `j`/`k`、`g`/`G` 和 `/` 搜索进行导航；按 `Esc` 关闭。"
 
-#: ../../usage.md:269
+#: ../../usage.md:268
 msgid "Interactive diff list showing changed files from the latest turn"
 msgstr "交互式 diff 列表显示最近一轮修改的文件"
 
-#: ../../usage.md:274
+#: ../../usage.md:273
 msgid "Choosing a file to diff."
 msgstr "选择要查看 diff 的文件。"
 
-#: ../../usage.md:277
+#: ../../usage.md:276
 msgid "Side-by-side file diff with syntax highlighting"
 msgstr "带语法高亮的并排文件 diff"
 
-#: ../../usage.md:282
+#: ../../usage.md:281
 msgid "Side-by-side detail view of a changed file."
 msgstr "文件 diff 的并排详情视图。"
 
-#: ../../usage.md:285
+#: ../../usage.md:284
 msgid "Long sessions"
 msgstr "长 session"
 
-#: ../../usage.md:287
+#: ../../usage.md:286
 msgid ""
 "minacode keeps long conversations within a working budget on its own, "
 "summarizing older context as needed so a session can run indefinitely. "

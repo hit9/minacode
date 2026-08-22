@@ -30,6 +30,7 @@ IMAGE_REFS_KEY = "_images"
 # irrevocable while letting the semantic message own the stored asset across resume.
 IMAGE_TEXT_ONLY_KEY = "_images_text_only"
 TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
+TOOL_IMAGE_QUESTION_KEY = "_tool_image_question"
 TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
 ATTACHMENT_VISION_OBSERVATION_PREFIX = "[Attachment image observation]"
 SUPPORTED_FORMATS = {
@@ -117,7 +118,7 @@ class ImageInputs:
     """Own image recognition, storage, transport, and learned model capability for a session."""
 
     _TOKEN_RE = re.compile(r"(?:'[^'\n]*'|\"(?:\\.|[^\"\n])*\"|(?:\\.|[^\s])+)")
-    _IMAGE_STATUS_RE = re.compile(r"\b(?:400|415|422)\b")
+    _IMAGE_STATUS_RE = re.compile(r"\b(?:error|status)(?:\s+code)?\s*[:=]?\s*(400|415|422)\b", re.IGNORECASE)
     _IMAGE_VARIANT_REJECTION_RE = re.compile(r"\bunknown variant\b\s*[`'\"]?(?:image_url|input_image|image)\b[`'\"]?[\s\S]*\bexpected\b[\s\S]*\btext\b")
     _TEXT_ONLY_MODEL_RE = re.compile(r"\bmodel\b[^\n.!?]{0,80}\bonly supports?\s+text(?:\s+input)?\b")
     _LEADING_PUNCTUATION = "([{<"
@@ -240,12 +241,14 @@ class ImageInputs:
         assert image is not None
         return self.prepare(UserInput(IMAGE_MARKER, (image,)), force=force).images[0]
 
-    def tool_observation(self, images: tuple[ImageRef, ...]) -> Json:
+    def tool_observation(self, images: tuple[ImageRef, ...], question: str = "") -> Json:
         """Build a durable multimodal user-role observation produced by a tool batch."""
 
         markers = " ".join(IMAGE_MARKER for _image in images)
         message = self.message(UserInput(TOOL_IMAGE_OBSERVATION_PREFIX + "\n" + markers, images))
         message[TOOL_IMAGE_OBSERVATION_KEY] = True
+        if question:
+            message[TOOL_IMAGE_QUESTION_KEY] = question
         return message
 
     @classmethod
@@ -255,6 +258,11 @@ class ImageInputs:
             and message.get(TOOL_IMAGE_OBSERVATION_KEY) is True
             and str(message.get("content") or "").startswith(TOOL_IMAGE_OBSERVATION_PREFIX)
         )
+
+    @staticmethod
+    def tool_observation_question(message: Json) -> str:
+        question = message.get(TOOL_IMAGE_QUESTION_KEY)
+        return question if isinstance(question, str) else ""
 
     def retain(self, images: tuple[ImageRef, ...]) -> None:
         self.retained_refs.update(image.ref for image in images)
@@ -278,6 +286,24 @@ class ImageInputs:
         if unsupported and self.session is not None and self.session.config.provider.image_input == "auto":
             self._remember(self._capability_key(), False)
         return unsupported
+
+    def can_retry_with_bridge(self, messages: list[Json], error: Exception) -> bool:
+        """Whether one text-only retry can isolate image transport as the failed variable."""
+
+        return bool(
+            self.session is not None
+            and self.session.config.vision_provider
+            and self.session.config.provider.image_input == "auto"
+            and self.support() is not True
+            and self.has_images(messages)
+            and self._error_status(error) in {400, 415, 422}
+        )
+
+    def note_bridge_retry_success(self) -> None:
+        """A matching text-only retry succeeded, proving the direct image shape was rejected."""
+
+        if self.session is not None and self.session.config.provider.image_input == "auto" and self.support() is None:
+            self._remember(self._capability_key(), False)
 
     def _remember(self, key: tuple[str, str, str, str], value: bool) -> None:
         """Record a learned support verdict, persisted so the next session does not re-probe."""
@@ -381,20 +407,14 @@ class ImageInputs:
         lines.append("[hint] These images remain available to ViewImage with a question.")
         return "\n".join(lines)
 
-    def attachment_observation_message(self, stored: UserInput, entry_label: str, observation: str) -> Json:
-        """Build one bridged attachment with durable, local-only image references.
+    def bridged_observation_message(self, message: Json, entry_label: str, observation: str) -> Json:
+        """Replace one semantic image message with a durable text-only vision observation."""
 
-        The semantic message owns the assets for exactly as long as it survives history pruning.
-        The text-only marker prevents a later provider switch from injecting pixels that were not
-        part of the original main-model request.
-        """
-
-        return {
-            "role": "user",
-            "content": stored.display_text() + "\n\n" + self.attachment_observation_content(stored.images, entry_label, observation),
-            IMAGE_REFS_KEY: [image.to_json() for image in stored.images],
-            IMAGE_TEXT_ONLY_KEY: True,
-        }
+        images = self.input_refs(message)
+        bridged = dict(message)
+        bridged["content"] = self.label_text(message) + "\n\n" + self.attachment_observation_content(images, entry_label, observation)
+        bridged[IMAGE_TEXT_ONLY_KEY] = True
+        return bridged
 
     def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
         images = self.input_refs(message)
@@ -494,20 +514,29 @@ class ImageInputs:
     @classmethod
     def _explicit_unsupported_error(cls, error: Exception) -> bool:
         text = str(error).lower()
-        cause = getattr(error, "__cause__", None)
-        status = getattr(cause, "status_code", None) or getattr(cause, "code", None)
-        numeric_status: int | None = None
-        with contextlib.suppress(TypeError, ValueError):
-            numeric_status = int(status) if status is not None else None
-        if numeric_status is not None and numeric_status not in {400, 415, 422}:
-            return False
-        if numeric_status is None and not cls._IMAGE_STATUS_RE.search(text):
+        if cls._error_status(error) not in {400, 415, 422}:
             return False
         mentions_image = any(term in text for term in cls._MODALITY_TERMS)
         rejects_modality = any(term in text for term in cls._UNSUPPORTED_TERMS)
         rejects_image_schema = cls._IMAGE_VARIANT_REJECTION_RE.search(text) is not None
         rejects_text_only_model = cls._TEXT_ONLY_MODEL_RE.search(text) is not None
         return (mentions_image and rejects_modality) or rejects_image_schema or rejects_text_only_model
+
+    @classmethod
+    def _error_status(cls, error: Exception) -> int | None:
+        """Prefer an SDK status on the exception chain; accept rendered status as a fallback."""
+
+        current: BaseException | None = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            status = getattr(current, "status_code", None) or getattr(current, "code", None)
+            with contextlib.suppress(TypeError, ValueError):
+                if status is not None:
+                    return int(status)
+            current = current.__cause__
+        match = cls._IMAGE_STATUS_RE.search(str(error))
+        return int(match.group(1)) if match is not None else None
 
     def _session(self) -> Session:
         if self.session is None:

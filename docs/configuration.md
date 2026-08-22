@@ -112,13 +112,12 @@ keeps the setting but does not send those tools; switching back enables them aga
 to check whether they are active. If minacode reports an unsupported entry, compare it with the
 example for your provider.
 
-With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
-successful image request is remembered for that provider and model during the session; only an
-explicit image-not-supported response disables later image submissions. Set `on` or `off` when the
-endpoint's capability is already known. Historical images remain readable as text labels after
-switching to a provider or model with image input disabled. When image input is disabled and a
-[vision model](#vision-model) is configured, images are handled by the vision model instead of
-being rejected.
+With `image_input = "auto"`, minacode first sends images using the selected standard API. Success
+is remembered for that provider and model. If the request is rejected and a [vision
+model](#vision-model) is configured, minacode describes the image there and retries the same turn
+without image blocks; a successful retry remembers the main model as text-only. Set `on` or `off`
+when the endpoint's capability is already known. Historical images remain readable as text labels
+after switching to a provider or model with image input disabled.
 
 ## Vision model
 

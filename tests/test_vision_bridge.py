@@ -337,8 +337,8 @@ def test_auto_unknown_with_vision_direct_attaches_and_learns_support(tmp_path, m
 
 
 def test_auto_unknown_learns_false_and_then_bridges(tmp_path, monkeypatch):
-    # A main model that explicitly rejects images teaches support False; the bridge then engages
-    # for the next ViewImage call instead of repeating the same rejected direct attachment.
+    # A main model that explicitly rejects images teaches support False and recovers the same turn
+    # through the bridge instead of requiring the user to submit or ViewImage again.
     s = session(tmp_path)  # auto, support unknown
     path = image_file(tmp_path / "shot.png")
     factory = _MockClientFactory(
@@ -354,22 +354,104 @@ def test_auto_unknown_learns_false_and_then_bridges(tmp_path, monkeypatch):
                 },
             ),
             _observation_response(OBSERVATION_TEXT),
+            _main_answer_response("done"),
         ]
     )
     monkeypatch.setattr(ModelClient, "client", factory)
     agent = Agent(s, output_fn=lambda _text: None)
     image = s.images.load(str(path), force=True)
 
-    with pytest.raises(ModelError, match="does not support image input"):
-        agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,)))
+    assert agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,))) == "done"
     assert s.images.support() is False
     assert s.images.bridging() is True
+    assert len(factory.calls) == 3
+    assert OBSERVATION_TEXT in str(s.messages)
 
-    tool, output = call_view_image(s, [path.name])
-    assert OBSERVATION_TEXT in output
-    assert 'vision="v/vision-model"' in output
-    assert tool.model_observation() is None
-    assert len(factory.calls) == 2
+
+def test_ambiguous_image_400_learns_only_after_text_only_retry_succeeds(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory(
+        [
+            (422, {"error": {"code": "InvalidParameter", "message": "Invalid request", "type": "BadRequest"}}),
+            _observation_response(OBSERVATION_TEXT),
+            _main_answer_response("recovered"),
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "client", factory)
+    agent = Agent(s, output_fn=lambda _text: None)
+    image = s.images.load(str(path), force=True)
+
+    assert agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,))) == "recovered"
+    assert s.images.support() is False
+    assert len(factory.calls) == 3
+
+
+def test_ambiguous_image_400_does_not_learn_when_text_only_retry_fails(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory(
+        [
+            (400, {"error": {"code": "InvalidParameter", "message": "Invalid request"}}),
+            _observation_response(OBSERVATION_TEXT),
+            (400, {"error": {"code": "InvalidParameter", "message": "Still invalid"}}),
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "client", factory)
+    agent = Agent(s, output_fn=lambda _text: None)
+    image = s.images.load(str(path), force=True)
+
+    with pytest.raises(ModelError, match="Still invalid"):
+        agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,)))
+    assert s.images.support() is None
+    assert len(factory.calls) == 3
+
+
+def test_non_image_candidate_error_does_not_probe_the_vision_bridge(tmp_path, monkeypatch):
+    s = session(tmp_path)
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory([(401, {"error": {"message": "Invalid API key"}})])
+    monkeypatch.setattr(ModelClient, "client", factory)
+    agent = Agent(s, output_fn=lambda _text: None)
+    image = s.images.load(str(path), force=True)
+
+    with pytest.raises(ModelError, match="Invalid API key"):
+        agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,)))
+    assert s.images.support() is None
+    assert len(factory.calls) == 1
+
+
+def test_unknown_view_image_rejection_recovers_through_bridge_with_question(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "shot.png")
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+            self.observations = []
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                return {}, [ToolCall("image", "ViewImage", ["shot.png", "read the error"])], ""
+            if len(self.requests) == 2:
+                raise ModelError("Error code: 400 - Invalid request")
+            return {"role": "assistant", "content": "recovered"}, [], "recovered"
+
+        def vision_observe(self, images, question=""):
+            self.observations.append((images, question))
+            return OBSERVATION_TEXT
+
+    agent = Agent(s, output_fn=lambda _text: None)
+    model = Model()
+    agent.model = model
+
+    assert agent.run("inspect the screenshot") == "recovered"
+    assert s.images.support() is False
+    assert len(model.requests) == 3
+    assert model.observations[0][1] == "read the error"
+    assert not ImageInputs.has_images(model.requests[2])
+    assert OBSERVATION_TEXT in str(model.requests[2])
 
 
 def test_learned_support_survives_a_snapshot_reload(tmp_path, monkeypatch):
