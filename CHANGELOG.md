@@ -40,8 +40,9 @@
 - **Breaking:** Quick hints are now always available in the TUI. The `/hints` command and
   `[runtime] quick_hints` setting have been removed; existing config values are ignored and
   `/hints` is now an unknown command.
-- Quick-hint chips now each take their own line under the prompt, so every suggestion stays
-  visible on narrow terminals instead of being clipped off the side.
+- Quick-hint chips flow left to right and wrap to new lines only between chips when the
+  terminal is too narrow, so every suggestion stays visible instead of being clipped off the
+  side.
 
 ### Fixed
 

@@ -33,6 +33,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar
 
 from minacode.base import (
@@ -533,12 +534,41 @@ class TuiApp:
         hints = self.quick_hints()
         if not hints:
             return []
+        return self._flow_quick_hints(hints, self._quick_hint_columns(), self.quick_hint_focus, tuple(self.quick_hint_picked))
+
+    def _quick_hint_columns(self) -> int:
+        """The terminal width in cells the hint row is rendered into; 0 when unknown."""
+        app = self.app
+        if app is None:
+            return 0
+        try:
+            return app.output.get_size().columns
+        except Exception:  # noqa: BLE001 - a terminal that refuses to report its size falls back to one unwrapped row.
+            return 0
+
+    @staticmethod
+    def _flow_quick_hints(hints: tuple[str, ...], columns: int, focus: int, picked: tuple[str, ...]) -> StyleAndTextTuples:
+        """Lay chips out left to right, wrapping only between chips once the row is full.
+
+        `columns` is the width in cells (0 = unknown: keep every chip on one row and let the
+        window wrap as a fallback). A chip is never split mid-text: when it would not fit the
+        remaining row it starts a new line, so every hint stays whole and distinguishable.
+        """
         parts: StyleAndTextTuples = []
+        line_width = 0
         for index, hint in enumerate(hints):
+            chip = f" \u2713 {hint} " if hint in picked else f" {hint} "
+            chip_width = get_cwidth(chip)
             if index:
-                parts.append(("class:quickhint", "\n"))
-            style = "class:quickhint.focused" if index == self.quick_hint_focus else "class:quickhint"
-            parts.append((style, f" \u2713 {hint} " if hint in self.quick_hint_picked else f" {hint} "))
+                if columns and line_width + 3 + chip_width > columns:
+                    parts.append(("class:quickhint", "\n"))
+                    line_width = 0
+                else:
+                    parts.append(("class:quickhint.sep", " \u2502 "))
+                    line_width += 3
+            style = "class:quickhint.focused" if index == focus else "class:quickhint"
+            parts.append((style, chip))
+            line_width += chip_width
         return parts
 
     def cycle_quick_hint_focus(self, reverse: bool = False) -> None:

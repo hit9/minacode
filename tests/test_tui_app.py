@@ -1822,17 +1822,17 @@ def test_quick_hint_fragments_mark_picked_chips():
 
 def test_quick_hint_fragments_highlight_focused_chip():
     app, _ = quick_hint_app(("a", "b"))
-    # One chip per visual line: every hint starts its own row, so no chip is ever clipped
-    # or fused with its neighbor.
-    assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint", "\n"), ("class:quickhint", " b ")]
+    # With no terminal width (the app is not running) chips stay on one horizontal row,
+    # separated by a bar, exactly as before the wrap-aware layout.
+    assert app.quick_hint_fragments() == [("class:quickhint", " a "), ("class:quickhint.sep", " \u2502 "), ("class:quickhint", " b ")]
     app.quick_hint_focus = 0
     assert ("class:quickhint.focused", " a ") in app.quick_hint_fragments()
 
 
 def test_quick_hints_all_visible_at_narrow_width(monkeypatch):
-    """Every hint occupies its own visual line, so all three stay fully visible — wrapped onto
-    extra lines when they exceed the width — at a narrow terminal. Exercises the real
-    prompt_toolkit layout/render boundary, not just quick_hint_fragments()."""
+    """Chips flow left to right and wrap only between chips once the row is full, so all three
+    hints stay fully visible — never truncated or split mid-text — at a narrow terminal.
+    Exercises the real prompt_toolkit layout/render boundary, not just quick_hint_fragments()."""
     hints = ("run the tests and check the coverage", "构建文档并同步中文 locale 目录", "commit the work with a clear message")
     app = TuiApp(quick_hints_fn=lambda: hints)
     output = ResizableOutput(rows=14, columns=30)
@@ -1852,12 +1852,49 @@ def test_quick_hints_all_visible_at_narrow_width(monkeypatch):
     run_interactive_tui(monkeypatch, app, drive=drive, output=output, after_render=after_render)
 
     assert frames, "the app rendered at least one frame"
-    # Wrapping splits a long hint across visual lines and eats the whitespace at the break, so
-    # compare compact forms: every hint's full text must be on screen, never truncated or
-    # clipped, even when it wraps onto several rows.
+    # A chip wider than the terminal wraps onto extra visual lines and eats the whitespace at
+    # the break, so compare compact forms: every hint's full text must be on screen.
     compact_frames = ["".join(frame.split()) for frame in frames]
     for hint in hints:
         assert any("".join(hint.split()) in screen for screen in compact_frames), f"hint missing from every rendered frame: {hint!r}"
+
+
+def test_quick_hint_flow_lays_chips_horizontally_and_wraps_between_chips():
+    """The wrap-aware layout keeps as many chips as fit on one row and only breaks between
+    chips, never inside one; a narrow column pushes later chips to their own lines."""
+    flow = TuiApp._flow_quick_hints
+
+    # Wide enough: all three chips on one horizontal row, bar-separated, no newlines.
+    wide = flow(("run", "show diff", "commit"), columns=100, focus=-1, picked=())
+    assert wide == [
+        ("class:quickhint", " run "),
+        ("class:quickhint.sep", " \u2502 "),
+        ("class:quickhint", " show diff "),
+        ("class:quickhint.sep", " \u2502 "),
+        ("class:quickhint", " commit "),
+    ]
+
+    # Unknown width (0) keeps the single horizontal row too, letting the window wrap as fallback.
+    unknown = flow(("a", "b"), columns=0, focus=-1, picked=())
+    assert "\n" not in [text for _style, text in unknown]
+
+    # Narrow: " run the tests " (15) fits alone, but " b " would not fit the remaining row,
+    # so it wraps to its own line; no chip is ever split and no bar appears mid-row.
+    narrow = flow(("run the tests", "b"), columns=16, focus=-1, picked=())
+    lines = "".join(text for _style, text in narrow)
+    assert lines == " run the tests \n b "
+    assert "\u2502" not in lines
+
+    # A chip wider than the whole row still stays whole on its own line.
+    lone = flow(("构建文档并同步中文 locale 目录", "x"), columns=12, focus=-1, picked=())
+    lines = "".join(text for _style, text in lone)
+    assert lines.startswith(" 构建文档并同步中文 locale 目录 ")
+    assert " \u2502 " not in lines
+
+    # Focus and picked marks keep working through the flow layout.
+    picked = flow(("a", "b"), columns=100, focus=1, picked=("a",))
+    assert ("class:quickhint", " \u2713 a ") in picked
+    assert ("class:quickhint.focused", " b ") in picked
 
 
 def test_quick_hint_pick_and_send_still_work_after_wrapping(monkeypatch):
