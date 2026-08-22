@@ -57,6 +57,8 @@
   keep the directory around.
 - The transcript redrawn on session restore now flows through the same output path as live lines,
   so it can no longer print ahead of a line that was still being batched and scramble the order.
+- The Ctrl-O output browser no longer hides the oldest stored result while a ToolScript is running:
+  the live running entry is listed on top of all stored records instead of counting against them.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.

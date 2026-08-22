@@ -351,13 +351,6 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     return ApprovalView(f"output · {record.key}", command, "bash", rows, streams)
 
 
-# How far back the browser lists. The session keeps 400 results (Session.store_tool_result), so
-# this matches it: the browser shows every stored record, newest first. A list this long is read
-# through the viewport and the `/` search rather than the cursor; the viewport (ChoiceViewState.max_rows)
-# is what keeps it from filling the screen.
-MAX_OUTPUT_ENTRIES = 400
-
-
 @dataclass(frozen=True)
 class OutputEntry:
     """One row of the Ctrl-O browser: how it reads in the list, and what it opens."""
@@ -414,8 +407,6 @@ def tool_output_viewer(loop: CommandLoop) -> None:
                 code = loop.agent.tools.bash_exit_code(record.output)
                 status = "ok" if code == "0" else ("fail" if code else "")
             entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view, status=status))
-        if len(entries) == MAX_OUTPUT_ENTRIES:
-            break
     if not entries:
         return
     # One list state for the whole browser: reopening the list after a detail's Esc keeps the

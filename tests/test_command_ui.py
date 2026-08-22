@@ -171,6 +171,29 @@ def test_tool_output_browser_lists_past_the_old_fifty_entry_cap(tmp_path, monkey
     assert "Bash printf 54" in listing  # the newest is in view
 
 
+def test_tool_output_browser_keeps_every_stored_record_with_a_running_script(tmp_path, monkeypatch):
+    """A running ToolScript's live entry does not push the oldest stored record out: with a full
+    session the browser lists all 400 stored results plus the running one, and the viewport still
+    bounds the screen."""
+    command_loop = loop(tmp_path)
+    for index in range(400):
+        command_loop.session.store_tool_result(
+            "Bash", [f"printf {index}"], Tool.process_result("BashToolResult", 0, f"out {index}", "")
+        )
+    command_loop.script_running_code = "print('hi')\n"
+    modal = ModalHarness(["q"])
+    command_loop.tui = modal
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert listing.startswith("\n──── Tool output · latest 401 ")
+    assert "showing 1-10 of 401" in listing
+    assert "ToolScript" in listing  # the running script's live entry is listed too
+
+
 def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_path, monkeypatch):
     """Esc (or q) in a detail goes back to the list instead of closing the whole browser, and
     the reopened list still points at the entry the reader came from."""
