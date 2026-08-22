@@ -55,6 +55,8 @@
 - Crash residue in the session's assets directory -- a `.image-*` staging file left behind by an
   interrupted save -- is cleaned up once it is old enough, so abandoned files no longer pile up or
   keep the directory around.
+- The transcript redrawn on session restore now flows through the same output path as live lines,
+  so it can no longer print ahead of a line that was still being batched and scramble the order.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.

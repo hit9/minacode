@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import get_app_or_none
-from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples
+from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.output import create_output
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
@@ -334,7 +334,7 @@ class UiPrinter:
 
     @contextlib.contextmanager
     def batched(self):
-        """Collect every emit into one print_formatted_text call and flush once."""
+        """Collect every emit into one scrollback flush instead of one suspend per emit."""
         if not self.color or self._batch_parts is not None:
             yield
             return
@@ -345,7 +345,22 @@ class UiPrinter:
             parts = self._batch_parts
             self._batch_parts = None
             if parts:
-                print_formatted_text(*parts, sep="", end="", flush=True)
+                self._flush_batch(parts)
+
+    def _flush_batch(self, parts: list[FormattedText | ANSI]) -> None:
+        """Flush a collected batch through the scrollback path, keeping the batch a single print.
+
+        Inside a live application the parts join the same queue as ordinary emits -- landing after
+        anything already queued and flushing as one print; outside one they print directly, in
+        order, as one call."""
+        app = get_app_or_none()
+        if app is None or not app.is_running or app._running_in_terminal:
+            self.drain_scrollback()
+            print_formatted_text(*parts, sep="", end="", flush=True)
+            return
+        loop = app.loop
+        assert loop is not None  # a running application always has one; the checker cannot see it
+        loop.call_soon_threadsafe(self._enqueue_scrollback, app, FormattedText([segment for part in parts for segment in to_formatted_text(part)]))
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
         """Print one line or log block. `indent` moves plain text into a column; a LogBlock is

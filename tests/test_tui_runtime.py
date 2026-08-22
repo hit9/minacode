@@ -1,6 +1,7 @@
 """TuiRuntime behavior: command dispatch, the follow-up queue, streamed response promotion,
 resume, and session housekeeping at startup."""
 
+import asyncio
 import os
 import threading
 import time
@@ -113,6 +114,42 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
 
     assert not driver.is_alive()
     assert emitted_while_running == [True]
+
+
+def test_batched_emits_join_the_scrollback_queue_in_order(monkeypatch):
+    """A batched block's exit flushes through the scrollback queue: its parts land after emits
+    already queued for the live application instead of printing over them, so the scrollback
+    cannot reorder."""
+    ui = render_module.UiPrinter(output_fn=lambda _text: None)
+    ui.color = True
+    loop = asyncio.new_event_loop()
+    app = SimpleNamespace(is_running=True, _running_in_terminal=False, loop=loop)
+    monkeypatch.setattr(render_module, "get_app_or_none", lambda: app)
+    printed = []
+
+    def capture(*values, **kwargs):
+        printed.append("".join(fragment_list_to_text(to_formatted_text(value)) for value in values))
+
+    monkeypatch.setattr(render_module, "print_formatted_text", capture)
+    thread = threading.Thread(
+        target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()), daemon=True
+    )
+    thread.start()
+    try:
+        ui.emit("queued first")
+        with ui.batched():
+            ui.emit("batched second")
+            ui.emit("batched third")
+        deadline = time.monotonic() + 2
+        while not printed and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+
+    assert printed, "the queued and batched parts never flushed"
+    # One flush, in emit order: nothing landed ahead of the line queued before the batch.
+    assert "".join(printed) == "queued first\nbatched second\nbatched third\n"
 
 
 @pytest.mark.parametrize("entered", [" /help", "exit "])
