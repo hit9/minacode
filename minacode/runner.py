@@ -47,6 +47,7 @@ from minacode.tools import (
 
 if TYPE_CHECKING:
     from minacode.engine import Agent
+    from minacode.model import ModelClient
 
 
 class EditBatchPlan:
@@ -310,6 +311,11 @@ class ToolRunner:
         self._active_job: ActiveResource[JobTool] = ActiveResource()
         # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
         self._active_worker: ActiveResource[Agent] = ActiveResource()
+        # The client behind tool-side vision requests (a bridged ViewImage observation), owned
+        # here so cancel() reaches the in-flight request. Created lazily -- most sessions never
+        # bridge an image tool call -- and shared across calls, since tool calls never overlap a
+        # main-model request. See vision_client().
+        self._vision_client: ModelClient | None = None
 
     @contextlib.contextmanager
     def nested(self):
@@ -349,16 +355,35 @@ class ToolRunner:
             ]
         )
 
+    def vision_client(self) -> ModelClient:
+        """The client behind tool-side vision requests, owned here so cancel() can abort one.
+
+        The bridged ViewImage observation would otherwise run on a throwaway client nobody can
+        reach, leaving Ctrl-C dead until the provider timeout. Created lazily because most
+        sessions never bridge an image tool call."""
+        if self._vision_client is None:
+            from minacode.model import ModelClient  # local import: model.py imports the tool registry
+
+            self._vision_client = ModelClient(self.session)
+        return self._vision_client
+
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
         self._active_job.apply(lambda tool: tool.cancel())
         self._active_worker.apply(lambda agent: agent.cancel())
+        if self._vision_client is not None:
+            self._vision_client.cancel()
 
     def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
         if isinstance(tool, DelegateTool):
             tool.runner = self
             return tool.call()
         if isinstance(tool, ToolScript):
+            tool.runner = self
+            return tool.call()
+        if isinstance(tool, ViewImageTool):
+            # The runner owns the vision client, so Agent.cancel() reaches an in-flight bridged
+            # observation instead of leaving it to wait out the provider timeout.
             tool.runner = self
             return tool.call()
         if isinstance(tool, BashTool):

@@ -10,6 +10,7 @@ a bridged ViewImage call attaches no image to the next main-model request.
 
 import base64
 import json
+import threading
 
 import pytest
 from model_harness import _AnthropicMockClientFactory, _MockClientFactory
@@ -220,6 +221,20 @@ def _main_answer_response(text: str) -> tuple[int, dict]:
     }
 
 
+class _BlockingMockClientFactory(_MockClientFactory):
+    """A mock factory whose wire handler blocks until released, simulating a slow provider read."""
+
+    def __init__(self, response, entered: threading.Event, release: threading.Event):
+        super().__init__([response])
+        self._entered = entered
+        self._release = release
+
+    def _next_response(self, request):
+        self._entered.set()
+        self._release.wait()
+        return super()._next_response(request)
+
+
 def test_bridged_observation_text_is_not_scanned_for_mentions(tmp_path, monkeypatch):
     # The observation is the vision model's output, not the user's typing: an @file: reference
     # shown in a screenshot must not inline that file into the turn's context.
@@ -249,6 +264,37 @@ def test_bridged_typed_text_mentions_still_resolve(tmp_path, monkeypatch):
 
     assert agent.run(UserInput(f"read @file:secrets.toml {IMAGE_MARKER}", (image,))) == "done"
     assert any("FILE MENTIONS" in str(message) and "super-secret" in str(message) for message in s.messages)
+
+
+def test_bridged_view_image_aborts_when_the_agent_is_cancelled(tmp_path, monkeypatch):
+    # The bridged observation runs on the runner-owned vision client, so Agent.cancel() reaches
+    # the in-flight request and the tool aborts instead of waiting out the provider timeout.
+    s = session(tmp_path)
+    path = image_file(tmp_path / "shot.png")
+    entered = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(ModelClient, "client", _BlockingMockClientFactory(_observation_response(OBSERVATION_TEXT), entered, release))
+
+    agent = Agent(s, output_fn=lambda _text: None)
+    outcome: list[str] = []
+
+    def run_tool() -> None:
+        try:
+            agent.tools.run([ToolCall("image", "ViewImage", [path.name])])
+            outcome.append("returned")
+        except KeyboardInterrupt:
+            outcome.append("cancelled")
+
+    thread = threading.Thread(target=run_tool, daemon=True)
+    thread.start()
+    try:
+        assert entered.wait(5), "the bridged vision request never reached the wire"
+        agent.cancel()
+        thread.join(5)
+        assert not thread.is_alive(), "Agent.cancel did not abort the in-flight bridged ViewImage"
+        assert outcome == ["cancelled"]
+    finally:
+        release.set()  # let the blocked mock read return so the worker thread drains
 
 
 # --- 三条协议 wire 形状（验收标准 7）---

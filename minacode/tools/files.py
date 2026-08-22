@@ -9,12 +9,15 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from minacode.base import Json, ModelError, Text, ToolArgs, ToolError
 from minacode.image import ImageRef
 from minacode.session import Session, TurnDiff
 from minacode.tools.base import Tool
+
+if TYPE_CHECKING:
+    from minacode.runner import ToolRunner
 
 
 class ReadTool(Tool):
@@ -188,6 +191,9 @@ class ViewImageTool(Tool):
         "View one local image as visual model input. Supports PNG, JPEG, WebP, and single-frame GIF; paths outside the workspace require confirmation."
     )
     PRODUCES_MODEL_OBSERVATION = True
+    # Injected by ToolRunner.call_tool: the runner owns the vision client, so Ctrl-C (Agent.cancel)
+    # reaches an in-flight bridged observation instead of leaving it to wait out the timeout.
+    runner: ToolRunner | None = None
 
     def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
@@ -240,6 +246,8 @@ class ViewImageTool(Tool):
 
     def _vision_observe(self, question: str) -> str:
         assert self.image is not None  # call() loaded it before bridging
+        if self.runner is not None:
+            return self.runner.vision_client().vision_observe((self.image,), question)
         from minacode.model import ModelClient  # local import: model.py imports the tool registry
 
         return ModelClient(self.session).vision_observe((self.image,), question)

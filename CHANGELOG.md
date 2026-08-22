@@ -40,6 +40,9 @@
 - Text the vision model reads out of an image is no longer scanned for `@file:` mentions: a
   screenshot that happens to show an `@file:...` reference used to inline that file's contents
   into the conversation, and now only the `@file:` references you actually type are resolved.
+- Pressing `Ctrl-C` while a bridged `ViewImage` is reading an image now cancels the read at once,
+  instead of hanging until the vision provider's response timeout; the turn then settles like any
+  other interrupted model call.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.
