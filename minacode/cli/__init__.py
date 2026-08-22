@@ -18,6 +18,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
 from minacode.base import (
+    ImageRouteNotice,
     Json,
     LogBlock,
     LogEdge,
@@ -246,13 +247,16 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.compaction = self.automatic_compaction_status
         self.agent.tools.script_status = self.toolscript_run_status
 
-    def image_route_notice(self, text: str) -> None:
-        """Show the one-time gray routing notice when a route learns text-only from a 400.
+    def image_route_notice(self, notice: ImageRouteNotice) -> None:
+        """Show the one gray routing notice for a text-only image delivery decision.
 
-        Presentation only: the engine already decided; this line must never enter model context.
+        The reason is the root line; the described-by entry is a child line with a tree edge,
+        mirroring the ViewImage tool's rendering. Presentation only: the engine already decided;
+        this block must never enter model context.
         """
 
-        self.tool_output(LogBlock([LogLine("", text, LogRole.META, LogEdge.NONE)]))
+        children = [LogLine("described by", notice.described_by, LogRole.META, LogEdge.END)] if notice.described_by else []
+        self.tool_output(LogBlock.hierarchy(LogLine("", notice.reason, LogRole.META, LogEdge.NONE), children))
 
     def automatic_compaction_status(self, active: bool, error: str = "") -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""

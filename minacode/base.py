@@ -116,6 +116,20 @@ IMAGE_ROUTE_UNKNOWN = "unknown"
 IMAGE_ROUTE_TEXT_ONLY_STATIC = "text_only_static"
 IMAGE_ROUTE_TEXT_ONLY_LEARNED = "text_only_learned"
 
+
+@dataclass(frozen=True)
+class ImageRouteNotice:
+    """One gray routing notice for a text-only image delivery decision.
+
+    `reason` is the root line (why the raw image was not delivered to the main model);
+    `described_by` is an optional child line naming the [vision] entry, mirroring the
+    ViewImage tool's rendering. Presentation only; never enters model context.
+    """
+
+    reason: str
+    described_by: str = ""
+
+
 SELECTION_BACK = object()
 SELECTION_FREE_TEXT = object()
 DISMISSED = "(The user dismissed the question without answering.)"

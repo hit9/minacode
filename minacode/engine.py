@@ -12,6 +12,7 @@ from minacode.base import (
     PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
+    ImageRouteNotice,
     Json,
     MalformedToolCallError,
     ModelError,
@@ -74,9 +75,10 @@ class Agent:
         # observation). Cleared when a request is accepted; used to decide 400 eligibility and to
         # observe exactly the current occurrences, never older accepted history.
         self._current_image_messages: list[Json] = []
-        # Presentation hook for image-routing notices (one gray line per unknown->learned
-        # transition). Wired by the CLI; never enters model context.
-        self.on_image_route_notice: Callable[[str], None] | None = None
+        # Presentation hook for image-routing notices (one gray block per text-only delivery
+        # decision: a reason root line plus an optional described-by child). Wired by the CLI;
+        # never enters model context.
+        self.on_image_route_notice: Callable[[ImageRouteNotice], None] | None = None
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
@@ -451,12 +453,12 @@ class Agent:
         # Older accepted image history is never redescribed.
         current_raw = [message for message in current if ImageInputs.input_refs(message)]
         if self.session.image_route.delivery() == "vision" and current_raw:
-            # Gray, non-model routing notices: the main model is text-only, so the current image
+            # One gray routing notice: the main model is text-only, so the current image
             # occurrences are described through [vision] instead of being sent raw (which would
-            # fail). The described-by line mirrors the ViewImage tool's rendering. Presentation
+            # fail). The described-by child mirrors the ViewImage tool's rendering. Presentation
             # only; never enters model context.
-            self._emit_image_route_notice(f"main model is text-only; image described through {self._vision_entry_label()}")
-            self._emit_image_route_notice(f"described by {self._vision_entry_label()}")
+            label = self._vision_entry_label()
+            self._emit_image_route_notice(ImageRouteNotice(f"main model is text-only; image described through {label}", described_by=label))
             request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
             if not pending:
                 # No accept_pending_inputs will commit the copy later, so keep the live list in
@@ -491,13 +493,15 @@ class Agent:
             self.session.image_route.learn_text_only()
             vision_entry = self.session.config.vision_provider
             if not vision_entry:
-                self._emit_image_route_notice("main model rejected image input (400); no vision provider configured")
+                self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400); no vision provider configured"))
                 # No fallback is available: the original error propagates and the normal
                 # replay-safe failure settlement runs, exactly as for any other rejected request.
                 raise
             provider = self.session.config.providers[vision_entry]
-            self._emit_image_route_notice(f"main model rejected image input (400); using {vision_entry}/{provider.model or '(empty)'}")
-            self._emit_image_route_notice(f"described by {self._vision_entry_label()}")
+            label = self._vision_entry_label()
+            self._emit_image_route_notice(
+                ImageRouteNotice(f"main model rejected image input (400); using {vision_entry}/{provider.model or '(empty)'}", described_by=label)
+            )
             # Observe the eligible current occurrences through [vision] and convert them to
             # durable text observations in the turn, then retry once without raw image blocks
             # (the route is now learned text-only, so projection suppresses every older raw
@@ -530,11 +534,11 @@ class Agent:
             return False
         return self.session.image_route.state() == IMAGE_ROUTE_UNKNOWN
 
-    def _emit_image_route_notice(self, text: str) -> None:
+    def _emit_image_route_notice(self, notice: ImageRouteNotice) -> None:
         """Publish one gray, non-model routing notice; never enters model context."""
 
         if self.on_image_route_notice is not None:
-            self.on_image_route_notice(text)
+            self.on_image_route_notice(notice)
 
     def _vision_entry_label(self) -> str:
         """The `[vision]` entry label shown in routing notices, matching ViewImage's rendering."""
