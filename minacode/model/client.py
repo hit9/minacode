@@ -688,8 +688,13 @@ class ModelClient:
         missing field would otherwise surface as a generic SDK credentials error naming nothing
         the user can act on -- then served by one non-streaming api_request with pre-built image
         blocks. Perception only: no tools, no coding task; the main model does the reasoning.
+
+        Like request() and compact(), the entry clears the cancel flag: a stale flag left by a
+        previous turn's Ctrl-C must not abort a fresh observation (the attachment bridge runs it
+        before the turn's first request).
         """
 
+        self.cancel_requested.clear()
         provider = vision_provider_config(self.session.config)
         entry_name = self.session.config.vision_provider
         if missing := provider.missing_fields():

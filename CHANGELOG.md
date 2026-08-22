@@ -34,7 +34,9 @@
 ## 0.30.0 - 2026-08-21
 
 ### Fixed
-
+- After a `Ctrl-C` on one turn, the next turn with attached images no longer dies with a
+  `KeyboardInterrupt` before it reaches the model: that message and its images used to be dropped
+  before the turn checkpointed, and are now processed normally.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.

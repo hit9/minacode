@@ -18,7 +18,7 @@ from PIL import Image
 from minacode.base import ConfigError, ModelError, ToolCall, ToolError
 from minacode.config import Config, ProviderConfig
 from minacode.engine import Agent
-from minacode.image import IMAGE_REFS_KEY, ImageInputs
+from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
 from minacode.render import StatusBar
@@ -152,6 +152,50 @@ def test_bridged_view_image_attaches_no_image_to_the_next_main_request(tmp_path,
     assert agent.run("inspect the screenshot") == "done"
     assert [message["role"] for message in s.messages] == ["user", "assistant", "tool", "assistant"]
     assert not any(IMAGE_REFS_KEY in message for message in agent.model.requests[1])
+
+
+def test_bridged_attachment_turn_survives_a_stale_cancel_from_the_previous_turn(tmp_path, monkeypatch):
+    # Ctrl-C on turn N leaves ModelClient.cancel_requested set. vision_observe() runs before the
+    # turn's first request() and was the only client entry that never cleared the flag, so the next
+    # bridged attachment turn raised KeyboardInterrupt before its first request and lost the input
+    # (checkpoint_turn never ran). A fresh observation must start with a clean flag, like request().
+    s = session(tmp_path)  # image_input="auto" + [vision], support unknown -> bridge
+    path = image_file(tmp_path / "shot.png")
+    factory = _MockClientFactory(
+        [
+            (
+                200,
+                {
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "vision-model",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": OBSERVATION_TEXT}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                },
+            ),
+            (
+                200,
+                {
+                    "id": "chatcmpl-2",
+                    "object": "chat.completion",
+                    "created": 2,
+                    "model": "main-model",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "client", factory)
+
+    agent = Agent(s, output_fn=lambda _text: None)
+    agent.model.cancel_requested.set()  # what model.cancel() leaves behind after a Ctrl-C
+    image = s.images.load(str(path), force=True)
+
+    assert agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,))) == "done"
+    # The turn checkpointed normally: the input and its observation reached history.
+    assert any(OBSERVATION_TEXT in str(message) for message in s.messages)
 
 
 # --- 三条协议 wire 形状（验收标准 7）---
