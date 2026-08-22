@@ -1053,7 +1053,7 @@ def test_suggest_tool_short_args(tmp_path):
 
 def test_quick_hints_are_transient_and_never_serialized(tmp_path):
     s = session(tmp_path)
-    s.set_quick_hints(["run the tests", "show the diff"])
+    s.add_quick_hints(["run the tests", "show the diff"])
     assert s.quick_hints == ("run the tests", "show the diff")
     snapshot = SessionSnapshotCodec.snapshot(s, {})
     assert "quick_hints" not in snapshot

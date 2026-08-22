@@ -623,11 +623,6 @@ class Session:
             for item in self.pending_user_inputs:
                 item.inflight = False
 
-    def set_quick_hints(self, hints: list[str]) -> None:
-        """Transient next-step inputs offered at the idle prompt; replaced wholesale, never snapshotted."""
-        with self._queue_lock:
-            self.quick_hints = tuple(hints)
-
     def add_quick_hints(self, hints: list[str], *, limit: int = 4) -> None:
         """Merge more offered inputs into the current set: appended in call order, deduplicated,
         and capped at `limit`. Several `NextHints` calls in one batch must not overwrite each

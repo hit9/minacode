@@ -183,7 +183,10 @@ class Agent:
                         return answer
                     # The batch produced neither text nor hints (every call failed). Its error
                     # results are already in the turn history; continue so the model reads them
-                    # and corrects, instead of ending on a blank turn.
+                    # and corrects, instead of ending on a blank turn. The failed batch still
+                    # counts as a tool batch, so the next ordinary batch is numbered ·2 instead
+                    # of presenting as the first.
+                    tool_batches += 1
                     self.checkpoint_turn(turn_messages, transcript_messages)
                     continue
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)

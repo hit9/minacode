@@ -1204,6 +1204,40 @@ def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
     assert "at least one non-empty" in second_context
 
 
+def test_failed_next_hints_batch_counts_as_tool_batch(tmp_path):
+    """A failed all-NextHints batch still counts as a tool batch: the next ordinary tool batch
+    shows the ·2 suffix instead of presenting as the first batch."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    suffixes: list[str] = []
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, messages, tools=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": []}])], ""
+            if self.calls == 2:
+                return {"role": "assistant", "content": ""}, [call("Read", [{"path": "missing"}])], ""
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    class Tools:
+        def run(self, calls, batch_suffix=""):
+            suffixes.append(batch_suffix)
+            return [{"role": "tool", "tool_call_id": calls[0].id, "name": calls[0].name, "content": "ok"}]
+
+    agent.model = FakeModel()
+    agent.tools = Tools()
+
+    assert agent.run("do it") == "done"
+    # The failed NextHints batch was the first batch (no suffix); the ordinary batch that
+    # follows it is the second tool batch and carries ·2.
+    assert suffixes == ["", "·2"]
+
+
 def test_all_next_hints_batch_with_whitespace_content_ends_turn(tmp_path):
     """Whitespace-only content counts as no answer text: the all-NextHints batch still ends the
     turn in one model call, storing no empty closing message and publishing nothing."""

@@ -67,6 +67,8 @@
 - Pressing `Ctrl-C` while a bridged `ViewImage` is reading an image now cancels the read at once,
   instead of hanging until the vision provider's response timeout; the turn then settles like any
   other interrupted model call.
+- A failed `NextHints` batch counts as a tool batch, so the next ordinary tool batch shows the
+  `·2` suffix instead of presenting as the first batch.
 - With the default `image_input = auto`, a configured `[vision]` model is now used only when the
   main model is actually text-only: the first image is sent to the main model, the outcome is
   remembered across sessions, and a vision-capable model no longer pays an extra vision round-trip
