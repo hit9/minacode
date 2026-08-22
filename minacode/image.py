@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 
 IMAGE_MARKER = "\ufffc"
 IMAGE_REFS_KEY = "_images"
+# Durable image references available to local tools but never projected as provider image blocks.
+# A bridged attachment has already replaced its pixels with text; this marker keeps that projection
+# irrevocable while letting the semantic message own the stored asset across resume.
+IMAGE_TEXT_ONLY_KEY = "_images_text_only"
 TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
 TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
 ATTACHMENT_VISION_OBSERVATION_PREFIX = "[Attachment image observation]"
@@ -134,6 +138,12 @@ class ImageInputs:
         if not isinstance(raw, list):
             return ()
         return tuple(image for value in raw if (image := ImageRef.from_json(value)) is not None)
+
+    @classmethod
+    def input_refs(cls, message: Json) -> tuple[ImageRef, ...]:
+        """Image refs that belong on the provider wire, excluding text-only local assets."""
+
+        return () if message.get(IMAGE_TEXT_ONLY_KEY) is True else cls.refs(message)
 
     @classmethod
     def label_text(cls, message: Json) -> str:
@@ -286,13 +296,13 @@ class ImageInputs:
                 parts = json.loads(raw)
             except (TypeError, ValueError):
                 continue
-            if isinstance(parts, list) and len(parts) == 4 and all(isinstance(part, str) for part in parts):
+            if isinstance(value, bool) and isinstance(parts, list) and len(parts) == 4 and all(isinstance(part, str) for part in parts):
                 restored[tuple(parts)] = value
         return restored
 
     @classmethod
     def has_images(cls, messages: list[Json]) -> bool:
-        return any(cls.refs(message) for message in messages)
+        return any(cls.input_refs(message) for message in messages)
 
     def chat_content(self, message: Json) -> str | list[Json]:
         return self._protocol_content(message, self._chat_image_part, "text")
@@ -319,7 +329,7 @@ class ImageInputs:
             },
         }
 
-    def vision_content(self, images: tuple[ImageRef, ...], api: str, text: str) -> str | list[Json]:
+    def vision_content(self, images: tuple[ImageRef, ...], api: str, text: str) -> list[Json]:
         """Content blocks for one vision-bridge request, built for the vision entry's protocol.
 
         The active-provider support gate does not apply here: the [vision] entry always carries
@@ -350,16 +360,16 @@ class ImageInputs:
 
         return bool(self.session is not None and self.session.config.vision_provider) and self.support() is False
 
-    @staticmethod
-    def attachment_observation_content(images: tuple[ImageRef, ...], entry_label: str, observation: str) -> str:
+    def attachment_observation_content(self, images: tuple[ImageRef, ...], entry_label: str, observation: str) -> str:
         """The plain-text observation block appended to a bridged user message.
 
         The header names the vision entry and every attached file so the main model knows it can
         keep asking about them with ViewImage; the body is the vision model's description. The
-        message itself carries no IMAGE_REFS_KEY, so the main model never sees image blocks."""
+        message carries text-only image refs, so the assets remain addressable without sending
+        image blocks to the main model."""
 
         lines = [f"{ATTACHMENT_VISION_OBSERVATION_PREFIX} vision={json.dumps(entry_label)}"]
-        lines.extend(f"[Image #{index} · {image.name}]" for index, image in enumerate(images, 1))
+        lines.extend(f"[Image #{index} · {image.name} · path={json.dumps(self.asset_path(image))}]" for index, image in enumerate(images, 1))
         lines.append(observation)
         # Provenance only, no nudge: the model sees ViewImage in its tool list, but connecting
         # "this description is a lossy read I can re-query" is the step a weaker model skips. An
@@ -370,8 +380,23 @@ class ImageInputs:
         lines.append("[hint] These images remain available to ViewImage with a question.")
         return "\n".join(lines)
 
+    def attachment_observation_message(self, stored: UserInput, entry_label: str, observation: str) -> Json:
+        """Build one bridged attachment with durable, local-only image references.
+
+        The semantic message owns the assets for exactly as long as it survives history pruning.
+        The text-only marker prevents a later provider switch from injecting pixels that were not
+        part of the original main-model request.
+        """
+
+        return {
+            "role": "user",
+            "content": stored.display_text() + "\n\n" + self.attachment_observation_content(stored.images, entry_label, observation),
+            IMAGE_REFS_KEY: [image.to_json() for image in stored.images],
+            IMAGE_TEXT_ONLY_KEY: True,
+        }
+
     def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
-        images = self.refs(message)
+        images = self.input_refs(message)
         if not images or self.support() is False:
             # A pre-built content list (a vision-bridge request) is already in the wire shape and
             # must pass through untouched; the label path would stringify it.
@@ -385,7 +410,7 @@ class ImageInputs:
 
     @classmethod
     def estimated_tokens(cls, messages: list[Json]) -> int:
-        return sum(cls._estimated_tokens(image) for message in messages for image in cls.refs(message))
+        return sum(cls._estimated_tokens(image) for message in messages for image in cls.input_refs(message))
 
     def assets_dir(self) -> str:
         session = self._session()
@@ -421,7 +446,7 @@ class ImageInputs:
             current = self._inspect(image.source_path, source_text=image.source_text)
             assert current is not None
             image = replace(current, source_text=image.source_text)
-            destination = self._asset_path(image)
+            destination = self.asset_path(image)
             os.makedirs(os.path.dirname(destination), exist_ok=True)
             if not self._asset_matches(destination, image.ref):
                 fd, temporary = tempfile.mkstemp(prefix=".image-", dir=os.path.dirname(destination))
@@ -436,12 +461,12 @@ class ImageInputs:
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
-        elif not os.path.isfile(self._asset_path(image)):
+        elif not os.path.isfile(self.asset_path(image)):
             raise ModelError(f"Stored image is missing: {image.name} ({image.ref[:12]})")
         return replace(image, source_path="")
 
     def _bytes(self, image: ImageRef) -> bytes:
-        path = self._asset_path(image)
+        path = self.asset_path(image)
         try:
             with open(path, "rb") as file:
                 data = file.read()
@@ -454,7 +479,9 @@ class ImageInputs:
     def _data_url(self, image: ImageRef) -> str:
         return f"data:{image.media_type};base64,{base64.b64encode(self._bytes(image)).decode('ascii')}"
 
-    def _asset_path(self, image: ImageRef) -> str:
+    def asset_path(self, image: ImageRef) -> str:
+        """Stable path of one stored image, suitable for a later ViewImage call."""
+
         return os.path.join(self.assets_dir(), image.ref)
 
     def _capability_key(self) -> tuple[str, str, str, str]:

@@ -619,11 +619,3 @@ def compaction_provider_config(config: Config) -> ProviderConfig:
         if value:
             setattr(provider, attr, value)
     return provider
-
-
-def vision_provider_config(config: Config) -> ProviderConfig:
-    """The provider entry vision requests run on; callers gate on `config.vision_provider` being
-    non-empty. Unlike compaction there are no per-field overrides, so the entry is used as-is and
-    never mutated. Resolved per call, never cached."""
-
-    return config.providers[config.vision_provider]

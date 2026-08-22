@@ -20,11 +20,13 @@ from PIL import Image
 
 from minacode.base import ConfigError, ModelError, ToolCall, ToolError
 from minacode.config import Config, ProviderConfig
+from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.image import IMAGE_MARKER, IMAGE_REFS_KEY, ImageInputs, UserInput
 from minacode.model import ModelClient
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
 from minacode.render import StatusBar
+from minacode.runner import ToolRunner
 from minacode.session import Session
 from minacode.tools import ViewImageTool
 
@@ -44,6 +46,13 @@ def session(tmp_path, *, image_input="auto", vision=True, api="chat"):
         config.vision_provider = "v"
     config.provider.image_input = image_input
     return Session(cwd=str(tmp_path), config=config)
+
+
+def call_view_image(s, args):
+    """Exercise ViewImage through its orchestration boundary, as production does."""
+    tool = ViewImageTool(s, args)
+    output = ToolRunner(s, ContextManager(s), output_fn=lambda _text: None).call_tool(tool)
+    return tool, output
 
 
 # --- 配置（验收标准 1）---
@@ -99,8 +108,7 @@ def test_view_image_bridges_observation_when_main_model_cannot_see(tmp_path, mon
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
 
-    tool = ViewImageTool(s, [path.name])
-    output = tool.call()
+    tool, output = call_view_image(s, [path.name])
 
     first, _, observation = output.partition("\n")
     assert first.startswith("<ViewImage")
@@ -121,6 +129,14 @@ def test_view_image_bridges_observation_when_main_model_cannot_see(tmp_path, mon
     assert [part["type"] for part in user["content"]] == ["image_url", "text"]
     assert user["content"][-1]["text"] == VISION_OBSERVE_DEFAULT_QUESTION
     assert IMAGE_REFS_KEY not in json.dumps(captured["messages"])
+
+
+def test_bridged_view_image_requires_runner_owned_vision_client(tmp_path):
+    s = session(tmp_path, image_input="off")
+    path = image_file(tmp_path / "shot.png")
+
+    with pytest.raises(ToolError, match="requires ToolRunner"):
+        ViewImageTool(s, [path.name]).call()
 
 
 def test_view_image_with_unknown_support_does_not_bridge(tmp_path):
@@ -378,7 +394,7 @@ def test_bridged_wire_keeps_the_prebuilt_image_blocks_on_chat(tmp_path, monkeypa
     )
     monkeypatch.setattr(ModelClient, "client", factory)
 
-    ViewImageTool(s, [path.name]).call()
+    call_view_image(s, [path.name])
 
     body = json.loads(factory.calls[0].content)
     assert body["model"] == "vision-model"
@@ -424,7 +440,7 @@ def test_bridged_wire_keeps_the_prebuilt_image_blocks_on_responses(tmp_path, mon
     )
     monkeypatch.setattr(ModelClient, "client", factory)
 
-    ViewImageTool(s, [path.name]).call()
+    call_view_image(s, [path.name])
 
     body = json.loads(factory.calls[0].content)
     assert body["model"] == "vision-model"
@@ -462,7 +478,7 @@ def test_bridged_wire_keeps_the_prebuilt_image_blocks_on_anthropic(tmp_path, mon
     )
     monkeypatch.setattr(ModelClient, "anthropic_client", factory)
 
-    ViewImageTool(s, [path.name]).call()
+    call_view_image(s, [path.name])
 
     body = json.loads(factory.calls[0].content)
     assert body["model"] == "vision-model"
@@ -521,7 +537,7 @@ def test_observation_keeps_the_main_request_cache_snapshot(tmp_path, monkeypatch
     assert s.usage.last_prompt_tokens == 100
     assert s.usage.last_cached_prompt_tokens == 80
 
-    ViewImageTool(s, [path.name]).call()  # one bridged observation through the real api_request path
+    call_view_image(s, [path.name])  # one bridged observation through the real api_request path
 
     # The last-request snapshot still describes the main-model request, not the observation.
     assert s.usage.last_prompt_tokens == 100
@@ -578,7 +594,7 @@ def test_question_reaches_the_vision_request(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
 
-    ViewImageTool(s, [path.name, "截图里的报错原文是什么"]).call()
+    call_view_image(s, [path.name, "截图里的报错原文是什么"])
 
     user = captured["messages"][1]
     assert [part["type"] for part in user["content"]] == ["image_url", "text"]
@@ -596,7 +612,7 @@ def test_vision_request_is_sent_with_a_default_question_when_none_given(tmp_path
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
 
-    ViewImageTool(s, [path.name]).call()
+    call_view_image(s, [path.name])
 
     assert captured["messages"][1]["content"][-1]["text"] == VISION_OBSERVE_DEFAULT_QUESTION
 
@@ -610,7 +626,7 @@ def test_missing_vision_fields_name_the_entry_and_fields(tmp_path, monkeypatch):
     path = image_file(tmp_path / "shot.png")
 
     with pytest.raises(ToolError) as caught:
-        ViewImageTool(s, [path.name]).call()
+        call_view_image(s, [path.name])
 
     message = str(caught.value)
     assert "vision provider `v` is missing key" in message
@@ -637,7 +653,7 @@ def test_vision_request_failure_surfaces_as_a_tool_error(tmp_path, monkeypatch):
     monkeypatch.setattr(ModelClient, "api_request", failing)
 
     with pytest.raises(ToolError, match="Vision bridge failed: upstream 502"):
-        ViewImageTool(s, [path.name]).call()
+        call_view_image(s, [path.name])
 
 
 # --- 观察请求后的主请求快照恢复（旗标 finally 清理，回归补充）---
@@ -682,7 +698,7 @@ def test_main_request_after_observation_re_touches_the_snapshot(tmp_path, monkey
 
     model = ModelClient(s)
     model.request([{"role": "user", "content": "hello"}])
-    ViewImageTool(s, [path.name]).call()
+    call_view_image(s, [path.name])
     assert s.state.vision_observe_active is False
     model.request([{"role": "user", "content": "again"}])
 
@@ -701,7 +717,7 @@ def test_failed_observation_clears_the_flag_and_next_main_request_touches(tmp_pa
     model = ModelClient(s)
     model.request([{"role": "user", "content": "hello"}])
     with pytest.raises(ToolError, match="Vision bridge failed"):
-        ViewImageTool(s, [path.name]).call()
+        call_view_image(s, [path.name])
     assert s.state.vision_observe_active is False
     model.request([{"role": "user", "content": "again"}])
 

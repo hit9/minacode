@@ -9,15 +9,12 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from minacode.base import Json, ModelError, Text, ToolArgs, ToolError
 from minacode.image import ImageRef
 from minacode.session import Session, TurnDiff
 from minacode.tools.base import Tool
-
-if TYPE_CHECKING:
-    from minacode.runner import ToolRunner
 
 
 class ReadTool(Tool):
@@ -191,13 +188,13 @@ class ViewImageTool(Tool):
         "View one local image as visual model input. Supports PNG, JPEG, WebP, and single-frame GIF; paths outside the workspace require confirmation."
     )
     PRODUCES_MODEL_OBSERVATION = True
-    # Injected by ToolRunner.call_tool: the runner owns the vision client, so Ctrl-C (Agent.cancel)
-    # reaches an in-flight bridged observation instead of leaving it to wait out the timeout.
-    runner: ToolRunner | None = None
 
     def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
         self.image: ImageRef | None = None
+        # Injected by ToolRunner.call_tool. The tool owns validation and result shape; orchestration
+        # owns the model-client lifecycle so Ctrl-C can reach every provider request.
+        self.vision_observe: Callable[[tuple[ImageRef, ...], str], str] | None = None
         self._bridged = False
         # Set when call() bridged to the [vision] entry, so the runner can draw the bridge trace
         # under the call line in the finish block (the attachment path's standalone log line does
@@ -235,7 +232,8 @@ class ViewImageTool(Tool):
         return self.args[1].strip()
 
     def needs_confirmation(self) -> bool:
-        return not self.session.in_cwd(self.path())
+        path = self.path()
+        return not (self.session.in_cwd(path) or self.session.owns_asset(path))
 
     def short_args(self) -> list[str]:
         return [self.session.relpath(self.path())]
@@ -246,11 +244,9 @@ class ViewImageTool(Tool):
 
     def _vision_observe(self, question: str) -> str:
         assert self.image is not None  # call() loaded it before bridging
-        if self.runner is not None:
-            return self.runner.vision_client().vision_observe((self.image,), question)
-        from minacode.model import ModelClient  # local import: model.py imports the tool registry
-
-        return ModelClient(self.session).vision_observe((self.image,), question)
+        if self.vision_observe is None:
+            raise ToolError("ViewImage vision bridge requires ToolRunner")
+        return self.vision_observe((self.image,), question)
 
     def call(self) -> str:
         path = self.path()
@@ -273,7 +269,7 @@ class ViewImageTool(Tool):
             observation = self._vision_observe(self.question())
         except ModelError as error:
             raise ToolError(f"Vision bridge failed: {error}") from error
-        return header + f" vision={json.dumps(self._vision_label())}/>" + "\n" + observation
+        return header + f" vision={json.dumps(self.vision_entry_label)}/>" + "\n" + observation
 
     def model_observation(self) -> Json | None:
         if self._bridged or self.image is None:

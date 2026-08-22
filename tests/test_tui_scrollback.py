@@ -226,6 +226,43 @@ def test_drain_scrollback_prints_queued_output_at_shutdown(monkeypatch):
     assert ui._scrollback_parts == []
 
 
+def test_shutdown_drains_fragment_before_loop_processes_schedule(monkeypatch):
+    """The agent-thread enqueue is durable before its loop scheduling callback can run."""
+    printed = []
+    pending = []
+    timers = []
+
+    class Loop:
+        def call_soon_threadsafe(self, callback, *args):
+            pending.append((callback, args))
+
+        def call_later(self, delay, callback, *args):
+            timers.append((delay, callback, args))
+
+    class App:
+        is_running = True
+        _running_in_terminal = False
+        loop = Loop()
+
+    monkeypatch.setattr("minacode.render.get_app_or_none", lambda: App())
+    monkeypatch.setattr("minacode.render.print_formatted_text", lambda *args, **kwargs: printed.append(args))
+    ui = UiPrinter(print)
+    ui.color = True
+
+    ui.emit("last line\n")
+    assert ui._scrollback_parts
+    assert len(pending) == 1
+
+    ui.drain_scrollback()
+    callback, args = pending.pop()
+    callback(*args)  # stale scheduling work arriving after shutdown is harmless
+
+    assert len(printed) == 1
+    assert fragment_text(printed[0][0]) == "last line\n"
+    assert timers == []
+    assert not ui._scrollback_scheduled
+
+
 def test_tui_runtime_wires_scrollback_drain_on_app_stop(tmp_path, monkeypatch):
     """TuiApp calls UiPrinter.drain_scrollback once the application stops."""
     loop = CommandLoop(
@@ -326,7 +363,7 @@ def test_flush_exception_drains_the_batch_and_keeps_the_printer_usable(monkeypat
         ui._flush_scrollback()
 
     assert ui._scrollback_parts == []  # the batch is gone; no retry, no double print
-    assert ui._scrollback_timer is None
+    assert not ui._scrollback_scheduled
 
     # The printer keeps working: the next emit falls through to a direct print.
     printed = []

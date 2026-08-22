@@ -26,6 +26,7 @@ from minacode.engine import Agent
 from minacode.image import (
     IMAGE_MARKER,
     IMAGE_REFS_KEY,
+    IMAGE_TEXT_ONLY_KEY,
     TOOL_IMAGE_OBSERVATION_KEY,
     TOOL_IMAGE_OBSERVATION_PREFIX,
     ImageInputs,
@@ -435,6 +436,25 @@ def test_disabled_image_input_degrades_historical_messages_to_labels(tmp_path):
     assert s.images.chat_content(message) == "review [Image #1 · past.png]"
     assert s.images.responses_content(message) == "review [Image #1 · past.png]"
     assert s.images.anthropic_content(message) == "review [Image #1 · past.png]"
+
+
+def test_text_only_image_refs_never_reenter_provider_projection(tmp_path):
+    s = session(tmp_path)
+    image_file(tmp_path / "bridged.png")
+    message = s.images.message(s.images.recognize("review bridged.png"))
+    message[IMAGE_TEXT_ONLY_KEY] = True
+    plain = {"role": "user", "content": message["content"]}
+
+    # Even a later positive capability verdict or provider switch cannot silently add pixels to a
+    # historical request whose bridge already replaced them with text.
+    s.config.provider.image_input = "on"
+    assert s.images.refs(message)
+    assert s.images.input_refs(message) == ()
+    assert s.images.chat_content(message) == message["content"]
+    assert s.images.responses_content(message) == message["content"]
+    assert s.images.anthropic_content(message) == message["content"]
+    assert ContextManager(s).estimated_tokens([message]) == ContextManager(s).estimated_tokens([plain])
+    assert not s.images.note_error([message], ModelError("Error code: 400 - image input is not supported"))
 
 
 def test_successful_image_request_is_learned_per_provider_and_model(tmp_path, monkeypatch):

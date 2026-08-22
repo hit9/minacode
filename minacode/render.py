@@ -271,9 +271,10 @@ class UiPrinter:
         # animated divider visibly blink on every emit. A short window batches a burst of emits
         # (a tool result's lines) into one suspend; outside a live application nothing changes.
         self._scrollback_parts: list[FormattedText | ANSI] = []
-        self._scrollback_timer: Any | None = None  # asyncio.TimerHandle, created on the app loop
-        # Parts/timer are touched from the app loop (enqueue/flush) and the agent thread
-        # (drain on direct prints and at shutdown), so all access goes through this lock.
+        self._scrollback_scheduled = False
+        self._scrollback_generation = 0
+        # Parts/scheduling state are touched from the app loop and the agent thread (enqueue and
+        # drain on direct prints/shutdown), so all access goes through this lock.
         self._scrollback_lock = threading.Lock()
 
     def drain_scrollback(self) -> None:
@@ -285,10 +286,8 @@ class UiPrinter:
         with self._scrollback_lock:
             parts = self._scrollback_parts
             self._scrollback_parts = []
-            timer = self._scrollback_timer
-            self._scrollback_timer = None
-        if timer is not None:
-            timer.cancel()
+            self._scrollback_scheduled = False
+            self._scrollback_generation += 1
         if parts:
             print_formatted_text(*parts, sep="", end="", flush=True)
 
@@ -316,17 +315,28 @@ class UiPrinter:
             return
         loop = app.loop
         assert loop is not None  # a running application always has one; the checker cannot see it
-        loop.call_soon_threadsafe(self._enqueue_scrollback, app, fragment)
+        self._queue_scrollback(app, fragment)
 
-    def _enqueue_scrollback(self, app: Any, fragment: FormattedText | ANSI) -> None:
+    def _queue_scrollback(self, app: Any, fragment: FormattedText | ANSI) -> None:
         with self._scrollback_lock:
             self._scrollback_parts.append(fragment)
-            if self._scrollback_timer is None:
-                self._scrollback_timer = app.loop.call_later(self.SCROLLBACK_BATCH_WINDOW, self._flush_scrollback)
+            if self._scrollback_scheduled:
+                return
+            self._scrollback_scheduled = True
+            generation = self._scrollback_generation
+        app.loop.call_soon_threadsafe(self._schedule_scrollback, app, generation)
 
-    def _flush_scrollback(self) -> None:
+    def _schedule_scrollback(self, app: Any, generation: int) -> None:
         with self._scrollback_lock:
-            self._scrollback_timer = None
+            if not self._scrollback_scheduled or generation != self._scrollback_generation:
+                return
+        app.loop.call_later(self.SCROLLBACK_BATCH_WINDOW, self._flush_scrollback, generation)
+
+    def _flush_scrollback(self, generation: int | None = None) -> None:
+        with self._scrollback_lock:
+            if generation is not None and generation != self._scrollback_generation:
+                return
+            self._scrollback_scheduled = False
             parts = self._scrollback_parts
             self._scrollback_parts = []
         if parts:
@@ -360,7 +370,7 @@ class UiPrinter:
             return
         loop = app.loop
         assert loop is not None  # a running application always has one; the checker cannot see it
-        loop.call_soon_threadsafe(self._enqueue_scrollback, app, FormattedText([segment for part in parts for segment in to_formatted_text(part)]))
+        self._queue_scrollback(app, FormattedText([segment for part in parts for segment in to_formatted_text(part)]))
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
         """Print one line or log block. `indent` moves plain text into a column; a LogBlock is

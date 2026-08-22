@@ -19,7 +19,7 @@ from minacode.base import (
     Json,
     Text,
 )
-from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
+from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_REQUEST_EVENT,
@@ -754,7 +754,9 @@ class ContextManager:
         payload: list[Json] = []
         for message in messages:
             estimated = {
-                key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
+                key: value
+                for key, value in message.items()
+                if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
             }
             if readable := readable_provider_context(message):
                 estimated["_provider_context"] = readable

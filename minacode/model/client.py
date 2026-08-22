@@ -38,11 +38,7 @@ from minacode.base import (
     ToolError,
     builtin_tool_label,
 )
-from minacode.config import (
-    ProviderConfig,
-    compaction_provider_config,
-    vision_provider_config,
-)
+from minacode.config import ProviderConfig, compaction_provider_config
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef
 from minacode.model import chat, resilience, responses
 from minacode.prompts import (
@@ -695,8 +691,8 @@ class ModelClient:
         """
 
         self.cancel_requested.clear()
-        provider = vision_provider_config(self.session.config)
         entry_name = self.session.config.vision_provider
+        provider = self.session.config.providers[entry_name]
         if missing := provider.missing_fields():
             raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
         if self.on_vision_observe is not None:

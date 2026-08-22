@@ -26,14 +26,13 @@
   for exit 0, a red ✗ for any other exit, and a blank cell for entries with no exit code (a
   script, an order). The list is mostly bash, so the failures become scannable by color, and it
   now lists every stored result (up to the session's 400) instead of the latest fifty.
-- A divider label wider than the default rule (e.g. the worker's `[worker]` + status + elapsed
-  + rate + queued line) widens the rule so both sides keep at least twelve dashes and the label
+- A divider label wider than the default rule (e.g. the worker's `[worker]` label with status,
+  elapsed time, rate, and a queued line) widens the rule so both sides keep at least twelve dashes and the label
   stays whole, instead of squeezing the comet's track to two or three dashes; on a narrow
   terminal the trail shrinks and the comet slows down so it never reads as frantic.
 
-## 0.30.0 - 2026-08-21
-
 ### Fixed
+
 - After a `Ctrl-C` on one turn, the next turn with attached images no longer dies with a
   `KeyboardInterrupt` before it reaches the model: that message and its images used to be dropped
   before the turn checkpointed, and are now processed normally.
@@ -47,6 +46,9 @@
   main model is actually text-only: the first image is sent to the main model, the outcome is
   remembered across sessions, and a vision-capable model no longer pays an extra vision round-trip
   or loses image resolution to the bridge.
+- A bridged attachment now remains available to `ViewImage` by a stable session-owned path after
+  its original file is moved or the session is resumed. It expires with the history message that
+  owns it, and a failed initial observation preserves the submitted turn so the read can be retried.
 - The live preview of a short `Job` log no longer repeats already-shown lines when the command
   writes more output: each new line is streamed once instead of the whole tail again.
 - The transcript no longer claims images were "described" when the vision observation failed: the
@@ -55,10 +57,14 @@
 - Crash residue in the session's assets directory -- a `.image-*` staging file left behind by an
   interrupted save -- is cleaned up once it is old enough, so abandoned files no longer pile up or
   keep the directory around.
-- The transcript redrawn on session restore now flows through the same output path as live lines,
-  so it can no longer print ahead of a line that was still being batched and scramble the order.
+- Batched terminal output is queued before the event-loop handoff and drained when the TUI stops,
+  so the turn's final lines cannot disappear or race ahead of a restored transcript.
 - The Ctrl-O output browser no longer hides the oldest stored result while a ToolScript is running:
   the live running entry is listed on top of all stored records instead of counting against them.
+
+## 0.30.0 - 2026-08-21
+
+### Fixed
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.

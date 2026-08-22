@@ -98,14 +98,11 @@ class Agent:
         tool_batches = 0
         malformed_tool_names: list[str] = []
         user_message = self._initial_user_message(user_input)
-        if isinstance(user_input, UserInput) and self.session.images.bridging():
-            # The bridged message appends the vision observation, which is the vision model's
-            # output, not the user's text. Mentions resolve against the typed text only (the
-            # same contract the queued path keeps, see _observe_queued_input), so an @file:
-            # shown in a screenshot never inlines that file into context.
-            user_text = user_input.display_text()
-        else:
-            user_text = self.session.images.label_text(user_message)
+        # Mentions belong to user input, never to a request transform. A bridged message appends
+        # model-produced observation text, while a direct image message does not; deriving mention
+        # input from UserInput keeps both paths under one rule and prevents text read from an image
+        # from acquiring file-read authority.
+        user_text = user_input.display_text() if isinstance(user_input, UserInput) else self.session.images.label_text(user_message)
         turn_messages = [user_message, *self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
         self.checkpoint_turn(turn_messages, transcript_messages)
@@ -221,16 +218,17 @@ class Agent:
         if not (isinstance(user_input, UserInput) and user_input.images) or not self.session.images.bridging():
             return self.session.images.message(user_input)
         stored = self.session.images.prepare(user_input, force=True)
-        self.session.images.retain(stored.images)
         entry = self.session.config.vision_provider
         provider = self.session.config.providers[entry]
         question = stored.original_text() if str(stored).replace(IMAGE_MARKER, "").strip() else VISION_OBSERVE_DEFAULT_QUESTION
         try:
             observation = self.model.vision_observe(stored.images, question)
         except ModelError as error:
-            raise ModelError(f"[vision] observation failed on `{entry}`: {error}") from error
-        content = self.session.images.attachment_observation_content(stored.images, f"{entry}/{provider.model}", observation)
-        return {"role": "user", "content": stored.display_text() + "\n\n" + content}
+            # The attachment is already submitted and stored. Preserve the turn with a truthful
+            # text observation instead of failing before its first checkpoint; the stable asset
+            # path lets the main model or user retry through ViewImage.
+            observation = f"[Vision observation failed: {ToolRunner.oneline(str(error), 300)}]"
+        return self.session.images.attachment_observation_message(stored, f"{entry}/{provider.model}", observation)
 
     def _observe_queued_input(self, item: QueuedInput) -> None:
         """Turn one queued input's images into a text observation for the vision bridge, so a
@@ -239,12 +237,13 @@ class Agent:
         The observation is stored on `item.observation`, not written into `item.text`: the text
         stays the typed original, so the flush echo never prints model-facing injection text, and
         item.message() joins the two at both projection sites (request and transcript). The images
-        stay stored (and retained) for ViewImage follow-ups; clearing item.images makes the
-        transformation idempotent across request retries inside the claim/acknowledge
-        transaction. Mentions are resolved by the caller before this runs, so the observation
-        text is never scanned for @-references."""
+        remain on the queued semantic message so snapshot ownership, resume, and asset collection
+        all follow the normal image lifecycle; `item.observation` makes the transform idempotent
+        across request retries, and the text-only marker prevents the refs from reaching the main
+        provider. Mentions are resolved by the caller before this runs, so observation text is
+        never scanned for @-references."""
 
-        if not item.images or not self.session.images.bridging():
+        if not item.images or item.observation or not self.session.images.bridging():
             return
         images = item.images
         entry = self.session.config.vision_provider
@@ -252,10 +251,8 @@ class Agent:
         try:
             observation = self.model.vision_observe(images, item.text or VISION_OBSERVE_DEFAULT_QUESTION)
         except ModelError as error:
-            raise ModelError(f"[vision] observation failed on `{entry}`: {error}") from error
-        self.session.images.retain(images)
+            observation = f"[Vision observation failed: {ToolRunner.oneline(str(error), 300)}]"
         item.observation = self.session.images.attachment_observation_content(images, f"{entry}/{provider.model}", observation)
-        item.images = ()
 
     def correct_textual_tool_calls(
         self,

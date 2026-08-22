@@ -384,7 +384,7 @@ class ToolRunner:
         if isinstance(tool, ViewImageTool):
             # The runner owns the vision client, so Agent.cancel() reaches an in-flight bridged
             # observation instead of leaving it to wait out the provider timeout.
-            tool.runner = self
+            tool.vision_observe = lambda images, question: self.vision_client().vision_observe(images, question)
             return tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
