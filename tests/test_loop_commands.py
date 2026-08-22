@@ -235,6 +235,43 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
 
 
+def test_simple_repl_schema_stays_next_hints_free_across_requests(tmp_path):
+    """The simple REPL chooses its tool set before the first model request without NextHints,
+    and that set stays stable on later requests: no tool is inserted or removed between
+    requests, so the tool-schema prefix does not churn."""
+    s = session(tmp_path)
+    requested: list[set[str]] = []
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, messages, tools=None):
+            requested.append({tool["function"]["name"] for tool in (tools or [])})
+            self.calls += 1
+            if self.calls == 1:
+                return {"role": "assistant", "content": ""}, [call("Read", [{"path": "missing"}])], ""
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+    inputs = iter(["do it"])
+
+    def fake_read(prompt="", **kw):
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise EOFError()
+
+    loop = CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.run()
+
+    assert s.next_hints_available is False
+    assert len(requested) == 2  # before the tool batch and before the final answer
+    assert all("NextHints" not in names for names in requested)
+    assert requested[0] == requested[1]
+
+
 def test_queue_live_region_shows_divider_and_pending(tmp_path):
     s = session(tmp_path)
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
@@ -393,11 +430,13 @@ def test_hints_command_is_removed(tmp_path):
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    handled, _exit = loop.command("/hints")
-
-    assert handled is True
-    assert out[-1].endswith("Unknown command: /hints")
+    # Every /hints spelling follows the normal unknown-command path; there is no toggle left.
+    for variant in ("/hints", "/hints on", "/hints off"):
+        handled, _exit = loop.command(variant)
+        assert handled is True
+        assert out[-1].endswith("Unknown command: /hints")
     assert "/hints" not in loop_module.COMMAND_LOOKUP
+    assert "/hints" not in loop_module.CommandLoop.COMMANDS
 
 
 def test_queue_command_rejects_mutating(tmp_path):

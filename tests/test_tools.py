@@ -1054,9 +1054,11 @@ def test_suggest_tool_short_args(tmp_path):
 def test_quick_hints_are_transient_and_never_serialized(tmp_path):
     s = session(tmp_path)
     s.add_quick_hints(["run the tests", "show the diff"])
+    s.next_hints_available = False
     assert s.quick_hints == ("run the tests", "show the diff")
     snapshot = SessionSnapshotCodec.snapshot(s, {})
     assert "quick_hints" not in snapshot
+    assert "next_hints_available" not in snapshot
     assert "quick_hints" not in snapshot["state"]
     s.clear_quick_hints()
     assert s.quick_hints == ()
@@ -1069,6 +1071,19 @@ def test_runtime_settings_no_longer_exposes_quick_hints_config(tmp_path):
 
     assert not hasattr(settings, "quick_hints")
     assert "quick_hints" not in ConfigFile.DEFAULT_TEXT
+    assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
+
+
+def test_legacy_config_quick_hints_key_loads_and_keeps_hints_enabled(tmp_path):
+    """An old config file with `[runtime] quick_hints = false` still loads: the obsolete key is
+    ignored (no runtime field, no crash) and the TUI capability stays on, so hints are not
+    disabled by stale configuration."""
+    cfg = tmp_path / "minacode.toml"
+    cfg.write_text("[runtime]\nquick_hints = false\n", encoding="utf-8")
+    s = Session.from_config_file(path=str(cfg))
+
+    assert not hasattr(s.settings, "quick_hints")
+    assert s.next_hints_available is True
     assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
 
