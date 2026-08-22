@@ -229,7 +229,7 @@ def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
     loop_ = loop(tmp_path)
     captured = []
     monkeypatch.setattr(loop_.ui, "emit", lambda text="", indent=0: captured.append(text))
-    loop_.vision_observe_output("deepseek-vision/deepseek-v4-flash-vision-exp", "described 1 attached image")
+    loop_.vision_observe_output("deepseek-vision/deepseek-v4-flash-vision-exp", "observing 1 attached image")
     loop_.builtin_call_output("search", "cache wiring")
     blocks = [item for item in captured if isinstance(item, LogBlock)]
     assert len(blocks) == 2

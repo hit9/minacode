@@ -702,7 +702,7 @@ class ModelClient:
         if self.on_vision_observe is not None:
             self.on_vision_observe(
                 f"{entry_name}/{provider.model}",
-                f"described {len(images)} attached image{'s' if len(images) != 1 else ''}",
+                f"observing {len(images)} attached image{'s' if len(images) != 1 else ''}",
             )
         messages = [
             {"role": "system", "content": VISION_OBSERVE_PROMPT},

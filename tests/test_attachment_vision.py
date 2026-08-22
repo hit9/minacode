@@ -233,8 +233,9 @@ def test_attachment_vision_failure_raises_model_error_naming_entry(tmp_path, mon
     assert "[vision]" in message
     assert "`v`" in message
     assert "upstream 502" in message
-    # The log line fires before the request, so a failed observation still leaves it.
-    assert logged == [("v/vision-model", "described 1 attached image")]
+    # The line fires before the request with a progressive state, so a failed observation still
+    # leaves it without claiming the images were described.
+    assert logged == [("v/vision-model", "observing 1 attached image")]
 
 
 # --- UI 输入区预检（验收标准 7）---
@@ -375,8 +376,8 @@ def test_bridge_logs_one_transcript_line_per_observation(tmp_path, monkeypatch):
     agent.run(s.images.recognize(f"look {shot.name}"))
 
     # One line per observation, naming the vision entry and the image count; fired before the
-    # request, so a failure to observe still leaves the line in the log.
-    assert logged == [("v/vision-model", "described 1 attached image")]
+    # request with a progressive state, so a failure to observe still leaves an honest line.
+    assert logged == [("v/vision-model", "observing 1 attached image")]
     assert len(calls["vision"]) == 1
 
 

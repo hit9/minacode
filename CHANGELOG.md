@@ -49,6 +49,9 @@
   or loses image resolution to the bridge.
 - The live preview of a short `Job` log no longer repeats already-shown lines when the command
   writes more output: each new line is streamed once instead of the whole tail again.
+- The transcript no longer claims images were "described" when the vision observation failed: the
+  bridge line reports the read as in progress, so a timeout or provider error cannot leave a false
+  completion line behind.
 - In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
   with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
   closes it.
