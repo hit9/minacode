@@ -455,10 +455,9 @@ class Agent:
         if self.session.image_route.delivery() == "vision" and current_raw:
             # One gray routing notice: the main model is text-only, so the current image
             # occurrences are described through [vision] instead of being sent raw (which would
-            # fail). The described-by child mirrors the ViewImage tool's rendering. Presentation
-            # only; never enters model context.
-            label = self._vision_entry_label()
-            self._emit_image_route_notice(ImageRouteNotice(f"main model is text-only; image described through {label}", described_by=label))
+            # fail). The entry name appears once, on the described-by child, mirroring the
+            # ViewImage tool's rendering. Presentation only; never enters model context.
+            self._emit_image_route_notice(ImageRouteNotice("main model is text-only", described_by=self._vision_entry_label()))
             request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
             if not pending:
                 # No accept_pending_inputs will commit the copy later, so keep the live list in
@@ -497,11 +496,7 @@ class Agent:
                 # No fallback is available: the original error propagates and the normal
                 # replay-safe failure settlement runs, exactly as for any other rejected request.
                 raise
-            provider = self.session.config.providers[vision_entry]
-            label = self._vision_entry_label()
-            self._emit_image_route_notice(
-                ImageRouteNotice(f"main model rejected image input (400); using {vision_entry}/{provider.model or '(empty)'}", described_by=label)
-            )
+            self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label()))
             # Observe the eligible current occurrences through [vision] and convert them to
             # durable text observations in the turn, then retry once without raw image blocks
             # (the route is now learned text-only, so projection suppresses every older raw

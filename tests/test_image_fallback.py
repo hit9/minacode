@@ -194,7 +194,7 @@ def test_eligible_400_attachment_falls_back_through_vision_once(tmp_path):
     # exactly one vision observation of the current attachment, with the bounded default question
     assert model.vision_calls == [(("shot.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_learned"
-    assert notices == [ImageRouteNotice("main model rejected image input (400); using v/vision-model", described_by="v/vision-model")]
+    assert notices == [ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model")]
 
     # durable text observation replaces the failed raw occurrence; refs stay for asset ownership
     message = s.messages[0]
@@ -218,7 +218,7 @@ def test_static_text_only_attachment_goes_directly_to_vision(tmp_path):
     assert model.vision_calls == [(("shot.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_static"
     # one gray routing notice with a described-by child, like the ViewImage tree rendering
-    assert notices == [ImageRouteNotice("main model is text-only; image described through v/vision-model", described_by="v/vision-model")]
+    assert notices == [ImageRouteNotice("main model is text-only", described_by="v/vision-model")]
 
 
 def test_static_text_only_without_vision_keeps_raw_attempt_and_original_error(tmp_path):
