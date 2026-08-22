@@ -232,6 +232,12 @@ TEXT_ONLY_MODEL_RULES: tuple[ModelRuleData, ...] = (
     # V4 text models, excluding the documented vision variant (`...-vision-exp` or any other
     # `-vision...` suffix).
     {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-v4-(?:flash|pro)(?:-(?!vision)|$)"},
+    # DeepSeek V3 and R1 documented text families: `deepseek-v3`, `deepseek-v3.x`, `deepseek-r1`
+    # and their suffixed variants. The documented vision families `deepseek-vl2` and
+    # `deepseek-ocr` share only the `deepseek-` prefix and never match; `deepseek-*` stays unknown.
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-v3(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-v3\.\d+(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-r1(?:-|$)"},
     # Z.AI / BigModel GLM text families. `glm-5`, `glm-5-turbo`, and numbered 5.x variants;
     # GLM-4.7/4.6/4.5 and their non-V variants; GLM-4-32B-0414-128K. `glm-5v`, `glm-4.6v`,
     # `glm-4.5v`, and `glm-ocr` never match (a `v` directly after the version is not `-`/end).

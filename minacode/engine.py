@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 
 from minacode.base import (
+    IMAGE_ROUTE_TEXT_ONLY_STATIC,
     IMAGE_ROUTE_UNKNOWN,
     PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
@@ -43,6 +44,17 @@ _TEXTUAL_INVOKE_RE = re.compile(
 _FENCE_RE = re.compile(r" {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 _BLOCKQUOTE_RE = re.compile(r" {0,3}>")
 MAX_TEXTUAL_TOOL_CORRECTIONS = 5
+
+
+class _ImageFallbackError(Exception):
+    """Carries the last-sent fallback request out of `_main_request` when that request fails, is
+    cancelled, or is manually retried, so the caller can commit/release against the last actually
+    sent request instead of the original raw one."""
+
+    def __init__(self, request: PreparedRequest, error: BaseException) -> None:
+        super().__init__(str(error))
+        self.request = request
+        self.error = error
 
 
 class Agent:
@@ -130,9 +142,14 @@ class Agent:
                         # One main-model request, with an eligible 400 converting into exactly one
                         # vision fallback (see _image_fallback). `accepted` is the request whose
                         # acceptance commits the turn — the retry on a recovered 400.
-                        assistant, tool_calls, content, accepted = self._main_request(request, turn_messages)
+                        assistant, tool_calls, content, accepted = self._main_request(request)
                         self.record_sources(assistant)
                         self.raise_if_cancelled()
+                        # A recovered 400 adopted a converted (text-only) turn: sync the live turn
+                        # now that the request is accepted, so the paid observation is what gets
+                        # committed. The fallback itself never mutates the caller's turn.
+                        if accepted.turn_messages is not request.turn_messages:
+                            turn_messages[:] = accepted.turn_messages
                         # The request reached the provider, so its follow-ups belong to history from
                         # here on, and any correction sent next lands after them — history keeps the
                         # order the provider saw, because a sent message can never be taken back.
@@ -151,6 +168,27 @@ class Agent:
                         break
                     except ModelRequestRetry:
                         continue
+                    except _ImageFallbackError as wrapper:
+                        # The fallback main request failed, was cancelled, or was manually retried
+                        # after a paid vision observation. Point the failure settlement at the last
+                        # actually sent request so the converted turn and its pending are committed
+                        # or released atomically.
+                        failed_request = wrapper.request
+                        if isinstance(wrapper.error, KeyboardInterrupt):
+                            # Cancelled: leave the live turn untouched. The queued image stays
+                            # queued and is re-submitted cleanly next turn, instead of appearing in
+                            # both history and the queue (a duplicate observation).
+                            raise wrapper.error
+                        # The observation is paid and durable: adopt the converted turn so a manual
+                        # retry re-sends the text observation (no second vision call) and a final
+                        # failure keeps it in history.
+                        turn_messages[:] = wrapper.request.turn_messages
+                        if isinstance(wrapper.error, ModelRequestRetry):
+                            # Manual retry of the fallback request: the queued input is now part of
+                            # the adopted turn, so acknowledge it once and re-prepare from there.
+                            self.accept_pending_inputs(turn_messages, transcript_messages, wrapper.request.pending, wrapper.request.turn_messages)
+                            continue
+                        raise wrapper.error
                 if assistant.get(PAUSED_TURN_KEY) and not tool_calls:
                     # The provider paused a long server-side tool run rather than ending the turn.
                     # Resuming means sending this message back unchanged and asking again, so it
@@ -453,12 +491,13 @@ class Agent:
         # Older accepted image history is never redescribed.
         current_raw = [message for message in current if ImageInputs.input_refs(message)]
         if self.session.image_route.delivery() == "vision" and current_raw:
-            # One gray routing notice: the main model is text-only, so the current image
-            # occurrences are described through [vision] instead of being sent raw (which would
-            # fail). The entry name appears once, on the described-by child, mirroring the
-            # ViewImage tool's rendering. Presentation only; never enters model context.
-            self._emit_image_route_notice(ImageRouteNotice("main model is text-only", described_by=self._vision_entry_label()))
+            # Observe first (the observation is paid), and only then emit the one gray routing
+            # notice, so a failed vision call never shows a fake described-by success. The reason
+            # names the route truthfully: static catalog evidence says text-only; a learned route
+            # only ever rejected an image-carrying request with an eligible 400.
             request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
+            reason = "main model is text-only" if self.session.image_route.state() == IMAGE_ROUTE_TEXT_ONLY_STATIC else "main model rejected image input (400)"
+            self._emit_image_route_notice(ImageRouteNotice(reason, described_by=self._vision_entry_label()))
             if not pending:
                 # No accept_pending_inputs will commit the copy later, so keep the live list in
                 # sync: a failure after the paid observation must settle the converted message,
@@ -473,7 +512,6 @@ class Agent:
     def _main_request(
         self,
         request: PreparedRequest,
-        turn_messages: list[Json],
     ) -> tuple[Json, list[ToolCall], str, PreparedRequest]:
         """Send one main-model request; an eligible 400 converts into exactly one vision fallback.
 
@@ -481,6 +519,11 @@ class Agent:
         whose acceptance commits the turn — the text-only retry when an eligible 400 recovered,
         otherwise `request` itself. The fallback retry cannot trigger another fallback: its route
         is now learned and it carries no current raw image, so both eligibility gates fail.
+
+        Never mutates the caller's live turn. The paid observation lives in the retry's turn
+        list and is adopted by the caller only once the retry is accepted. A failed, cancelled,
+        or manually retried fallback request raises `_ImageFallbackError` carrying the retry, so
+        the caller commits/releases the converted turn and its pending atomically.
         """
 
         try:
@@ -496,22 +539,28 @@ class Agent:
                 # No fallback is available: the original error propagates and the normal
                 # replay-safe failure settlement runs, exactly as for any other rejected request.
                 raise
-            self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label()))
             # Observe the eligible current occurrences through [vision] and convert them to
-            # durable text observations in the turn, then retry once without raw image blocks
-            # (the route is now learned text-only, so projection suppresses every older raw
-            # image as well, not only the failed occurrence).
+            # durable text observations, then retry once without raw image blocks (the route is
+            # now learned text-only, so projection suppresses every older raw image as well, not
+            # only the failed occurrence). The observation is paid for here, so the gray notice
+            # naming the entry is emitted only after it succeeded.
             converted = self.session.images.observe_current(request.turn_messages, list(request.current_image_messages), self.model.vision_observe)
-            turn_messages[:] = converted
+            self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label()))
             tools = Tool.resolved_schemas(self.session)
-            messages = self.context.prepare_messages(self.model, self.session.system_prompt, turn_messages, tools)
+            messages = self.context.prepare_messages(self.model, self.session.system_prompt, converted, tools)
             self.context.update_percent(messages, tools)
-            retry = PreparedRequest(messages, tools, request.pending, turn_messages)
-            self.session.state.turn_messages = len(turn_messages)
+            retry = PreparedRequest(messages, tools, request.pending, converted)
+            self.session.state.turn_messages = len(converted)
             # The successful fallback request is the one accepted for transaction ordering: current
             # and queued messages commit once, checkpoint once, and the loop continues normally —
             # no failed-turn marker is appended for a recovered 400.
-            assistant, tool_calls, content = self.model.request(messages, tools)
+            try:
+                assistant, tool_calls, content = self.model.request(messages, tools)
+            except BaseException as error:
+                # Failed, cancelled, or manually retried after a paid observation: hand the
+                # last-sent request to the caller, which commits/releases against it. The live
+                # turn stays untouched here.
+                raise _ImageFallbackError(retry, error) from error
             return assistant, tool_calls, content, retry
 
     def _eligible_image_fallback(self, error: ModelError, request: PreparedRequest) -> bool:

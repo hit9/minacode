@@ -5,7 +5,7 @@ import json
 import pytest
 from PIL import Image
 
-from minacode.base import ImageRouteNotice, ModelError, ToolCall
+from minacode.base import ImageRouteNotice, ModelError, ModelRequestRetry, ToolCall
 from minacode.config import Config, ProviderConfig
 from minacode.engine import Agent
 from minacode.image import (
@@ -85,6 +85,10 @@ def run_with(s, model):
         ("deepseek-reasoner", True),
         ("deepseek-v4-flash", True),
         ("deepseek-v4-pro", True),
+        ("deepseek-v3", True),
+        ("deepseek-v3.1", True),
+        ("deepseek-v3.2", True),
+        ("deepseek-r1", True),
         ("glm-5", True),
         ("glm-5-turbo", True),
         ("glm-5.1", True),
@@ -106,6 +110,10 @@ def run_with(s, model):
         # vision variants and unknown models stay main-first (never in the negative list)
         ("deepseek-v4-flash-vision-exp", False),
         ("deepseek-v4-pro-vision", False),
+        # documented DeepSeek vision families share only the `deepseek-` prefix
+        ("deepseek-vl", False),
+        ("deepseek-vl2", False),
+        ("deepseek-ocr", False),
         ("glm-5v", False),
         ("glm-4.6v", False),
         ("glm-4.5v", False),
@@ -132,6 +140,8 @@ def test_static_text_only_catalog_positives_and_negatives(model, expected):
     ("model", "expected"),
     [
         ("deepseek/deepseek-chat", True),
+        ("deepseek/deepseek-v3.2", True),
+        ("deepseek/deepseek-r1", True),
         ("z-ai/glm-5", True),
         ("bigmodel/glm-4.6", True),
         ("qwen/qwen3-coder-next", True),
@@ -410,13 +420,16 @@ def test_vision_failure_propagates_without_retry_loop(tmp_path):
             raise ModelError("vision provider unreachable")
 
     model = FailingVision([ModelError("Error code: 400 - boom")])
-    agent, _notices = run_with(s, model)
+    agent, notices = run_with(s, model)
 
     with pytest.raises(ModelError, match="vision provider unreachable"):
         agent.run(s.images.recognize("inspect shot.png"))
 
     assert len(model.requests) == 1  # one raw attempt; no loop
     assert s.image_route.state() == "text_only_learned"
+    # the notice names the entry only after the observation succeeds, so a failed vision call
+    # never shows a fake described-by success
+    assert notices == []
     # the failed occurrence is settled replay-safe
     assert FAILED_IMAGE_CONTEXT_PREFIX in s.messages[0]["content"]
 
@@ -442,3 +455,208 @@ def test_learned_evidence_not_serialized_and_observation_survives_resume(tmp_pat
     assert ATTACHMENT_VISION_OBSERVATION_PREFIX in resumed.messages[0]["content"]
     assert resumed.messages[0][IMAGE_TEXT_ONLY_KEY] is True
     assert not ImageInputs.input_refs(resumed.messages[0])
+
+
+# --- notice honesty and transaction boundaries --------------------------------------------------
+
+
+def test_static_vision_failure_emits_no_notice(tmp_path):
+    s = session(tmp_path, model="deepseek-chat", vision=True)
+    image_file(tmp_path / "shot.png")
+
+    class FailingVision(FallbackModel):
+        def vision_observe(self, images, question=""):
+            self.vision_calls.append((tuple(image.name for image in images), question))
+            raise ModelError("vision provider unreachable")
+
+    model = FailingVision([("never reached", [])])
+    agent, notices = run_with(s, model)
+
+    with pytest.raises(ModelError, match="vision provider unreachable"):
+        agent.run(s.images.recognize("inspect shot.png"))
+
+    # the static-route notice would claim a described-by success; a failed observation must not
+    assert notices == []
+    assert len(model.requests) == 0  # no doomed raw request was ever sent
+
+
+def test_learned_route_observes_follow_up_attachment_directly(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    image_file(tmp_path / "first.png")
+    image_file(tmp_path / "second.png", color=(65, 43, 21))
+    model = FallbackModel([ModelError("Error code: 400 - boom"), ("learned ok", []), ("direct ok", [])])
+    agent, notices = run_with(s, model)
+
+    assert agent.run(s.images.recognize("look at first.png")) == "learned ok"
+    assert agent.run(s.images.recognize("now second.png")) == "direct ok"
+
+    assert s.image_route.state() == "text_only_learned"
+    # the follow-up attachment is observed directly through [vision], never re-sent raw
+    assert model.vision_calls == [(("first.png",), VISION_OBSERVE_DEFAULT_QUESTION), (("second.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
+    assert len(model.requests) == 3
+    assert "image_url" not in json.dumps(model.requests[2])
+    # the learned-route reason is truthful: runtime evidence is a rejected 400, not architecture
+    assert notices == [
+        ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model"),
+        ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model"),
+    ]
+
+
+def test_learned_evidence_does_not_leak_across_provider_switch(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    s.config.providers["other"] = ProviderConfig(url="http://main2.test", key="k2", model="other-model")
+    assert s.image_route.state() == "unknown"
+
+    s.image_route.learn_text_only()
+    assert s.image_route.state() == "text_only_learned"
+
+    # switching the active main route is a different route: evidence does not apply
+    s.config.active_provider = "other"
+    assert s.image_route.state() == "unknown"
+    # switching back restores the session-local learned evidence
+    s.config.active_provider = "default"
+    assert s.image_route.state() == "text_only_learned"
+
+
+def test_queued_image_400_fallback_cancelled_keeps_pending_and_no_history_duplicate(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    image_file(tmp_path / "queued.png")
+
+    class CancelDuringFallback(FallbackModel):
+        def __init__(self):
+            self.requests = []
+            self.vision_calls = []
+            self.step = 0
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            self.step += 1
+            if self.step == 1:
+                s.enqueue_user_input(s.images.recognize("look queued.png"))
+                return {"role": "assistant", "content": ""}, [ToolCall("read", "Read", ["missing.txt"])], ""
+            if self.step == 2:
+                raise ModelError("Error code: 400 - boom")
+            raise KeyboardInterrupt()
+
+        def cancel(self):
+            pass
+
+    agent, _notices = run_with(s, CancelDuringFallback())
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("start")
+
+    # the paid observation stays out of history on cancel: the queued image is released back to
+    # the queue instead of appearing in both history and the queue (a next-turn duplicate)
+    assert s.pending_user_inputs and "queued.png" in s.pending_user_inputs[0].text
+    assert "queued.png" not in json.dumps(s.messages)
+    assert agent.model.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
+
+    # a fresh turn re-submits the still-queued image, observes it once, and commits it once
+    second = FallbackModel([("replayed ok", [])])
+    agent2, _notices2 = run_with(s, second)
+    assert agent2.run("start") == "replayed ok"
+    assert second.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
+    observations = [m for m in s.messages if ImageInputs.refs(m) and "queued.png" in json.dumps(m)]
+    assert len(observations) == 1
+    assert ATTACHMENT_VISION_OBSERVATION_PREFIX in observations[0]["content"]
+
+
+def test_queued_image_400_fallback_manual_retry_observes_once(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    image_file(tmp_path / "queued.png")
+
+    class RetryDuringFallback(FallbackModel):
+        def __init__(self):
+            self.requests = []
+            self.vision_calls = []
+            self.step = 0
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            self.step += 1
+            if self.step == 1:
+                s.enqueue_user_input(s.images.recognize("look queued.png"))
+                return {"role": "assistant", "content": ""}, [ToolCall("read", "Read", ["missing.txt"])], ""
+            if self.step == 2:
+                raise ModelError("Error code: 400 - boom")
+            if self.step == 3:
+                raise ModelRequestRetry()
+            return {"role": "assistant", "content": "queued ok"}, [], "queued ok"
+
+        def cancel(self):
+            pass
+
+    agent, _notices = run_with(s, RetryDuringFallback())
+    assert agent.run("start") == "queued ok"
+
+    # the manual retry re-sends the converted observation: the queued image is observed exactly
+    # once and committed once, never duplicated between the request and history
+    assert len(agent.model.requests) == 4
+    assert agent.model.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
+    assert s.pending_user_inputs == []
+    observations = [m for m in s.messages if ImageInputs.refs(m) and "queued.png" in json.dumps(m)]
+    assert len(observations) == 1
+    assert "image_url" not in json.dumps(agent.model.requests[3])
+
+
+def test_queued_image_400_fallback_failure_keeps_paid_observation(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    image_file(tmp_path / "queued.png")
+
+    class FailingDuringFallback(FallbackModel):
+        def __init__(self):
+            self.requests = []
+            self.vision_calls = []
+            self.step = 0
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            self.step += 1
+            if self.step == 1:
+                s.enqueue_user_input(s.images.recognize("look queued.png"))
+                return {"role": "assistant", "content": ""}, [ToolCall("read", "Read", ["missing.txt"])], ""
+            if self.step == 2:
+                raise ModelError("Error code: 400 - boom")
+            raise ModelError("fallback main request failed")
+
+        def cancel(self):
+            pass
+
+    agent, _notices = run_with(s, FailingDuringFallback())
+    with pytest.raises(ModelError, match="fallback main request failed"):
+        agent.run("start")
+
+    # the fallback failed, but the vision observation was already paid for: it is committed as
+    # durable text (with its queued input acknowledged) instead of being overwritten by the raw
+    # request's settlement
+    assert agent.model.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
+    assert s.pending_user_inputs == []
+    observations = [m for m in s.messages if ImageInputs.refs(m) and "queued.png" in json.dumps(m)]
+    assert len(observations) == 1
+    assert ATTACHMENT_VISION_OBSERVATION_PREFIX in observations[0]["content"]
+    assert FAILED_IMAGE_CONTEXT_PREFIX not in observations[0]["content"]
+
+
+def test_two_view_image_questions_keep_order_and_cardinality(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    image_file(tmp_path / "a.png")
+    image_file(tmp_path / "b.png", color=(65, 43, 21))
+    model = FallbackModel(
+        [
+            ("", [ToolCall("view_image", "ViewImage", ["a.png", "what is in a?"]), ToolCall("view_image", "ViewImage", ["b.png", "what is in b?"])]),
+            ModelError("Error code: 400 - image input not supported"),
+            ("both described", []),
+        ]
+    )
+    agent, _notices = run_with(s, model)
+
+    assert agent.run(s.images.recognize("compare the two")) == "both described"
+
+    # two ViewImage calls keep their individual questions and their replay ordering
+    assert model.vision_calls == [(("a.png",), "what is in a?"), (("b.png",), "what is in b?")]
+    assert len(model.requests) == 3
+    stored = [m for m in s.messages if m.get(TOOL_IMAGE_OBSERVATION_KEY)]
+    assert len(stored) == 2
+    assert all(m[IMAGE_TEXT_ONLY_KEY] is True for m in stored)
+    assert all(m["content"] == f"{TOOL_IMAGE_OBSERVATION_PREFIX}\n{VISION_TEXT}" for m in stored)
+    assert [ImageInputs.tool_observation_question(m) for m in stored] == ["what is in a?", "what is in b?"]

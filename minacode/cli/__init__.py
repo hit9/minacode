@@ -250,13 +250,16 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
     def image_route_notice(self, notice: ImageRouteNotice) -> None:
         """Show the one gray routing notice for a text-only image delivery decision.
 
-        The reason is the root line; the described-by entry is a child line with a tree edge,
-        mirroring the ViewImage tool's rendering. Presentation only: the engine already decided;
-        this block must never enter model context.
+        The root line names the observation and carries the routing reason as a gray meta
+        suffix; the described-by entry is its single child with a tree edge, mirroring the
+        ViewImage tool's rendering. The engine emits this only after the observation
+        succeeded, so a failed vision call never shows a fake described-by. Presentation
+        only; never enters model context.
         """
 
         children = [LogLine("described by", notice.described_by, LogRole.META, LogEdge.END)] if notice.described_by else []
-        self.tool_output(LogBlock.hierarchy(LogLine("", notice.reason, LogRole.META, LogEdge.NONE), children))
+        root = LogLine("image observation", "", LogRole.META, LogEdge.NONE, meta=" · " + notice.reason)
+        self.tool_output(LogBlock.hierarchy(root, children))
 
     def automatic_compaction_status(self, active: bool, error: str = "") -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""
