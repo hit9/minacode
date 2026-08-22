@@ -338,10 +338,24 @@ def test_auto_unknown_with_vision_direct_attaches_and_learns_support(tmp_path, m
 
 def test_auto_unknown_learns_false_and_then_bridges(tmp_path, monkeypatch):
     # A main model that explicitly rejects images teaches support False; the bridge then engages
-    # (and stays engaged, since the main model is no longer asked for images).
+    # for the next ViewImage call instead of repeating the same rejected direct attachment.
     s = session(tmp_path)  # auto, support unknown
     path = image_file(tmp_path / "shot.png")
-    factory = _MockClientFactory([(400, {"error": {"message": "This model does not support image input", "type": "invalid_request_error"}})])
+    factory = _MockClientFactory(
+        [
+            (
+                400,
+                {
+                    "error": {
+                        "code": "InvalidParameter",
+                        "message": "Model only support text input",
+                        "type": "BadRequest",
+                    }
+                },
+            ),
+            _observation_response(OBSERVATION_TEXT),
+        ]
+    )
     monkeypatch.setattr(ModelClient, "client", factory)
     agent = Agent(s, output_fn=lambda _text: None)
     image = s.images.load(str(path), force=True)
@@ -350,6 +364,12 @@ def test_auto_unknown_learns_false_and_then_bridges(tmp_path, monkeypatch):
         agent.run(UserInput(f"what is shown {IMAGE_MARKER}", (image,)))
     assert s.images.support() is False
     assert s.images.bridging() is True
+
+    tool, output = call_view_image(s, [path.name])
+    assert OBSERVATION_TEXT in output
+    assert 'vision="v/vision-model"' in output
+    assert tool.model_observation() is None
+    assert len(factory.calls) == 2
 
 
 def test_learned_support_survives_a_snapshot_reload(tmp_path, monkeypatch):

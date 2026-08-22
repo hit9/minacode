@@ -36,6 +36,9 @@
 
 ### Fixed
 
+- Text-only model errors phrased as `only support text input` now activate a configured vision
+  bridge after the failed capability probe, instead of sending each later image to the same model
+  and repeating the provider error.
 - A stale `Edit` anchor now returns a small, freshly anchored file neighborhood in the failed
   result, so a verified nearby target can be retried without another `Read`; ambiguous targets
   still require a read and are never guessed. Batched edits now also return the same duplicate-line

@@ -119,6 +119,7 @@ class ImageInputs:
     _TOKEN_RE = re.compile(r"(?:'[^'\n]*'|\"(?:\\.|[^\"\n])*\"|(?:\\.|[^\s])+)")
     _IMAGE_STATUS_RE = re.compile(r"\b(?:400|415|422)\b")
     _IMAGE_VARIANT_REJECTION_RE = re.compile(r"\bunknown variant\b\s*[`'\"]?(?:image_url|input_image|image)\b[`'\"]?[\s\S]*\bexpected\b[\s\S]*\btext\b")
+    _TEXT_ONLY_MODEL_RE = re.compile(r"\bmodel\b[^\n.!?]{0,80}\bonly supports?\s+text(?:\s+input)?\b")
     _LEADING_PUNCTUATION = "([{<"
     _TRAILING_PUNCTUATION = ",;:!?)]}>"
     _MODALITY_TERMS = ("image", "vision", "multimodal", "input_image", "image_url", "modality")
@@ -505,7 +506,8 @@ class ImageInputs:
         mentions_image = any(term in text for term in cls._MODALITY_TERMS)
         rejects_modality = any(term in text for term in cls._UNSUPPORTED_TERMS)
         rejects_image_schema = cls._IMAGE_VARIANT_REJECTION_RE.search(text) is not None
-        return (mentions_image and rejects_modality) or rejects_image_schema
+        rejects_text_only_model = cls._TEXT_ONLY_MODEL_RE.search(text) is not None
+        return (mentions_image and rejects_modality) or rejects_image_schema or rejects_text_only_model
 
     def _session(self) -> Session:
         if self.session is None:

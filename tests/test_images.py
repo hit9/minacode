@@ -508,6 +508,16 @@ def test_only_explicit_image_unsupported_error_is_learned(tmp_path, monkeypatch)
         model.request([message], [])
     assert s.images.support() is None
 
+    s.config.provider.model = "text-format-error-model"
+
+    def text_format_error(_messages, _tools):
+        raise ModelError("Error code: 400 - response_format only supports text input")
+
+    monkeypatch.setattr(model, "api_request", text_format_error)
+    with pytest.raises(ModelError, match="response_format only supports text input"):
+        model.request([message], [])
+    assert s.images.support() is None
+
 
 def test_non_numeric_sdk_code_does_not_bypass_image_error_status_gate(tmp_path, monkeypatch):
     s = session(tmp_path)
