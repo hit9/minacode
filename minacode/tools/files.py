@@ -284,7 +284,6 @@ class Edit:
     end: str = ""
     content: str = ""
     old: str = ""
-    new: str = ""
 
 
 @dataclass
@@ -341,13 +340,13 @@ LARGE_EDIT_CHARS = 6000
 def _large_edit(edits: list[Edit]) -> EditWarning | None:
     """Warn when one call wrote enough text that it should have been several.
 
-    Deliberately measured on what the model typed (`content` and `new`), not on the file's before
-    and after, which is why this one is not in EDIT_WARNINGS: the subject is the assistant message
-    the call arrived in, not the change it made. That message is generated in one stretch, and a
-    response timeout or an output cap partway through discards all of it -- this edit, the
-    reasoning that reached it, and every other call batched beside it. Smaller edits land as they
-    go, and cost nothing extra when nothing goes wrong."""
-    written = sum(len(edit.content) + len(edit.new) for edit in edits)
+    Deliberately measured on what the model typed (`content`), not on the file's before and after,
+    which is why this one is not in EDIT_WARNINGS: the subject is the assistant message the call
+    arrived in, not the change it made. That message is generated in one stretch, and a response
+    timeout or an output cap partway through discards all of it -- this edit, the reasoning that
+    reached it, and every other call batched beside it. Smaller edits land as they go, and cost
+    nothing extra when nothing goes wrong."""
+    written = sum(len(edit.content) for edit in edits)
     if written < LARGE_EDIT_CHARS:
         return None
     return EditWarning(
@@ -380,8 +379,9 @@ class EditTool(Tool):
         "start..end range (the line at end is itself replaced or deleted); insert_before/insert_after keep "
         "the anchor line and only add content beside it; replace_unique replaces text that occurs exactly "
         "once and refuses when it does not. Do not copy unchanged surrounding context into replacement or "
-        "insertion content; Edit preserves it automatically. Prefer replace_unique for a small edit when the "
-        "exact old text is unique, because it does not depend on anchors. "
+        "insertion content; Edit preserves it automatically. Every operation that writes text uses the same "
+        "content field. Prefer replace_unique for a small edit when the exact old text is unique, because it "
+        "does not depend on anchors. "
         "Work in small steps: one call per cohesive change, and split a large rewrite across several "
         "calls, because everything one call writes is generated inside a single assistant message "
         "and a timeout partway through loses all of it."
@@ -390,8 +390,8 @@ class EditTool(Tool):
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
         'insert after an anchored line without copying the anchor as context. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"10:1ab2c","content":"new_value = 1\\n"}]}',
-        'replace one exact block without anchors. Example: {"path":"src/app.py","edits":[{"op":"replace_unique","old":"value = 1\\n","new":"value = 2\\n"}]}',
-        'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
+        'replace one exact block without anchors. Example: {"path":"src/app.py","edits":[{"op":"replace_unique","old":"value = 1\\n","content":"value = 2\\n"}]}',
+        'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","content":"NewName"}]}',
     )
     MUTATES = True
 
@@ -422,15 +422,16 @@ class EditTool(Tool):
             "content": {
                 "type": "string",
                 "description": (
-                    "New text for create/replace/insert. For replace: only the final replacement text for the inclusive "
-                    "start..end range; lines before start and after end are preserved automatically and must not be "
-                    "copied into content merely as context. For insert_before/insert_after: only the new text; the anchor "
-                    "line is preserved automatically, so do not copy it merely to keep it. The new text may independently "
-                    "equal neighboring text when that is the intended result. For create: the whole file."
+                    "New text for create/replace/insert/replace_all/replace_unique. For replace: only the final replacement "
+                    "text for the inclusive start..end range; lines before start and after end are preserved automatically "
+                    "and must not be copied into content merely as context. For insert_before/insert_after: only the new "
+                    "text; the anchor line is preserved automatically, so do not copy it merely to keep it. For "
+                    "replace_all/replace_unique: the exact replacement for old; content must be present, and an explicit "
+                    "empty string deletes the match. The new text may independently equal neighboring text when that is the "
+                    "intended result. For create: the whole file."
                 ),
             },
             "old": {"type": "string", "description": "Text to find for replace_all/replace_unique"},
-            "new": {"type": "string", "description": "Replacement text for replace_all/replace_unique"},
         }, ["op"])
         return cls.object_schema({
             "path": {"type": "string", "description": "File to create or patch"},
@@ -551,7 +552,7 @@ class EditTool(Tool):
         for item in raw_edits:
             if not isinstance(item, dict):
                 raise ToolError("each edit must be an object")
-            if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old", "new"}):
+            if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
             if op not in {"create", "replace", "delete", "insert_before", "insert_after", "replace_all", "replace_unique"}:
@@ -562,6 +563,8 @@ class EditTool(Tool):
                 raise ToolError(f"{op} requires start and end anchors")
             if op in {"insert_before", "insert_after"} and not item.get("start"):
                 raise ToolError(f"{op} requires start anchor")
+            if op in {"replace_all", "replace_unique"} and ("content" not in item or item["content"] is None):
+                raise ToolError(f"{op} requires content; use an explicit empty string to delete the match")
             edits.append(
                 Edit(
                     op=op,
@@ -569,7 +572,6 @@ class EditTool(Tool):
                     end=str(item.get("end") or ""),
                     content=self.normalize_text(str(item.get("content") or "")),
                     old=self.normalize_text(str(item.get("old") or "")),
-                    new=self.normalize_text(str(item.get("new") or "")),
                 )
             )
         return path, edits
@@ -631,14 +633,14 @@ class EditTool(Tool):
                     raise ToolError("replace_all requires old")
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
-                content = content.replace(edit.old, edit.new)
+                content = content.replace(edit.old, edit.content)
             return EditApplyResult(content, [(0, 0, 0, len(ReadTool.split_lines(content)))], [], True)
         lines = ReadTool.split_lines(original)
         resolve_anchor = anchor_resolver or (lambda anchor: self.resolve_anchor(lines, anchor))
         replacements = []
         for edit in edits:
             if edit.op == "replace_unique":
-                replacements.append(self._replace_unique_span(original, edit.old, edit.new))
+                replacements.append(self._replace_unique_span(original, edit.old, edit.content))
                 continue
             start = resolve_anchor(edit.start)
             if edit.op in {"replace", "delete"}:

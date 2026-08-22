@@ -1515,7 +1515,7 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     status_tool = DelegateTool(parent, [{"action": "status"}])
     block = runner.approval_display(ToolCall("delegate-3", "Delegate", [{"action": "status"}]), status_tool, "confirm")
     assert not block.has_children
-    edit_tool = EditTool(parent, ["a.py", [{"op": "replace_all", "old": "x", "new": "y"}]])
+    edit_tool = EditTool(parent, ["a.py", [{"op": "replace_all", "old": "x", "content": "y"}]])
     (tmp_path / "a.py").write_text("x\n")
     block = runner.approval_display(ToolCall("edit-1", "Edit", ["a.py", []]), edit_tool, "confirm")
     assert block.has_children

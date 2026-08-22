@@ -15,6 +15,10 @@
 
 ### Changed
 
+- **Breaking:** `Edit` now uses `content` as the single field for text written by every operation,
+  including `replace_all` and `replace_unique`; their former `new` field is rejected. Exact-text
+  replacements must include `content`, with an explicit empty string meaning deletion, so an
+  omitted replacement can no longer silently delete the match.
 - Worker replies printed between tool calls now render as markdown, like the worker's final
   report. Tool lines stay as the log tree.
 - The live stream preview now marks inline markdown in the streaming text: `**bold**`,

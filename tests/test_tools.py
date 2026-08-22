@@ -1444,7 +1444,7 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     with pytest.raises(ToolError):
         ReadTool(s, [{"path": "sample.py", "ranges": []}]).call()
     with pytest.raises(ToolError):
-        EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "new": "a\n"}]]).call()
+        EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "content": "a\n"}]]).call()
     with pytest.raises(ToolError):
         BashTool(s, []).call()
     with pytest.raises(ToolError):
