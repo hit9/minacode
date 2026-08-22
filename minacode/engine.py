@@ -98,7 +98,14 @@ class Agent:
         tool_batches = 0
         malformed_tool_names: list[str] = []
         user_message = self._initial_user_message(user_input)
-        user_text = self.session.images.label_text(user_message)
+        if isinstance(user_input, UserInput) and self.session.images.bridging():
+            # The bridged message appends the vision observation, which is the vision model's
+            # output, not the user's text. Mentions resolve against the typed text only (the
+            # same contract the queued path keeps, see _observe_queued_input), so an @file:
+            # shown in a screenshot never inlines that file into context.
+            user_text = user_input.display_text()
+        else:
+            user_text = self.session.images.label_text(user_message)
         turn_messages = [user_message, *self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
         self.checkpoint_turn(turn_messages, transcript_messages)
