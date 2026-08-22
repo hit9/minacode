@@ -30,6 +30,9 @@
   elapsed time, rate, and a queued line) widens the rule so both sides keep at least twelve dashes and the label
   stays whole, instead of squeezing the comet's track to two or three dashes; on a narrow
   terminal the trail shrinks and the comet slows down so it never reads as frantic.
+- Quick-hint chips are picked with `Enter` (again unpicks) instead of `Space`: the pick
+  returns focus to the prompt, so `Tab` to the next chip and `Enter` again combines several
+  suggestions, and a final `Enter` sends. `Space` is a plain space again.
 
 ### Fixed
 

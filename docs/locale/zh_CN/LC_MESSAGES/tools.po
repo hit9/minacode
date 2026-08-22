@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: minacode 0.9\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-21 03:08-0700\n"
+"POT-Creation-Date: 2026-08-21 22:38-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -87,8 +87,8 @@ msgid ""
 " instead."
 msgstr ""
 "将一个本地 PNG、JPEG、WebP 或单帧 GIF 作为视觉输入提供给当前模型。Agent 可主动用它查看截图、模型图、图表和生成的素材。查看"
-" workspace 外的图片需要确认。当当前 provider/model 无法接收图片时，配置了 "
-"[vision model](configuration.md#vision-model) 会改由视觉模型描述图片。"
+" workspace 外的图片需要确认。当当前 provider/model 无法接收图片时，配置了 [vision "
+"model](configuration.md#vision-model) 会改由视觉模型描述图片。"
 
 #: ../../tools.md:47
 msgid "**`Search`**"
@@ -244,46 +244,50 @@ msgstr "**`NextHints`**"
 msgid ""
 "Offers 2–3 short next-step prompts the model suggests after its answer. "
 "They appear as selectable chips at the idle prompt; `Tab` cycles focus, "
-"`Space` picks a chip into the input (press again to unpick) so several "
-"can be combined before sending, and `/hints` toggles them off. An "
-"all-`NextHints` batch ends the turn in a single model call."
+"`Enter` picks a chip into the input (press again to unpick) and returns "
+"to the prompt, so `Tab` to the next chip and `Enter` again combines "
+"several before sending, and `/hints` toggles them off. An all-`NextHints`"
+" batch ends the turn in a single model call."
 msgstr ""
 "在回答之后给出模型建议的 2–3 条简短的下一步。它们以可选择的 chip 形式出现在 idle 提示符处；`Tab` "
-"循环切换焦点，`Space` 把 chip 选进输入框（再按一次取消选中），可以组合多个后再发送，`/hints` 关闭它们。一整批都是 "
-"`NextHints` 的调用会在一次模型调用内结束这个回合。"
+"循环切换焦点，`Enter` 把 chip 选进输入框（再按一次取消选中）并返回提示符，因此 `Tab` 移到下一个 chip 再按 "
+"`Enter` 即可组合多个后再发送，`/hints` 关闭它们。一整批都是 `NextHints` "
+"的调用会在一次模型调用内结束这个回合。"
 
-#: ../../tools.md:114
+#: ../../tools.md:115
 msgid ""
-"`Tab` moves the highlight; `Space` picks the focused chip into the input "
-"line (again unpicks), and `Enter` on the input line sends the combined "
-"text."
-msgstr "`Tab` 移动高亮；`Space` 把聚焦的 chip 选进输入行（再按取消），在输入行上按 `Enter` 发送组合后的文本。"
+"`Tab` moves the highlight; `Enter` picks the focused chip into the input "
+"line (again unpicks) and returns to the prompt, so `Tab` to the next chip"
+" and `Enter` again combines several; a final `Enter` sends."
+msgstr ""
+"`Tab` 移动高亮；`Enter` 把聚焦的 chip 选进输入行（再按取消）并返回提示符，因此 `Tab` 移到下一个 chip 再按 "
+"`Enter` 即可组合多个；最后按一次 `Enter` 发送。"
 
-#: ../../tools.md:116
+#: ../../tools.md:118
 msgid "**`Skill`**"
 msgstr "**`Skill`**"
 
-#: ../../tools.md:117
+#: ../../tools.md:119
 msgid ""
 "Loads an installed skill's full instructions when needed. It appears only"
 " when skills are installed; see [Skills](skills.md)."
 msgstr "按需加载已安装 skill 的完整指令。仅当存在已安装 skill 时才会出现；见 [Skills](skills.md)。"
 
-#: ../../tools.md:119
+#: ../../tools.md:121
 msgid "**`MCP`**"
 msgstr "**`MCP`**"
 
-#: ../../tools.md:120
+#: ../../tools.md:122
 msgid ""
 "Describes or calls tools and reads resources from a connected MCP server."
 " It appears only after a server is connected; see [MCP](mcp.md)."
 msgstr "描述或调用已连接 MCP server 的工具，并读取其资源。仅在 server 连接后出现；见 [MCP](mcp.md)。"
 
-#: ../../tools.md:122
+#: ../../tools.md:124
 msgid "**`ToolScript`**"
 msgstr "**`ToolScript`**"
 
-#: ../../tools.md:123
+#: ../../tools.md:125
 msgid ""
 "Runs a Python script the agent writes, so many tool calls happen in one "
 "call instead of one at a time. Only what the script prints returns to the"
@@ -292,11 +296,11 @@ msgstr ""
 "运行 agent 写的一段 Python 脚本,把多次工具调用合并成一次。只有脚本 print 的内容回到对话,从而省 token;见 "
 "[ToolScript](#toolscript)。"
 
-#: ../../tools.md:126
+#: ../../tools.md:128
 msgid "**`Delegate`**"
 msgstr "**`Delegate`**"
 
-#: ../../tools.md:127
+#: ../../tools.md:129
 msgid ""
 "Hands a bounded task to a second in-process session (the worker) that "
 "runs on its own configured provider with a reduced tool set, keeping its "
@@ -307,11 +311,11 @@ msgstr ""
 "和精简后的工具集，并在各次委派之间保留上下文，直到被重置。仅当启用 [worker delegation](worker.md#worker-"
 "delegation) 时才会出现。"
 
-#: ../../tools.md:134
+#: ../../tools.md:136
 msgid "ToolScript"
 msgstr "ToolScript"
 
-#: ../../tools.md:136
+#: ../../tools.md:138
 msgid ""
 "`ToolScript` is how the agent makes many tool calls at once: it writes "
 "one small Python program, and inside it a `call()` is a tool call. "
@@ -322,7 +326,7 @@ msgstr ""
 "`ToolScript` 让 agent 一次发起很多次工具调用:它写一段小 Python 程序,程序里的 `call()` "
 "就是一次工具调用。因为是代码,agent 可以循环遍历列表、根据结果分支、把一次调用的输出喂给下一次——然后整个程序作为一次调用执行。"
 
-#: ../../tools.md:141
+#: ../../tools.md:143
 msgid ""
 "The payoff is tokens: the calls the script makes, and everything they "
 "print, never enter the conversation - only the few lines it prints at the"
@@ -332,14 +336,14 @@ msgstr ""
 "好处是省 token:脚本发起的调用和它们的输出都不会进对话,回来的只有脚本最后 print 的那几行。本来要占十几条 tool "
 "消息、每条输出都撑一块上下文的事,现在只占一次。"
 
-#: ../../tools.md:145
+#: ../../tools.md:147
 msgid ""
 "The log stays compact: the script's calls hang indented under it on one "
 "`│` rail down to the result line, so the whole batch reads as work the "
 "script did - not calls the agent made one by one."
 msgstr "日志也很紧凑:脚本发出的调用缩进记在它下面,由一条 `│` 竖线连到结果行,整批读起来是脚本干的活,而不是 agent 逐个发出的调用。"
 
-#: ../../tools.md:151
+#: ../../tools.md:153
 msgid ""
 "The log shows the first lines of a script, not all of it. To see the "
 "whole thing: pick **View script** at the confirmation prompt (or type "
@@ -351,18 +355,18 @@ msgstr ""
 "日志只显示脚本的开头几行。想看完整内容:确认提示时选中 **View script**(或输入 `v`),或跑完后按 **`Ctrl-O`** "
 "从列表里选中脚本。两者都打开只读查看器,显示完整脚本;跑完后还会附上返回的结果。`--yolo` 下没有确认提示,只能走 `Ctrl-O`。"
 
-#: ../../tools.md:159
+#: ../../tools.md:161
 msgid ""
 "A script has the same privileges as `Bash` - there is no sandbox. Every "
 "run asks for confirmation showing the script's opening lines; `--yolo` "
 "skips it, as with `Bash`."
 msgstr "脚本的权限和 `Bash` 一样,没有沙箱。每次运行都会请求确认,并展示脚本的开头几行;`--yolo` 会跳过,规则同 `Bash`。"
 
-#: ../../tools.md:163
+#: ../../tools.md:165
 msgid "Provider-side tools"
 msgstr "Provider 侧工具"
 
-#: ../../tools.md:165
+#: ../../tools.md:167
 msgid ""
 "Some providers can <span class=\"marker\">search the web "
 "themselves</span>, as part of answering. The model searches, reads the "
@@ -375,17 +379,17 @@ msgstr ""
 "不执行任何东西。该能力默认关闭，通过 [`builtin_tools`](configuration.md#provider-side-"
 "tools) 开启。"
 
-#: ../../tools.md:169
+#: ../../tools.md:171
 msgid ""
 "You see a line for each search, `web search` as the working phase while "
 "it runs, and the pages it read listed under the answer:"
 msgstr "每次搜索都会有一行提示，运行期间工作阶段显示为 `web search`，读过的页面列在回答下方："
 
-#: ../../tools.md:174
+#: ../../tools.md:176
 msgid "Sources appear when the provider reports them; not all of them do."
 msgstr "只有 Provider 返回来源时才会显示；并非所有 Provider 都会返回。"
 
-#: ../../tools.md:176
+#: ../../tools.md:178
 msgid ""
 "Unlike the tools above, a search is never confirmed — it happens inside "
 "the model's own reply, so the only control is whether you enable it. What"
@@ -394,11 +398,11 @@ msgid ""
 "the questions themselves are sensitive."
 msgstr "与上面的工具不同，搜索不会经过确认——它发生在模型自己的回复内部，唯一的控制手段就是是否启用。它读取的是不可信的网页文本，并且会让这一轮变得更大。在无人值守运行、或问题本身涉及敏感信息时，请保持关闭。"
 
-#: ../../tools.md:181
+#: ../../tools.md:183
 msgid "Code symbol index"
 msgstr "代码符号索引"
 
-#: ../../tools.md:183
+#: ../../tools.md:185
 msgid ""
 "minacode includes a **code symbol index** for <span "
 "class=\"marker\">structured navigation</span> — finding definitions, "
@@ -409,11 +413,11 @@ msgstr ""
 "minacode 内置**代码符号索引**，用于<span class=\"marker\">结构化导航</span>：无需外部 language"
 " server 即可查找定义、调用者、引用和实现。索引会<span class=\"marker\">按项目分别构建</span>。"
 
-#: ../../tools.md:187
+#: ../../tools.md:189
 msgid "What it is"
 msgstr "它是什么"
 
-#: ../../tools.md:189
+#: ../../tools.md:191
 msgid ""
 "The index is a static database of symbols (functions, classes, methods, "
 "variables, etc.) extracted from your project's source files. It is built "
@@ -423,56 +427,56 @@ msgstr ""
 "索引是从项目源文件中提取的符号（function、class、method、variable 等）静态数据库。它由 [code-symbol-"
 "index](https://github.com/hit9/code-symbol-index) 构建，支持多种语言。"
 
-#: ../../tools.md:194
+#: ../../tools.md:196
 msgid "When the index is available, the `InspectCode` tool can:"
 msgstr "索引可用时，`InspectCode` 可以："
 
-#: ../../tools.md:196
+#: ../../tools.md:198
 msgid "**Find symbols** by name with fuzzy matching"
 msgstr "按名称进行模糊匹配，**查找符号**"
 
-#: ../../tools.md:197
+#: ../../tools.md:199
 msgid "**Inspect a symbol** — show its definition and members"
 msgstr "**检查符号** — 显示其定义和成员"
 
-#: ../../tools.md:198
+#: ../../tools.md:200
 msgid ""
 "**List references** — call, read, write, and type references across the "
 "project"
 msgstr "**列出引用** — 项目中的 call、read、write 和 type 引用"
 
-#: ../../tools.md:199
+#: ../../tools.md:201
 msgid "**Walk call chains** — transitive callers and callees"
 msgstr "**遍历调用链** — 递归查找调用者和被调用者"
 
-#: ../../tools.md:200
+#: ../../tools.md:202
 msgid "**File outlines** — symbol tree of a single file"
 msgstr "**文件 outline** — 显示单个文件的符号树"
 
-#: ../../tools.md:202
+#: ../../tools.md:204
 msgid ""
 "Asking where `MCPManager` is defined returns the symbol itself, not every"
 " line that mentions the word:"
 msgstr "询问 `MCPManager` 在哪里定义时，返回的是符号本身，而不是所有提到该单词的行："
 
-#: ../../tools.md:207
+#: ../../tools.md:209
 msgid ""
 "Each hit carries its file and line range, so the agent can open exactly "
 "the right lines. The same index answers \"who calls this\" and \"what "
 "implements this\" the same way."
 msgstr "每个结果都包含文件和行范围，因此 agent 可以只打开准确位置。同一索引也可以回答“谁调用它”和“谁实现它”。"
 
-#: ../../tools.md:211
+#: ../../tools.md:213
 msgid ""
 "Without an index, `InspectCode` reports that the index is unavailable. "
 "Run `/index` once in a project to build it."
 msgstr "没有索引时，`InspectCode` 会报告索引不可用。在项目中运行一次 `/index` 即可构建。"
 
-#: ../../tools.md:215
+#: ../../tools.md:217
 msgid "Building and syncing"
 msgstr "构建与同步"
 
-#: ../../tools.md:217
+#: ../../tools.md:219
 msgid ""
 "<span class=\"marker\">Run `/index` to build or rebuild the index.</span>"
 " The first build walks every source file; subsequent builds sync from the"
@@ -482,7 +486,7 @@ msgstr ""
 "<span class=\"marker\">运行 `/index` "
 "构建或重建索引。</span>首次构建会扫描所有源文件；后续构建会基于之前的快照同步，因此快得多。加上 `force` 可从头重建。"
 
-#: ../../tools.md:221
+#: ../../tools.md:223
 msgid ""
 "When an index already exists, minacode refreshes it in the background at "
 "startup. After an agent turn, it <span class=\"marker\">automatically "
@@ -493,55 +497,55 @@ msgstr ""
 "class=\"marker\">自动更新少量已修改的源文件</span>；如果大量改动导致索引过期，请运行 `/index`。`/status`"
 " 会显示当前状态："
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "State"
 msgstr "状态"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "Meaning"
 msgstr "含义"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "**synced**"
 msgstr "**synced**"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "Index is current and ready"
 msgstr "索引已同步，可以使用"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "**stale**"
 msgstr "**stale**"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "Out of date; wait for background refresh or run `/index`"
 msgstr "索引已过期；等待后台刷新或运行 `/index`"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "**syncing**"
 msgstr "**syncing**"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "A background refresh is in progress"
 msgstr "正在后台刷新"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "**missing**"
 msgstr "**missing**"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "No index exists yet; run `/index`"
 msgstr "索引尚未创建；运行 `/index`"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "**error**"
 msgstr "**error**"
 
-#: ../../tools.md:210
+#: ../../tools.md:212
 msgid "The index failed to build or sync; `/status` shows the details"
 msgstr "索引构建或同步失败；`/status` 会显示详情"
 
-#: ../../tools.md:234
+#: ../../tools.md:236
 msgid ""
 "The project index is stored in `.code-symbol-index/index.sqlite`. It "
 "covers Python, JavaScript, TypeScript, Go, Rust, C, C++, Java, and more."

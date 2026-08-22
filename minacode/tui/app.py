@@ -550,7 +550,7 @@ class TuiApp:
         self.invalidate()
 
     def _live_quick_hints(self, buffer: Buffer) -> tuple[str, ...]:
-        """The chips Tab and Space act on, or () when the chip row is not in play.
+        """The chips Tab and Enter act on, or () when the chip row is not in play.
 
         It is in play on a chat prompt that still holds exactly the picked text -- any manual edit
         leaves that agreement -- and with no completion menu open, which owns both keys while it
@@ -582,23 +582,26 @@ class TuiApp:
                 self._refresh_file_completions(buffer)
         self.complete_input(buffer, reverse=reverse)
 
-    def _handle_space(self, buffer: Buffer) -> None:
-        """Space toggles the chip Tab has focused, and only then; anywhere else -- including on the
-        chip row with focus still on the input line -- it inserts a plain space."""
+    def _pick_quick_hint(self, buffer: Buffer) -> bool:
+        """Toggle the chip Tab has focused into the input; True when the chip row was in play.
+
+        Enter picks and returns focus to the input line, so a second Enter sends. The pick is
+        a toggle: a chip already picked is unpicked."""
         hints = self._live_quick_hints(buffer)
-        if hints and 0 <= self.quick_hint_focus < len(hints):
-            hint = hints[self.quick_hint_focus]
-            if hint in self.quick_hint_picked:
-                self.quick_hint_picked.remove(hint)
-            else:
-                self.quick_hint_picked.append(hint)
-            self._reset_input("\n".join(self.quick_hint_picked), preserve_quick_hints=True)
-            return
-        buffer.insert_text(" ")
+        if not hints or not 0 <= self.quick_hint_focus < len(hints):
+            return False
+        hint = hints[self.quick_hint_focus]
+        if hint in self.quick_hint_picked:
+            self.quick_hint_picked.remove(hint)
+        else:
+            self.quick_hint_picked.append(hint)
+        self._reset_input("\n".join(self.quick_hint_picked), preserve_quick_hints=True)
+        self.quick_hint_focus = -1
+        return True
 
     def placeholder_text(self) -> str:
         if self.input_mode == "chat" and self.quick_hints():
-            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Space picks into the input (again unpicks) \u00b7 Enter sends"
+            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter picks (again unpicks) \u00b7 Enter sends"
         return self.input_hint_fn()
 
     def _on_input_text_changed(self, buffer: Buffer) -> None:
@@ -1045,16 +1048,17 @@ class TuiApp:
             if is_searching():
                 pt_search.accept_search()
                 return
-            event.current_buffer.validate_and_handle()
+            # Enter on a focused quick-hint chip picks it into the input and returns focus to the
+            # input line, so a second Enter sends.
+            buffer = event.current_buffer
+            if self._pick_quick_hint(buffer):
+                return
+            buffer.validate_and_handle()
 
         bindings.add("enter", filter=~modal, eager=True)(enter)
         bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
         for key, reverse in (("tab", False), ("s-tab", True)):
             bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.tab_or_complete(event.current_buffer, reverse=reverse))
-        # Space toggles the focused chip only while the input holds exactly the picked text and no
-        # completion menu is open; otherwise it inserts a plain space. Never eager, so ordinary
-        # typing still reaches the buffer.
-        bindings.add("space", filter=~modal)(lambda event: self._handle_space(event.current_buffer))
 
         # The approval action row is live only while the line is empty: the moment a reason is being
         # typed, Tab completes and the arrows move the cursor, exactly as everywhere else. That is
