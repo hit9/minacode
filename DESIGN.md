@@ -412,7 +412,7 @@ threshold; provider integration tests verify reported usage and acceptance witho
 A worker is the same process's second minacode session, driven serially by the parent through one
 `Delegate` tool call per round: a full minacode (compaction, Recall, tr.N, Job, Skill, MCP, diff,
 confirmation, snapshots) with its own system prompt and reduced tool list. The worker never
-reaches back. Three decisions are easy to reopen; their reasons follow.
+reaches back. Four decisions are easy to reopen; their reasons follow.
 
 **No worker-to-parent tool calls.** A reverse call would re-enter the parent's `Agent.run` mid-turn;
 the agent loop is the serialized writer of active-turn messages (see "Context is a projection"), so
@@ -432,3 +432,13 @@ message, never spliced into its system prompt, or every delegation starts a fres
 worker inherits the parent's `created_at` (Environment byte-identical across spawns), keeps its
 tool list fixed, and shares the parent's SkillLibrary/MCPManager so no index changes between
 delegations.
+
+**Acceptance belongs to the parent; a worker's report is a claim, not evidence.** The worker's
+summary optimizes for its own success, so the parent accepts on what it re-derives itself: the
+diff, and command output it re-ran or read directly. The check has to run at the layer that
+carries the risk - a key-binding change needs keys driven through the real bindings, a request
+adapter change needs the wire body asserted - because the method-level suite stays green even
+when the wiring above it is wrong. The order's verification list is a floor, not a ceiling: the
+worker cannot test files its order never named, so the parent re-runs wider (the sibling test
+file holding a stale assertion is the classic leak), and green on tests the worker also wrote is
+weaker evidence than green on a pre-existing black-box test.
