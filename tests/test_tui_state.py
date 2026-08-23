@@ -267,16 +267,21 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
     clock[0] = 7.0  # no anchor: still breathing, just at whatever phase the clock is in
     assert LiveSpark.style() in ramp
 
-    # The two stars swap at the darkest point of the breath (the half-period), so the change
-    # reads as the color fading rather than a flicker; phase zero is GLYPH.
+    # The star changes once per breath at the crest, so every star is seen at full brightness:
+    # the opening breath is the fine four-point star, the next breath the heavy six-point one,
+    # then back; phase zero is GLYPH.
     clock[0] = 0.0
     assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH
     clock[0] = 0.25 * LiveSpark.PERIOD
-    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH  # the bright half keeps GLYPH
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH  # the whole opening breath keeps GLYPH
     clock[0] = 0.75 * LiveSpark.PERIOD
-    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPHS[1]  # swapped after the trough
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH  # still the opening breath, past the trough
     clock[0] = LiveSpark.PERIOD
-    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH  # and back at the crest
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPHS[1]  # the next breath is the heavy star
+    clock[0] = LiveSpark.PERIOD + LiveSpark.PERIOD / 2
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPHS[1]  # and it holds through its trough
+    clock[0] = 2 * LiveSpark.PERIOD
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH  # and back at the third breath
 
     def luma(style):
         red, green, blue = Theme.rgb(style.split()[0])

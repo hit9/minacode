@@ -1045,8 +1045,9 @@ class LiveSpark:
     # A text glyph rather than an emoji: terminals draw emoji in their own colors, so a breath put
     # on one lands on whatever is beside it instead, and emoji are two cells before the space.
     GLYPH: ClassVar[str] = "✦ "
-    # Two weights of the star, swapped at the trough of the breath so the change is almost
-    # invisible; each is the width of a rail. GLYPH is the phase-zero entry.
+    # Two weights of the star, one per breath, swapped at the crest so every star is seen at full
+    # brightness: the opening breath is the fine four-point star, the next breath the heavy
+    # six-point one, then back. GLYPH is the phase-zero entry.
     GLYPHS: ClassVar[tuple[str, ...]] = ("✦ ", "✶ ")
     # Twice the divider pulse's period: that dot marks a request in flight and should read as a
     # heartbeat, while this one sits over a wall of text and would nag at that rate.
@@ -1101,12 +1102,12 @@ class LiveSpark:
 
     @classmethod
     def glyph(cls, started_at: float = 0.0) -> str:
-        """The spark's mark at this phase: the two stars swap at the darkest point of the breath,
-        so the change reads as the color fading rather than a flicker. Shares the phase clock
-        with `style`; `GLYPH` is the phase-zero entry."""
+        """The spark's mark at this phase: one star per breath, the fine four-point star on the
+        opening breath and the heavy six-point star on the next, so each is seen at full
+        brightness; `GLYPH` is the opening entry. Shares the phase clock with `style`."""
         elapsed = (time.monotonic() - started_at) if started_at else time.monotonic()
-        phase = (elapsed % cls.PERIOD) / cls.PERIOD
-        return cls.GLYPHS[0 if phase < 0.5 else 1]
+        breath = int(elapsed // cls.PERIOD)
+        return cls.GLYPHS[breath % 2]
 
 
 class BashLivePreview:

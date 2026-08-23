@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The live spark now shows one star per breath and swaps at the crest, so both the fine
+  four-point star and the heavy six-point one appear at full brightness: the opening breath
+  is the four-point star, the next the six-point one, then back.
+
 ## 0.31.0 - 2026-08-23
 
 ### Added
