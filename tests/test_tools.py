@@ -226,876 +226,112 @@ def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monk
     assert s.state.code_index_status == "synced"
 
 
-def test_ask_tool_call_basic(tmp_path):
-    """call() returns question text when question_fn is None."""
-    s = session(tmp_path)
-    assert AskTool(s, _q({"question": "Which approach?"})).call() == "Which approach?"
-
-
-def test_ask_tool_call_callback_passthrough_choices_none(tmp_path):
-    """call() passes choices/previews/recommended as None when not provided."""
-    s = session(tmp_path)
-    calls = []
-
-    def fake_fn(specs):
-        calls.append(specs)
-        return ["free text answer"]
-
-    tool = AskTool(s, _q({"question": "Name?"}))
-    tool.question_fn = fake_fn
-    assert tool.call() == "free text answer"
-    spec = calls[0][0]
-    assert spec.choices is None
-    assert spec.previews is None
-    assert spec.recommended is None
-
-
-def test_ask_tool_call_empty_list_raises(tmp_path):
-    """call() raises ToolError when questions list is missing or empty."""
-    s = session(tmp_path)
-    with pytest.raises(ToolError, match="non-empty 'questions' list"):
-        AskTool(s, [{"questions": []}]).call()
-    with pytest.raises(ToolError, match="non-empty 'questions' list"):
-        AskTool(s, [{}]).call()
-
-
-def test_ask_tool_call_empty_question_raises(tmp_path):
-    """call() raises ToolError for empty/missing question text."""
-    s = session(tmp_path)
-    with pytest.raises(ToolError, match="each question requires a 'question' field"):
-        AskTool(s, _q({"question": ""})).call()
-    with pytest.raises(ToolError, match="each question requires a 'question' field"):
-        AskTool(s, _q({})).call()
-
-
-def test_ask_tool_call_invalid_args_raises(tmp_path):
-    """call() raises ToolError for malformed top-level args."""
-    s = session(tmp_path)
-    with pytest.raises(ToolError, match="Ask requires named fields"):
-        AskTool(s, ["just a string"]).call()
-    with pytest.raises(ToolError, match="Ask requires named fields"):
-        AskTool(s, []).call()
-
-
-def test_ask_tool_call_invalid_choices_raises(tmp_path):
-    """call() validates choices type."""
-    s = session(tmp_path)
-    with pytest.raises(ToolError, match="Ask choices must be a list of strings"):
-        AskTool(s, _q({"question": "Q", "choices": "not-a-list"})).call()
-    with pytest.raises(ToolError, match="Ask choices must be a list of strings"):
-        AskTool(s, _q({"question": "Q", "choices": [1, 2, 3]})).call()
-
-
-def test_ask_tool_call_invalid_previews_raises(tmp_path):
-    """call() validates previews type and length."""
-    s = session(tmp_path)
-    with pytest.raises(ToolError, match="Ask previews must be a list of strings"):
-        AskTool(s, _q({"question": "Q", "choices": ["A"], "previews": [1]})).call()
-    with pytest.raises(ToolError, match="Ask previews must match choices length"):
-        AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "previews": ["only one"]})).call()
-
-
-def test_ask_tool_call_invalid_recommended_raises(tmp_path):
-    """call() validates recommended is an in-range choice index."""
-    s = session(tmp_path)
-    with pytest.raises(ToolError, match="valid 0-based choice index"):
-        AskTool(s, _q({"question": "Q", "choices": ["A", "B"], "recommended": 2})).call()
-    with pytest.raises(ToolError, match="valid 0-based choice index"):
-        AskTool(s, _q({"question": "Q", "recommended": 0})).call()  # no choices
-    with pytest.raises(ToolError, match="valid 0-based choice index"):
-        AskTool(s, _q({"question": "Q", "choices": ["A"], "recommended": True})).call()  # bool not int
-
-
-def test_ask_tool_call_invokes_callback(tmp_path):
-    """call() passes the whole batch to question_fn and returns its single answer verbatim."""
-    s = session(tmp_path)
-    calls = []
-
-    def fake_fn(specs):
-        calls.append(specs)
-        return ["user chose B"]
-
-    tool = AskTool(s, _q({"question": "A or B?", "choices": ["A", "B"], "previews": ["PA", "PB"], "recommended": 1}))
-    tool.question_fn = fake_fn
-    result = tool.call()
-    assert result == "user chose B"
-    spec = calls[0][0]
-    assert (spec.question, spec.choices, spec.previews, spec.recommended) == ("A or B?", ["A", "B"], ["PA", "PB"], 1)
-    assert len(calls[0]) == 1  # the whole batch arrives in one call
-
-
-def test_ask_tool_call_multiple_questions(tmp_path):
-    """call() asks the whole batch at once and labels the combined answers."""
-    s = session(tmp_path)
-    asked = []
-
-    def fake_fn(specs):
-        asked.extend(spec.question for spec in specs)
-        return [{"Runtime?": "Node", "Name?": "core"}[spec.question] for spec in specs]
-
-    tool = AskTool(
-        s,
-        _q(
-            {"question": "Runtime?", "choices": ["Node", "Deno"]},
-            {"question": "Name?"},
-        ),
-    )
-    tool.question_fn = fake_fn
-    result = tool.call()
-    assert asked == ["Runtime?", "Name?"]  # batch order preserved
-    assert result == "Q: Runtime?\nA: Node\n\nQ: Name?\nA: core"
-
-
-def test_ask_tool_call_no_previews_with_choices(tmp_path):
-    """call() allows choices without previews."""
-    s = session(tmp_path)
-    assert AskTool(s, _q({"question": "Q", "choices": ["A", "B"]})).call() == "Q"
-
-
-def test_ask_tool_call_with_choices(tmp_path):
-    """call() accepts choices and returns fallback question text."""
-    s = session(tmp_path)
-    assert AskTool(s, _q({"question": "Which?", "choices": ["A", "B"]})).call() == "Which?"
-
-
-def test_ask_tool_call_with_choices_and_previews(tmp_path):
-    """call() accepts choices + previews."""
-    s = session(tmp_path)
-    tool = AskTool(
-        s,
-        _q(
-            {
-                "question": "Which?",
-                "choices": ["A", "B"],
-                "previews": ["Preview A", "Preview B"],
-            }
-        ),
-    )
-    assert tool.call() == "Which?"
-
-
-def test_ask_tool_registered():
-    """AskTool is in TOOLS and TOOL_REGISTRY."""
-    assert AskTool.NAME == "Ask"
-    assert AskTool in TOOLS
-    assert TOOL_REGISTRY["Ask"] is AskTool
-    assert "Question" not in TOOL_REGISTRY
-    assert not hasattr(minacode, "QuestionTool")
-
-
-def test_ask_tool_schema():
-    """params_schema requires a questions array of question objects, strict."""
-    schema = AskTool.params_schema()
-    assert schema["type"] == "object"
-    assert schema["required"] == ["questions"]
-    assert schema["additionalProperties"] is False
-    questions = schema["properties"]["questions"]
-    assert questions["type"] == "array"
-    assert questions["minItems"] == 1
-    item = questions["items"]
-    assert item["required"] == ["question"]
-    assert item["additionalProperties"] is False
-    props = item["properties"]
-    assert props["question"]["type"] == "string"
-    assert props["choices"]["items"]["type"] == "string"
-    assert props["previews"]["items"]["type"] == "string"
-    assert props["recommended"]["type"] == "integer"
-
-
-def test_ask_tool_schema_strict(tmp_path):
-    """schema() enforces additionalProperties=False at both levels."""
-    schema = AskTool.schema()
-    params = schema["function"]["parameters"]
-    assert params["additionalProperties"] is False
-    assert "questions" in params["properties"]
-    item = params["properties"]["questions"]["items"]
-    assert item["additionalProperties"] is False
-    assert "question" in item["properties"]
-    assert "choices" in item["properties"]
-    assert "previews" in item["properties"]
-
-
-def test_ask_tool_short_args(tmp_path):
-    """short_args() shows the first question and a count of the rest."""
-    s = session(tmp_path)
-    tool = AskTool(s, _q({"question": "Which approach should I use?"}))
-    args = tool.short_args()
-    assert len(args) == 1
-    assert "Which approach" in args[0]
-    assert "more" not in args[0]
-    multi = AskTool(s, _q({"question": "First?"}, {"question": "Second?"}))
-    assert "(+1 more)" in multi.short_args()[0]
-    assert len(AskTool(s, []).short_args()) == 1
-
-
-def test_ask_tool_validates_batch_before_asking(tmp_path):
-    """A malformed later question raises before any question is asked."""
-    s = session(tmp_path)
-    asked = []
-
-    def fake_fn(specs):
-        asked.extend(spec.question for spec in specs)
-        return ["x"] * len(specs)
-
-    tool = AskTool(
-        s,
-        _q(
-            {"question": "First?", "choices": ["A"]},
-            {"question": "Second?", "choices": ["A", "B"], "recommended": 5},  # out of range
-        ),
-    )
-    tool.question_fn = fake_fn
-    with pytest.raises(ToolError, match="valid 0-based choice index"):
-        tool.call()
-    assert asked == []  # validation happens up front, so nothing was asked
-
-
-def test_ask_tool_wired_in_tool_runner(tmp_path):
-    """ToolRunner injects question_fn into AskTool instances."""
-    s = session(tmp_path)
-    ctx = ContextManager(s)
-    captured = []
-
-    def fake_question_fn(specs):
-        captured.append(specs)
-        return ["test answer"]
-
-    runner = ToolRunner(s, ctx, output_fn=lambda text: None)
-    runner.question_fn = fake_question_fn
-    results = runner.run([ToolCall("q", "Ask", [{"questions": [{"question": "A or B?", "choices": ["A", "B"], "recommended": 0}]}])])
-    assert len(results) == 1
-    assert results[0]["tool_call_id"] == "q"
-    assert results[0]["role"] == "tool"
-    assert "test answer" in results[0]["content"]
-    spec = captured[0][0]
-    assert (spec.question, spec.choices, spec.recommended) == ("A or B?", ["A", "B"], 0)
-
-
-def test_auto_approved_tool_prints_single_line_with_tag(tmp_path):
-    # In yolo mode a confirmation-requiring tool without a preview (Bash) should print only the
-    # result line tagged [auto], not a redundant "auto …" pre-line that duplicates the header.
-    s = session(tmp_path)
-    s.settings.yolo = True
-    out = []
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: out.append(str(text)))
-    runner.run([ToolCall("b0", "Bash", [":"])])
-    assert len(out) == 1
-    assert out[0].startswith("  Bash  ")
-    assert out[0].rstrip().endswith("[auto]")
-    assert sum(line.startswith("  Bash  ") for line in out) == 1
-
-
-def test_gitignore_cache_cleanup_on_file_delete(tmp_path):
-    """Cache entry is removed when .gitignore is deleted."""
-    gitignore = tmp_path / ".gitignore"
-    gitignore.write_text("delete_me.txt\n", encoding="utf-8")
-    s = session(tmp_path)
-    tool = SearchTool(s, [{"pattern": "x"}])
-
-    tool.gitignore_patterns(str(tmp_path))
-    ws_gitignore = str(gitignore)
-    assert ws_gitignore in s._gitignore_cache
-
-    # Delete the .gitignore file
-    gitignore.unlink()
-    patterns = tool.gitignore_patterns(str(tmp_path))
-    assert patterns == []
-    assert ws_gitignore not in s._gitignore_cache
-
-
-def test_gitignore_cache_invalidates_on_file_change(tmp_path):
-    """Cache re-reads .gitignore when mtime changes."""
-    gitignore = tmp_path / ".gitignore"
-    gitignore.write_text("old.txt\n", encoding="utf-8")
-    s = session(tmp_path)
-    tool = SearchTool(s, [{"pattern": "x"}])
-
-    patterns1 = tool.gitignore_patterns(str(tmp_path))
-    assert patterns1 == ["old.txt"]
-
-    ws_gitignore = str(gitignore)
-    old_mtime = s._gitignore_cache[ws_gitignore][0]
-
-    # Modify the .gitignore file
-    gitignore.write_text("new.txt\n", encoding="utf-8")
-    patterns2 = tool.gitignore_patterns(str(tmp_path))
-    assert patterns2 == ["new.txt"]
-
-    new_mtime = s._gitignore_cache[ws_gitignore][0]
-    assert new_mtime != old_mtime
-
-
-def test_gitignore_cache_keyed_by_root(tmp_path):
-    """Different root directories cache independently."""
-    sub = tmp_path / "sub"
-    sub.mkdir()
-    (tmp_path / ".gitignore").write_text("root_ignored.txt\n", encoding="utf-8")
-    (sub / ".gitignore").write_text("sub_ignored.txt\n", encoding="utf-8")
-
-    s = session(tmp_path)
-    tool = SearchTool(s, [{"pattern": "x"}])
-
-    # Root patterns include only workspace .gitignore
-    root_patterns = tool.gitignore_patterns(str(tmp_path))
-    assert "root_ignored.txt" in root_patterns
-    assert "sub_ignored.txt" not in root_patterns
-
-    # Sub patterns include workspace + sub .gitignore
-    sub_patterns = tool.gitignore_patterns(str(sub))
-    assert "root_ignored.txt" in sub_patterns  # workspace always included
-    assert "sub_ignored.txt" in sub_patterns
-
-    # Two separate cache entries
-    assert len(s._gitignore_cache) == 2
-
-
-def test_gitignore_cache_noop_when_no_gitignore(tmp_path):
-    """When no .gitignore exists, returns empty list and cache stays empty."""
-    s = session(tmp_path)
-    tool = SearchTool(s, [{"pattern": "x"}])
-
-    patterns = tool.gitignore_patterns(str(tmp_path))
-    assert patterns == []
-    assert len(s._gitignore_cache) == 0
-
-
-def test_gitignore_cache_populated_and_reused(tmp_path):
-    """Cache stores parsed patterns and reuses them on subsequent calls."""
-    (tmp_path / ".gitignore").write_text("ignored.txt\nbuild/\n", encoding="utf-8")
-    s = session(tmp_path)
-    tool = SearchTool(s, [{"pattern": "x"}])
-
-    # First call populates the cache
-    patterns1 = tool.gitignore_patterns(str(tmp_path))
-    assert "ignored.txt" in patterns1
-    assert "build/" in patterns1
-
-    # Cache should exist for the workspace .gitignore
-    ws_gitignore = str(tmp_path / ".gitignore")
-    assert ws_gitignore in s._gitignore_cache
-    cached_mtime, cached_patterns = s._gitignore_cache[ws_gitignore]
-    assert cached_patterns == patterns1
-
-    # Second call reuses cache (mtime unchanged)
-    patterns2 = tool.gitignore_patterns(str(tmp_path))
-    assert patterns2 == patterns1
-    # Cache entry unchanged
-    assert s._gitignore_cache[ws_gitignore][0] == cached_mtime
-
-
-def test_gitignore_cache_preserves_order(tmp_path):
-    """After a no-op stat (no change), patterns come from cache unchanged."""
-    (tmp_path / ".gitignore").write_text("a.txt\nb.txt\n", encoding="utf-8")
-    s = session(tmp_path)
-    tool = SearchTool(s, [{"pattern": "x"}])
-
-    p1 = tool.gitignore_patterns(str(tmp_path))
-    p2 = tool.gitignore_patterns(str(tmp_path))
-
-    # Same object identity isn't required, but content must match
-    assert p1 == p2 == ["a.txt", "b.txt"]
-
-
-def test_gitignore_cache_shared_across_tools(tmp_path):
-    """SearchTool instances share the same gitignore cache via Session."""
-    (tmp_path / ".gitignore").write_text("secret.log\n", encoding="utf-8")
-    s = session(tmp_path)
-
-    find = SearchTool(s, [{"pattern": "x"}])
-    search = SearchTool(s, [{"pattern": "needle", "path": "."}])
-
-    # Find populates the cache
-    find_patterns = find.gitignore_patterns(str(tmp_path))
-    assert find_patterns == ["secret.log"]
-
-    # Search reuses the same cache entry
-    search_patterns = search.gitignore_patterns(str(tmp_path))
-    assert search_patterns == find_patterns
-
-    ws_key = str(tmp_path / ".gitignore")
-    assert ws_key in s._gitignore_cache
-    # Only one cache entry, not duplicated
-    assert len(s._gitignore_cache) == 1
-
-
-def test_gitignore_line_filtering_unchanged(tmp_path):
-    """Cache still filters blank lines, comments, and negation patterns."""
-    (tmp_path / ".gitignore").write_text("keep.txt\n\n  # comment\n!negated.txt\n  \n", encoding="utf-8")
-    s = session(tmp_path)
-    tool = SearchTool(s, [{"pattern": "x"}])
-
-    patterns = tool.gitignore_patterns(str(tmp_path))
-    assert patterns == ["keep.txt"]
-
-    assert s.tool_errors == []
-
-
-def test_inspect_code_api_errors_return_failed_result(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
-    monkeypatch.setattr(csi, "search", lambda *args, **kwargs: (_ for _ in ()).throw(csi.CodeSymbolIndexError("bad query")))
-
-    result = InspectCodeTool(s, ["find", "Missing"]).call()
-
-    assert "* exit_code: 1" in result
-    assert "bad query" in result
-
-
-def test_inspect_code_modes_call_symbol_index_api(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    (tmp_path / "sample.py").write_text("class Example:\n    pass\n", encoding="utf-8")
-    calls = []
-
-    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
-    monkeypatch.setattr(csi, "search", lambda query, **kwargs: calls.append(("search", query, kwargs)) or "search ok")
-    monkeypatch.setattr(csi, "inspect", lambda query, **kwargs: calls.append(("inspect", query, kwargs)) or "inspect ok")
-    monkeypatch.setattr(csi, "outline", lambda path, **kwargs: calls.append(("outline", path, kwargs)) or "outline ok")
-    monkeypatch.setattr(csi, "refs", lambda query, **kwargs: calls.append(("refs", query, kwargs)) or "refs ok")
-    monkeypatch.setattr(csi, "impls", lambda query, **kwargs: calls.append(("impls", query, kwargs)) or "impls ok")
-    monkeypatch.setattr(csi, "callers", lambda query, **kwargs: calls.append(("callers", query, kwargs)) or "callers ok")
-    monkeypatch.setattr(csi, "callees", lambda query, **kwargs: calls.append(("callees", query, kwargs)) or "callees ok")
-
-    assert "search ok" in InspectCodeTool(s, ["find", "Example", {"kind": "class,function", "limit": 10, "exact_only": True}]).call()
-    assert "inspect ok" in InspectCodeTool(s, ["inspect", "Example", {"path": "sample.py"}]).call()
-    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py"]).call()
-    assert "outline ok" in InspectCodeTool(s, ["outline", "sample.py", {"limit": 300}]).call()
-    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"all_kinds": True, "offset": 5}]).call()
-    assert "impls ok" in InspectCodeTool(s, ["impls", "Example", {"kind": "class"}]).call()
-    assert "callers ok" in InspectCodeTool(s, ["callers", "Example", {"depth": 2}]).call()
-    assert "callees ok" in InspectCodeTool(s, ["callees", "Example"]).call()
-
-    assert calls[0] == (
-        "search",
-        "Example",
-        {"root": str(tmp_path), "kind": "class,function", "path": None, "exact_only": True, "format": "text", "limit": 10},
-    )
-    assert calls[1] == (
-        "inspect",
-        "Example",
-        {
-            "root": str(tmp_path),
-            "kind": None,
-            "path": "sample.py",
-            "exact_only": False,
-            "format": "text",
-            "limit": csi.DEFAULT_PAGE_LIMIT,
-            "anchors": True,
-            "anchor_format": "explicit",
-        },
-    )
-    assert calls[2] == (
-        "outline",
-        "sample.py",
-        {"root": str(tmp_path), "symbol": None, "max_symbols": csi.DEFAULT_MAX_OUTLINE_SYMBOLS, "format": "text"},
-    )
-    assert calls[3] == (
-        "outline",
-        "sample.py",
-        {"root": str(tmp_path), "symbol": None, "max_symbols": 300, "format": "text"},
-    )
-    assert calls[4] == (
-        "refs",
-        "Example",
-        {
-            "root": str(tmp_path),
-            "kind": None,
-            "path": None,
-            "exact_only": False,
-            "format": "text",
-            "limit": csi.DEFAULT_MAX_REFERENCES,
-            "offset": 5,
-            "ref_kinds": "all",
-        },
-    )
-    assert calls[5] == (
-        "impls",
-        "Example",
-        {"root": str(tmp_path), "kind": "class", "path": None, "exact_only": False, "format": "text", "limit": csi.DEFAULT_MAX_IMPLEMENTORS, "offset": 0},
-    )
-    assert calls[6] == (
-        "callers",
-        "Example",
-        {"root": str(tmp_path), "kind": None, "path": None, "exact_only": False, "format": "text", "limit": csi.DEFAULT_MAX_CALLERS, "depth": 2},
-    )
-    assert calls[7] == (
-        "callees",
-        "Example",
-        {
-            "root": str(tmp_path),
-            "kind": None,
-            "path": None,
-            "exact_only": False,
-            "format": "text",
-            "limit": csi.DEFAULT_MAX_CALLEES,
-            "depth": 3,
-            "loose": False,
-        },
-    )
-
-    assert "refs ok" in InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call,write"}]).call()
-    assert calls[8][2]["ref_kinds"] == "call,write"
-    assert "callees ok" in InspectCodeTool(s, ["callees", "Example", {"loose": True}]).call()
-    assert calls[9][2]["loose"] is True
-
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["outline", "missing.py"]).call()
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["inspect", "sample.py"]).call()
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["outline", "sample.py", {"limit": 1001}]).call()
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["refs", "sample.py"]).call()
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["callers", "Example", {"depth": 9}]).call()
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["refs", "Example", {"ref_kind": "bogus"}]).call()
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["refs", "Example", {"ref_kind": "call", "all_kinds": True}]).call()
-
-
-def test_inspect_code_strips_kind_prefix_from_target(tmp_path, monkeypatch):
-    s = session(tmp_path)
-    calls = []
-    monkeypatch.setattr(CodeIndex, "available", lambda self: True)
-    monkeypatch.setattr(csi, "search", lambda query, **kwargs: calls.append(query) or "ok")
-
-    # "class Config" with kind "class" -> the redundant leading kind word is dropped.
-    InspectCodeTool(s, ["find", "class Config", {"kind": "class"}]).call()
-    assert calls[-1] == "Config"
-
-    # Works when the kind option lists several kinds.
-    InspectCodeTool(s, ["find", "function handoff", {"kind": "class,function"}]).call()
-    assert calls[-1] == "handoff"
-
-    # Only the declared kind is stripped: a bare language keyword is not, and still errors.
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["find", "def foo", {"kind": "function"}]).call()
-    # No kind provided -> nothing to key off, still rejected.
-    with pytest.raises(ToolError):
-        InspectCodeTool(s, ["find", "class Config"]).call()
-
-
-def test_log_block_aligns_multiline_tool_arguments():
-    block = LogBlock.hierarchy(
-        LogLine("Bash", 'git commit -m "title\nbody"', LogRole.TOOL, syntax="bash"),
-        [LogLine("done", role=LogRole.META, edge=LogEdge.END)],
-    )
-    expected = '  Bash  git commit -m "title\n        body"\n    └ done'
-
-    assert str(block) == expected
-    rendered = "".join(text for _style, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
-    assert rendered == expected + "\n"
-
-
-def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
-    command = 'git commit -m "system prompt: enhance with attitude, updates, review mode, and tooling rules"'
-    block = LogBlock([LogLine("Bash", command, LogRole.TOOL, syntax="bash")])
-
-    with monkeypatch.context() as patch:
-        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((40, 24)))
-        rendered = "".join(text for _style, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
-
-    assert rendered.splitlines() == [
-        '  Bash  git commit -m "system prompt:',
-        "        enhance with attitude,",
-        "        updates, review mode, and",
-        '        tooling rules"',
-    ]
-    assert all(len(line) < 40 for line in rendered.splitlines())
-
-
-def test_note_tool_replace_known(tmp_path):
-    s = session(tmp_path)
-    s.state.known = ["old fact"]
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    short = runner.short_call(ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
-    assert short == "Note known:\n  new fact a\n  new fact b"
-
-    output = []
-    runner.output_fn = output.append
-    runner.run([ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}])])
-    assert s.state.known == ["new fact a", "new fact b"]
-    assert output == ["known:\n  new fact a\n  new fact b"]
-
-    runner.run([ToolCall("n", "Note", [{"replace_known": []}])])
-    assert s.state.known == []
-
-
-def test_note_tool_set_check(tmp_path):
-    s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    short = runner.short_call(ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
-    assert short == "Note check: pytest -q passed"
-
-    output = []
-    runner.output_fn = output.append
-    runner.run([ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
-    assert s.state.check == "pytest -q passed"
-    assert output == ["check: pytest -q passed"]
-
-
-def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
-    s = session(tmp_path)
-    s.state.known = ["existing"]
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
-
-    output = []
-    runner.output_fn = output.append
-    runner.run(
-        [
-            ToolCall(
-                "note",
-                "Note",
-                [
-                    {
-                        "set_goal": "ship",
-                        "replace_plan": [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}],
-                        "append_known": ["existing", "pytest"],
-                    }
-                ],
-            )
-        ]
-    )
-
-    assert s.state.goal == "ship"
-    assert [vars(item) for item in s.state.plan] == [{"status": "doing", "text": "inspect"}, {"status": "todo", "text": "patch"}]
-    assert s.state.known == ["existing", "pytest"]
-    assert s.tool_records == []
-    assert output == ["goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + pytest"]
-
-
-def test_note_tool_validates_before_mutating_state(tmp_path):
-    s = session(tmp_path)
-    s.state.goal = "old goal"
-    s.state.plan = ["old plan"]
-    s.state.known = ["old fact"]
-
-    with pytest.raises(ToolError) as error:
-        NoteTool(s, [{"set_goal": "new goal", "replace_plan": "inspect"}]).call()
-
-    assert str(error.value) == 'Note replace_plan must be an array of plan items, e.g. {"replace_plan":[{"status":"doing","text":"inspect"}]}'
-    assert s.state.goal == "old goal"
-    assert s.state.plan == ["old plan"]
-    assert s.state.known == ["old fact"]
-
-    with pytest.raises(ToolError, match="Note replace_plan status must be one of"):
-        NoteTool(s, [{"replace_plan": [{"status": "started", "text": "inspect"}]}]).call()
-
-
-def test_note_tool_views_selected_state_without_mutating(tmp_path):
-    s = session(tmp_path)
-    s.state.goal = "ship"
-    s.state.plan = [{"status": "doing", "text": "verify"}]
-
-    result = json.loads(NoteTool(s, [{"action": "view", "fields": ["goal", "plan"]}]).call())
-
-    assert result == {"goal": "ship", "plan": [{"status": "doing", "text": "verify"}]}
-    assert NoteTool(s, [{"action": "view"}]).needs_confirmation() is False
-
-
-def test_memory_tools_treat_strict_schema_nulls_as_omitted(tmp_path):
-    s = session(tmp_path)
-    note_result = json.loads(
-        NoteTool(
-            s,
-            [{"action": "update", "fields": None, "set_goal": "ship", "replace_plan": None, "append_known": None, "replace_known": None, "set_check": None}],
-        ).call()
-    )
-    s.history.append(HistorySegment(key="seg.1", title="cache"))
-    list_result = json.loads(
-        RecallContextTool(
-            s,
-            [{"action": "list", "keys": None, "query": None, "case_sensitive": None, "limit": 1, "before": None}],
-        ).call()
-    )
-
-    assert note_result["changed"] == ["goal"]
-    assert list_result["segments"] == [{"key": "seg.1", "title": "cache"}]
-
-
-def test_note_short_args_treats_strict_schema_nulls_as_omitted(tmp_path):
-    payload = {
-        "action": None,
-        "fields": None,
-        "set_goal": None,
-        "replace_plan": None,
-        "append_known": None,
-        "replace_known": None,
-        "set_check": None,
-    }
-
-    assert NoteTool(session(tmp_path), [payload]).short_args() == ["view all"]
-
-
-def test_note_empty_goal_and_check_explicitly_clear_state(tmp_path):
-    s = session(tmp_path)
-    s.state.goal = "ship"
-    s.state.check = "tests pass"
-    tool = NoteTool(s, [{"set_goal": "", "set_check": ""}])
-
-    assert tool.short_args() == ["goal: (cleared)\ncheck: (cleared)"]
-    assert json.loads(tool.call())["changed"] == ["goal", "check"]
-    assert s.state.goal == ""
-    assert s.state.check == ""
-
-
-def test_recall_context_distinguishes_a_dropped_segment_from_an_unknown_one(tmp_path):
-    """Only the newest segments are retained, so a key below the window is gone for good. Saying
-    that, with what is still reachable, is what stops the model from retrying the same key."""
-    s = session(tmp_path)
-    s.history.extend(HistorySegment(key=f"seg.{number}", title=f"span {number}", text="body") for number in range(7, 10))
-
-    result = RecallContextTool(s, [{"action": "get", "keys": ["seg.3", "seg.99", "seg.8"]}]).call()
-
-    assert "* seg.3: dropped; only the newest 3 segments are kept, from seg.7" in result
-    assert "* seg.99: missing" in result
-    assert '<Segment key="seg.8" title="span 8">' in result
-
-
-def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
-    s = session(tmp_path)
-    s.history.append(HistorySegment(key="seg.1", title="cache", text="needle"))
-
-    listed = json.loads(
-        RecallContextTool(
-            s,
-            [{"action": "list", "keys": [], "query": "", "case_sensitive": False, "limit": 20}],
-        ).call()
-    )
-    searched = RecallContextTool(
-        s,
-        [{"action": "search", "keys": [], "query": "needle", "case_sensitive": False, "limit": 20}],
-    ).call()
-    retrieved = RecallContextTool(
-        s,
-        [{"action": "get", "keys": ["seg.1"], "query": "", "case_sensitive": False, "limit": 20}],
-    ).call()
-    updated = json.loads(NoteTool(s, [{"action": "update", "fields": [], "set_goal": "ship"}]).call())
-    viewed = json.loads(NoteTool(s, [{"action": "view", "fields": []}]).call())
-
-    assert listed["segments"] == [{"key": "seg.1", "title": "cache"}]
-    assert "needle" in searched
-    assert "needle" in retrieved
-    assert updated["changed"] == ["goal"]
-    assert viewed["goal"] == "ship"
-
-
-@pytest.mark.parametrize(
-    ("payload", "message"),
-    [
-        ({"action": "view", "set_goal": "bad"}, "view does not accept"),
-        ({"action": "view", "fields": ["goal", "summary"]}, "fields must contain only"),
-        ({"action": "update", "fields": ["goal"], "set_goal": "bad"}, "fields is only valid"),
-    ],
-)
-def test_note_actions_reject_conflicting_fields(tmp_path, payload, message):
-    with pytest.raises(ToolError, match=message):
-        NoteTool(session(tmp_path), [payload]).call()
-
-
-def test_suggest_tool_sets_transient_quick_hints(tmp_path):
-    s = session(tmp_path)
-    assert NextHintsTool(s, [{"inputs": ["run the tests", "show the diff"]}]).call() == "Offered 2 quick input(s)"
-    assert s.quick_hints == ("run the tests", "show the diff")
-
-
-def test_suggest_tool_dedupes_and_caps(tmp_path):
-    s = session(tmp_path)
-    NextHintsTool(s, [{"inputs": ["a", "a", "b", "c", "d", "e"]}]).call()
-    assert s.quick_hints == ("a", "b", "c", "d")
-
-
-def test_suggest_tool_validates_before_writing(tmp_path):
-    s = session(tmp_path)
-    with pytest.raises(ToolError, match="inputs must be an array"):
-        NextHintsTool(s, [{"inputs": "run"}]).call()
-    with pytest.raises(ToolError, match="at least one non-empty"):
-        NextHintsTool(s, [{"inputs": ["  "]}]).call()
-    with pytest.raises(ToolError, match="inputs must be an array"):
-        NextHintsTool(s, [{"inputs": [1, {"x": 1}]}]).call()  # non-string elements are rejected
-    with pytest.raises(ToolError, match="unexpected field"):
-        NextHintsTool(s, [{"inputs": ["a"], "extra": 1}]).call()
-    assert s.quick_hints == ()
-
-
-def test_suggest_tool_does_not_store_result():
-    assert NextHintsTool.STORES_RESULT is False
-
-
-def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
-    """Several legal NextHints calls in one batch accumulate their inputs in call order,
-    deduplicated and capped at MAX_HINTS, instead of the last call replacing the rest."""
-    s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
-    messages = runner.run(
-        [
-            ToolCall("n1", "NextHints", [{"inputs": ["run the tests", "show the diff"]}]),
-            ToolCall("n2", "NextHints", [{"inputs": ["commit the work", "run the tests"]}]),
-        ]
-    )
-    assert len(messages) == 2  # each call still gets its own tool result
-    assert s.quick_hints == ("run the tests", "show the diff", "commit the work")
-
-    # The cap applies to the merged total, not per call.
-    s.clear_quick_hints()
-    first = [f"a{index}" for index in range(4)]
-    second = [f"b{index}" for index in range(4)]
-    runner.run([ToolCall("n3", "NextHints", [{"inputs": first}]), ToolCall("n4", "NextHints", [{"inputs": second}])])
-    assert s.quick_hints == (*first, *second)[: NextHintsTool.MAX_HINTS]
-
-
-def test_suggest_tool_short_args(tmp_path):
-    tool = NextHintsTool(session(tmp_path), [{"inputs": ["run the tests", "show the diff"]}])
-    assert tool.short_args() == ['inputs: "run the tests", "show the diff"']
-
-
-def test_quick_hints_are_transient_and_never_serialized(tmp_path):
-    s = session(tmp_path)
-    s.add_quick_hints(["run the tests", "show the diff"])
-    s.next_hints_available = False
-    assert s.quick_hints == ("run the tests", "show the diff")
-    snapshot = SessionSnapshotCodec.snapshot(s, {})
-    assert "quick_hints" not in snapshot
-    assert "next_hints_available" not in snapshot
-    assert "quick_hints" not in snapshot["state"]
-    s.clear_quick_hints()
-    assert s.quick_hints == ()
-
-
-def test_runtime_settings_no_longer_exposes_quick_hints_config(tmp_path):
-    settings = RuntimeSettings.from_dict({"runtime": {"quick_hints": False}})
-    s = session(tmp_path)
-    s.settings = settings
-
-    assert not hasattr(settings, "quick_hints")
-    assert "quick_hints" not in ConfigFile.DEFAULT_TEXT
-    assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
-
-
-def test_legacy_config_quick_hints_key_loads_and_keeps_hints_enabled(tmp_path):
-    """An old config file with `[runtime] quick_hints = false` still loads: the obsolete key is
-    ignored (no runtime field, no crash) and the TUI capability stays on, so hints are not
-    disabled by stale configuration."""
-    cfg = tmp_path / "minacode.toml"
-    cfg.write_text("[runtime]\nquick_hints = false\n", encoding="utf-8")
-    s = Session.from_config_file(path=str(cfg))
-
-    assert not hasattr(s.settings, "quick_hints")
-    assert s.next_hints_available is True
-    assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
-
-
-def test_resolved_schemas_follow_frontend_next_hints_capability(tmp_path):
-    s = session(tmp_path)
-
-    def names():
-        return {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
-
-    assert "NextHints" in names()
-    s.next_hints_available = False
-    assert "NextHints" not in names()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_read_and_search_success_paths(tmp_path):
