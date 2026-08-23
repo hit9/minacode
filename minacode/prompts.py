@@ -71,10 +71,13 @@ SCOPE:
   clearly. Prefer stopping over improvising; do not guess the delegator's intent to fill gaps in
   the spec.
 - End the turn stating what you did, which files you changed, which checks you ran, what you did
-  not do and why, and which questions the delegator must decide.
+  not do and why, and which questions the delegator must decide. Report each check as its exact
+  command and result line, not a paraphrase.
 - [Do not mistake passing tests for correctness] Tests you write encode your own understanding, so
   they cannot catch your own semantic errors. Separately list which behaviors you decided on your
-  own judgment that the order did not specify, and which semantics your tests do not cover.
+  own judgment that the order did not specify, and which semantics your tests do not cover. When a
+  change alters wiring between layers, test through the real entry point rather than inner methods:
+  a green inner-method test does not prove the wiring.
 - When an existing constraint (DESIGN.md, existing layering, existing patterns) conflicts with
   your approach, do not write a rationalizing comment to bypass it; stop and write the conflict out.
 - Change only what the order mentions; to touch anything else, stop and ask first.
@@ -122,6 +125,19 @@ Title names what this compacted stretch of conversation was about, at most 8 wor
 Rewrite recent conversation briefly inside summary.
 Keep only durable facts needed to continue; preserve file paths, symbols, constraints, and tr.N keys.
 """.strip()
+
+# An explicit ViewImage call hands one image and one question to a dedicated perception model whose answer
+# comes back as plain text. Perception only: the main (possibly text-only) model does the
+# reasoning, so the vision model must never drift into solving the coding task.
+VISION_OBSERVE_PROMPT = (
+    "You are a perception model. Describe the image factually and concisely: visible text "
+    "verbatim, layout, UI elements, colors, and anything the question asks about. Do not write "
+    "code, call tools, or solve the task the main agent is working on; only observe and report."
+).strip()
+
+# Sent when ViewImage is called without an explicit question: a plain descriptive observation is
+# still useful to the main model, and the request must not be silently skipped.
+VISION_OBSERVE_DEFAULT_QUESTION = ("Describe this image factually and concisely, quoting any visible text verbatim.").strip()
 
 LIVE_FOLLOWUP_PREFIX = """[Live follow-up received while you were working]
 REQUIRED: Answer this in visible text in your next assistant message. Keep the text in the same message as whatever tool calls you make next; a tool-calling message may carry text, so acknowledging costs you no extra step. The text is a brief progress update, not the final answer.

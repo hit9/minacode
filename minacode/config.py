@@ -18,11 +18,11 @@ from minacode.providers.compat import (
     CompatibilityProfile,
     ResolvedProvider,
     compatibility_for_host,
+    is_text_only_model,
 )
 
 DEFAULT_MAX_CONTEXT_TOKENS = 256 * 1024
 PROVIDER_API_CHOICES = ("auto", "chat", "responses", "anthropic")
-IMAGE_INPUT_CHOICES = ("auto", "on", "off")
 REASONING_CHOICES = ("off", *REASONING_LEVELS)
 CHAT_REASONING_CHOICES = (
     "auto",
@@ -110,7 +110,6 @@ class ProviderConfig:
     model: str = ""
     api: str = "auto"
     stream: bool = True
-    image_input: str = "auto"
     prompt_cache_key: str = "auto"
     available_models: tuple[str, ...] = ()
     temperature: float | None = None
@@ -136,13 +135,11 @@ class ProviderConfig:
     @classmethod
     def from_dict(cls, data: Json) -> ProviderConfig:
         api = Config.str(data, "api", "auto")
-        image_input = Config.str(data, "image_input", "auto")
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
         for key, value, choices in (
             ("api", api, PROVIDER_API_CHOICES),
-            ("image_input", image_input, IMAGE_INPUT_CHOICES),
             ("reasoning", reasoning, REASONING_CHOICES),
             ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES),
         ):
@@ -161,7 +158,6 @@ class ProviderConfig:
             model=Config.str(data, "model"),
             api=api,
             stream=Config.bool(data, "stream", True),
-            image_input=image_input,
             prompt_cache_key=prompt_cache_key,
             available_models=Config.str_tuple(data, "available_models"),
             temperature=Config.float(data, "temperature", None),
@@ -241,6 +237,7 @@ class ProviderConfig:
             strict_tools_active=strict_tools_active,
             builtin_tools_by_wire=profile.builtin_tools_by_wire,
             json_response_format=profile.json_response_format,
+            text_only=is_text_only_model(model, profile),
         )
 
     def reasoning_effort(self) -> str:
@@ -287,7 +284,6 @@ class RuntimeSettings:
     # Max read-only tool calls from one model batch to execute concurrently; 1 disables parallelism.
     max_parallel_tools: int = 4
     yolo: bool = False
-    quick_hints: bool = True
     worker: bool = False  # register the Delegate tool (see [worker] in ConfigFile.DEFAULT_TEXT)
     theme: str = "auto"
     language: str = "auto"  # forced reply language; "auto" injects nothing (see /language)
@@ -304,7 +300,6 @@ class RuntimeSettings:
             max_parallel_tools=max(1, Config.int(runtime, "max_parallel_tools", 4)),
             session_retention_days=max(0, Config.int(runtime, "session_retention_days", 7)),
             yolo=yolo or Config.bool(runtime, "yolo", False),
-            quick_hints=Config.bool(runtime, "quick_hints", True),
             worker=Config.bool(runtime, "worker", False),
             theme=theme or Config.str(runtime, "theme", "auto"),
             language=RuntimeSettings.clean_language(Config.str(runtime, "language", "auto")),
@@ -349,6 +344,10 @@ class Config:
     compaction_model: str = ""
     compaction_reasoning: str = ""
     compaction_api: str = ""
+
+    # The provider entry used by explicit ViewImage calls. It only perceives an image and question;
+    # attachments still go directly to the active provider and never route here implicitly.
+    vision_provider: str = ""
 
     # Backward compatibility: the data dir moved from ~/.nanocode to ~/.minacode.
     LEGACY_DATA_DIR: ClassVar[str] = "~/.nanocode"
@@ -398,6 +397,10 @@ class Config:
         compaction_api = cls.str(compaction_root, "api", "")
         if compaction_api and compaction_api not in PROVIDER_API_CHOICES:
             raise ConfigError("compaction.api must be one of " + ", ".join(PROVIDER_API_CHOICES))
+        vision_root = cls.table(data, "vision")
+        vision_provider = cls.str(vision_root, "provider", "")
+        if vision_provider and vision_provider not in providers:
+            raise ConfigError(f"vision.provider `{vision_provider}` does not exist")
         return cls(
             active_provider=active,
             providers=providers,
@@ -411,6 +414,7 @@ class Config:
             compaction_model=cls.str(compaction_root, "model", ""),
             compaction_reasoning=compaction_reasoning,
             compaction_api=compaction_api,
+            vision_provider=vision_provider,
         )
 
     @staticmethod
@@ -502,7 +506,6 @@ key = ""
 model = ""
 # api = "auto"                 # auto | chat | responses | anthropic
 # stream = true
-# image_input = "auto"         # auto | on | off
 # reasoning = "medium"
 # max_context_tokens = 0       # how much of THIS model's window to use; 0 inherits runtime.max_context_tokens.
                                # Set it per entry when models differ: 1048576 for a 1M-window model,
@@ -522,7 +525,6 @@ model = ""
 
 # [runtime]                    # optional overrides (defaults shown)
 # yolo = false
-# quick_hints = true           # model-suggested next-step chips; toggle with /hints
 # max_context_tokens = 262144      # 256K; how much of the model's window to use, not its size.
                                # Raise it for a 1M-window model; lower it for a smaller one.
 # max_agent_steps = 400
@@ -541,6 +543,9 @@ model = ""
 # model = ""                  # optional: override the entry's model (inherit by default)
 # reasoning = ""              # optional: override the entry's reasoning; /worker reason at runtime
 # api = ""                    # optional: override the entry's api protocol; empty = inherit the entry's own
+# [vision]                     # optional: provider entry used only by explicit ViewImage calls
+# provider = "vision"          # its model receives the local image and optional question, then
+                               # returns a text observation to the active model
 # [mcp.example]                # url (+ auth = "oauth") for remote, or command/args for stdio
 # url = "https://example.com/mcp"
 # auto_connect = false

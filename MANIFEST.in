@@ -1,5 +1,4 @@
 include LICENSE
-include README.zh-CN.md
 recursive-include minacode/builtin_skills *.md
 prune demo*
 prune tests

@@ -13,7 +13,8 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from prompt_toolkit import print_formatted_text
-from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples
+from prompt_toolkit.application import get_app_or_none
+from prompt_toolkit.formatted_text import ANSI, FormattedText, StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.output import create_output
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
@@ -235,6 +236,10 @@ class UiPrinter:
     MESSAGE_ROLE_STYLES: ClassVar[dict[str, str]] = {"user": "cyan bold", "assistant": "magenta bold"}
     PROMPT_PREFIX: ClassVar[str] = "> "
     USER_LOG_PREFIX: ClassVar[str] = "• "
+    # How long scrollback emits wait before printing as one batch. Each print suspends the live
+    # application (erase + repaint), so batching a burst of tool-result lines into one suspend
+    # keeps the animated divider on screen; 30ms is well below human perception.
+    SCROLLBACK_BATCH_WINDOW: ClassVar[float] = 0.03
     MCP_STATUS_RE: ClassVar[re.Pattern[str]] = re.compile(r"● (connected|connecting|disconnected|disconnecting|error|skipped)")
     MCP_STATUS_ANSI: ClassVar[dict[str, str]] = {
         "connected": "\x1b[32m",
@@ -256,6 +261,116 @@ class UiPrinter:
     def __init__(self, output_fn=print):
         self.output_fn = output_fn
         self.color = output_fn is print and sys.stdout.isatty()
+        # Batch mode: while active, every emit appends its styled fragments instead of printing,
+        # so a burst of output (the restored-transcript replay) is printed by a single
+        # print_formatted_text call and flushes once. Under the TUI each call coordinates with the
+        # renderer, so batching turns a hundred of those into one. Only the colored path batches.
+        self._batch_parts: list[FormattedText | ANSI] | None = None
+        # Scrollback window: while a prompt_toolkit application is live, each print_formatted_text
+        # suspends it (erase the whole rendered output, print above it, repaint), which makes the
+        # animated divider visibly blink on every emit. A short window batches a burst of emits
+        # (a tool result's lines) into one suspend; outside a live application nothing changes.
+        self._scrollback_parts: list[FormattedText | ANSI] = []
+        self._scrollback_scheduled = False
+        self._scrollback_generation = 0
+        # Parts/scheduling state are touched from the app loop and the agent thread (enqueue and
+        # drain on direct prints/shutdown), so all access goes through this lock.
+        self._scrollback_lock = threading.Lock()
+
+    def drain_scrollback(self) -> None:
+        """Synchronously print anything still queued in the batching window.
+
+        Called before any direct print (so a later line never lands ahead of queued ones) and
+        at application shutdown (so a turn's last lines are not lost to an un-fired timer).
+        """
+        with self._scrollback_lock:
+            parts = self._scrollback_parts
+            self._scrollback_parts = []
+            self._scrollback_scheduled = False
+            self._scrollback_generation += 1
+        if parts:
+            print_formatted_text(*parts, sep="", end="", flush=True)
+
+    def _scrollback_print(self, fragment: FormattedText | ANSI) -> None:
+        """Print above a live application, batching a burst of emits into one suspend.
+
+        Outside a live application this drains any queued batch first and then prints
+        immediately, exactly as before, so headless and pre-TUI output is unchanged and
+        nothing queued is reordered or lost.
+
+        The batching path depends on the live application being reachable from this thread:
+        TuiApp.run never wraps create_app_session, so the app registers on the shared default
+        AppSession (prompt_toolkit's `_current_app_session` ContextVar default) and every
+        thread's get_app_or_none() sees it. Should a future caller wrap app.run in a private
+        create_app_session instead, this degrades gracefully to per-emit direct prints -- the
+        pre-batch behavior, correct but with the divider blink back.
+        """
+        app = get_app_or_none()
+        # `_running_in_terminal` has no public accessor; it is the only way to see "a suspend is
+        # already in progress" so a nested emit prints inside it instead of rejoining the window
+        # (which would delay it past the suspend's wait-then-return contract).
+        if app is None or not app.is_running or app._running_in_terminal:
+            self.drain_scrollback()
+            print_formatted_text(fragment, end="", flush=True)
+            return
+        loop = app.loop
+        assert loop is not None  # a running application always has one; the checker cannot see it
+        self._queue_scrollback(app, fragment)
+
+    def _queue_scrollback(self, app: Any, fragment: FormattedText | ANSI) -> None:
+        with self._scrollback_lock:
+            self._scrollback_parts.append(fragment)
+            if self._scrollback_scheduled:
+                return
+            self._scrollback_scheduled = True
+            generation = self._scrollback_generation
+        app.loop.call_soon_threadsafe(self._schedule_scrollback, app, generation)
+
+    def _schedule_scrollback(self, app: Any, generation: int) -> None:
+        with self._scrollback_lock:
+            if not self._scrollback_scheduled or generation != self._scrollback_generation:
+                return
+        app.loop.call_later(self.SCROLLBACK_BATCH_WINDOW, self._flush_scrollback, generation)
+
+    def _flush_scrollback(self, generation: int | None = None) -> None:
+        with self._scrollback_lock:
+            if generation is not None and generation != self._scrollback_generation:
+                return
+            self._scrollback_scheduled = False
+            parts = self._scrollback_parts
+            self._scrollback_parts = []
+        if parts:
+            print_formatted_text(*parts, sep="", end="", flush=True)
+
+    @contextlib.contextmanager
+    def batched(self):
+        """Collect every emit into one scrollback flush instead of one suspend per emit."""
+        if not self.color or self._batch_parts is not None:
+            yield
+            return
+        self._batch_parts = []
+        try:
+            yield
+        finally:
+            parts = self._batch_parts
+            self._batch_parts = None
+            if parts:
+                self._flush_batch(parts)
+
+    def _flush_batch(self, parts: list[FormattedText | ANSI]) -> None:
+        """Flush a collected batch through the scrollback path, keeping the batch a single print.
+
+        Inside a live application the parts join the same queue as ordinary emits -- landing after
+        anything already queued and flushing as one print; outside one they print directly, in
+        order, as one call."""
+        app = get_app_or_none()
+        if app is None or not app.is_running or app._running_in_terminal:
+            self.drain_scrollback()
+            print_formatted_text(*parts, sep="", end="", flush=True)
+            return
+        loop = app.loop
+        assert loop is not None  # a running application always has one; the checker cannot see it
+        self._queue_scrollback(app, FormattedText([segment for part in parts for segment in to_formatted_text(part)]))
 
     def emit(self, text: str | LogBlock = "", indent: int = 0) -> None:
         """Print one line or log block. `indent` moves plain text into a column; a LogBlock is
@@ -272,7 +387,10 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         if indent:
             segments = self.indent_segments(segments, LogBlock.margin(indent))
-        print_formatted_text(FormattedText(segments), end="", flush=True)
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(segments))
+            return
+        self._scrollback_print(FormattedText(segments))
 
     @staticmethod
     def indent_segments(segments: list[tuple[str, str]], margin: str) -> list[tuple[str, str]]:
@@ -374,7 +492,10 @@ class UiPrinter:
             # every line that carries no visible characters.
             lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
             cleaned = "\n".join(lines) + "\n"
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        if self._batch_parts is not None:
+            self._batch_parts.append(ANSI(cleaned))
+            return
+        self._scrollback_print(ANSI(cleaned))
 
     # The label sits just past a short lead rather than flush at column 0 (Rich's `align="left"`
     # pushes it to the very edge, which reads as a stray label, not text on a rule) and not
@@ -405,7 +526,10 @@ class UiPrinter:
             ("fg:default", label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
-        print_formatted_text(FormattedText(fragments), end="", flush=True)
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(fragments))
+            return
+        self._scrollback_print(FormattedText(fragments))
 
     def emit_worker_rule(self, label: str) -> None:
         """Open or close a delegation with a full-width rule whose yellow label names the worker.
@@ -440,7 +564,10 @@ class UiPrinter:
             (Theme.style("status.worker"), label),
             ("ansibrightblack", " " + "─" * trail + "\n"),
         ]
-        print_formatted_text(FormattedText(fragments), end="", flush=True)
+        if self._batch_parts is not None:
+            self._batch_parts.append(FormattedText(fragments))
+            return
+        self._scrollback_print(FormattedText(fragments))
         self.emit()
 
     @staticmethod
@@ -482,7 +609,10 @@ class UiPrinter:
         with console.capture() as capture:
             console.print(Markdown(text, hyperlinks=False))
         cleaned = self.strip_unknown_escapes(self.strip_trailing_pad(capture.get()))
-        print_formatted_text(ANSI(cleaned), end="", flush=True)
+        if self._batch_parts is not None:
+            self._batch_parts.append(ANSI(cleaned))
+            return
+        self._scrollback_print(ANSI(cleaned))
 
     @staticmethod
     def tab_segments(titles: tuple[str, ...], active: int) -> list[tuple[str, str]]:
@@ -915,6 +1045,9 @@ class LiveSpark:
     # A text glyph rather than an emoji: terminals draw emoji in their own colors, so a breath put
     # on one lands on whatever is beside it instead, and emoji are two cells before the space.
     GLYPH: ClassVar[str] = "✦ "
+    # Two weights of the star, swapped at the trough of the breath so the change is almost
+    # invisible; each is the width of a rail. GLYPH is the phase-zero entry.
+    GLYPHS: ClassVar[tuple[str, ...]] = ("✦ ", "✶ ")
     # Twice the divider pulse's period: that dot marks a request in flight and should read as a
     # heartbeat, while this one sits over a wall of text and would nag at that rate.
     PERIOD: ClassVar[float] = 3.2
@@ -923,10 +1056,14 @@ class LiveSpark:
     ROLE: ClassVar[str] = "divider.glow"
     # How far the breath reaches past that color, as a fraction of the way to black at the trough
     # and to white at the crest. Wide on purpose: a shallow fade reads as the terminal mis-drawing
-    # a cell rather than as a breath, and the crest has to clear the gray rows beside it.
+    # a cell rather than as a breath, and the crest has to clear the gray rows beside it. The
+    # crest stays shy of pure white so a light terminal does not lose the mark against its own
+    # background, but is close enough to read as white on a dark one.
+    # The star is thin in its own shape and the terminal has no font size, so it is bold for the
+    # whole ramp: that is the only way the mark reads heavier than the rows beside it. The breath
+    # survives as the color ramp alone.
     FLOOR: ClassVar[float] = 0.78
-    CEILING: ClassVar[float] = 0.78
-    BOLD_STEPS: ClassVar[int] = 3
+    CEILING: ClassVar[float] = 0.92
 
     @classmethod
     def ramp(cls) -> list[str]:
@@ -940,7 +1077,7 @@ class LiveSpark:
         low = Theme.rgb(Theme.mix(hue, (0, 0, 0), cls.FLOOR))
         high = Theme.rgb(Theme.mix(hue, (255, 255, 255), cls.CEILING))
         span = max(1, cls.STEPS - 1)
-        return ["fg:" + Theme.mix(low, high, step / span) + (" bold" if step >= cls.STEPS - cls.BOLD_STEPS else "") for step in range(cls.STEPS)]
+        return ["fg:" + Theme.mix(low, high, step / span) + " bold" for step in range(cls.STEPS)]
 
     @classmethod
     def style(cls, started_at: float = 0.0) -> str:
@@ -962,6 +1099,15 @@ class LiveSpark:
         ramp = cls.ramp()
         return ramp[min(len(ramp) - 1, int(intensity * len(ramp)))]
 
+    @classmethod
+    def glyph(cls, started_at: float = 0.0) -> str:
+        """The spark's mark at this phase: the two stars swap at the darkest point of the breath,
+        so the change reads as the color fading rather than a flicker. Shares the phase clock
+        with `style`; `GLYPH` is the phase-zero entry."""
+        elapsed = (time.monotonic() - started_at) if started_at else time.monotonic()
+        phase = (elapsed % cls.PERIOD) / cls.PERIOD
+        return cls.GLYPHS[0 if phase < 0.5 else 1]
+
 
 class BashLivePreview:
     HEIGHT: ClassVar[int] = 6
@@ -978,6 +1124,9 @@ class BashLivePreview:
         self.rendered_rows: list[list[tuple[str, str]]] = []
         self.text = ""
         self.started_at = 0.0
+        # Monotonic absolute end of the current wait budget, for the `· Ns left` countdown; None
+        # for Bash, which has no budget to count down.
+        self.deadline: float | None = None
         self.lock = threading.Lock()
         self.timer: threading.Thread | None = None
 
@@ -987,6 +1136,7 @@ class BashLivePreview:
         with self.lock:
             self.active, self.rendered_lines, self.rendered_rows, self.text = True, 0, [], ""
             self.started_at = time.monotonic()
+            self.deadline = None
             self.render()
         self.timer = threading.Thread(target=self.tick, daemon=True)
         self.timer.start()
@@ -1016,6 +1166,7 @@ class BashLivePreview:
             timer.join()
         with self.lock:
             self.rendered_lines, self.rendered_rows, self.text = 0, [], ""
+            self.deadline = None
 
     def render(self) -> None:
         if not self.active:
@@ -1053,14 +1204,18 @@ class BashLivePreview:
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         body = [line.expandtabs(4) for line in self.text.replace("\r", "\n").splitlines()[-self.HEIGHT :]]
         label = Text.elapsed_since(self.started_at, precise=True)
+        remaining = f" · {math.ceil(max(0.0, self.deadline - time.monotonic()))}s left" if self.deadline is not None else ""
         # `limit` leaves a column of slack so a full-width line cannot auto-wrap and desync the
         # cursor-up math in render().
         rail = LogBlock.prefix(2, LogEdge.CONTINUE)
         limit = max(1, width - get_cwidth(rail) - 1)
         # Always emit a status row so the frame is visible even before any output arrives.
-        status = f"output · {label}" if body else f"running… {label}"
-        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.GLYPH), ("ansibrightblack", status)]]
-        rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
+        status = f"output · {label}{remaining}" if body else f"running… {label}{remaining}"
+        rows = [[(LiveSpark.style(self.started_at), LogBlock.margin(2) + LiveSpark.glyph(self.started_at)), ("ansibrightblack", status)]]
+        if body:
+            # A blank row keeps the spark off the rail: the star caps the region, it does not sit on it.
+            rows.append([("", "")])
+            rows.extend([("ansibrightblack", rail + Text.clip_width(line, limit))] for line in body)
         return rows
 
 

@@ -44,12 +44,14 @@ def anthropic_params(
     replayable_echo: Callable[[Json, str], bool],
     images: ImageInputs,
     builtin_tools: Callable[[ResolvedProvider | None], list[Json]],
+    text_only: bool = False,
 ) -> Json:
     """Assemble the Messages request body from normalized messages and provider settings.
 
     The caller supplies the ModelClient hooks the body depends on: endpoint identity
     (`provider_origin`), the echo replay gate (`replayable_echo`), image content substitution
-    (`images`), and builtin tool schemas (`builtin_tools`).
+    (`images`), and builtin tool schemas (`builtin_tools`). `text_only` is the route's
+    image-delivery verdict: raw blocks are suppressed but readable labels and asset paths stay.
     """
     system_text = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
     # Anthropic prompt caching is a prefix match that only takes effect at explicit
@@ -62,7 +64,9 @@ def anthropic_params(
         "model": provider.model,
         "system": system,
         "messages": mark_prompt_cache_tail(
-            anthropic_messages(messages, provider_origin(provider), provider_origin=provider_origin, replayable_echo=replayable_echo, images=images)
+            anthropic_messages(
+                messages, provider_origin(provider), provider_origin=provider_origin, replayable_echo=replayable_echo, images=images, text_only=text_only
+            )
         ),
         "max_tokens": provider.anthropic_output_cap(),
     }
@@ -80,8 +84,10 @@ def anthropic_params(
     params.update(thinking_params)
     thinking = thinking_params.get("thinking")
     thinking_active = anthropic_thinking_always_on(provider.model) or (isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive"))
+    # Anthropic SDK 1.0 removed the top-level `temperature` parameter; `extra_body` is merged
+    # into the wire body by both 0.104.1 and 1.0.0, so the value still goes out the same way.
     if provider.temperature is not None and not thinking_active:
-        params["temperature"] = provider.temperature
+        params.setdefault("extra_body", {})["temperature"] = provider.temperature
     return params
 
 
@@ -92,11 +98,14 @@ def anthropic_messages(
     provider_origin: Callable[[ProviderConfig | None], str],
     replayable_echo: Callable[[Json, str], bool],
     images: ImageInputs,
+    text_only: bool = False,
 ) -> list[Json]:
     """Convert normalized messages to Messages history, merging consecutive same-role turns.
 
     System messages are dropped (they live in `system`), assistant messages replay their saved
     content blocks when the origin matches, and tool results become user tool_result blocks.
+    `text_only` is the route's image-delivery verdict: raw blocks are suppressed but readable
+    labels and asset paths stay.
     """
     origin = origin or provider_origin(None)
     converted: list[Json] = []
@@ -105,7 +114,7 @@ def anthropic_messages(
         if role == "system":
             continue
         if role == "user":
-            append_anthropic_message(converted, "user", images.anthropic_content(message))
+            append_anthropic_message(converted, "user", images.anthropic_content(message, text_only=text_only))
         elif role == "assistant":
             blocks = anthropic_assistant_blocks(message, origin, provider_origin=provider_origin, replayable_echo=replayable_echo)
             if blocks:

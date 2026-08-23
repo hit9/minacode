@@ -5,9 +5,15 @@ the wire formats can be exercised without hitting real providers."""
 
 import json
 
+import anthropic._base_client as _bc
 import httpx
 from anthropic import Anthropic
 from openai import OpenAI
+
+# Anthropic 1.x validates the client against its own vendored httpx2 module, so the mock
+# transport, the requests it delivers, and the responses built from the fixture queue must
+# all come from that same module. Older SDKs use plain httpx; fall back to it.
+sdk_httpx = getattr(_bc, "httpx2", None) or httpx
 
 from minacode.config import (
     Config,
@@ -19,6 +25,10 @@ from minacode.session import Session
 class _MockClientFactory:
     """Factory that returns a fresh OpenAI client on each call, all sharing one request log."""
 
+    # The httpx module whose Request/Response types this factory speaks. The OpenAI path uses
+    # plain httpx; the Anthropic subclass switches to the SDK's own module.
+    response_module = httpx
+
     def __init__(self, responses: list, base_url: str = "http://test"):
         self.responses = list(responses)
         self.calls: list[httpx.Request] = []
@@ -27,12 +37,12 @@ class _MockClientFactory:
     def _next_response(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
         response = self.responses.pop(0)
-        if isinstance(response, httpx.Response):
+        if isinstance(response, self.response_module.Response):
             return response
         if isinstance(response, int):
-            return httpx.Response(response)
+            return self.response_module.Response(response)
         status, body = response
-        return httpx.Response(status, json=body)
+        return self.response_module.Response(status, json=body)
 
     def __call__(self, **kwargs) -> OpenAI:
         transport = httpx.MockTransport(self._next_response)
@@ -68,9 +78,11 @@ class _StreamClientFactory:
 class _AnthropicMockClientFactory(_MockClientFactory):
     """Factory that returns fresh Anthropic clients over the shared mocked response queue."""
 
+    response_module = sdk_httpx
+
     def __call__(self, **kwargs) -> Anthropic:
-        transport = httpx.MockTransport(self._next_response)
-        http_client = httpx.Client(transport=transport)
+        transport = sdk_httpx.MockTransport(self._next_response)
+        http_client = sdk_httpx.Client(transport=transport)
         return Anthropic(
             api_key="sk-test",
             base_url=kwargs.get("base_url", self.base_url),
@@ -89,9 +101,9 @@ class _AnthropicStreamClientFactory:
         def respond(request: httpx.Request) -> httpx.Response:
             self.calls.append(request)
             body = "".join(f"event: {name}\ndata: {json.dumps(event)}\n\n" for name, event in self.events)
-            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+            return sdk_httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
 
-        http_client = httpx.Client(transport=httpx.MockTransport(respond))
+        http_client = sdk_httpx.Client(transport=sdk_httpx.MockTransport(respond))
         return Anthropic(api_key="sk-test", base_url=self.base_url, http_client=http_client, max_retries=0)
 
 

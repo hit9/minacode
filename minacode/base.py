@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - optional highlighting dependency
     pygments = None
     Token = None  # keep the name defined so class-body/token lookups don't NameError
 
-__version__ = "0.29.1"
+__version__ = "0.30.0"
 
 _ResourceT = TypeVar("_ResourceT")
 
@@ -106,6 +106,29 @@ def builtin_tool_label(name: str) -> str:
 # Protocol-neutral metadata for lifecycle/context checkpoint messages. Provider adapters remove
 # this key while preserving the canonical role/content pair in the conversation log.
 SESSION_EVENT_KEY = "_session_event"
+
+
+# Image-delivery states of the active main route (REQUIREMENT-3 main-first image fallback).
+# UNKNOWN routes optimistically receive raw images first; TEXT_ONLY_STATIC comes from the
+# provider compatibility catalog; TEXT_ONLY_LEARNED is session-local evidence created when an
+# eligible main request returns HTTP 400 for a request carrying a current-turn raw image.
+IMAGE_ROUTE_UNKNOWN = "unknown"
+IMAGE_ROUTE_TEXT_ONLY_STATIC = "text_only_static"
+IMAGE_ROUTE_TEXT_ONLY_LEARNED = "text_only_learned"
+
+
+@dataclass(frozen=True)
+class ImageRouteNotice:
+    """One gray routing notice for a text-only image delivery decision.
+
+    `reason` says why the raw image was not delivered to the main model; `images` names
+    the observed inputs; `described_by` optionally names the [vision] entry. Presentation
+    only; never enters model context.
+    """
+
+    reason: str
+    described_by: str = ""
+    images: tuple[str, ...] = ()
 
 
 SELECTION_BACK = object()
@@ -298,7 +321,10 @@ class ModelUsage:
                 return int(raw or 0)
         return 0
 
-    def add(self, usage: Any, budget: int | None = None) -> None:
+    def add(self, usage: Any, budget: int | None = None, *, touch_last: bool = True) -> None:
+        """Add one completed request to the totals, and unless `touch_last` is False make it the
+        new last-request snapshot (the status bar's ctx/cache reading). Non-main-model requests
+        (vision observations) stay in the totals but must not move that snapshot."""
         self.calls += 1
         prompt_tokens = self.field(usage, "prompt_tokens", "input_tokens")
         completion_tokens = self.field(usage, "completion_tokens", "output_tokens")
@@ -323,11 +349,12 @@ class ModelUsage:
         self.total_tokens += total_tokens
         self.cached_prompt_tokens += cached_tokens
         self.cache_write_prompt_tokens += cache_write_tokens
-        self.last_prompt_tokens = prompt_tokens
-        if budget is not None:
-            self.last_prompt_budget = budget
-        self.last_cached_prompt_tokens = cached_tokens
-        self.last_cache_write_prompt_tokens = cache_write_tokens
+        if touch_last:
+            self.last_prompt_tokens = prompt_tokens
+            if budget is not None:
+                self.last_prompt_budget = budget
+            self.last_cached_prompt_tokens = cached_tokens
+            self.last_cache_write_prompt_tokens = cache_write_tokens
 
 
 @dataclass

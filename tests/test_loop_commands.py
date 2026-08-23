@@ -13,6 +13,7 @@ from agent_harness import call, queue, session
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.utils import get_cwidth
 
 import minacode.cli as loop_module
 import minacode.cli.commands as commands_mod
@@ -32,8 +33,10 @@ from minacode.base import (
 from minacode.cli import CommandLoop
 from minacode.cli.commands import (
     name_command,
-    session_label,
+    session_label_fn,
     session_preview,
+    session_rows,
+    session_table,
     sessions_command,
     skills_command,
     status,
@@ -47,7 +50,7 @@ from minacode.engine import Agent
 from minacode.prompts import SYSTEM_PROMPT
 from minacode.render import StatusBar, UiPrinter
 from minacode.runner import ToolRunner
-from minacode.session import Session, SessionSnapshotStore, ToolResultRecord
+from minacode.session import Session, SessionEntry, SessionSnapshotStore, ToolResultRecord
 from minacode.skill import SkillLibrary
 from minacode.tools import AskSpec, CodeIndex, SkillTool, Tool
 from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TuiApp
@@ -209,9 +212,11 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     """Unconsumed pending_user_inputs are auto-submitted as next input."""
     s = session(tmp_path)
     queue(s, "leftover instruction")
+    requested_tools = []
 
     class FakeModel:
         def request(self, messages, tools=None):
+            requested_tools.extend(tools or [])
             return {"role": "assistant", "content": "done"}, [], "done"
 
     agent = Agent(s, output_fn=lambda text: None)
@@ -225,7 +230,46 @@ def test_pending_user_inputs_auto_submit_at_round_end(tmp_path):
     loop.run()
 
     assert s.pending_user_inputs == []
+    assert s.next_hints_available is False
+    assert "NextHints" not in {tool["function"]["name"] for tool in requested_tools}
     assert any("leftover instruction" in msg.get("content", "") for msg in s.messages)
+
+
+def test_simple_repl_schema_stays_next_hints_free_across_requests(tmp_path):
+    """The simple REPL chooses its tool set before the first model request without NextHints,
+    and that set stays stable on later requests: no tool is inserted or removed between
+    requests, so the tool-schema prefix does not churn."""
+    s = session(tmp_path)
+    requested: list[set[str]] = []
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, messages, tools=None):
+            requested.append({tool["function"]["name"] for tool in (tools or [])})
+            self.calls += 1
+            if self.calls == 1:
+                return {"role": "assistant", "content": ""}, [call("Read", [{"path": "missing"}])], ""
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    agent = Agent(s, output_fn=lambda text: None)
+    agent.model = FakeModel()
+    inputs = iter(["do it"])
+
+    def fake_read(prompt="", **kw):
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise EOFError()
+
+    loop = CommandLoop(agent, input_fn=fake_read, output_fn=lambda text: None)
+    loop.run()
+
+    assert s.next_hints_available is False
+    assert len(requested) == 2  # before the tool batch and before the final answer
+    assert all("NextHints" not in names for names in requested)
+    assert requested[0] == requested[1]
 
 
 def test_queue_live_region_shows_divider_and_pending(tmp_path):
@@ -381,17 +425,18 @@ def test_queue_command_runs_yolo_toggle(tmp_path):
     assert s.pending_user_inputs == []
 
 
-def test_queue_command_runs_hints_toggle(tmp_path):
-    """/hints flips the quick hints flag from the queue while the agent works."""
+def test_hints_command_is_removed(tmp_path):
     s = session(tmp_path)
     out = []
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda *a, **k: "", output_fn=out.append)
 
-    before = s.settings.quick_hints
-    loop.run_queued_command("/hints")
-
-    assert s.settings.quick_hints is (not before)
-    assert s.pending_user_inputs == []
+    # Every /hints spelling follows the normal unknown-command path; there is no toggle left.
+    for variant in ("/hints", "/hints on", "/hints off"):
+        handled, _exit = loop.command(variant)
+        assert handled is True
+        assert out[-1].endswith("Unknown command: /hints")
+    assert "/hints" not in loop_module.COMMAND_LOOKUP
+    assert "/hints" not in loop_module.CommandLoop.COMMANDS
 
 
 def test_queue_command_rejects_mutating(tmp_path):
@@ -548,14 +593,211 @@ def test_session_labels_carry_age_and_size(tmp_path):
     loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
 
     entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
-    label = session_label(loop, entry)
+    rows, widths = session_table(loop, [entry])
+    row = session_rows(rows, widths)[0]
 
-    assert label.startswith("current work")
-    assert "just now" in label and "4 rounds" in label and "current" in label
+    assert row.startswith("current work")
+    assert "just now" in row and "4 rounds" in row and "current" in row
     s.state.round_count = 1
     s.save_snapshot()
-    assert "1 round " in session_label(loop, SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]) + " "
-    assert entry.uid in session_preview(loop, entry)
+    entry = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)[0]
+    rows, widths = session_table(loop, [entry])
+    row = session_rows(rows, widths)[0]
+    assert "1 round " in row + " "
+    assert session_preview(entry) == []  # no summary, no preview
+
+
+def test_sessions_rows_align_columns_in_display_cells(tmp_path, monkeypatch):
+    """The picker's labels are table rows: each column padded to the widest value in it, so names
+    of different lengths -- CJK included -- still line up their ages and round counts."""
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.tui = TuiApp()
+    loop.interactive_input = True
+    for text in ("a", "中文名", "quite a long session name"):
+        other = stored_session(tmp_path, text)
+        other.state.round_count = 3
+        other.save_snapshot()
+
+    captured: dict[str, dict[str, str]] = {}
+    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(labels=args[2]) or None)
+
+    assert loop.command("/sessions") == (True, False)
+    labels = list(captured["labels"].values())
+    assert len(labels) == 3
+    # Once the name and age columns are padded, the round count starts at the same display
+    # column in every row; it would drift with the label lengths without the padding. The
+    # char-index find() differs across CJK rows, so compare padded display widths instead.
+    assert len({get_cwidth(row[: row.find("3 rounds")]) for row in labels}) == 1
+
+
+def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_path, monkeypatch):
+    """The picker is exclusive (alternate screen) with a viewport cap, its rows are styled per
+    field, and the preview carries the session's recent messages."""
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.save_snapshot()
+    target = stored_session(tmp_path, "the one we want", name="picked")
+    target.messages.append({"role": "assistant", "content": "the latest answer"})
+    target.save_snapshot()
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    loop.tui = TuiApp()
+    loop.interactive_input = True
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(commands_mod, "choice_application", lambda _loop, *args, **kwargs: captured.update(args=args, kwargs=kwargs) or target.uid)
+
+    assert loop.command("/sessions") == (True, True)
+    assert captured["kwargs"]["exclusive"] is True
+    assert captured["kwargs"]["max_rows"] > 0
+    label_fn = captured["kwargs"]["label_fn"]
+    assert label_fn is not None
+    assert any(style == "class:choice.meta" for style, _text in label_fn(target.uid))
+    assert any(style == "class:choice.live" for style, _text in label_fn(s.uid))
+    preview = "".join(text for _style, text in captured["kwargs"]["preview_fn"](target.uid))
+    assert "the latest answer" in preview
+    # The preview reads like the transcript: the user bullet takes the prompt colour and the
+    # message the transcript's warm tone, newest exchange at the bottom.
+    parts = captured["kwargs"]["preview_fn"](target.uid)
+    assert ("class:prompt", "• ") in parts
+    assert any(style == "class:choice.user" for style, _text in parts)
+    assert parts[-1] == ("", "  the latest answer\n")
+
+
+def test_session_summary_tails_the_recent_messages(tmp_path):
+    other = stored_session(tmp_path, "opening")
+    other.messages.append({"role": "user", "content": "one"})
+    other.messages.append({"role": "assistant", "content": "two"})
+    other.messages.append({"role": "assistant", "content": "three"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "three"), ("assistant", "two"), ("user", "one"), ("user", "opening")]
+    assert SessionSnapshotStore.tail_summary(entry.path, limit=2) == [("assistant", "three"), ("assistant", "two")]
+
+
+def test_session_summary_skips_internal_events(tmp_path):
+    """Session-resume markers are stored as user-role messages; the preview must not show them as
+    conversation, or the 'recent messages' read as a wall of <session_event ...> lines."""
+    other = stored_session(tmp_path, "opening")
+    other.messages.append({SESSION_EVENT_KEY: "resumed", "content": '<session_event type="resumed" at="2026-08-20" />'})
+    other.messages.append({"role": "user", "content": "real question"})
+    other.messages.append({"role": "assistant", "content": "real answer"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    summary = SessionSnapshotStore.tail_summary(entry.path)
+    assert summary[:2] == [("assistant", "real answer"), ("user", "real question")]
+    assert all("<session_event" not in text for _role, text in summary)
+
+
+def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
+    """A tool-heavy session has almost no assistant text; the preview shows the tool names of
+    textless turns so it still says something useful."""
+    other = stored_session(tmp_path, "investigate")
+    other.messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "Bash", "arguments": "{}"}},
+                {"function": {"name": "Read", "arguments": "{}"}},
+            ],
+        }
+    )
+    other.messages.append({"role": "assistant", "content": "found it"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "found it"), ("user", "investigate"), ("tool", "→ Bash, Read")]
+
+
+def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
+    """Tool-only turns collapse into one counted line at the end, and when the preview is already
+    full of text no tool line is added at all."""
+    other = stored_session(tmp_path, "q")
+    for name in ("Bash", "Bash", "Read", "Bash"):
+        other.messages.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": name, "arguments": "{}"}}]})
+    other.messages.append({"role": "assistant", "content": "answer"})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("assistant", "answer"), ("user", "q"), ("tool", "→ Bash ×3, Read")]
+
+    full = stored_session(tmp_path, "t0")
+    for i in range(1, 6):
+        full.messages.append({"role": "user", "content": f"q{i}"})
+    full.messages.append({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "Bash", "arguments": "{}"}}]})
+    full.save_snapshot()
+    full_entry = SessionSnapshotStore.list_sessions(full.config.data_dir, full.cwd)[0]
+    summary = SessionSnapshotStore.tail_summary(full_entry.path)
+    assert len(summary) == 5
+    assert all(not text.startswith("→") for _role, text in summary)
+
+
+def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
+    """A tool result can bury the conversation under hundreds of kilobytes; the summary widens its
+    tail window until it holds enough text, capped by the budget."""
+    other = stored_session(tmp_path, "q0")
+    for i in range(1, 6):
+        other.messages.append({"role": "user", "content": f"q{i}"})
+    other.messages.append({"role": "tool", "content": "x" * 200000})
+    other.save_snapshot()
+    entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("user", f"q{i}") for i in range(5, 0, -1)]
+
+
+def test_session_summary_survives_a_seek_inside_a_cjk_character(tmp_path, monkeypatch):
+    """The tail read must never decode from an arbitrary byte: when the seek point lands inside a
+    multi-byte character, the old text-mode readline raised UnicodeDecodeError and took /sessions
+    down with it. The binary line split skips the torn line instead. The tail budget is shrunk so
+    the seek lands inside the character regardless of the default budget."""
+    monkeypatch.setattr(SessionSnapshotStore, "TAIL_BUDGET", 65536)
+    header = json.dumps({"v": 4})
+    # The CJK character sits right at the start of a padding line whose tail pushes the seek point
+    # (size - budget) onto the character's second byte.
+    pad = '{"padding": "' + "中" + "a" * 65478 + '"}'
+    snapshot = '{"messages": [{"role": "user", "content": "latest"}]}'
+    line = header + "\n" + pad + "\n" + snapshot + "\n"
+    data = line.encode("utf-8")
+    cjk = data.find("中".encode())
+    seek = len(data) - 65536
+    assert seek - cjk in (1, 2)  # the seek point sits inside the multi-byte character
+    path = tmp_path / "torn.jsonl"
+    path.write_bytes(data)
+    entry = SessionEntry(uid="torn", name="", opening="", rounds=0, cwd=str(tmp_path), updated_at=time.time(), path=str(path))
+    assert SessionSnapshotStore.tail_summary(entry.path) == [("user", "latest")]
+
+
+def test_session_label_fn_matches_the_text_layout(tmp_path):
+    """The styled rows line up exactly like the plain ones: the styled text of every field is the
+    padded table row, and the current marker takes the live colour. A second session whose round
+    count is a different width than the current one's makes the last column not always the widest
+    value in its own column -- the one spot where the styled and plain layouts can disagree."""
+    s = session(tmp_path)
+    s.config.data_dir = str(tmp_path / "data")
+    s.messages.append({"role": "user", "content": "current work"})
+    s.state.round_count = 100
+    s.save_snapshot()
+    other = stored_session(tmp_path, "a different session")
+    other.state.round_count = 3
+    other.save_snapshot()
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
+    entries = SessionSnapshotStore.list_sessions(s.config.data_dir, s.cwd)
+    rows, widths = session_table(loop, entries)
+    label_fn = session_label_fn({entry.uid: row for entry, row in zip(entries, rows)}, widths)
+    text_rows = session_rows(rows, widths)
+
+    # Every styled row joins to exactly its plain counterpart, including the rows whose last column
+    # is narrower than the widest value in that column.
+    for entry in entries:
+        index = entries.index(entry)
+        parts = label_fn(entry.uid)
+        assert "".join(text for _style, text in parts) == text_rows[index]
+    parts = label_fn(s.uid)
+    current = next(entry for entry in entries if entry.uid == s.uid)
+    index = entries.index(current)
+    assert parts[0] == ("", rows[index][0] + " " * (widths[0] - get_cwidth(rows[index][0])) + "  ")  # name plain, padded to the column plus the gap
+    assert parts[1][0] == "class:choice.meta"  # age dim
+    assert parts[2][0] == "class:choice.meta"  # rounds dim
+    assert parts[-1] == ("class:choice.live", "current")
 
 
 def test_name_command_shows_and_sets_the_session_name(tmp_path):
@@ -879,13 +1121,14 @@ def test_choice_application_expands_escaped_preview_newlines(tmp_path):
     rendered = []
 
     class Modal:
-        def show_modal(self, fragments_fn, key_fn):
+        def show_modal(self, fragments_fn, key_fn, exclusive=False):
             rendered.extend(fragments_fn())
             return key_fn("enter", "")
 
     loop.tui = Modal()
 
-    result = choice_application(loop, 
+    result = choice_application(
+        loop,
         "Select:",
         ("A", "B"),
         {},

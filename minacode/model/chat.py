@@ -25,12 +25,16 @@ def chat_messages(
     resolved: ResolvedProvider,
     images: ImageInputs,
     latest_user_position: Callable[[list[Json]], int],
+    *,
+    text_only: bool = False,
 ) -> list[Json]:
     """Build Chat Completions history from normalized messages under the provider's replay contract.
 
     Scrubs provider-echo keys and reasoning per the resolved chat_reasoning_history, substituting
     image content for local image refs. `latest_user_position` is the boundary the caller uses for
     "current turn" reasoning — ModelClient.latest_user_position — so the same rule cannot drift.
+    `text_only` is the route's image-delivery verdict: raw blocks are suppressed but readable
+    labels and stable asset paths stay.
     """
     history = resolved.chat_reasoning_history
     thinking = provider.extra_body.get("thinking")
@@ -52,7 +56,7 @@ def chat_messages(
             for key in ("reasoning_content", "reasoning", "reasoning_details"):
                 clean.pop(key, None)
         if message.get("role") == "user" and images.refs(message):
-            clean["content"] = images.chat_content(message)
+            clean["content"] = images.chat_content(message, text_only=text_only)
         converted.append(clean)
     return Text.value(converted)
 

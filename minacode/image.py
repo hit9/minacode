@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -24,8 +24,19 @@ if TYPE_CHECKING:
 
 IMAGE_MARKER = "\ufffc"
 IMAGE_REFS_KEY = "_images"
+# Durable image references available to local tools but never projected as provider image blocks.
+# A bridged attachment has already replaced its pixels with text; this marker keeps that projection
+# irrevocable while letting the semantic message own the stored asset across resume.
+IMAGE_TEXT_ONLY_KEY = "_images_text_only"
 TOOL_IMAGE_OBSERVATION_KEY = "_tool_image_observation"
+TOOL_IMAGE_QUESTION_KEY = "_tool_image_question"
 TOOL_IMAGE_OBSERVATION_PREFIX = "[Tool image observation]"
+# Durable plain-text block a text-only route receives after the configured [vision] provider
+# perceives an attachment. Never projected as provider image blocks; the refs stay on the
+# message only for asset ownership.
+ATTACHMENT_VISION_OBSERVATION_PREFIX = "[Attachment image observation]"
+FAILED_IMAGE_CONTEXT_PREFIX = "[Image input failed; local assets remain available through ViewImage]"
+IMAGE_ASSET_CONTEXT_PREFIX = "[Attached image assets]"
 SUPPORTED_FORMATS = {
     "GIF": "image/gif",
     "JPEG": "image/jpeg",
@@ -108,21 +119,16 @@ class UserInput(str):
 
 
 class ImageInputs:
-    """Own image recognition, storage, transport, and learned model capability for a session."""
+    """Own image recognition, storage, semantic references, and wire projection for a session."""
 
     _TOKEN_RE = re.compile(r"(?:'[^'\n]*'|\"(?:\\.|[^\"\n])*\"|(?:\\.|[^\s])+)")
-    _IMAGE_STATUS_RE = re.compile(r"\b(?:400|415|422)\b")
-    _IMAGE_VARIANT_REJECTION_RE = re.compile(r"\bunknown variant\b\s*[`'\"]?(?:image_url|input_image|image)\b[`'\"]?[\s\S]*\bexpected\b[\s\S]*\btext\b")
     _LEADING_PUNCTUATION = "([{<"
     _TRAILING_PUNCTUATION = ",;:!?)]}>"
-    _MODALITY_TERMS = ("image", "vision", "multimodal", "input_image", "image_url", "modality")
-    _UNSUPPORTED_TERMS = ("unsupported", "not supported", "does not support", "only supports text", "not enabled")
 
     def __init__(self, session: Session | None = None, *, cwd: str = "") -> None:
         self.session = session
         self.cwd = session.cwd if session is not None else cwd or os.getcwd()
         self.retained_refs: set[str] = set()
-        self._learned_support: dict[tuple[str, str, str, str], bool] = {}
 
     @staticmethod
     def refs(message: Json) -> tuple[ImageRef, ...]:
@@ -130,6 +136,12 @@ class ImageInputs:
         if not isinstance(raw, list):
             return ()
         return tuple(image for value in raw if (image := ImageRef.from_json(value)) is not None)
+
+    @classmethod
+    def input_refs(cls, message: Json) -> tuple[ImageRef, ...]:
+        """Image refs that belong on the provider wire, excluding text-only local assets."""
+
+        return () if message.get(IMAGE_TEXT_ONLY_KEY) is True else cls.refs(message)
 
     @classmethod
     def label_text(cls, message: Json) -> str:
@@ -193,10 +205,10 @@ class ImageInputs:
         return UserInput("".join(output), tuple(found))
 
     def prepare(self, value: str | UserInput) -> UserInput:
+        """Validate and store a draft's images as session-owned assets."""
+
         if not isinstance(value, UserInput) or not value.images:
             return UserInput(str(value))
-        if self.support() is False:
-            raise ModelError("Image input is disabled for the active provider/model")
         if self.session is None:
             return value
         return UserInput(str(value), tuple(self._store(image) for image in value.images))
@@ -214,17 +226,18 @@ class ImageInputs:
 
     def load(self, path: str, *, source_text: str = "") -> ImageRef:
         """Validate and store one explicit local image for model input."""
-
         image = self._inspect(path, source_text=source_text or path)
         assert image is not None
         return self.prepare(UserInput(IMAGE_MARKER, (image,))).images[0]
 
-    def tool_observation(self, images: tuple[ImageRef, ...]) -> Json:
+    def tool_observation(self, images: tuple[ImageRef, ...], question: str = "") -> Json:
         """Build a durable multimodal user-role observation produced by a tool batch."""
 
         markers = " ".join(IMAGE_MARKER for _image in images)
         message = self.message(UserInput(TOOL_IMAGE_OBSERVATION_PREFIX + "\n" + markers, images))
         message[TOOL_IMAGE_OBSERVATION_KEY] = True
+        if question:
+            message[TOOL_IMAGE_QUESTION_KEY] = question
         return message
 
     @classmethod
@@ -235,65 +248,159 @@ class ImageInputs:
             and str(message.get("content") or "").startswith(TOOL_IMAGE_OBSERVATION_PREFIX)
         )
 
+    @staticmethod
+    def tool_observation_question(message: Json) -> str:
+        question = message.get(TOOL_IMAGE_QUESTION_KEY)
+        return question if isinstance(question, str) else ""
+
     def retain(self, images: tuple[ImageRef, ...]) -> None:
         self.retained_refs.update(image.ref for image in images)
 
-    def support(self) -> bool | None:
-        if self.session is None:
-            return None
-        configured = self.session.config.provider.image_input
-        if configured == "on":
-            return True
-        if configured == "off":
-            return False
-        return self._learned_support.get(self._capability_key())
+    def chat_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
+        return self._protocol_content(message, self._chat_image_part, "text", text_only=text_only)
 
-    def note_success(self, messages: list[Json]) -> None:
-        if self.session is not None and self.session.config.provider.image_input == "auto" and self.support() is not False and self.has_images(messages):
-            self._learned_support[self._capability_key()] = True
+    def responses_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
+        return self._protocol_content(message, self._responses_image_part, "input_text", text_only=text_only)
 
-    def note_error(self, messages: list[Json], error: Exception) -> bool:
-        unsupported = self.has_images(messages) and self.support() is not False and self._explicit_unsupported_error(error)
-        if unsupported and self.session is not None and self.session.config.provider.image_input == "auto":
-            self._learned_support[self._capability_key()] = False
-        return unsupported
+    def anthropic_content(self, message: Json, *, text_only: bool = False) -> str | list[Json]:
+        return self._protocol_content(message, self._anthropic_image_part, "text", text_only=text_only)
 
-    @classmethod
-    def has_images(cls, messages: list[Json]) -> bool:
-        return any(cls.refs(message) for message in messages)
+    def _chat_image_part(self, image: ImageRef) -> Json:
+        return {"type": "image_url", "image_url": {"url": self._data_url(image)}}
 
-    def chat_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(message, lambda image: {"type": "image_url", "image_url": {"url": self._data_url(image)}}, "text")
+    def _responses_image_part(self, image: ImageRef) -> Json:
+        return {"type": "input_image", "image_url": self._data_url(image)}
 
-    def responses_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(message, lambda image: {"type": "input_image", "image_url": self._data_url(image)}, "input_text")
-
-    def anthropic_content(self, message: Json) -> str | list[Json]:
-        return self._protocol_content(
-            message,
-            lambda image: {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": image.media_type,
-                    "data": base64.b64encode(self._bytes(image)).decode("ascii"),
-                },
+    def _anthropic_image_part(self, image: ImageRef) -> Json:
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": base64.b64encode(self._bytes(image)).decode("ascii"),
             },
-            "text",
-        )
+        }
 
-    def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str) -> str | list[Json]:
-        images = self.refs(message)
-        if not images or self.support() is False:
-            return self.label_text(message)
-        parts = [image_part(image) for image in images]
-        if text := str(message.get("content") or ""):
+    def vision_content(self, images: tuple[ImageRef, ...], api: str, text: str) -> list[Json]:
+        """Content blocks for one explicit vision-provider request.
+
+        The [vision] entry always carries the images, and the blocks are pre-built so projection leaves the
+        request untouched (the message carries no IMAGE_REFS_KEY). Perception only: `text` is the
+        question or the default observation instruction, never the coding task."""
+
+        if api == "anthropic":
+            parts = [self._anthropic_image_part(image) for image in images]
+            text_type = "text"
+        elif api == "responses":
+            parts = [self._responses_image_part(image) for image in images]
+            text_type = "input_text"
+        else:
+            parts = [self._chat_image_part(image) for image in images]
+            text_type = "text"
+        if text:
             parts.append({"type": text_type, "text": text})
         return parts
 
-    @classmethod
-    def estimated_tokens(cls, messages: list[Json]) -> int:
-        return sum(cls._estimated_tokens(image) for message in messages for image in cls.refs(message))
+    def text_observation(self, images: tuple[ImageRef, ...], observation: str, question: str = "") -> Json:
+        """Build a durable text-only observation produced by the [vision] provider.
+
+        Same shape as `tool_observation` (a user-role tool observation), but the content is the
+        plain vision text instead of image markers, and the occurrence-level text-only marker
+        keeps those refs from ever being projected as provider image blocks — on this route and
+        on any later one, including after a resume that lost the learned evidence.
+        """
+
+        message = self.tool_observation(images, question)
+        message["content"] = f"{TOOL_IMAGE_OBSERVATION_PREFIX}\n{observation}"
+        message[IMAGE_TEXT_ONLY_KEY] = True
+        return message
+
+    def observe_current(
+        self,
+        messages: list[Json],
+        current: list[Json],
+        observe: Callable[[tuple[ImageRef, ...], str], str],
+    ) -> list[Json]:
+        """Convert each current raw image occurrence in `messages` to a durable text observation.
+
+        `current` lists the exact semantic message objects that entered the active turn since the
+        last accepted main-model request (opening attachment, claimed queued attachment, ViewImage
+        observation). Each is observed through `observe(refs, question)` — the vision provider —
+        exactly once, with its own question (ViewImage) or the bounded default perception
+        question (attachments). Older successful image history is never redescribed.
+        """
+
+        result = list(messages)
+        for index, message in enumerate(result):
+            if not any(message is item for item in current):
+                continue
+            images = self.input_refs(message)
+            if not images:
+                continue
+            question = self.tool_observation_question(message)
+            observation = observe(images, question)
+            if message.get(TOOL_IMAGE_OBSERVATION_KEY):
+                result[index] = self.text_observation(images, observation, question)
+            else:
+                converted = dict(message)
+                converted["content"] = f"{self.label_text(message)}\n\n{ATTACHMENT_VISION_OBSERVATION_PREFIX}\n{observation}"
+                converted[IMAGE_TEXT_ONLY_KEY] = True
+                result[index] = converted
+        return result
+
+    def settle_failed_messages(self, messages: list[Json]) -> None:
+        """Make image occurrences in one failed turn safe to replay as text.
+
+        The refs remain on the semantic message to retain their session-owned assets, while the
+        text-only marker prevents those same failed occurrences from being resent as image blocks.
+        New images in later turns are unaffected.
+        """
+
+        for message in messages:
+            images = self.input_refs(message)
+            if not images:
+                continue
+            paths = "\n".join(f"- {image.name}: {self.asset_path(image)}" for image in images)
+            message["content"] = f"{self.label_text(message)}\n\n{FAILED_IMAGE_CONTEXT_PREFIX}\n{paths}"
+            message[IMAGE_TEXT_ONLY_KEY] = True
+
+    def asset_context(self, images: tuple[ImageRef, ...]) -> str:
+        """Deterministic model-facing mapping from image labels to session-owned tool paths."""
+
+        rows = [IMAGE_ASSET_CONTEXT_PREFIX]
+        rows.extend(
+            "- " + json.dumps({"image": index, "name": image.name, "path": self.asset_path(image)}, ensure_ascii=False) for index, image in enumerate(images, 1)
+        )
+        return "\n".join(rows)
+
+    def _protocol_content(self, message: Json, image_part: Callable[[ImageRef], Json], text_type: str, *, text_only: bool = False) -> str | list[Json]:
+        images = self.input_refs(message)
+        if not images:
+            # A pre-built content list for the explicit vision provider is already in wire shape.
+            if isinstance(message.get("content"), list):
+                return message["content"]
+            return self.label_text(message)
+        text = self.label_text(message)
+        if text_only:
+            # Route-specific projection for a static/learned text-only route: raw blocks are
+            # suppressed but readable labels and the stable asset paths stay, so the model can
+            # still ViewImage the stored files. The semantic message is not mutated.
+            asset_context = self.asset_context(images)
+            block: Json = {"type": text_type, "text": "\n\n".join(part for part in (text, asset_context) if part)}
+            return [block]
+        parts = [image_part(image) for image in images]
+        asset_context = self.asset_context(images)
+        parts.append({"type": text_type, "text": "\n\n".join(part for part in (text, asset_context) if part)})
+        return parts
+
+    def estimated_tokens(self, messages: list[Json]) -> int:
+        total = 0
+        for message in messages:
+            images = self.input_refs(message)
+            total += sum(self._estimated_tokens(image) for image in images)
+            if images:
+                total += (len("\n\n" + self.asset_context(images)) + 3) // 4
+        return total
 
     def assets_dir(self) -> str:
         session = self._session()
@@ -329,7 +436,7 @@ class ImageInputs:
             current = self._inspect(image.source_path, source_text=image.source_text)
             assert current is not None
             image = replace(current, source_text=image.source_text)
-            destination = self._asset_path(image)
+            destination = self.asset_path(image)
             os.makedirs(os.path.dirname(destination), exist_ok=True)
             if not self._asset_matches(destination, image.ref):
                 fd, temporary = tempfile.mkstemp(prefix=".image-", dir=os.path.dirname(destination))
@@ -344,12 +451,12 @@ class ImageInputs:
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
-        elif not os.path.isfile(self._asset_path(image)):
+        elif not os.path.isfile(self.asset_path(image)):
             raise ModelError(f"Stored image is missing: {image.name} ({image.ref[:12]})")
         return replace(image, source_path="")
 
     def _bytes(self, image: ImageRef) -> bytes:
-        path = self._asset_path(image)
+        path = self.asset_path(image)
         try:
             with open(path, "rb") as file:
                 data = file.read()
@@ -362,31 +469,10 @@ class ImageInputs:
     def _data_url(self, image: ImageRef) -> str:
         return f"data:{image.media_type};base64,{base64.b64encode(self._bytes(image)).decode('ascii')}"
 
-    def _asset_path(self, image: ImageRef) -> str:
+    def asset_path(self, image: ImageRef) -> str:
+        """Stable path of one stored image, suitable for a later ViewImage call."""
+
         return os.path.join(self.assets_dir(), image.ref)
-
-    def _capability_key(self) -> tuple[str, str, str, str]:
-        session = self._session()
-        provider = session.config.provider
-        resolved = provider.resolve()
-        return session.config.active_provider, resolved.api, resolved.base_url, provider.model
-
-    @classmethod
-    def _explicit_unsupported_error(cls, error: Exception) -> bool:
-        text = str(error).lower()
-        cause = getattr(error, "__cause__", None)
-        status = getattr(cause, "status_code", None) or getattr(cause, "code", None)
-        numeric_status: int | None = None
-        with contextlib.suppress(TypeError, ValueError):
-            numeric_status = int(status) if status is not None else None
-        if numeric_status is not None and numeric_status not in {400, 415, 422}:
-            return False
-        if numeric_status is None and not cls._IMAGE_STATUS_RE.search(text):
-            return False
-        mentions_image = any(term in text for term in cls._MODALITY_TERMS)
-        rejects_modality = any(term in text for term in cls._UNSUPPORTED_TERMS)
-        rejects_image_schema = cls._IMAGE_VARIANT_REJECTION_RE.search(text) is not None
-        return (mentions_image and rejects_modality) or rejects_image_schema
 
     def _session(self) -> Session:
         if self.session is None:

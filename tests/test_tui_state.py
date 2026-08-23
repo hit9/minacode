@@ -6,10 +6,12 @@ These tests exercise the stateful parts of the TUI without requiring a real term
 import os
 import shutil
 import time
+from types import SimpleNamespace
 
 import minacode.render as render_module
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, TurnBox
 from minacode.cli import CommandLoop
+from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.view import View
 from minacode.config import (
     Config,
@@ -265,6 +267,17 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
     clock[0] = 7.0  # no anchor: still breathing, just at whatever phase the clock is in
     assert LiveSpark.style() in ramp
 
+    # The two stars swap at the darkest point of the breath (the half-period), so the change
+    # reads as the color fading rather than a flicker; phase zero is GLYPH.
+    clock[0] = 0.0
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH
+    clock[0] = 0.25 * LiveSpark.PERIOD
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH  # the bright half keeps GLYPH
+    clock[0] = 0.75 * LiveSpark.PERIOD
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPHS[1]  # swapped after the trough
+    clock[0] = LiveSpark.PERIOD
+    assert LiveSpark.glyph(started_at=0.0) == LiveSpark.GLYPH  # and back at the crest
+
     def luma(style):
         red, green, blue = Theme.rgb(style.split()[0])
         return 0.299 * red + 0.587 * green + 0.114 * blue
@@ -272,16 +285,31 @@ def test_live_spark_breathes_across_a_wide_range_of_the_divider_accent(monkeypat
     accent = Theme.style(LiveSpark.ROLE)
     assert luma(ramp[0]) < luma(accent) < luma(ramp[-1])  # the breath brackets the accent
     assert luma(ramp[-1]) - luma(ramp[0]) >= luma(View.WAITING_PULSE_STYLES[-1]) - luma(View.WAITING_PULSE_STYLES[0])
-    assert ramp[-1].endswith(" bold") and not ramp[0].endswith(" bold")  # the crest carries weight
+    assert all(step.endswith(" bold") for step in ramp)  # the star is thin; bold carries its weight
+
+    # The crest is the loudest frame on the ramp: close enough to white to clear the gray rows
+    # beside it on a dark terminal (kept shy of pure white for light ones).
+    crest = Theme.rgb(ramp[-1].split()[0])
+    assert all(channel >= 230 for channel in crest)
 
     # Slower than the divider's in-flight heartbeat, which sits above a much quieter line.
     assert LiveSpark.PERIOD > View.WAITING_PULSE_PERIOD
 
 
+def test_live_spark_keeps_range_on_a_light_terminal(monkeypatch):
+    """The crest stays shy of pure white and the trough stays dark, so the breath still reads
+    against a light background instead of vanishing into it or washing out."""
+    monkeypatch.setattr(Theme, "_mode", "light")
+    crest = Theme.rgb(LiveSpark.ramp()[-1].split()[0])
+    assert all(channel >= 225 for channel in crest)  # near-white, but not the background itself
+    trough = Theme.rgb(LiveSpark.ramp()[0].split()[0])
+    assert sum(trough) <= sum(crest) - 300  # the trough stays clearly darker: the breath has range
+
+
 def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
-    """The preview has no heading: the divider under it already names the phase and times it, so
-    a `thinking` line here would print the same word twice on one screen. The spark caps the rail
-    instead, saying the region is live without words.
+    """The spark's row belongs to the spark: a gray phase word (`thinking`, then `responding`) sits
+    beside it, and the streamed text starts on its own rail row below, so the first line never
+    races for whatever room the spark leaves -- with or without the word, the layout is the same.
 
     The rows carry CONTINUE and nothing carries BRANCH -- `├` is a T-junction, and there is no
     line above the block for one to join. Nothing closes it either: the stream is still arriving,
@@ -294,14 +322,18 @@ def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
     lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
 
     rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
-    assert lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.GLYPH + "weighing the two paths"
-    assert lines[1] == rail + "the second option is cleaner"
-    assert "thinking" not in "".join(lines)  # named on the divider, not repeated here
+    assert any(
+        lines[0] == LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + glyph + "thinking" for glyph in LiveSpark.GLYPHS
+    )  # either star may lead the preview: no anchor means the wall clock picks the phase
+    assert lines[1] == ""  # the blank row lifts the spark off the rail below it
+    assert lines[2] == rail + "weighing the two paths"
+    assert lines[3] == rail + "the second option is cleaner"
     assert len(LiveSpark.GLYPH) == len(LogBlock.RAIL)  # so the spark sits in the rail's column
+    assert all(len(glyph) == len(LogBlock.RAIL) for glyph in LiveSpark.GLYPHS)  # and its swapped partner does too
     assert not any(LogEdge.BRANCH.value in line or LogEdge.END.value in line for line in lines)
     # The column a tool's own output lines are drawn in: the two trees share a grid.
     tool = str(LogBlock.hierarchy(LogLine("Bash", "pytest -q", LogRole.TOOL), [LogLine("", "output line", LogRole.OUTPUT, LogEdge.CONTINUE)]))
-    assert tool.splitlines()[1].index(LogEdge.CONTINUE.value) == lines[1].index(LogEdge.CONTINUE.value)
+    assert tool.splitlines()[1].index(LogEdge.CONTINUE.value) == lines[2].index(LogEdge.CONTINUE.value)
 
 
 def test_model_stream_preview_switches_phase_and_clears(tmp_path):
@@ -309,27 +341,97 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     config.data_dir = str(tmp_path / "data")
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
-    # The phase is named once, on the divider. The preview carries only the text it is previewing.
+    # The phase word rides beside the spark and follows the stream: `thinking` while the model
+    # reasons, `responding` once it answers; the preview carries only the text besides that.
     loop.model_stream_output("reasoning", "checking the request")
     reasoning = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "checking the request" in reasoning
-    assert "thinking" not in reasoning
+    assert "thinking" in reasoning
     assert "thinking" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("output", "answering now")
     output = "".join(text for _style, text in loop.view.model_stream_fragments())
     assert "answering now" in output
-    assert "responding" not in output
+    assert "thinking" not in output  # the word follows the phase instead of staying stale
+    assert "responding" in output
     assert "checking the request" not in output
     assert "responding" in "".join(text for _style, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("correcting malformed tool call 1/5 · Bash", "")
     assert loop.view.model_stream_fragments() == []
-    assert "correcting malformed tool call 1/5 · Bash" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    divider = "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "correcting malformed tool call 1/5 · Bash" in divider  # the phase stays whole
 
     loop.model_stream_output("", "")
     assert loop.view.model_stream_fragments() == []
     assert "working" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+
+
+def test_model_stream_preview_styles_inline_markdown(tmp_path, monkeypatch):
+    """Closed inline markdown tokens in the live preview render with their own styles -- bold,
+    code, italic -- marked in the preview's own gray tones (no color), while plain text stays
+    gray and an unclosed marker stays literal, so a growing stream never toggles a token's
+    style frame to frame."""
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 20)))
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+
+    loop.model_stream_output("reasoning", "**bold** `code` *italic* and **unclosed")
+
+    styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
+    assert ("bold", "ansibrightblack bold") in styled
+    assert ("code", "ansibrightblack underline") in styled
+    assert ("italic", "ansibrightblack italic") in styled
+    assert (" and **unclosed", "ansibrightblack") in styled  # no closing marker: the tail stays literal
+
+
+def test_model_stream_preview_keeps_malformed_star_runs_literal(tmp_path, monkeypatch):
+    """A lone star can never be borrowed from a double-star run: `**a*` and `*a**` are unclosed
+    markers, not italic, and stay gray instead of mis-rendering as `*a*`."""
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 20)))
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+
+    loop.model_stream_output("reasoning", "**a* *a** **** **a**b**")
+
+    styled = {(text, style) for style, text in loop.view.model_stream_fragments() if text}
+    assert ("**a* *a** **** ", "ansibrightblack") in styled  # unclosed and empty star runs stay literal
+    assert ("a", "ansibrightblack bold") in styled  # the closed bold inside the last token still renders
+    assert ("b**", "ansibrightblack") in styled  # the trailing unclosed run stays literal
+    assert not any(text == "a" and "italic" in style for text, style in styled)  # no italic borrowed from `**`
+
+
+def test_sweep_divider_widens_for_long_labels_and_keeps_the_track(tmp_path, monkeypatch):
+    """A label that would fill the default rule is accommodated by widening the rule instead of
+    being clipped: both sides keep at least MIN_TRAIL dashes (up to the terminal width) and the
+    label text stays whole, so the comet reads as motion rather than a frantic bounce."""
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 20)))
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    view = loop.view
+
+    long_label = "[worker] thinking (5m07s · ↓ 75 tok/s) [ 1 queued ]"
+    fragments = view.sweep_divider_fragments(long_label)
+    dashes = sum(1 for _style, text in fragments if text == "-")
+    assert dashes >= 3 + 12  # lead + the minimum trail
+    assert any(text == long_label for _style, text in fragments)  # never clipped
+
+    short_label = "working"
+    plain = view.sweep_divider_fragments(short_label)
+    assert any(text == short_label for _style, text in plain)  # a short label is never clipped
+
+
+def test_queue_divider_resuming_status_is_a_quiet_gray_line(tmp_path):
+    """While a session is being restored the divider is one gray line: no sweep, no pulse, no
+    elapsed time, because nothing is streaming and the replay that follows is the whole story."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    loop.tui = SimpleNamespace(status_label=RESUME_STATUS_LABEL)
+    assert loop.view.queue_divider_fragments() == [("ansibrightblack", RESUME_STATUS_LABEL)]
 
 
 def test_divider_shows_output_rate_while_a_response_streams(tmp_path):
@@ -364,8 +466,8 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
 
     activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert activity.count("use black instead") == 1
-    preview = LiveSpark.GLYPH + "checking the formatter"
-    assert activity.index("• use black instead") < activity.index(preview) < activity.rindex("thinking")
+    # Either star may lead the preview row; the text after it is what the order checks.
+    assert activity.index("• use black instead") < activity.index("checking the formatter") < activity.rindex("thinking")
     assert "+ use black instead" not in activity
     assert "queued" not in activity and "sent" not in activity
 
@@ -379,6 +481,24 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
     session.acknowledge_user_inputs(claimed)
     committed = "".join(text for _style, text in loop.view.tui_activity_fragments())
     assert "use black instead" not in committed
+
+
+def test_activity_echo_gets_a_blank_row_before_the_divider(tmp_path):
+    """The echoed follow-up sits directly above the standing divider while no stream exists.
+    Without a blank row it presses against the divider; the same gap the stream path already
+    draws must separate it from the divider too."""
+    config = Config()
+    config.data_dir = str(tmp_path / "data")
+    session = Session(cwd=str(tmp_path), config=config)
+    loop = CommandLoop(Agent(session), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
+    session.enqueue_user_input("\u770b\u770b shot.png")
+    session.claim_user_inputs()  # in-flight: the echo renders above the divider
+
+    activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
+    lines = activity.splitlines()
+    echo = next(index for index, line in enumerate(lines) if line.startswith("\u2022 \u770b\u770b shot.png"))
+    divider = next(index for index, line in enumerate(lines) if "working" in line)
+    assert divider == echo + 2  # one blank row between the echo and the divider
 
 
 def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypatch):

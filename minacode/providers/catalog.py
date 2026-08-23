@@ -130,7 +130,9 @@ OPENAI_EFFORT_CAPABILITY: CompatibilityData = {
 MODEL_CAPABILITIES: dict[str, CompatibilityData] = {
     "openai_effort": OPENAI_EFFORT_CAPABILITY,
     # DeepSeek V4 uses thinking.type and accepts low/high/max plus xhigh as a model-specific
-    # compatibility level. Its tool-call replay rule travels with the model, not the endpoint: a
+    # compatibility level. The host folds medium/high/xhigh to high server-side, so only low and
+    # max are distinct efforts; xhigh is kept in the level list because the endpoint accepts it.
+    # Its tool-call replay rule travels with the model, not the endpoint: a
     # gateway serving the same model still requires reasoning on tool-call messages and ignores it
     # everywhere else.
     # Evidence: https://api-docs.deepseek.com/guides/thinking_mode/
@@ -193,6 +195,86 @@ MODEL_CAPABILITIES: dict[str, CompatibilityData] = {
         "reasoning_effort_off_rules": ({"value": "none", "prefixes": ("k3",)},),
     },
 }
+
+
+TEXT_ONLY_VALUE = "text_only"
+
+
+# Documented text-only model families: a conservative negative list for image routing. Anything
+# not matched stays unknown and is tried on the main model; the catalog is reviewed source data,
+# never scraped at runtime. Rules are anchored to complete documented families or exact IDs, and
+# matching is case-insensitive because configured model IDs are normalized to lower case.
+# A gateway ID in canonical vendor/model form (e.g. `deepseek/deepseek-v4-pro`) is matched by
+# its model part only when the vendor prefix is one of CANONICAL_VENDORS; a custom alias such as
+# `production-model` stays unknown and is probed.
+#
+# Evidence:
+#   DeepSeek (chat = V3, reasoner = R1, V4 Flash/Pro text; V4 Flash Vision is the documented
+#   vision variant and must never match): https://api-docs.deepseek.com/quick_start/pricing
+#   https://api-docs.deepseek.com/guides/vision
+#   Z.AI / BigModel GLM families (GLM-5x text, GLM-4.7/4.6/4.5 and non-V variants, GLM-4-32B;
+#   GLM-5V / GLM-4.6V / GLM-4.5V / GLM-OCR must never match):
+#   https://docs.z.ai/guides/overview/overview
+#   Qwen coding-plan models documented without direct vision (do not generalize to Qwen3.5/3.6/3.7
+#   or Qwen-VL): https://help.aliyun.com/zh/model-studio/add-vision-skill
+#   https://help.aliyun.com/zh/model-studio/vision-model/
+#   Kimi / Moonshot text families (K3, K2.7 Code, pre-K2.5 K2, moonshot-v1 sizes; Kimi K2.5,
+#   Kimi K2.6, and moonshot-v1-*-vision-preview must never match):
+#   https://platform.kimi.com/docs/models
+#   https://platform.kimi.com/docs/guide/use-kimi-vision-model
+#   gpt-oss text models: https://developers.openai.com/api/docs/models/gpt-oss-120b
+#   Claude stays unknown/main-first (never in the negative list):
+#   https://platform.claude.com/docs/en/about-claude/models/overview
+TEXT_ONLY_MODEL_RULES: tuple[ModelRuleData, ...] = (
+    # DeepSeek ordinary text models.
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-chat(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-reasoner(?:-|$)"},
+    # V4 text models, excluding the documented vision variant (`...-vision-exp` or any other
+    # `-vision...` suffix).
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-v4-(?:flash|pro)(?:-(?!vision)|$)"},
+    # DeepSeek V3 and R1 documented text families: `deepseek-v3`, `deepseek-v3.x`, `deepseek-r1`
+    # and their suffixed variants. The documented vision families `deepseek-vl2` and
+    # `deepseek-ocr` share only the `deepseek-` prefix and never match; `deepseek-*` stays unknown.
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-v3(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-v3\.\d+(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"deepseek-r1(?:-|$)"},
+    # Z.AI / BigModel GLM text families. `glm-5`, `glm-5-turbo`, and numbered 5.x variants;
+    # GLM-4.7/4.6/4.5 and their non-V variants; GLM-4-32B-0414-128K. `glm-5v`, `glm-4.6v`,
+    # `glm-4.5v`, and `glm-ocr` never match (a `v` directly after the version is not `-`/end).
+    {"value": TEXT_ONLY_VALUE, "pattern": r"glm-5(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"glm-5-turbo(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"glm-5\.\d+(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"glm-4\.[567](?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"glm-4-32b-0414-128k(?:-|$)"},
+    # Qwen models explicitly documented as lacking direct vision in coding plans.
+    {"value": TEXT_ONLY_VALUE, "pattern": r"qwen3-max-2026-01-23(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"qwen3-coder-(?:next|plus)(?:-|$)"},
+    # Kimi K3 (open platform and Kimi Code), K2.7 Code, and pre-K2.5 K2 text IDs. Kimi K2.5/
+    # K2.6 never match (`kimi-k2` followed by `.` is not `-`/end).
+    {"value": TEXT_ONLY_VALUE, "pattern": r"kimi-k3(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"kimi-k2\.7-code(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"kimi-k2(?!\.5|\.6)(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"k3(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"kimi-for-coding(?:-|$)"},
+    # Moonshot v1 text sizes; a `moonshot-v1-*-vision-preview` ID never matches.
+    {"value": TEXT_ONLY_VALUE, "pattern": r"moonshot-v1-(?:8k|32k|128k)(?:-(?!vision)|$)"},
+    # Other common explicit text models.
+    {"value": TEXT_ONLY_VALUE, "pattern": r"minimax-m2\.5(?:-|$)"},
+    {"value": TEXT_ONLY_VALUE, "pattern": r"gpt-oss-(?:20b|120b)(?:-|$)"},
+)
+
+
+# Canonical vendor slugs of the negative-list families, for the `vendor/model` gateway form.
+# A different vendor prefix keeps the ID unknown even when its suffix would match a rule.
+CANONICAL_VENDORS: tuple[str, ...] = (
+    "deepseek",
+    "z-ai",
+    "bigmodel",
+    "qwen",
+    "moonshotai",
+    "minimax",
+    "openai",
+)
 
 
 PROVIDER_CATALOG: dict[str, ProviderData] = {

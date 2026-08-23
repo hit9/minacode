@@ -13,9 +13,11 @@ from typing import Literal, cast
 
 from .catalog import (
     ANTHROPIC_MODELS,
+    CANONICAL_VENDORS,
     MODEL_CAPABILITIES,
     PROVIDER_CATALOG,
     REASONING_LEVELS,
+    TEXT_ONLY_MODEL_RULES,
     BuiltinToolRuleData,
     ModelEffortRuleData,
     ModelRuleData,
@@ -76,6 +78,10 @@ class CompatibilityProfile:
     # subsets. ``None`` keeps generic pass-through for unknown hosts; an empty mapping means no
     # wire accepts tools.
     builtin_tools_by_wire: dict[str, tuple[BuiltinToolRuleData, ...]] | None = None
+    # Documented text-only model families (static evidence, see catalog.TEXT_ONLY_MODEL_RULES).
+    # A route matching one of these must never be sent a raw image; anything else stays unknown
+    # and is tried on the main model.
+    text_only_rules: tuple[ModelRule, ...] = ()
 
     @staticmethod
     def rule_value(rules: tuple[ModelRule, ...], model: str) -> str | None:
@@ -104,6 +110,9 @@ class ResolvedProvider:
     # Defaulted, and last: an unknown or hand-built provider must land on "no constrained
     # decoding" rather than fail to construct.
     json_response_format: bool = False
+    # Static text-only evidence folded from the catalog. Learned session evidence lives in the
+    # session image-routing state and is combined at delivery time; this is only the catalog half.
+    text_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -181,6 +190,12 @@ def _model_rules(*groups: tuple[ModelRuleData, ...]) -> tuple[ModelRule, ...]:
     return tuple(ModelRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["value"]) for group in groups for rule in group)
 
 
+# The compiled static text-only negative list. Model evidence is global: a documented text-only
+# model stays text-only on any host, including unknown hosts and the default compatibility
+# profile, so the default rule set is this one rather than empty.
+TEXT_ONLY_RULES = _model_rules(TEXT_ONLY_MODEL_RULES)
+
+
 def _effort_rules(*groups: tuple[ModelEffortRuleData, ...]) -> tuple[ModelEffortRule, ...]:
     return tuple(ModelEffortRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["levels"]) for group in groups for rule in group)
 
@@ -230,6 +245,7 @@ def _compatibility_profile(data: ProviderData) -> CompatibilityProfile:
         suppress_temperature=data.get("suppress_temperature", False),
         suppress_temperature_models=data.get("suppress_temperature_models", ()),
         builtin_tools_by_wire=data.get("builtin_tools_by_wire"),
+        text_only_rules=_model_rules(TEXT_ONLY_MODEL_RULES),
     )
 
 
@@ -308,6 +324,26 @@ def anthropic_keeps_prior_thinking(model: str) -> bool:
         return True
     families = _FAMILY_SPLIT_RE.split(model.lower())
     return version >= ANTHROPIC_MODELS["adaptive_min_version"] or (version == (4, 5) and "opus" in families)
+
+
+def is_text_only_model(model: str, profile: CompatibilityProfile | None = None) -> bool:
+    """Whether a configured model ID resolves to documented static text-only evidence.
+
+    The full ID is matched first; a canonical `vendor/model` gateway form (OpenRouter/OpenCode)
+    is matched by its model part only when the vendor prefix is one of the canonical family
+    slugs, so a custom alias or an unknown host stays unknown and is probed on the main model.
+    The rules are global model evidence, so the default/unknown-host profile falls back to the
+    compiled list instead of matching nothing.
+    """
+
+    rules = profile.text_only_rules if profile is not None and profile.text_only_rules else TEXT_ONLY_RULES
+    if CompatibilityProfile.rule_value(rules, model):
+        return True
+    if "/" in model:
+        vendor, _, candidate = model.partition("/")
+        if vendor in CANONICAL_VENDORS and CompatibilityProfile.rule_value(rules, candidate):
+            return True
+    return False
 
 
 def compatibility_for_host(host: str, profiles: Mapping[str, CompatibilityProfile] = COMPATIBILITY_PROFILES) -> CompatibilityProfile:

@@ -42,10 +42,12 @@ from minacode.tools import (
     ReadTool,
     Tool,
     ToolScript,
+    ViewImageTool,
 )
 
 if TYPE_CHECKING:
     from minacode.engine import Agent
+    from minacode.model import ModelClient
 
 
 class EditBatchPlan:
@@ -104,6 +106,7 @@ class EditBatchPlan:
         after: str
         created: bool
         changes: list[tuple[int, int, int, int]]
+        warnings: str
 
         def preview(self, tool: EditTool) -> str:
             return tool.diff(self.path, self.before, self.after) or f"Edit({self.path})"
@@ -128,15 +131,11 @@ class EditBatchPlan:
             tool.last_diff = tool.diff(self.path, self.before, self.after)
             tool.last_before = self.before
             tool.last_after = self.after
-            return "\n".join(
-                [
-                    f"<Edit path={json.dumps(tool.last_path)}>",
-                    tool.file_stat(self.path),
-                    tool.last_diff.rstrip(),
-                    tool.edit_context(self.after, self.changes),
-                    "</Edit>",
-                ]
-            )
+            parts = [f"<Edit path={json.dumps(tool.last_path)}>", tool.file_stat(self.path), tool.last_diff.rstrip()]
+            if self.warnings:
+                parts.append(self.warnings)
+            parts.extend((tool.edit_context(self.after, self.changes), "</Edit>"))
+            return "\n".join(parts)
 
     def __init__(self, session: Session):
         self.session = session
@@ -163,7 +162,7 @@ class EditBatchPlan:
         after = "".join(line.text for line in result.lines)
         if after == before and not created:
             raise ToolError(EditTool.no_changes_error_from_lines(before_lines, result.replacements, result.replace_all))
-        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes)
+        self.planned[call.id] = self.PlannedEdit(path, before, after, created, result.changes, tool.warnings_block(before, after, edits))
         state.lines, state.exists = result.lines, True
 
     def file_state(self, tool: EditTool, path: str, creating: bool) -> FileState:
@@ -204,16 +203,25 @@ class EditBatchPlan:
             current = state.current_origin(index)
             if current is not None:
                 return current
-            raise ToolError(f"stale anchor {anchor}; original line was changed in this batch")
+            raise ToolError(
+                f"stale anchor {anchor}; original line was changed in this batch; Read again unless the returned context verifies the intended line; "
+                "for a small exact edit whose old text is unique, prefer replace_unique\n"
+                + EditTool.current_file_context([line.text for line in state.lines], index)
+            )
         relocated = ReadTool.relocated_anchor([line.text for line in state.lines], index, expected)
         if relocated is not None:
             return relocated
         if 0 <= index < len(state.lines):
             current_line = ReadTool.anchor_line(index, state.lines[index].text)
             raise ToolError(
-                f"stale anchor {anchor}; current is {current_line}; retry with the current anchor only if its content is the line you meant, otherwise re-read"
+                f"stale anchor {anchor}; current is {current_line}; retry with a returned anchor only if its content is the line you meant; "
+                "otherwise Read again; for a small exact edit whose old text is unique, prefer replace_unique\n"
+                + EditTool.current_file_context([line.text for line in state.lines], index)
             )
-        raise ToolError(f"anchor line {index + 1} out of range; file has {len(state.lines)} lines")
+        raise ToolError(
+            f"anchor line {index + 1} out of range; file has {len(state.lines)} lines; "
+            "Read again unless the returned context verifies the intended line\n" + EditTool.current_file_context([line.text for line in state.lines], index)
+        )
 
 
 @dataclass
@@ -226,6 +234,9 @@ class ToolDisplay:
     nested_display: bool = False
     approved: bool = False
     auto: bool = False
+    # Non-empty when a ViewImage call bridged to the [vision] entry; finish_display draws it as a
+    # child of the call line so the bridge trace can never precede the call's own root.
+    vision_entry: str = ""
 
 
 class ToolRunner:
@@ -261,9 +272,9 @@ class ToolRunner:
         self.input_fn = input_fn
         self.output_fn = output_fn
         self.live_output: Callable[[str, str], None] | None = None
-        self.live_start: Callable[[], None] | None = None
+        self.live_start: Callable[..., None] | None = None
         self.worker_rule: Callable | None = None
-        # Renders the worker's final report like an agent answer (markdown), wired by the loop;
+        # Renders the worker's interim and final model text like an agent answer (markdown), wired by the loop;
         # None lets the worker publish it through its ordinary output channel (headless).
         self.worker_answer: Callable[[str], None] | None = None
         self.question_fn: Callable[[list[AskSpec]], list[str]] | None = None
@@ -274,8 +285,9 @@ class ToolRunner:
         # Injected by CommandLoop: opens a read-only viewer for the text behind a confirmation --
         # a Delegate order, a ToolScript body -- for the confirm-time `v`/`view` key (see
         # cli.modals.approval_text_viewer). None degrades the `v` key to printing the whole text
-        # (headless / non-CommandLoop runners).
-        self.text_viewer: Callable[[ApprovalView], None] | None = None
+        # (headless / non-CommandLoop runners). The return value is the viewer's close signal and is
+        # discarded here; the Ctrl-O browser's reopen loop reads it on its own.
+        self.text_viewer: Callable[[ApprovalView], object] | None = None
         # How many enclosing tool calls are running the calls being logged right now. Nested calls
         # (a ToolScript's call()) are printed one level deeper per enclosing call, so the log shows
         # who made them; see nested().
@@ -305,6 +317,11 @@ class ToolRunner:
         self._active_job: ActiveResource[JobTool] = ActiveResource()
         # The in-flight worker agent, so Ctrl-C fans out to it (see DelegateTool).
         self._active_worker: ActiveResource[Agent] = ActiveResource()
+        # The client behind explicit ViewImage vision requests, owned
+        # here so cancel() reaches the in-flight request. Created lazily -- most sessions never
+        # bridge an image tool call -- and shared across calls, since tool calls never overlap a
+        # main-model request. See vision_client().
+        self._vision_client: ModelClient | None = None
 
     @contextlib.contextmanager
     def nested(self):
@@ -344,10 +361,24 @@ class ToolRunner:
             ]
         )
 
+    def vision_client(self) -> ModelClient:
+        """The client behind tool-side vision requests, owned here so cancel() can abort one.
+
+        The ViewImage observation would otherwise run on a throwaway client nobody can
+        reach, leaving Ctrl-C dead until the provider timeout. Created lazily because most
+        sessions never bridge an image tool call."""
+        if self._vision_client is None:
+            from minacode.model import ModelClient  # local import: model.py imports the tool registry
+
+            self._vision_client = ModelClient(self.session)
+        return self._vision_client
+
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
         self._active_job.apply(lambda tool: tool.cancel())
         self._active_worker.apply(lambda agent: agent.cancel())
+        if self._vision_client is not None:
+            self._vision_client.cancel()
 
     def call_tool(self, tool: Tool, planned_edit: EditBatchPlan.PlannedEdit | None = None) -> str:
         if isinstance(tool, DelegateTool):
@@ -355,6 +386,11 @@ class ToolRunner:
             return tool.call()
         if isinstance(tool, ToolScript):
             tool.runner = self
+            return tool.call()
+        if isinstance(tool, ViewImageTool):
+            # The runner owns the vision client, so Agent.cancel() reaches an in-flight
+            # observation instead of leaving it to wait out the provider timeout.
+            tool.vision_observe = lambda images, question: self.vision_client().vision_observe(images, question)
             return tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
@@ -534,7 +570,7 @@ class ToolRunner:
         if call.error:
             return "failed", self.reject(call, f"ToolError: {call.error}", d=ToolDisplay(batch_suffix=batch_suffix)), None
         tool = tool_class(self.session, call.args)
-        if isinstance(tool, BashTool):
+        if isinstance(tool, (BashTool, JobTool)):
             tool.live_output = self.live_output
         started = time.monotonic()
         d = ToolDisplay(batch_suffix=batch_suffix)
@@ -571,15 +607,26 @@ class ToolRunner:
                     self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                     d.nested_display = True
                 self.live_start()
+            elif isinstance(tool, JobTool) and tool.blocks_agent() and self.live_start is not None:
+                # A blocking Job wait streams the job's log into the same live preview as Bash, so
+                # it draws the root line up front and hands the preview the wait budget for the
+                # countdown, exactly like Bash's pre-block.
+                if not d.nested_display:
+                    self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
+                    d.nested_display = True
+                self.live_start(tool.wait_budget(tool.payload()))
             elif tool.blocks_agent() and not d.nested_display:
-                # A blocking call (a Job wait) holds the agent with no live stream to show for it, so
-                # print the call line now -- as a leaf the finish block will hang children under --
-                # and the user sees the agent is waiting instead of a blank screen until the result
-                # lands. Skipped when something already drew a root (an approval block, an auto
-                # preview); a second copy of the same line is noise, not reassurance.
+                # A blocking call with no live preview wired up (e.g. headless, or a Job wait
+                # outside the runner) still prints its call line now -- as a leaf the finish block
+                # will hang children under -- so the user sees the agent is waiting instead of a
+                # blank screen until the result lands. Skipped when something already drew a root
+                # (an approval block, an auto preview); a second copy of the same line is noise,
+                # not reassurance.
                 self.emit(LogBlock.hierarchy(self.log_root(d.display or self.short_call(call), batch_suffix=batch_suffix, call=call), []))
                 d.nested_display = True
             output = self.call_tool(tool, planned_edit)
+            if isinstance(tool, ViewImageTool) and tool.vision_entry_label:
+                d.vision_entry = tool.vision_entry_label
             observation = tool.model_observation()
         except ToolError as error:
             return "failed", self.reject(call, f"ToolError: {error}", d=d), None
@@ -916,7 +963,7 @@ class ToolRunner:
         if call.name == "Note" and not failed and d.display:
             return self.with_batch_suffix(d.display.removeprefix("Note ").strip(), d.batch_suffix)
         tag = " [refused]" if failed and "user refused" in output else " [failed]" if failed else " [approved]" if d.approved else " [auto]" if d.auto else ""
-        tree = d.nested_display or call.name in ("Bash", "Delegate")
+        tree = d.nested_display or call.name in ("Bash", "Delegate") or bool(d.vision_entry)
         # A failed call explains itself in the error child below, so its root only has to identify
         # the call -- collapsed to one line, or a multi-line display (Note keeps the whole rendered
         # note there) paints its entire body red under the tag.
@@ -998,6 +1045,12 @@ class ToolRunner:
                     preview = self.delegate_answer_preview(output)
                     if preview:
                         children.extend(LogLine("", line, LogRole.OUTPUT, LogEdge.CONTINUE) for line in preview.splitlines())
+        elif call.name == "ViewImage" and d.vision_entry:
+            # The vision-provider observation is a child of the call line, drawn before the stored row, so
+            # the trace can never appear above its own call (the attachment path's standalone
+            # line is the engine's, not a tool's). TOOL, not sibling children's META: the stored
+            # row is bookkeeping, this is a real request on another paid entry.
+            children.append(LogLine("described by", d.vision_entry, LogRole.TOOL, LogEdge.BRANCH))
         if tree and not failed:
             children.append(LogLine("stored" if key else "done", key + tag if key else tag.strip(), LogRole.META, LogEdge.END))
         elif not tree and root is not None:

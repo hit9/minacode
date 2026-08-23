@@ -1,6 +1,7 @@
 """TuiRuntime behavior: command dispatch, the follow-up queue, streamed response promotion,
 resume, and session housekeeping at startup."""
 
+import asyncio
 import os
 import threading
 import time
@@ -25,6 +26,7 @@ from minacode.base import (
     TurnBox,
 )
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
+from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.update import UpdateChecker
 from minacode.config import (
     Config,
@@ -84,8 +86,10 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
     emitted_while_running = []
     history_emitted = threading.Event()
 
-    def print_formatted(value, *args, **kwargs):
-        text = fragment_list_to_text(to_formatted_text(value))
+    def print_formatted(*values, **kwargs):
+        # The batched resume replay arrives as one call with every fragment value as a positional
+        # argument (print_formatted_text accepts *values); scan them all, not just the first.
+        text = "".join(fragment_list_to_text(to_formatted_text(value)) for value in values)
         if "restored answer" in text:
             emitted_while_running.append(command_loop.tui is not None and command_loop.tui.app is not None and command_loop.tui.app.is_running)
             history_emitted.set()
@@ -97,6 +101,10 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
 
         def drive():
             assert history_emitted.wait(timeout=1)
+            # The resuming status ends with set_idle; EOF only exits from chat mode, so wait for the
+            # transition to finish before sending it.
+            while command_loop.tui.input_mode != "chat":
+                time.sleep(0.01)
             pipe_input.send_text("\x04")
 
         driver = threading.Thread(target=drive, daemon=True)
@@ -106,6 +114,42 @@ def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeyp
 
     assert not driver.is_alive()
     assert emitted_while_running == [True]
+
+
+def test_batched_emits_join_the_scrollback_queue_in_order(monkeypatch):
+    """A batched block's exit flushes through the scrollback queue: its parts land after emits
+    already queued for the live application instead of printing over them, so the scrollback
+    cannot reorder."""
+    ui = render_module.UiPrinter(output_fn=lambda _text: None)
+    ui.color = True
+    loop = asyncio.new_event_loop()
+    app = SimpleNamespace(is_running=True, _running_in_terminal=False, loop=loop)
+    monkeypatch.setattr(render_module, "get_app_or_none", lambda: app)
+    printed = []
+
+    def capture(*values, **kwargs):
+        printed.append("".join(fragment_list_to_text(to_formatted_text(value)) for value in values))
+
+    monkeypatch.setattr(render_module, "print_formatted_text", capture)
+    thread = threading.Thread(
+        target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()), daemon=True
+    )
+    thread.start()
+    try:
+        ui.emit("queued first")
+        with ui.batched():
+            ui.emit("batched second")
+            ui.emit("batched third")
+        deadline = time.monotonic() + 2
+        while not printed and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+
+    assert printed, "the queued and batched parts never flushed"
+    # One flush, in emit order: nothing landed ahead of the line queued before the batch.
+    assert "".join(printed) == "queued first\nbatched second\nbatched third\n"
 
 
 @pytest.mark.parametrize("entered", [" /help", "exit "])
@@ -147,6 +191,49 @@ def test_tui_runtime_warms_file_mentions_after_startup(tmp_path, monkeypatch):
 
     assert runtime.run() == 0
     assert warmed == [None]
+
+
+def test_tui_run_shows_resuming_status_while_restoring(tmp_path, monkeypatch):
+    """While a resumed session's transcript is being restored the TUI shows a resuming status, and
+    returns to idle the moment the replay is out."""
+    scenario_session = session(tmp_path)
+    scenario_session.resumed = True
+    command_loop = CommandLoop(
+        Agent(scenario_session, output_fn=lambda _text: None),
+        input_fn=lambda prompt="": "",
+        output_fn=lambda _text: None,
+    )
+    runtime = TuiRuntime(command_loop)
+    calls = []
+
+    class FakeTui:
+        ready = threading.Event()
+
+        def __init__(self):
+            self.ready.set()
+
+        def run(self, style=None):
+            del style
+
+        def exit(self):
+            pass
+
+        def set_running(self, label):
+            calls.append(("running", label))
+
+        def set_idle(self):
+            calls.append(("idle",))
+
+    fake_tui = FakeTui()
+    monkeypatch.setattr(runtime, "build_tui", lambda: fake_tui)
+    monkeypatch.setattr(runtime, "run_agent_loop", lambda: None)
+    monkeypatch.setattr(command_loop, "start_session", lambda: calls.append(("start_session",)))
+    monkeypatch.setattr(command_loop, "take_pending_inputs", list)
+    monkeypatch.setattr(command_loop, "close_background_output", lambda: None)
+    monkeypatch.setattr(command_loop.session.mentions, "refresh_async", lambda callback=None: None)
+
+    assert runtime.run() == 0
+    assert calls == [("running", RESUME_STATUS_LABEL), ("start_session",), ("idle",)]
 
 
 def test_tui_dispatch_compact_flushes_queued_followups(tmp_path):
@@ -957,13 +1044,67 @@ def test_resume_history_prints_before_tui_starts(tmp_path, monkeypatch):
     )
     command_loop.ui.color = True
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
     command_loop.render_resumed_session()
 
     text = "".join(printed)
     assert "most recent question" in text
     assert "most recent answer" in text
+
+
+def test_resume_redraws_only_the_recent_turns_and_says_so(tmp_path, monkeypatch):
+    """A long session does not flood the terminal on resume: only the newest turns are redrawn,
+    with a line saying the earlier ones stayed in context."""
+    command_loop = loop(tmp_path)
+    command_loop.session.resumed = True
+    messages = []
+    for index in range(23):
+        messages.append({"role": "user", "content": f"question {index}"})
+        messages.append({"role": "assistant", "content": f"answer {index}"})
+    command_loop.session.messages.extend(messages)
+    command_loop.ui.color = True
+    printed = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
+
+    command_loop.render_resumed_session()
+
+    text = "".join(printed)
+    assert "3 earlier turns not redrawn (still in context)" in text
+    assert "question 22" in text and "answer 22" in text  # the newest turn is redrawn
+    assert "question 3" in text  # the first visible turn is redrawn
+    assert "question 0" not in text and "answer 0" not in text  # the earliest turns are not
+
+
+def test_resume_redraw_keeps_tool_pairing_after_truncation(tmp_path, monkeypatch):
+    """Truncating the redraw still pairs the visible turns with their own tool results: the
+    folded turns advance the record cursor without rendering anything."""
+    command_loop = loop(tmp_path)
+    command_loop.session.resumed = True
+    command_loop.session.store_tool_result("Bash", ["printf old"], "old out")
+    command_loop.session.store_tool_result("Bash", ["printf new"], "new out")
+    messages = [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "Bash", "arguments": '["printf old"]'}}]},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for index in range(20):
+        messages.append({"role": "user", "content": f"question {index}"})
+        messages.append({"role": "assistant", "content": f"answer {index}"})
+    messages.append({"role": "user", "content": "new question"})
+    messages.append({"role": "assistant", "tool_calls": [{"id": "call-2", "type": "function", "function": {"name": "Bash", "arguments": '["printf new"]'}}]})
+    messages.append({"role": "assistant", "content": "new answer"})
+    command_loop.session.messages.extend(messages)
+    command_loop.ui.color = True
+    printed = []
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
+
+    command_loop.render_resumed_session()
+
+    text = "".join(printed)
+    assert "2 earlier turns not redrawn (still in context)" in text
+    assert "tr.2" in text  # the newest call pairs with its own record
+    assert "tr.1" not in text  # the folded turn's record is not rendered
 
 
 def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
@@ -974,7 +1115,7 @@ def test_tui_commands_print_output_immediately(tmp_path, monkeypatch):
     status_entry = replace(loop_module.COMMAND_LOOKUP["/status"], handler=lambda _loop, _args: "status marker")
     monkeypatch.setattr(loop_module, "COMMAND_LOOKUP", {**loop_module.COMMAND_LOOKUP, "/status": status_entry})
     printed = []
-    monkeypatch.setattr(render_module, "print_formatted_text", lambda value, *args, **kwargs: printed.append(fragment_list_to_text(to_formatted_text(value))))
+    monkeypatch.setattr(render_module, "print_formatted_text", lambda *values, **kwargs: printed.extend(fragment_list_to_text(to_formatted_text(value)) for value in values))
 
     assert command_loop.command("/help") == (True, False)
     assert command_loop.command("/status") == (True, False)
@@ -1008,7 +1149,7 @@ def test_start_session_does_not_scan_or_refresh_code_index(tmp_path, monkeypatch
     monkeypatch.setattr(
         CodeIndex,
         "status",
-        lambda _index, *, check=False, max_pending_files=20: (status_checks.append(check) or ("ready", "")),
+        lambda _index, *, check=False, max_pending_files=20: status_checks.append(check) or ("ready", ""),
     )
     monkeypatch.setattr(CodeIndex, "refresh_existing_async", lambda _index: pytest.fail("startup refreshed the code index"))
 

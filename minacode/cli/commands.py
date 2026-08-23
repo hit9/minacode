@@ -10,11 +10,14 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
+
+from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import (
     HTTP_USER_AGENT,
@@ -38,7 +41,6 @@ from minacode.cli.modals import (
 )
 from minacode.cli.update import UpdateChecker
 from minacode.config import (
-    IMAGE_INPUT_CHOICES,
     PROVIDER_API_CHOICES,
     REASONING_CHOICES,
     Config,
@@ -53,9 +55,10 @@ from minacode.session import SessionEntry, SessionSnapshotStore
 from minacode.tools import CodeIndex
 
 if TYPE_CHECKING:
+    from prompt_toolkit.formatted_text import StyleAndTextTuples
+
     from minacode.cli import CommandLoop
     from minacode.session import Session
-
 
 # fmt: off
 
@@ -70,7 +73,6 @@ SET_HANDLERS: dict[str, SetHandler] = {
     "provider.timeout": ("provider", "timeout", lambda v: max(1, int(v))),
     "provider.response_timeout": ("provider", "response_timeout", lambda v: max(0, int(v))),
     "provider.stream": ("provider", "stream", lambda v: v == "on"),
-    "provider.image_input": ("provider", "image_input", None),
     "runtime.max_agent_steps": ("settings", "max_steps", lambda v: max(1, int(v))),
     "runtime.max_context_tokens": ("settings", "max_context_tokens", lambda v: max(1, int(v))),
     "runtime.max_parallel_tools": ("settings", "max_parallel_tools", lambda v: max(1, int(v))),
@@ -82,7 +84,6 @@ SET_KEYS = tuple(SET_HANDLERS)
 # Keys whose values are a closed set: rejected by /set when unknown, and offered whole as completions.
 SET_CHOICES: dict[str, tuple[str, ...]] = {
     "provider.stream": ("on", "off"),
-    "provider.image_input": IMAGE_INPUT_CHOICES,
     "runtime.worker": ("on", "off"),
 }
 SET_VALUES: dict[str, tuple[str, ...]] = {
@@ -365,7 +366,6 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.model: {provider.model or '(empty)'}",
             f"provider.api: {provider.api}",
             f"provider.stream: {'on' if provider.stream else 'off'}",
-            f"provider.image_input: {provider.image_input}",
             f"provider.resolved_api: {resolved.api}",
             f"provider.prompt_cache_key: {provider.prompt_cache_key}",
             f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
@@ -415,14 +415,43 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
     entries = SessionSnapshotStore.list_sessions(loop.session.config.data_dir, loop.session.cwd, all_projects=argument == "all")
     if not entries:
         return "No saved sessions yet."
-    labels = {entry.uid: session_label(loop, entry, all_projects=argument == "all") for entry in entries}
+    table, widths = session_table(loop, entries, all_projects=argument == "all")
+    rows = session_rows(table, widths)
     if loop.tui is None or not loop.interactive_input:
-        return "\n".join(f"{entry.uid}  {labels[entry.uid]}" for entry in entries)
+        uid_width = max(get_cwidth(entry.uid) for entry in entries)
+        return "\n".join(f"{entry.uid}{' ' * (uid_width - get_cwidth(entry.uid))}  {label}" for entry, label in zip(entries, rows))
+    labels = {entry.uid: label for entry, label in zip(entries, rows)}
     title = "Sessions" + (" · all projects" if argument == "all" else "")
     # The preview renders on every frame, so it reads the list already in hand, never the store.
+    # Each session's summary is read lazily the first time the cursor lands on it and cached, so
+    # opening the picker costs nothing and a huge log is only read for sessions you actually look
+    # at.
     by_uid = {entry.uid: entry for entry in entries}
+    fields_by_uid = {entry.uid: row for entry, row in zip(entries, table)}
+    height = shutil.get_terminal_size().lines
+    summaries: dict[str, list[tuple[str, str]]] = {}
+
+    def preview_fn(uid: str) -> StyleAndTextTuples:
+        entry = by_uid.get(uid)
+        if entry is None:
+            return []
+        if uid not in summaries:
+            summaries[uid] = SessionSnapshotStore.tail_summary(entry.path)
+        return session_preview(entry, summary=summaries[uid])
+
     chosen = choice_application(
-        loop, title, tuple(entry.uid for entry in entries), labels, loop.session.uid, set(), preview_fn=lambda uid: session_preview(loop, by_uid.get(uid))
+        loop,
+        title,
+        tuple(entry.uid for entry in entries),
+        labels,
+        loop.session.uid,
+        set(),
+        preview_fn=preview_fn,
+        label_fn=session_label_fn(fields_by_uid, widths),
+        exclusive=True,
+        # A viewport over the list, like the Ctrl-O browser's: the picker fills the terminal, so
+        # beyond this many rows the list scrolls instead of pushing the preview off the screen.
+        max_rows=max(5, min(20, height - 12)),
     )
     if not isinstance(chosen, str) or chosen == loop.session.uid:
         return None
@@ -431,20 +460,88 @@ def sessions_command(loop: CommandLoop, args: str) -> str | None:
     return None
 
 
-def session_label(loop: CommandLoop, entry: SessionEntry, *, all_projects: bool = False) -> str:
-    rounds = f"{entry.rounds} round" + ("s" if entry.rounds > 1 else "") if entry.rounds else "no turns"
-    parts = [Text.age(time.time() - entry.updated_at), rounds]
+def _session_fields(loop: CommandLoop, entry: SessionEntry, *, all_projects: bool) -> list[str]:
+    """One session's fields in display order: name, age, round count, then the project when
+    browsing all projects and a `current` marker for the live session."""
+    rounds = f"{entry.rounds} round{'s' if entry.rounds > 1 else ''}" if entry.rounds else "no turns"
+    fields = [entry.label(), Text.age(time.time() - entry.updated_at), rounds]
     if all_projects and entry.cwd:
-        parts.append(os.path.basename(entry.cwd.rstrip(os.sep)) or entry.cwd)
+        fields.append(os.path.basename(entry.cwd.rstrip(os.sep)) or entry.cwd)
     if entry.uid == loop.session.uid:
-        parts.append("current")
-    return f"{entry.label()}  ·  " + " · ".join(parts)
+        fields.append("current")
+    return fields
 
 
-def session_preview(loop: CommandLoop, entry: SessionEntry | None) -> str:
-    if entry is None:
-        return ""
-    return "\n".join([f"uid   {entry.uid}", f"start {entry.opening or '(no message)'}", f"where {entry.cwd or '(unknown)'}"])
+def session_table(loop: CommandLoop, entries: list[SessionEntry], *, all_projects: bool = False) -> tuple[list[list[str]], list[int]]:
+    """Each session's fields plus every column's display width, so the same table can be laid out
+    as plain text or as styled fragments without recomputing the padding."""
+    rows = [_session_fields(loop, entry, all_projects=all_projects) for entry in entries]
+    widths = [0] * max((len(row) for row in rows), default=0)
+    for row in rows:
+        for index, field in enumerate(row):
+            widths[index] = max(widths[index], get_cwidth(field))
+    return rows, widths
+
+
+def session_rows(rows: list[list[str]], widths: list[int]) -> list[str]:
+    """The session list as table rows: every column padded to the widest value in it, so names,
+    ages, and round counts line up in the picker instead of drifting with the label lengths.
+    Padding is measured in display cells, so CJK names align too."""
+    lines = []
+    for row in rows:
+        cells = [field if index == len(row) - 1 else field + " " * max(0, widths[index] - get_cwidth(field)) for index, field in enumerate(row)]
+        lines.append("  ".join(cells))
+    return lines
+
+
+def session_label_fn(fields_by_uid: dict[str, list[str]], widths: list[int]) -> Callable[[str], StyleAndTextTuples]:
+    """Style one session row for the picker: the name plain, the age and round count dim, the
+    current session's marker in the live colour. Columns keep the same padding as the text layout."""
+
+    def label_fn(uid: str) -> StyleAndTextTuples:
+        fields = fields_by_uid[uid]
+        parts: StyleAndTextTuples = []
+        for index, field in enumerate(fields):
+            text = field if index == len(fields) - 1 else field + " " * max(0, widths[index] - get_cwidth(field))
+            if index == 0:
+                style = ""
+            elif field == "current":
+                style = "class:choice.live"
+            else:
+                style = "class:choice.meta"
+            parts.append((style, text + ("  " if index < len(fields) - 1 else "")))
+        return parts
+
+    return label_fn
+
+
+def session_preview(entry: SessionEntry, *, summary: list[tuple[str, str]] | None = None) -> StyleAndTextTuples:
+    """The picker's preview as fragments, laid out like the transcript itself: a user message is
+    its bullet plus the same warm tone the transcript uses, an assistant reply sits indented in
+    the default colour, and a collapsed tool line is dimmed. Newest exchange at the bottom, the
+    way a conversation reads."""
+    if not summary:
+        return []
+    width = max(40, shutil.get_terminal_size((120, 24)).columns - 4)
+    messages = list(summary)
+    # A tool-heavy session's newest turns are almost all assistant text; without a user message
+    # the preview gives no hint of what the conversation was about. Anchor it with the opening
+    # question when the recent window is all replies.
+    if not any(role == "user" for role, _text in messages) and entry.opening:
+        messages.append(("user", entry.opening))
+    parts: StyleAndTextTuples = []
+    for role, text in reversed(messages):
+        line = Text.clip_width(text.replace("\n", " "), width)
+        if role == "user":
+            parts.append(("", "\n"))
+            parts.append(("class:prompt", "• "))
+            parts.append(("class:choice.user", line))
+            parts.append(("", "\n"))
+        elif role == "tool":
+            parts.append(("class:choice.meta", "  " + line + "\n"))
+        else:
+            parts.append(("", "  " + line + "\n"))
+    return parts
 
 
 def name_command(loop: CommandLoop, args: str) -> str:
@@ -762,11 +859,6 @@ def set_api(loop: CommandLoop, value: str) -> str:
 def yolo(loop: CommandLoop, args: str) -> str:
     loop.session.settings.yolo = not loop.session.settings.yolo
     return "yolo: " + ("on" if loop.session.settings.yolo else "off")
-
-
-def hints(loop: CommandLoop, args: str) -> str:
-    loop.session.settings.quick_hints = not loop.session.settings.quick_hints
-    return "quick hints: " + ("on" if loop.session.settings.quick_hints else "off")
 
 
 def strict(loop: CommandLoop, args: str) -> str:

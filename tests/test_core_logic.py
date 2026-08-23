@@ -187,11 +187,9 @@ def test_provider_stream_defaults_on_and_can_be_disabled():
     assert "# stream = true" in ConfigFile.DEFAULT_TEXT
 
 
-def test_provider_image_input_defaults_to_auto_and_validates_values():
-    assert ProviderConfig().image_input == "auto"
-    assert ProviderConfig.from_dict({"image_input": "on"}).image_input == "on"
-    with pytest.raises(ConfigError, match="provider.image_input"):
-        ProviderConfig.from_dict({"image_input": "unknown"})
+def test_provider_ignores_obsolete_image_input_values():
+    assert not hasattr(ProviderConfig(), "image_input")
+    assert not hasattr(ProviderConfig.from_dict({"image_input": "off"}), "image_input")
 
 
 def test_runtime_settings_reads_theme_from_config():
@@ -314,7 +312,8 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     provider.reasoning = "off"
     params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
     assert "thinking" not in params
-    assert params["temperature"] == 0.3
+    assert "temperature" not in params
+    assert params["extra_body"]["temperature"] == 0.3
 
     provider.model = "claude-fable-5"
     params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
@@ -324,7 +323,8 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     provider.model, provider.reasoning = "claude-sonnet", "medium"
     params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
     assert "thinking" not in params
-    assert params["temperature"] == 0.3
+    assert "temperature" not in params
+    assert params["extra_body"]["temperature"] == 0.3
 
 
 @pytest.mark.parametrize(
@@ -439,9 +439,7 @@ def test_openrouter_reasoning_effort_uses_the_resolved_level(tmp_path):
     params: dict = {}
 
     # Kimi documents low/high/max, so "medium" folds up on any host whose profile carries that scale.
-    client.apply_provider_params(
-        params, ProviderConfig(url="https://api.moonshot.ai/v1", model="kimi-k3", chat_reasoning="reasoning", reasoning="medium")
-    )
+    client.apply_provider_params(params, ProviderConfig(url="https://api.moonshot.ai/v1", model="kimi-k3", chat_reasoning="reasoning", reasoning="medium"))
 
     assert params["extra_body"] == {"reasoning": {"effort": "high"}}
 
@@ -1814,4 +1812,3 @@ def test_deepseek_tool_call_replay_travels_with_the_model_not_the_endpoint():
     assert gateway.resolve().chat_reasoning_history == "tool_calls"
     # A model the gateway does not document keeps the generic full-replay default.
     assert ProviderConfig.from_dict({"url": "https://opencode.ai/zen/v1", "model": "vendor/model"}).resolve().chat_reasoning_history == "all"
-

@@ -8,6 +8,7 @@ its `loop` reference; it renders, it does not own behavior.
 from __future__ import annotations
 
 import heapq
+import re
 import shutil
 import time
 from collections.abc import Callable, Iterator
@@ -16,11 +17,13 @@ from typing import TYPE_CHECKING, ClassVar
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 from minacode.base import LogBlock, LogEdge, Text, TurnBox
 from minacode.cli.commands import SET_KEYS, SET_VALUES
 from minacode.cli.hints import Context as HintContext
 from minacode.cli.hints import HintPicker
+from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.worker import WORKER_SUBCOMMANDS
 from minacode.config import (
     PROVIDER_API_CHOICES,
@@ -274,6 +277,16 @@ class View:
     QUEUE_EMPTY_HINT = "Enter queues follow-up · Ctrl-C interrupts"
     QUEUE_PENDING_HINT = "↑ recalls queued · Ctrl-C interrupts"
 
+    # Line-level markdown tokens the live stream preview styles. Block constructs (headings,
+    # lists, fenced code) are deliberately not parsed: the preview shows partial streaming text,
+    # and only tokens that close on one line can render without flickering as the stream grows.
+    # Each token must hold a non-blank character, so whitespace-only runs (`** **`, `* *`) stay
+    # literal; the italic branch's `(?<!\*) ... (?!\*)` guards keep a lone star from borrowing
+    # itself out of a `**` run.
+    STREAM_INLINE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(\*\*[^*\n]*[^*\s\n][^*\n]*\*\*|`[^`\n]*[^`\s\n][^`\n]*`|(?<!\*)\*[^*\n]*[^*\s\n][^*\n]*\*(?!\*))"
+    )
+
     def __init__(self, loop: CommandLoop) -> None:
         self.loop = loop
         self._hint_picker = HintPicker()  # idle-placeholder tips; see minacode/cli/hints.py
@@ -292,14 +305,25 @@ class View:
         prefix_len = sum(len(fragment[1]) for fragment in prefix)
         cols = shutil.get_terminal_size((80, 20)).columns
         width = width if width is not None else max(20, min(52, cols - 2))
-        body_len = prefix_len + len(label) + 2  # prefix + " label "
         lead = 3
+        # A comet needs a track long enough to read as motion. When the label is long (the
+        # worker's `[worker]` + status + elapsed + rate + queued), widen the rule so both sides
+        # keep at least MIN_TRAIL dashes instead of clipping the label; the terminal width is
+        # the ceiling, and the trail shrinks only when even that cannot fit.
+        min_trail = 12
+        body_len = prefix_len + get_cwidth(label) + 2  # prefix + " label "
+        width = min(max(cols - 2, 20), max(width, lead + body_len + min_trail))
         trail = max(3, width - lead - body_len)
         dash_count = lead + trail
         # The comet head bounces over the horizontal rule only. The label stays stable and readable
         # while the glow appears to pass through the dash track on either side.
         span = max(1, dash_count - 1)
-        phase = time.monotonic() * self.QUEUE_SWEEP_CELLS_PER_SEC % (2 * span)
+        # A short track (a narrow terminal squeezing the trail) must not make the head bounce
+        # faster than the eye can follow: hold each round trip to at least a second by lowering
+        # the sweep rate as the span shrinks; normal-length tracks keep the full frame-per-cell
+        # rate.
+        sweep = min(self.QUEUE_SWEEP_CELLS_PER_SEC, 2 * span / 1.0)
+        phase = time.monotonic() * sweep % (2 * span)
         head = phase if phase <= span else 2 * span - phase
 
         def dashes(offset: int, count: int) -> StyleAndTextTuples:
@@ -338,6 +362,10 @@ class View:
             # Timed like the working phases, but never relabelled from the stream phase: nothing is
             # streaming while a script runs, so the last kind seen would be stale, not current.
             label = f"{status} ({Text.elapsed_since(self.loop.status_bar.started_at)})"
+        elif status == RESUME_STATUS_LABEL:
+            # A quiet gray lead-in to the restored transcript: nothing streams and nothing sweeps
+            # while the replay is being prepared, so no pulse pretends there is activity.
+            return [("ansibrightblack", status)]
         else:
             label = status
         if queued:
@@ -372,9 +400,13 @@ class View:
     def tui_activity_fragments(self) -> StyleAndTextTuples:
         sent, waiting = self.followup_fragments()
         fragments = sent
+        stream = self.model_stream_fragments()
         if fragments:
             fragments.append(("", "\n"))
-        stream = self.model_stream_fragments()
+            # A blank row lifts the echoed follow-up off whatever follows it: the streamed reply,
+            # or the standing divider when no stream exists yet. The divider always sits below,
+            # so the gap can never leave a hanging blank row at the end of the activity region.
+            fragments.append(("", "\n"))
         fragments.extend(stream)
         if stream:
             fragments.append(("", "\n"))
@@ -390,28 +422,62 @@ class View:
     def model_stream_fragments(self) -> StyleAndTextTuples:
         with self.loop.model_stream_lock:
             text = self.loop.model_stream_text
+            kind = self.loop.model_stream_kind
         if not text:
             return []
         width = max(20, shutil.get_terminal_size((120, 20)).columns)
         # Drawn with LogBlock's own rail so it cannot drift from the tree every tool call draws.
         # The rows carry CONTINUE (`│`) and nothing carries BRANCH: `├` is a T-junction, and there
-        # is no line above the block for one to join. Nor does a `└` close it — the stream is still
+        # is no line above the block for one to join. Nor does a `└` close it - the stream is still
         # arriving, and an end cap would say it had finished.
         rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
         rows = [Text.clip_width(line.expandtabs(4), max(1, width - len(rail) - 1)) for line in text.replace("\r", "\n").splitlines()[-6:]]
-        # The spark caps the rail and is the only thing that moves. The rows are what the reader is
-        # actually reading, and breathing those would be a strobe rather than a sign of life.
-        spark = LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.GLYPH
-        fragments: StyleAndTextTuples = []
-        for index, row in enumerate(rows):
-            if index:
-                fragments.extend([("ansibrightblack", f"{rail}{row}"), ("", "\n")])
-            else:
-                # Anchored to the stream this preview is showing, which ModelClient stamps on the
-                # first chunk of each request and clears between them, so every response opens the
-                # spark at its crest instead of wherever the wall clock happened to be.
-                fragments.extend([(LiveSpark.style(self.loop.session.state.stream_started_at), spark), ("ansibrightblack", row), ("", "\n")])
+        # The spark's row is the region's own, never the text's: a gray word beside the spark names
+        # the phase (the same wording the divider below uses), and the first streamed line can arrive
+        # on the next row down instead of racing for whatever room the spark leaves. The rows are
+        # what the reader is actually reading, and breathing those would be a strobe rather than a
+        # sign of life.
+        spark = LogBlock.margin(TurnBox.CONTENT_LEVEL + 1) + LiveSpark.glyph(self.loop.session.state.stream_started_at)
+        label = {"reasoning": "thinking", "output": "responding"}.get(kind)
+        fragments: StyleAndTextTuples = [
+            # Anchored to the stream this preview is showing, which ModelClient stamps on the
+            # first chunk of each request and clears between them, so every response opens the
+            # spark at its crest instead of wherever the wall clock happened to be.
+            (LiveSpark.style(self.loop.session.state.stream_started_at), spark),
+            *([("ansibrightblack", label)] if label else []),
+            ("", "\n"),
+            # A blank row keeps the spark off the rail: the star caps the region, it does not sit
+            # on it. The running-command frame draws the same gap whenever it has output.
+            ("", "\n"),
+        ]
+        for row in rows:
+            fragments.append(("ansibrightblack", rail))
+            fragments.extend(self._stream_inline_fragments(row))
+            fragments.append(("", "\n"))
         return fragments
+
+    @classmethod
+    def _stream_inline_fragments(cls, row: str) -> StyleAndTextTuples:
+        """One preview row as fragments: plain gray text with closed inline markdown tokens
+        marked in the same gray tones (weight and underline, no color), so the region stays
+        uniformly gray. A marker without its closing partner stays literal, so a stream that has
+        not finished a token never toggles its style from frame to frame."""
+        fragments: StyleAndTextTuples = []
+        cursor = 0
+        for match in cls.STREAM_INLINE_RE.finditer(row):
+            if match.start() > cursor:
+                fragments.append(("ansibrightblack", row[cursor : match.start()]))
+            token = match.group(1)
+            if token.startswith("**"):
+                fragments.append(("ansibrightblack bold", token[2:-2]))
+            elif token.startswith("`"):
+                fragments.append(("ansibrightblack underline", token[1:-1]))
+            else:
+                fragments.append(("ansibrightblack italic", token[1:-1]))
+            cursor = match.end()
+        if cursor < len(row):
+            fragments.append(("ansibrightblack", row[cursor:]))
+        return fragments or [("ansibrightblack", row)]
 
     def tui_input_hint(self) -> str:
         tui = self.loop.tui
@@ -468,12 +534,16 @@ class View:
                 "choice.selected": "reverse",
                 "choice.disabled": "ansibrightblack",
                 "choice.preview": "ansigreen italic",
+                # The preview's user messages take the same tone as the transcript's `• ` lines.
+                "choice.user": Theme.style("user.log"),
                 # The Ctrl-O browser's rows, coloured as the transcript colours the same call: the
                 # tr.N key dim, the tool name in the tool green, the arguments plain. A row that is
                 # still running takes the working divider's magenta instead of the dim key.
                 "choice.meta": "ansibrightblack",
                 "choice.tool": "ansigreen",
                 "choice.live": "ansimagenta bold",
+                "choice.output.ok": "ansigreen bold",
+                "choice.output.fail": "ansired bold",
                 "choice.status.connected": "ansigreen bold",
                 "choice.status.connecting": "ansigreen bold",
                 "choice.status.disconnected": "ansiyellow bold",

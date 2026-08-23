@@ -52,7 +52,6 @@ Most users can leave these unset.
 |---|---|---|
 | `api` | `auto` | API protocol shown above |
 | `stream` | `true` | Stream model output; disable for endpoints that reject streaming or Chat `stream_options` |
-| `image_input` | `auto` | Image capability: learn automatically, force `on`, or disable with `off` |
 | `reasoning` | `medium` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; change it during a session with `/reason` |
 | `available_models` | — | Additional models shown by `/model` |
 | `temperature` | — | Sampling temperature; omitted by default |
@@ -112,11 +111,26 @@ keeps the setting but does not send those tools; switching back enables them aga
 to check whether they are active. If minacode reports an unsupported entry, compare it with the
 example for your provider.
 
-With `image_input = "auto"`, minacode sends attached images using the selected standard API. A
-successful image request is remembered for that provider and model during the session; only an
-explicit image-not-supported response disables later image submissions. Set `on` or `off` when the
-endpoint's capability is already known. Historical images remain readable as text labels after
-switching to a provider or model with image input disabled.
+## Vision model
+
+An optional `[vision]` entry gives image input a fallback when the active model is text-only:
+
+```toml
+[vision]
+provider = "vision"
+
+[provider.vision]
+url = "https://api.deepseek.com"
+key = "sk-..."
+model = "deepseek-v4-flash-vision-exp"
+```
+
+An attached image is first sent to the active model unless minacode knows it rejects images:
+documented text-only families from a static catalog, or the same model returning HTTP 400 for an
+image in this session. In those cases `[vision]` describes the image once and its text replaces
+the raw image, and `ViewImage` falls back the same way. Each fallback description costs one
+vision-model request. Without `[vision]`, a text-only route keeps sending to the active model and
+you see the provider's own error.
 
 ## Runtime
 
@@ -125,7 +139,6 @@ Optional; the defaults shown are used when omitted.
 | Key | Default | Meaning |
 |---|---|---|
 | `yolo` | `false` | Start without confirmation prompts |
-| `quick_hints` | `true` | Let the model offer selectable next-step chips; toggle with `/hints` |
 | `max_context_tokens` | `262144` (256K) | Default for every provider entry that does not set its own `max_context_tokens`. How much of the model's context window to use, which sets the automatic-compaction budget — a budget, not the window's size: raise it for a 1M-window model, lower it for a smaller one |
 | `max_agent_steps` | `400` | Maximum tool steps in one turn |
 | `shell_timeout` | `60` | Maximum shell-command lifetime, in seconds |

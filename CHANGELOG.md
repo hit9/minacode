@@ -1,5 +1,135 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A `[vision]` provider entry gives image input a fallback: when the active model rejects an
+  attached image or is known to be text-only, `[vision]` produces one plain-text observation that
+  replaces the raw image in the conversation. Each routing prints a compact image log with the
+  input name or count and a `described by <provider>` child matching `ViewImage`.
+- A blocking `Job` wait now streams the job's output into the same live preview as Bash, and the
+  status line shows the seconds left in the wait (e.g. `· 12s left`).
+
+### Changed
+
+- **Breaking:** `Edit` now uses `content` as the single field for text written by every operation,
+  including `replace_all` and `replace_unique`; their former `new` field is rejected. Exact-text
+  replacements must include `content`, with an explicit empty string meaning deletion, so an
+  omitted replacement can no longer silently delete the match.
+- Worker replies printed between tool calls now render as markdown, like the worker's final
+  report. Tool lines stay as the log tree.
+- The live stream preview now marks inline markdown in the streaming text: `**bold**`,
+  `` `code` ``, and `*italic*` render with weight and underline once their closing marker
+  arrives. The marks stay in the preview's own gray tones, so the region keeps its all-gray
+  look; block constructs and unclosed markers stay literal, so a stream mid-token never
+  flickers.
+- The Ctrl-O browser marks each Bash row with its exit verdict in the first column: a green ✓
+  for exit 0, a red ✗ for any other exit, and a blank cell for entries with no exit code (a
+  script, an order). The list is mostly bash, so the failures become scannable by color, and it
+  now lists every stored result (up to the session's 400) instead of the latest fifty.
+- A divider label wider than the default rule (e.g. the worker's `[worker]` label with status,
+  elapsed time, rate, and a queued line) widens the rule so both sides keep at least twelve dashes and the label
+  stays whole, instead of squeezing the comet's track to two or three dashes; on a narrow
+  terminal the trail shrinks and the comet slows down so it never reads as frantic.
+- Quick-hint chips are picked with `Enter` instead of `Space`: the pick returns focus to the
+  prompt, so one `Tab` advances to the next chip, `Enter` again combines it, and a final
+  `Enter` sends. Refocus a picked chip and press `Enter` to unpick it; `Space` is plain again.
+- **Breaking:** Quick hints are now always available in the TUI. The `/hints` command and
+  `[runtime] quick_hints` setting have been removed; existing config values are ignored and
+  `/hints` is now an unknown command.
+- **Breaking:** Image routing is main-first with a bounded `[vision]` fallback. A raw image is
+  always tried on the active model first unless minacode knows the route is text-only; when that
+  request fails with HTTP 400, the image is described once through `[vision]` and the turn retries
+  without raw image blocks. Text-only knowledge comes from a static catalog of documented
+  text-only model families (DeepSeek chat/reasoner, GLM 5 and 4.x, Kimi K3, Moonshot v1, gpt-oss,
+  and a few others) or is learned for the session from that first 400; learned evidence is never
+  saved, so a resumed session starts unknown again while the text observation itself stays in
+  history. The removed `provider.image_input` setting is ignored in old configs; `off` no longer
+  disables submission and `auto` no longer manages vision routing.
+- Each `Job(action="wait")` call now waits at most 20 seconds, including the default wait; a
+  still-running job remains available for a later status check or another wait.
+- Quick-hint chips flow left to right, up to three per line, and wrap to new lines only
+  between chips when the terminal is too narrow, so every suggestion stays visible instead of
+  being clipped off the side.
+- Documentation is English-only now: the Simplified Chinese pages, their gettext catalogs and
+  `sphinx-intl` tooling, the language switcher, and the Chinese README have been removed. The
+  README screenshots now use absolute GitHub URLs so they render on PyPI instead of breaking.
+
+### Fixed
+
+- Attached images now include their stable session-owned paths in model context, so a model that
+  silently ignores image input can call `ViewImage` directly instead of searching the filesystem.
+- A rejected image no longer makes every later request replay the same unsupported image. The
+  failed occurrence is retained as readable text with stable session asset paths for `ViewImage`,
+  while a newly submitted image is still attempted normally.
+- A stale `Edit` anchor now returns a small, freshly anchored file neighborhood in the failed
+  result, so a verified nearby target can be retried without another `Read`; ambiguous targets
+  still require a read and are never guessed. Batched edits now also return the same duplicate-line
+  and large-edit warnings as direct edits, and the tool guidance no longer tells models to copy
+  unchanged boundary lines into replacement content.
+- Pressing `Ctrl-C` while a `ViewImage` vision request is running now cancels the read at once,
+  instead of hanging until the vision provider's response timeout; the turn then settles like any
+  other interrupted model call.
+- A failed `NextHints` batch counts as a tool batch, so the next ordinary tool batch shows the
+  `·2` suffix instead of presenting as the first batch.
+- The live preview of a short `Job` log no longer repeats already-shown lines when the command
+  writes more output: each new line is streamed once instead of the whole tail again.
+- Crash residue in the session's assets directory -- a `.image-*` staging file left behind by an
+  interrupted save -- is cleaned up once it is old enough, so abandoned files no longer pile up or
+  keep the directory around.
+- Batched terminal output is queued before the event-loop handoff and drained when the TUI stops,
+  so the turn's final lines cannot disappear or race ahead of a restored transcript.
+- The Ctrl-O output browser no longer hides the oldest stored result while a ToolScript is running:
+  the live running entry is listed on top of all stored records instead of counting against them.
+
+- Anthropic requests with a configured `temperature` no longer crash with
+  `unexpected keyword argument 'temperature'` on anthropic SDK 1.0 or newer, which removed the
+  top-level parameter; the value still reaches the request body as before.
+- An all-`NextHints` tool batch now ends the turn even when the model returns no answer text:
+  the suggestions stay at the idle prompt instead of being cleared by a follow-up model request,
+  and no blank answer line is printed. If every `NextHints` call in such a batch fails (no
+  answer text, no suggestions), the turn continues instead of ending as a blank reply, and
+  several `NextHints` calls in one batch merge their suggestions rather than the last call
+  overwriting the rest.
+
+## 0.30.0 - 2026-08-21
+
+### Fixed
+- In the Ctrl-O output browser, `Esc`, `q`, or `Ctrl-C` inside a detail now returns to the list
+  with the cursor on the entry it came from instead of closing the whole browser; `Ctrl-O` still
+  closes it.
+- Resuming a long session no longer replays the whole transcript onto the terminal: only the
+  twenty most recent turns are redrawn, with a line noting that the earlier ones stay in context.
+  The replay is printed in a single flush, so it appears at once instead of line by line. In the
+  full-TUI shell a quiet gray `resuming session…` status shows while it is being restored.
+- Opening `/sessions` / `/resume` no longer crashes with `UnicodeDecodeError` when the session
+  log's last chunk happens to cut a multi-byte (e.g. Chinese) character in half; the preview
+  reads the tail in binary and skips the torn line.
+
+### Changed
+
+- The `/sessions` / `/resume` picker is redesigned. It opens full-screen like the other browsers,
+  with the session list scrolling in a viewport, and its rows line up in columns: session name,
+  age, and round count padded to the widest value in each (measured in terminal cells, so CJK
+  names align too), the name plain, age and round count dimmed, the current session marked in the
+  live colour. The preview below shows the session's facts plus its most recent messages, read
+  lazily when the cursor lands on a session rather than by scanning every log on open. Internal
+  `<session_event ...>` resume markers are hidden so the preview shows real conversation, tool-only
+  turns collapse into one counted line (`-> Bash ×3, Read`), and the messages are laid out like the
+  transcript -- a `• ` bullet in the prompt colour with the message in the transcript's warm tone,
+  replies indented in the default colour, newest exchange at the bottom, anchored on the opening
+  question when the recent turns are all replies. The preview widens its tail window only until
+  it holds the recent conversation (capped), so a session whose tool output runs to megabytes no
+  longer shows just the last message or two.
+- The breathing spark on a streaming response and a running command now swaps between the
+  fine star and a heavier one at the darkest point of its breath (so the change is barely
+  visible) and is bold throughout: bigger and still continuous. A blank row now separates the
+  spark from the output rail below it, so the star reads as capping the region rather than
+  sitting on it. A gray phase word rides beside the spark -- `thinking` while the model reasons,
+  `responding` once it answers -- and the streamed text starts on its own row below, so the first
+  line no longer shares the spark's row.
+
 ## 0.29.1 - 2026-08-20
 
 ### Fixed

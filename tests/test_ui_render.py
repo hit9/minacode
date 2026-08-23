@@ -18,6 +18,7 @@ from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
     LogBlock,
+    LogEdge,
     LogLine,
     LogRole,
     Text,
@@ -219,6 +220,28 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
     assert rendered[0][1] != rendered[1][1]
 
 
+def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
+    """Standalone turn-level rows must not draw an edge. A BRANCH on a row with no parent line
+    above it dangles (`├` joined to nothing) and shifts the label two columns past every sibling
+    row. Cover the provider builtin-call row so it cannot reintroduce that defect."""
+    loop_ = loop(tmp_path)
+    captured = []
+    monkeypatch.setattr(loop_.ui, "emit", lambda text="", indent=0: captured.append(text))
+    loop_.builtin_call_output("search", "cache wiring")
+    blocks = [item for item in captured if isinstance(item, LogBlock)]
+    assert len(blocks) == 1
+    for block in blocks:
+        assert all(isinstance(line, LogLine) for line in block.items)
+        assert all(line.edge is LogEdge.NONE for line in block.items)
+
+    ui = UiPrinter(output_fn=lambda text: None)
+    builtin = "".join(text for _style, text in ui.log_segments(blocks[0])).splitlines()[0]
+    tool_root = "".join(text for _style, text in ui.log_segments(LogBlock([LogLine("Bash", "rg -n cache minacode/", LogRole.TOOL)]))).splitlines()[0]
+    user_echo = "\u2022 [Image #1 \u00b7 ef739e37-....png]"
+    # All three rows start their content in the same column (two-cell indent, no edge).
+    assert builtin.index("search") == tool_root.index("Bash") == user_echo.index("[Image") == 2
+
+
 def test_interactive_renderer_keeps_theme_when_parent_exports_no_color(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
@@ -275,6 +298,38 @@ def test_editor_and_queued_user_text_use_desert_style(tmp_path, monkeypatch):
     command_loop.session.enqueue_user_input("queued message")
     sent, waiting = command_loop.view.followup_fragments()
     assert any(style == expected and "queued message" in text for style, text in [*sent, *waiting])
+
+
+def test_activity_blank_line_separates_flushed_followup_from_the_stream(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.enqueue_user_input("queued message")
+    command_loop.session.claim_user_inputs()  # inflight: renders as the sent (echoed) follow-up
+    command_loop.model_stream_kind = "output"
+    command_loop.model_stream_text = "streamed reply line"
+
+    text = "".join(fragment for _style, fragment in command_loop.view.tui_activity_fragments())
+    lines = text.splitlines()
+    echo = next(index for index, line in enumerate(lines) if "queued message" in line)
+    # Exactly one blank row separates the echoed follow-up from the stream's first row, so the
+    # two never sit pressed together.
+    assert lines[echo + 1] == ""
+    assert lines[echo + 2]
+    assert "streamed reply line" in text
+
+
+def test_activity_leaves_no_hanging_blank_row_when_nothing_streams(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.enqueue_user_input("queued message")
+    command_loop.session.claim_user_inputs()
+
+    text = "".join(fragment for _style, fragment in command_loop.view.tui_activity_fragments())
+    lines = text.splitlines()
+    echo = next(index for index, line in enumerate(lines) if "queued message" in line)
+    # The blank row between the echo and the divider is separation, not a hanging row: the
+    # divider always follows it, so the activity region never ends on an empty line.
+    assert lines[echo + 1] == ""
+    assert lines[echo + 2]
+    assert lines[-1]  # the divider closes the region; nothing streams below it
 
 
 @pytest.mark.parametrize("width", [20, 40, 80])
@@ -429,6 +484,26 @@ def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_
     preview.text = "new line"
     preview.render()
     assert len(recording_output.events) > 0
+
+
+def test_bash_live_preview_status_shows_wait_countdown_when_deadline_set(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    preview = BashLivePreview()
+    preview.active = True
+    preview.started_at = 100.0
+
+    preview.deadline = 103.0
+    status = "".join(text for _style, text in preview.frame_rows()[0])
+    assert " · 3s left" in status
+
+    preview.deadline = 99.0  # 已过期的预算:剩余显示 0s,不出现负数
+    status = "".join(text for _style, text in preview.frame_rows()[0])
+    assert " · 0s left" in status
+
+    preview.deadline = None  # Bash 无预算:状态行与现状一致,不带倒计时
+    status = "".join(text for _style, text in preview.frame_rows()[0])
+    assert "s left" not in status
 
 
 def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch):
@@ -867,9 +942,7 @@ def test_ask_view_keys_navigate_advance_and_submit():
 def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
     """Tabbing to the last page and Enter must not submit a half-answered batch: it records the
     pick and jumps back to the first unanswered page."""
-    state = AskViewState.build(
-        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
-    )
+    state = AskViewState.build([AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])])
     assert state.handle_key("tab") is TUI_MODAL_PENDING
     assert state.handle_key("tab") is TUI_MODAL_PENDING
     assert state.active == 2
@@ -880,9 +953,7 @@ def test_ask_view_tab_to_last_page_does_not_submit_unanswered():
 
 def test_ask_view_out_of_order_answers_submit_when_all_answered():
     """Answers may land in any order; the batch only submits once every page has a pick."""
-    state = AskViewState.build(
-        [AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])]
-    )
+    state = AskViewState.build([AskSpec("One?", choices=["A"]), AskSpec("Two?", choices=["B"]), AskSpec("Three?", choices=["C"])])
     state.handle_key("tab")
     state.handle_key("tab")
     assert state.handle_key("enter") is TUI_MODAL_PENDING  # last page answered, batch not done
@@ -964,3 +1035,38 @@ class TestCodeLogLines:
 
     def test_unknown_lexer_degrades_to_plain_text(self):
         assert self.rendered("a = 1\n", "no-such-lexer").splitlines() == ["  1  a = 1"]
+
+
+def test_ui_batched_collects_into_one_print_formatted_text_call(monkeypatch):
+    """The restored-transcript replay batches: every emit feeds one print call, not one per line."""
+
+    calls: list[tuple[tuple, dict]] = []
+
+    def recording(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(render_module, "print_formatted_text", recording)
+    ui = UiPrinter(print)
+    ui.color = True
+    with ui.batched():
+        ui.emit("first")
+        with ui.batched():  # nested batches are a no-op, not a re-entry
+            ui.emit("second")
+        ui.emit_answer("**bold** answer", role="assistant", rule=False, indent=4)
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert kwargs["sep"] == "" and kwargs["flush"] is True
+    text = "".join(fragment for part in args for _style, fragment in to_formatted_text(part))
+    assert "first" in text and "second" in text and "bold" in text
+
+
+def test_ui_batched_passthrough_when_plain():
+    """Without color there is nothing to batch; each emit still calls output_fn directly."""
+
+    calls: list[str] = []
+    ui = UiPrinter(output_fn=calls.append)
+    with ui.batched():
+        ui.emit("one")
+        ui.emit("two")
+    assert calls == ["one", "two"]

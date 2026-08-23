@@ -18,6 +18,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
 from minacode.base import (
+    ImageRouteNotice,
     Json,
     LogBlock,
     LogEdge,
@@ -79,6 +80,10 @@ class CommandLoop:
     HELP_HEADING_RE: ClassVar[re.Pattern] = re.compile(r"^### (.+)$", re.MULTILINE)
     HELP_ENTRY_RE: ClassVar[re.Pattern] = re.compile(r"^- (.+?) — ", re.MULTILINE)
     TRANSCRIPT_DIFF_LINES: ClassVar[int] = 40
+    # Resume redraws at most this many recent turns. A long session would otherwise flood the
+    # terminal with the whole transcript and push the prompt out of reach; the earlier turns stay
+    # in the session, so the next request still sees them.
+    MAX_REDRAWN_TURNS: ClassVar[int] = 20
     EDITOR_CONTEXT_MAX_LINES: ClassVar[int] = 200
     EDITOR_CONTEXT_ELLIPSIS: ClassVar[str] = "# [... earlier lines of this reply omitted ...]"
     EDITOR_CONTEXT_SEPARATOR: ClassVar[str] = "# --- (earlier reply) ---"
@@ -109,7 +114,6 @@ class CommandLoop:
 - `/set KEY VALUE` — Set `provider.*` and `runtime.*`.
 - `/language [NAME]` — Force or show the reply language; auto follows your messages.
 - `/yolo` — Toggle tool confirmations.
-- `/hints` — Toggle next-step quick hints.
 - `/strict` — Toggle strict tool-call schemas (OpenAI / DeepSeek).
 - `/mcp` — Manage MCP server connections.
 - `/exit`, `/quit` — Exit.
@@ -224,6 +228,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
         self.agent.model.on_retry_wait = self.model_retry_wait_status
+        self.agent.on_image_route_notice = self.image_route_notice
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
@@ -241,6 +246,23 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.agent.tools.builtin_call = self.builtin_call_output
         self.agent.tools.compaction = self.automatic_compaction_status
         self.agent.tools.script_status = self.toolscript_run_status
+
+    def image_route_notice(self, notice: ImageRouteNotice) -> None:
+        """Show the one gray routing notice for a text-only image delivery decision.
+
+        The root line names the observation and carries the routing reason as a gray meta
+        suffix; the described-by entry is its single child with a tree edge, mirroring the
+        ViewImage tool's rendering. The engine emits this only after the observation
+        succeeded, so a failed vision call never shows a fake described-by. Presentation
+        only; never enters model context.
+        """
+
+        children = [LogLine("described by", notice.described_by, LogRole.TOOL, LogEdge.END)] if notice.described_by else []
+        count = len(notice.images)
+        label = "Image" if count <= 1 else "Images"
+        text = notice.images[0] if count == 1 else (f"{count} attachments" if count else "")
+        root = LogLine(label, text, LogRole.META, LogEdge.NONE, meta=" · " + notice.reason)
+        self.tool_output(LogBlock.hierarchy(root, children))
 
     def automatic_compaction_status(self, active: bool, error: str = "") -> None:
         """Show automatic context compaction as a distinct phase of the running turn."""
@@ -380,7 +402,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         # Interactive terminals use the full TUI; injected/non-TTY callers use the simple REPL.
         if self.interactive_input:
             return self.run_tui()
-        self.session.settings.quick_hints = False  # the simple REPL has no hint UI; don't invite the model to offer them
+        self.session.next_hints_available = False  # the simple REPL has no chip UI; don't offer an invisible terminal tool
         self.start_session()
         while True:
             try:
@@ -489,21 +511,39 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         }
         semantic_tool_results = any("status" in message for message in tool_results.values())
         messages = [message for message in transcript if not SessionSnapshotCodec.is_internal_message(message) and message.get("role") != "tool"]
-        self.emit(f"Restored session: {self.session.uid}")
-        if self.session.transcript_incomplete:
-            self.emit("Warning: this transcript may omit turns written by an older minacode version.")
-        if not messages:
-            return
-        transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
-        diffs = {diff.key: diff.diff for diff in transcript_diffs if diff.key and diff.diff}
-        tool_record_index = 0
-        for i, turn in enumerate(TurnBox.group(messages)):
-            if i:
+        # The replay is a burst of independent emits; batch them into a single print_formatted_text
+        # call so the whole session restores in one flush (and one TUI coordination) instead of one
+        # per line.
+        with self.ui.batched():
+            self.emit(f"Restored session: {self.session.uid}")
+            if self.session.transcript_incomplete:
+                self.emit("Warning: this transcript may omit turns written by an older minacode version.")
+            if not messages:
+                return
+            transcript_diffs = self.session.transcript_turn_diffs or self.session.turn_diffs
+            diffs = {diff.key: diff.diff for diff in transcript_diffs if diff.key and diff.diff}
+            tool_record_index = 0
+            turns = TurnBox.group(messages)
+            hidden = len(turns) - self.MAX_REDRAWN_TURNS
+            if hidden > 0:
+                # The earliest turns are not redrawn: on a long session they would flood the terminal
+                # and the prompt would scroll out of reach. They stay in the session, so the next
+                # request still sees them; only the redraw is skipped. Tool records still advance
+                # through them so the visible turns pair with their own results.
+                for turn in turns[:hidden]:
+                    for message in turn.messages:
+                        tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results, dry_run=True)
+                self.emit(f"… {hidden} earlier turn{'s' if hidden > 1 else ''} not redrawn (still in context)")
+                # The notice is its own paragraph, like the blank line between turns.
                 self.emit("")
-            for message in turn.messages:
-                tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results)
-        if not semantic_tool_results:
-            self.render_remaining_tool_records(tool_record_index, diffs)
+                turns = turns[hidden:]
+            for i, turn in enumerate(turns):
+                if i:
+                    self.emit("")
+                for message in turn.messages:
+                    tool_record_index = self.render_transcript_message(message, tool_record_index, diffs, tool_results)
+            if not semantic_tool_results:
+                self.render_remaining_tool_records(tool_record_index, diffs)
 
     def render_transcript_message(
         self,
@@ -511,17 +551,19 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         tool_record_index: int = 0,
         diffs: dict[str, str] | None = None,
         tool_results: dict[str, Json] | None = None,
+        *,
+        dry_run: bool = False,
     ) -> int:
         role = str(message.get("role") or "")
         content = ImageInputs.label_text(message).strip()
-        if role == "assistant" and content:
+        if role == "assistant" and content and not dry_run:
             # Every assistant message sits in the content column, final answer included, so a
             # resumed session reads exactly like the live one. The turn's own text all shares that
             # column with the user's message, whose `• ` bullet hangs in the same two-space margin.
             self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL)
         if role == "assistant":
-            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {})
-        if role == "user" and content and not ImageInputs.is_tool_observation(message):
+            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {}, dry_run=dry_run)
+        if role == "user" and content and not ImageInputs.is_tool_observation(message) and not dry_run:
             # The follow-up marker is model-facing context, part of history because it was sent.
             # The scrollback shows what the user typed, exactly as it looked when they typed it.
             self.ui.emit_answer(content.removeprefix(LIVE_FOLLOWUP_PREFIX.strip()).lstrip(), role=role, rule=False)
@@ -533,6 +575,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         tool_record_index: int,
         diffs: dict[str, str],
         tool_results: dict[str, Json] | None = None,
+        *,
+        dry_run: bool = False,
     ) -> int:
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
@@ -543,10 +587,12 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 continue
             result = (tool_results or {}).get(call.id)
             if result is not None and "status" in result:
-                self.emit_transcript_tool(call, str(result.get("result_key") or ""), diffs, failed=result.get("status") != "ok")
+                if not dry_run:
+                    self.emit_transcript_tool(call, str(result.get("result_key") or ""), diffs, failed=result.get("status") != "ok")
                 continue
             record, tool_record_index = self.transcript_tool_record(call, tool_record_index)
-            self.emit_transcript_tool(call, record.key if record else "", diffs)
+            if not dry_run:
+                self.emit_transcript_tool(call, record.key if record else "", diffs)
         return tool_record_index
 
     def render_remaining_tool_records(self, tool_record_index: int, diffs: dict[str, str]) -> None:
@@ -682,8 +728,9 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
 
         A provider-side search leaves no local tool call to log, and the running status label is gone
         the moment the turn ends. Without this line the transcript would credit the model with
-        knowledge it went and looked up."""
-        self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.BRANCH)]))
+        knowledge it went and looked up. No edge: a standalone row, nothing above it to join (a
+        branch glyph would dangle."""
+        self.tool_output(LogBlock([LogLine(label, Text.clip_width(detail, 120), LogRole.TOOL, LogEdge.NONE)]))
 
     @staticmethod
     def unpromoted_text(text: str, promoted: str) -> str:
@@ -764,8 +811,8 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
     def worker_answer_output(self, text: str) -> None:
-        """The worker's final report, rendered like an agent answer (markdown) rather than the
-        plain log lines its interim messages print as."""
+        """The worker's interim and final model text, rendered like an agent answer (markdown) rather than the
+        plain log lines tool execution prints as."""
         self.with_status_paused(lambda: self.emit_agent_output(text))
 
     def _begin_cli_preview(self) -> None:
@@ -775,7 +822,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
             self.status_bar.stop()
         self.live_preview.start()
 
-    def tool_live_start(self) -> None:
+    def tool_live_start(self, budget: float | None = None) -> None:
         if not self.ui.color:
             return
         if self.tui is not None:
@@ -783,9 +830,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
                 self.live_preview.active = True
                 self.live_preview.text = ""
                 self.live_preview.started_at = time.monotonic()
+                self.live_preview.deadline = (time.monotonic() + budget) if budget else None
             self.tui.invalidate()
             return
         self._begin_cli_preview()
+        # The preview region is reused across calls, so a call without a budget (Bash) must clear
+        # any deadline a previous Job wait left behind.
+        with self.live_preview.lock:
+            self.live_preview.deadline = (time.monotonic() + budget) if budget else None
 
     def tool_live_output(self, _stream: str, text: str) -> None:
         if not self.ui.color:
@@ -851,7 +903,6 @@ COMMANDS: tuple[Command, ...] = (
     Command("/set", commands.set_value),
     Command("/yolo", commands.yolo, queue_safe=True),
     Command("/strict", commands.strict),
-    Command("/hints", commands.hints, queue_safe=True),
     Command("/mcp", commands.mcp_command, queue_safe=True, render="answer"),
     Command("/resend", commands.resend_command, queue_safe=True),
     Command("/name", commands.name_command),

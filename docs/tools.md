@@ -40,10 +40,9 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     editor, tracebacks, and diffs show, so `Read`, `Search`, and `InspectCode` all agree on which
     line is which.
 * - **`ViewImage`**
-  - Opens one local PNG, JPEG, WebP, or single-frame GIF as visual input for the active model.
-    The agent can use it proactively for screenshots, mockups, diagrams, and generated assets.
-    Images outside the workspace require confirmation, and the active provider/model must support
-    image input.
+  - Opens one local PNG, JPEG, WebP, or single-frame GIF. The active model reads it when it
+    accepts images; on a text-only route a configured [vision model](configuration.md#vision-model)
+    returns its text observation instead. Images outside the workspace require confirmation.
 * - **`Search`**
   - Finds text with case-insensitive regular expressions, optionally limited by path or filename
     pattern. It skips hidden, binary, and gitignored files and returns editable anchors.
@@ -105,14 +104,17 @@ change your system ask for confirmation unless `--yolo` or `/yolo` is active.
     Pressing `Esc` declines the question; typing instead of choosing answers in free text.
 * - **`NextHints`**
   - Offers 2–3 short next-step prompts the model suggests after its answer. They appear as
-    selectable chips at the idle prompt; `Tab` cycles focus, `Space` picks a chip into the
-    input (press again to unpick) so several can be combined before sending, and `/hints`
-    toggles them off. An all-`NextHints` batch ends the turn in a single model call.
+    selectable chips at the idle prompt, flowing left to right with up to three per line and
+    wrapping when the terminal is too narrow so every suggestion stays visible; `Tab` cycles focus, `Enter` picks a chip into the
+    input and returns to the prompt, so `Tab` to the next chip and
+    `Enter` again combines several before sending. An
+    all-`NextHints` batch ends the turn in a single model call.
 
-    <div class="term-shot" role="img" aria-label="A terminal at the idle prompt after a NextHints call: the answer text above, then an empty prompt with a caret, a gap line, and one horizontal row of three cyan suggestion chips separated by grey bars with the middle chip highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
+    <div class="term-shot" role="img" aria-label="A terminal at the idle prompt after a NextHints call: the answer text above, then an empty prompt with a caret, a gap line, and one row of three suggestion chips separated by grey bars with the middle chip highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
 
-    `Tab` moves the highlight; `Space` picks the focused chip into the input line (again
-    unpicks), and `Enter` on the input line sends the combined text.
+    `Tab` moves the highlight; `Enter` picks the focused chip into the input line and returns
+    to the prompt, so `Tab` to the next chip and `Enter` again combines several; a final
+    `Enter` sends. Focus a picked chip and press `Enter` to unpick it.
 * - **`Skill`**
   - Loads an installed skill's full instructions when needed. It appears only when skills are
     installed; see [Skills](skills.md).

@@ -17,6 +17,11 @@ from minacode.render import search_sources_footer
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp
 
+# The TUI status label shown while a resumed session's transcript is being restored: a quiet
+# lead-in before the single-write replay, so the wait reads as a restore in progress rather than a
+# stuck prompt.
+RESUME_STATUS_LABEL = "resuming session…"
+
 if TYPE_CHECKING:
     from minacode.cli import CommandLoop
 
@@ -102,7 +107,7 @@ class TuiRuntime:
             status_fragments_fn=lambda: self.loop.status_bar.display_fragments(active=self.tui.input_mode == "running"),
             activity_fragments_fn=self.loop.view.tui_activity_fragments,
             input_hint_fn=self.loop.view.tui_input_hint,
-            quick_hints_fn=lambda: self.loop.session.quick_hints if self.loop.session.settings.quick_hints else (),
+            quick_hints_fn=lambda: self.loop.session.quick_hints,
             file_picker_available_fn=self.loop.session.mentions.picker.available if self.loop.session.mentions else None,
             file_picker_fn=self.loop.session.mentions.picker.pick if self.loop.session.mentions else None,
             file_complete_fn=self.loop.session.mentions.complete_async if self.loop.session.mentions else None,
@@ -110,6 +115,7 @@ class TuiRuntime:
             images=self.loop.session.images,
             history=self.loop.input_history,
             completer=self.loop.input_completer,
+            on_app_stop=lambda: self.loop.ui.drain_scrollback(),
         )
 
     def submit_next(self, entered: Sequence[str | UserInput]) -> None:
@@ -232,7 +238,12 @@ class TuiRuntime:
                 raise self.error
             # Emit startup and restored transcript lines only after patch_stdout owns the terminal,
             # so the primary-screen application places them in native terminal/tmux scrollback.
+            resuming = self.loop.session.resumed
+            if resuming:
+                self.tui.set_running(RESUME_STATUS_LABEL)
             self.loop.start_session()
+            if resuming:
+                self.tui.set_idle()
             if self.loop.session.mentions is not None:
                 # Git discovery can cost hundreds of milliseconds in a large worktree. Warm its
                 # runtime-only snapshot after the prompt is live so the first picker need not wait.

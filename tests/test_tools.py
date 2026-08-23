@@ -1024,6 +1024,28 @@ def test_suggest_tool_does_not_store_result():
     assert NextHintsTool.STORES_RESULT is False
 
 
+def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
+    """Several legal NextHints calls in one batch accumulate their inputs in call order,
+    deduplicated and capped at MAX_HINTS, instead of the last call replacing the rest."""
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda *a: "", output_fn=lambda text: None)
+    messages = runner.run(
+        [
+            ToolCall("n1", "NextHints", [{"inputs": ["run the tests", "show the diff"]}]),
+            ToolCall("n2", "NextHints", [{"inputs": ["commit the work", "run the tests"]}]),
+        ]
+    )
+    assert len(messages) == 2  # each call still gets its own tool result
+    assert s.quick_hints == ("run the tests", "show the diff", "commit the work")
+
+    # The cap applies to the merged total, not per call.
+    s.clear_quick_hints()
+    first = [f"a{index}" for index in range(4)]
+    second = [f"b{index}" for index in range(4)]
+    runner.run([ToolCall("n3", "NextHints", [{"inputs": first}]), ToolCall("n4", "NextHints", [{"inputs": second}])])
+    assert s.quick_hints == (*first, *second)[: NextHintsTool.MAX_HINTS]
+
+
 def test_suggest_tool_short_args(tmp_path):
     tool = NextHintsTool(session(tmp_path), [{"inputs": ["run the tests", "show the diff"]}])
     assert tool.short_args() == ['inputs: "run the tests", "show the diff"']
@@ -1031,29 +1053,48 @@ def test_suggest_tool_short_args(tmp_path):
 
 def test_quick_hints_are_transient_and_never_serialized(tmp_path):
     s = session(tmp_path)
-    s.set_quick_hints(["run the tests", "show the diff"])
+    s.add_quick_hints(["run the tests", "show the diff"])
+    s.next_hints_available = False
     assert s.quick_hints == ("run the tests", "show the diff")
     snapshot = SessionSnapshotCodec.snapshot(s, {})
     assert "quick_hints" not in snapshot
+    assert "next_hints_available" not in snapshot
     assert "quick_hints" not in snapshot["state"]
     s.clear_quick_hints()
     assert s.quick_hints == ()
 
 
-def test_runtime_settings_quick_hints_default_and_override():
-    assert RuntimeSettings.from_dict({}).quick_hints is True
-    assert RuntimeSettings.from_dict({"runtime": {"quick_hints": False}}).quick_hints is False
-    assert "# quick_hints = true" in ConfigFile.DEFAULT_TEXT
+def test_runtime_settings_no_longer_exposes_quick_hints_config(tmp_path):
+    settings = RuntimeSettings.from_dict({"runtime": {"quick_hints": False}})
+    s = session(tmp_path)
+    s.settings = settings
+
+    assert not hasattr(settings, "quick_hints")
+    assert "quick_hints" not in ConfigFile.DEFAULT_TEXT
+    assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
 
-def test_resolved_schemas_hide_next_hints_when_disabled(tmp_path):
+def test_legacy_config_quick_hints_key_loads_and_keeps_hints_enabled(tmp_path):
+    """An old config file with `[runtime] quick_hints = false` still loads: the obsolete key is
+    ignored (no runtime field, no crash) and the TUI capability stays on, so hints are not
+    disabled by stale configuration."""
+    cfg = tmp_path / "minacode.toml"
+    cfg.write_text("[runtime]\nquick_hints = false\n", encoding="utf-8")
+    s = Session.from_config_file(path=str(cfg))
+
+    assert not hasattr(s.settings, "quick_hints")
+    assert s.next_hints_available is True
+    assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
+
+
+def test_resolved_schemas_follow_frontend_next_hints_capability(tmp_path):
     s = session(tmp_path)
 
     def names():
         return {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
 
     assert "NextHints" in names()
-    s.settings.quick_hints = False
+    s.next_hints_available = False
     assert "NextHints" not in names()
 
 
@@ -1440,7 +1481,7 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
     with pytest.raises(ToolError):
         ReadTool(s, [{"path": "sample.py", "ranges": []}]).call()
     with pytest.raises(ToolError):
-        EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "new": "a\n"}]]).call()
+        EditTool(s, ["a.txt", [{"op": "replace_all", "old": "", "content": "a\n"}]]).call()
     with pytest.raises(ToolError):
         BashTool(s, []).call()
     with pytest.raises(ToolError):

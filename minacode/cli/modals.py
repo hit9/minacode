@@ -38,6 +38,12 @@ if TYPE_CHECKING:
     from minacode.cli import CommandLoop
     from minacode.session import HistorySegment
 
+# A detail opened from the Ctrl-O browser can say ``Esc`` to go back to the list instead of
+# closing the whole browser. ``show_modal`` closes on any non-pending return, so the viewer
+# hands this sentinel back and ``tool_output_viewer`` reopens the list around it.
+
+_TOOL_OUTPUT_BACK = object()
+
 
 def wrapped_rows(text: str, width: int, margin: str = "  ", style: str = "") -> list[StyleAndTextTuples]:
     """Source text as display rows, one logical line at a time. Text.wrap_styled measures in
@@ -230,14 +236,17 @@ def choice_application(
     current: str,
     disabled: set[str],
     *,
-    preview_fn: Callable[[str], str] | None = None,
+    preview_fn: Callable[[str], StyleAndTextTuples | str] | None = None,
+    label_fn: Callable[[str], StyleAndTextTuples] | None = None,
+    exclusive: bool = False,
+    max_rows: int = 0,
 ) -> str | object | None:
-    state = ChoiceViewState(choices, labels, disabled)
+    state = ChoiceViewState(choices, labels, disabled, max_rows=max_rows)
     options = state.enabled()
     state.selected = options.index(current) if current in options else 0
     if loop.tui is None:
         return None
-    result = loop.tui.show_modal(lambda: state.fragments(title, preview_fn), state.handle_key)
+    result = loop.tui.show_modal(lambda: state.fragments(title, preview_fn, label_fn), state.handle_key, exclusive=exclusive)
     if isinstance(result, KeyboardInterrupt):
         raise result
     return result
@@ -342,13 +351,6 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     return ApprovalView(f"output · {record.key}", command, "bash", rows, streams)
 
 
-# How far back the browser lists. The session keeps 400 results (Session.store_tool_result), so this
-# is a reading bound, not a storage one: a list is scanned, and past a few dozen rows the `/` search
-# is the way through it rather than the cursor. The viewport (ChoiceViewState.max_rows) is what keeps
-# a list this long from filling the screen.
-MAX_OUTPUT_ENTRIES = 50
-
-
 @dataclass(frozen=True)
 class OutputEntry:
     """One row of the Ctrl-O browser: how it reads in the list, and what it opens."""
@@ -358,6 +360,10 @@ class OutputEntry:
     detail: str
     view: ApprovalView
     live: bool = False
+    # The Bash result's verdict for the row's first column: "ok" (exit 0), "fail" (nonzero
+    # exit), or "" when the entry is not a Bash result (a script or an order has no exit code
+    # to promise). Computed once, at browse time, next to `record_view`.
+    status: str = ""
 
 
 def running_script_entry(loop: CommandLoop) -> OutputEntry | None:
@@ -380,7 +386,10 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     Delegate order with the worker's answer -- opens the same read-only scrolling viewer.
     ToolScript is here because yolo has no other door to it; Bash is here because a bounded excerpt
     under the list was never the whole answer; Delegate is here because judging the answer means
-    reading the order again, and the transcript kept only the `Delegate send` line."""
+    reading the order again, and the transcript kept only the `Delegate send` line.
+
+    A detail's Esc (or q, or Ctrl-C) returns to the list with the cursor where it was; Ctrl-O
+    closes the whole browser."""
     if loop.tui is None:
         return
     # Built once, on the way in: a record with nothing to show is also a record with no view, so
@@ -393,14 +402,23 @@ def tool_output_viewer(loop: CommandLoop) -> None:
     for record in reversed(loop.session.tool_records):
         view = record_view(loop, record)
         if view is not None:
-            entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view))
-        if len(entries) == MAX_OUTPUT_ENTRIES:
-            break
+            status = ""
+            if record.name == "Bash":
+                code = loop.agent.tools.bash_exit_code(record.output)
+                status = "ok" if code == "0" else ("fail" if code else "")
+            entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view, status=status))
     if not entries:
         return
-    picked = _tool_output_list(loop, entries)
-    if picked is not None:
-        approval_text_viewer(loop, picked)
+    # One list state for the whole browser: reopening the list after a detail's Esc keeps the
+    # cursor where it was instead of restarting at the top.
+    state: ChoiceViewState | None = None
+    while True:
+        picked, state = _tool_output_list(loop, entries, state)
+        if picked is None:
+            return
+        # Esc, q, or Ctrl-C in a detail goes back to the list; Ctrl-O closes the whole browser.
+        if approval_text_viewer(loop, picked, back_on_escape=True) is not _TOOL_OUTPUT_BACK:
+            return
 
 
 def record_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
@@ -432,33 +450,47 @@ def delegate_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView |
     return ApprovalView(f"order · {record.key}", view.text, view.lexer, rows, result)
 
 
-def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry]) -> ApprovalView | None:
+def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: ChoiceViewState | None = None) -> tuple[ApprovalView | None, ChoiceViewState]:
     """The list modal itself: pick one, and it closes returning the view to open.
 
+    `state` keeps the cursor (and any `/` filter) across reopenings, so a detail's Esc lands back
+    on the entry the reader came from instead of the top of the list. The same state comes back in
+    the return so the caller can pass it to the next opening.
+
     Rows are coloured the way the transcript colours the same call -- dim key, green tool name,
-    plain arguments -- so a row is scannable by shape instead of read word by word. The label is
-    still the flat text, which is what `/` searches over."""
+    plain arguments -- so a row is scannable by shape instead of read word by word. The first
+    column is the Bash verdict where one exists: a green ✓ for exit 0, a red ✗ for any other
+    exit, and a blank cell for entries that have no exit code (a script, an order, a running
+    batch). The label is still the flat text, which is what `/` searches over."""
     assert loop.tui is not None
     width = max(20, shutil.get_terminal_size((120, 20)).columns - 12)
     parts: dict[str, StyleAndTextTuples] = {}
     labels: dict[str, str] = {}
+    # Two cells wide so the verdict column lines up whether or not a row has one.
+    status_marks = {
+        "ok": ("class:choice.output.ok", "✓ "),
+        "fail": ("class:choice.output.fail", "✗ "),
+        "": ("", "  "),
+    }
     for index, entry in enumerate(entries):
+        mark = status_marks[entry.status]
         head = f"{entry.key}  "
         # Folded to one line before it is measured. `short_call` keeps a multi-line command whole,
         # which is right in the transcript and wrong here: a row is one row, and an embedded newline
         # spills it over several, taking the numbering and the selection bar with it. `git commit -m`
         # with a real message is the everyday case. The full command is a keypress away in the viewer.
         detail = loop.agent.tools.oneline(entry.detail.removeprefix(entry.name).strip(), 400)
-        detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1))
+        detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1 - 2))
         labels[str(index)] = f"{head}{entry.name} {detail}".rstrip()
         parts[str(index)] = [
+            mark,
             ("class:choice.live" if entry.live else "class:choice.meta", head),
             ("class:choice.tool", entry.name + " "),
             ("", detail),
         ]
     # Leave room for the rule, the help row, the counter, and the input region below.
     height = shutil.get_terminal_size((120, 24)).lines
-    state = ChoiceViewState(tuple(labels), labels, set(), max_rows=max(5, min(20, height - 10)))
+    state = state or ChoiceViewState(tuple(labels), labels, set(), max_rows=max(5, min(20, height - 10)))
 
     def rule(label: str) -> StyleAndTextTuples:
         cols = shutil.get_terminal_size((80, 20)).columns
@@ -480,7 +512,7 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry]) -> Approval
         return entries[int(result)].view if isinstance(result, str) else TUI_MODAL_PENDING
 
     picked = loop.tui.show_modal(fragments, handle_key)
-    return picked if isinstance(picked, ApprovalView) else None
+    return (picked if isinstance(picked, ApprovalView) else None), state
 
 
 def code_rows(text: str, lexer: str, width: int, margin: str = "  ") -> list[StyleAndTextTuples]:
@@ -501,12 +533,15 @@ def code_rows(text: str, lexer: str, width: int, margin: str = "  ") -> list[Sty
     return rows
 
 
-def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
+def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escape: bool = False) -> object:
     """Read-only viewer for the text behind a confirmation: header rows plus the complete text,
     rendered as highlighted code when the view names a lexer and as markdown when it does not (an
     order is prose; a script is not). Esc/q closes back to the approval prompt; nothing here edits
     anything. The same viewer is what the Ctrl-O browser opens after the fact, which is how a
-    script is read under yolo, where no prompt ever stops to offer `v`."""
+    script is read under yolo, where no prompt ever stops to offer `v`.
+
+    With `back_on_escape`, Esc, q, or Ctrl-C returns `_TOOL_OUTPUT_BACK` instead of closing, so
+    the caller can reopen the list; Ctrl-O still closes."""
     if loop.tui is None:
         return
     margin = "  "
@@ -566,13 +601,17 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
                     ),
                 )
             )
+        # A blank line sets the fields apart from the body below the rule, and the body from
+        # the result: three sections instead of one wall of text.
+        lines.append([])
         lines.append(separator(width))
         lines.extend(code_rows(view.text, view.lexer, width, margin) if view.lexer else markdown_rows(view.text, width))
         if view.result.strip():
             # Plain, unlexed, and whole: this is the result exactly as the model received it, and a
-            # viewer opened to check what a script did may not quietly edit or clip it.
+            # viewer opened to check what a script did may not quietly edit or clip it. Default
+            # foreground, not dimmed, so the answer reads as plainly as the text above it.
             lines.extend([[], separator(width, "result")])
-            lines.extend(wrapped_rows(view.result.rstrip(), width, margin, "ansibrightblack"))
+            lines.extend(wrapped_rows(view.result.rstrip(), width, margin))
         wrapped[width] = lines
         return lines
 
@@ -593,8 +632,10 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
         # The full legend needs ~78 cells; drop to the key names alone rather than let it spill past
         # the right edge on a narrow terminal, where the modal window would just cut it off.
         legend = "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q close"
+        if back_on_escape:
+            legend = "  ↑/↓ scroll · Ctrl-U/D half-page · PgUp/Dn page · g/G top/bottom · Esc/q back · c-o close"
         if get_cwidth(legend) > width:
-            legend = "  ↑/↓ · Ctrl-U/D · g/G · Esc/q close"
+            legend = "  ↑/↓ · Ctrl-U/D · g/G · Esc/q back · c-o close" if back_on_escape else "  ↑/↓ · Ctrl-U/D · g/G · Esc/q close"
         parts: StyleAndTextTuples = [("class:choice.disabled", f"  {view.label[:1].upper() + view.label[1:]} · read-only\n")]
         for line in lines[scroll : scroll + height]:
             parts.extend(line)
@@ -604,6 +645,8 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
 
     def handle_key(key: str, data: str) -> Any:
         nonlocal scroll
+        if back_on_escape and key in {"q", "escape", "c-c"}:
+            return _TOOL_OUTPUT_BACK
         if key in {"q", "c-o", "escape"}:
             return None
         height = viewport()
@@ -620,7 +663,7 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView) -> None:
         scroll = max(0, scroll)
         return TUI_MODAL_PENDING
 
-    loop.tui.show_modal(fragments, handle_key, exclusive=True)
+    return loop.tui.show_modal(fragments, handle_key, exclusive=True)
 
 
 def diff_viewer(loop: CommandLoop) -> None:

@@ -151,7 +151,6 @@ def test_worker_config_parsing_and_validation(tmp_path):
         RuntimeSettings,
     )
 
-
     config = Config.from_dict({"worker": {"provider": "fast"}, "provider": {"active": "default", "default": {"model": "d"}, "fast": {"model": "m"}}})
     assert config.worker_provider == "fast"
     assert RuntimeSettings.from_dict({"runtime": {"worker": True}}).worker is True
@@ -261,7 +260,6 @@ def test_worker_agent_wires_lifecycle_callbacks(tmp_path, monkeypatch):
     assert getattr(agent2.model, "on_retry_wait", None) is None
     assert getattr(agent2.model, "on_builtin_call", None) is None
     assert agent2.context.on_compaction is None
-
 
 
 # 5. reset: after reset, the next send carries no prior history, and the snapshot file is gone.
@@ -951,7 +949,7 @@ def test_worker_status_command_is_human_readable(tmp_path):
 
 
 # The engine publishes the model's own text as bare strings (content beside tool calls), so the
-# worker output wrapper must wrap them into LogLine items: LogBlock.walk crashes on a str item.
+# worker output wrapper must wrap them into LogLine items in headless mode: LogBlock.walk crashes on a str item.
 def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch):
     from minacode.base import LogBlock, ToolCall
     from minacode.context import ContextManager
@@ -973,6 +971,40 @@ def test_worker_output_wraps_model_text_for_the_log_stream(tmp_path, monkeypatch
     assert outputs, "the worker turn produced no output"
     rendered = [str(block) for block in outputs if isinstance(block, LogBlock)]  # str items raised before the fix
     assert any("thinking out loud" in text for text in rendered)
+
+
+def test_worker_interim_model_text_routes_to_worker_answer_when_wired(tmp_path, monkeypatch):
+    from minacode.base import LogBlock, ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    tool_call = ToolCall(id="call1", name="Note", args={"action": "view"})
+    model = FakeModelClient(
+        [
+            ({"role": "assistant", "content": "**thinking out loud**"}, [tool_call], "**thinking out loud**"),
+            ({"role": "assistant", "content": "done"}, [], "done"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    log_outputs = []
+    answer_outputs = []
+    append_answer = answer_outputs.append
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=log_outputs.append)
+    runner.worker_answer = append_answer
+
+    _delegate_call(parent, runner, action="send", order="o")
+
+    # Interim model text and final answer route to worker_answer for markdown rendering.
+    assert answer_outputs == ["**thinking out loud**", "done"]
+    # Worker tool output still flows through the ordinary log stream as LogBlock.
+    assert any(isinstance(block, LogBlock) for block in log_outputs)
+    # The bindings that make the split work: the worker agent's model text goes to the markdown
+    # hook, and its tool runner is pinned to the plain log wrapper -- dropping the pin would let
+    # tool output slip into the markdown channel.
+    agent = parent.worker._agent
+    assert agent.output_fn is append_answer
+    assert agent.tools.output_fn is not append_answer
 
 
 def test_worker_output_passes_memory_shaped_text_through_for_highlighting():
@@ -1132,7 +1164,6 @@ def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, m
 def test_delegate_send_rejects_a_blank_language(tmp_path):
     from minacode.base import ToolError
 
-
     parent = _delegate_session(tmp_path)
     runner = _delegate_runner(parent)
     with pytest.raises(ToolError, match="language"):
@@ -1278,9 +1309,7 @@ def test_delegate_summary_formats_tokens_and_tolerates_old_envelopes(tmp_path):
     )
     assert "8.2K in / 1.3K out" in summary
 
-    legacy = runner.delegate_result_summary(
-        '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false">'
-    )
+    legacy = runner.delegate_result_summary('<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false">')
     assert "steps 3" in legacy
     assert "2.5s" in legacy
     assert "a.txt, b.txt" in legacy
@@ -1302,6 +1331,7 @@ def test_delegate_summary_shows_rounds_and_context_fill(tmp_path):
     summary = runner.delegate_result_summary(envelope)
     assert "round 4" in summary
     assert "ctx 73%" in summary
+
 
 # 15. resolve_uid prefix search never resolves to a worker snapshot (review point 5): the parent's
 #     uid prefix must resolve to the parent alone, without ambiguity.
@@ -1348,8 +1378,6 @@ def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
         assert unavailable not in WORKER_PROMPT
 
 
-
-
 # 18. The worker prompt may name only tools in its reduced tool set.
 def test_prompts_never_name_tools_outside_their_toolset():
     import re
@@ -1375,6 +1403,7 @@ def test_system_prompt_stable_across_refactors():
     from minacode.prompts import SYSTEM_PROMPT
 
     assert hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest() == "83db5525a584bba0efffcaafae3497289d7cc14abdaee608278f139baaa7ef92"
+
 
 # 20. yolo covers editing files and running commands: those mistakes show up in the diff or the
 #     command output at once. A delegation's mistake is the order text, and it only surfaces a whole
@@ -1486,7 +1515,7 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     status_tool = DelegateTool(parent, [{"action": "status"}])
     block = runner.approval_display(ToolCall("delegate-3", "Delegate", [{"action": "status"}]), status_tool, "confirm")
     assert not block.has_children
-    edit_tool = EditTool(parent, ["a.py", [{"op": "replace_all", "old": "x", "new": "y"}]])
+    edit_tool = EditTool(parent, ["a.py", [{"op": "replace_all", "old": "x", "content": "y"}]])
     (tmp_path / "a.py").write_text("x\n")
     block = runner.approval_display(ToolCall("edit-1", "Edit", ["a.py", []]), edit_tool, "confirm")
     assert block.has_children
@@ -1529,7 +1558,9 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
 
     runner = ToolRunner(parent, ContextManager(parent), input_fn=input_fn, output_fn=outputs.append)
     runner.worker_config_picker = lambda: calls.append(1) or picker()
-    confirmed, reason = runner.confirm(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}]))
+    confirmed, reason = runner.confirm(
+        ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
+    )
     assert (confirmed, reason) == (True, "")
     assert calls == [1]  # the `c` key drove the picker loop exactly once
     assert parent.config.worker_provider == "alt"
@@ -1553,7 +1584,9 @@ def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tm
     outputs = []
     answers = iter(["c", "y"])
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
-    confirmed, reason = runner.confirm(ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}]))
+    confirmed, reason = runner.confirm(
+        ToolCall("delegate-2", "Delegate", [{"action": "send", "order": "o"}]), DelegateTool(parent, [{"action": "send", "order": "o"}])
+    )
     assert (confirmed, reason) == (True, "")
     assert any("worker config" in str(out) for out in outputs if isinstance(out, LogBlock))
     assert parent.config.worker_provider == "alt"  # untouched without a picker
@@ -1646,9 +1679,7 @@ def test_delegate_view_empty_order_is_noop(tmp_path):
     # unrecognized line means at this prompt: a refusal carrying what was typed as its reason.
     assert (confirmed, reason) == (False, "v")
     assert seen == []
-    assert not any(
-        isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk()) for out in outputs
-    )
+    assert not any(isinstance(out, LogBlock) and any(item.label.strip() == "order" for item, _ in out.walk()) for out in outputs)
 
 
 def test_delegate_approval_legend_mentions_view(tmp_path):
@@ -1814,7 +1845,7 @@ def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "", "```python", "def nested():", "    x = 1", "```"])
-    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "中文标题" * 10)]))
+    approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 
     rows = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
     assert rows, "the viewer rendered nothing"
@@ -1847,7 +1878,7 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
         )
     )
     order_lines = [f"line {i} " + "word " * 30 for i in range(200)]  # wraps to ~400 lines
-    approval_text_viewer(loop, ApprovalView('order', "\n".join(order_lines), '', [("title", "fix things")]))
+    approval_text_viewer(loop, ApprovalView("order", "\n".join(order_lines), "", [("title", "fix things")]))
     fragments = captured["fragments_fn"]
     handle_key = captured["key_fn"]
     assert captured["exclusive"] is True  # full-screen alternate-screen viewer
@@ -1898,7 +1929,7 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "## Section\n\n- item one\n- item two\n\n```python\nprint(1)\n```"
-    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "fix things")]))
+    approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
     rendered = "".join(text for _style, text in captured["fragments_fn"]())
     assert "Section" in rendered
@@ -1924,7 +1955,7 @@ def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = "Touch these files:\nminacode/loop.py\nminacode/parser.py\nDo not touch tests."
-    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "fix things")]))
+    approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
     rows = [row.strip() for row in "".join(text for _style, text in captured["fragments_fn"]()).splitlines()]
     for source_line in order.splitlines():
@@ -1945,7 +1976,7 @@ def test_delegate_order_viewer_field_header_alignment(monkeypatch):
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    approval_text_viewer(loop, ApprovalView('order', "order", '', [("title", "fix"), ("lang", "python"), ("max_steps", "3")]))
+    approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix"), ("lang", "python"), ("max_steps", "3")]))
 
     fragments = captured["fragments_fn"]()
     cyan = {text for style, text in fragments if style == "ansicyan" and text.strip() in {"title", "lang", "max_steps"}}
@@ -1967,7 +1998,7 @@ def test_delegate_order_viewer_header_separator(monkeypatch):
 
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
-    approval_text_viewer(loop, ApprovalView('order', "order", '', [("title", "fix things")]))
+    approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix things")]))
 
     lines = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
     separators = [line for line in lines if line.strip() and set(line) <= {"─", " "}]
@@ -1993,7 +2024,7 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     captured = {}
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     order = '## 标题\n\n- 把这段中文说明加进审批流程并补充测试\n\n```python\nprint("中文")\n```'
-    approval_text_viewer(loop, ApprovalView('order', order, '', [("title", "中文标题" * 10)]))
+    approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 
     rendered = "".join(text for _style, text in captured["fragments_fn"]())
     rows = rendered.splitlines()
@@ -2037,9 +2068,8 @@ def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
 # 21. [worker] model/reasoning/api parse like [worker] provider; reasoning and api validate their choices.
 def test_worker_config_parses_model_and_reasoning(tmp_path):
     from minacode.config import (
-    Config,
-)
-
+        Config,
+    )
 
     config = Config.from_dict(
         {
@@ -2063,7 +2093,6 @@ def test_worker_config_rejects_invalid_worker_reasoning(tmp_path):
         Config,
     )
 
-
     with pytest.raises(ConfigError, match="worker.reasoning"):
         Config.from_dict({"worker": {"reasoning": "turbo"}, "provider": {"default": {}}})
 
@@ -2073,7 +2102,6 @@ def test_worker_config_rejects_invalid_worker_api(tmp_path):
     from minacode.config import (
         Config,
     )
-
 
     with pytest.raises(ConfigError, match="worker.api"):
         Config.from_dict({"worker": {"api": "oai"}, "provider": {"default": {}}})
@@ -2386,14 +2414,14 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
-    status, _message, _observation = runner.run_one(
-        ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}])
-    )
+    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}]))
     assert status == "ok"
 
     done = [label for label in labels if label.startswith("worker done · ")]
     assert done, "the finish worker_rule callback never fired"
     assert done[0].startswith("worker done · fix /status blank line · steps 1")
+
+
 # 28c. the worker's final report prints into the scrollback in full -- like its interim
 # messages -- while the finish block's answer preview stays the folded three-line form: the
 # scrollback block is the record, the preview only shows that it is there.
@@ -2420,19 +2448,14 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     )
     assert "report line 20" in str(full)  # the middle of the answer survived
     # The finish block's preview is still the folded three-line form (head, omitted marker, tail).
-    finish = next(
-        block
-        for block in blocks
-        if block is not full and any(item.role is LogRole.OUTPUT for item, _ in block.walk())
-    )
+    finish = next(block for block in blocks if block is not full and any(item.role is LogRole.OUTPUT for item, _ in block.walk()))
     rendered = str(finish)
     assert "lines omitted" in rendered
     assert "report line 20" not in rendered  # the folded preview only carries the head and tail
 
 
-# 28e. with the loop wired in (worker_answer set), the worker's final report goes through the
-# answer renderer (markdown) instead of the plain log lines; interim messages keep the plain
-# output channel.
+# 28e. with the loop wired in (worker_answer set), the worker's model text (interim and final)
+# goes through the answer renderer (markdown) instead of the plain log lines.
 def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, monkeypatch):
     from minacode.base import LogBlock, LogRole, ToolCall
     from minacode.context import ContextManager
@@ -2449,11 +2472,7 @@ def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, m
     assert status == "ok"
 
     assert answers == ["the report"]  # the report went through the markdown hook, exactly once
-    auto = [
-        block
-        for block in outputs
-        if isinstance(block, LogBlock) and any(item.role is LogRole.AUTO for item, _ in block.walk())
-    ]
+    auto = [block for block in outputs if isinstance(block, LogBlock) and any(item.role is LogRole.AUTO for item, _ in block.walk())]
     assert not auto  # nothing on the plain output channel carries the final report
 
 

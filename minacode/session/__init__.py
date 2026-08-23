@@ -17,6 +17,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from minacode.base import (
+    IMAGE_ROUTE_TEXT_ONLY_LEARNED,
+    IMAGE_ROUTE_TEXT_ONLY_STATIC,
+    IMAGE_ROUTE_UNKNOWN,
     SESSION_EVENT_KEY,
     Json,
     ModelUsage,
@@ -113,6 +116,11 @@ class AgentState:
     # is. Live display state, like the retry and index fields above: set around the request in
     # ModelClient.compact and never persisted.
     compaction_entry: str = ""
+    # True while an explicit ViewImage vision request is in flight. Its usage joins the session
+    # totals but it is not a main-model request, so `_record_usage` must not let it overwrite the
+    # last-request ctx/cache snapshot the status bar reads. Live request state, like
+    # compaction_entry: never persisted.
+    vision_observe_active: bool = False
     # The last delegation that failed on this worker, for `Delegate status` to tell the parent
     # (which cannot see the worker) why it stopped, instead of the parent having to remember.
     # Live display state, like compaction_entry: never persisted.
@@ -317,6 +325,64 @@ class BackgroundJob:
         return "..." + text[-(limit - 3) :]
 
 
+class ImageRoute:
+    """Unified image-delivery decision for the active main route; session-local.
+
+    Static text-only evidence is folded by `ProviderConfig.resolve()` from the provider
+    compatibility catalog. Learned evidence is created only when an eligible main request
+    returns HTTP 400 for a request carrying a current-turn raw image, and is keyed by the full
+    route identity (provider entry, resolved API, resolved base URL, model). It lives in memory
+    for the live session only: snapshots never carry it and a resumed session starts unknown
+    unless the catalog supplies static evidence.
+
+    Attachments and ViewImage must ask this one decision which delivery is required instead of
+    duplicating model matching or 400 learning; presentation only observes routing events.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def identity(self) -> tuple[str, str, str, str]:
+        """The full identity of the effective active provider entry, used as the learned-evidence key."""
+
+        provider = self.session.config.provider
+        resolved = provider.resolve()
+        return (self.session.config.active_provider, resolved.api, resolved.base_url, provider.model.lower())
+
+    def static_text_only(self) -> bool:
+        return self.session.config.provider.resolve().text_only
+
+    def learned_text_only(self) -> bool:
+        return self.identity() in self.session.learned_text_only_routes
+
+    def is_text_only(self) -> bool:
+        return self.static_text_only() or self.learned_text_only()
+
+    def state(self) -> str:
+        if self.static_text_only():
+            return IMAGE_ROUTE_TEXT_ONLY_STATIC
+        if self.learned_text_only():
+            return IMAGE_ROUTE_TEXT_ONLY_LEARNED
+        return IMAGE_ROUTE_UNKNOWN
+
+    def learn_text_only(self) -> None:
+        """Record session-local evidence for the exact current main route."""
+
+        self.session.learned_text_only_routes.add(self.identity())
+
+    def delivery(self) -> str:
+        """How a current image occurrence is delivered: `vision` when the route is text-only
+        (static or learned) and a vision entry exists, else a raw attempt on the main model.
+
+        A text-only route without `[vision]` deliberately keeps the raw attempt so the
+        provider's real failure stays visible; no local image-disable error is invented.
+        """
+
+        if self.is_text_only() and self.session.config.vision_provider:
+            return "vision"
+        return "raw"
+
+
 @dataclass(eq=False)
 class QueuedInput:
     text: str
@@ -391,6 +457,7 @@ class Session:
     tool_errors: list[ToolErrorRecord] = field(default_factory=list)
     pending_user_inputs: list[QueuedInput] = field(default_factory=list)
     quick_hints: tuple[str, ...] = field(default_factory=tuple)  # transient offered next-step inputs; never serialized, cleared each turn
+    next_hints_available: bool = True  # transient frontend capability; false for the simple REPL, which has no chip UI
     # Worker handoff (see DESIGN.md): the second session this one delegates to, and its per-session
     # projection knobs. None of these are persisted — SessionSnapshotCodec.snapshot is an explicit
     # whitelist, so they return to their defaults on load and must be re-set by the delegate caller.
@@ -415,6 +482,11 @@ class Session:
     skills: SkillLibrary | None = None
     mentions: FileMentions | None = None  # runtime handle; holds the cached @file: path list
     images: ImageInputs = field(init=False, repr=False)
+    # Session-local learned text-only route evidence, keyed by ImageRoute.identity(). Runtime
+    # only: SessionSnapshotCodec is an explicit whitelist, so this never reaches a snapshot and
+    # a resumed session starts unknown unless the catalog supplies static evidence.
+    learned_text_only_routes: set[tuple[str, str, str, str]] = field(default_factory=set, repr=False)
+    image_route: ImageRoute = field(init=False, repr=False)
     _gitignore_cache: dict[str, tuple[int, list[str]]] = field(default_factory=dict)
     uid: str = ""
     resumed: bool = False
@@ -434,6 +506,7 @@ class Session:
 
     def __post_init__(self) -> None:
         self.images = ImageInputs(self)
+        self.image_route = ImageRoute(self)
         if not self.uid:
             self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]  # noqa: DTZ005 - IDs intentionally use local wall time.
         if self.system_info is None:
@@ -602,10 +675,13 @@ class Session:
             for item in self.pending_user_inputs:
                 item.inflight = False
 
-    def set_quick_hints(self, hints: list[str]) -> None:
-        """Transient next-step inputs offered at the idle prompt; replaced wholesale, never snapshotted."""
+    def add_quick_hints(self, hints: list[str], *, limit: int = 4) -> None:
+        """Merge more offered inputs into the current set: appended in call order, deduplicated,
+        and capped at `limit`. Several `NextHints` calls in one batch must not overwrite each
+        other, so the batch's suggestions accumulate instead of the last call winning."""
         with self._queue_lock:
-            self.quick_hints = tuple(hints)
+            merged = [*self.quick_hints, *(hint for hint in hints if hint not in self.quick_hints)]
+            self.quick_hints = tuple(merged[:limit])
 
     def clear_quick_hints(self) -> None:
         with self._queue_lock:

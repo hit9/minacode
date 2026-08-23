@@ -38,17 +38,16 @@ from minacode.base import (
     ToolError,
     builtin_tool_label,
 )
-from minacode.config import (
-    ProviderConfig,
-    compaction_provider_config,
-)
-from minacode.image import IMAGE_REFS_KEY, ImageInputs
+from minacode.config import ProviderConfig, compaction_provider_config
+from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef
 from minacode.model import chat, resilience, responses
 from minacode.prompts import (
     COMPACTION_ECHO_RETRY,
     COMPACTION_PROMPT,
     COMPACTION_REQUEST_EVENT,
     COMPACTION_RETRY,
+    VISION_OBSERVE_DEFAULT_QUESTION,
+    VISION_OBSERVE_PROMPT,
 )
 from minacode.providers.catalog import THINKING_BUDGETS
 from minacode.providers.compat import (
@@ -82,6 +81,11 @@ class PreparedRequest:
     tools: list[Json]
     pending: list[QueuedInput]
     turn_messages: list[Json]
+    # Exact semantic messages whose raw image occurrences entered this request since the last
+    # accepted main-model request (opening attachment, claimed queued attachment, or a ViewImage
+    # observation from the current tool loop). Eligibility for 400 learning requires at least one
+    # of these; the fallback observes exactly these and nothing older.
+    current_image_messages: tuple[Json, ...] = ()
 
 
 class _RequestLease:
@@ -180,11 +184,17 @@ class ModelClient:
             default=-1,
         )
 
-    def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None) -> list[Json]:
-        """Build Chat Completions history using the provider's documented replay contract."""
+    def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None, *, text_only: bool | None = None) -> list[Json]:
+        """Build Chat Completions history using the provider's documented replay contract.
+
+        `text_only` defaults to the session's current main-route image verdict; pass an explicit
+        value to override it (the main request path recomputes it per call).
+        """
 
         provider = provider if provider is not None else self.session.config.provider
-        return chat.chat_messages(messages, provider, provider.resolve(), self.session.images, self.latest_user_position)
+        if text_only is None:
+            text_only = self.session.image_route.is_text_only()
+        return chat.chat_messages(messages, provider, provider.resolve(), self.session.images, self.latest_user_position, text_only=text_only)
 
     def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
@@ -251,7 +261,9 @@ class ModelClient:
             return clean
 
         chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
+        # A text-only route never projects raw image blocks, so its tiles must not count against
+        # the budget either; labels and the asset-context line are already inside `chars`.
+        images = self.session.images.estimated_tokens(messages) if not self.session.image_route.is_text_only() else 0
         return (chars + 3) // 4 + images
 
     def call_client(self, client: OpenAI | Anthropic, request: Callable[[], _ResultT], *, response_timeout: float | None = None) -> _ResultT:
@@ -335,21 +347,13 @@ class ModelClient:
                 state.current_model_call_started_at = time.monotonic()
                 state.stream_started_at = state.stream_chars = 0
                 try:
-                    result = self.api_request(messages, tools)
-                    self.session.images.note_success(messages)
-                    return result
+                    return self.api_request(messages, tools)
                 except KeyboardInterrupt:
                     if state.manual_model_retry_requested:
                         state.manual_model_retry_requested = False
                         raise ModelRequestRetry() from None
                     raise
                 except ModelError as error:
-                    if self.session.images.note_error(messages, error):
-                        provider = self.session.config.provider
-                        identity = f"{self.session.config.active_provider}/{provider.model or '(no model)'}"
-                        raise ModelError(
-                            f"{identity} does not support image input. Switch to an image-capable model, or continue with image labels only."
-                        ) from error
                     retryable = resilience.retryable_error(error)
                     if attempt >= MODEL_REQUEST_RETRIES or not retryable:
                         if attempt:
@@ -438,7 +442,7 @@ class ModelClient:
         and its prefix reuse is worth reading on its own -- it now rides the conversation's cached
         prefix deliberately, and blending the two would hide whether that worked."""
         counter = self.session.compaction_usage if self.session.state.compaction_entry else self.session.usage
-        counter.add(usage, self.session.request_token_budget())
+        counter.add(usage, self.session.request_token_budget(), touch_last=not self.session.state.vision_observe_active)
 
     def chat_request(
         self,
@@ -551,6 +555,7 @@ class ModelClient:
                 provider_origin=self.provider_origin,
                 replayable_echo=self.replayable_echo,
                 images=self.session.images,
+                text_only=self.session.image_route.is_text_only(),
             ),
             "stream": stream,
             "store": False,
@@ -625,13 +630,15 @@ class ModelClient:
         if self.on_stream is not None:
             self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
 
-    def responses_input(self, messages: list[Json], origin: str = "") -> list[Json]:
+    def responses_input(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
+        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
         return responses.responses_input(
             messages,
             origin,
             provider_origin=self.provider_origin,
             replayable_echo=self.replayable_echo,
             images=self.session.images,
+            text_only=text_only,
         )
 
     @staticmethod
@@ -671,6 +678,39 @@ class ModelClient:
     @staticmethod
     def dump_message_item(item: Any) -> Json:
         return responses.dump_message_item(item)
+
+    def vision_observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
+        """Ask the [vision]-configured entry to observe images for an explicit ViewImage call.
+
+        Mirrors compact(): the [vision] entry is resolved per call and validated locally -- a
+        missing field would otherwise surface as a generic SDK credentials error naming nothing
+        the user can act on -- then served by one non-streaming api_request with pre-built image
+        blocks. Perception only: no tools, no coding task; the main model does the reasoning.
+
+        Like request() and compact(), the entry clears the cancel flag so a stale flag left by a
+        previous turn's Ctrl-C cannot abort a fresh observation.
+        """
+
+        self.cancel_requested.clear()
+        entry_name = self.session.config.vision_provider
+        provider = self.session.config.providers[entry_name]
+        if missing := provider.missing_fields():
+            raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
+        messages = [
+            {"role": "system", "content": VISION_OBSERVE_PROMPT},
+            {
+                "role": "user",
+                "content": self.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
+            },
+        ]
+        # The observation is billed to the session totals but is not a main-model request, so its
+        # usage must not overwrite the last-request ctx/cache snapshot the status bar reads.
+        self.session.state.vision_observe_active = True
+        try:
+            _, _, content = self.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
+        finally:
+            self.session.state.vision_observe_active = False
+        return content.strip()
 
     def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None, echo_source: str = "") -> Json:
         self.cancel_requested.clear()
@@ -982,6 +1022,7 @@ class ModelClient:
             replayable_echo=self.replayable_echo,
             images=self.session.images,
             builtin_tools=self.builtin_tools,
+            text_only=self.session.image_route.is_text_only(),
         )
 
     @staticmethod
@@ -998,13 +1039,15 @@ class ModelClient:
                   https://docs.qwencloud.com/api-reference/chat/openai-chat"""
         return anthropic_module.manual_thinking_budget(effort, max_tokens)
 
-    def anthropic_messages(self, messages: list[Json], origin: str = "") -> list[Json]:
+    def anthropic_messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
+        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
         return anthropic_module.anthropic_messages(
             messages,
             origin,
             provider_origin=self.provider_origin,
             replayable_echo=self.replayable_echo,
             images=self.session.images,
+            text_only=text_only,
         )
 
     @staticmethod

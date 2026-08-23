@@ -111,27 +111,6 @@ footer#pagefooter, footer#pagefooter a, footer#pagefooter a:visited { color: var
     display: block;
     margin: 0 0 1.25rem;
 }
-.sphinxsidebar .doc-language {
-    margin: -0.55rem 0 1.1rem;
-    font-family: var(--nc-sans);
-    font-size: 0.92rem;
-    font-weight: 400;
-}
-.sphinxsidebar .doc-language a,
-.sphinxsidebar .doc-language a:visited {
-    color: var(--nc-link);
-}
-.sphinxsidebar .doc-language a:hover {
-    color: var(--nc-link-hover);
-    text-decoration: underline dotted;
-    text-underline-offset: 3px;
-    text-decoration-color: rgba(194, 216, 246, 0.55);
-}
-.sphinxsidebar .doc-language-current { color: var(--nc-fg-strong); }
-.sphinxsidebar .doc-language-sep {
-    margin: 0 0.4rem;
-    color: var(--nc-muted);
-}
 
 /* Separate documentation pages from sections within the current page. */
 .sphinxsidebar .toctree-l1 > a {

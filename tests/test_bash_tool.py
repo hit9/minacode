@@ -105,6 +105,18 @@ def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, mon
     assert JobTool(s, [{"action": "wait", "job": "job.1", "timeout": "1m"}]).blocks_agent() is False
 
 
+def test_job_wait_budget_is_always_capped_at_twenty_seconds(tmp_path):
+    tool = JobTool(session(tmp_path), [{"action": "wait", "job": "job.1"}])
+
+    assert tool.wait_budget({}) == 20
+    assert tool.wait_budget({"timeout": 0}) == 20
+    assert tool.wait_budget({"timeout": 19}) == 19
+    assert tool.wait_budget({"timeout": 20}) == 20
+    assert tool.wait_budget({"timeout": 21}) == 20
+    assert tool.wait_budget({"timeout": 3600}) == 20
+    assert "capped at 20s" in JobTool.params_schema()["properties"]["timeout"]["description"]
+
+
 def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypatch):
     """Ctrl-C during a wait reaches JobTool through the runner and abandons the wait only: the
     command keeps running, so the agent gets control back without losing the job."""
@@ -129,6 +141,123 @@ def test_job_wait_is_interruptible_and_leaves_the_job_running(tmp_path, monkeypa
     assert "Still running (the user interrupted the wait)" in result[0]
     assert s.jobs["job.1"].process.poll() is None  # the job itself survives the interrupt
     JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
+def test_job_wait_streams_log_tail_to_live_output(tmp_path, monkeypatch):
+    """A wait streams the job's log tail into the live preview in increments, and closes the
+    region when the wait ends."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    JobTool(s, [{"action": "start", "command": "printf 'line one\\nline two\\n'; sleep 30"}]).call()
+    events = []
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 1}])
+    tool.live_output = lambda stream, text: events.append((stream, text))
+
+    tool.call()
+
+    assert events[-1] == ("", "")
+    deltas = [text for stream, text in events if stream == "output"]
+    assert deltas, "no output was streamed into the live preview"
+    assert "".join(deltas) == "line one\nline two\n"  # 增量拼接后恰好是全部输出
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
+def test_job_wait_streams_short_log_incrementally_without_duplicates(tmp_path, monkeypatch):
+    """A short log appended in two phases spaced past the live interval streams each increment
+    exactly once: the second tail is a continuation of the first, never a repeat of the whole
+    frame."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(JobTool, "LIVE_INTERVAL", 0.01)
+    JobTool(s, [{"action": "start", "command": "printf 'one\\n'; sleep 0.6; printf 'two\\n'; sleep 30"}]).call()
+    events = []
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}])
+    tool.live_output = lambda stream, text: events.append((stream, text))
+
+    tool.call()
+
+    deltas = [text for stream, text in events if stream == "output"]
+    assert "".join(deltas) == "one\ntwo\n"
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
+def test_job_wait_keeps_streaming_after_log_outgrows_tail_window(tmp_path, monkeypatch):
+    """Once the log passes the 8000-char tail window the `...` prefix breaks suffix matching;
+    the wait then pushes the whole visible tail so the preview keeps rolling instead of freezing."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(JobTool, "LIVE_INTERVAL", 0.01)
+    command = "printf 'a%.0s' {1..6000}; sleep 0.5; printf 'b%.0s' {1..4000}; sleep 30"
+    JobTool(s, [{"action": "start", "command": command}]).call()
+    events = []
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}])
+    tool.live_output = lambda stream, text: events.append((stream, text))
+
+    tool.call()
+
+    deltas = [text for stream, text in events if stream == "output"]
+    assert events[-1] == ("", "")
+    assert deltas[0] == "a" * 6000  # 窗口内时按增量推送
+    # 日志超过窗口后，推送的是完整的可见尾部：带 `...` 前缀且以最新输出结尾
+    assert deltas[-1].startswith("...") and deltas[-1].endswith("b" * 100)
+    assert len(deltas[-1]) == 8000
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
+def test_job_wait_stream_clears_when_budget_is_exhausted(tmp_path, monkeypatch):
+    """The live region is closed even when the wait ends by running out of budget."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 0.2)
+    monkeypatch.setattr(JobTool, "MAX_WAIT", 0.2)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call()
+    events = []
+    tool = JobTool(s, [{"action": "wait", "job": "job.1"}])
+    tool.live_output = lambda stream, text: events.append((stream, text))
+
+    tool.call()
+
+    assert "Still running" in tool._format(s.jobs["job.1"], {"action": "wait", "job": "job.1"})
+    assert events[-1] == ("", "")
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
+def test_job_wait_stream_clears_on_cancel(tmp_path, monkeypatch):
+    """Ctrl-C abandons the wait and still closes the live region; the job keeps running."""
+    s = session(tmp_path)
+    monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call()
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
+    events = []
+    tool.live_output = lambda stream, text: events.append((stream, text))
+    result = []
+    thread = threading.Thread(target=lambda: result.append(tool.call()))
+    thread.start()
+    deadline = time.monotonic() + 2
+    while not events and time.monotonic() < deadline:
+        time.sleep(0.01)
+    tool.cancel()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive(), "cancel did not interrupt the wait"
+    assert s.jobs["job.1"].process.poll() is None  # 中断只放弃 wait,不杀 job
+    assert events[-1] == ("", "")
+    JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
+
+
+def test_job_wait_stream_clears_when_job_resolution_fails(tmp_path):
+    """A wait on an unknown job raises ToolError and still closes the live region the runner
+    already opened."""
+    s = session(tmp_path)
+    events = []
+    tool = JobTool(s, [{"action": "wait", "job": "job.99"}])
+    tool.live_output = lambda stream, text: events.append((stream, text))
+
+    with pytest.raises(ToolError, match="unknown job"):
+        tool.call()
+
+    assert events == [("", "")]
 
 
 def _job_call_lines(blocks) -> list[str]:
@@ -159,13 +288,11 @@ def test_job_wait_prints_call_line_before_blocking(tmp_path, monkeypatch):
     assert "wait" in root.text and "job.1" in root.text
     # The finish block comes after, with no root of its own (the pre-block already drew it) and a
     # stored/done child hanging underneath.
-    finish_blocks = [block for block in blocks[1:] if isinstance(block, LogBlock) and not any(isinstance(item, LogLine) and item.label == "Job" for item in block.items)]
+    finish_blocks = [
+        block for block in blocks[1:] if isinstance(block, LogBlock) and not any(isinstance(item, LogLine) and item.label == "Job" for item in block.items)
+    ]
     assert finish_blocks, "no rootless finish block after the pre-block call line"
-    assert any(
-        line[0].label in {"stored", "done"}
-        for block in finish_blocks
-        for line in block.walk()
-    )
+    assert any(line[0].label in {"stored", "done"} for block in finish_blocks for line in block.walk())
     # A non-blocking action (list) prints no pre-block call line: only the finish block appears.
     blocks.clear()
     runner.run([ToolCall("call_2", "Job", [{"action": "list"}])])
@@ -699,6 +826,34 @@ def test_tool_runner_starts_bash_live_preview_before_output(tmp_path):
     assert events[0] == ("start", "")
     assert ("stdout", "live") in events
     assert events[-1] == ("", "")
+
+
+def test_tool_runner_job_wait_starts_live_preview_with_budget(tmp_path, monkeypatch):
+    """A blocking Job wait opens the same live preview as Bash, handing it the wait budget for
+    the countdown; a non-blocking status opens nothing."""
+    monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
+    s = session(tmp_path)
+    s.settings.yolo = True
+    events = []
+    runner = ToolRunner(
+        s,
+        ContextManager(s),
+        input_fn=lambda prompt: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
+        output_fn=lambda text: None,
+    )
+    runner.live_start = lambda budget=None: events.append(("start", budget))
+    runner.live_output = lambda stream, text: events.append((stream, text))
+    JobTool(s, [{"action": "start", "command": "sleep 0.2; printf done"}]).call()
+
+    runner.run([ToolCall("call_1", "Job", [{"action": "wait", "job": "job.1", "timeout": 5}])])
+
+    assert events[0] == ("start", 5)
+    assert events[-1] == ("", "")
+
+    # A status without a timeout holds nothing and opens no live region.
+    events.clear()
+    runner.run([ToolCall("call_2", "Job", [{"action": "status", "job": "job.1"}])])
+    assert not any(kind == "start" for kind, _text in events)
 
 
 def test_uiprinter_renders_bash_preview_like_live_output():

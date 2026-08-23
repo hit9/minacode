@@ -15,6 +15,10 @@ import minacode.cli.commands as commands_mod
 import minacode.cli.modals as modals_mod
 from minacode.base import (
     SELECTION_BACK,
+    ImageRouteNotice,
+    LogBlock,
+    LogEdge,
+    LogRole,
     ModelError,
 )
 from minacode.cli import COMMANDS, CommandCompleter, CommandLoop
@@ -70,9 +74,38 @@ def test_registry_names_and_aliases_appear_in_help():
     assert missing <= HELP_OMISSIONS, f"registered commands missing from HELP: {sorted(missing - HELP_OMISSIONS)}"
 
 
+def test_image_route_notice_matches_view_image_tree_vocabulary(tmp_path):
+    command_loop = loop(tmp_path)
+    blocks = []
+    command_loop.tool_output = blocks.append
+
+    command_loop.image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by="vision/model", images=("shot.png",)))
+
+    [block] = blocks
+    assert isinstance(block, LogBlock)
+    root, children = block.items
+    assert (root.label, root.text, root.role, root.meta) == (
+        "Image",
+        "shot.png",
+        LogRole.META,
+        " · main model rejected image input (400)",
+    )
+    [child] = children.items
+    assert (child.label, child.text, child.role, child.edge) == ("described by", "vision/model", LogRole.TOOL, LogEdge.END)
+
+    command_loop.image_route_notice(ImageRouteNotice("main model is text-only", described_by="vision/model", images=("a.png", "b.png")))
+    multi_root = blocks[-1].items[0]
+    assert (multi_root.label, multi_root.text) == ("Images", "2 attachments")
+
+
 class ModalHarness:
-    def __init__(self, keys):
-        self.keys = keys
+    def __init__(self, keys, *, consumed=False):
+        self.keys = list(keys)
+        # consumed=True hands each key to the next modal in line instead of replaying the whole
+        # sequence for every modal, which is how a multi-modal flow (list -> detail -> list) is
+        # driven end to end.
+        self.consumed = consumed
+        self.pos = 0
         self.frames = []
         self.exclusive = []
 
@@ -80,7 +113,10 @@ class ModalHarness:
         self.exclusive.append(exclusive)
         self.frames.append(fragments_fn())
         result = TUI_MODAL_PENDING
-        for key in self.keys:
+        keys = self.keys[self.pos :] if self.consumed else self.keys
+        for key in keys:
+            if self.consumed:
+                self.pos += 1
             result = key_fn(key, key if len(key) == 1 else "")
             self.frames.append(fragments_fn())
             if result is not TUI_MODAL_PENDING:
@@ -123,7 +159,197 @@ def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_fu
     assert modal.exclusive == [False, True]  # the list shares the screen; the viewer takes it
 
 
-def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path):
+def test_tool_output_browser_marks_bash_results_ok_and_fail(tmp_path, monkeypatch):
+    """A Bash row's first column carries its verdict: a green ✓ for exit 0, a red ✗ for any other
+    exit. The list is mostly bash, so the failures should be scannable by color; entries with no
+    exit code (a script, an order) keep the cell blank instead of guessing."""
+    command_loop = loop(tmp_path)
+    command_loop.session.store_tool_result("Bash", ["printf ok"], Tool.process_result("BashToolResult", 0, "ok output", ""))
+    command_loop.session.store_tool_result("Bash", ["make check"], Tool.process_result("BashToolResult", 2, "", "target failed"))
+    modal = ModalHarness(["j", "q"])
+    command_loop.tui = modal
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    # The selected row is reversed as a whole, which hides its mark's own color, so the two frames
+    # (cursor on the failure, then on the success) each expose one verdict column in its color.
+    pairs = [(style, value) for frame in modal.frames for style, value in frame]
+    assert ("class:choice.output.ok", "✓ ") in pairs
+    assert ("class:choice.output.fail", "✗ ") in pairs
+
+
+def test_tool_output_browser_lists_past_the_old_fifty_entry_cap(tmp_path, monkeypatch):
+    """The browser's list reaches as far back as the session stores: 400 results, not a page of
+    fifty. The viewport still shows one screenful with the counter saying how far there is to go."""
+    command_loop = loop(tmp_path)
+    for index in range(55):
+        command_loop.session.store_tool_result("Bash", [f"printf {index}"], Tool.process_result("BashToolResult", 0, f"out {index}", ""))
+    modal = ModalHarness(["q"])
+    command_loop.tui = modal
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert listing.startswith("\n──── Tool output · latest 55 ")
+    assert "showing 1-10 of 55" in listing
+    assert "Bash printf 54" in listing  # the newest is in view
+
+
+def test_tool_output_browser_keeps_every_stored_record_with_a_running_script(tmp_path, monkeypatch):
+    """A running ToolScript's live entry does not push the oldest stored record out: with a full
+    session the browser lists all 400 stored results plus the running one, and the viewport still
+    bounds the screen."""
+    command_loop = loop(tmp_path)
+    for index in range(400):
+        command_loop.session.store_tool_result("Bash", [f"printf {index}"], Tool.process_result("BashToolResult", 0, f"out {index}", ""))
+    command_loop.script_running_code = "print('hi')\n"
+    modal = ModalHarness(["q"])
+    command_loop.tui = modal
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    listing = "".join(value for _style, value in modal.frames[0])
+    assert listing.startswith("\n──── Tool output · latest 401 ")
+    assert "showing 1-10 of 401" in listing
+    assert "ToolScript" in listing  # the running script's live entry is listed too
+
+
+def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_path, monkeypatch):
+    """Esc (or q) in a detail goes back to the list instead of closing the whole browser, and
+    the reopened list still points at the entry the reader came from."""
+    command_loop = loop(tmp_path)
+    for index in range(5):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # j moves to the second entry, enter opens it, escape returns to the list, enter opens the
+    # same entry again, c-o closes the whole browser.
+    modal = ModalHarness(["j", "enter", "escape", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert len(listings) == 5  # two list passes: three renders, then two on the reopened one
+    assert modal.exclusive == [False, True, False, True]  # list, detail, list, detail
+
+    def selected_line(listing: str) -> str:
+        return next(row for row in listing.splitlines() if row.startswith("> "))
+
+    assert "command-4" in selected_line(listings[0])  # first list starts at the newest entry
+    assert "command-3" in selected_line(listings[1])  # j moved to the second entry
+    # The reopened list still sits on the entry the escape came back from, not the top.
+    assert "command-3" in selected_line(listings[3])
+    # The same detail opened twice: once before the escape, once before the c-o, each rendering
+    # its title row twice (initial frame plus the frame after its closing key).
+    assert sum("read-only" in frame for frame in frames) == 4
+
+
+def test_tool_output_viewer_q_in_a_detail_also_returns_to_the_list(tmp_path, monkeypatch):
+    """q behaves exactly like Esc inside a detail: back to the list, not out of the browser."""
+    command_loop = loop(tmp_path)
+    for index in range(3):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # enter opens the top entry, q returns to the list, enter opens it again, c-o closes.
+    modal = ModalHarness(["enter", "q", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert modal.exclusive == [False, True, False, True]  # list, detail, list, detail
+    assert len(listings) == 4  # q came back to the list: two renders per list pass
+    assert sum("read-only" in frame for frame in frames) == 4  # the detail opened twice
+
+
+def test_tool_output_viewer_ctrl_c_in_a_detail_also_returns_to_the_list(tmp_path, monkeypatch):
+    """Ctrl-C behaves like Esc inside a detail: back to the list, not out of the browser."""
+    command_loop = loop(tmp_path)
+    for index in range(3):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # enter opens the top entry, c-c returns to the list, enter opens it again, c-o closes.
+    modal = ModalHarness(["enter", "c-c", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert modal.exclusive == [False, True, False, True]  # list, detail, list, detail
+    assert len(listings) == 4  # c-c came back to the list: two renders per list pass
+    assert sum("read-only" in frame for frame in frames) == 4  # the detail opened twice
+
+
+def test_tool_output_viewer_ctrl_o_in_a_detail_closes_the_browser(tmp_path, monkeypatch):
+    """Ctrl-O inside a detail still closes the whole browser: only Esc/q go back to the list."""
+    command_loop = loop(tmp_path)
+    for index in range(3):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    modal = ModalHarness(["j", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    assert modal.exclusive == [False, True]  # list, detail -- and no reopened list
+    assert sum("Tool output" in frame for frame in frames) == 3  # the list rendered its three frames once
+    assert sum("read-only" in frame for frame in frames) == 2  # the detail closed the browser
+
+
+def test_tool_output_viewer_keeps_the_search_filter_across_an_escape(tmp_path, monkeypatch):
+    """A `/` filter survives Esc back to the list: the reopened list is still filtered."""
+    command_loop = loop(tmp_path)
+    for index in range(5):
+        command_loop.session.store_tool_result(
+            "Bash",
+            [f"printf command-{index}"],
+            Tool.process_result("BashToolResult", 0, f"output {index}", ""),
+        )
+    # Filter to the newest entry, open it, Esc back: the reopened list still shows just that
+    # entry, then the second enter opens it again and c-o closes the browser.
+    modal = ModalHarness(["/", *"command-4", "enter", "enter", "escape", "enter", "c-o"], consumed=True)
+    command_loop.tui = modal
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((50, 20)))
+        tool_output_viewer(command_loop)
+
+    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    listings = [frame for frame in frames if "Tool output" in frame]
+    assert modal.exclusive == [False, True, False, True]
+    assert "command-4" in listings[0] and "command-3" in listings[0]  # the full list first
+    # The reopened list is still filtered to the one matching entry, not the full list again.
+    assert "command-4" in listings[-1]
+    assert "command-3" not in listings[-1] and "command-0" not in listings[-1]
+    assert sum("read-only" in frame for frame in frames) == 4
+
+
+def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path, monkeypatch):
     """A row is one row. `short_call` keeps a multi-line command whole for the transcript, and a
     `git commit -m` with a real message would otherwise spill its row over several lines, carrying
     the numbering and the selection bar with it."""
@@ -136,7 +362,11 @@ def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path):
     modal = ModalHarness([])
     command_loop.tui = modal
 
-    tool_output_viewer(command_loop)
+    # ``shutil`` is a shared module object also used by pytest's terminal reporter. Restore the
+    # patch before pytest reports this test result, rather than waiting for fixture teardown.
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((120, 20)))
+        tool_output_viewer(command_loop)
 
     listing = "".join(value for _style, value in modal.frames[0])
     rows = [row for row in listing.splitlines() if "tr.1" in row]
@@ -291,7 +521,7 @@ def test_tool_output_viewer_reads_resumed_history(tmp_path):
     saved.save_snapshot()
     restored = Session.load_snapshot(saved.uid, config=saved.config)
     command_loop = CommandLoop(Agent(restored, output_fn=lambda _text: None), input_fn=lambda prompt="": "", output_fn=lambda _text: None)
-    modal = ModalHarness(["enter", "q"])
+    modal = ModalHarness(["enter", "c-o"], consumed=True)
     command_loop.tui = modal
 
     tool_output_viewer(command_loop)
@@ -412,9 +642,7 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert command_loop.session.config.provider.stream is False
     stream_values = [item.text for item in CommandCompleter().get_completions(Document("/set provider.stream "), None)]
     assert stream_values == ["on", "off"]
-    assert set_value(command_loop, "provider.image_input maybe") == "Invalid value for provider.image_input"
-    assert set_value(command_loop, "provider.image_input off") == "Set provider.image_input"
-    assert command_loop.session.config.provider.image_input == "off"
+    assert set_value(command_loop, "provider.image_input off") == "Unknown config key: provider.image_input"
 
 
 def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
@@ -919,7 +1147,12 @@ def test_worker_command_completion(tmp_path):
         providers=lambda: tuple(sorted(command_loop.session.config.providers)),
         worker_models=lambda: tuple(
             dict.fromkeys(
-                (*command_loop.session.config.providers[command_loop.session.config.worker_provider or command_loop.session.config.active_provider].available_models, "default")
+                (
+                    *command_loop.session.config.providers[
+                        command_loop.session.config.worker_provider or command_loop.session.config.active_provider
+                    ].available_models,
+                    "default",
+                )
             )
         ),
     )

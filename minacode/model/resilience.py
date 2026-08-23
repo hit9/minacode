@@ -134,6 +134,28 @@ def retryable_error(error: Exception) -> bool:
     return any(part in text for part in ("internal server error", "timeout", "timed out", "connection reset", "connection aborted", "temporarily unavailable"))
 
 
+def error_status(error: Exception) -> int | None:
+    """The unambiguous HTTP status of a failed request, from the exception/cause chain.
+
+    Structured SDK status wins (ModelClient.call_client wraps SDK errors in ModelError with the
+    SDK error as `__cause__`); a rendered status number embedded in the error text is a
+    conservative fallback. Returns None when no status can be established, which callers must
+    treat as "not eligible" rather than as a status.
+    """
+
+    cause = getattr(error, "__cause__", None)
+    status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
+    with contextlib.suppress(Exception):
+        code = int(status)
+        if 400 <= code <= 599:
+            return code
+    match = _STATUS_CODE_RE.search(str(error))
+    if match:
+        with contextlib.suppress(ValueError):
+            return int(match.group(1))
+    return None
+
+
 def retry_reason(error: Exception) -> str:
     """Short, safe label for the retry (status code, or a fixed word) shown in the status bar.
 

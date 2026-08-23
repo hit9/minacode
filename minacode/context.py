@@ -19,7 +19,7 @@ from minacode.base import (
     Json,
     Text,
 )
-from minacode.image import IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
+from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
 from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_REQUEST_EVENT,
@@ -405,6 +405,9 @@ class ContextManager:
             f"- arch: {info.arch}",
             f"- shell_timeout: {self.session.settings.shell_timeout}s",
         ]
+        if (entry := self.session.config.vision_provider) and (not self.session.tool_names or "ViewImage" in self.session.tool_names):
+            provider = self.session.config.providers[entry]
+            rows.append(f"- vision: {entry}/{provider.model or '(empty)'} (available as image fallback)")
         if self.session.settings.agents_md and info.agents_md:
             content = info.agents_md
             total = self.estimated_text_tokens(content)
@@ -754,13 +757,15 @@ class ContextManager:
         payload: list[Json] = []
         for message in messages:
             estimated = {
-                key: value for key, value in message.items() if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
+                key: value
+                for key, value in message.items()
+                if key not in (*PROVIDER_ECHO_KEYS, IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_KEY, SESSION_EVENT_KEY)
             }
             if readable := readable_provider_context(message):
                 estimated["_provider_context"] = readable
             payload.append(estimated)
         chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        images = ImageInputs.estimated_tokens(messages) if self.session.images.support() is not False else 0
+        images = self.session.images.estimated_tokens(messages)
         return (chars + 3) // 4 + images
 
     @staticmethod

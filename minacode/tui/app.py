@@ -33,6 +33,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput, HighlightIncrementalSearchProcessor, Processor, Transformation
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar
 
 from minacode.base import (
@@ -154,6 +155,9 @@ class TuiApp:
     # Debounce inline second-stage candidate refreshes while the user is still typing. The external
     # file picker overrides this with a zero-delay handoff at the namespace boundary.
     MENTION_TRANSITION_DELAY: ClassVar[float] = 0.12
+    # Quick-hint chips wrap to a new line after this many per row, matching the tool's 2-4 range
+    # with the upper end always reachable: four short hints never crowd one line.
+    MAX_QUICK_HINTS_PER_ROW: ClassVar[int] = 3
 
     def __init__(
         self,
@@ -178,6 +182,7 @@ class TuiApp:
         image_cwd: str = "",
         history: FileHistory | None = None,
         completer: Completer | None = None,
+        on_app_stop: Callable[[], None] | None = None,
     ) -> None:
         self.on_chat_submit = on_chat_submit or (lambda _: None)
         self.on_running_submit = on_running_submit or (lambda _: None)
@@ -188,6 +193,9 @@ class TuiApp:
         self.on_recall = on_recall or (lambda: "")
         self.on_expand_output = on_expand_output or (lambda: None)
         self.status_fragments_fn: Callable[[], StyleAndTextTuples] = status_fragments_fn or list
+        # Called once after the application stops, before the terminal is handed back, so the
+        # owner can flush anything still queued (see UiPrinter.drain_scrollback).
+        self.on_app_stop = on_app_stop or (lambda: None)
         self.activity_fragments_fn: Callable[[], StyleAndTextTuples] = activity_fragments_fn or list
         self.input_hint_fn = input_hint_fn or (lambda: "")
         self.quick_hints_fn: Callable[[], tuple[str, ...]] = quick_hints_fn or (lambda: ())
@@ -216,6 +224,7 @@ class TuiApp:
         self.ready = threading.Event()
         self.input_mode = "chat"  # chat | dispatch | running | approval
         self.quick_hint_focus = -1  # -1 = input focused; 0..n-1 = that quick-input chip
+        self._quick_hint_resume_focus = -1  # last picked chip; Tab resumes after it once
         self.quick_hint_picked: list[str] = []  # chips picked into the input, in pick order
         self._last_quick_hints: tuple[str, ...] | None = None  # hints seen by the last quick_hints() call
         self._file_picker_active = False
@@ -521,32 +530,71 @@ class TuiApp:
 
     def _clear_quick_hint_selection(self) -> None:
         self.quick_hint_focus = -1
+        self._quick_hint_resume_focus = -1
         self.quick_hint_picked = []
 
     def quick_hint_fragments(self) -> StyleAndTextTuples:
         hints = self.quick_hints()
         if not hints:
             return []
+        return self._flow_quick_hints(hints, self._quick_hint_columns(), self.quick_hint_focus, tuple(self.quick_hint_picked))
+
+    def _quick_hint_columns(self) -> int:
+        """The terminal width in cells the hint row is rendered into; 0 when unknown."""
+        app = self.app
+        if app is None:
+            return 0
+        try:
+            return app.output.get_size().columns
+        except Exception:  # noqa: BLE001 - a terminal that refuses to report its size falls back to one unwrapped row.
+            return 0
+
+    @staticmethod
+    def _flow_quick_hints(hints: tuple[str, ...], columns: int, focus: int, picked: tuple[str, ...]) -> StyleAndTextTuples:
+        """Lay chips out left to right, at most three per row, wrapping only between chips.
+
+        A row ends when it holds `MAX_QUICK_HINTS_PER_ROW` chips or the next chip would not fit
+        in the remaining width. `columns` is the width in cells (0 = unknown: ignore width and
+        let the window wrap as a fallback). Chips never wrap mid-text except for one extreme:
+        a single chip wider than the whole terminal overflows its own row and the window's own
+        `wrap_lines` splits it; every ordinary chip stays whole and distinguishable.
+        """
         parts: StyleAndTextTuples = []
+        line_width = 0
+        chips_on_row = 0
         for index, hint in enumerate(hints):
+            chip = f" \u2713 {hint} " if hint in picked else f" {hint} "
+            chip_width = get_cwidth(chip)
             if index:
-                parts.append(("class:quickhint.sep", " │ "))
-            style = "class:quickhint.focused" if index == self.quick_hint_focus else "class:quickhint"
-            parts.append((style, f" ✓ {hint} " if hint in self.quick_hint_picked else f" {hint} "))
+                if chips_on_row >= TuiApp.MAX_QUICK_HINTS_PER_ROW or (columns and line_width + 3 + chip_width > columns):
+                    parts.append(("class:quickhint", "\n"))
+                    line_width = 0
+                    chips_on_row = 0
+                else:
+                    parts.append(("class:quickhint.sep", " \u2502 "))
+                    line_width += 3
+            style = "class:quickhint.focused" if index == focus else "class:quickhint"
+            parts.append((style, chip))
+            line_width += chip_width
+            chips_on_row += 1
         return parts
 
     def cycle_quick_hint_focus(self, reverse: bool = False) -> None:
         count = len(self.quick_hints())
         if not count:
             return
-        focus = self.quick_hint_focus + (-1 if reverse else 1)
+        origin = self.quick_hint_focus
+        if origin == -1 and self._quick_hint_resume_focus >= 0:
+            origin = self._quick_hint_resume_focus
+            self._quick_hint_resume_focus = -1
+        focus = origin + (-1 if reverse else 1)
         if focus >= count or focus < -1:
             focus = count - 1 if reverse else -1
         self.quick_hint_focus = focus
         self.invalidate()
 
     def _live_quick_hints(self, buffer: Buffer) -> tuple[str, ...]:
-        """The chips Tab and Space act on, or () when the chip row is not in play.
+        """The chips Tab and Enter act on, or () when the chip row is not in play.
 
         It is in play on a chat prompt that still holds exactly the picked text -- any manual edit
         leaves that agreement -- and with no completion menu open, which owns both keys while it
@@ -578,23 +626,28 @@ class TuiApp:
                 self._refresh_file_completions(buffer)
         self.complete_input(buffer, reverse=reverse)
 
-    def _handle_space(self, buffer: Buffer) -> None:
-        """Space toggles the chip Tab has focused, and only then; anywhere else -- including on the
-        chip row with focus still on the input line -- it inserts a plain space."""
+    def _pick_quick_hint(self, buffer: Buffer) -> bool:
+        """Toggle the chip Tab has focused into the input; True when the chip row was in play.
+
+        Enter picks and returns focus to the input line, so a second Enter sends. The pick is
+        a toggle: a chip already picked is unpicked."""
         hints = self._live_quick_hints(buffer)
-        if hints and 0 <= self.quick_hint_focus < len(hints):
-            hint = hints[self.quick_hint_focus]
-            if hint in self.quick_hint_picked:
-                self.quick_hint_picked.remove(hint)
-            else:
-                self.quick_hint_picked.append(hint)
-            self._reset_input("\n".join(self.quick_hint_picked), preserve_quick_hints=True)
-            return
-        buffer.insert_text(" ")
+        if not hints or not 0 <= self.quick_hint_focus < len(hints):
+            return False
+        picked_focus = self.quick_hint_focus
+        hint = hints[picked_focus]
+        if hint in self.quick_hint_picked:
+            self.quick_hint_picked.remove(hint)
+        else:
+            self.quick_hint_picked.append(hint)
+        self._reset_input("\n".join(self.quick_hint_picked), preserve_quick_hints=True)
+        self.quick_hint_focus = -1
+        self._quick_hint_resume_focus = picked_focus
+        return True
 
     def placeholder_text(self) -> str:
         if self.input_mode == "chat" and self.quick_hints():
-            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Space picks into the input (again unpicks) \u00b7 Enter sends"
+            return "" if self.quick_hint_focus >= 0 else "Tab cycles suggestions \u00b7 Enter picks \u00b7 Enter sends"
         return self.input_hint_fn()
 
     def _on_input_text_changed(self, buffer: Buffer) -> None:
@@ -888,8 +941,6 @@ class TuiApp:
 
     def input_error_fragments(self) -> StyleAndTextTuples:
         error = self.input_error
-        if not error and self.input_images and self.input_mode in {"chat", "running"} and self.images.support() is False:
-            error = "Image input is disabled for the active provider/model"
         return [("class:input.error", f"Error: {error}")] if error else []
 
     @staticmethod
@@ -1041,16 +1092,17 @@ class TuiApp:
             if is_searching():
                 pt_search.accept_search()
                 return
-            event.current_buffer.validate_and_handle()
+            # Enter on a focused quick-hint chip picks it into the input and returns focus to the
+            # input line, so a second Enter sends.
+            buffer = event.current_buffer
+            if self._pick_quick_hint(buffer):
+                return
+            buffer.validate_and_handle()
 
         bindings.add("enter", filter=~modal, eager=True)(enter)
         bindings.add("escape", "enter", filter=~modal, eager=True)(lambda event: event.current_buffer.insert_text("\n"))
         for key, reverse in (("tab", False), ("s-tab", True)):
             bindings.add(key, filter=~modal)(lambda event, reverse=reverse: self.tab_or_complete(event.current_buffer, reverse=reverse))
-        # Space toggles the focused chip only while the input holds exactly the picked text and no
-        # completion menu is open; otherwise it inserts a plain space. Never eager, so ordinary
-        # typing still reaches the buffer.
-        bindings.add("space", filter=~modal)(lambda event: self._handle_space(event.current_buffer))
 
         # The approval action row is live only while the line is empty: the moment a reason is being
         # typed, Tab completes and the arrows move the cursor, exactly as everywhere else. That is
@@ -1317,6 +1369,9 @@ class TuiApp:
                 app.run(pre_run=start)
         finally:
             self.ready.set()
+            # Flush anything still queued in the scrollback batching window before the terminal
+            # is handed back; a timer fired inside the app loop would never get to run again.
+            self.on_app_stop()
             self.app = None
             # If the agent thread is still parked in request_input at exit, unblock it so its frame
             # unwinds instead of leaking a thread. It unblocks as a cancel: a pending approval must

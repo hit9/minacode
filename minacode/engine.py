@@ -8,9 +8,12 @@ import threading
 from collections.abc import Callable
 
 from minacode.base import (
+    IMAGE_ROUTE_TEXT_ONLY_STATIC,
+    IMAGE_ROUTE_UNKNOWN,
     PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
+    ImageRouteNotice,
     Json,
     MalformedToolCallError,
     ModelError,
@@ -19,8 +22,8 @@ from minacode.base import (
     ToolCall,
 )
 from minacode.context import ContextManager
-from minacode.image import UserInput
-from minacode.model import ModelClient, PreparedRequest
+from minacode.image import ImageInputs, UserInput
+from minacode.model import ModelClient, PreparedRequest, resilience
 from minacode.prompts import (
     FAILED_TOOL_CALL_RESULT,
     FAILED_TURN_MARKER,
@@ -68,6 +71,15 @@ class Agent:
         # text (e.g. markdown rendering). None publishes through output_fn like interim text.
         self.final_output_fn = final_output_fn
         self.cancel_requested = threading.Event()
+        # Image-bearing semantic messages introduced into the active turn since its last accepted
+        # main-model request (opening attachment, claimed queued attachment, ViewImage
+        # observation). Cleared when a request is accepted; used to decide 400 eligibility and to
+        # observe exactly the current occurrences, never older accepted history.
+        self._current_image_messages: list[Json] = []
+        # Presentation hook for image-routing notices (one gray block per text-only delivery
+        # decision: a reason root line plus an optional described-by child). Wired by the CLI;
+        # never enters model context.
+        self.on_image_route_notice: Callable[[ImageRouteNotice], None] | None = None
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
@@ -96,11 +108,17 @@ class Agent:
         self.session.state.turn_step = 0
         tool_batches = 0
         malformed_tool_names: list[str] = []
-        user_message = self.session.images.message(user_input)
-        user_text = self.session.images.label_text(user_message)
+        self._current_image_messages = []
+        user_message = self._initial_user_message(user_input)
+        if ImageInputs.input_refs(user_message):
+            # The opening attachment is a current image occurrence for the first request of the turn.
+            self._current_image_messages.append(user_message)
+        # Mentions belong to the user's typed input, never to projected image content.
+        user_text = user_input.display_text() if isinstance(user_input, UserInput) else self.session.images.label_text(user_message)
         turn_messages = [user_message, *self.mention_messages(user_text)]
         transcript_messages: list[Json] = [self.transcript_message(user_message)]
         self.checkpoint_turn(turn_messages, transcript_messages)
+        failed_request: PreparedRequest | None = None
         try:
             for step in range(self.session.settings.max_steps):
                 self.session.state.turn_step = step + 1
@@ -109,19 +127,58 @@ class Agent:
                     try:
                         self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
-                        assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                        failed_request = request
+                        try:
+                            assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                            accepted = request
+                        except ModelError as error:
+                            fallback = self._image_fallback_request(error, request)
+                            if fallback is None:
+                                raise
+                            accepted, replacements = fallback
+                            failed_request = accepted
+                            while True:
+                                try:
+                                    self.raise_if_cancelled()
+                                    assistant, tool_calls, content = self.model.request(accepted.messages, accepted.tools)
+                                    break
+                                except ModelRequestRetry:
+                                    # The paid observation is already in `accepted`; resend that
+                                    # exact request instead of rebuilding it and observing again.
+                                    continue
+                                except KeyboardInterrupt:
+                                    # Preserve successful observations that replace messages already
+                                    # in the live turn (notably ViewImage), while staged queued input
+                                    # remains outside it and is released by the normal interrupt path.
+                                    for before, after in replacements:
+                                        for index, message in enumerate(turn_messages):
+                                            if message is before:
+                                                turn_messages[index] = after
+                                                break
+                                    raise
+                                except ModelError:
+                                    # A final failure commits the exact converted request; the outer
+                                    # error path acknowledges any staged input and keeps paid text.
+                                    turn_messages[:] = accepted.turn_messages
+                                    raise
                         self.record_sources(assistant)
                         self.raise_if_cancelled()
+                        # A recovered 400 adopted a converted (text-only) turn: sync the live turn
+                        # now that the request is accepted, so the paid observation is what gets
+                        # committed. The fallback itself never mutates the caller's turn.
+                        if accepted.turn_messages is not request.turn_messages:
+                            turn_messages[:] = accepted.turn_messages
                         # The request reached the provider, so its follow-ups belong to history from
                         # here on, and any correction sent next lands after them — history keeps the
                         # order the provider saw, because a sent message can never be taken back.
-                        self.accept_pending_inputs(turn_messages, transcript_messages, request.pending, request.turn_messages)
+                        self.accept_pending_inputs(turn_messages, transcript_messages, accepted.pending, accepted.turn_messages)
+                        failed_request = None
                         assistant, tool_calls, content = self.correct_textual_tool_calls(
                             assistant,
                             tool_calls,
                             content,
-                            base_messages=request.messages,
-                            tools=request.tools,
+                            base_messages=accepted.messages,
+                            tools=accepted.tools,
                             names=malformed_tool_names,
                             turn_messages=turn_messages,
                             transcript_messages=transcript_messages,
@@ -151,8 +208,8 @@ class Agent:
                     (self.final_output_fn or self.output_fn)(answer)
                     self.finish_turn(turn_messages, transcript_messages, self.assistant_turn_message(assistant, [], answer))
                     return answer
-                if content.strip() and self.terminal_next_hints(tool_calls):
-                    return self.finish_with_next_hints(
+                if self.terminal_next_hints(tool_calls):
+                    answer = self.finish_with_next_hints(
                         turn_messages,
                         assistant,
                         tool_calls,
@@ -160,6 +217,16 @@ class Agent:
                         tool_batches,
                         transcript_messages=transcript_messages,
                     )
+                    if answer is not None:
+                        return answer
+                    # The batch produced neither text nor hints (every call failed). Its error
+                    # results are already in the turn history; continue so the model reads them
+                    # and corrects, instead of ending on a blank turn. The failed batch still
+                    # counts as a tool batch, so the next ordinary batch is numbered ·2 instead
+                    # of presenting as the first.
+                    tool_batches += 1
+                    self.checkpoint_turn(turn_messages, transcript_messages)
+                    continue
                 assistant = self.assistant_turn_message(assistant, tool_calls, content)
                 turn_messages.append(assistant)
                 transcript_messages.append(self.transcript_message(assistant))
@@ -168,6 +235,10 @@ class Agent:
                 tool_batches += 1
                 tool_messages = self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
                 turn_messages.extend(tool_messages)
+                # ViewImage observations produced by this batch are current image occurrences for
+                # the next main-model request; their refs feed the 400-eligibility check and the
+                # fallback observation, never older accepted history.
+                self._current_image_messages.extend(message for message in tool_messages if ImageInputs.input_refs(message))
                 transcript_messages.extend(SessionSnapshotCodec.transcript_messages(tool_messages))
                 self.raise_if_cancelled()
                 self.checkpoint_turn(turn_messages, transcript_messages)
@@ -182,6 +253,18 @@ class Agent:
             self.session.save_snapshot()
             raise
         except Exception as error:
+            if isinstance(error, ModelError):
+                # A queued follow-up was part of the rejected request too. Commit the exact sent
+                # turn before settling its images, rather than releasing it to repeat the same
+                # rejected image on every later request.
+                if failed_request is not None and failed_request.pending:
+                    self.accept_pending_inputs(
+                        turn_messages,
+                        transcript_messages,
+                        failed_request.pending,
+                        failed_request.turn_messages,
+                    )
+                self.session.images.settle_failed_messages(turn_messages)
             self.session.release_user_inputs()
             # A turn that died from an error still has to leave a legal, marked history: tool
             # calls that never got results are settled so the next request is not rejected for a
@@ -201,6 +284,11 @@ class Agent:
             self.session.state.turn_messages = 0
             self.session.save_snapshot()
             raise
+
+    def _initial_user_message(self, user_input: str | UserInput) -> Json:
+        """Build the turn's opening user message, preserving image refs for direct projection."""
+
+        return self.session.images.message(user_input)
 
     def correct_textual_tool_calls(
         self,
@@ -252,9 +340,13 @@ class Agent:
         self.session._active_transcript_messages = list(transcript_messages)
         self.session.save_snapshot()
 
-    def finish_turn(self, turn_messages: list[Json], transcript_messages: list[Json], assistant: Json) -> None:
-        self.session.messages.extend([*turn_messages, assistant])
-        self.session.transcript_messages.extend([*transcript_messages, self.transcript_message(assistant)])
+    def finish_turn(self, turn_messages: list[Json], transcript_messages: list[Json], assistant: Json | None = None) -> None:
+        if assistant is not None:
+            self.session.messages.extend([*turn_messages, assistant])
+            self.session.transcript_messages.extend([*transcript_messages, self.transcript_message(assistant)])
+        else:
+            self.session.messages.extend(turn_messages)
+            self.session.transcript_messages.extend(transcript_messages)
         self.session._active_turn_messages.clear()
         self.session._active_transcript_messages.clear()
         self.session.state.turn_messages = 0
@@ -272,11 +364,18 @@ class Agent:
         tool_batches: int,
         *,
         transcript_messages: list[Json] | None = None,
-    ) -> str:
-        """Run an all-NextHints batch and finish the turn with `content` in a single model call.
+    ) -> str | None:
+        """Run an all-NextHints batch, finishing the turn when it actually produced output.
 
-        The tool-bearing assistant message keeps only the calls; the answer becomes its own final
-        message so it appears exactly once in history."""
+        Returns the turn's answer (possibly "") when the turn ends: the answer text, or — with
+        no text — the NextHints tool result that stored suggestions. Returns None when neither
+        happened, i.e. every call failed: the error results stay in the turn history and the
+        caller must continue to the next step so the model can correct instead of ending on a
+        blank turn.
+
+        The tool-bearing assistant message keeps only the calls; with answer text, the answer
+        becomes its own final message so it appears exactly once in history. Without answer
+        text the tool result ends the history and the turn returns an empty string."""
         answer = content.strip()
         transcript_messages = transcript_messages if transcript_messages is not None else SessionSnapshotCodec.transcript_messages(turn_messages)
         tool_message = dict(assistant or {})
@@ -290,11 +389,22 @@ class Agent:
         turn_messages.extend(result_messages)
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(result_messages))
         self.raise_if_cancelled()
-        self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
-        # Same publishing rule as the plain final-answer path: the answer goes out through
-        # final_output_fn (or output_fn); a stream promotion that already wrote it is skipped
-        # by the consumer.
-        (self.final_output_fn or self.output_fn)(answer)
+        if not answer and not self.session.quick_hints:
+            # The batch produced neither text nor suggestions (every call failed). Ending here
+            # would be a blank turn the user sees as nothing happening; keep the error results
+            # in history and let the next step read them and correct.
+            return None
+        if answer:
+            # Text exists: the answer becomes its own final message and is published exactly
+            # once, unchanged from the plain final-answer path.
+            self.finish_turn(turn_messages, transcript_messages, {"role": "assistant", "content": answer})
+            (self.final_output_fn or self.output_fn)(answer)
+        else:
+            # Tool-only terminal batch: the NextHints tool result ends the history. All three
+            # adapters replay a turn whose last message is that tool result once the next
+            # user message is appended, so no empty closing assistant message is stored, and
+            # nothing is published (an empty answer must not reach the visible output).
+            self.finish_turn(turn_messages, transcript_messages)
         return answer
 
     def settle_interrupted_turn(self, turn_messages: list[Json], transcript_messages: list[Json]) -> None:
@@ -362,16 +472,98 @@ class Agent:
         # rewrites it in place, and a throwaway copy would make the next step compact the same prefix
         # again. Pending input stays transactional in a copy until the provider accepts it.
         request_turn = turn_messages
+        current: list[Json] = list(self._current_image_messages)
         if pending:
             request_turn = [*turn_messages]
             for item in pending:
-                request_turn.append(item.message(LIVE_FOLLOWUP_PREFIX))
-                request_turn.extend(self.mention_messages(item.text))
+                mentions = self.mention_messages(item.text)
+                pending_message = item.message(LIVE_FOLLOWUP_PREFIX)
+                request_turn.append(pending_message)
+                request_turn.extend(mentions)
+                if ImageInputs.input_refs(pending_message):
+                    # A claimed queued attachment is a current image occurrence.
+                    current.append(pending_message)
+        # On a text-only route with [vision], observe the current image occurrences before the
+        # main request: no doomed raw image is ever sent, and the observation is durable text.
+        # Older accepted image history is never redescribed.
+        current_raw = [message for message in current if ImageInputs.input_refs(message)]
+        if self.session.image_route.delivery() == "vision" and current_raw:
+            # Observe first (the observation is paid), and only then emit the one gray routing
+            # notice, so a failed vision call never shows a fake described-by success. The reason
+            # names the route truthfully: static catalog evidence says text-only; a learned route
+            # only ever rejected an image-carrying request with an eligible 400.
+            request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
+            reason = "main model is text-only" if self.session.image_route.state() == IMAGE_ROUTE_TEXT_ONLY_STATIC else "main model rejected image input (400)"
+            names = tuple(image.name for message in current_raw for image in ImageInputs.input_refs(message))
+            self._emit_image_route_notice(ImageRouteNotice(reason, described_by=self._vision_entry_label(), images=names))
+            if not pending:
+                # No accept_pending_inputs will commit the copy later, so keep the live list in
+                # sync: a failure after the paid observation must settle the converted message,
+                # not the raw one whose observation text would be lost.
+                turn_messages[:] = request_turn
         self.session.state.turn_messages = len(request_turn)
         tools = Tool.resolved_schemas(self.session)
         messages = self.context.prepare_messages(self.model, self.session.system_prompt, request_turn, tools)
         self.context.update_percent(messages, tools)
-        return PreparedRequest(messages, tools, pending, request_turn)
+        return PreparedRequest(messages, tools, pending, request_turn, tuple(current_raw))
+
+    def _image_fallback_request(
+        self,
+        error: ModelError,
+        request: PreparedRequest,
+    ) -> tuple[PreparedRequest, list[tuple[Json, Json]]] | None:
+        """Prepare one text-only retry for an eligible image 400; otherwise return ``None``.
+
+        The returned replacement pairs identify only semantic image messages converted by the
+        paid vision observation. The turn owner uses them to preserve already-live observations
+        on cancellation without adopting staged queued input.
+        """
+
+        if not self._eligible_image_fallback(error, request):
+            return None
+        self.session.image_route.learn_text_only()
+        current = list(request.current_image_messages)
+        names = tuple(image.name for message in current for image in ImageInputs.input_refs(message))
+        if not self.session.config.vision_provider:
+            self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400); no vision provider configured", images=names))
+            return None
+        converted = self.session.images.observe_current(request.turn_messages, current, self.model.vision_observe)
+        replacements = [(before, after) for before, after in zip(request.turn_messages, converted, strict=True) if before is not after]
+        self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label(), images=names))
+        tools = Tool.resolved_schemas(self.session)
+        messages = self.context.prepare_messages(self.model, self.session.system_prompt, converted, tools)
+        self.context.update_percent(messages, tools)
+        retry = PreparedRequest(messages, tools, request.pending, converted)
+        self.session.state.turn_messages = len(converted)
+        return retry, replacements
+
+    def _eligible_image_fallback(self, error: ModelError, request: PreparedRequest) -> bool:
+        """Whether a failed main request may learn text-only and fall back through [vision].
+
+        All conditions must hold: the exhausted request failed with HTTP status exactly 400; it
+        projected at least one current image occurrence as a raw image block; the active route
+        was unknown when it was sent; and the request has not already consumed its one vision
+        fallback (the retry fails the first two gates, so no explicit budget flag is needed).
+        """
+
+        if resilience.error_status(error) != 400:
+            return False
+        if not request.current_image_messages:
+            return False
+        return self.session.image_route.state() == IMAGE_ROUTE_UNKNOWN
+
+    def _emit_image_route_notice(self, notice: ImageRouteNotice) -> None:
+        """Publish one gray, non-model routing notice; never enters model context."""
+
+        if self.on_image_route_notice is not None:
+            self.on_image_route_notice(notice)
+
+    def _vision_entry_label(self) -> str:
+        """The `[vision]` entry label shown in routing notices, matching ViewImage's rendering."""
+
+        entry = self.session.config.vision_provider
+        provider = self.session.config.providers[entry]
+        return f"{entry}/{provider.model or '(empty)'}"
 
     def mention_messages(self, text: str) -> list[Json]:
         """Session-event context blocks attached after one user message, initial or queued."""
@@ -455,6 +647,9 @@ class Agent:
         pending: list[QueuedInput],
         prepared_turn_messages: list[Json],
     ) -> None:
+        # A request reached the provider: whatever current image occurrences it carried are no
+        # longer current, whether or not queued input was part of it.
+        self._current_image_messages = []
         if not pending:
             return
         texts = [item.text for item in pending]

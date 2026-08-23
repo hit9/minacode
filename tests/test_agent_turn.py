@@ -1081,9 +1081,38 @@ def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_pat
     assert "tool_calls" not in s.messages[-1]
 
 
-def test_non_terminal_next_hints_do_not_leak_into_a_later_answer(tmp_path):
-    """A NextHints batch without answer text runs as a normal tool batch; the next step supersedes
-    its hints, so a later final answer never displays stale suggestions beside it."""
+def test_all_next_hints_batch_without_answer_ends_turn_in_single_model_call(tmp_path):
+    """An all-NextHints batch is terminal even with no answer text: exactly one model request,
+    no invented answer, no empty visible output callback, and every hint survives to the idle
+    prompt instead of being superseded by a follow-up step."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    outputs: list[str] = []
+    agent = Agent(s, output_fn=outputs.append)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
+            return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": ["run the tests", "show the diff"]}])], ""
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == ""  # nothing was invented as an answer
+    assert len(agent.model.messages) == 1  # finished on the first call, no extra round trip
+    assert s.quick_hints == ("run the tests", "show the diff")  # all hints survived
+    assert outputs == []  # no empty visible output callback was emitted
+    # The tool call and its result are recorded; no empty closing assistant message is stored.
+    assert [m["role"] for m in s.messages] == ["user", "assistant", "tool"]
+    assert s.messages[1]["tool_calls"][0]["function"]["name"] == "NextHints"
+    assert s.messages[2]["tool_call_id"] == s.messages[1]["tool_calls"][0]["id"]
+
+
+def test_tool_only_history_replays_across_all_protocols(tmp_path):
+    """A tool-only terminal turn stays replayable on the next user turn through every adapter:
+    each NextHints call is matched by exactly one tool result, and the next user message lands
+    after them."""
     s = session(tmp_path)
     s.skills = SkillLibrary({})
     agent = Agent(s, output_fn=lambda text: None)
@@ -1094,9 +1123,166 @@ def test_non_terminal_next_hints_do_not_leak_into_a_later_answer(tmp_path):
 
         def request(self, messages, tools=None):
             self.messages.append(messages)
+            return (
+                {"role": "assistant", "content": ""},
+                [ToolCall("nh-1", "NextHints", [{"inputs": ["run the tests"]}]), ToolCall("nh-2", "NextHints", [{"inputs": ["show the diff"]}])],
+                "",
+            )
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == ""
+    assert [m["role"] for m in s.messages] == ["user", "assistant", "tool", "tool"]
+
+    # The next user turn appends its opening user message to the tool-only history.
+    history = [*s.messages, {"role": "user", "content": "next turn"}]
+    call_ids = {call["id"] for message in s.messages if message.get("role") == "assistant" for call in message.get("tool_calls") or []}
+    assert len(call_ids) == 2
+    client = ModelClient(s)
+
+    chat = client.chat_messages(history)
+    tool_results = [message for message in chat if message.get("role") == "tool"]
+    chat_call_ids = {call["id"] for message in chat if message.get("role") == "assistant" for call in message.get("tool_calls") or []}
+    assert len(tool_results) == 2
+    assert {message["tool_call_id"] for message in tool_results} == chat_call_ids == call_ids
+    assert chat[-1]["content"] == "next turn"
+
+    responses = client.responses_input(history)
+    outputs = {item["call_id"] for item in responses if item.get("type") == "function_call_output"}
+    inputs = {item["call_id"] for item in responses if item.get("type") == "function_call"}
+    assert len(outputs) == 2
+    assert outputs == inputs == call_ids
+
+    anthropic = client.anthropic_messages(history)
+    tool_use_ids = {
+        block["id"] for message in anthropic if message.get("role") == "assistant" for block in message.get("content") or [] if block.get("type") == "tool_use"
+    }
+    tool_result_ids = {
+        block["tool_use_id"]
+        for message in anthropic
+        if message.get("role") == "user"
+        for block in message.get("content") or []
+        if block.get("type") == "tool_result"
+    }
+    assert len(tool_use_ids) == 2
+    assert tool_result_ids == tool_use_ids == call_ids
+
+    # Several legal NextHints calls in one batch merge their suggestions instead of the last
+    # call overwriting the rest.
+    assert s.quick_hints == ("run the tests", "show the diff")
+
+
+def test_failed_tool_only_next_hints_batch_continues_turn(tmp_path):
+    """An all-NextHints batch whose calls all fail (no answer text, no suggestions) must not end
+    the turn as a blank reply: the error results stay in history and the next step gets to
+    correct them."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    outputs: list[str] = []
+    agent = Agent(s, output_fn=outputs.append)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
             if len(self.messages) == 1:
-                # No answer text: not terminal, so it runs as an ordinary batch and publishes hints.
-                return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": ["stale suggestion"]}])], ""
+                # Empty inputs: the NextHints call fails, so no hints are produced.
+                return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": []}])], ""
+            return {"role": "assistant", "content": "here is the answer"}, [], "here is the answer"
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == "here is the answer"
+    assert len(agent.model.messages) == 2  # the turn continued past the failed batch
+    # The failed batch surfaced its own rejection line; nothing blank was published.
+    assert outputs[-1] == "here is the answer"
+    assert any(isinstance(item, LogBlock) and "rejected" in str(item) for item in outputs)
+    assert s.quick_hints == ()  # no hints were stored
+    # The failed tool result reached the second request, so the model could read and correct.
+    second_context = "\n\n".join(str(message.get("content") or "") for message in agent.model.messages[1])
+    assert "status: failed" in second_context
+    assert "at least one non-empty" in second_context
+
+
+def test_failed_next_hints_batch_counts_as_tool_batch(tmp_path):
+    """A failed all-NextHints batch still counts as a tool batch: the next ordinary tool batch
+    shows the ·2 suffix instead of presenting as the first batch."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    suffixes: list[str] = []
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, messages, tools=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {"role": "assistant", "content": ""}, [call("NextHints", [{"inputs": []}])], ""
+            if self.calls == 2:
+                return {"role": "assistant", "content": ""}, [call("Read", [{"path": "missing"}])], ""
+            return {"role": "assistant", "content": "done"}, [], "done"
+
+    class Tools:
+        def run(self, calls, batch_suffix=""):
+            suffixes.append(batch_suffix)
+            return [{"role": "tool", "tool_call_id": calls[0].id, "name": calls[0].name, "content": "ok"}]
+
+    agent.model = FakeModel()
+    agent.tools = Tools()
+
+    assert agent.run("do it") == "done"
+    # The failed NextHints batch was the first batch (no suffix); the ordinary batch that
+    # follows it is the second tool batch and carries ·2.
+    assert suffixes == ["", "·2"]
+
+
+def test_all_next_hints_batch_with_whitespace_content_ends_turn(tmp_path):
+    """Whitespace-only content counts as no answer text: the all-NextHints batch still ends the
+    turn in one model call, storing no empty closing message and publishing nothing."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    outputs: list[str] = []
+    agent = Agent(s, output_fn=outputs.append)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
+            return {"role": "assistant", "content": "   \n\t "}, [call("NextHints", [{"inputs": ["run the tests"]}])], "   \n\t "
+
+    agent.model = FakeModel()
+    assert agent.run("do it") == ""
+    assert len(agent.model.messages) == 1
+    assert s.quick_hints == ("run the tests",)
+    assert outputs == []
+    assert [m["role"] for m in s.messages] == ["user", "assistant", "tool"]
+
+
+def test_mixed_next_hints_batch_do_not_leak_into_a_later_answer(tmp_path):
+    """A batch mixing NextHints with another tool is not terminal; its hints are transient
+    intermediate state and are superseded, so a later final answer never displays them."""
+    s = session(tmp_path)
+    s.skills = SkillLibrary({})
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    agent = Agent(s, output_fn=lambda text: None)
+
+    class FakeModel:
+        def __init__(self):
+            self.messages = []
+
+        def request(self, messages, tools=None):
+            self.messages.append(messages)
+            if len(self.messages) == 1:
+                # Mixed batch: hints are only intermediate state, so the turn continues.
+                return (
+                    {"role": "assistant", "content": ""},
+                    [call("NextHints", [{"inputs": ["stale suggestion"]}]), call("Read", [{"path": "a.txt", "ranges": [[0, 1]]}])],
+                    "",
+                )
             return {"role": "assistant", "content": "different final answer"}, [], "different final answer"
 
     agent.model = FakeModel()
@@ -1173,7 +1359,8 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     params = client.anthropic_params(messages, [ReadTool.schema()])
     # system is a cache_control-marked block so the tools+system prefix is cached across turns.
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
-    assert params["temperature"] == 0.2
+    assert "temperature" not in params
+    assert params["extra_body"]["temperature"] == 0.2
     assert params["max_tokens"] == ANTHROPIC_DEFAULT_MAX_TOKENS
     # An unversioned gateway alias remains generic rather than guessing a thinking generation.
     assert "thinking" not in params

@@ -184,34 +184,66 @@ class ReadTool(Tool):
 
 class ViewImageTool(Tool):
     NAME = "ViewImage"
-    DESCRIPTION = (
-        "View one local image as visual model input. Supports PNG, JPEG, WebP, and single-frame GIF; paths outside the workspace require confirmation."
-    )
+    DESCRIPTION = "View a local PNG, JPEG, WebP, or single-frame GIF. Uses the active model when possible and the configured vision provider as fallback. Use an attachment's session-owned path when provided; outside-workspace paths require confirmation."
     PRODUCES_MODEL_OBSERVATION = True
 
     def __init__(self, session: Session, args: ToolArgs):
         super().__init__(session, args)
         self.image: ImageRef | None = None
+        # Injected by ToolRunner.call_tool. The tool owns validation and result shape; orchestration
+        # owns the model-client lifecycle so Ctrl-C can reach every provider request.
+        self.vision_observe: Callable[[tuple[ImageRef, ...], str], str] | None = None
+        self._uses_vision_provider = False
+        self._observation_text = ""
+        # Set when the explicit call uses [vision], so the runner can render that paid request.
+        self.vision_entry_label = ""
 
     @classmethod
     def params_schema(cls) -> Json:
-        return cls.object_schema({"path": {"type": "string", "minLength": 1, "description": "Local image path to view"}}, ["path"])
+        return cls.object_schema(
+            {
+                "path": {"type": "string", "minLength": 1, "description": "Local image path to view"},
+                "question": {"type": "string", "description": "Optional question to answer about the image"},
+            },
+            ["path"],
+        )
 
     @classmethod
     def payload_args(cls, payload: Json) -> ToolArgs:
-        return [payload.get("path")]
+        return [payload.get("path"), payload.get("question")]
 
     def path(self) -> str:
-        path = self.strings(min_count=1, max_count=1)[0].strip()
+        raw = self.args[0] if self.args else None
+        if not isinstance(raw, str):
+            raise ToolError("ViewImage requires a path string")
+        path = raw.strip()
         if not path:
             raise ToolError("ViewImage path must be non-empty")
         return self.session.resolve_path(path)
 
+    def question(self) -> str:
+        if len(self.args) < 2 or self.args[1] is None:
+            return ""
+        if not isinstance(self.args[1], str):
+            raise ToolError("ViewImage question must be a string")
+        return self.args[1].strip()
+
     def needs_confirmation(self) -> bool:
-        return not self.session.in_cwd(self.path())
+        path = self.path()
+        return not (self.session.in_cwd(path) or self.session.owns_asset(path))
 
     def short_args(self) -> list[str]:
         return [self.session.relpath(self.path())]
+
+    def _vision_label(self) -> str:
+        provider = self.session.config.providers[self.session.config.vision_provider]
+        return f"{self.session.config.vision_provider}/{provider.model}"
+
+    def _vision_observe(self, question: str) -> str:
+        assert self.image is not None  # call() loaded it before bridging
+        if self.vision_observe is None:
+            raise ToolError("ViewImage with a configured vision provider requires ToolRunner")
+        return self.vision_observe((self.image,), question)
 
     def call(self) -> str:
         path = self.path()
@@ -219,14 +251,33 @@ class ViewImageTool(Tool):
             self.image = self.session.images.load(path, source_text=self.session.relpath(path))
         except ModelError as error:
             raise ToolError(str(error)) from error
-        return (
+        header = (
             f"<ViewImage path={json.dumps(self.session.relpath(path))} "
             f"media_type={json.dumps(self.image.media_type)} width={self.image.width} "
-            f"height={self.image.height} bytes={self.image.size}/>"
+            f"height={self.image.height} bytes={self.image.size}"
         )
+        # Main-first: only a text-only route (static catalog or session-learned 400) with a
+        # configured [vision] entry bridges here; an unknown route keeps the raw observation so
+        # the active multimodal model receives the original pixels even when [vision] exists.
+        if self.session.image_route.delivery() != "vision":
+            return header + "/>"
+        self._uses_vision_provider = True
+        self.vision_entry_label = self._vision_label()
+        try:
+            observation = self._vision_observe(self.question())
+        except ModelError as error:
+            raise ToolError(f"Vision observation failed: {error}") from error
+        self._observation_text = observation
+        return header + f" vision={json.dumps(self.vision_entry_label)}/>" + "\n" + observation
 
     def model_observation(self) -> Json | None:
-        return self.session.images.tool_observation((self.image,)) if self.image is not None else None
+        if self.image is None:
+            return None
+        if self._uses_vision_provider:
+            # Durable text observation for a text-only route: no raw block ever reaches the main
+            # route, and the refs stay only for asset ownership across resume.
+            return self.session.images.text_observation((self.image,), self._observation_text, self.question())
+        return self.session.images.tool_observation((self.image,), self.question())
 
 
 @dataclass
@@ -236,7 +287,6 @@ class Edit:
     end: str = ""
     content: str = ""
     old: str = ""
-    new: str = ""
 
 
 @dataclass
@@ -293,13 +343,13 @@ LARGE_EDIT_CHARS = 6000
 def _large_edit(edits: list[Edit]) -> EditWarning | None:
     """Warn when one call wrote enough text that it should have been several.
 
-    Deliberately measured on what the model typed (`content` and `new`), not on the file's before
-    and after, which is why this one is not in EDIT_WARNINGS: the subject is the assistant message
-    the call arrived in, not the change it made. That message is generated in one stretch, and a
-    response timeout or an output cap partway through discards all of it -- this edit, the
-    reasoning that reached it, and every other call batched beside it. Smaller edits land as they
-    go, and cost nothing extra when nothing goes wrong."""
-    written = sum(len(edit.content) + len(edit.new) for edit in edits)
+    Deliberately measured on what the model typed (`content`), not on the file's before and after,
+    which is why this one is not in EDIT_WARNINGS: the subject is the assistant message the call
+    arrived in, not the change it made. That message is generated in one stretch, and a response
+    timeout or an output cap partway through discards all of it -- this edit, the reasoning that
+    reached it, and every other call batched beside it. Smaller edits land as they go, and cost
+    nothing extra when nothing goes wrong."""
+    written = sum(len(edit.content) for edit in edits)
     if written < LARGE_EDIT_CHARS:
         return None
     return EditWarning(
@@ -331,7 +381,10 @@ class EditTool(Tool):
         "Create or patch one UTF-8 file. op=create writes a new file; replace/delete cover the inclusive "
         "start..end range (the line at end is itself replaced or deleted); insert_before/insert_after keep "
         "the anchor line and only add content beside it; replace_unique replaces text that occurs exactly "
-        "once and refuses when it does not; never restate lines that already exist in the file. "
+        "once and refuses when it does not. Do not copy unchanged surrounding context into replacement or "
+        "insertion content; Edit preserves it automatically. Every operation that writes text uses the same "
+        "content field. Prefer replace_unique for a small edit when the exact old text is unique, because it "
+        "does not depend on anchors. "
         "Work in small steps: one call per cohesive change, and split a large rewrite across several "
         "calls, because everything one call writes is generated inside a single assistant message "
         "and a timeout partway through loses all of it."
@@ -339,7 +392,9 @@ class EditTool(Tool):
     EXAMPLE = (
         'create file. Example: {"path":"src/app.py","edits":[{"op":"create","content":"print(1)\\n"}]}',
         'replace range. Example: {"path":"src/app.py","edits":[{"op":"replace","start":"10:1ab2c","end":"12:3de4f","content":"new_value = 1\\n"}]}',
-        'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","new":"NewName"}]}',
+        'insert after an anchored line without copying the anchor as context. Example: {"path":"src/app.py","edits":[{"op":"insert_after","start":"10:1ab2c","content":"new_value = 1\\n"}]}',
+        'replace one exact block without anchors. Example: {"path":"src/app.py","edits":[{"op":"replace_unique","old":"value = 1\\n","content":"value = 2\\n"}]}',
+        'replace_all exact text; do not mix with anchored ops. Example: {"path":"src/app.py","edits":[{"op":"replace_all","old":"OldName","content":"NewName"}]}',
     )
     MUTATES = True
 
@@ -352,7 +407,8 @@ class EditTool(Tool):
                 "type": "string",
                 "description": (
                     "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; re-read after any file change or stale-anchor error; "
+                    "never invent or calculate it; after a stale-anchor error use a returned context anchor only after "
+                    "verifying its content, otherwise Read again; use replace_unique when the old text is exact and unique; "
                     "a file viewed through Bash carries no anchors"
                 ),
             },
@@ -360,7 +416,8 @@ class EditTool(Tool):
                 "type": "string",
                 "description": (
                     "Exact current line:hash anchor copied verbatim from Read, Search, or InspectCode; "
-                    "never invent or calculate it; re-read after any file change or stale-anchor error; "
+                    "never invent or calculate it; after a stale-anchor error use a returned context anchor only after "
+                    "verifying its content, otherwise Read again; use replace_unique when the old text is exact and unique; "
                     "a file viewed through Bash carries no anchors; "
                     "inclusive — the line at end is itself replaced or deleted"
                 ),
@@ -368,14 +425,16 @@ class EditTool(Tool):
             "content": {
                 "type": "string",
                 "description": (
-                    "New text for create/replace/insert. For replace: the complete new text of the inclusive range; "
-                    "for insert_before/insert_after: only the new lines — the anchor line is kept and must not be "
-                    "restated; for create: the whole file. The first and last content lines must correspond exactly "
-                    "to the start/end anchor lines."
+                    "New text for create/replace/insert/replace_all/replace_unique. For replace: only the final replacement "
+                    "text for the inclusive start..end range; lines before start and after end are preserved automatically "
+                    "and must not be copied into content merely as context. For insert_before/insert_after: only the new "
+                    "text; the anchor line is preserved automatically, so do not copy it merely to keep it. For "
+                    "replace_all/replace_unique: the exact replacement for old; content must be present, and an explicit "
+                    "empty string deletes the match. The new text may independently equal neighboring text when that is the "
+                    "intended result. For create: the whole file."
                 ),
             },
             "old": {"type": "string", "description": "Text to find for replace_all/replace_unique"},
-            "new": {"type": "string", "description": "Replacement text for replace_all/replace_unique"},
         }, ["op"])
         return cls.object_schema({
             "path": {"type": "string", "description": "File to create or patch"},
@@ -496,7 +555,7 @@ class EditTool(Tool):
         for item in raw_edits:
             if not isinstance(item, dict):
                 raise ToolError("each edit must be an object")
-            if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old", "new"}):
+            if unexpected := sorted(set(item) - {"op", "start", "end", "content", "old"}):
                 raise ToolError("Edit unexpected field: " + ", ".join(unexpected))
             op = str(item.get("op") or "")
             if op not in {"create", "replace", "delete", "insert_before", "insert_after", "replace_all", "replace_unique"}:
@@ -507,6 +566,8 @@ class EditTool(Tool):
                 raise ToolError(f"{op} requires start and end anchors")
             if op in {"insert_before", "insert_after"} and not item.get("start"):
                 raise ToolError(f"{op} requires start anchor")
+            if op in {"replace_all", "replace_unique"} and ("content" not in item or item["content"] is None):
+                raise ToolError(f"{op} requires content; use an explicit empty string to delete the match")
             edits.append(
                 Edit(
                     op=op,
@@ -514,7 +575,6 @@ class EditTool(Tool):
                     end=str(item.get("end") or ""),
                     content=self.normalize_text(str(item.get("content") or "")),
                     old=self.normalize_text(str(item.get("old") or "")),
-                    new=self.normalize_text(str(item.get("new") or "")),
                 )
             )
         return path, edits
@@ -576,14 +636,14 @@ class EditTool(Tool):
                     raise ToolError("replace_all requires old")
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
-                content = content.replace(edit.old, edit.new)
+                content = content.replace(edit.old, edit.content)
             return EditApplyResult(content, [(0, 0, 0, len(ReadTool.split_lines(content)))], [], True)
         lines = ReadTool.split_lines(original)
         resolve_anchor = anchor_resolver or (lambda anchor: self.resolve_anchor(lines, anchor))
         replacements = []
         for edit in edits:
             if edit.op == "replace_unique":
-                replacements.append(self._replace_unique_span(original, edit.old, edit.new))
+                replacements.append(self._replace_unique_span(original, edit.old, edit.content))
                 continue
             start = resolve_anchor(edit.start)
             if edit.op in {"replace", "delete"}:
@@ -747,8 +807,26 @@ class EditTool(Tool):
         if relocated is not None:
             return relocated
         if not 0 <= index < len(lines):
-            raise ToolError(f"anchor line {index + 1} out of range; file has {len(lines)} lines")
+            raise ToolError(
+                f"anchor line {index + 1} out of range; file has {len(lines)} lines; Read again unless the returned context verifies the intended line\n"
+                + self.current_file_context(lines, index)
+            )
         current = ReadTool.anchor_line(index, lines[index])
         raise ToolError(
-            f"stale anchor {anchor}; current is {current}; retry with the current anchor only if its content is the line you meant, otherwise re-read"
+            f"stale anchor {anchor}; current is {current}; retry with a returned anchor only if its content is the line you meant; "
+            "otherwise Read again; for a small exact edit whose old text is unique, prefer replace_unique\n" + self.current_file_context(lines, index)
         )
+
+    @staticmethod
+    def current_file_context(lines: list[str], index: int) -> str:
+        """Return bounded factual context near a rejected anchor, without claiming a target."""
+        out = ["<current-file-context hashline-numbered>", "(near the requested line; not an inferred target)"]
+        if not lines:
+            out.append("(empty file)")
+        else:
+            center = min(max(index, 0), len(lines) - 1)
+            start = max(0, center - 3)
+            end = min(len(lines), center + 4)
+            out.extend(ReadTool.anchor_line(current, lines[current]) for current in range(start, end))
+        out.append("</current-file-context>")
+        return "\n".join(out)

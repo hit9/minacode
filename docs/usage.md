@@ -101,14 +101,16 @@ still an estimate, and it disappears between requests and on providers that do n
 ## Quick hints
 
 After an answer, the model may suggest two or three next steps as chips under the prompt. They are
-suggestions, not commands: ignore them and keep typing, or take one.
+suggestions, not commands: ignore them and keep typing, or take one. Chips flow left to right,
+up to three per line, and wrap to new lines when the terminal is too narrow, so every
+suggestion stays visible.
 
 <div class="term-shot" role="img" aria-label="The idle prompt after an answer: the answer text, an empty prompt with a caret, and one row of three suggestion chips separated by grey bars, the middle one highlighted in reverse."><span>Everything is ready to review.</span><span> </span><span class="fs-prompt">&gt; <span class="fs-caret">▏</span></span><span> </span><span><span class="fs-i fs-sel"> run the tests </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-tab-on"> show the diff </span><span class="fs-i fs-dim"> │ </span><span class="fs-i fs-sel"> commit the work </span></span></div>
 
-`Tab` cycles between the input and the chips. `Space` on a chip toggles it into or out of the
-input, so several suggestions can be combined; return focus to the input and press `Enter` to
-send. Editing the text normally clears the chip selection state. `/hints` turns suggestions off
-for the session, `[runtime] quick_hints` for good.
+`Tab` cycles between the input and the chips. `Enter` on a chip picks it into the input and
+returns to the prompt, so `Tab` to the next chip and `Enter` again combines several suggestions;
+a final `Enter` sends. Focus a picked chip and press `Enter` to unpick it. Editing the text
+normally clears the chip selection state. Quick hints are always available at the TUI prompt.
 
 ## Commands
 
@@ -186,11 +188,11 @@ from the workspace; quoted paths and backslash-escaped spaces are accepted.
 
 <div class="term-shot" role="img" aria-label="The input prompt after recognizing a local screenshot path as an editable inline image label."><span class="fs-prompt">&gt; explain <span class="fs-i fs-sel">[Image #1 · screenshot.png]</span> and fix the layout<span class="fs-caret">▏</span></span></div>
 
-PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends images using the selected
-standard API. If the provider explicitly rejects image input, that result is remembered for the
-session and later image submissions are blocked without clearing the draft. Queued follow-ups,
-resumed sessions, and providers with image input disabled keep readable image labels. See
-[`provider.image_input`](configuration.md#optional-provider-settings) to override automatic detection.
+PNG, JPEG, WebP, and single-frame GIF files are supported. minacode sends each new attachment to
+the active model using the selected standard API. If the provider rejects that turn, the image
+remains stored at a session-owned path and later requests replay a readable label instead of the
+same image blocks; the agent can inspect the stored path explicitly with `ViewImage`. A configured
+[vision model](configuration.md#vision-model) is used only by `ViewImage`, never automatically.
 
 ## Sessions
 
