@@ -6,8 +6,8 @@
 
 - A `[vision]` provider entry gives image input a fallback: when the active model rejects an
   attached image or is known to be text-only, `[vision]` produces one plain-text observation that
-  replaces the raw image in the conversation. Each routing prints a single gray log block whose
-  `described by <provider>` child line mirrors `ViewImage`'s rendering.
+  replaces the raw image in the conversation. Each routing prints a compact image log with the
+  input name or count and a `described by <provider>` child matching `ViewImage`.
 - A blocking `Job` wait now streams the job's output into the same live preview as Bash, and the
   status line shows the seconds left in the wait (e.g. `· 12s left`).
 

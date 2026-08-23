@@ -204,7 +204,7 @@ def test_eligible_400_attachment_falls_back_through_vision_once(tmp_path):
     # exactly one vision observation of the current attachment, with the bounded default question
     assert model.vision_calls == [(("shot.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_learned"
-    assert notices == [ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model")]
+    assert notices == [ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model", images=("shot.png",))]
 
     # durable text observation replaces the failed raw occurrence; refs stay for asset ownership
     message = s.messages[0]
@@ -228,7 +228,7 @@ def test_static_text_only_attachment_goes_directly_to_vision(tmp_path):
     assert model.vision_calls == [(("shot.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     assert s.image_route.state() == "text_only_static"
     # one gray routing notice with a described-by child, like the ViewImage tree rendering
-    assert notices == [ImageRouteNotice("main model is text-only", described_by="v/vision-model")]
+    assert notices == [ImageRouteNotice("main model is text-only", described_by="v/vision-model", images=("shot.png",))]
 
 
 def test_static_text_only_without_vision_keeps_raw_attempt_and_original_error(tmp_path):
@@ -257,7 +257,7 @@ def test_400_without_vision_keeps_original_error_and_notices(tmp_path):
         agent.run(s.images.recognize("inspect shot.png"))
 
     assert model.vision_calls == []
-    assert notices == [ImageRouteNotice("main model rejected image input (400); no vision provider configured")]
+    assert notices == [ImageRouteNotice("main model rejected image input (400); no vision provider configured", images=("shot.png",))]
     # evidence is recorded, but without [vision] delivery still raw-attempts
     assert s.image_route.state() == "text_only_learned"
     assert s.image_route.delivery() == "raw"
@@ -497,8 +497,8 @@ def test_learned_route_observes_follow_up_attachment_directly(tmp_path):
     assert "image_url" not in json.dumps(model.requests[2])
     # the learned-route reason is truthful: runtime evidence is a rejected 400, not architecture
     assert notices == [
-        ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model"),
-        ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model"),
+        ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model", images=("first.png",)),
+        ImageRouteNotice("main model rejected image input (400)", described_by="v/vision-model", images=("second.png",)),
     ]
 
 
@@ -597,6 +597,73 @@ def test_queued_image_400_fallback_manual_retry_observes_once(tmp_path):
     observations = [m for m in s.messages if ImageInputs.refs(m) and "queued.png" in json.dumps(m)]
     assert len(observations) == 1
     assert "image_url" not in json.dumps(agent.model.requests[3])
+
+
+def test_view_image_400_fallback_cancel_keeps_paid_observation(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    image_file(tmp_path / "shot.png")
+
+    class CancelAfterViewImage(FallbackModel):
+        def __init__(self):
+            self.requests = []
+            self.vision_calls = []
+            self.step = 0
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            self.step += 1
+            if self.step == 1:
+                return {"role": "assistant", "content": ""}, [ToolCall("view", "ViewImage", ["shot.png", "what is shown?"])], ""
+            if self.step == 2:
+                raise ModelError("Error code: 400 - boom")
+            raise KeyboardInterrupt()
+
+        def cancel(self):
+            pass
+
+    agent, _notices = run_with(s, CancelAfterViewImage())
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("inspect")
+
+    observations = [message for message in s.messages if message.get(TOOL_IMAGE_OBSERVATION_KEY)]
+    assert len(observations) == 1
+    assert observations[0][IMAGE_TEXT_ONLY_KEY] is True
+    assert observations[0]["content"] == f"{TOOL_IMAGE_OBSERVATION_PREFIX}\n{VISION_TEXT}"
+    assert agent.model.vision_calls == [(("shot.png",), "what is shown?")]
+
+
+def test_queued_image_400_manual_retry_then_cancel_releases_pending(tmp_path):
+    s = session(tmp_path, model="main-model", vision=True)
+    image_file(tmp_path / "queued.png")
+
+    class RetryThenCancel(FallbackModel):
+        def __init__(self):
+            self.requests = []
+            self.vision_calls = []
+            self.step = 0
+
+        def request(self, messages, tools=None):
+            self.requests.append(messages)
+            self.step += 1
+            if self.step == 1:
+                s.enqueue_user_input(s.images.recognize("look queued.png"))
+                return {"role": "assistant", "content": ""}, [ToolCall("read", "Read", ["missing.txt"])], ""
+            if self.step == 2:
+                raise ModelError("Error code: 400 - boom")
+            if self.step == 3:
+                raise ModelRequestRetry()
+            raise KeyboardInterrupt()
+
+        def cancel(self):
+            pass
+
+    agent, _notices = run_with(s, RetryThenCancel())
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("start")
+
+    assert s.pending_user_inputs and "queued.png" in s.pending_user_inputs[0].text
+    assert "queued.png" not in json.dumps(s.messages)
+    assert agent.model.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
 
 
 def test_queued_image_400_fallback_failure_keeps_paid_observation(tmp_path):

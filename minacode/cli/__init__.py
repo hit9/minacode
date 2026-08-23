@@ -257,8 +257,11 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         only; never enters model context.
         """
 
-        children = [LogLine("described by", notice.described_by, LogRole.META, LogEdge.END)] if notice.described_by else []
-        root = LogLine("image observation", "", LogRole.META, LogEdge.NONE, meta=" · " + notice.reason)
+        children = [LogLine("described by", notice.described_by, LogRole.TOOL, LogEdge.END)] if notice.described_by else []
+        count = len(notice.images)
+        label = "Image" if count <= 1 else "Images"
+        text = notice.images[0] if count == 1 else (f"{count} attachments" if count else "")
+        root = LogLine(label, text, LogRole.META, LogEdge.NONE, meta=" · " + notice.reason)
         self.tool_output(LogBlock.hierarchy(root, children))
 
     def automatic_compaction_status(self, active: bool, error: str = "") -> None:

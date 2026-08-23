@@ -46,17 +46,6 @@ _BLOCKQUOTE_RE = re.compile(r" {0,3}>")
 MAX_TEXTUAL_TOOL_CORRECTIONS = 5
 
 
-class _ImageFallbackError(Exception):
-    """Carries the last-sent fallback request out of `_main_request` when that request fails, is
-    cancelled, or is manually retried, so the caller can commit/release against the last actually
-    sent request instead of the original raw one."""
-
-    def __init__(self, request: PreparedRequest, error: BaseException) -> None:
-        super().__init__(str(error))
-        self.request = request
-        self.error = error
-
-
 class Agent:
     """Run one user turn to a final answer, composing context, model, and tools.
 
@@ -139,10 +128,39 @@ class Agent:
                         self.raise_if_cancelled()
                         request = self.prepare_request(turn_messages)
                         failed_request = request
-                        # One main-model request, with an eligible 400 converting into exactly one
-                        # vision fallback (see _image_fallback). `accepted` is the request whose
-                        # acceptance commits the turn — the retry on a recovered 400.
-                        assistant, tool_calls, content, accepted = self._main_request(request)
+                        try:
+                            assistant, tool_calls, content = self.model.request(request.messages, request.tools)
+                            accepted = request
+                        except ModelError as error:
+                            fallback = self._image_fallback_request(error, request)
+                            if fallback is None:
+                                raise
+                            accepted, replacements = fallback
+                            failed_request = accepted
+                            while True:
+                                try:
+                                    self.raise_if_cancelled()
+                                    assistant, tool_calls, content = self.model.request(accepted.messages, accepted.tools)
+                                    break
+                                except ModelRequestRetry:
+                                    # The paid observation is already in `accepted`; resend that
+                                    # exact request instead of rebuilding it and observing again.
+                                    continue
+                                except KeyboardInterrupt:
+                                    # Preserve successful observations that replace messages already
+                                    # in the live turn (notably ViewImage), while staged queued input
+                                    # remains outside it and is released by the normal interrupt path.
+                                    for before, after in replacements:
+                                        for index, message in enumerate(turn_messages):
+                                            if message is before:
+                                                turn_messages[index] = after
+                                                break
+                                    raise
+                                except ModelError:
+                                    # A final failure commits the exact converted request; the outer
+                                    # error path acknowledges any staged input and keeps paid text.
+                                    turn_messages[:] = accepted.turn_messages
+                                    raise
                         self.record_sources(assistant)
                         self.raise_if_cancelled()
                         # A recovered 400 adopted a converted (text-only) turn: sync the live turn
@@ -168,27 +186,6 @@ class Agent:
                         break
                     except ModelRequestRetry:
                         continue
-                    except _ImageFallbackError as wrapper:
-                        # The fallback main request failed, was cancelled, or was manually retried
-                        # after a paid vision observation. Point the failure settlement at the last
-                        # actually sent request so the converted turn and its pending are committed
-                        # or released atomically.
-                        failed_request = wrapper.request
-                        if isinstance(wrapper.error, KeyboardInterrupt):
-                            # Cancelled: leave the live turn untouched. The queued image stays
-                            # queued and is re-submitted cleanly next turn, instead of appearing in
-                            # both history and the queue (a duplicate observation).
-                            raise wrapper.error
-                        # The observation is paid and durable: adopt the converted turn so a manual
-                        # retry re-sends the text observation (no second vision call) and a final
-                        # failure keeps it in history.
-                        turn_messages[:] = wrapper.request.turn_messages
-                        if isinstance(wrapper.error, ModelRequestRetry):
-                            # Manual retry of the fallback request: the queued input is now part of
-                            # the adopted turn, so acknowledge it once and re-prepare from there.
-                            self.accept_pending_inputs(turn_messages, transcript_messages, wrapper.request.pending, wrapper.request.turn_messages)
-                            continue
-                        raise wrapper.error
                 if assistant.get(PAUSED_TURN_KEY) and not tool_calls:
                     # The provider paused a long server-side tool run rather than ending the turn.
                     # Resuming means sending this message back unchanged and asking again, so it
@@ -497,7 +494,8 @@ class Agent:
             # only ever rejected an image-carrying request with an eligible 400.
             request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
             reason = "main model is text-only" if self.session.image_route.state() == IMAGE_ROUTE_TEXT_ONLY_STATIC else "main model rejected image input (400)"
-            self._emit_image_route_notice(ImageRouteNotice(reason, described_by=self._vision_entry_label()))
+            names = tuple(image.name for message in current_raw for image in ImageInputs.input_refs(message))
+            self._emit_image_route_notice(ImageRouteNotice(reason, described_by=self._vision_entry_label(), images=names))
             if not pending:
                 # No accept_pending_inputs will commit the copy later, so keep the live list in
                 # sync: a failure after the paid observation must settle the converted message,
@@ -509,59 +507,35 @@ class Agent:
         self.context.update_percent(messages, tools)
         return PreparedRequest(messages, tools, pending, request_turn, tuple(current_raw))
 
-    def _main_request(
+    def _image_fallback_request(
         self,
+        error: ModelError,
         request: PreparedRequest,
-    ) -> tuple[Json, list[ToolCall], str, PreparedRequest]:
-        """Send one main-model request; an eligible 400 converts into exactly one vision fallback.
+    ) -> tuple[PreparedRequest, list[tuple[Json, Json]]] | None:
+        """Prepare one text-only retry for an eligible image 400; otherwise return ``None``.
 
-        Returns `(assistant, tool_calls, content, accepted)`, where `accepted` is the request
-        whose acceptance commits the turn — the text-only retry when an eligible 400 recovered,
-        otherwise `request` itself. The fallback retry cannot trigger another fallback: its route
-        is now learned and it carries no current raw image, so both eligibility gates fail.
-
-        Never mutates the caller's live turn. The paid observation lives in the retry's turn
-        list and is adopted by the caller only once the retry is accepted. A failed, cancelled,
-        or manually retried fallback request raises `_ImageFallbackError` carrying the retry, so
-        the caller commits/releases the converted turn and its pending atomically.
+        The returned replacement pairs identify only semantic image messages converted by the
+        paid vision observation. The turn owner uses them to preserve already-live observations
+        on cancellation without adopting staged queued input.
         """
 
-        try:
-            assistant, tool_calls, content = self.model.request(request.messages, request.tools)
-            return assistant, tool_calls, content, request
-        except ModelError as error:
-            if not self._eligible_image_fallback(error, request):
-                raise
-            self.session.image_route.learn_text_only()
-            vision_entry = self.session.config.vision_provider
-            if not vision_entry:
-                self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400); no vision provider configured"))
-                # No fallback is available: the original error propagates and the normal
-                # replay-safe failure settlement runs, exactly as for any other rejected request.
-                raise
-            # Observe the eligible current occurrences through [vision] and convert them to
-            # durable text observations, then retry once without raw image blocks (the route is
-            # now learned text-only, so projection suppresses every older raw image as well, not
-            # only the failed occurrence). The observation is paid for here, so the gray notice
-            # naming the entry is emitted only after it succeeded.
-            converted = self.session.images.observe_current(request.turn_messages, list(request.current_image_messages), self.model.vision_observe)
-            self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label()))
-            tools = Tool.resolved_schemas(self.session)
-            messages = self.context.prepare_messages(self.model, self.session.system_prompt, converted, tools)
-            self.context.update_percent(messages, tools)
-            retry = PreparedRequest(messages, tools, request.pending, converted)
-            self.session.state.turn_messages = len(converted)
-            # The successful fallback request is the one accepted for transaction ordering: current
-            # and queued messages commit once, checkpoint once, and the loop continues normally —
-            # no failed-turn marker is appended for a recovered 400.
-            try:
-                assistant, tool_calls, content = self.model.request(messages, tools)
-            except BaseException as error:
-                # Failed, cancelled, or manually retried after a paid observation: hand the
-                # last-sent request to the caller, which commits/releases against it. The live
-                # turn stays untouched here.
-                raise _ImageFallbackError(retry, error) from error
-            return assistant, tool_calls, content, retry
+        if not self._eligible_image_fallback(error, request):
+            return None
+        self.session.image_route.learn_text_only()
+        current = list(request.current_image_messages)
+        names = tuple(image.name for message in current for image in ImageInputs.input_refs(message))
+        if not self.session.config.vision_provider:
+            self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400); no vision provider configured", images=names))
+            return None
+        converted = self.session.images.observe_current(request.turn_messages, current, self.model.vision_observe)
+        replacements = [(before, after) for before, after in zip(request.turn_messages, converted, strict=True) if before is not after]
+        self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label(), images=names))
+        tools = Tool.resolved_schemas(self.session)
+        messages = self.context.prepare_messages(self.model, self.session.system_prompt, converted, tools)
+        self.context.update_percent(messages, tools)
+        retry = PreparedRequest(messages, tools, request.pending, converted)
+        self.session.state.turn_messages = len(converted)
+        return retry, replacements
 
     def _eligible_image_fallback(self, error: ModelError, request: PreparedRequest) -> bool:
         """Whether a failed main request may learn text-only and fall back through [vision].

@@ -15,6 +15,10 @@ import minacode.cli.commands as commands_mod
 import minacode.cli.modals as modals_mod
 from minacode.base import (
     SELECTION_BACK,
+    ImageRouteNotice,
+    LogBlock,
+    LogEdge,
+    LogRole,
     ModelError,
 )
 from minacode.cli import COMMANDS, CommandCompleter, CommandLoop
@@ -68,6 +72,30 @@ HELP_OMISSIONS = frozenset({"/worker"})
 def test_registry_names_and_aliases_appear_in_help():
     missing = {name for command in COMMANDS for name in (command.name, *command.aliases) if name not in CommandLoop.HELP}
     assert missing <= HELP_OMISSIONS, f"registered commands missing from HELP: {sorted(missing - HELP_OMISSIONS)}"
+
+
+def test_image_route_notice_matches_view_image_tree_vocabulary(tmp_path):
+    command_loop = loop(tmp_path)
+    blocks = []
+    command_loop.tool_output = blocks.append
+
+    command_loop.image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by="vision/model", images=("shot.png",)))
+
+    [block] = blocks
+    assert isinstance(block, LogBlock)
+    root, children = block.items
+    assert (root.label, root.text, root.role, root.meta) == (
+        "Image",
+        "shot.png",
+        LogRole.META,
+        " · main model rejected image input (400)",
+    )
+    [child] = children.items
+    assert (child.label, child.text, child.role, child.edge) == ("described by", "vision/model", LogRole.TOOL, LogEdge.END)
+
+    command_loop.image_route_notice(ImageRouteNotice("main model is text-only", described_by="vision/model", images=("a.png", "b.png")))
+    multi_root = blocks[-1].items[0]
+    assert (multi_root.label, multi_root.text) == ("Images", "2 attachments")
 
 
 class ModalHarness:

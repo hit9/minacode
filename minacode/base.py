@@ -121,13 +121,14 @@ IMAGE_ROUTE_TEXT_ONLY_LEARNED = "text_only_learned"
 class ImageRouteNotice:
     """One gray routing notice for a text-only image delivery decision.
 
-    `reason` is the root line (why the raw image was not delivered to the main model);
-    `described_by` is an optional child line naming the [vision] entry, mirroring the
-    ViewImage tool's rendering. Presentation only; never enters model context.
+    `reason` says why the raw image was not delivered to the main model; `images` names
+    the observed inputs; `described_by` optionally names the [vision] entry. Presentation
+    only; never enters model context.
     """
 
     reason: str
     described_by: str = ""
+    images: tuple[str, ...] = ()
 
 
 SELECTION_BACK = object()
