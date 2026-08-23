@@ -87,13 +87,13 @@ def test_job_wait_honours_a_longer_model_timeout_up_to_the_ceiling(tmp_path, mon
     # through; the elapsed-time range pins that the wait really parked.
     monkeypatch.setattr(JobTool, "DEFAULT_WAIT", 0.1)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
-    JobTool(s, [{"action": "start", "command": "sleep 0.8; printf slow-done"}]).call()
+    JobTool(s, [{"action": "start", "command": "sleep 0.5; printf slow-done"}]).call()
 
     # The default would have given up at 0.1s; asking for 30 sees the job through to the end.
     started = time.monotonic()
     waited = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 30}]).call()
 
-    assert 0.6 < time.monotonic() - started < 5
+    assert 0.3 < time.monotonic() - started < 5
     assert "Status: done" in waited
     assert "--- output ---\nslow-done" in waited
     assert JobTool(s, [{"action": "wait", "job": "job.1"}]).wait_budget({}) == 0.1  # DEFAULT_WAIT
@@ -148,7 +148,7 @@ def test_job_wait_streams_log_tail_to_live_output(tmp_path, monkeypatch):
     region when the wait ends."""
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
-    JobTool(s, [{"action": "start", "command": "printf 'line one\\nline two\\n'; sleep 30"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf 'line one\\nline two\\n'; sleep 0.1"}]).call()
     events = []
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 1}])
     tool.live_output = lambda stream, text: events.append((stream, text))
@@ -169,9 +169,9 @@ def test_job_wait_streams_short_log_incrementally_without_duplicates(tmp_path, m
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
     monkeypatch.setattr(JobTool, "LIVE_INTERVAL", 0.01)
-    JobTool(s, [{"action": "start", "command": "printf 'one\\n'; sleep 0.6; printf 'two\\n'; sleep 30"}]).call()
+    JobTool(s, [{"action": "start", "command": "printf 'one\\n'; sleep 0.1; printf 'two\\n'; sleep 0.1"}]).call()
     events = []
-    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}])
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 1}])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
     tool.call()
@@ -187,10 +187,10 @@ def test_job_wait_keeps_streaming_after_log_outgrows_tail_window(tmp_path, monke
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
     monkeypatch.setattr(JobTool, "LIVE_INTERVAL", 0.01)
-    command = "printf 'a%.0s' {1..6000}; sleep 0.5; printf 'b%.0s' {1..4000}; sleep 30"
+    command = "printf 'a%.0s' {1..6000}; sleep 0.2; printf 'b%.0s' {1..4000}; sleep 0.1"
     JobTool(s, [{"action": "start", "command": command}]).call()
     events = []
-    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 2}])
+    tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 1}])
     tool.live_output = lambda stream, text: events.append((stream, text))
 
     tool.call()
@@ -227,7 +227,9 @@ def test_job_wait_stream_clears_on_cancel(tmp_path, monkeypatch):
     s = session(tmp_path)
     monkeypatch.setattr(JobTool, "MAX_WAIT", 900)
     monkeypatch.setattr(JobTool, "POLL_INTERVAL", 0.01)
-    JobTool(s, [{"action": "start", "command": "sleep 30"}]).call()
+    # One line of output so the first poll pushes an event and the cancel fires right away,
+    # instead of the loop below waiting out its whole deadline on a silent job.
+    JobTool(s, [{"action": "start", "command": "printf 'x\\n'; sleep 30"}]).call()
     tool = JobTool(s, [{"action": "wait", "job": "job.1", "timeout": 900}])
     events = []
     tool.live_output = lambda stream, text: events.append((stream, text))
@@ -241,6 +243,7 @@ def test_job_wait_stream_clears_on_cancel(tmp_path, monkeypatch):
     thread.join(timeout=5)
 
     assert not thread.is_alive(), "cancel did not interrupt the wait"
+    assert ("output", "x\n") in events  # 流式输出在 cancel 前已到达
     assert s.jobs["job.1"].process.poll() is None  # 中断只放弃 wait,不杀 job
     assert events[-1] == ("", "")
     JobTool(s, [{"action": "kill", "job": "job.1"}]).call()
