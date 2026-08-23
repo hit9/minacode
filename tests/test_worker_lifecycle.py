@@ -1,16 +1,13 @@
 """worker lifecycle (split from tests/test_worker_handoff.py)."""
 import json
 import os
-import time
+
 import pytest
-from agent_harness import call, session
-from minacode.base import SESSION_EVENT_KEY
-from minacode.cli.worker import worker_command
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
-from minacode.tools import TOOL_REGISTRY, Tool
+from agent_harness import call
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
+
+from minacode.base import SESSION_EVENT_KEY
+
 
 def test_delegate_context_continuity(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)

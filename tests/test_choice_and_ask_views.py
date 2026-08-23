@@ -1,30 +1,13 @@
 """choice and ask views (split from tests/test_ui_render.py)."""
-import itertools
-import os
-import shutil
-import sys
-import time
-import pytest
-from prompt_toolkit.formatted_text import to_formatted_text
-from prompt_toolkit.utils import get_cwidth
-from rich.console import Console
-from tui_harness import loop, session
 import minacode.render as render_module
 from minacode.base import (
     SELECTION_BACK,
     SELECTION_FREE_TEXT,
-    LogBlock,
-    LogEdge,
-    LogLine,
-    LogRole,
-    Text,
 )
-from minacode.config import (
-    request_budget_for,
-)
-from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
+from minacode.render import UiPrinter
 from minacode.tools import AskSpec
-from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState, TuiApp
+from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState
+
 
 def test_choice_view_g_and_shift_g_jump_first_and_last():
     state = ChoiceViewState(choices=("one", "two", "three"), labels={}, disabled=set())

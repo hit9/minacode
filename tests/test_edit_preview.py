@@ -1,18 +1,13 @@
 """edit preview (split from tests/test_edit_tool.py)."""
-import os
-import re
-import shutil
-import pytest
 from prompt_toolkit.utils import get_cwidth
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
-from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.render import UiPrinter
-from minacode.runner import EditBatchPlan, ToolRunner
-from minacode.session import Session
-from minacode.tools import CodeIndex, EditTool, ReadTool
-from minacode.tools.files import Edit
 from test_edit_tool import anchor, session
+
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall
+from minacode.context import ContextManager
+from minacode.render import UiPrinter
+from minacode.runner import ToolRunner
+from minacode.tools import CodeIndex, ReadTool
+
 
 def test_approval_segments_highlight_inline_edit_preview():
     preview = "--- foo.py\n+++ foo.py\n@@ -1,2 +1,2 @@\n def hello():\n-    pass\n+    return 42"

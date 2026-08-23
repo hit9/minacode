@@ -1,40 +1,14 @@
 """tui approval (split from tests/test_tui_app.py)."""
-import asyncio
-import multiprocessing
-import os
-import signal
 import threading
-import time
-from types import SimpleNamespace
+
 import pytest
-from prompt_toolkit.application import Application
-from prompt_toolkit.data_structures import Size
 from prompt_toolkit.document import Document
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.output import DummyOutput
-from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, session, wait_until
-import minacode.tui.app as tui_module
-from minacode.base import (
-    SESSION_EVENT_KEY,
-    LogBlock,
-    LogEdge,
-)
-from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime, hints
-from minacode.cli.commands import select_choice
-from minacode.cli.hints import HintPicker
-from minacode.cli.update import UpdateChecker
-from minacode.config import (
-    Config,
-)
-from minacode.engine import Agent
-from minacode.mentions import FilePick, active_mention
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
-from minacode.session import Session, SessionSnapshotStore
-from minacode.tools import CodeIndex
-from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, TuiApp
 from test_tui_app import ACTIONS, _active, _approval_app
+from tui_harness import run_interactive_tui, wait_until
+
+from minacode.tui import TuiApp
+
 
 def test_tui_approval_form_fires_the_focused_action_on_enter():
     # Enter submits the focused action's answer -- the same whole line ("", "v", "c", "n") the

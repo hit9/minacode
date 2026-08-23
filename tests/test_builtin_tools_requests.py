@@ -1,27 +1,19 @@
 """builtin tools requests (split from tests/test_builtin_tools.py)."""
 import json
+
 import pytest
-from agent_harness import session as agent_session
-from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _MockClientFactory, _session, _StreamClientFactory
+from model_harness import _AnthropicMockClientFactory, _MockClientFactory, _session
+from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _responses_body
+
 from minacode.base import (
-    PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
     ConfigError,
-    ModelError,
-    ToolCall,
-    builtin_tool_label,
 )
 from minacode.config import (
-    ConfigFile,
     ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
 from minacode.model import ModelClient
-from minacode.render import search_sources_footer
-from minacode.runner import ToolRunner
-from minacode.skill import SkillLibrary
-from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _responses_body
+
 
 def test_builtin_tools_parse_as_tables_with_a_type():
     provider = ProviderConfig.from_dict({"builtin_tools": [{"type": "web_search", "search_context_size": "high"}]})

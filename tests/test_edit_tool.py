@@ -1,18 +1,12 @@
 import os
-import re
 import shutil
 
-import pytest
 from prompt_toolkit.utils import get_cwidth
 
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
-from minacode.context import ContextManager
-from minacode.model import ModelClient
+from minacode.base import LogBlock, LogEdge, LogLine, LogRole
 from minacode.render import UiPrinter
-from minacode.runner import EditBatchPlan, ToolRunner
 from minacode.session import Session
-from minacode.tools import CodeIndex, EditTool, ReadTool
-from minacode.tools.files import Edit
+from minacode.tools import ReadTool
 
 
 def session(tmp_path):

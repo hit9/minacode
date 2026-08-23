@@ -1,18 +1,12 @@
 """edit anchor recovery (split from tests/test_edit_tool.py)."""
-import os
-import re
-import shutil
 import pytest
-from prompt_toolkit.utils import get_cwidth
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
-from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.render import UiPrinter
-from minacode.runner import EditBatchPlan, ToolRunner
-from minacode.session import Session
-from minacode.tools import CodeIndex, EditTool, ReadTool
-from minacode.tools.files import Edit
 from test_edit_tool import anchor, session
+
+from minacode.base import ToolCall, ToolError
+from minacode.context import ContextManager
+from minacode.runner import ToolRunner
+from minacode.tools import CodeIndex, EditTool, ReadTool
+
 
 def test_single_anchor_stale_guides_content_check(tmp_path):
     path = tmp_path / "note.txt"

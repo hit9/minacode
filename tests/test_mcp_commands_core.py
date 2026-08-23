@@ -1,11 +1,12 @@
 """mcp commands core (split from tests/test_mcp_commands.py)."""
-import asyncio
 import threading
 import time
 from types import SimpleNamespace
 from typing import ClassVar
+
 import pytest
-from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info
+from mcp_harness import mcp_cfg, mcp_tool_info
+
 import minacode.cli.commands as commands_mod
 from minacode.base import SELECTION_BACK
 from minacode.cli import CommandCompleter, CommandLoop
@@ -16,11 +17,12 @@ from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.mcp import MCPFileTokenStore, MCPManager
-from minacode.render import StatusBar, UiPrinter
+from minacode.mcp import MCPManager
+from minacode.render import UiPrinter
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
+
 
 class TestMCPCommands:
     def test_start_session_discovers_auto_servers(self, monkeypatch):

@@ -1,24 +1,18 @@
 """session load (split from tests/test_session_persistence.py)."""
-import itertools
 import json
 import os
 import time
-from typing import ClassVar
+
 import pytest
+from test_session_persistence import log_path, project_dir, read_jsonl, read_lines, session_with_data_dir, visible_contents
+
 from minacode.base import SESSION_EVENT_KEY, MinacodeError
-from minacode.cli import CommandLoop
-from minacode.cli.commands import compact, provider, set_model
 from minacode.config import (
     Config,
-    ProviderConfig,
     RuntimeSettings,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
-from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
-from test_session_persistence import log_path, project_dir, read_jsonl, read_lines, session_with_data_dir, visible_contents
+from minacode.session import Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
+
 
 def test_oversized_snapshots_are_dropped_before_reaching_the_log(tmp_path):
     """Snapshots over the size limit are still discarded, and leave no blob behind."""

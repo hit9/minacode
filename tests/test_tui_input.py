@@ -1,11 +1,11 @@
 """tui input (split from tests/test_tui_app.py)."""
 import asyncio
-import multiprocessing
 import os
 import signal
 import threading
 import time
 from types import SimpleNamespace
+
 import pytest
 from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Size
@@ -14,26 +14,24 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
-from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, session, wait_until
+from tui_harness import ResizableOutput, loop, run_interactive_tui, session, wait_until
+
 import minacode.tui.app as tui_module
 from minacode.base import (
     SESSION_EVENT_KEY,
     LogBlock,
     LogEdge,
 )
-from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime, hints
-from minacode.cli.commands import select_choice
-from minacode.cli.hints import HintPicker
+from minacode.cli import CommandCompleter, CommandLoop, TuiRuntime
 from minacode.cli.update import UpdateChecker
 from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.mentions import FilePick, active_mention
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools import CodeIndex
-from minacode.tui import TUI_MODAL_PENDING, CallbackPlaceholder, TuiApp
+from minacode.tui import CallbackPlaceholder, TuiApp
+
 
 def ctrl_c_queue_scenario(cwd, results):
     config = Config(data_dir=cwd)

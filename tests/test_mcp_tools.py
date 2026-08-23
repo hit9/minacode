@@ -1,26 +1,17 @@
 """MCP tools as the agent sees them: the tool index and its budget, confirmation, context
 blocks, calling, result normalization, and resources."""
 
-import asyncio
-from types import SimpleNamespace
-from typing import ClassVar
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info, session
 
-from minacode.base import ToolCall, ToolError
 from minacode.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.mcp import MCPManager, MCPResourceInfo, MCPToolInfo
-from minacode.runner import ToolRunner
+from minacode.mcp import MCPToolInfo
 from minacode.session import Session
-from minacode.tools import MCPTool, Tool
 
 
 def _index_session(servers):

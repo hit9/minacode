@@ -1,18 +1,18 @@
 """mcp resources (split from tests/test_mcp_tools.py)."""
-import asyncio
 from types import SimpleNamespace
 from typing import ClassVar
+
 import pytest
-from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info, session
-from minacode.base import ToolCall, ToolError
+from mcp_harness import _fake_resource, mcp_cfg, session
+
+from minacode.base import ToolError
 from minacode.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.mcp import MCPManager, MCPResourceInfo, MCPToolInfo
-from minacode.runner import ToolRunner
+from minacode.mcp import MCPManager, MCPResourceInfo
 from minacode.session import Session
-from minacode.tools import MCPTool, Tool
+from minacode.tools import MCPTool
+
 
 class TestMCPResources:
     def _server_with_resources(self, monkeypatch, resources):

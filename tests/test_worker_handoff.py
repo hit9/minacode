@@ -3,19 +3,10 @@
 Coverage follows WORKER_HANDOFF_PLAN.txt section 9; each numbered test maps to that list.
 """
 
-import json
-import os
-import time
 
-import pytest
-from agent_harness import call, session
+from agent_harness import session
 
-from minacode.base import SESSION_EVENT_KEY
-from minacode.cli.worker import worker_command
-from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
-from minacode.tools import TOOL_REGISTRY, Tool
 
 
 def _requested_system(tmp_path, custom=None):

@@ -1,18 +1,13 @@
 """edit replace unique (split from tests/test_edit_tool.py)."""
-import os
-import re
-import shutil
 import pytest
-from prompt_toolkit.utils import get_cwidth
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from test_edit_tool import anchor, session
+
+from minacode.base import ToolCall, ToolError
 from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.render import UiPrinter
-from minacode.runner import EditBatchPlan, ToolRunner
-from minacode.session import Session
+from minacode.runner import ToolRunner
 from minacode.tools import CodeIndex, EditTool, ReadTool
 from minacode.tools.files import Edit
-from test_edit_tool import anchor, session
+
 
 def test_replace_unique_replaces_exact_single_hit(tmp_path):
     path = tmp_path / "note.txt"

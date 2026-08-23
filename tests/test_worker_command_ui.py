@@ -1,38 +1,16 @@
 """worker command ui (split from tests/test_command_ui.py)."""
-import os
-import shutil
-import threading
 from types import SimpleNamespace
-import openai as openai_module
-import pytest
-from prompt_toolkit.utils import get_cwidth
-from tui_harness import ResizableOutput, loop, rendered_screen_text, run_interactive_tui, session, wait_until
+
+from test_command_ui import ModalHarness
+from tui_harness import loop
+
 import minacode.cli.commands as commands_mod
-import minacode.cli.modals as modals_mod
 from minacode.base import (
     SELECTION_BACK,
-    ImageRouteNotice,
-    LogBlock,
-    LogEdge,
-    LogRole,
-    ModelError,
 )
-from minacode.cli import COMMANDS, CommandCompleter, CommandLoop
+from minacode.cli import CommandCompleter
 from minacode.cli import worker as worker_mod
-from minacode.cli.commands import (
-    SET_KEYS,
-    api,
-    config,
-    language_command,
-    model,
-    provider,
-    reason,
-    remote_models,
-    set_model,
-    set_value,
-    strict,
-)
-from minacode.cli.modals import choice_application, diff_viewer, select_choice, tool_output_viewer
+from minacode.cli.modals import tool_output_viewer
 from minacode.cli.worker import WorkerFlow, worker_command
 from minacode.config import (
     PROVIDER_API_CHOICES,
@@ -40,13 +18,8 @@ from minacode.config import (
     Config,
     ProviderConfig,
 )
-from minacode.engine import Agent
-from minacode.model import ModelClient
-from minacode.runner import ToolRunner
-from minacode.session import Session
 from minacode.tools import Tool
-from minacode.tui import TUI_MODAL_PENDING, DiffViewState, TabbedViewState, TuiApp
-from test_command_ui import ModalHarness
+
 
 def test_worker_command_completion(tmp_path):
     from prompt_toolkit.document import Document

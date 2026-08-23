@@ -1,30 +1,21 @@
 """editor and theme (split from tests/test_ui_render.py)."""
-import itertools
-import os
-import shutil
 import sys
-import time
+
 import pytest
 from prompt_toolkit.formatted_text import to_formatted_text
-from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
-from tui_harness import loop, session
+from tui_harness import loop
+
 import minacode.render as render_module
 from minacode.base import (
-    SELECTION_BACK,
-    SELECTION_FREE_TEXT,
     LogBlock,
     LogEdge,
     LogLine,
     LogRole,
-    Text,
 )
-from minacode.config import (
-    request_budget_for,
-)
-from minacode.render import BashLivePreview, StatusBar, Theme, UiPrinter
-from minacode.tools import AskSpec
-from minacode.tui import ASK_DONE, ASK_FREE_TEXT, TUI_MODAL_PENDING, AskViewState, ChoiceViewState, TuiApp
+from minacode.render import StatusBar, Theme, UiPrinter
+from minacode.tui import TuiApp
+
 
 def test_theme_palettes_have_identical_complete_keys():
     assert Theme.DARK.keys() == Theme.LIGHT.keys()

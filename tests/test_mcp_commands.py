@@ -1,33 +1,12 @@
 """The /mcp command surface: subcommands, tab completion, and end-to-end user scenarios."""
 
-import asyncio
-import threading
-import time
-from types import SimpleNamespace
-from typing import ClassVar
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info
 
-import minacode.cli.commands as commands_mod
-from minacode.base import SELECTION_BACK
-from minacode.cli import CommandCompleter, CommandLoop
-from minacode.cli.commands import mcp_command
-from minacode.cli.modals import mcp_manager
-from minacode.cli.update import UpdateChecker
-from minacode.config import (
-    Config,
-)
-from minacode.engine import Agent
-from minacode.mcp import MCPFileTokenStore, MCPManager
-from minacode.render import StatusBar, UiPrinter
-from minacode.session import Session, SessionSnapshotStore
-from minacode.tools import CodeIndex
-from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
+from minacode.mcp import MCPFileTokenStore
 
 
 def oauth_value(store: MCPFileTokenStore, url: str, collection: str, suffix: str) -> dict | None:

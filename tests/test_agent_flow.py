@@ -1,32 +1,21 @@
 """agent flow (split from tests/test_agent_turn.py)."""
-import json
 import threading
-import time
 from types import SimpleNamespace
+
 import pytest
 from agent_harness import call, queue, session
+from test_agent_turn import _correction
+
 import minacode.engine as engine_module
 from minacode.base import (
-    SESSION_EVENT_KEY,
     LogBlock,
     MalformedToolCallError,
-    ModelError,
-    ToolCall,
 )
-from minacode.config import (
-    ANTHROPIC_DEFAULT_MAX_TOKENS,
-    Config,
-    ProviderConfig,
-)
-from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
-from minacode.prompts import FAILED_TURN_MARKER, INTERRUPT_MARKER, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
-from minacode.runner import ToolRunner
-from minacode.session import Session, SessionSnapshotCodec
-from minacode.skill import SkillLibrary
-from minacode.tools import BashTool, ReadTool, Tool
-from test_agent_turn import _correction
+from minacode.prompts import LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT
+from minacode.tools import Tool
+
 
 def test_model_cancel_closes_active_client_and_interrupts_request(tmp_path):
     s = session(tmp_path)

@@ -1,39 +1,19 @@
 """compaction slices (split from tests/test_context.py)."""
-import os
-import platform
-import re
-import shutil
-from dataclasses import replace
-from types import SimpleNamespace
 import pytest
-from agent_harness import call, session
-import minacode.context as context_module
+from agent_harness import session
+
 from minacode.base import (
-    MAX_AGENTS_MD_TOKENS,
-    MAX_TOOL_OUTPUT_TOKENS,
     SESSION_EVENT_KEY,
-    ModelError,
-)
-from minacode.cli import CommandLoop
-from minacode.cli.commands import compact
-from minacode.config import (
-    DEFAULT_OUTPUT_RESERVE_TOKENS,
-    MIN_CONTEXT_SAFETY_TOKENS,
 )
 from minacode.context import ContextManager
-from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
-    CURRENT_TURN_CONTEXT_TRIMMED,
     LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
-    SYSTEM_PROMPT,
 )
-from minacode.runner import ToolRunner
-from minacode.session import HistorySegment, Session
-from minacode.skill import SkillLibrary
-from minacode.tools import EditTool, ReadTool
+from minacode.session import Session
+
 
 def test_history_segments_keep_only_the_newest_window(tmp_path):
     """Every compaction stores a span and nothing used to drop one, so a long session carried each

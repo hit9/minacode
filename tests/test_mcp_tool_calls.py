@@ -1,18 +1,18 @@
 """mcp tool calls (split from tests/test_mcp_tools.py)."""
-import asyncio
-from types import SimpleNamespace
 from typing import ClassVar
+
 import pytest
-from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info, session
+from mcp_harness import mcp_cfg, mcp_tool_info
+
 from minacode.base import ToolCall, ToolError
 from minacode.config import (
     Config,
 )
 from minacode.context import ContextManager
-from minacode.mcp import MCPManager, MCPResourceInfo, MCPToolInfo
 from minacode.runner import ToolRunner
 from minacode.session import Session
-from minacode.tools import MCPTool, Tool
+from minacode.tools import MCPTool
+
 
 class TestMCPToolConfirmation:
     def test_describe_does_not_require_confirmation(self):

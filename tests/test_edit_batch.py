@@ -1,18 +1,15 @@
 """edit batch (split from tests/test_edit_tool.py)."""
-import os
 import re
-import shutil
+
 import pytest
-from prompt_toolkit.utils import get_cwidth
-from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
+from test_edit_tool import anchor, session
+
+from minacode.base import ToolCall, ToolError
 from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.render import UiPrinter
-from minacode.runner import EditBatchPlan, ToolRunner
-from minacode.session import Session
+from minacode.runner import ToolRunner
 from minacode.tools import CodeIndex, EditTool, ReadTool
 from minacode.tools.files import Edit
-from test_edit_tool import anchor, session
+
 
 def test_tool_runner_batch_edit_rejects_anchor_for_line_changed_in_batch(tmp_path, monkeypatch):
     s = session(tmp_path)

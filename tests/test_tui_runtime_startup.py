@@ -1,37 +1,29 @@
 """tui runtime startup (split from tests/test_tui_runtime.py)."""
 import asyncio
-import os
 import threading
 import time
-from dataclasses import replace
 from types import SimpleNamespace
+
 import pytest
 from prompt_toolkit.application import Application
 from prompt_toolkit.formatted_text import fragment_list_to_text, to_formatted_text
-from prompt_toolkit.history import FileHistory
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from tui_harness import ResizableOutput, loop, run_interactive_tui, session, wait_until
-import minacode.cli as loop_module
+from tui_harness import loop, session
+
 import minacode.render as render_module
 import minacode.tui.app as tui_module
 from minacode.base import (
-    MalformedToolCallError,
     MinacodeError,
-    ToolCall,
-    TurnBox,
 )
-from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
+from minacode.cli import CommandLoop, TuiRuntime
 from minacode.cli.runtime import RESUME_STATUS_LABEL
 from minacode.cli.update import UpdateChecker
-from minacode.config import (
-    Config,
-)
 from minacode.engine import Agent
-from minacode.prompts import LIVE_FOLLOWUP_PREFIX
-from minacode.session import Session, SessionSnapshotStore
+from minacode.session import SessionSnapshotStore
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp
+
 
 def test_tui_emits_resumed_history_after_primary_screen_starts(tmp_path, monkeypatch):
     scenario_session = session(tmp_path)

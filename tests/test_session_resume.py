@@ -1,24 +1,16 @@
 """session resume (split from tests/test_session_persistence.py)."""
-import itertools
-import json
-import os
-import time
 from typing import ClassVar
-import pytest
-from minacode.base import SESSION_EVENT_KEY, MinacodeError
+
+from test_session_persistence import _resumed_transcript, log_path, read_jsonl, session_with_data_dir
+
+from minacode.base import SESSION_EVENT_KEY
 from minacode.cli import CommandLoop
-from minacode.cli.commands import compact, provider, set_model
-from minacode.config import (
-    Config,
-    ProviderConfig,
-    RuntimeSettings,
-)
-from minacode.context import ContextManager
+from minacode.cli.commands import compact
 from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
-from minacode.session import HistorySegment, Session, SessionSnapshotCodec, SessionSnapshotStore, TurnDiff
-from test_session_persistence import _resumed_transcript, log_path, read_jsonl, session_with_data_dir
+from minacode.session import HistorySegment, Session
+
 
 def test_resume_replays_full_transcript_after_model_context_and_retained_records_are_pruned(tmp_path):
     s = session_with_data_dir(tmp_path)

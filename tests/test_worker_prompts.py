@@ -1,16 +1,15 @@
 """worker prompts (split from tests/test_worker_handoff.py)."""
-import json
 import os
 import time
+
 import pytest
-from agent_harness import call, session
-from minacode.base import SESSION_EVENT_KEY
-from minacode.cli.worker import worker_command
-from minacode.context import ContextManager
-from minacode.engine import Agent
-from minacode.prompts import SYSTEM_PROMPT, WORKER_PROMPT
-from minacode.tools import TOOL_REGISTRY, Tool
+from agent_harness import session
 from test_worker_handoff import _requested_system
+
+from minacode.context import ContextManager
+from minacode.prompts import SYSTEM_PROMPT
+from minacode.tools import TOOL_REGISTRY, Tool
+
 
 def test_tool_names_filter_resolved_schemas_and_keep_registry_order(tmp_path):
     s = session(tmp_path)

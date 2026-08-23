@@ -1,27 +1,16 @@
 """builtin tools stream (split from tests/test_builtin_tools.py)."""
-import json
-import pytest
-from agent_harness import session as agent_session
 from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _MockClientFactory, _session, _StreamClientFactory
+from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _responses_body
+
 from minacode.base import (
-    PAUSED_TURN_KEY,
-    SEARCH_SOURCES_KEY,
-    ConfigError,
-    ModelError,
-    ToolCall,
     builtin_tool_label,
 )
 from minacode.config import (
     ConfigFile,
-    ProviderConfig,
 )
-from minacode.context import ContextManager
-from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.render import search_sources_footer
-from minacode.runner import ToolRunner
-from minacode.skill import SkillLibrary
-from test_builtin_tools import FUNCTION_TOOL, WEB_SEARCH, _responses_body
+
 
 def test_responses_stream_reports_a_search_in_progress(tmp_path, monkeypatch):
     """A provider-side search has no tool line of its own; the status label is the only signal."""

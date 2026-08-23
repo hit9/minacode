@@ -1,26 +1,20 @@
 """builtin tools pause (split from tests/test_builtin_tools.py)."""
-import json
-import pytest
 from agent_harness import session as agent_session
-from model_harness import _AnthropicMockClientFactory, _AnthropicStreamClientFactory, _MockClientFactory, _session, _StreamClientFactory
+from model_harness import _AnthropicMockClientFactory, _session
+
 from minacode.base import (
     PAUSED_TURN_KEY,
-    SEARCH_SOURCES_KEY,
-    ConfigError,
-    ModelError,
     ToolCall,
-    builtin_tool_label,
 )
 from minacode.config import (
-    ConfigFile,
     ProviderConfig,
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.model import ModelClient
-from minacode.render import search_sources_footer
 from minacode.runner import ToolRunner
 from minacode.skill import SkillLibrary
+
 
 def test_paused_turn_is_reported_and_replays_unchanged(tmp_path, monkeypatch):
     """A paused search must be resumed by sending the assistant message back exactly as received."""

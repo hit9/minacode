@@ -1,48 +1,27 @@
 """tool memory (split from tests/test_tools.py)."""
 import json
-import os
-import shutil
-import code_symbol_index as csi
+
 import pytest
-import minacode
+from test_tools import session
+
 from minacode.base import (
-    LogBlock,
-    LogEdge,
-    LogLine,
-    LogRole,
     ToolCall,
     ToolError,
 )
 from minacode.config import (
-    Config,
     ConfigFile,
     RuntimeSettings,
 )
 from minacode.context import ContextManager
-from minacode.model import ModelClient
-from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session, SessionSnapshotCodec
 from minacode.tools import (
-    TOOL_REGISTRY,
-    TOOLS,
-    AskTool,
-    BashTool,
-    CodeIndex,
-    EditTool,
-    InspectCodeTool,
-    MCPTool,
     NextHintsTool,
     NoteTool,
-    ReadTool,
     RecallContextTool,
-    RecallTool,
-    SearchTool,
-    SkillTool,
     Tool,
-    ViewImageTool,
 )
-from test_tools import session
+
 
 def test_note_tool_replace_known(tmp_path):
     s = session(tmp_path)

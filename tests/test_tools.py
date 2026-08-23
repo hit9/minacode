@@ -5,7 +5,6 @@ import shutil
 import code_symbol_index as csi
 import pytest
 
-import minacode
 from minacode.base import (
     LogBlock,
     LogEdge,
@@ -16,24 +15,20 @@ from minacode.base import (
 )
 from minacode.config import (
     Config,
-    ConfigFile,
-    RuntimeSettings,
 )
 from minacode.context import ContextManager
 from minacode.model import ModelClient
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
-from minacode.session import HistorySegment, Session, SessionSnapshotCodec
+from minacode.session import HistorySegment, Session
 from minacode.tools import (
     TOOL_REGISTRY,
     TOOLS,
-    AskTool,
     BashTool,
     CodeIndex,
     EditTool,
     InspectCodeTool,
     MCPTool,
-    NextHintsTool,
     NoteTool,
     ReadTool,
     RecallContextTool,

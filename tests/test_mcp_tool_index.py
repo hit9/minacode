@@ -1,19 +1,16 @@
 """mcp tool index (split from tests/test_mcp_tools.py)."""
-import asyncio
-from types import SimpleNamespace
 from typing import ClassVar
-import pytest
-from mcp_harness import _fake_resource, mcp_cfg, mcp_tool_info, session
-from minacode.base import ToolCall, ToolError
+
+from mcp_harness import mcp_cfg, mcp_tool_info, session
+from test_mcp_tools import _index_session
+
 from minacode.config import (
     Config,
 )
-from minacode.context import ContextManager
-from minacode.mcp import MCPManager, MCPResourceInfo, MCPToolInfo
-from minacode.runner import ToolRunner
+from minacode.mcp import MCPManager, MCPToolInfo
 from minacode.session import Session
-from minacode.tools import MCPTool, Tool
-from test_mcp_tools import _index_session
+from minacode.tools import Tool
+
 
 class TestToolIndexRendering:
     def test_render_tools_index_empty(self):
