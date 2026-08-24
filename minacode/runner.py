@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, ClassVar
 
 from prompt_toolkit.utils import get_cwidth
 
-from minacode import tooloutput
 from minacode.base import (
     ActiveResource,
     ApprovalView,
@@ -40,6 +39,7 @@ from minacode.tools import (
     Tool,
     ToolScript,
     ViewImageTool,
+    tooloutput,
 )
 from minacode.tools.editplan import EditBatchPlan
 

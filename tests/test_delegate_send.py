@@ -3,7 +3,7 @@
 import pytest
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
-from minacode import tooloutput
+from minacode.tools import tooloutput
 from minacode.prompts import WORKER_PROMPT
 
 

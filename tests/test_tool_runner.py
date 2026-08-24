@@ -2,7 +2,7 @@
 
 from agent_harness import call, session
 
-from minacode import tooloutput
+from minacode.tools import tooloutput
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
 

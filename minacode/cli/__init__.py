@@ -17,7 +17,6 @@ from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
-from minacode import tooloutput
 from minacode.base import (
     ImageRouteNotice,
     Json,
@@ -44,7 +43,7 @@ from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.render import BashLivePreview, StatusBar, UiPrinter, search_sources_footer
 from minacode.runner import ToolDisplay
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
-from minacode.tools import TOOL_REGISTRY, CodeIndex, tool_payload
+from minacode.tools import TOOL_REGISTRY, CodeIndex, tool_payload, tooloutput
 from minacode.tui import TuiApp
 
 

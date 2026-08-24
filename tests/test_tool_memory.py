@@ -5,7 +5,7 @@ import json
 import pytest
 from test_tools import session
 
-from minacode import tooloutput
+from minacode.tools import tooloutput
 from minacode.base import (
     ToolCall,
     ToolError,

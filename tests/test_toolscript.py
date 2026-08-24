@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
-from minacode import tooloutput
+from minacode.tools import tooloutput
 from minacode.base import LogEdge, LogRole, ToolCall, ToolError
 from minacode.config import Config
 from minacode.context import ContextManager

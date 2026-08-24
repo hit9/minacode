@@ -19,11 +19,10 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
-from minacode import tooloutput
 from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox, oneline
 from minacode.render import UiPrinter
 from minacode.session import ToolResultRecord
-from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript
+from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript, tooloutput
 from minacode.tui import (
     ASK_DONE,
     ASK_FREE_TEXT,

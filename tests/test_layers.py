@@ -56,7 +56,6 @@ LAYERS = {
     "minacode.model.client": 5,
     "minacode.model.resilience": 5,
     "minacode.tools": 6,
-    "minacode.tooloutput": 6,
     "minacode.mcp": 6,
     "minacode.mcp.config": 6,
     "minacode.mcp.tokens": 6,

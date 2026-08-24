@@ -7,7 +7,7 @@ import time
 import pytest
 
 import minacode.render as render_module
-from minacode import tooloutput
+from minacode.tools import tooloutput
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
 from minacode.cli import CommandLoop
 from minacode.cli.commands import ps_command

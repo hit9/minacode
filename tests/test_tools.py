@@ -5,7 +5,7 @@ import shutil
 import code_symbol_index as csi
 import pytest
 
-from minacode import tooloutput
+from minacode.tools import tooloutput
 from minacode.base import (
     LogBlock,
     LogEdge,
