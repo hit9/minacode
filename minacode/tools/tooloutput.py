@@ -7,7 +7,8 @@ import re
 from typing import NamedTuple
 
 from minacode.base import Text, ToolCall, oneline
-from minacode.tools import TOOL_REGISTRY, Tool
+from minacode.session import Session
+from minacode.tools.base import Tool
 
 BASH_TRANSCRIPT_PREVIEW_LINES = 3
 BASH_PREVIEW_LINE_LIMIT = 220
@@ -239,7 +240,9 @@ def with_batch_suffix(text: str, suffix: str) -> str:
     return text + (("  " + suffix) if suffix else "")
 
 
-def short_call(session, call: ToolCall, args: list[str] | None = None) -> str:
+def short_call(session: Session, call: ToolCall, args: list[str] | None = None) -> str:
+    from minacode.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
+
     tool_class = TOOL_REGISTRY.get(call.name)
     if args is None:
         try:
