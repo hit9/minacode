@@ -17,10 +17,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 from PIL import Image, UnidentifiedImageError
 
 from minacode.base import Json, ModelError
-from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
 
 if TYPE_CHECKING:
-    from minacode.model import ModelClient
     from minacode.session import Session
 
 
@@ -503,36 +501,3 @@ class ImageInputs:
 
         tiles = max(1, (image.width + 511) // 512) * max(1, (image.height + 511) // 512)
         return 85 + 170 * tiles
-
-
-def observe_image(model: ModelClient, images: tuple[ImageRef, ...], question: str = "") -> str:
-    """Ask the [vision]-configured entry to observe images for an explicit ViewImage call.
-
-    Mirrors Compactor.compact(): the [vision] entry is resolved per call and validated locally -- a
-    missing field would otherwise surface as a generic SDK credentials error naming nothing the user
-    can act on -- then served by one non-streaming api_request with pre-built image blocks. Perception
-    only: no tools, no coding task; the main model does the reasoning.
-
-    The entry clears the cancel flag so a stale flag left by a previous turn's Ctrl-C cannot abort a
-    fresh observation.
-    """
-    model.cancel_requested.clear()
-    entry_name = model.session.config.vision_provider
-    provider = model.session.config.providers[entry_name]
-    if missing := provider.missing_fields():
-        raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
-    messages = [
-        {"role": "system", "content": VISION_OBSERVE_PROMPT},
-        {
-            "role": "user",
-            "content": model.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
-        },
-    ]
-    # The observation is billed to the session totals but is not a main-model request, so its
-    # usage must not overwrite the last-request ctx/cache snapshot the status bar reads.
-    model.session.state.vision_observe_active = True
-    try:
-        _, _, content = model.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
-    finally:
-        model.session.state.vision_observe_active = False
-    return content.strip()

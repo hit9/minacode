@@ -6,7 +6,6 @@ import json
 import re
 import threading
 from collections.abc import Callable
-from functools import partial
 
 from minacode.base import (
     IMAGE_ROUTE_TEXT_ONLY_STATIC,
@@ -24,8 +23,9 @@ from minacode.base import (
     oneline,
 )
 from minacode.context import ContextManager
-from minacode.image import ImageInputs, UserInput, observe_image
+from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient, PreparedRequest, resilience
+from minacode.model.vision import VisionObserver
 from minacode.prompts import (
     FAILED_TOOL_CALL_RESULT,
     FAILED_TURN_MARKER,
@@ -67,7 +67,7 @@ class Agent:
         self.session = session
         self.model = ModelClient(session)
         self.context = ContextManager(session, self.model)
-        self.vision_observe = partial(observe_image, self.model)
+        self.vision_observe = VisionObserver(self.model).observe
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         # How a turn's final answer is published, when it should look different from interim

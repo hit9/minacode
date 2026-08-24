@@ -24,8 +24,8 @@ from minacode.base import (
     oneline,
 )
 from minacode.context import ContextManager
-from minacode.image import observe_image
 from minacode.model import ModelClient
+from minacode.model.vision import VisionObserver
 from minacode.session import Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -187,7 +187,7 @@ class ToolRunner:
         if isinstance(tool, ViewImageTool):
             # The runner owns the vision client, so Agent.cancel() reaches an in-flight
             # observation instead of leaving it to wait out the provider timeout.
-            tool.vision_observe = lambda images, question: observe_image(self.vision_client(), images, question)
+            tool.vision_observe = VisionObserver(self.vision_client()).observe
             return tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):
