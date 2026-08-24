@@ -6,6 +6,7 @@ import json
 import re
 import threading
 from collections.abc import Callable
+from functools import partial
 
 from minacode.base import (
     IMAGE_ROUTE_TEXT_ONLY_STATIC,
@@ -23,7 +24,7 @@ from minacode.base import (
     oneline,
 )
 from minacode.context import ContextManager
-from minacode.image import ImageInputs, UserInput
+from minacode.image import ImageInputs, UserInput, observe_image
 from minacode.model import ModelClient, PreparedRequest, resilience
 from minacode.prompts import (
     FAILED_TOOL_CALL_RESULT,
@@ -66,6 +67,7 @@ class Agent:
         self.session = session
         self.model = ModelClient(session)
         self.context = ContextManager(session, self.model)
+        self.vision_observe = partial(observe_image, self.model)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         # How a turn's final answer is published, when it should look different from interim
@@ -493,7 +495,7 @@ class Agent:
             # notice, so a failed vision call never shows a fake described-by success. The reason
             # names the route truthfully: static catalog evidence says text-only; a learned route
             # only ever rejected an image-carrying request with an eligible 400.
-            request_turn = self.session.images.observe_current(request_turn, current, self.model.vision_observe)
+            request_turn = self.session.images.observe_current(request_turn, current, self.vision_observe)
             reason = "main model is text-only" if self.session.image_route.state() == IMAGE_ROUTE_TEXT_ONLY_STATIC else "main model rejected image input (400)"
             names = tuple(image.name for message in current_raw for image in ImageInputs.input_refs(message))
             self._emit_image_route_notice(ImageRouteNotice(reason, described_by=self._vision_entry_label(), images=names))
@@ -528,7 +530,7 @@ class Agent:
         if not self.session.config.vision_provider:
             self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400); no vision provider configured", images=names))
             return None
-        converted = self.session.images.observe_current(request.turn_messages, current, self.model.vision_observe)
+        converted = self.session.images.observe_current(request.turn_messages, current, self.vision_observe)
         replacements = [(before, after) for before, after in zip(request.turn_messages, converted, strict=True) if before is not after]
         self._emit_image_route_notice(ImageRouteNotice("main model rejected image input (400)", described_by=self._vision_entry_label(), images=names))
         tools = Tool.resolved_schemas(self.session)

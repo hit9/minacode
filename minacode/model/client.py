@@ -10,7 +10,6 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from json_repair import repair_json
@@ -39,7 +38,7 @@ from minacode.base import (
     builtin_tool_label,
 )
 from minacode.config import ProviderConfig
-from minacode.image import IMAGE_REFS_KEY, ImageInputs, observe_image
+from minacode.image import IMAGE_REFS_KEY, ImageInputs
 from minacode.model import chat, resilience, responses
 from minacode.prompts import COMPACTION_REQUEST_EVENT
 from minacode.providers.catalog import THINKING_BUDGETS
@@ -113,7 +112,6 @@ class ModelClient:
         self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
         self._request_local = threading.local()
         self.on_stream: Callable[[str, str], None] | None = None
-        self.vision_observe = partial(observe_image, self)
         # Called with (label, detail) for each provider-side tool call a response reports. Reported
         # from the parsed result rather than the stream, so a search is logged the same way when
         # streaming is off and on a frontend that shows no live status at all.
