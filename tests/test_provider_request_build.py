@@ -10,13 +10,14 @@ from minacode.base import (
     ModelError,
     ModelUsage,
     ToolCall,
+    drop_nulls,
 )
 from minacode.config import (
     ProviderConfig,
 )
 from minacode.context import ContextManager
 from minacode.model import ModelClient, resilience
-from minacode.tools import TOOL_REGISTRY, Tool, drop_nulls
+from minacode.tools import TOOL_REGISTRY, Tool
 
 
 def test_explicit_manual_thinking_maps_max_to_the_largest_budget(tmp_path):

@@ -187,6 +187,16 @@ def oneline(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
 
+def drop_nulls(value: object) -> object:
+    """Recursively drop null values. Strict schemas express optional params as nullable, so callers
+    may send explicit null for an omitted argument; in minacode null means "absent"."""
+    if isinstance(value, dict):
+        return {key: drop_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [drop_nulls(item) for item in value]
+    return value
+
+
 class Text:
     BASE36: ClassVar[str] = "0123456789abcdefghijklmnopqrstuvwxyz"
 

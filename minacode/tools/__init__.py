@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minacode.base import ToolArgs
+from minacode.base import ToolArgs, drop_nulls
 from minacode.tools.ask import AskSpec, AskTool
 from minacode.tools.base import Tool
 from minacode.tools.delegate import WORKER_TOOLS, DelegateTool
@@ -33,16 +33,6 @@ TOOLS: tuple[type[Tool], ...] = (
     DelegateTool,
 )
 TOOL_REGISTRY: dict[str, type[Tool]] = {tool.NAME: tool for tool in TOOLS}
-
-
-def drop_nulls(value: object) -> object:
-    """Recursively strip explicit nulls. Strict schemas express optional params as nullable, so the
-    model may send null for an omitted argument, and in every minacode tool null means "absent"."""
-    if isinstance(value, dict):
-        return {key: drop_nulls(item) for key, item in value.items() if item is not None}
-    if isinstance(value, list):
-        return [drop_nulls(item) for item in value]
-    return value
 
 
 def tool_payload(name: str, payload: object) -> ToolArgs:
@@ -79,6 +69,5 @@ __all__ = [
     "Tool",
     "ToolScript",
     "ViewImageTool",
-    "drop_nulls",
     "tool_payload",
 ]
