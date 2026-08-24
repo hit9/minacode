@@ -207,3 +207,52 @@ def test_file_picker_cancel_keeps_buffer(monkeypatch):
         app.app.loop.call_soon_threadsafe(app.app.exit)
 
     run_interactive_tui(monkeypatch, app, drive=drive)
+
+def test_enter_commits_highlighted_completion_without_sending(monkeypatch):
+    """Tab previews a mention row; Enter commits it into the input instead of sending the
+    message, so the prompt stays open and a second Enter sends."""
+    submitted = []
+    app = TuiApp(
+        completer=CommandCompleter(skills=lambda: ("release", "review")),
+        on_chat_submit=submitted.append,
+    )
+
+    def state():
+        current = app.input_buffer.complete_state
+        return None if current is None else (current.complete_index, [c.text for c in current.completions])
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("use @skill:")
+        wait_until(lambda: (state() or (None, []))[1] == ["@skill:release", "@skill:review"])
+        pipe_input.send_text("\t")
+        wait_until(lambda: state() is not None and state()[0] is not None)
+        pipe_input.send_text("\r")
+        wait_until(lambda: state() is None and app.input_buffer.text == "use @skill:release")
+        assert submitted == []
+        pipe_input.send_text("\r")
+        wait_until(lambda: submitted == ["use @skill:release"])
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)
+
+def test_enter_sends_when_completion_menu_has_no_highlighted_row(monkeypatch):
+    """The menu opens while typing with no row highlighted; Enter there still sends, so a fully
+    typed mention goes out in one press (only Tab-highlighted rows are committed by Enter)."""
+    submitted = []
+    app = TuiApp(
+        completer=CommandCompleter(skills=lambda: ("release", "review")),
+        on_chat_submit=submitted.append,
+    )
+
+    def drive(pipe_input):
+        wait_until(lambda: app.app is not None and app.app.is_running)
+        pipe_input.send_text("use @skill:")
+        wait_until(
+            lambda: app.input_buffer.complete_state is not None and app.input_buffer.complete_state.current_completion is None
+        )
+        pipe_input.send_text("\r")
+        wait_until(lambda: submitted == ["use @skill:"])
+        app.app.loop.call_soon_threadsafe(app.app.exit)
+
+    run_interactive_tui(monkeypatch, app, drive=drive)

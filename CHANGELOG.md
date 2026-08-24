@@ -12,6 +12,8 @@
 
 ### Changed
 
+- Enter with a Tab-highlighted completion row now commits that row into the input instead of
+  sending the message; a second Enter sends.
 - A streamed response that ends without a terminal event no longer fails the turn: it is a
   transient provider-side drop, retried automatically like a dropped connection.
 

@@ -1097,6 +1097,14 @@ class TuiApp:
             buffer = event.current_buffer
             if self._pick_quick_hint(buffer):
                 return
+            # Enter with a completion row highlighted (Tab previews it) commits that row into the
+            # input instead of sending the message: the menu closes, the prompt stays open, and a
+            # second Enter sends. A menu opened by typing alone has no highlighted row, so Enter
+            # still sends there, exactly as it always did.
+            state = buffer.complete_state
+            if state is not None and state.current_completion is not None:
+                buffer.apply_completion(state.current_completion)
+                return
             buffer.validate_and_handle()
 
         bindings.add("enter", filter=~modal, eager=True)(enter)
