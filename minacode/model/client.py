@@ -34,7 +34,6 @@ from minacode.base import (
     ModelStreamIncomplete,
     ModelUsage,
     Text,
-    ToolArgs,
     ToolCall,
     ToolError,
     builtin_tool_label,
@@ -65,8 +64,8 @@ if TYPE_CHECKING:
 
 from minacode.session import AgentState, QueuedInput, Session
 from minacode.tools import (
-    TOOL_REGISTRY,
     Tool,
+    tool_payload,
 )
 
 _ResultT = TypeVar("_ResultT")
@@ -1198,29 +1197,11 @@ class ModelClient:
         return calls
 
     @classmethod
-    def tool_payload(cls, name: str, payload: object) -> ToolArgs:
-        if isinstance(payload, dict) and (tool := TOOL_REGISTRY.get(name)):
-            # Strict schemas express optional params as nullable, so the model may send explicit
-            # null for an omitted argument. In every minacode tool null means "absent", so drop it.
-            cleaned = cls.drop_nulls(payload)
-            assert isinstance(cleaned, dict)
-            return tool.payload_args(cleaned)
-        return [payload]
-
-    @classmethod
-    def drop_nulls(cls, value: object) -> object:
-        if isinstance(value, dict):
-            return {key: cls.drop_nulls(item) for key, item in value.items() if item is not None}
-        if isinstance(value, list):
-            return [cls.drop_nulls(item) for item in value]
-        return value
-
-    @classmethod
     def tool_call(cls, call_id: str, name: str, payload: object) -> ToolCall:
         # payload_args may reject malformed arguments (e.g. Bash with an empty command). Capture that
         # error on the call so it is replayed as a tool result during execution, letting the model
         # self-correct, rather than escaping to abort the entire agent turn.
         try:
-            return ToolCall(id=call_id, name=name, args=cls.tool_payload(name, payload))
+            return ToolCall(id=call_id, name=name, args=tool_payload(name, payload))
         except ToolError as error:
             return ToolCall(id=call_id, name=name, args=[], error=str(error))

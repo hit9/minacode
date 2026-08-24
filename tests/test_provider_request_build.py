@@ -16,7 +16,7 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.model import ModelClient, resilience
-from minacode.tools import TOOL_REGISTRY, Tool
+from minacode.tools import TOOL_REGISTRY, Tool, drop_nulls
 
 
 def test_explicit_manual_thinking_maps_max_to_the_largest_budget(tmp_path):
@@ -186,7 +186,7 @@ def test_strict_tools_skips_free_form_object_schemas():
     assert Tool._strictifiable(TOOL_REGISTRY["Read"].params_schema()) is True
 
 def test_drop_nulls_strips_omitted_strict_arguments():
-    assert ModelClient.drop_nulls({"a": 1, "b": None, "c": {"d": None, "e": 2}, "f": [{"g": None, "h": 3}]}) == {"a": 1, "c": {"e": 2}, "f": [{"h": 3}]}
+    assert drop_nulls({"a": 1, "b": None, "c": {"d": None, "e": 2}, "f": [{"g": None, "h": 3}]}) == {"a": 1, "c": {"e": 2}, "f": [{"h": 3}]}
 
 def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tmp_path):
     client = ModelClient(session(tmp_path))

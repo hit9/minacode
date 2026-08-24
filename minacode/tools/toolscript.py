@@ -364,10 +364,10 @@ class ToolScript(Tool):
                 raise ToolError(f'{name} does not support format="json"; use format="text"')
             if not isinstance(args, dict):
                 raise ToolError(f'call("{name}", ...) requires named arguments')
-            from minacode.model import ModelClient  # local import: model.py imports the tool registry
+            from minacode.tools import tool_payload  # local import: the registry is built on top of every tool
 
             try:
-                call = ToolCall(f"toolscript.{len(keys) + 1}", name, ModelClient.tool_payload(name, args))
+                call = ToolCall(f"toolscript.{len(keys) + 1}", name, tool_payload(name, args))
             except ToolError as error:
                 raise ToolError(f"{name}: {error}") from error
         # The capture steps aside for the same reason the clock pauses: what the nested call logs

@@ -17,7 +17,6 @@ from minacode.config import (
     Config,
 )
 from minacode.context import ContextManager
-from minacode.model import ModelClient
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session
@@ -37,6 +36,7 @@ from minacode.tools import (
     SkillTool,
     Tool,
     ViewImageTool,
+    tool_payload,
 )
 
 
@@ -585,13 +585,13 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
 
 
 def test_single_and_batch_payload_shapes_are_supported():
-    assert ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[1, 0]]}]
-    assert ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
-    assert ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
+    assert tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[1, 0]]}]
+    assert tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
+    assert tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
     assert ReadTool(Session(cwd="."), [{"path": "minacode.py"}]).targets()[0][1] == [(1, 0)]
-    assert ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
-    assert ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
-    assert ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
+    assert tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
+    assert tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
+    assert tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
 
 
 def test_tool_runner_finish_display_keeps_ask_answer(tmp_path):

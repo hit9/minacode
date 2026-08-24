@@ -39,12 +39,11 @@ from minacode.cli.update import UpdateChecker
 from minacode.cli.view import CommandCompleter, View
 from minacode.engine import Agent
 from minacode.image import ImageInputs, UserInput
-from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.render import BashLivePreview, StatusBar, UiPrinter, search_sources_footer
 from minacode.runner import ToolDisplay
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
-from minacode.tools import TOOL_REGISTRY, CodeIndex
+from minacode.tools import TOOL_REGISTRY, CodeIndex, tool_payload
 from minacode.tui import TuiApp
 
 
@@ -645,7 +644,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         except json.JSONDecodeError:
             payload = {}
         try:
-            args = ModelClient.tool_payload(name, payload)
+            args = tool_payload(name, payload)
         except ToolError:
             # A malformed historical call (e.g. tool args that fail validation) must not crash
             # the resume; render it without parsed args.
