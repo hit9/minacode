@@ -496,7 +496,8 @@ class ToolRunner:
         # Bash streams live output and mutates; Ask blocks on the user.
         tool_class = TOOL_REGISTRY.get(call.name)
         if (
-            tool_class is None
+            (self.session.tool_names and call.name not in self.session.tool_names)
+            or tool_class is None
             or call.name in ("Delegate", "Edit", "NextHints")
             or tool_class in (BashTool, JobTool, AskTool, ToolScript)
             or tool_class.PRODUCES_MODEL_OBSERVATION
@@ -567,6 +568,8 @@ class ToolRunner:
         tool_class = TOOL_REGISTRY.get(call.name)
         if tool_class is None:
             return "failed", self.reject(call, f"ToolError: unknown tool {call.name}", d=ToolDisplay(batch_suffix=batch_suffix)), None
+        if self.session.tool_names and call.name not in self.session.tool_names:
+            return "failed", self.reject(call, f"ToolError: {call.name} is not available in this session", d=ToolDisplay(batch_suffix=batch_suffix)), None
         if call.error:
             return "failed", self.reject(call, f"ToolError: {call.error}", d=ToolDisplay(batch_suffix=batch_suffix)), None
         tool = tool_class(self.session, call.args)

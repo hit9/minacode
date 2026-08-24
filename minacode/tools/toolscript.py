@@ -213,6 +213,8 @@ class ToolScript(Tool):
         from minacode.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
 
         if raw_entry in TOOL_REGISTRY:
+            if self.session.tool_names and raw_entry not in self.session.tool_names:
+                return f"{raw_entry}: not available in this session"
             return self._describe_builtin(TOOL_REGISTRY[raw_entry])
         mcp = self.session.mcp
         if mcp is None:

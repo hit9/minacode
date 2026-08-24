@@ -29,15 +29,18 @@ if TYPE_CHECKING:
 
 # The worker's tool set. Exclusions, and why: Delegate (would recurse), Ask (blocks on user input
 # while the parent turn is inside a tool call), NextHints (no idle prompt; blurs the turn-ending
-# rule), ViewImage (no user images). Skill and MCP stay: a worker that cannot load skills or call
-# external tools cannot do real work.
+# rule). ViewImage and ToolScript joined: ViewImage reads any local image path, not just user
+# attachments, and ToolScript batches repetitive same-shape calls. Skill and MCP stay: a worker
+# that cannot load skills or call external tools cannot do real work.
 WORKER_TOOLS: tuple[str, ...] = (
     "Read",
+    "ViewImage",
     "Search",
     "InspectCode",
     "Edit",
     "Bash",
     "Job",
+    "ToolScript",
     "Recall",
     "RecallContext",
     "Note",

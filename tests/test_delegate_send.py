@@ -222,3 +222,46 @@ def test_delegate_summary_shows_rounds_and_context_fill(tmp_path):
     summary = runner.delegate_result_summary(envelope)
     assert "round 4" in summary
     assert "ctx 73%" in summary
+
+
+def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
+    """End to end at the Delegate boundary: the worker's real tool block has ViewImage and
+    ToolScript but not Ask/NextHints/Delegate, a hallucinated call to an excluded tool is
+    rejected with a tool message instead of blocking on user input, and ViewImage executes
+    as an ordinary tool (its failure here is a plain missing-file error)."""
+    from minacode.base import ToolCall
+    from minacode.context import ContextManager
+    from minacode.runner import ToolRunner
+
+    parent = _delegate_session(tmp_path)
+    prompts = []
+
+    def fail_on_user(*args):
+        prompts.append(args)
+        raise AssertionError("worker blocked on user input")
+
+    model = FakeModelClient(
+        [
+            ({"role": "assistant", "content": ""}, [ToolCall("a1", "Ask", [{"questions": [{"question": "hi?"}]}]), ToolCall("n1", "NextHints", [{"inputs": ["x"]}])], ""),
+            ({"role": "assistant", "content": ""}, [ToolCall("v1", "ViewImage", ["missing.png"])], ""),
+            ({"role": "assistant", "content": "done"}, [], "done"),
+        ]
+    )
+    monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
+    runner = ToolRunner(parent, ContextManager(parent), input_fn=fail_on_user, output_fn=lambda text: None)
+    result = _delegate_call(parent, runner, action="send", order="do the thing")
+
+    names = {
+        (schema.get("function") or schema).get("name")
+        for schema in model.received_tools[0] or []
+        if isinstance(schema, dict)
+    }
+    assert {"ViewImage", "ToolScript"} <= names
+    assert not {"Ask", "NextHints", "Delegate"} & names
+
+    assert prompts == []  # no user prompt ever fired: the calls were rejected, not executed
+    second = str(model.requests[1])
+    assert "Ask is not available in this session" in second
+    assert "NextHints is not available in this session" in second
+    assert "Cannot read image" in str(model.requests[2])
+    assert "done" in result

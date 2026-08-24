@@ -754,3 +754,30 @@ def test_non_string_tool_name_stays_a_plain_tool_error(tmp_path):
     assert "ToolScript failed" in content
     assert 'unknown tool "123"' in content
     assert "TypeError" not in content
+
+
+class TestWhitelistGating:
+    """A session tool whitelist gates nested calls and describe entries, not just schemas."""
+
+    def test_nested_call_rejects_tool_outside_whitelist(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        s.tool_names = ("Read", "Search", "ToolScript")
+        content = _run_script(s, 'call("Bash", {"command": "echo hi"})\n')
+        assert "ToolScript failed" in content
+        assert "Bash is not available in this session" in content
+
+    def test_nested_call_inside_whitelist_still_runs(self, tmp_path):
+        (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+        s = _mcp_session(tmp_path)
+        s.tool_names = ("Read", "ToolScript")
+        content = _run_script(s, 'print(call("Read", {"path": "a.txt"}))\n')
+        assert "ToolScript ok" in content
+        assert "hello" in content
+
+    def test_describe_gates_schema_of_tool_outside_whitelist(self, tmp_path):
+        s = _mcp_session(tmp_path)
+        s.tool_names = ("Read", "Search", "ToolScript")
+        out = _describe(s, ["Bash", "Read"])
+        assert "Bash: not available in this session" in out
+        assert "Read\n" in out
+        assert "  args:    path  string" in out

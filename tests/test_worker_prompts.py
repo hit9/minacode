@@ -159,7 +159,7 @@ def test_worker_prompt_does_not_inherit_parent_review_or_terminal_output():
     assert "REVIEW:" in SYSTEM_PROMPT and "REVIEW:" not in WORKER_PROMPT
     assert "terminal scrollback" in SYSTEM_PROMPT and "terminal scrollback" not in WORKER_PROMPT
     assert "You write for the delegator" in WORKER_PROMPT and "You write for the delegator" not in SYSTEM_PROMPT
-    for unavailable in ("Ask", "NextHints", "ViewImage"):
+    for unavailable in ("Ask", "NextHints"):
         assert unavailable not in WORKER_PROMPT
 
 def test_prompts_never_name_tools_outside_their_toolset():
@@ -174,6 +174,27 @@ def test_prompts_never_name_tools_outside_their_toolset():
 
     worker_mentioned = mentioned(WORKER_PROMPT)
     assert worker_mentioned <= set(WORKER_TOOLS), worker_mentioned - set(WORKER_TOOLS)
+
+
+def test_worker_toolset_includes_image_and_script_tools():
+    from minacode.tools.delegate import WORKER_TOOLS
+
+    assert "ViewImage" in WORKER_TOOLS
+    assert "ToolScript" in WORKER_TOOLS
+    for excluded in ("Ask", "NextHints", "Delegate"):
+        assert excluded not in WORKER_TOOLS
+
+
+def test_worker_schemas_include_viewimage_and_toolscript(tmp_path):
+    from minacode.tools.delegate import WORKER_TOOLS
+
+    s = session(tmp_path)
+    s.tool_names = WORKER_TOOLS
+    resolved = [schema["function"]["name"] for schema in Tool.resolved_schemas(s)]
+    assert "ViewImage" in resolved
+    assert "ToolScript" in resolved
+    for excluded in ("Ask", "NextHints", "Delegate"):
+        assert excluded not in resolved
 
 def test_system_prompt_stable_across_refactors():
     import hashlib
