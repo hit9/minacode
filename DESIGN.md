@@ -169,6 +169,12 @@ Tests protect observable contracts and reproduced regressions, not implementatio
   styled terminal output, so this is the log-line vocabulary from `base.py`, not UI leaking down.
   Keeping them out of `ToolRunner` is what lets transcript replay render a saved call without
   standing up a live runner.
+- Inside `toolblocks`, `finish_display`/`approval_display` branch on `call.name` for the handful of
+  tools with a shaped result (Note, Bash, MCP, ToolScript, Ask, Delegate, ViewImage). That switch
+  stays deliberately: a rendering hook on the `Tool` base would put six special cases into the
+  interface every tool implements, and one chain that reads top to bottom is easier to keep
+  consistent than seven overrides. Push the branches down onto the tool classes when a tool outside
+  the built-in set needs its own finish block, not merely because the chain is long.
 
 State changes belong to the module owning their meaning. Dependencies point toward stable
 concepts: configuration and value types do not know the runtime; feature and session modules do not
