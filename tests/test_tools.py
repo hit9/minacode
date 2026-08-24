@@ -623,6 +623,36 @@ def test_tool_runner_reject_records_error_and_returns_failed_message(tmp_path):
     assert "command not found" in result
 
 
+def test_run_one_rejects_tools_outside_session_whitelist(tmp_path):
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y")
+
+    s.tool_names = ("Read",)
+    (message,) = runner.run([ToolCall("c1", "Bash", ["echo hi"])])
+    content = str(message["content"])
+    assert "failed" in content.lower()
+    assert "ToolError: Bash is not available in this session" in content
+
+    # Empty tuple = no filtering (parent behavior): the same call executes.
+    s.tool_names = ()
+    (message,) = runner.run([ToolCall("c2", "Bash", ["echo hi"])])
+    assert "hi" in str(message["content"])
+
+
+def test_parallel_safe_false_for_tools_outside_whitelist(tmp_path):
+    s = session(tmp_path)
+    runner = ToolRunner(s, ContextManager(s))
+
+    # Search is normally parallel-safe, but the whitelist excludes it, so it falls back to
+    # serial run_one (where the whitelist gate rejects it) instead of execute_readonly.
+    s.tool_names = ("Bash",)
+    assert not runner.parallel_safe(ToolCall("c1", "Search", [{"pattern": "x"}]))
+
+    # Empty tuple = no filtering: parallel-safety is decided as before.
+    s.tool_names = ()
+    assert runner.parallel_safe(ToolCall("c2", "Search", [{"pattern": "x"}]))
+
+
 def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
@@ -776,3 +806,23 @@ def test_uiprinter_renders_tool_root_without_generic_prefix():
 
     assert text == "  Read  minacode.py 0:100 → tr.6 [auto]\n"
     assert any(style == "fg:default" and "minacode.py 0:100 → tr.6 [auto]" in value for style, value in segments)
+
+
+def test_mixed_batch_whitelisted_tool_runs_and_excluded_rejected(tmp_path):
+    """A batch mixing an excluded parallel-safe tool with a whitelisted one: the segment router
+    never hands the excluded name to execute_readonly, so each call gets its own verdict."""
+    s = session(tmp_path)
+    s.settings.max_parallel_tools = 4
+    s.tool_names = ("Read",)
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y")
+
+    calls = [
+        ToolCall("s1", "Search", [{"pattern": "hello"}]),
+        ToolCall("r1", "Read", [{"path": "a.txt"}]),
+        ToolCall("s2", "Search", [{"pattern": "hello"}]),
+    ]
+    contents = {message["tool_call_id"]: str(message["content"]) for message in runner.run(calls)}
+    assert "hello" in contents["r1"]
+    assert "Search is not available in this session" in contents["s1"]
+    assert "Search is not available in this session" in contents["s2"]

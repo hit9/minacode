@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- The worker session (Delegate) now has `ViewImage` and `ToolScript`: it can inspect any local
+  image path, not just user attachments, and batch repetitive same-shape tool calls.
+- A session's tool whitelist is now enforced at execution time, not only in the schema
+  projection: a hallucinated or scripted call to an excluded tool is rejected with "not
+  available in this session" instead of running.
+
 ## 0.31.1 - 2026-08-23
 
 ### Changed
