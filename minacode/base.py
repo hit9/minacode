@@ -14,13 +14,6 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from prompt_toolkit.utils import get_cwidth
 
-try:
-    import pygments
-    from pygments.token import Token
-except ImportError:  # pragma: no cover - optional highlighting dependency
-    pygments = None
-    Token = None  # keep the name defined so class-body/token lookups don't NameError
-
 __version__ = "0.31.1"
 
 _ResourceT = TypeVar("_ResourceT")
