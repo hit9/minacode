@@ -23,18 +23,26 @@ ToolArgs = list[Any]
 
 
 HTTP_USER_AGENT = "minacode/" + __version__
-logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
-# Refresh failures / re-auth fall back to minacode's own handling, which surfaces an
-# actionable "authentication required" message; suppress this logger's ERROR-level
-# traceback spam (incl. the RuntimeError minacode raises as control flow).
-logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
-# MCP client transports log expected-and-already-surfaced failures (httpx ReadTimeout on a
-# slow server, dropped SSE/stdio frames, JSON-RPC parse errors) at ERROR with full
-# tracebacks via logging.lastResort, which dumps them onto the TUI mid-render.
-# MCPManager captures these same failures into server_errors and the status bar, so the
-# library's own transport traceback is pure noise. Raise it out of the ERROR band.
-for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
-    logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
+
+
+def configure_logging() -> None:
+    """Quiet third-party loggers whose expected failures minacode already surfaces itself.
+
+    Refresh failures / re-auth fall back to minacode's own handling, which surfaces an
+    actionable "authentication required" message; suppress this logger's ERROR-level
+    traceback spam (incl. the RuntimeError minacode raises as control flow).
+    """
+    logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
+    logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
+    # MCP client transports log expected-and-already-surfaced failures (httpx ReadTimeout on a
+    # slow server, dropped SSE/stdio frames, JSON-RPC parse errors) at ERROR with full
+    # tracebacks via logging.lastResort, which dumps them onto the TUI mid-render.
+    # MCPManager captures these same failures into server_errors and the status bar, so the
+    # library's own transport traceback is pure noise. Raise it out of the ERROR band.
+    for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
+        logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
+
+
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 # Extension of the file a truncated tool result is materialized to, named after the result's key.
 # ContextManager.materialize_output writes it; the session store's asset collector retains it.

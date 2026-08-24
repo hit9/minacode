@@ -808,7 +808,7 @@ class TestStatusBarMCPStatus:
 # ---------------------------------------------------------------------------
 # Library logging — MCP client transport tracebacks must not reach the TUI
 # ---------------------------------------------------------------------------
-# minacode.base configures the noisy MCP client transport loggers so that
+# minacode's configure_logging quiets the noisy MCP client transport loggers so that
 # expected-and-already-surfaced failures (httpx ReadTimeout on a slow server,
 # dropped SSE/stdio frames, JSON-RPC parse errors) don't dump full tracebacks
 # onto stderr mid-render via logging.lastResort.
@@ -816,10 +816,12 @@ class TestStatusBarMCPStatus:
 
 class TestTransportLoggingSuppressed:
     def test_transport_loggers_at_critical(self):
-        """Importing minacode.base raises the transport loggers out of the ERROR band."""
+        """configure_logging raises the transport loggers out of the ERROR band."""
         import logging
 
-        import minacode.base  # noqa: F401 — side effect: module-level logging config
+        from minacode.base import configure_logging
+
+        configure_logging()
 
         for name in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
             logger = logging.getLogger(name)
@@ -829,8 +831,9 @@ class TestTransportLoggingSuppressed:
         """logger.exception on the streamable_http transport produces no stderr output."""
         import logging
 
-        import minacode.base  # noqa: F401
+        from minacode.base import configure_logging
 
+        configure_logging()
         log = logging.getLogger("mcp.client.streamable_http")
         try:
             raise ZeroDivisionError("simulated transport failure")
