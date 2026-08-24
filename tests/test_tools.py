@@ -37,6 +37,7 @@ from minacode.tools import (
     SkillTool,
     Tool,
     ViewImageTool,
+    toolblocks,
     tool_payload,
 )
 
@@ -489,9 +490,8 @@ def test_single_and_batch_payload_shapes_are_supported():
 
 def test_tool_runner_finish_display_keeps_ask_answer(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    display = str(runner.finish_display(ToolCall("ask", "Ask", _q({"question": "Which?"})), "tr.1", "typed answer", failed=False))
+    display = str(toolblocks.finish_display(s, ToolCall("ask", "Ask", _q({"question": "Which?"})), "tr.1", "typed answer", failed=False))
 
     assert display.startswith("  Ask  Which? → tr.1\n")
     assert display.endswith("    └ answer typed answer")
@@ -650,9 +650,8 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
 
 
 def test_uiprinter_highlights_generic_tool_arguments(tmp_path):
-    s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s))
-    line = runner.log_root('Search "done in" glob=*.py C=2')
+    session(tmp_path)
+    line = toolblocks.log_root('Search "done in" glob=*.py C=2')
 
     assert line.syntax == "tool-args"
     segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([line]))

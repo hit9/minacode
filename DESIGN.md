@@ -163,6 +163,12 @@ Tests protect observable contracts and reproduced regressions, not implementatio
   layout, modals; `render.py` owns presentation.
 - `tools/`, `image.py`, `mcp/`, `skill.py` are vertical features that never leak storage or UI
   details; `tools/` splits built-ins by capability, with the registry in `__init__.py`.
+- How a call *reads* is a tool concern, not a runner one: `tools/tooloutput.py` bounds and parses
+  result text, `tools/toolblocks.py` assembles the approval/rejection/finish `LogBlock` trees. Both
+  are pure over the call, the tool, and the session — `render.py` still owns turning a block into
+  styled terminal output, so this is the log-line vocabulary from `base.py`, not UI leaking down.
+  Keeping them out of `ToolRunner` is what lets transcript replay render a saved call without
+  standing up a live runner.
 
 State changes belong to the module owning their meaning. Dependencies point toward stable
 concepts: configuration and value types do not know the runtime; feature and session modules do not

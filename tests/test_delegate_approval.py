@@ -52,9 +52,7 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     from minacode.config import (
         ProviderConfig,
     )
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
-    from minacode.tools import EditTool
+    from minacode.tools import EditTool, toolblocks
     from minacode.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
@@ -62,12 +60,11 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
     parent.config.worker_provider = "fast"
     parent.config.worker_model = "override-model"
     parent.config.worker_api = ""
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
 
     order_lines = [f"line {i}" for i in range(1, 16)]
     args = {"action": "send", "order": "\n".join(order_lines), "title": "fix things", "language": "Chinese", "max_steps": 7}
     tool = DelegateTool(parent, [args])
-    block = runner.approval_display(ToolCall("delegate-1", "Delegate", [args]), tool, "confirm")
+    block = toolblocks.approval_display(parent, ToolCall("delegate-1", "Delegate", [args]), tool, "confirm")
     rows = [(item.label, item.text) for item, _ in block.walk()]
     labels = [label for label, _ in rows]
     texts = [text for _, text in rows]
@@ -97,7 +94,7 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
 
     # An explicit worker_api override wins over the entry's api.
     parent.config.worker_api = "chat"
-    block = runner.approval_display(ToolCall("delegate-2", "Delegate", [args]), tool, "confirm")
+    block = toolblocks.approval_display(parent, ToolCall("delegate-2", "Delegate", [args]), tool, "confirm")
     rows = [(item.label, item.text) for item, _ in block.walk()]
     api_row = next(text for label, text in rows if label.strip() == "api")
     assert api_row == "chat"
@@ -105,11 +102,11 @@ def test_delegate_approval_brief_lists_send_and_worker_details(tmp_path):
 
     # Non-send Delegate calls keep the plain display; Edit keeps its preview children.
     status_tool = DelegateTool(parent, [{"action": "status"}])
-    block = runner.approval_display(ToolCall("delegate-3", "Delegate", [{"action": "status"}]), status_tool, "confirm")
+    block = toolblocks.approval_display(parent, ToolCall("delegate-3", "Delegate", [{"action": "status"}]), status_tool, "confirm")
     assert not block.has_children
     edit_tool = EditTool(parent, ["a.py", [{"op": "replace_all", "old": "x", "content": "y"}]])
     (tmp_path / "a.py").write_text("x\n")
-    block = runner.approval_display(ToolCall("edit-1", "Edit", ["a.py", []]), edit_tool, "confirm")
+    block = toolblocks.approval_display(parent, ToolCall("edit-1", "Edit", ["a.py", []]), edit_tool, "confirm")
     assert block.has_children
 
 def test_delegate_config_cycle_changes_worker_knobs_and_refreshes_live_worker(tmp_path):
@@ -270,13 +267,11 @@ def test_delegate_view_empty_order_is_noop(tmp_path):
 
 def test_delegate_approval_legend_mentions_view(tmp_path):
     from minacode.base import LogRole
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from minacode.tools import toolblocks
     from minacode.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
-    children = runner.delegate_approval_children(DelegateTool(parent, [{"action": "send", "order": "o"}]))
+    children = toolblocks.delegate_approval_children(DelegateTool(parent, [{"action": "send", "order": "o"}]))
     legend = children[-1]
     assert legend.role is LogRole.META
     assert "v view order" in legend.text
@@ -324,6 +319,7 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
     from minacode.base import ToolCall
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
+    from minacode.tools import toolblocks
     from minacode.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
@@ -334,19 +330,19 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
     # Approve is first because it is the default; Refuse is last because Escape already refuses in
     # one key, while every Tab spent reaching View order is a key the user actually presses.
     send = DelegateTool(parent, [{"action": "send", "order": "o"}])
-    send_actions = runner.approval_actions(send, True)
+    send_actions = toolblocks.approval_actions(send, True)
     assert send_actions == [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]
     assert runner.declare_approval_form(send_actions) is True
 
     # No order means nothing to view, so the action is not offered rather than opening an empty one.
     orderless = DelegateTool(parent, [{"action": "send", "order": ""}])
-    orderless_actions = runner.approval_actions(orderless, True)
+    orderless_actions = toolblocks.approval_actions(orderless, True)
     assert orderless_actions == [("Approve", ""), ("Worker config", "c"), ("Refuse", "n")]
     assert runner.declare_approval_form(orderless_actions) is True
 
     # Every other tool gets approve/refuse: `c` and `v` are Delegate actions, Bash has no equivalent.
     bash = TOOL_REGISTRY["Bash"](parent, ["rm -rf build"])
-    bash_actions = runner.approval_actions(bash, False)
+    bash_actions = toolblocks.approval_actions(bash, False)
     assert bash_actions == [("Approve", ""), ("Refuse", "n")]
     assert runner.declare_approval_form(bash_actions) is True
     assert [len(actions) for actions in declared] == [4, 3, 2]
@@ -354,9 +350,9 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
     # Headless: nothing is wired, so nothing is claimed and the typed protocol is what is offered.
     runner.approval_form = None
     assert runner.declare_approval_form(send_actions) is False
-    assert runner.approval_prompt(True, []) == "Approve delegation? [Y/n/c] "
-    assert runner.approval_prompt(False, []) == "Approve? [Y/n or reason] "
-    assert runner.approval_prompt(False, [("Approve", "")]) == "reason › "
+    assert toolblocks.approval_prompt(True, []) == "Approve delegation? [Y/n/c] "
+    assert toolblocks.approval_prompt(False, []) == "Approve? [Y/n or reason] "
+    assert toolblocks.approval_prompt(False, [("Approve", "")]) == "reason › "
 
     # Every action's answer is a line confirm() already understands, so the two paths cannot drift.
     for _, answer in [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]:
@@ -369,23 +365,21 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
 
 def test_delegate_legend_prints_only_without_an_action_row(tmp_path):
     from minacode.base import LogEdge
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from minacode.tools import toolblocks
     from minacode.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
     tool = DelegateTool(parent, [{"action": "send", "order": "o"}])
 
     # Headless keeps the typed legend: those words plus Enter are all that path has.
-    headless = runner.delegate_approval_children(tool)
+    headless = toolblocks.delegate_approval_children(tool)
     assert headless[-1].text == "Y/Enter approve · n refuse · c worker config · v view order · else reason"
     assert headless[-1].edge is LogEdge.END
 
     # With a live action row the legend would be a stale duplicate, so the brief ends at its rows —
     # and the last one has to take over the closing edge.
-    actions = runner.approval_actions(tool, True)
-    children = runner.delegate_approval_children(tool, actions, actions)
+    actions = toolblocks.approval_actions(tool, True)
+    children = toolblocks.delegate_approval_children(tool, actions, actions)
     assert all("Y/Enter approve" not in (line.text or "") for line in children)
     assert children[-1].edge is LogEdge.END
     assert children[0].edge is LogEdge.BRANCH
@@ -394,18 +388,16 @@ def test_delegate_legend_offers_only_the_actions_the_call_has(tmp_path):
     """The action row already hid `View order` when the send carries no order, but the legend -- the
     only guidance a headless run gets -- still advertised it, and typing `v` then re-asked in silence
     with nothing viewed. Both are built from one list of actions, so they cannot disagree."""
-    from minacode.context import ContextManager
-    from minacode.runner import ToolRunner
+    from minacode.tools import toolblocks
     from minacode.tools.delegate import DelegateTool
 
     parent = _delegate_session(tmp_path)
-    runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "y", output_fn=lambda text: None)
     orderless = DelegateTool(parent, [{"action": "send"}])
 
-    legend = runner.delegate_approval_children(orderless)[-1].text or ""
+    legend = toolblocks.delegate_approval_children(orderless)[-1].text or ""
     assert "v view order" not in legend
     assert "c worker config" in legend  # the actions it does have are untouched
-    assert legend == runner.approval_legend(runner.approval_actions(orderless, True), "order")
+    assert legend == toolblocks.approval_legend(toolblocks.approval_actions(orderless, True), "order")
 
 def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     # A CJK order is two terminal cells per character. Wrapping by character count (textwrap) makes

@@ -2,7 +2,7 @@
 
 from agent_harness import call, session
 
-from minacode.tools import tooloutput
+from minacode.tools import toolblocks, tooloutput
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
 
@@ -31,25 +31,24 @@ def test_rejected_and_failed_calls_collapse_a_multiline_display_to_one_line(tmp_
     # leads with a red tag, so neither may inherit those lines: a rejected Note used to dim its
     # entire body and bury the reason at the end of the last line.
     from minacode.base import LogRole
-    from minacode.runner import ToolDisplay
+    from minacode.tools.toolblocks import ToolDisplay
 
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     note = call("Note", [{"replace_plan": [f"Task {index}" for index in range(1, 11)]}])
     display = ToolDisplay()
-    display.display = tooloutput.short_call(runner.session, note)
+    display.display = tooloutput.short_call(s, note)
     assert len(display.display.splitlines()) > 1, "precondition: Note renders a multi-line display"
 
-    rejected = list(runner.reject_display(note, "ToolError: Note fields is only valid for view", d=display).walk())
+    rejected = list(toolblocks.reject_display(s, note, "ToolError: Note fields is only valid for view", d=display).walk())
     assert [item.role for item, _ in rejected] == [LogRole.MUTED]
     assert len(rejected[0][0].text.splitlines()) == 1
     assert rejected[0][0].text.endswith("· rejected: Note fields is only valid for view")
 
-    failed = list(runner.finish_display(note, "", "Note: disk is full", failed=True, d=display).walk())
+    failed = list(toolblocks.finish_display(s, note, "", "Note: disk is full", failed=True, d=display).walk())
     assert all(len((item.text or "").splitlines()) == 1 for item, _ in failed)
 
     # A successful Note is the one case that should keep every line: printing the note is the point.
-    assert len(runner.finish_display(note, "", "ok", failed=False, d=display).splitlines()) > 1
+    assert len(toolblocks.finish_display(s, note, "", "ok", failed=False, d=display).splitlines()) > 1
 
 
 def test_tool_runner_refuses_without_reason_on_n(tmp_path):

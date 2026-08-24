@@ -41,9 +41,9 @@ from minacode.engine import Agent
 from minacode.image import ImageInputs, UserInput
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX
 from minacode.render import BashLivePreview, StatusBar, UiPrinter, search_sources_footer
-from minacode.runner import ToolDisplay
 from minacode.session import SessionSnapshotCodec, SessionSnapshotStore, ToolResultRecord
-from minacode.tools import TOOL_REGISTRY, CodeIndex, tool_payload, tooloutput
+from minacode.tools import TOOL_REGISTRY, CodeIndex, tool_payload, toolblocks, tooloutput
+from minacode.tools.toolblocks import ToolDisplay
 from minacode.tui import TuiApp
 
 
@@ -606,15 +606,14 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         needs no reconstruction."""
         preview = diffs.get(key, "") if call.name == "Edit" else ""
         if not preview:
-            self.emit(self.agent.tools.finish_display(call, key, "failed in saved session" if failed else "", failed=failed))
+            self.emit(toolblocks.finish_display(self.session, call, key, "failed in saved session" if failed else "", failed=failed))
             return
         # The preview block carries the call line, so the result collapses to its trailing marker
         # underneath it — the same nesting the live approval block produces.
         self.emit(self.transcript_edit_preview(call, preview))
-        self.emit(self.agent.tools.finish_display(call, key, "", failed=False, d=ToolDisplay(nested_display=True)))
+        self.emit(toolblocks.finish_display(self.session, call, key, "", failed=False, d=ToolDisplay(nested_display=True)))
 
     def transcript_edit_preview(self, call: ToolCall, preview: str) -> LogBlock:
-        tools = self.agent.tools
         lines = preview.rstrip().splitlines()
         # A long replay would bury the prompt under diffs, so each one is trimmed to a readable
         # window; `/diff` still holds the full text.
@@ -625,7 +624,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in lines)
         if hidden:
             children.append(LogLine("", f"… {hidden} more lines, see /diff", LogRole.META, LogEdge.CONTINUE))
-        return LogBlock.hierarchy(tools.log_root(tooloutput.short_call(self.session, call), LogRole.AUTO, "", call), children)
+        return LogBlock.hierarchy(toolblocks.log_root(tooloutput.short_call(self.session, call), LogRole.AUTO, "", call), children)
 
     @staticmethod
     def transcript_tool_call(raw: object) -> ToolCall | None:

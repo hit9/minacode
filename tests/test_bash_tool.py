@@ -14,9 +14,10 @@ from minacode.cli.commands import ps_command
 from minacode.context import ContextManager
 from minacode.engine import Agent
 from minacode.render import BashLivePreview, LiveSpark, UiPrinter
-from minacode.runner import ToolDisplay, ToolRunner
+from minacode.runner import ToolRunner
 from minacode.session import Session
-from minacode.tools import BashTool, JobTool, Tool
+from minacode.tools import BashTool, JobTool, Tool, toolblocks
+from minacode.tools.toolblocks import ToolDisplay
 
 
 def session(tmp_path):
@@ -626,12 +627,11 @@ def test_job_start_runs_shell_builtins_and_compound_commands(tmp_path):
 
 def test_job_start_uses_bash_highlighting(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s))
     start = ToolCall("j1", "Job", [{"action": "start", "command": "pytest -q"}])
     wait = ToolCall("j2", "Job", [{"action": "wait", "job": "job.1"}])
 
-    start_line = runner.log_root(tooloutput.short_call(runner.session, start), call=start)
-    wait_line = runner.log_root(tooloutput.short_call(runner.session, wait), call=wait)
+    start_line = toolblocks.log_root(tooloutput.short_call(s, start), call=start)
+    wait_line = toolblocks.log_root(tooloutput.short_call(s, wait), call=wait)
 
     assert start_line.syntax == "bash"
     assert wait_line.syntax == "tool-args"
@@ -726,11 +726,11 @@ def test_tool_runner_bash_preview_omits_past_limit(tmp_path):
 
 def test_tool_runner_compact_bash_result_keeps_bounded_output_without_live_frame(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     output = Tool.process_result("BashToolResult", 0, "visible output", "")
 
     display = str(
-        runner.finish_display(
+        toolblocks.finish_display(
+            s,
             ToolCall("bash", "Bash", ["printf visible"]),
             "tr.1",
             output,
@@ -761,11 +761,10 @@ def test_tool_runner_failed_live_bash_does_not_repeat_command(tmp_path, monkeypa
 
 def test_tool_runner_finish_display_bounds_bash_output(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     stdout = "\n".join(f"out {index}" for index in range(20))
     output = Tool.process_result("BashToolResult", 0, stdout, "err")
 
-    display = str(runner.finish_display(ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
+    display = str(toolblocks.finish_display(s, ToolCall("bash", "Bash", ["printf lots"]), "tr.1", output, failed=False))
 
     assert display.startswith("  Bash  printf lots\n")
     assert "    ├ output Ctrl-O for more" in display
@@ -778,10 +777,9 @@ def test_tool_runner_finish_display_bounds_bash_output(tmp_path):
 
 def test_tool_runner_finish_display_keeps_bounded_bash_output_after_live_preview(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     output = Tool.process_result("BashToolResult", 0, "live output", "")
 
-    display = str(runner.finish_display(ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
+    display = str(toolblocks.finish_display(s, ToolCall("bash", "Bash", ["printf live"]), "tr.1", output, failed=False))
 
     assert "    ├ output Ctrl-O for more" in display
     assert "live output" in display
@@ -878,8 +876,8 @@ def test_uiprinter_renders_bash_preview_like_live_output():
 
 
 def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
-    s = session(tmp_path)
-    line = ToolRunner(s, ContextManager(s)).log_root("Bash cd /tmp && printf '%s\\n' value")
+    session(tmp_path)
+    line = toolblocks.log_root("Bash cd /tmp && printf '%s\\n' value")
 
     assert line.syntax == "bash"
     segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([line]))

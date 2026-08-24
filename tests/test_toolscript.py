@@ -12,7 +12,7 @@ from minacode.context import ContextManager
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session, bootstrap_features
-from minacode.tools import MCPTool, ReadTool, Tool, ToolScript
+from minacode.tools import MCPTool, ReadTool, Tool, ToolScript, toolblocks
 
 OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
@@ -406,11 +406,10 @@ class TestConfirmationBlockShowsScript:
     def test_confirm_block_contains_script_excerpt(self, tmp_path):
         """The confirmation block shows the script body: the user approves code, not a label."""
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
         code = 'for i in range(3):\n    print(call("MCP", {"server": "test", "tool": "echo", "arguments": {"i": i}}))\n'
         args = [{"action": "call", "code": code}]
         tool = ToolScript(s, args)
-        block = runner.approval_display(ToolCall("ts-1", "ToolScript", args), tool, "confirm")
+        block = toolblocks.approval_display(s, ToolCall("ts-1", "ToolScript", args), tool, "confirm")
         assert block.has_children
         lines = [line for line, _ in block.walk()]
         assert any(line.label == "script" for line in lines)
@@ -424,13 +423,12 @@ class TestConfirmationBlockShowsScript:
     def test_confirm_block_clips_long_script_and_says_how_much_is_hidden(self, tmp_path):
         """A long script is clipped in the transcript; the whole body stays one keypress away."""
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
         code = "\n".join(f"x{index} = {index}" for index in range(30))
         args = [{"action": "call", "code": code}]
-        block = runner.approval_display(ToolCall("ts-1", "ToolScript", args), ToolScript(s, args), "confirm")
+        block = toolblocks.approval_display(s, ToolCall("ts-1", "ToolScript", args), ToolScript(s, args), "confirm")
         lines = [line for line, _ in block.walk()]
         code_lines = [line for line in lines if line.role is LogRole.CODE]
-        assert len(code_lines) == ToolRunner.VIEW_EXCERPT_LINES
+        assert len(code_lines) == toolblocks.VIEW_EXCERPT_LINES
         assert code_lines[0].text == "x0 = 0"
         assert lines[-1].text.startswith("… +20 more lines · ")
 
@@ -440,7 +438,7 @@ class TestConfirmationBlockShowsScript:
         runner = _runner(s)
         code = "\n".join(f"x{index} = {index}" for index in range(30))
         tool = ToolScript(s, [{"action": "call", "code": code}])
-        assert ("View script", "v") in runner.approval_actions(tool, False)
+        assert ("View script", "v") in toolblocks.approval_actions(tool, False)
         views = []
         runner.text_viewer = views.append
         replies = iter(["v", "y"])
@@ -455,7 +453,7 @@ class TestConfirmationBlockShowsScript:
         s = _mcp_session(tmp_path)
         tool = ToolScript(s, [{"action": "describe", "tools": ["Read"]}])
         assert tool.approval_view() is None
-        assert ("View script", "v") not in _runner(s).approval_actions(tool, False)
+        assert ("View script", "v") not in toolblocks.approval_actions(tool, False)
 
 
 # ---------------------------------------------------------------------------
@@ -666,8 +664,7 @@ class TestScriptLogShape:
     def test_describe_has_no_script_summary(self, tmp_path):
         """A describe returns tool shapes, not a script envelope, so there is nothing to count."""
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
-        block = runner.finish_display(ToolCall("ts1", "ToolScript", [{"action": "describe", "tools": ["Read"]}]), "tr.1", "Read\njson:    no", failed=False)
+        block = toolblocks.finish_display(s, ToolCall("ts1", "ToolScript", [{"action": "describe", "tools": ["Read"]}]), "tr.1", "Read\njson:    no", failed=False)
         assert not any(line.label.startswith("calls") for line, _ in block.walk())
 
     def test_result_fields_parse_the_envelope(self, tmp_path):
