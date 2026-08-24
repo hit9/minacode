@@ -1,11 +1,13 @@
 """edit apply (split from tests/test_edit_tool.py)."""
+
 import pytest
 from test_edit_tool import anchor, session
 
 from minacode.base import ToolCall, ToolError, split_lines
 from minacode.context import ContextManager
-from minacode.runner import EditBatchPlan, ToolRunner
+from minacode.runner import ToolRunner
 from minacode.tools import CodeIndex, EditTool
+from minacode.tools.editplan import EditBatchPlan
 
 
 @pytest.mark.parametrize(
@@ -46,6 +48,7 @@ def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, ra
     assert batch.replacements == single.replacements
     assert batch.replace_all == single.replace_all
 
+
 @pytest.mark.parametrize(
     ("original", "raw_edits"),
     [
@@ -81,6 +84,7 @@ def test_single_and_batch_edit_application_raise_the_same_error(tmp_path, origin
 
     assert str(batch_error.value) == str(single_error.value)
 
+
 def test_split_lines_matches_readlines_only_on_newline():
     # Edit's line model must number lines exactly like Read (file.readlines), i.e. split on "\n"
     # only. str.splitlines(True) also breaks on \x0c and friends, which would desync anchors.
@@ -88,6 +92,7 @@ def test_split_lines_matches_readlines_only_on_newline():
     assert split_lines("a\nb") == ["a\n", "b"]
     assert split_lines("") == []
     assert split_lines("a\nb\x0cc\nd\n") != "a\nb\x0cc\nd\n".splitlines(True)
+
 
 def test_tool_runner_batch_edit_accepts_drifted_anchor(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -107,6 +112,7 @@ def test_tool_runner_batch_edit_accepts_drifted_anchor(tmp_path, monkeypatch):
     assert path.read_text(encoding="utf-8") == "a\nx\nb\nC\n"
     assert s.tool_errors == []
 
+
 def test_tool_runner_relocates_anchor_drifted_before_batch(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
@@ -119,6 +125,7 @@ def test_tool_runner_relocates_anchor_drifted_before_batch(tmp_path, monkeypatch
 
     assert path.read_text(encoding="utf-8") == "x\na\nB\nc\n"
     assert s.tool_errors == []
+
 
 def test_tool_runner_batch_edit_barrier_rejects_ambiguous_relocation(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -140,6 +147,7 @@ def test_tool_runner_batch_edit_barrier_rejects_ambiguous_relocation(tmp_path, m
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 1
     assert s.tool_errors
 
+
 def test_tool_runner_batch_edit_can_create_empty_then_patch_same_file(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
@@ -157,6 +165,7 @@ def test_tool_runner_batch_edit_can_create_empty_then_patch_same_file(tmp_path, 
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
     assert s.tool_errors == []
 
+
 def test_tool_runner_batch_edit_can_create_then_patch_same_file(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
@@ -173,6 +182,7 @@ def test_tool_runner_batch_edit_can_create_then_patch_same_file(tmp_path, monkey
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "a\nB\n"
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
     assert s.tool_errors == []
+
 
 def test_tool_runner_batch_edit_create_and_existing_file_edit_are_independent(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -193,6 +203,7 @@ def test_tool_runner_batch_edit_create_and_existing_file_edit_are_independent(tm
     assert len([record for record in s.tool_records if record.name == "Edit"]) == 2
     assert s.tool_errors == []
 
+
 def test_tool_runner_batch_edit_maps_original_anchor_after_delete(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
@@ -210,6 +221,7 @@ def test_tool_runner_batch_edit_maps_original_anchor_after_delete(tmp_path, monk
 
     assert path.read_text(encoding="utf-8") == "a\nc\nD\n"
     assert s.tool_errors == []
+
 
 def test_tool_runner_batch_edit_maps_original_anchor_after_insert(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -229,6 +241,7 @@ def test_tool_runner_batch_edit_maps_original_anchor_after_insert(tmp_path, monk
     assert path.read_text(encoding="utf-8") == "a\nx\nb\nC\n"
     assert s.tool_errors == []
 
+
 def test_tool_runner_batch_edit_plans_files_independently(tmp_path, monkeypatch):
     s = session(tmp_path)
     s.settings.yolo = True
@@ -247,6 +260,7 @@ def test_tool_runner_batch_edit_plans_files_independently(tmp_path, monkeypatch)
     assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "a\nA\nb\n"
     assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "x\nY\n"
     assert s.tool_errors == []
+
 
 def test_tool_runner_batch_edit_read_between_edits_sees_intermediate_file(tmp_path, monkeypatch):
     s = session(tmp_path)

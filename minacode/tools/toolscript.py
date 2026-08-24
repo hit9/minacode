@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from minacode.base import ApprovalView, Json, ToolCall, ToolError
 from minacode.tools.base import Tool
+from minacode.tools.editplan import EditBatchPlan
 
 if TYPE_CHECKING:
     from minacode.runner import ToolRunner
@@ -406,8 +407,6 @@ class ToolScript(Tool):
         Edit behaves exactly like a top-level single Edit (anchor planning, stale checks, write-time
         verification) instead of a plan-less EditTool.call()."""
         if call.name == "Edit":
-            from minacode.runner import EditBatchPlan  # local import: runner.py imports the tool registry
-
             plan = EditBatchPlan(self.session).build([call])
             return runner.run_one(call, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
         return runner.run_one(call)
