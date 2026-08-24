@@ -1,8 +1,10 @@
 """Context projection and compaction: what a request carries, what compaction keeps, and the
 history index it leaves behind."""
 
+import json
+import threading
 
-from agent_harness import session
+from agent_harness import session, session_with_provider
 
 from minacode.context import ContextManager
 from minacode.prompts import (
@@ -12,90 +14,10 @@ from minacode.prompts import (
 # --- AGENTS.md / CLAUDE.md injection (runtime.agents_md, default on) ---
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _huge_history(tmp_path, steps, *, budget_tokens=200_000, chars=160_000):
     """A session that has already been compacted once, still over budget, with `steps` large
     assistant messages after the latest user message."""
-    s = session(tmp_path)
+    s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = budget_tokens
     s.state.summary = "old summary"
     s.messages = [
@@ -107,70 +29,19 @@ def _huge_history(tmp_path, steps, *, budget_tokens=200_000, chars=160_000):
 
 
 class _CountingModel:
-    def __init__(self):
+    def __init__(self, session):
         self.calls = 0
+        self.session = session
+        self.cancel_requested = threading.Event()
+        self.last_compaction_model = ""
 
-    def compact(self, _text, *_args, **_kwargs):
+    def api_request(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object):
         self.calls += 1
-        return {"summary": "new summary"}
+        return None, [], '{"summary": "new summary"}'
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    @staticmethod
+    def parse_json_object(text):
+        return json.loads(text)
 
 
 # The request that opened a turn survives compaction because latest_user_index protects the last
@@ -180,43 +51,3 @@ class _CountingModel:
 # this bites hardest: that message is the entire order (docs/worker.md), the worker cannot see the
 # parent's history, and nothing re-sends it.
 RUNTIME_GENERATED_EVENTS = ("mcp_mentions", "skill_mentions", "file_mentions", "tool_call_correction")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

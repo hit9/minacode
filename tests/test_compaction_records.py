@@ -1,7 +1,9 @@
 """compaction records (split from tests/test_context.py)."""
+
 from agent_harness import session
 
 from minacode.context import ContextManager
+from minacode.model import compaction
 from minacode.tools import EditTool, ReadTool
 
 
@@ -22,12 +24,13 @@ def test_compaction_keeps_assistant_with_tool_results(tmp_path):
         *({"role": "user", "content": f"recent {index}"} for index in range(6)),
     ]
 
-    compacted, keep = context.compaction_parts_for(messages)
+    compacted, keep = compaction.Compactor(context).parts_for(messages)
 
     assert compacted == messages[:3]
     assert keep == messages[3:]
     assert keep[0]["role"] == "assistant"
     assert [message["role"] for message in keep[1:3]] == ["tool", "tool"]
+
 
 def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
     s = session(tmp_path)
@@ -40,6 +43,7 @@ def test_compaction_keeps_tool_records_referenced_from_summary(tmp_path):
     assert kept in s.tool_results
     assert dropped not in s.tool_results
     assert [record.key for record in s.tool_records] == [kept]
+
 
 def test_compaction_prunes_unreferenced_tool_records(tmp_path):
     path = tmp_path / "a.txt"
@@ -57,6 +61,7 @@ def test_compaction_prunes_unreferenced_tool_records(tmp_path):
     assert {record.key for record in s.tool_records} == {current_key}
     assert set(s.tool_results) == {current_key}
 
+
 def test_compaction_keeps_current_turn_tool_records(tmp_path):
     s = session(tmp_path)
     s.settings.max_context_tokens = 1
@@ -73,6 +78,7 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
     assert old_key not in s.tool_results
     assert current_key in s.tool_results
     assert [record.key for record in s.tool_records] == [current_key]
+
 
 def test_compaction_drops_unreferenced_read_edit_records(tmp_path):
     path = tmp_path / "a.txt"

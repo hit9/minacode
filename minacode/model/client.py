@@ -10,7 +10,6 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from json_repair import repair_json
@@ -38,14 +37,11 @@ from minacode.base import (
     ToolError,
     builtin_tool_label,
 )
-from minacode.config import ProviderConfig, compaction_provider_config
+from minacode.config import ProviderConfig
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef
 from minacode.model import chat, resilience, responses
 from minacode.prompts import (
-    COMPACTION_ECHO_RETRY,
-    COMPACTION_PROMPT,
     COMPACTION_REQUEST_EVENT,
-    COMPACTION_RETRY,
     VISION_OBSERVE_DEFAULT_QUESTION,
     VISION_OBSERVE_PROMPT,
 )
@@ -677,128 +673,6 @@ class ModelClient:
             self.session.state.vision_observe_active = False
         return content.strip()
 
-    def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None, echo_source: str = "") -> Json:
-        self.cancel_requested.clear()
-        # The summary request runs on the [compaction]-resolved provider entry (empty [compaction]
-        # = the active provider), resolved per call so a runtime /provider switch applies next
-        # time. The context budget is untouched: compaction still measures against the main
-        # provider's window, only the summary request itself uses this entry.
-        provider = compaction_provider_config(self.session.config)
-        entry_name = self.session.config.compaction_provider or self.session.config.active_provider
-        # The client's own gate checks the active provider, which is the wrong entry when a
-        # summary runs elsewhere: an incomplete [compaction] entry would otherwise reach the SDK
-        # and come back as "Missing credentials", naming nothing the user can act on. Compaction
-        # still degrades to deterministic trimming -- this only makes the fallback say why.
-        if missing := provider.missing_fields():
-            raise ModelError(f"compaction provider `{entry_name}` is missing {', '.join(missing)}; check [compaction] and [provider.{entry_name}]")
-        self.last_compaction_model = ""
-        # Two shapes. The inline form is the agent's own request with a compaction instruction
-        # appended: same tools, same system, same conversation, so the provider's prefix cache --
-        # already warm from the turn that just ran -- covers everything but the tail, and the
-        # compactor sees real messages instead of a flattened re-rendering that drops tool calls.
-        # The flattened form stays for every case the inline one cannot serve.
-        inline = inline_messages is not None
-        messages = inline_messages if inline else [{"role": "system", "content": COMPACTION_PROMPT}, {"role": "user", "content": Text.clean(context)}]
-        # Compaction honors the configured total-generation limit instead of a hidden cap: a
-        # summary is worth the user's configured wait, and the deterministic trim fallback still
-        # catches whatever the provider rejects.
-        response_timeout = provider.response_timeout
-        # The status bar reads this to name the entry actually serving the summary; cleared in the
-        # finally so a timeout, a cancel, or a provider error leaves no stale row behind.
-        entry_label = f"{entry_name}/{provider.model}"
-        self.session.state.compaction_entry = entry_label
-        try:
-            data = self.compact_attempts(messages, provider, response_timeout, entry_label, tools=tools if inline else None, echo_source=echo_source)
-        finally:
-            self.session.state.compaction_entry = ""
-        self.last_compaction_model = provider.model
-        return data
-
-    def compact_attempts(
-        self,
-        messages: list[Json],
-        provider: ProviderConfig,
-        response_timeout: float,
-        entry_label: str,
-        tools: list[Json] | None = None,
-        echo_source: str = "",
-    ) -> Json:
-        """Ask for the summary, and ask once more if what came back was not a JSON object.
-
-        The failure this retries is a model ignoring the format and replying in prose -- usually by
-        continuing the conversation it was handed instead of summarizing it. A bare resend would
-        likely reproduce it, so the second attempt carries the previous reply and a correction,
-        which is the same shape a person would use. Every error names the entry that served the
-        request: compaction can run on its own `[compaction]` provider, and a cheaper model there is
-        exactly the one that fails this way, so the message has to say which model to look at."""
-        attempt_messages = list(messages)
-        for attempt in (1, 2):
-            try:
-                # Tools ride along, and tool_choice is deliberately left exactly as an ordinary
-                # request sets it. Forcing "none" here looks safer and is not: changing tool_choice
-                # invalidates the messages cache, which is the whole 100k-token conversation this
-                # request exists to reuse -- it would spend the prize to buy the guarantee. The
-                # instruction not to call tools lives in the appended message instead, and a model
-                # that calls one anyway returns no text, which the retry below already handles.
-                _, _, content = self.api_request(
-                    attempt_messages, tools, allow_stream=False, response_timeout=response_timeout, provider=provider, json_object=True
-                )
-            except ModelResponseTimeout:
-                raise ModelResponseTimeout(
-                    f"compaction summary on `{entry_label}` exceeded provider.response_timeout={response_timeout:g}s; "
-                    "set it to 0 to disable the total-generation limit"
-                ) from None
-            try:
-                data = self.parse_json_object(content)
-            except ModelError as error:
-                if attempt == 2:
-                    raise ModelError(f"{error} (compaction provider `{entry_label}`)") from None
-                attempt_messages = [
-                    *attempt_messages,
-                    {"role": "assistant", "content": Tool.compact(content, 400)},
-                    {"role": "user", "content": COMPACTION_RETRY},
-                ]
-                continue
-            if not isinstance(data, dict):
-                raise ModelError(f"compactor returned non-object JSON (compaction provider `{entry_label}`)")
-            # Checked after parsing, not instead of it: this is the same failure the retry above
-            # exists for, only it arrived shaped like a valid answer. Left unchecked it applies
-            # cleanly into session.state and is fed back into every later compaction.
-            if self.echoes_source(data.get("summary") or "", echo_source):
-                if attempt == 2:
-                    raise ModelError(f"compactor echoed the conversation instead of summarizing it (compaction provider `{entry_label}`)")
-                attempt_messages = [
-                    *attempt_messages,
-                    {"role": "assistant", "content": Tool.compact(content, 400)},
-                    {"role": "user", "content": COMPACTION_ECHO_RETRY},
-                ]
-                continue
-            return data
-        raise ModelError(f"compactor returned no usable JSON (compaction provider `{entry_label}`)")
-
-    # A summary that is mostly one verbatim run copied out of the conversation is the echo failure
-    # wearing valid JSON: constrained decoding forces the shape, never the task. Deliberately blunt
-    # thresholds -- a real summary paraphrases, so 80% of it being a single unbroken copy is not a
-    # close call, and quoting a path or an identifier is far below that.
-    #
-    # The floor is counted in characters, which are not equal: the same sentence is 138 characters
-    # of English and 68 of Chinese. It is set for the denser script, because a floor tuned to
-    # English would have excluded from this check every summary written in the language the failure
-    # was first seen in.
-    ECHO_MIN_CHARS: ClassVar[int] = 40
-    ECHO_RATIO: ClassVar[float] = 0.8
-    ECHO_COMPARE_CHARS: ClassVar[int] = 4000
-
-    @classmethod
-    def echoes_source(cls, summary: str, source: str) -> bool:
-        """True when `summary` reproduces `source` rather than describing it."""
-        summary = " ".join(str(summary).split())[: cls.ECHO_COMPARE_CHARS]
-        source = " ".join(str(source).split())[-cls.ECHO_COMPARE_CHARS :]
-        if len(summary) < cls.ECHO_MIN_CHARS or not source:
-            return False
-        match = SequenceMatcher(None, summary, source, autojunk=False).find_longest_match(0, len(summary), 0, len(source))
-        return match.size >= len(summary) * cls.ECHO_RATIO
-
     @classmethod
     def parse_json_object(cls, text: str) -> Json:
         text = cls.strip_json_fence(Text.clean(text).strip())
@@ -989,6 +863,7 @@ class ModelClient:
             builtin_tools=self.builtin_tools,
             text_only=self.session.image_route.is_text_only(),
         )
+
     def anthropic_messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
         text_only = self.session.image_route.is_text_only() if text_only is None else text_only
         return anthropic_module.anthropic_messages(
@@ -999,6 +874,7 @@ class ModelClient:
             images=self.session.images,
             text_only=text_only,
         )
+
     def anthropic_assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
         return anthropic_module.anthropic_assistant_blocks(
             message,
@@ -1006,6 +882,7 @@ class ModelClient:
             provider_origin=self.provider_origin,
             replayable_echo=self.replayable_echo,
         )
+
     def anthropic_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
         return anthropic_module.anthropic_result(
             result,

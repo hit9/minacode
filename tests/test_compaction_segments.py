@@ -1,9 +1,12 @@
 """compaction segments (split from tests/test_context.py)."""
+
+import json
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
-from agent_harness import session
+from agent_harness import session, session_with_provider
 from test_context import RUNTIME_GENERATED_EVENTS
 
 import minacode.context as context_module
@@ -18,7 +21,7 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.model import ModelClient
+from minacode.model import ModelClient, compaction
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
 )
@@ -43,6 +46,7 @@ def test_compaction_captures_a_history_segment(tmp_path):
     assert "find the parser bug" in segment.text
     assert "looking into it" in segment.text
 
+
 def test_segment_takes_the_name_the_compactor_gave_it(tmp_path):
     # The compaction reply already describes the span, and the model is the only party that read
     # all of it. The deterministic name is the first user message of the window, which says little
@@ -58,6 +62,7 @@ def test_segment_takes_the_name_the_compactor_gave_it(tmp_path):
 
     assert s.history[0].title == "Tokenizer extraction"
 
+
 def test_segment_title_is_flattened_and_bounded(tmp_path):
     # Free-form model text landing in a listing, a checkpoint line, and a viewer column.
     s = session(tmp_path)
@@ -71,6 +76,7 @@ def test_segment_title_is_flattened_and_bounded(tmp_path):
 
     assert s.history[0].title == "Parser refactor and its tests"
 
+
 def test_segment_title_falls_back_when_the_compactor_names_nothing(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
@@ -81,6 +87,7 @@ def test_segment_title_falls_back_when_the_compactor_names_nothing(tmp_path):
         context.apply_compaction(data, [], compacted=compacted)
         assert s.history[0].title == "find the parser bug", data
 
+
 def test_deterministic_trim_still_names_its_segment(tmp_path):
     # No model reply at all: the summarizer failed and the span was trimmed deterministically.
     s = session(tmp_path)
@@ -89,6 +96,7 @@ def test_deterministic_trim_still_names_its_segment(tmp_path):
     context.apply_compaction(None, [], compacted=[{"role": "user", "content": "find the parser bug"}], fallback_note="trimmed")
 
     assert s.history[0].title == "find the parser bug"
+
 
 def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(context_module, "MAX_TOOL_OUTPUT_TOKENS", 10)
@@ -100,6 +108,7 @@ def test_large_history_segment_has_no_self_referential_recall_marker(tmp_path, m
     assert "<bounded_output" in s.history[0].text
     assert 'recall="seg.1"' not in s.history[0].text
 
+
 def test_compaction_history_keys_increment(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
@@ -109,6 +118,7 @@ def test_compaction_history_keys_increment(tmp_path):
 
     assert [segment.key for segment in s.history] == ["seg.1", "seg.2"]
 
+
 def test_compaction_without_compacted_messages_captures_nothing(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
@@ -117,10 +127,11 @@ def test_compaction_without_compacted_messages_captures_nothing(tmp_path):
 
     assert s.history == []
 
+
 def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_path):
     """An over-budget request can cross both compaction stages in one prepare: the history before the
     latest request becomes seg.1, then the oversized current turn itself becomes seg.2."""
-    s = session(tmp_path)
+    s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 1
     s.messages = [
         {"role": "user", "content": "old request"},
@@ -131,14 +142,20 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
     turn = [{"role": "user", "content": "current request"}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
 
     class FakeModel:
-        def __init__(self):
+        def __init__(self, session):
+            self.session = session
             self.calls = 0
+            self.cancel_requested = threading.Event()
 
-        def compact(self, text, *_args, **_kwargs):
+        def api_request(self, _messages, _tools, **_kwargs):
             self.calls += 1
-            return {"summary": f"summary {self.calls}"}
+            return "", "", json.dumps({"summary": f"summary {self.calls}"})
 
-    model = FakeModel()
+        @staticmethod
+        def parse_json_object(content):
+            return json.loads(content)
+
+    model = FakeModel(s)
     context.prepare_messages(model, "system", turn)
 
     assert model.calls == 2
@@ -150,6 +167,7 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
     assert turn[0]["content"] == "current request"
     assert turn[1]["content"].startswith(COMPACTION_SUMMARY_TITLE)
 
+
 def test_history_title_skips_summary_blocks(tmp_path):
     context = ContextManager(session(tmp_path))
     messages = [
@@ -159,6 +177,7 @@ def test_history_title_skips_summary_blocks(tmp_path):
     ]
 
     assert context.history_title(messages) == "the real request"
+
 
 def test_history_index_and_memory_are_not_injected_into_each_request(tmp_path):
     s = session(tmp_path)
@@ -172,6 +191,7 @@ def test_history_index_and_memory_are_not_injected_into_each_request(tmp_path):
     assert contents[2:] == ["old request", "old answer", "current request"]
     assert not any(content.startswith("--- History index ---") for content in contents)
     assert not any(content.startswith("--- Memory ---") for content in contents)
+
 
 def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     s = session(tmp_path)
@@ -200,8 +220,9 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     assert "user:\n0" in s.history[0].text
     assert "user:\n8" in s.history[0].text
 
+
 def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
-    s = session(tmp_path)
+    s = session_with_provider(tmp_path)
     # Long enough that something is actually evicted: the rule under test is where the checkpoint
     # lands relative to the latest request, which only exists once there is a head to replace.
     s.messages = [
@@ -215,13 +236,19 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     loop.tui = SimpleNamespace(set_running=transitions.append, set_dispatching=lambda: transitions.append("dispatch"))
 
     class FakeModel:
-        last_compaction_model = ""
+        def __init__(self, session):
+            self.session = session
+            self.cancel_requested = threading.Event()
 
-        def compact(self, text, *_args, **_kwargs):
+        def api_request(self, _messages, _tools, **_kwargs):
             assert transitions == ["compacting context"]
-            return {"summary": "summary", "plan": ["next"], "known": ["fact"]}
+            return "", "", json.dumps({"summary": "summary", "plan": ["next"], "known": ["fact"]})
 
-    loop.agent.model = FakeModel()
+        @staticmethod
+        def parse_json_object(content):
+            return json.loads(content)
+
+    loop.agent.model = FakeModel(s)
     result = compact(loop, "")
 
     assert len(s.messages) < 12  # a head was evicted
@@ -232,6 +259,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     assert transitions == ["compacting context", "dispatch"]
     assert "messages 12 -> " in result
     assert "prior summary inserted" in result
+
 
 def test_agent_state_format_is_available_for_explicit_checkpoints(tmp_path):
     s = session(tmp_path)
@@ -247,6 +275,7 @@ def test_agent_state_format_is_available_for_explicit_checkpoints(tmp_path):
     assert "all good" in ctx
     assert "Recent tool errors:" not in ctx
 
+
 def test_estimated_text_tokens_stays_on_characters_for_output_trimming(tmp_path):
     """estimated_text_tokens drives tool-output trimming (head/tail excerpts and the omitted marker),
     so it stays chars/4: UTF-8 bytes there would shrink the head/tail slice for CJK, overlapping the
@@ -256,6 +285,7 @@ def test_estimated_text_tokens_stays_on_characters_for_output_trimming(tmp_path)
     assert context.estimated_text_tokens("hello world") == (len("hello world") + 3) // 4
     # CJK stays at chars/4 too: 4 chars -> 1 estimated token, not 3.
     assert context.estimated_text_tokens("你好世界") == 1
+
 
 def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
     """A CJK-heavy session that the chars/4 estimate kept under budget now compacts: the bytes/4
@@ -288,6 +318,7 @@ def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
     context.prepare_messages(FakeModel(), "system", turn)
     assert compaction_phases == [True, False]
     assert s.state.compaction_count == 1
+
 
 def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     """The last completed request filled >=99% of its budget, so the next one compacts even though the
@@ -338,6 +369,7 @@ def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     context2 = ContextManager(s2)
     assert context2._overdue_by_usage() is False
 
+
 def test_apply_compaction_clears_last_usage_but_keeps_cumulative(tmp_path):
     """Compaction rewrites history, so the recorded last-* usage no longer describes the next
     request. Clearing them (not the cumulative totals) makes the overdue guard and the status bar
@@ -356,7 +388,7 @@ def test_apply_compaction_clears_last_usage_but_keeps_cumulative(tmp_path):
         {"role": "user", "content": "latest"},
     ]
     context = ContextManager(s)
-    compacted, keep = context.compaction_parts()
+    compacted, keep = compaction.Compactor(context).parts()
     context.apply_compaction({"summary": "compact summary", "plan": ["next"], "known": ["fact"]}, keep, compacted=compacted)
 
     assert s.usage.last_prompt_tokens == 0
@@ -366,6 +398,7 @@ def test_apply_compaction_clears_last_usage_but_keeps_cumulative(tmp_path):
     assert s.usage.prompt_tokens == 9999
     assert s.usage.calls == 7
     assert context._overdue_by_usage() is False
+
 
 def test_compaction_override_does_not_change_request_budget(tmp_path):
     """The [compaction] entry never feeds the context budget: even pointing at a small-window entry,
@@ -386,6 +419,7 @@ def test_compaction_override_does_not_change_request_budget(tmp_path):
     context = ContextManager(s)
     assert context.request_token_budget() == request_budget_for(1_048_576, DEFAULT_OUTPUT_RESERVE_TOKENS)
     assert context.request_token_budget() > request_budget_for(16_384, DEFAULT_OUTPUT_RESERVE_TOKENS)
+
 
 @pytest.mark.parametrize("event", RUNTIME_GENERATED_EVENTS)
 def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, event):
@@ -410,6 +444,7 @@ def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, e
     assert "the whole order" not in s.history[-1].text
     assert "step 0" in s.history[-1].text
 
+
 def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path):
     s = session(tmp_path)
     # Long enough that the recent window leaves a compactable head: the rule under test is where
@@ -421,12 +456,13 @@ def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path
         {"role": "assistant", "content": "working"},
     ]
 
-    compacted, keep = ContextManager(s).compaction_parts()
+    compacted, keep = compaction.Compactor(ContextManager(s)).parts()
 
     assert compacted  # older history is summarized away
     assert "the whole order" not in [message["content"] for message in compacted]
     # The request and the runtime expansion it produced stay together on the kept side.
     assert [message["content"] for message in keep][-3:] == ["the whole order", "runtime expansion", "working"]
+
 
 def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
     """Compaction is a cache break, and where it breaks is what it costs. Keeping the request in
@@ -459,6 +495,7 @@ def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
     assert before[shared - 1].get("content") == "the whole order"
     assert after[shared].get("content", "").startswith(COMPACTION_SUMMARY_TITLE)
 
+
 def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     """The engine half of the same rule: what run() appends around the request is not a request."""
     folder = os.path.join(tmp_path, ".minacode", "skills", "triage")
@@ -481,12 +518,13 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     assert [message.get(SESSION_EVENT_KEY) for message in s.messages] == [None, "mcp_mentions", "skill_mentions", "file_mentions", None]
     assert ContextManager(s).latest_user_index(s.messages) == 0
 
+
 def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
     """Surviving one pass is not the same as surviving four. Each pass re-reads what the previous
     one left, so a request kept by accident (a second copy, a stale checkpoint it hides behind)
     would drift round by round: the invariant is one verbatim request, one checkpoint, and a
     message stream where every tool result still answers a call that is still there."""
-    s = session(tmp_path)
+    s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 12000
     context = ContextManager(s)
 
@@ -503,14 +541,20 @@ def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
         return messages
 
     class FakeModel:
-        def __init__(self):
+        def __init__(self, session):
+            self.session = session
             self.calls = 0
+            self.cancel_requested = threading.Event()
 
-        def compact(self, text, *_args, **_kwargs):
+        def api_request(self, _messages, _tools, **_kwargs):
             self.calls += 1
-            return {"summary": f"summary {self.calls}"}
+            return "", "", json.dumps({"summary": f"summary {self.calls}"})
 
-    model = FakeModel()
+        @staticmethod
+        def parse_json_object(content):
+            return json.loads(content)
+
+    model = FakeModel(s)
     turn = [
         {"role": "user", "content": "the whole order"},
         {"role": "user", "content": "--- SKILL MENTIONS ---\nbody", SESSION_EVENT_KEY: "skill_mentions"},

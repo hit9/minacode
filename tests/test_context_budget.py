@@ -1,7 +1,9 @@
 """context budget (split from tests/test_context.py)."""
+import json
+import threading
 from types import SimpleNamespace
 
-from agent_harness import session
+from agent_harness import session, session_with_provider
 
 from minacode.config import (
     DEFAULT_OUTPUT_RESERVE_TOKENS,
@@ -112,7 +114,7 @@ def test_provider_context_limit_shares_one_denominator_with_usage(tmp_path):
     assert s.usage.last_prompt_budget > request_budget_for(262_144, 16_384), "the runtime default was used, not the entry's"
 
 def test_compaction_uses_configured_context_budget(tmp_path):
-    s = session(tmp_path)
+    s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 1
     s.messages = [
         {"role": "user", "content": "old user"},
@@ -126,19 +128,22 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
-        def __init__(self):
+        def __init__(self, session):
+            self.session = session
             self.input = None
+            self.cancel_requested = threading.Event()
 
-        def __call__(self):
-            return self
-
-        def compact(self, text, inline_messages=None, *_args, **_kwargs):
+        def api_request(self, messages, _tools, **_kwargs):
             # The inline form carries the conversation as messages; the flattened text is only
             # built when that form cannot serve, so this reads whichever one was actually sent.
-            self.input = "\n".join(str(message.get("content") or "") for message in inline_messages) if inline_messages else text
-            return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
+            self.input = "\n".join(str(message.get("content") or "") for message in messages)
+            return "", "", json.dumps({"summary": "compact summary", "plan": ["next"], "known": ["fact"]})
 
-    model = FakeModel()
+        @staticmethod
+        def parse_json_object(content):
+            return json.loads(content)
+
+    model = FakeModel(s)
     context.prepare_messages(model, "system", [{"role": "user", "content": "request"}])
     assert compaction_phases == [True, False]
     assert model.input is not None
@@ -178,7 +183,7 @@ def test_compaction_budget_reserves_output_and_safety(tmp_path):
     assert context.request_token_budget() == 100_000 - 10_000 - MIN_CONTEXT_SAFETY_TOKENS
 
 def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
-    s = session(tmp_path)
+    s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 30_000
     s.messages = [
         {"role": "user", "content": "old request"},
@@ -193,14 +198,20 @@ def test_tool_schemas_can_trigger_compaction_before_context_ceiling(tmp_path):
     assert context.request_token_budget() <= context.request_tokens(messages, tools) < s.settings.max_context_tokens
 
     class FakeModel:
-        def __init__(self):
+        def __init__(self, session):
+            self.session = session
             self.called = False
+            self.cancel_requested = threading.Event()
 
-        def compact(self, text, *_args, **_kwargs):
+        def api_request(self, _messages, _tools, **_kwargs):
             self.called = True
-            return {"summary": "summary"}
+            return "", "", json.dumps({"summary": "summary"})
 
-    model = FakeModel()
+        @staticmethod
+        def parse_json_object(content):
+            return json.loads(content)
+
+    model = FakeModel(s)
     context.prepare_messages(model, "system", turn, tools)
 
     assert model.called is True
