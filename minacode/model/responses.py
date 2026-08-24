@@ -17,6 +17,7 @@ from minacode.base import (
     Json,
     ModelError,
     ModelOutputTruncated,
+    ModelStreamIncomplete,
     Text,
     ToolCall,
     builtin_tool_label,
@@ -248,7 +249,7 @@ def reassemble_stream(
     finally:
         emit("", "")
     if terminal is None:
-        raise ModelError("Responses stream ended without a terminal response")
+        raise ModelStreamIncomplete("Responses stream ended without a terminal response")
     return terminal
 
 

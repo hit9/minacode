@@ -15,6 +15,7 @@ from minacode.base import (
     RETRY_MAX_DELAY,
     ModelOutputTruncated,
     ModelResponseTimeout,
+    ModelStreamIncomplete,
 )
 
 _RETRYABLE_STATUS_RE: re.Pattern = re.compile(r"(?:error|status)?[_\s-]*code['\"]?\s*[:=]\s*['\"]?(408|409|425|429|5\d\d)\b")
@@ -83,6 +84,10 @@ def retryable_error(error: Exception) -> bool:
     # A truncated generation is deterministic: the same request hits the same output cap again.
     if isinstance(error, (ModelResponseTimeout, ModelOutputTruncated)):
         return False
+    # A stream that ends without a terminal event is a server-side drop detected after the fact by
+    # reassemble_stream, the same class of transient failure as the httpx transport errors below.
+    if isinstance(error, ModelStreamIncomplete):
+        return True
     cause = getattr(error, "__cause__", None)
 
     # SDK status errors expose status_code directly. A 429 whose structured error text carries
@@ -163,6 +168,8 @@ def retry_reason(error: Exception) -> str:
     drawn only from the structured status, the embedded status code, or fixed words for the
     timeout/connection/server-error families, with "transient error" as the fallback.
     """
+    if isinstance(error, ModelStreamIncomplete):
+        return "stream"
     cause = getattr(error, "__cause__", None)
     status: Any = getattr(cause, "status_code", None) or getattr(cause, "code", None)
     with contextlib.suppress(Exception):

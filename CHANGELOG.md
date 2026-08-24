@@ -10,6 +10,11 @@
   projection: a hallucinated or scripted call to an excluded tool is rejected with "not
   available in this session" instead of running.
 
+### Changed
+
+- A streamed response that ends without a terminal event no longer fails the turn: it is a
+  transient provider-side drop, retried automatically like a dropped connection.
+
 ## 0.31.1 - 2026-08-23
 
 ### Changed

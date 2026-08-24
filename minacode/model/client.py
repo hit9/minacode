@@ -31,6 +31,7 @@ from minacode.base import (
     ModelOutputTruncated,
     ModelRequestRetry,
     ModelResponseTimeout,
+    ModelStreamIncomplete,
     ModelUsage,
     Text,
     ToolArgs,
@@ -300,7 +301,9 @@ class ModelClient:
                 if self.cancel_requested.is_set():
                     raise KeyboardInterrupt
                 return cast(_ResultT, value)
-            except ModelResponseTimeout:
+            # ModelStreamIncomplete is raised by the Responses stream reassembler and must reach
+            # the retry classifier as itself: flattening it here would lose the retry decision.
+            except (ModelResponseTimeout, ModelStreamIncomplete):
                 raise
             except Exception as error:
                 if self.cancel_requested.is_set():
