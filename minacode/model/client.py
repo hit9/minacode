@@ -506,7 +506,7 @@ class ModelClient:
             client,
             params,
             message_field=self.message_field,
-            dump_message_item=self.dump_message_item,
+            dump_message_item=responses.dump_message_item,
             raise_if_inactive=self._raise_if_request_inactive,
             emit=self._emit_stream,
         )
@@ -594,17 +594,6 @@ class ModelClient:
         assistant[PROVIDER_ORIGIN_KEY] = self.provider_origin(provider)
         return assistant, calls, text
 
-    @staticmethod
-    def responses_extra_body(extra_body: Json, params: Json) -> Json:
-        """Fold configured `reasoning` fields into the managed object instead of replacing it.
-
-        `extra_body` is merged over the request body, so a whole object configured there would drop
-        the fields minacode manages inside it — settling `reasoning.context` would silently take the
-        resolved `effort` with it. Merging per field keeps a documented extra reachable while
-        `/reason` stays authoritative, mirroring how the Chat path folds `thinking`.
-        """
-        return responses.responses_extra_body(extra_body, params)
-
     def _responses_stream(self, client: OpenAI, params: Json) -> Any:
         """Consume a Responses stream, promoting completed text before tool arguments finish.
 
@@ -644,15 +633,6 @@ class ModelClient:
         )
 
     @staticmethod
-    def replayable_output_item(item: Json) -> bool:
-        """Whether a saved output item still carries something a later request can use.
-
-        Stateless reasoning travels in the encrypted payload, which the id alone cannot stand in
-        for once the response was never stored. A host that returns neither that payload nor any
-        readable reasoning leaves an empty shell, so it is dropped instead of replayed."""
-        return responses.replayable_output_item(item)
-
-    @staticmethod
     def responses_tool_schemas(tools: list[Json]) -> list[Json]:
         return responses.responses_tool_schemas(tools)
 
@@ -661,25 +641,12 @@ class ModelClient:
             result,
             streamed,
             message_field=self.message_field,
-            dump_message_item=self.dump_message_item,
+            dump_message_item=responses.dump_message_item,
             tool_call=self.tool_call,
             report_builtin_call=self.report_builtin_call,
             truncated_output_error=self.truncated_output_error,
             collect_sources=self.collect_sources,
         )
-
-    @classmethod
-    def responses_sources(cls, saved_output: list[Json]) -> list[Json]:
-        """Sources a Responses host attached to one response.
-
-        Two hosts, two places: OpenAI cites inline through `url_citation` annotations on the
-        message, while Qwen returns no citations at all and reports sources only on the search
-        call. Reading both keeps one renderer honest across them."""
-        return responses.responses_sources(saved_output, cls.collect_sources)
-
-    @staticmethod
-    def dump_message_item(item: Any) -> Json:
-        return responses.dump_message_item(item)
 
     def vision_observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
         """Ask the [vision]-configured entry to observe images for an explicit ViewImage call.
@@ -897,7 +864,7 @@ class ModelClient:
         sources: dict[str, Json] = {}
         for group in groups:
             for raw in group or []:
-                item = raw if isinstance(raw, dict) else ModelClient.dump_message_item(raw)
+                item = raw if isinstance(raw, dict) else responses.dump_message_item(raw)
                 if not isinstance(item, dict):
                     continue
                 # OpenAI and OpenRouter nest the fields one level down under `url_citation`.
@@ -1073,7 +1040,7 @@ class ModelClient:
             result,
             streamed,
             message_field=self.message_field,
-            dump_message_item=self.dump_message_item,
+            dump_message_item=responses.dump_message_item,
             tool_call=self.tool_call,
             report_builtin_call=self.report_builtin_call,
             truncated_output_error=self.truncated_output_error,
@@ -1138,7 +1105,7 @@ class ModelClient:
             if value:
                 data[key] = Text.value(value)
         raw_details = self.message_field(message, "reasoning_details") or []
-        details = [item for item in (self.dump_message_item(raw) for raw in raw_details) if item]
+        details = [item for item in (responses.dump_message_item(raw) for raw in raw_details) if item]
         if details:
             data["reasoning_details"] = details
         # Chat hosts that cite (OpenAI's search models, OpenRouter's web plugin) hang annotations
