@@ -41,9 +41,19 @@ Modules (dependencies point downward only):
             providers/catalog.py           evidence-backed compatibility data
 ```
 
-`session/__init__.py` and `session/store.py` reach upward features/state types only via deferred
-imports (commented at each call site), so features sit above `session/` without a module-scope
-cycle.
+Two import rings stay runtime-only so the module graph above stays a DAG:
+
+- **Orchestration ring (`tools/` ↔ engine/runner/model).** `Delegate` spawns a worker by constructing
+  `engine.Agent`, and `ToolScript` runs nested calls through `runner.ToolRunner` and
+  `runner.EditBatchPlan`; `runner` builds the vision `ModelClient` on the first image. The downward
+  direction (engine/runner/model importing `tools`) is module scope; the upward edges are deferred
+  imports, commented at each call site (`tools/delegate.py`, `tools/toolscript.py`, `runner.py`).
+  Lifting one to module scope makes the cycle part of startup.
+- **Session features (`session/` ↔ mcp/skill/mentions).** `Session` itself is feature-free:
+  `__post_init__` never reaches upward. `bootstrap_features()` (deferred imports inside) attaches
+  `MCPManager`/`SkillLibrary`/`FileMentions` when needed, called by `Session.from_config_file` and
+  `Session.load_snapshot`; the delegate worker handoff injects the parent's `skills`/`mcp` fields
+  explicitly instead, and `session/store.py` still imports its parent package at load time.
 
 A turn, and its three endings:
 
