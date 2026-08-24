@@ -194,16 +194,16 @@ def test_toolscript_phase_shows_on_divider_and_yields_to_compaction(tmp_path):
     command_loop.model_stream_output("output", "answering")
 
     command_loop.toolscript_run_status(True)
-    running = "".join(text for _style, text in command_loop.view.queue_divider_fragments())
+    running = "".join(text for _, text in command_loop.view.queue_divider_fragments())
     assert "running script" in running
     assert "responding" not in running
 
     # Compaction is the inner phase while it lasts, and the script phase returns underneath it.
     command_loop.model_stream_output("", "")
     command_loop.automatic_compaction_status(True)
-    assert "compacting context" in "".join(text for _style, text in command_loop.view.queue_divider_fragments())
+    assert "compacting context" in "".join(text for _, text in command_loop.view.queue_divider_fragments())
     command_loop.automatic_compaction_status(False)
-    assert "running script" in "".join(text for _style, text in command_loop.view.queue_divider_fragments())
+    assert "running script" in "".join(text for _, text in command_loop.view.queue_divider_fragments())
 
     command_loop.toolscript_run_status(False)
-    assert "working" in "".join(text for _style, text in command_loop.view.queue_divider_fragments())
+    assert "working" in "".join(text for _, text in command_loop.view.queue_divider_fragments())

@@ -19,7 +19,7 @@ def test_approval_segments_highlight_inline_edit_preview():
         ],
     )
     segments = UiPrinter().log_segments(block)
-    rendered = "".join(text for _style, text in segments)
+    rendered = "".join(text for _, text in segments)
 
     assert ("ansigreen", "Edit") in segments
     assert any(style == "fg:#ff7b72 bg:#003b00" and "return" in text for style, text in segments)
@@ -38,7 +38,7 @@ def test_auto_approved_edit_keeps_preview_pre_line(tmp_path, monkeypatch):
     runner.run([ToolCall("e0", "Edit", ["a.txt", [{"op": "insert_after", "start": anchor(0, "hello\n"), "content": "NEW\n"}]])])
     assert len(out) == 2
     assert isinstance(out[0], LogBlock)
-    root, _level = next(out[0].walk())
+    root, _ = next(out[0].walk())
     assert root.role is LogRole.AUTO
     assert "preview" in str(out[0])
     assert str(out[1]).rstrip().endswith("[auto]")
@@ -123,6 +123,6 @@ def test_diff_segments_syntax_highlights_python(tmp_path):
     assert any(text == "def" and "bg:" not in style for style, text in segments)
 
     live = ui.segment_lines(ui.diff_segments_live(diff, row_width=40))
-    changed = [line for line in live if any("bg:" in style for style, _text in line)]
-    widths = [sum(get_cwidth(text.rstrip("\n")) for _style, text in line) for line in changed]
+    changed = [line for line in live if any("bg:" in style for style, _ in line)]
+    widths = [sum(get_cwidth(text.rstrip("\n")) for _, text in line) for line in changed]
     assert set(widths) == {40}

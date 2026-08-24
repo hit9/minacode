@@ -132,7 +132,7 @@ def test_path_source_non_git_walk(tmp_path):
     (tmp_path / "node_modules" / "x.js").write_text("", encoding="utf-8")
     (tmp_path / ".hidden.py").write_text("", encoding="utf-8")
     s = session(tmp_path)
-    rels = {rel for _lower, rel in s.mentions.paths()}
+    rels = {rel for _, rel in s.mentions.paths()}
     assert "src/a.py" in rels
     assert "node_modules/x.js" in rels  # only ignore rules and .git exclude paths
     assert ".hidden.py" in rels
@@ -150,7 +150,7 @@ def test_path_source_git_repo_and_untracked_appears(tmp_path):
     (tmp_path / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
     (tmp_path / "ignored.tmp").write_text("", encoding="utf-8")
     s = session(tmp_path)
-    rels = {rel for _lower, rel in s.mentions.paths()}
+    rels = {rel for _, rel in s.mentions.paths()}
     assert "tracked.py" in rels
     assert "untracked.py" in rels  # git ls-files -o --exclude-standard
     assert "ignored.tmp" not in rels
@@ -168,7 +168,7 @@ def test_path_source_git_nested_ignore_negation_and_unusual_names(tmp_path):
     (nested / "中文 name.txt").write_text("", encoding="utf-8")
     (nested / "line\nbreak.txt").write_text("", encoding="utf-8")
 
-    rels = {rel for _lower, rel in session(tmp_path).mentions.paths()}
+    rels = {rel for _, rel in session(tmp_path).mentions.paths()}
     assert "nested/drop.tmp" not in rels
     assert "nested/keep.tmp" in rels
     assert "nested/中文 name.txt" in rels
@@ -196,7 +196,7 @@ def test_python_fallback_honors_nested_gitignore(monkeypatch, tmp_path):
     (nested / "keep.tmp").write_text("", encoding="utf-8")
     monkeypatch.setattr("minacode.mentions.shutil.which", lambda _name: None)
 
-    rels = {rel for _lower, rel in session(tmp_path).mentions.paths()}
+    rels = {rel for _, rel in session(tmp_path).mentions.paths()}
     assert "nested/drop.tmp" not in rels
     assert "nested/keep.tmp" in rels
 
@@ -206,9 +206,9 @@ def test_path_cache_refreshes_after_window(tmp_path):
     s = session(tmp_path)
     s.mentions._paths_cache = (time.monotonic() - 10, (("a.py", "a.py"),))  # stale: only a.py
     (tmp_path / "b.py").write_text("", encoding="utf-8")
-    assert {rel for _lower, rel in s.mentions.paths()} == {"a.py", "b.py"}
+    assert {rel for _, rel in s.mentions.paths()} == {"a.py", "b.py"}
     s.mentions._paths_cache = (time.monotonic(), (("a.py", "a.py"),))  # fresh: kept as is
-    assert {rel for _lower, rel in s.mentions.paths()} == {"a.py"}
+    assert {rel for _, rel in s.mentions.paths()} == {"a.py"}
 
 
 # --- T5: resolver ---

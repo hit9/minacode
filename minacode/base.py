@@ -7,7 +7,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, ClassVar, Generic, TypeVar
@@ -248,7 +248,7 @@ class Text:
 
         def row_segments(row_prefix: list[tuple[str, str]], cells: list[tuple[str, str, int]]) -> list[tuple[str, str]]:
             row = list(row_prefix)
-            for style, char, _char_width in cells:
+            for style, char, _ in cells:
                 if row and row[-1][0] == style:
                     row[-1] = (style, row[-1][1] + char)
                 else:
@@ -260,9 +260,9 @@ class Text:
         for logical in logical_lines:
             remaining = logical
             while True:
-                prefix_width = sum(get_cwidth(text) for _style, text in row_prefix)
+                prefix_width = sum(get_cwidth(text) for _, text in row_prefix)
                 available = max(1, width - prefix_width) if width else None
-                if available is None or sum(cell_width for _style, _char, cell_width in remaining) <= available:
+                if available is None or sum(cell_width for _, _, cell_width in remaining) <= available:
                     rows.append(row_segments(row_prefix, remaining))
                     break
                 used = 0
@@ -482,7 +482,7 @@ class LogBlock:
         return [(index in rails, cls.RAIL if index in rails else cls.INDENT) for index in range(level)]
 
     def walk(self, parent_level: int = 0):
-        for line, level, _rails in self.walk_rows(parent_level):
+        for line, level, _ in self.walk_rows(parent_level):
             yield line, level
 
     def walk_rows(self, parent_level: int = 0, rails: tuple[int, ...] = ()):
@@ -503,11 +503,11 @@ class LogBlock:
     def __str__(self) -> str:
         rows = []
         for line, level, rails in self.walk_rows():
-            margin = "".join(text for _rail, text in self.margin_units(level, rails))
+            margin = "".join(text for _, text in self.margin_units(level, rails))
             prefix = margin + line.text_prefix()
             continuation = margin + " " * get_cwidth(line.text_prefix())
             rows.extend(Text.wrap_styled([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
-        return "\n".join("".join(text for _style, text in row) for row in rows)
+        return "\n".join("".join(text for _, text in row) for row in rows)
 
 
 @dataclass
@@ -539,7 +539,7 @@ class ActiveResource(Generic[_ResourceT]):
         self.value: _ResourceT | None = None
 
     @contextlib.contextmanager
-    def track(self, value: _ResourceT) -> Iterator[None]:
+    def track(self, value: _ResourceT) -> Generator[None, None, None]:
         with self.lock:
             self.value = value
         try:

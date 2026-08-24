@@ -216,7 +216,7 @@ def test_responses_stream_promotes_text_before_blocked_tool_arguments(tmp_path, 
 
     def request():
         try:
-            _assistant, _calls, content = command_loop.agent.model.request([{"role": "user", "content": "make the change"}], [])
+            _, _, content = command_loop.agent.model.request([{"role": "user", "content": "make the change"}], [])
             command_loop.agent_output(content)
         except Exception as error:  # noqa: BLE001 - harness collects every worker-thread failure
             worker_errors.append(error)
@@ -287,7 +287,7 @@ def test_provider_tool_stream_promotes_answer_once_into_tui_scrollback(tmp_path,
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 
-    _assistant, _calls, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
+    _, _, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
     command_loop.agent_output(content)
 
     assert emitted == [answer]
@@ -327,7 +327,7 @@ def test_provider_tool_stream_publishes_only_the_text_written_after_the_search(t
     emitted = []
     monkeypatch.setattr(command_loop, "emit_agent_output", emitted.append)
 
-    _assistant, _calls, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
+    _, _, content = command_loop.agent.model.request([{"role": "user", "content": "search"}], None)
     command_loop.agent_output(content)
 
     assert emitted == [lead, rest]

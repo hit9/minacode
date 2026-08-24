@@ -920,7 +920,7 @@ class ToolRunner:
 
     @classmethod
     def approval_legend(cls, actions: list[tuple[str, str]], view_label: str = "") -> str:
-        offered = {answer for _label, answer in actions}
+        offered = {answer for _, answer in actions}
         segments = [text.format(label=view_label) for answer, text in cls.APPROVAL_LEGEND_SEGMENTS if answer in offered]
         return " · ".join(segments) + " · else reason"
 

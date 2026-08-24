@@ -378,7 +378,7 @@ class ToolScript(Tool):
         budget.pause()
         try:
             with capture.paused():
-                status, message, _observation = self._run_nested(runner, call)
+                status, message, _ = self._run_nested(runner, call)
         finally:
             budget.resume()
         if status == "refused":

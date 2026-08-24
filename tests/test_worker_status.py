@@ -57,7 +57,7 @@ def test_working_divider_marks_inflight_worker(tmp_path):
     parent.worker = worker
 
     def label():
-        return "".join(text for _style, text in loop.view.queue_divider_fragments())
+        return "".join(text for _, text in loop.view.queue_divider_fragments())
 
     assert "[worker]" not in label()
     worker._active_turn_messages.append({"role": "user", "content": "order"})

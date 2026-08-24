@@ -212,7 +212,7 @@ class CommandCompleter(Completer):
                     score = 2
                 yield score, len(lower), lower, path
 
-        return [path for _score, _length, _lower, path in heapq.nsmallest(self.MAX_ROWS, ranked())]
+        return [path for _, _, _, path in heapq.nsmallest(self.MAX_ROWS, ranked())]
 
     def _mcp_completions(self, query: str, start: int) -> Iterator[Completion]:
         """After "@mcp:": servers, then "server." expands to that server's tools."""

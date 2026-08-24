@@ -856,7 +856,7 @@ def test_tool_runner_job_wait_starts_live_preview_with_budget(tmp_path, monkeypa
     # A status without a timeout holds nothing and opens no live region.
     events.clear()
     runner.run([ToolCall("call_2", "Job", [{"action": "status", "job": "job.1"}])])
-    assert not any(kind == "start" for kind, _text in events)
+    assert not any(kind == "start" for kind, _ in events)
 
 
 def test_uiprinter_renders_bash_preview_like_live_output():
@@ -887,4 +887,4 @@ def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
     assert ("fg:#79c0ff", "cd") in segments
     assert ("fg:#79c0ff", "printf") in segments
     assert ("fg:#a5d6ff", "'%s\\n'") in segments
-    assert not any("bg:" in style for style, _text in segments)
+    assert not any("bg:" in style for style, _ in segments)

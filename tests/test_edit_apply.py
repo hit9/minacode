@@ -28,7 +28,7 @@ from minacode.tools import CodeIndex, EditTool, ReadTool
 )
 def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, raw_edits):
     tool = EditTool(session(tmp_path), ["code.txt", raw_edits])
-    _path, edits = tool.parse()
+    _, edits = tool.parse()
     single = tool.apply(original, edits)
     original_lines = ReadTool.split_lines(original)
     plan = EditBatchPlan(tool.session)
@@ -69,7 +69,7 @@ def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, ra
 )
 def test_single_and_batch_edit_application_raise_the_same_error(tmp_path, original, raw_edits):
     tool = EditTool(session(tmp_path), ["code.txt", raw_edits])
-    _path, edits = tool.parse()
+    _, edits = tool.parse()
     original_lines = ReadTool.split_lines(original)
     plan = EditBatchPlan(tool.session)
     state = plan.FileState("code.txt", [plan.Line(line, index) for index, line in enumerate(original_lines)], original_lines, True)

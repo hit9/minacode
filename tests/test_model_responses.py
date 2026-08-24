@@ -324,7 +324,7 @@ def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(t
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    _assistant, calls, content = model.request([{"role": "user", "content": "make the change"}], None)
+    _, calls, content = model.request([{"role": "user", "content": "make the change"}], None)
 
     promoted = ("output_done", "I am editing the files.")
     assert timeline.index(promoted) < timeline.index(("wire", "tool arguments"))
@@ -366,7 +366,7 @@ def test_responses_stream_promotes_completed_text_across_provider_call(tmp_path,
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
 
-    _assistant, calls, content = model.request([{"role": "user", "content": "weather?"}], None)
+    _, calls, content = model.request([{"role": "user", "content": "weather?"}], None)
 
     promoted = ("output_done", "The answer is sunny.")
     clear = ("", "")
@@ -407,7 +407,7 @@ def test_responses_stream_promotes_when_output_item_added_is_missing(tmp_path, m
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    _assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, calls, content = model.request([{"role": "user", "content": "hi"}], None)
 
     promoted = ("output_done", "searched")
     assert timeline.count(promoted) == 1
@@ -506,7 +506,7 @@ def test_responses_incomplete_for_another_reason_still_returns_its_output(tmp_pa
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "partial"}]}],
     }
 
-    _assistant, calls, content = model.responses_result(result)
+    _, calls, content = model.responses_result(result)
 
     assert content == "partial"
     assert calls == []
@@ -910,7 +910,7 @@ def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkey
     tools = [BashTool.schema(False)]
 
     # First request: non-empty tools, provider returns a valid call
-    assistant, calls, _content = model.request([{"role": "user", "content": "run it"}], tools)
+    assistant, calls, _ = model.request([{"role": "user", "content": "run it"}], tools)
     assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert assistant["tool_calls"][0]["id"] == "call_1"
     assert any(item.get("type") == "function_call" for item in assistant["_responses_output"])
@@ -921,7 +921,7 @@ def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkey
         assistant,
         {"role": "tool", "tool_call_id": "call_1", "content": "hi"},
     ]
-    _final, final_calls, final_content = model.request(history, tools)
+    _, final_calls, final_content = model.request(history, tools)
     assert final_content == "done"
     assert final_calls == []
 

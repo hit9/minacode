@@ -320,9 +320,9 @@ def test_tool_output_viewer_opens_a_stored_script_in_the_scrolling_viewer(tmp_pa
 
     tool_output_viewer(command_loop)
 
-    listing = "".join(value for _style, value in modal.frames[0])
+    listing = "".join(value for _, value in modal.frames[0])
     assert "ToolScript call 30 lines" in listing
-    frames = ["".join(value for _style, value in frame) for frame in modal.frames]
+    frames = ["".join(value for _, value in frame) for frame in modal.frames]
     viewer = [frame for frame in frames if "Script · tr.1 · read-only" in frame]
     assert viewer, "the entry hands off to the read-only script viewer"
     assert " 1  x0 = 0" in viewer[0]  # numbered, so a traceback's line N is findable
@@ -354,7 +354,7 @@ def test_tool_output_viewer_shows_a_failed_script_with_its_traceback(tmp_path):
 
     tool_output_viewer(command_loop)
 
-    viewer = "".join(value for _style, value in modal.frames[-1])
+    viewer = "".join(value for _, value in modal.frames[-1])
     assert " 2  print(rows[2])" in viewer
     assert "IndexError: list index out of range" in viewer
     assert 'File "<toolscript>", line 2' in viewer
@@ -370,6 +370,6 @@ def test_tool_output_viewer_shows_the_whole_command_not_the_clipped_log_line(tmp
 
     tool_output_viewer(command_loop)
 
-    viewer = next(frame for frame in ("".join(v for _s, v in f) for f in modal.frames) if "read-only" in frame)
+    viewer = next(frame for frame in ("".join(v for _, v in f) for f in modal.frames) if "read-only" in frame)
     assert "vendor/29" in viewer  # the tail of the command survived
     assert "..." not in viewer.split("── result")[0]

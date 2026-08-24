@@ -315,7 +315,7 @@ class TuiApp:
             return []
         typing = bool(self.input_buffer.text)
         parts: StyleAndTextTuples = [("ansibrightblack", LogBlock.prefix(2, LogEdge.CONTINUE))]
-        for index, (label, _answer) in enumerate(self._approval_actions):
+        for index, (label, _) in enumerate(self._approval_actions):
             focused = index == self._approval_focus and not typing
             style = "class:approval.action.focused" if focused else "class:approval.action.dim" if typing else "class:approval.action"
             parts.append((style, f" {label} "))

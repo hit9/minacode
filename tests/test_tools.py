@@ -802,7 +802,7 @@ def test_uiprinter_renders_stored_result_dim():
 def test_uiprinter_renders_tool_root_without_generic_prefix():
     block = LogBlock([LogLine("Read", "minacode.py 0:100 → tr.6 [auto]", LogRole.TOOL)])
     segments = UiPrinter(output_fn=lambda text: None).log_segments(block)
-    text = "".join(value for _style, value in segments)
+    text = "".join(value for _, value in segments)
 
     assert text == "  Read  minacode.py 0:100 → tr.6 [auto]\n"
     assert any(style == "fg:default" and "minacode.py 0:100 → tr.6 [auto]" in value for style, value in segments)

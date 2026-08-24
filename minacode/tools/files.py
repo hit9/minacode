@@ -522,7 +522,7 @@ class EditTool(Tool):
         return TurnDiff(key="", turn=0, path=path, diff=diff, before=getattr(self, "last_before", ""), after=getattr(self, "last_after", ""))
 
     def preview(self) -> str:
-        path, original, _, result, _edits = self.build()
+        path, original, _, result, _ = self.build()
         if result.content == original and os.path.exists(path):
             raise ToolError(self.no_changes_error(original, result))
         return self.diff(path, original, result.content) or f"Edit({path})"

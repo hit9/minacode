@@ -42,7 +42,7 @@ def test_choice_navigation_uses_shared_modal_protocol(tmp_path):
     result = choice_application(command_loop, "Pick", ("a", "b", "c"), {"a": "Alpha", "b": "Beta", "c": "Gamma"}, "", set())
 
     assert result == "b"
-    assert "Beta" in "".join(text for frame in modal.frames for _style, text in frame)
+    assert "Beta" in "".join(text for frame in modal.frames for _, text in frame)
 
 def test_provider_selection_chains_provider_model_api_and_reasoning(tmp_path, monkeypatch):
     command_loop = loop(tmp_path)
@@ -402,7 +402,7 @@ def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monk
         modal = app.modal
         if modal is None:
             return ""
-        return "".join(text for _style, text in modal.fragments_fn()).splitlines()[0]
+        return "".join(text for _, text in modal.fragments_fn()).splitlines()[0]
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)
@@ -469,7 +469,7 @@ def test_diff_viewer_switches_tabs_and_opens_selected_file(tmp_path):
     assert any(("class:tab.active", " Session ") in frame for frame in switched.frames)
     assert switched.exclusive == [True]
     assert opened.exclusive == [True]
-    text = "".join(text for frame in opened.frames for _style, text in frame)
+    text = "".join(text for frame in opened.frames for _, text in frame)
     assert "Edit · b.py" in text
     assert "[diff]" in text
 
@@ -482,8 +482,8 @@ def test_diff_viewer_ctrl_d_scrolls_file_preview(tmp_path):
     command_loop.tui = scrolled
     diff_viewer(command_loop)
 
-    initial_text = "".join(text for frame in initial.frames for _style, text in frame)
-    scrolled_text = "".join(text for frame in scrolled.frames for _style, text in frame)
+    initial_text = "".join(text for frame in initial.frames for _, text in frame)
+    scrolled_text = "".join(text for frame in scrolled.frames for _, text in frame)
     assert initial_text != scrolled_text
     assert "[diff]" in scrolled_text
 
@@ -492,7 +492,7 @@ def test_empty_diff_viewer_reports_zero_position(tmp_path):
     modal = ModalHarness(["q"])
     command_loop.tui = modal
     diff_viewer(command_loop)
-    text = "".join(text for frame in modal.frames for _style, text in frame)
+    text = "".join(text for frame in modal.frames for _, text in frame)
 
     assert "No diffs" in text
     assert "[0/0]" in text

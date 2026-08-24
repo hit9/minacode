@@ -193,7 +193,7 @@ class Modal:
         self.exclusive = kwargs.get("exclusive", False)
 
     def text(self) -> str:
-        return "".join(fragment for _style, fragment in self.fragments())
+        return "".join(fragment for _, fragment in self.fragments())
 
 
 def viewer(tmp_path, count=3):

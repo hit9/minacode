@@ -337,18 +337,18 @@ def test_quick_hint_flow_lays_chips_horizontally_and_wraps_between_chips():
 
     # Unknown width (0) keeps the single horizontal row too, letting the window wrap as fallback.
     unknown = flow(("a", "b"), columns=0, focus=-1, picked=())
-    assert "\n" not in [text for _style, text in unknown]
+    assert "\n" not in [text for _, text in unknown]
 
     # Narrow: " run the tests " (15) fits alone, but " b " would not fit the remaining row,
     # so it wraps to its own line; no chip is ever split and no bar appears mid-row.
     narrow = flow(("run the tests", "b"), columns=16, focus=-1, picked=())
-    lines = "".join(text for _style, text in narrow)
+    lines = "".join(text for _, text in narrow)
     assert lines == " run the tests \n b "
     assert "\u2502" not in lines
 
     # A chip wider than the whole row still stays whole on its own line.
     lone = flow(("构建文档并同步中文 locale 目录", "x"), columns=12, focus=-1, picked=())
-    lines = "".join(text for _style, text in lone)
+    lines = "".join(text for _, text in lone)
     assert lines.startswith(" 构建文档并同步中文 locale 目录 ")
     assert " \u2502 " not in lines
 
@@ -360,12 +360,12 @@ def test_quick_hint_flow_lays_chips_horizontally_and_wraps_between_chips():
     # At most MAX_QUICK_HINTS_PER_ROW chips per row even when the terminal is wide: the fourth
     # short hint starts its own line instead of crowding one row.
     four = flow(("a", "b", "c", "d"), columns=100, focus=-1, picked=())
-    lines = "".join(text for _style, text in four)
+    lines = "".join(text for _, text in four)
     assert lines == " a  \u2502  b  \u2502  c \n d "
 
     # Width and the per-row cap both end a row; the width check still wins on a narrow column.
     cap_and_width = flow(("a", "b", "c", "d"), columns=5, focus=-1, picked=())
-    assert "".join(text for _style, text in cap_and_width) == " a \n b \n c \n d "
+    assert "".join(text for _, text in cap_and_width) == " a \n b \n c \n d "
 
 def test_quick_hint_pick_and_send_still_work_after_wrapping(monkeypatch):
     """Chips that wrap onto multiple visual lines keep Tab focus, Enter pick/unpick, and the

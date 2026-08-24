@@ -183,7 +183,7 @@ def test_tool_argument_rendering_tracks_theme_without_changing_text(monkeypatch)
     for mode in ("dark", "light"):
         monkeypatch.setattr(Theme, "_mode", mode)
         segments = UiPrinter(output_fn=lambda text: None).log_segments(block)
-        rendered.append(("".join(text for _style, text in segments), {style for style, text in segments if text.strip()}))
+        rendered.append(("".join(text for _, text in segments), {style for style, text in segments if text.strip()}))
 
     assert rendered[0][0] == rendered[1][0] == '  Search  "needle" path=src 0:20\n'
     assert rendered[0][1] != rendered[1][1]
@@ -203,8 +203,8 @@ def test_standalone_turn_rows_carry_no_edge_glyph(tmp_path, monkeypatch):
         assert all(line.edge is LogEdge.NONE for line in block.items)
 
     ui = UiPrinter(output_fn=lambda text: None)
-    builtin = "".join(text for _style, text in ui.log_segments(blocks[0])).splitlines()[0]
-    tool_root = "".join(text for _style, text in ui.log_segments(LogBlock([LogLine("Bash", "rg -n cache minacode/", LogRole.TOOL)]))).splitlines()[0]
+    builtin = "".join(text for _, text in ui.log_segments(blocks[0])).splitlines()[0]
+    tool_root = "".join(text for _, text in ui.log_segments(LogBlock([LogLine("Bash", "rg -n cache minacode/", LogRole.TOOL)]))).splitlines()[0]
     user_echo = "\u2022 [Image #1 \u00b7 ef739e37-....png]"
     # All three rows start their content in the same column (two-cell indent, no edge).
     assert builtin.index("search") == tool_root.index("Bash") == user_echo.index("[Image") == 2

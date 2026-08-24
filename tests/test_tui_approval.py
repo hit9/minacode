@@ -69,12 +69,12 @@ def test_tui_approval_form_row_shows_focus_and_dims_while_typing():
     app = _approval_app()
 
     def row():
-        return "".join(text for _style, text in app.approval_form_fragments())
+        return "".join(text for _, text in app.approval_form_fragments())
 
     def styles():
-        return [style for style, _text in app.approval_form_fragments()]
+        return [style for style, _ in app.approval_form_fragments()]
 
-    assert all(label in row() for label, _answer in ACTIONS)  # every action is visible, none memorized
+    assert all(label in row() for label, _ in ACTIONS)  # every action is visible, none memorized
     assert "class:approval.action.focused" in styles()
     assert "Tab to move" in row()
 
@@ -182,7 +182,7 @@ def test_tui_approval_prompt_never_renders_a_newline_as_a_control_character(prom
 
     assert app.input_prompt == expected_prefix
     assert app._input_prompt_above == expected_above
-    assert all("\n" not in text for _style, text in app.status_fragments())
+    assert all("\n" not in text for _, text in app.status_fragments())
     assert app.full_input_prompt() == prompt  # nothing is dropped, only relocated
 
     app.input_buffer.insert_text("typed")

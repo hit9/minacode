@@ -152,7 +152,7 @@ def test_agent_never_reshapes_tools_for_a_live_followup(tmp_path):
 
     assert agent.run("initial request") == "done"
     assert len(agent.model.requests) == 2  # one request per step, none inserted for the follow-ups
-    assert all(tools for _messages, tools in agent.model.requests)
+    assert all(tools for _, tools in agent.model.requests)
     assert agent.model.requests[0][1] == agent.model.requests[1][1]
     first_request = "\n".join(message.get("content") or "" for message in agent.model.requests[0][0])
     assert "first follow-up" in first_request and "second follow-up" in first_request
@@ -220,7 +220,7 @@ def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
 
     assert agent.run("initial request") == "done"
     assert len(agent.model.requests) == 4
-    tool_blocks = [tools for _messages, tools in agent.model.requests]
+    tool_blocks = [tools for _, tools in agent.model.requests]
     assert all(tools and tools == tool_blocks[0] for tools in tool_blocks)
 
     # Messages only ever grow: each request is a prefix of the next, once the one-shot follow-up
@@ -228,7 +228,7 @@ def test_agent_keeps_one_tool_block_for_the_whole_turn(tmp_path):
     def normalized(messages):
         return [str(message.get("content") or "").replace(LIVE_FOLLOWUP_PREFIX, "") for message in messages]
 
-    lengths = [len(messages) for messages, _tools in agent.model.requests]
+    lengths = [len(messages) for messages, _ in agent.model.requests]
     assert lengths == sorted(lengths) and len(set(lengths)) == len(lengths)
     for earlier, later in zip(agent.model.requests, agent.model.requests[1:]):
         assert normalized(later[0])[: len(earlier[0])] == normalized(earlier[0])
@@ -260,7 +260,7 @@ def test_agent_commits_textual_tool_call_correction_to_history(tmp_path):
 
     assert agent.run("initial request") == "done"
     assert len(agent.model.requests) == 3
-    assert all(tools == agent.model.requests[0][1] for _messages, tools in agent.model.requests)
+    assert all(tools == agent.model.requests[0][1] for _, tools in agent.model.requests)
     retry_messages = agent.model.requests[1][0]
     assert retry_messages[-1] == correction
     assert retry_messages[:-1] == agent.model.requests[0][0]
@@ -297,9 +297,9 @@ def test_agent_shares_textual_tool_call_limit_across_corrections(tmp_path):
         agent.run("initial request")
 
     assert len(agent.model.requests) == engine_module.MAX_TEXTUAL_TOOL_CORRECTIONS + 1
-    assert all(tools == agent.model.requests[0][1] and tools for _messages, tools in agent.model.requests)
+    assert all(tools == agent.model.requests[0][1] and tools for _, tools in agent.model.requests)
     # Each correction stacks onto the previous one, so the retries grow by exactly one message.
-    lengths = [len(messages) for messages, _tools in agent.model.requests]
+    lengths = [len(messages) for messages, _ in agent.model.requests]
     assert lengths == [lengths[0] + index for index in range(len(lengths))]
     assert output == []
     assert all(pseudo not in str(message.get("content") or "") for message in s.messages)

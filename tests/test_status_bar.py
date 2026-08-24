@@ -24,15 +24,15 @@ def test_bash_live_preview_status_shows_wait_countdown_when_deadline_set(monkeyp
     preview.started_at = 100.0
 
     preview.deadline = 103.0
-    status = "".join(text for _style, text in preview.frame_rows()[0])
+    status = "".join(text for _, text in preview.frame_rows()[0])
     assert " · 3s left" in status
 
     preview.deadline = 99.0  # 已过期的预算:剩余显示 0s,不出现负数
-    status = "".join(text for _style, text in preview.frame_rows()[0])
+    status = "".join(text for _, text in preview.frame_rows()[0])
     assert " · 0s left" in status
 
     preview.deadline = None  # Bash 无预算:状态行与现状一致,不带倒计时
-    status = "".join(text for _style, text in preview.frame_rows()[0])
+    status = "".join(text for _, text in preview.frame_rows()[0])
     assert "s left" not in status
 
 def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch):
@@ -43,7 +43,7 @@ def test_status_bar_clips_wide_model_name_by_display_width(tmp_path, monkeypatch
         patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((20, 24)))
         fragments = StatusBar(s).fragments(sweep=False, show_elapsed=False)
 
-    assert get_cwidth("".join(text for _style, text in fragments)) < 20
+    assert get_cwidth("".join(text for _, text in fragments)) < 20
 
 def test_status_bar_idle_clip_keeps_role_colors(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -59,7 +59,7 @@ def test_status_bar_idle_clip_keeps_role_colors(tmp_path, monkeypatch):
     assert len(styles) > 1
     assert Theme.style("status.base") in styles
     assert Theme.style("status.reason") in styles
-    assert get_cwidth("".join(text for _style, text in fragments)) < 30
+    assert get_cwidth("".join(text for _, text in fragments)) < 30
 
 def test_status_bar_clip_fragments_preserves_segment_styles():
     fragments = [("#aaaaaa", "alpha "), ("#bbbbbb", "beta "), ("#cccccc", "gamma")]
@@ -68,7 +68,7 @@ def test_status_bar_clip_fragments_preserves_segment_styles():
 
     # The clip cuts mid-second segment; each surviving segment keeps its own style and the
     # ellipsis inherits the style of the segment it interrupted.
-    assert "".join(text for _style, text in clipped) == "alpha bet..."
+    assert "".join(text for _, text in clipped) == "alpha bet..."
     assert {style for style, _ in clipped} == {"#aaaaaa", "#bbbbbb"}
 
 def test_status_bar_clip_fragments_mirrors_clip_width_ellipsis():
@@ -77,8 +77,8 @@ def test_status_bar_clip_fragments_mirrors_clip_width_ellipsis():
     assert StatusBar.clip_fragments(fragments, 0) == [("", "")]
     for width in (1, 2, 3, 4, 8):
         clipped = StatusBar.clip_fragments(fragments, width)
-        assert "".join(text for _style, text in clipped) == Text.clip_width("hello world", width)
-        assert get_cwidth("".join(text for _style, text in clipped)) <= width
+        assert "".join(text for _, text in clipped) == Text.clip_width("hello world", width)
+        assert get_cwidth("".join(text for _, text in clipped)) <= width
 
 def test_status_bar_sweep_shares_styles_between_neighbouring_cells(tmp_path, monkeypatch):
     s = session(tmp_path)
@@ -91,7 +91,7 @@ def test_status_bar_sweep_shares_styles_between_neighbouring_cells(tmp_path, mon
     seen = set()
     for frame in range(120):  # four seconds of frames
         now[0] = 1000.0 + frame / 30
-        styles = [style for style, _text in bar.sweep_fragments(text)]
+        styles = [style for style, _ in bar.sweep_fragments(text)]
         assert len(styles) == len(text)
         seen.update(styles)
         runs.append(1 + sum(1 for left, right in itertools.pairwise(styles) if left != right))
@@ -111,7 +111,7 @@ def test_status_bar_sweep_crest_travels_and_stays_within_the_palette(tmp_path, m
 
     def crest_at(offset: float) -> int:
         now[0] = 1000.0 + offset
-        styles = [style for style, _text in bar.sweep_fragments(text)]
+        styles = [style for style, _ in bar.sweep_fragments(text)]
         crest = Theme.style("status.sweep.crest")
         return min(range(len(styles)), key=lambda index: sum(abs(a - b) for a, b in zip(Theme.rgb(styles[index]), Theme.rgb(crest), strict=True)))
 
@@ -136,7 +136,7 @@ def test_status_bar_does_not_treat_long_model_calls_as_pressure(tmp_path, monkey
     now[0] = 121.0  # Same sweep phase after a full configured timeout.
 
     assert bar.sweep_fragments("status") == initial
-    assert all("resend" not in text for text, _role in bar.entries(show_elapsed=True))
+    assert all("resend" not in text for text, _ in bar.entries(show_elapsed=True))
 
 def test_status_bar_shows_last_request_cache_hit_ratio(tmp_path):
     s = session(tmp_path)
@@ -153,7 +153,7 @@ def test_status_bar_shows_last_request_cache_hit_ratio(tmp_path):
     assert ctx_text().endswith("· cache 87%")
     # Rendering exercises the merged ctx/cache segment end-to-end.
     rendered = bar.fragments(sweep=False, show_elapsed=False)
-    assert any("cache 87%" in text for _style, text in rendered)
+    assert any("cache 87%" in text for _, text in rendered)
 
     s.usage.last_cached_prompt_tokens = 0
     assert ctx_text().endswith("· cache 0%")
@@ -218,7 +218,7 @@ def test_status_bar_shows_step_only_near_max_steps(tmp_path):
     s.settings.max_steps = 200
 
     s.state.turn_step = 1
-    assert all(not text.startswith("step ") for text, _role in bar.entries(show_elapsed=True))
+    assert all(not text.startswith("step ") for text, _ in bar.entries(show_elapsed=True))
 
     s.state.turn_step = 160
     assert ("step 160/200", "warn") in bar.entries(show_elapsed=True)

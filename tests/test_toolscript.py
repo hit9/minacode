@@ -441,7 +441,7 @@ class TestConfirmationBlockShowsScript:
         runner.text_viewer = views.append
         replies = iter(["v", "y"])
         runner.input_fn = lambda _prompt: next(replies)
-        confirmed, _reason = runner.confirm(ToolCall("ts-1", "ToolScript", tool.args), tool)
+        confirmed, _ = runner.confirm(ToolCall("ts-1", "ToolScript", tool.args), tool)
         assert confirmed
         assert [view.label for view in views] == ["script"]
         assert views[0].text == code and views[0].lexer == "python"
@@ -631,7 +631,7 @@ class TestScriptLogShape:
         tallest. Every rendered row of the nested region carries it now, in one column."""
         s = _mcp_session(tmp_path)
         blocks = self._blocks(s, 'print(call("Bash", {"command": "printf one; printf two"}))\n')
-        rows = [row for block in blocks for row in "".join(text for _style, text in UiPrinter(output_fn=lambda _text: None).log_segments(block)).splitlines()]
+        rows = [row for block in blocks for row in "".join(text for _, text in UiPrinter(output_fn=lambda _text: None).log_segments(block)).splitlines()]
         start = next(index for index, row in enumerate(rows) if row.endswith("Bash printf one; printf two"))
         end = next(index for index, row in enumerate(rows) if "calls 1" in row)  # the script's own result line closes the region
         nested = rows[start:end]

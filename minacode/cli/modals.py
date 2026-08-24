@@ -150,8 +150,8 @@ def mcp_manager(loop: CommandLoop) -> None:
             mode = "auto" if config.auto_connect else "manual"
             count = len(mcp.tools.get(config.name, []))
             server_rows.append((config.name, status, mode, count))
-        name_width = max(len(name) for name, *_rest in server_rows)
-        status_width = max(len(mcp.STATUS_MARKER + " disconnecting"), *(len(status) for _name, status, _mode, _count in server_rows))
+        name_width = max(len(name) for name, *_ in server_rows)
+        status_width = max(len(mcp.STATUS_MARKER + " disconnecting"), *(len(status) for _, status, _, _ in server_rows))
         return {name: f"{name:<{name_width}}  {status:<{status_width}}  {mode:<6}  {count:>3} tools" for name, status, mode, count in server_rows}
 
     def preview(name: str) -> str:
@@ -587,7 +587,7 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
         if width in wrapped:
             return wrapped[width]
         lines: list[StyleAndTextTuples] = []
-        label_width = max((get_cwidth(label) for label, _value in header_rows), default=0)
+        label_width = max((get_cwidth(label) for label, _ in header_rows), default=0)
         for label, value in header_rows:
             padded = label + " " * max(0, label_width - get_cwidth(label))
             lines.extend(
@@ -690,10 +690,10 @@ def diff_viewer(loop: CommandLoop) -> None:
 
     def list_fragments(parts: StyleAndTextTuples, sections: list[tuple[str, str, str]]) -> None:
         parts.append(("", "\n"))
-        counts = [loop.diff_counts(diff) for _status, _path, diff in sections]
-        added_width = max(len(str(added)) for added, _removed in counts)
-        removed_width = max(len(str(removed)) for _added, removed in counts)
-        for index, ((_status, path, _diff), (added, removed)) in enumerate(zip(sections, counts)):
+        counts = [loop.diff_counts(diff) for _, _, diff in sections]
+        added_width = max(len(str(added)) for added, _ in counts)
+        removed_width = max(len(str(removed)) for _, removed in counts)
+        for index, ((_, path, _), (added, removed)) in enumerate(zip(sections, counts)):
             selected = index == state.file
             marker = "> " if selected else "  "
             style = "ansicyan" if selected else "class:choice.disabled"
@@ -783,9 +783,9 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
     def list_rows(width: int) -> list[StyleAndTextTuples]:
         columns = [segment_columns(segment) for segment in segments]
         key_width = max((get_cwidth(segment.key) for segment in segments), default=0)
-        when_width = max((get_cwidth(when) for when, _kind, _messages in columns), default=0)
-        kind_width = max((get_cwidth(kind) for _when, kind, _messages in columns), default=0)
-        messages_width = max((get_cwidth(messages) for _when, _kind, messages in columns), default=0)
+        when_width = max((get_cwidth(when) for when, _, _ in columns), default=0)
+        kind_width = max((get_cwidth(kind) for _, kind, _ in columns), default=0)
+        messages_width = max((get_cwidth(messages) for _, _, messages in columns), default=0)
         rows: list[StyleAndTextTuples] = []
         for index, (segment, (when, kind, messages)) in enumerate(zip(segments, columns)):
             selected = index == state.selected
@@ -800,7 +800,7 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
         """What the compaction was, then what it kept. The stored excerpt stays in the segment for
         the model's RecallContext, but it is the raw conversation the summary already stands for —
         showing it here buried the one thing worth reading."""
-        when, _kind, _messages = segment_columns(segment)
+        when, _, _ = segment_columns(segment)
         headline, caveat = segment_story(segment)
         rows: list[StyleAndTextTuples] = [
             [("ansicyan", f"  {segment.key}"), ("class:choice.disabled", f"  {when}")],

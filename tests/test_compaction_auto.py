@@ -34,7 +34,7 @@ def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
     # summary, which is filtered out. So a handful of large messages after that user message left an
     # empty head, and every following request went out over budget without compacting anything.
     for steps in (2, 6, 8):
-        _s, context = _huge_history(tmp_path, steps=steps)
+        _, context = _huge_history(tmp_path, steps=steps)
         budget = context.request_token_budget()
         before = context.request_tokens(context.model_messages("system"), None)
         model = _CountingModel()
@@ -94,7 +94,7 @@ def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path):
     # Same guard for the current-turn pass, and it must not carry across turns: a fresh turn is a
     # different (shorter) list, and blocking it because the previous turn was longer would leave the
     # new one uncompactable.
-    _s, context = _huge_history(tmp_path, steps=2)
+    _, context = _huge_history(tmp_path, steps=2)
     model = _CountingModel()
     turn = [{"role": "user", "content": "request"}, *({"role": "assistant", "content": "t " + "y" * 160_000} for _ in range(30))]
 

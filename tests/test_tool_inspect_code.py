@@ -170,7 +170,7 @@ def test_log_block_aligns_multiline_tool_arguments():
     expected = '  Bash  git commit -m "title\n        body"\n    └ done'
 
     assert str(block) == expected
-    rendered = "".join(text for _style, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
+    rendered = "".join(text for _, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
     assert rendered == expected + "\n"
 
 def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
@@ -179,7 +179,7 @@ def test_log_block_wraps_long_tool_arguments_with_hanging_indent(monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((40, 24)))
-        rendered = "".join(text for _style, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
+        rendered = "".join(text for _, text in UiPrinter(output_fn=lambda text: None).log_segments(block))
 
     assert rendered.splitlines() == [
         '  Bash  git commit -m "system prompt:',

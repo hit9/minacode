@@ -99,7 +99,7 @@ def test_compaction_prefix_survives_an_earlier_summary_and_repeated_schemas(tmp_
     ]
     context = ContextManager(live)
     compacted, _keep = context.compaction_parts()
-    messages, _tools = context.compaction_request(compacted)
+    messages, _ = context.compaction_request(compacted)
 
     sent = context.model_messages(live.system_prompt)
     assert messages[:-1] == sent[: len(messages) - 1]
@@ -116,7 +116,7 @@ def test_turn_scope_compaction_slices_the_same_projection(tmp_path):
     compacted, _keep = context.turn_compaction_parts(turn)
     assert compacted
 
-    messages, _tools = context.compaction_request(compacted, turn)
+    messages, _ = context.compaction_request(compacted, turn)
 
     sent = context.model_messages(live.system_prompt, turn)
     assert messages[:-1] == sent[: len(messages) - 1]
@@ -168,7 +168,7 @@ def test_turn_scope_prefix_stops_where_the_turn_keeps(tmp_path):
     compacted, keep = context.turn_compaction_parts(turn)
     assert compacted and keep  # the split is real, not a degenerate all-or-nothing
 
-    messages, _tools = context.compaction_request(compacted, turn)
+    messages, _ = context.compaction_request(compacted, turn)
 
     head = len(context.model_header(live.system_prompt)) + len(live.messages)
     assert len(messages) - 1 - head == len(compacted)
@@ -186,7 +186,7 @@ def test_echo_source_covers_the_message_the_slice_adds(tmp_path):
     assert order not in [message["content"] for message in compacted]
     assert order in [message["content"] for message in keep]
 
-    messages, _tools = context.compaction_request(compacted)
+    messages, _ = context.compaction_request(compacted)
 
     assert order not in context.compaction_echo_source(compacted)  # what it used to be checked against
     assert order in context.compaction_echo_source(messages[:-1])  # what the model is actually handed
@@ -207,7 +207,7 @@ def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
     assert not context.compaction_parts()[0]  # the ordinary window yields nothing, forcing the fallback
     compacted, _keep = context.compaction_parts(ContextManager.COMPACT_MINIMUM_RECENT)
 
-    messages, _tools = context.compaction_request(compacted, recent=ContextManager.COMPACT_MINIMUM_RECENT)
+    messages, _ = context.compaction_request(compacted, recent=ContextManager.COMPACT_MINIMUM_RECENT)
 
     carried = messages[len(context.model_header(live.system_prompt)) : -1]
     assert len(carried) >= len(compacted)
@@ -315,7 +315,7 @@ def test_recent_window_is_a_floor_for_small_messages_and_a_ceiling_for_large_one
     for index in range(58):
         small.messages.extend([{"role": "user", "content": f"q{index}"}, {"role": "assistant", "content": f"a{index}"}])
     small.messages.extend([{"role": "user", "content": "latest"}, {"role": "assistant", "content": "answer"}])
-    _compacted, keep = ContextManager(small).compaction_parts()
+    _, keep = ContextManager(small).compaction_parts()
     assert len(keep) == ContextManager.COMPACT_RECENT_MESSAGES  # was 2
 
     large = session(tmp_path / "large")
@@ -340,7 +340,7 @@ def test_the_slice_and_the_split_agree_on_where_the_cut_is(tmp_path):
         compacted, _keep = context.compaction_parts(recent)
         if not compacted:
             continue
-        messages, _tools = context.compaction_request(compacted, recent=recent)
+        messages, _ = context.compaction_request(compacted, recent=recent)
         carried = messages[len(context.model_header(live.system_prompt)) : -1]
         for message in compacted:
             assert message in carried, f"recent={recent} evicted a message the summary never saw"

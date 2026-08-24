@@ -47,12 +47,12 @@ def test_emit_indents_plain_text_without_losing_its_style(tmp_path):
 
     error = ui.indent_segments(ui.segments("Error: provider is down"), margin)
     assert error[0] == ("ansired", margin)  # the margin carries the style of the line it opens
-    assert "".join(text for _style, text in error) == f"{margin}Error: provider is down\n"
+    assert "".join(text for _, text in error) == f"{margin}Error: provider is down\n"
 
     two_lines = ui.indent_segments(ui.segments("first\nsecond"), margin)
-    assert "".join(text for _style, text in two_lines) == f"{margin}first\n{margin}second\n"
+    assert "".join(text for _, text in two_lines) == f"{margin}first\n{margin}second\n"
 
-    assert "".join(text for _style, text in ui.indent_segments(ui.segments(""), margin)) == "\n"
+    assert "".join(text for _, text in ui.indent_segments(ui.segments(""), margin)) == "\n"
 
 def test_turn_output_shares_one_column_and_session_chrome_does_not(tmp_path):
     """One left edge for the exchange: the user's line (its `• ` bullet hanging in the margin),

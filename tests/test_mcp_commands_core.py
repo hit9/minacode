@@ -455,10 +455,10 @@ class TestMCPCommands:
 
         def show_modal(fragments, handle_key):
             assert handle_key("enter") is TUI_MODAL_PENDING
-            assert "● connecting" in "".join(text for _style, text in fragments())
+            assert "● connecting" in "".join(text for _, text in fragments())
             release.set()
             assert repainted.wait(1)
-            assert "● connected" in "".join(text for _style, text in fragments())
+            assert "● connected" in "".join(text for _, text in fragments())
             connected.set()
             return SELECTION_BACK
 
@@ -484,10 +484,10 @@ class TestMCPCommands:
 
         def show_modal(fragments, handle_key):
             assert handle_key("enter") is TUI_MODAL_PENDING
-            assert "● disconnecting" in "".join(text for _style, text in fragments())
+            assert "● disconnecting" in "".join(text for _, text in fragments())
             release.set()
             assert repainted.wait(1)
-            assert "● disconnected" in "".join(text for _style, text in fragments())
+            assert "● disconnected" in "".join(text for _, text in fragments())
             return SELECTION_BACK
 
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
@@ -575,7 +575,7 @@ class TestMCPCommands:
         captured = {}
 
         def show_modal(fragments, _handle_key):
-            captured["text"] = "".join(text for _style, text in fragments())
+            captured["text"] = "".join(text for _, text in fragments())
             return SELECTION_BACK
 
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)

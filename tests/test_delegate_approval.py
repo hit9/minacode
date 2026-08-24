@@ -224,7 +224,7 @@ def test_delegate_view_reflects_a_worker_config_changed_by_c(tmp_path):
     runner.text_viewer = lambda view: seen.append(dict(view.rows))
     runner.worker_config_picker = lambda: setattr(parent.config, "worker_model", "chosen-in-the-c-cycle")
 
-    confirmed, _reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    confirmed, _ = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
 
     assert confirmed
     assert seen and seen[0]["model"] == "chosen-in-the-c-cycle"
@@ -313,7 +313,7 @@ def test_approval_brief_prints_once_however_many_side_trips(tmp_path):
     outputs, prompts = [], []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or next(answers), output_fn=outputs.append)
     runner.text_viewer = lambda view: None
-    confirmed, _reason = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
+    confirmed, _ = runner.confirm(ToolCall("delegate-1", "Delegate", [args]), DelegateTool(parent, [args]))
 
     assert confirmed is True
     assert len(prompts) == 4  # every side trip re-asked
@@ -359,7 +359,7 @@ def test_approval_form_actions_offered_per_tool_and_only_where_they_work(tmp_pat
     assert runner.approval_prompt(False, [("Approve", "")]) == "reason › "
 
     # Every action's answer is a line confirm() already understands, so the two paths cannot drift.
-    for _label, answer in [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]:
+    for _, answer in [("Approve", ""), ("View order", "v"), ("Worker config", "c"), ("Refuse", "n")]:
         typed = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt, a=answer: a, output_fn=lambda text: None)
         typed.text_viewer = lambda view: None
         typed.worker_config_picker = lambda: None
@@ -427,7 +427,7 @@ def test_delegate_order_viewer_wraps_by_terminal_cells(monkeypatch):
     order = "\n".join(["把这个仓库里的审批快捷键改造一遍并补上测试" * 3, "", "```python", "def nested():", "    x = 1", "```"])
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 
-    rows = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
+    rows = "".join(text for _, text in captured["fragments_fn"]()).splitlines()
     assert rows, "the viewer rendered nothing"
     assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
     assert any("把这个仓库里的审批快捷键" in row for row in rows)  # the CJK text is still there, just wrapped
@@ -463,7 +463,7 @@ def test_delegate_order_viewer_is_exclusive_and_scrolls(monkeypatch):
     assert captured["exclusive"] is True  # full-screen alternate-screen viewer
 
     def visible_text() -> str:
-        return "".join(text for _style, text in fragments())
+        return "".join(text for _, text in fragments())
 
     first = visible_text()
     assert "Order · read-only" in first
@@ -509,7 +509,7 @@ def test_delegate_order_viewer_renders_markdown(monkeypatch):
     order = "## Section\n\n- item one\n- item two\n\n```python\nprint(1)\n```"
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
-    rendered = "".join(text for _style, text in captured["fragments_fn"]())
+    rendered = "".join(text for _, text in captured["fragments_fn"]())
     assert "Section" in rendered
     assert "##" not in rendered  # heading marker consumed by the markdown renderer
     assert "```" not in rendered  # code fence consumed too
@@ -534,7 +534,7 @@ def test_delegate_order_viewer_keeps_source_line_breaks(monkeypatch):
     order = "Touch these files:\nminacode/loop.py\nminacode/parser.py\nDo not touch tests."
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "fix things")]))
 
-    rows = [row.strip() for row in "".join(text for _style, text in captured["fragments_fn"]()).splitlines()]
+    rows = [row.strip() for row in "".join(text for _, text in captured["fragments_fn"]()).splitlines()]
     for source_line in order.splitlines():
         assert source_line in rows, f"{source_line!r} was folded into another line"
 
@@ -575,7 +575,7 @@ def test_delegate_order_viewer_header_separator(monkeypatch):
     loop = SimpleNamespace(tui=SimpleNamespace(show_modal=lambda fragments_fn, key_fn, **kwargs: captured.update(fragments_fn=fragments_fn)))
     approval_text_viewer(loop, ApprovalView("order", "order", "", [("title", "fix things")]))
 
-    lines = "".join(text for _style, text in captured["fragments_fn"]()).splitlines()
+    lines = "".join(text for _, text in captured["fragments_fn"]()).splitlines()
     separators = [line for line in lines if line.strip() and set(line) <= {"─", " "}]
     assert separators
     assert all(get_cwidth(line) == 118 for line in separators)  # content width: 120 minus the two-space margins
@@ -600,7 +600,7 @@ def test_delegate_order_viewer_markdown_fits_narrow_terminal(monkeypatch):
     order = '## 标题\n\n- 把这段中文说明加进审批流程并补充测试\n\n```python\nprint("中文")\n```'
     approval_text_viewer(loop, ApprovalView("order", order, "", [("title", "中文标题" * 10)]))
 
-    rendered = "".join(text for _style, text in captured["fragments_fn"]())
+    rendered = "".join(text for _, text in captured["fragments_fn"]())
     rows = rendered.splitlines()
     assert rows, "the viewer rendered nothing"
     assert all(get_cwidth(row) <= 60 for row in rows), max(rows, key=get_cwidth)
@@ -617,7 +617,7 @@ def test_delegate_yolo_without_authorization_still_confirms(tmp_path, monkeypatc
     prompts = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: prompts.append(prompt) or "y", output_fn=lambda text: None)
 
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
     assert len(prompts) == 1  # yolo alone does not skip a Delegate send
 
@@ -631,7 +631,7 @@ def test_delegate_send_refused_does_not_run(tmp_path, monkeypatch):
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda prompt: "n", output_fn=lambda text: None)
 
-    status, message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, message, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "refused"
     assert "refused" in message
     assert not model.requests  # the worker never ran

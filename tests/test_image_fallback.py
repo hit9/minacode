@@ -235,7 +235,7 @@ def test_static_text_only_without_vision_keeps_raw_attempt_and_original_error(tm
     s = session(tmp_path, model="deepseek-chat", vision=False)
     image_file(tmp_path / "shot.png")
     model = FallbackModel([ModelError("Error code: 400 - no vision configured")])
-    agent, _notices = run_with(s, model)
+    agent, _ = run_with(s, model)
 
     with pytest.raises(ModelError, match="no vision configured"):
         agent.run(s.images.recognize("inspect shot.png"))
@@ -268,7 +268,7 @@ def test_multi_image_attachment_is_observed_once_with_both_images(tmp_path):
     image_file(tmp_path / "one.png")
     image_file(tmp_path / "two.png", color=(65, 43, 21))
     model = FallbackModel([ModelError("Error code: 400 - boom"), ("ok", [])])
-    agent, _notices = run_with(s, model)
+    agent, _ = run_with(s, model)
 
     assert agent.run(s.images.recognize("compare one.png two.png")) == "ok"
 
@@ -286,7 +286,7 @@ def test_view_image_observation_400_falls_back_with_the_tool_question(tmp_path):
             ("resolved", []),
         ]
     )
-    agent, _notices = run_with(s, model)
+    agent, _ = run_with(s, model)
 
     assert agent.run(s.images.recognize("debug the screenshot")) == "resolved"
 
@@ -306,7 +306,7 @@ def test_old_image_and_new_attachment_observe_only_the_new_one(tmp_path):
     image_file(tmp_path / "first.png")
     image_file(tmp_path / "second.png", color=(65, 43, 21))
     model = FallbackModel([("first ok", []), ModelError("Error code: 400 - boom"), ("second ok", [])])
-    agent, _notices = run_with(s, model)
+    agent, _ = run_with(s, model)
 
     assert agent.run(s.images.recognize("look at first.png")) == "first ok"
     assert agent.run(s.images.recognize("now second.png")) == "second ok"
@@ -358,7 +358,7 @@ def test_queued_attachment_400_commits_once_after_fallback(tmp_path):
         def cancel(self):
             pass
 
-    agent, _notices = run_with(s, QueueingModel())
+    agent, _ = run_with(s, QueueingModel())
     assert agent.run("start") == "queued ok"
 
     assert s.pending_user_inputs == []
@@ -401,7 +401,7 @@ def test_cancelled_request_does_not_learn(tmp_path):
     s = session(tmp_path, model="main-model", vision=True)
     image_file(tmp_path / "shot.png")
     model = FallbackModel([KeyboardInterrupt()])
-    agent, _notices = run_with(s, model)
+    agent, _ = run_with(s, model)
 
     with pytest.raises(KeyboardInterrupt):
         agent.run(s.images.recognize("inspect shot.png"))
@@ -441,7 +441,7 @@ def test_learned_evidence_not_serialized_and_observation_survives_resume(tmp_pat
     s = session(tmp_path, model="main-model", vision=True)
     image_file(tmp_path / "shot.png")
     model = FallbackModel([ModelError("Error code: 400 - image input unsupported"), ("recovered", [])])
-    agent, _notices = run_with(s, model)
+    agent, _ = run_with(s, model)
 
     assert agent.run(s.images.recognize("inspect shot.png")) == "recovered"
     assert s.image_route.state() == "text_only_learned"
@@ -541,7 +541,7 @@ def test_queued_image_400_fallback_cancelled_keeps_pending_and_no_history_duplic
         def cancel(self):
             pass
 
-    agent, _notices = run_with(s, CancelDuringFallback())
+    agent, _ = run_with(s, CancelDuringFallback())
     with pytest.raises(KeyboardInterrupt):
         agent.run("start")
 
@@ -553,7 +553,7 @@ def test_queued_image_400_fallback_cancelled_keeps_pending_and_no_history_duplic
 
     # a fresh turn re-submits the still-queued image, observes it once, and commits it once
     second = FallbackModel([("replayed ok", [])])
-    agent2, _notices2 = run_with(s, second)
+    agent2, _ = run_with(s, second)
     assert agent2.run("start") == "replayed ok"
     assert second.vision_calls == [(("queued.png",), VISION_OBSERVE_DEFAULT_QUESTION)]
     observations = [m for m in s.messages if ImageInputs.refs(m) and "queued.png" in json.dumps(m)]
@@ -586,7 +586,7 @@ def test_queued_image_400_fallback_manual_retry_observes_once(tmp_path):
         def cancel(self):
             pass
 
-    agent, _notices = run_with(s, RetryDuringFallback())
+    agent, _ = run_with(s, RetryDuringFallback())
     assert agent.run("start") == "queued ok"
 
     # the manual retry re-sends the converted observation: the queued image is observed exactly
@@ -621,7 +621,7 @@ def test_view_image_400_fallback_cancel_keeps_paid_observation(tmp_path):
         def cancel(self):
             pass
 
-    agent, _notices = run_with(s, CancelAfterViewImage())
+    agent, _ = run_with(s, CancelAfterViewImage())
     with pytest.raises(KeyboardInterrupt):
         agent.run("inspect")
 
@@ -657,7 +657,7 @@ def test_queued_image_400_manual_retry_then_cancel_releases_pending(tmp_path):
         def cancel(self):
             pass
 
-    agent, _notices = run_with(s, RetryThenCancel())
+    agent, _ = run_with(s, RetryThenCancel())
     with pytest.raises(KeyboardInterrupt):
         agent.run("start")
 
@@ -689,7 +689,7 @@ def test_queued_image_400_fallback_failure_keeps_paid_observation(tmp_path):
         def cancel(self):
             pass
 
-    agent, _notices = run_with(s, FailingDuringFallback())
+    agent, _ = run_with(s, FailingDuringFallback())
     with pytest.raises(ModelError, match="fallback main request failed"):
         agent.run("start")
 
@@ -715,7 +715,7 @@ def test_two_view_image_questions_keep_order_and_cardinality(tmp_path):
             ("both described", []),
         ]
     )
-    agent, _notices = run_with(s, model)
+    agent, _ = run_with(s, model)
 
     assert agent.run(s.images.recognize("compare the two")) == "both described"
 
