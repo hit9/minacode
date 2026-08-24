@@ -5,6 +5,7 @@ import shutil
 import code_symbol_index as csi
 import pytest
 
+from minacode import tooloutput
 from minacode.base import (
     LogBlock,
     LogEdge,
@@ -219,114 +220,6 @@ def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monk
     assert s.state.code_index_notice == ""
     assert s.state.code_index_error == ""
     assert s.state.code_index_status == "synced"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_read_and_search_success_paths(tmp_path):
@@ -657,7 +550,8 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    search = runner.short_call(
+    search = tooloutput.short_call(
+        runner.session,
         ToolCall(
             "s",
             "Search",
@@ -665,15 +559,16 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
                 {"pattern": "done in", "glob": "*.py"},
                 {"pattern": "elapsed.*s]", "path": "tests", "context": 2},
             ],
-        )
+        ),
     )
     assert search == 'Search "done in" glob=*.py; "elapsed.*s]" path=tests C=2'
 
-    recall = runner.short_call(ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
+    recall = tooloutput.short_call(runner.session, ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
     s.state.known = ["existing"]
-    note = runner.short_call(
+    note = tooloutput.short_call(
+        runner.session,
         ToolCall(
             "m",
             "Note",
@@ -684,7 +579,7 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
                     "append_known": ["existing", "new fact"],
                 }
             ],
-        )
+        ),
     )
     assert note == "Note goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
 

@@ -37,6 +37,7 @@ MINACODE = REPO / "minacode"
 # targets whose layer is >= its own.
 LAYERS = {
     "minacode.__init__": 0,
+    "minacode": 100,
     "minacode.__main__": 0,
     "minacode.cli": 1,
     "minacode.tui": 2,
@@ -55,6 +56,7 @@ LAYERS = {
     "minacode.model.client": 5,
     "minacode.model.resilience": 5,
     "minacode.tools": 6,
+    "minacode.tooloutput": 6,
     "minacode.mcp": 6,
     "minacode.mcp.config": 6,
     "minacode.mcp.tokens": 6,

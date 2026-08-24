@@ -1,9 +1,11 @@
 """tool memory (split from tests/test_tools.py)."""
+
 import json
 
 import pytest
 from test_tools import session
 
+from minacode import tooloutput
 from minacode.base import (
     ToolCall,
     ToolError,
@@ -28,7 +30,7 @@ def test_note_tool_replace_known(tmp_path):
     s.state.known = ["old fact"]
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    short = runner.short_call(ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
+    short = tooloutput.short_call(runner.session, ToolCall("n", "Note", [{"replace_known": ["new fact a", "new fact b"]}]))
     assert short == "Note known:\n  new fact a\n  new fact b"
 
     output = []
@@ -40,11 +42,12 @@ def test_note_tool_replace_known(tmp_path):
     runner.run([ToolCall("n", "Note", [{"replace_known": []}])])
     assert s.state.known == []
 
+
 def test_note_tool_set_check(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    short = runner.short_call(ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
+    short = tooloutput.short_call(runner.session, ToolCall("n", "Note", [{"set_check": "pytest -q passed"}]))
     assert short == "Note check: pytest -q passed"
 
     output = []
@@ -52,6 +55,7 @@ def test_note_tool_set_check(tmp_path):
     runner.run([ToolCall("n", "Note", [{"set_check": "pytest -q passed"}])])
     assert s.state.check == "pytest -q passed"
     assert output == ["check: pytest -q passed"]
+
 
 def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     s = session(tmp_path)
@@ -82,6 +86,7 @@ def test_note_tool_updates_durable_memory_without_result_key(tmp_path):
     assert s.tool_records == []
     assert output == ["goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + pytest"]
 
+
 def test_note_tool_validates_before_mutating_state(tmp_path):
     s = session(tmp_path)
     s.state.goal = "old goal"
@@ -99,6 +104,7 @@ def test_note_tool_validates_before_mutating_state(tmp_path):
     with pytest.raises(ToolError, match="Note replace_plan status must be one of"):
         NoteTool(s, [{"replace_plan": [{"status": "started", "text": "inspect"}]}]).call()
 
+
 def test_note_tool_views_selected_state_without_mutating(tmp_path):
     s = session(tmp_path)
     s.state.goal = "ship"
@@ -108,6 +114,7 @@ def test_note_tool_views_selected_state_without_mutating(tmp_path):
 
     assert result == {"goal": "ship", "plan": [{"status": "doing", "text": "verify"}]}
     assert NoteTool(s, [{"action": "view"}]).needs_confirmation() is False
+
 
 def test_memory_tools_treat_strict_schema_nulls_as_omitted(tmp_path):
     s = session(tmp_path)
@@ -128,6 +135,7 @@ def test_memory_tools_treat_strict_schema_nulls_as_omitted(tmp_path):
     assert note_result["changed"] == ["goal"]
     assert list_result["segments"] == [{"key": "seg.1", "title": "cache"}]
 
+
 def test_note_short_args_treats_strict_schema_nulls_as_omitted(tmp_path):
     payload = {
         "action": None,
@@ -141,6 +149,7 @@ def test_note_short_args_treats_strict_schema_nulls_as_omitted(tmp_path):
 
     assert NoteTool(session(tmp_path), [payload]).short_args() == ["view all"]
 
+
 def test_note_empty_goal_and_check_explicitly_clear_state(tmp_path):
     s = session(tmp_path)
     s.state.goal = "ship"
@@ -151,6 +160,7 @@ def test_note_empty_goal_and_check_explicitly_clear_state(tmp_path):
     assert json.loads(tool.call())["changed"] == ["goal", "check"]
     assert s.state.goal == ""
     assert s.state.check == ""
+
 
 def test_recall_context_distinguishes_a_dropped_segment_from_an_unknown_one(tmp_path):
     """Only the newest segments are retained, so a key below the window is gone for good. Saying
@@ -163,6 +173,7 @@ def test_recall_context_distinguishes_a_dropped_segment_from_an_unknown_one(tmp_
     assert "* seg.3: dropped; only the newest 3 segments are kept, from seg.7" in result
     assert "* seg.99: missing" in result
     assert '<Segment key="seg.8" title="span 8">' in result
+
 
 def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
     s = session(tmp_path)
@@ -191,6 +202,7 @@ def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
     assert updated["changed"] == ["goal"]
     assert viewed["goal"] == "ship"
 
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -203,15 +215,18 @@ def test_note_actions_reject_conflicting_fields(tmp_path, payload, message):
     with pytest.raises(ToolError, match=message):
         NoteTool(session(tmp_path), [payload]).call()
 
+
 def test_suggest_tool_sets_transient_quick_hints(tmp_path):
     s = session(tmp_path)
     assert NextHintsTool(s, [{"inputs": ["run the tests", "show the diff"]}]).call() == "Offered 2 quick input(s)"
     assert s.quick_hints == ("run the tests", "show the diff")
 
+
 def test_suggest_tool_dedupes_and_caps(tmp_path):
     s = session(tmp_path)
     NextHintsTool(s, [{"inputs": ["a", "a", "b", "c", "d", "e"]}]).call()
     assert s.quick_hints == ("a", "b", "c", "d")
+
 
 def test_suggest_tool_validates_before_writing(tmp_path):
     s = session(tmp_path)
@@ -225,8 +240,10 @@ def test_suggest_tool_validates_before_writing(tmp_path):
         NextHintsTool(s, [{"inputs": ["a"], "extra": 1}]).call()
     assert s.quick_hints == ()
 
+
 def test_suggest_tool_does_not_store_result():
     assert NextHintsTool.STORES_RESULT is False
+
 
 def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
     """Several legal NextHints calls in one batch accumulate their inputs in call order,
@@ -249,9 +266,11 @@ def test_suggest_tool_merges_multiple_calls_in_one_batch(tmp_path):
     runner.run([ToolCall("n3", "NextHints", [{"inputs": first}]), ToolCall("n4", "NextHints", [{"inputs": second}])])
     assert s.quick_hints == (*first, *second)[: NextHintsTool.MAX_HINTS]
 
+
 def test_suggest_tool_short_args(tmp_path):
     tool = NextHintsTool(session(tmp_path), [{"inputs": ["run the tests", "show the diff"]}])
     assert tool.short_args() == ['inputs: "run the tests", "show the diff"']
+
 
 def test_quick_hints_are_transient_and_never_serialized(tmp_path):
     s = session(tmp_path)
@@ -265,6 +284,7 @@ def test_quick_hints_are_transient_and_never_serialized(tmp_path):
     s.clear_quick_hints()
     assert s.quick_hints == ()
 
+
 def test_runtime_settings_no_longer_exposes_quick_hints_config(tmp_path):
     settings = RuntimeSettings.from_dict({"runtime": {"quick_hints": False}})
     s = session(tmp_path)
@@ -273,6 +293,7 @@ def test_runtime_settings_no_longer_exposes_quick_hints_config(tmp_path):
     assert not hasattr(settings, "quick_hints")
     assert "quick_hints" not in ConfigFile.DEFAULT_TEXT
     assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
+
 
 def test_legacy_config_quick_hints_key_loads_and_keeps_hints_enabled(tmp_path):
     """An old config file with `[runtime] quick_hints = false` still loads: the obsolete key is
@@ -285,6 +306,7 @@ def test_legacy_config_quick_hints_key_loads_and_keeps_hints_enabled(tmp_path):
     assert not hasattr(s.settings, "quick_hints")
     assert s.next_hints_available is True
     assert "NextHints" in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
+
 
 def test_resolved_schemas_follow_frontend_next_hints_capability(tmp_path):
     s = session(tmp_path)

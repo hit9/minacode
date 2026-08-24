@@ -19,6 +19,7 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
+from minacode import tooloutput
 from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox, oneline
 from minacode.render import UiPrinter
 from minacode.session import ToolResultRecord
@@ -307,14 +308,14 @@ def script_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
     if not code.strip():
         return None
     rows = [("key", record.key), ("lines", str(len(code.splitlines())))]
-    fields = loop.agent.tools.toolscript_result_fields(record.output)
+    fields = tooloutput.toolscript_result_fields(record.output)
     if fields is not None:
         rows.append(("calls", fields[0]))
     # The envelope rides along: a script is a question and its printed output is the answer, and
     # the transcript only kept the first lines of it. A failed script keeps its whole traceback
     # here too, which is the one place the clipped error line in the log can be resolved against
     # the numbered source right above it.
-    result, note = loop.agent.tools.viewer_text(record.output)
+    result, note = tooloutput.viewer_text(record.output)
     if note:
         rows.append(("shown", note))
     return ApprovalView(f"script · {record.key}", code, "python", rows, result)
@@ -327,7 +328,7 @@ def bash_command(loop: CommandLoop, record: ToolResultRecord) -> str:
     try:
         return BashTool(loop.session, record.args).command()
     except ToolError:
-        return loop.agent.tools.short_call(ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
+        return tooloutput.short_call(loop.session, ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
 
 
 def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
@@ -338,13 +339,13 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     has no cap, and a viewer that hangs on the one command that printed a megabyte is worse than
     one that says how much it is showing."""
     command = bash_command(loop, record)
-    streams, note = loop.agent.tools.bash_viewer_output(record.output)
+    streams, note = tooloutput.bash_viewer_output(record.output)
     if not streams:
         # A command that printed nothing has nothing here the transcript does not already show. A
         # script is different: its source is worth reading whether or not it printed anything.
         return None
     rows = [("key", record.key)]
-    if code := loop.agent.tools.bash_exit_code(record.output):
+    if code := tooloutput.bash_exit_code(record.output):
         rows.append(("exit", code))
     if note:
         rows.append(("shown", note))
@@ -404,9 +405,11 @@ def tool_output_viewer(loop: CommandLoop) -> None:
         if view is not None:
             status = ""
             if record.name == "Bash":
-                code = loop.agent.tools.bash_exit_code(record.output)
+                code = tooloutput.bash_exit_code(record.output)
                 status = "ok" if code == "0" else ("fail" if code else "")
-            entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view, status=status))
+            entries.append(
+                OutputEntry(record.key, record.name, tooloutput.short_call(loop.session, ToolCall("", record.name, record.args)), view, status=status)
+            )
     if not entries:
         return
     # One list state for the whole browser: reopening the list after a detail's Esc keeps the
@@ -443,7 +446,7 @@ def delegate_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView |
     view = DelegateTool(loop.session, record.args).approval_view()
     if view is None:
         return None
-    result, note = loop.agent.tools.viewer_text(record.output)
+    result, note = tooloutput.viewer_text(record.output)
     rows = [("key", record.key), *view.rows]
     if note:
         rows.append(("shown", note))

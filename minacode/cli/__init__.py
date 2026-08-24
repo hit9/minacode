@@ -17,6 +17,7 @@ from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 
+from minacode import tooloutput
 from minacode.base import (
     ImageRouteNotice,
     Json,
@@ -625,7 +626,7 @@ Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, S
         children.extend(LogLine("", line, LogRole.DIFF, LogEdge.CONTINUE) for line in lines)
         if hidden:
             children.append(LogLine("", f"… {hidden} more lines, see /diff", LogRole.META, LogEdge.CONTINUE))
-        return LogBlock.hierarchy(tools.log_root(tools.short_call(call), LogRole.AUTO, "", call), children)
+        return LogBlock.hierarchy(tools.log_root(tooloutput.short_call(self.session, call), LogRole.AUTO, "", call), children)
 
     @staticmethod
     def transcript_tool_call(raw: object) -> ToolCall | None:

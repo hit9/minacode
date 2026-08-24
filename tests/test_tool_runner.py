@@ -1,6 +1,8 @@
 """tool runner (split from tests/test_agent_turn.py)."""
+
 from agent_harness import call, session
 
+from minacode import tooloutput
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
 
@@ -22,6 +24,7 @@ def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_pat
     assert len(bad.tool_errors) == 1
     assert outputs and "· rejected:" in outputs[0]  # argument errors collapse to a quiet line
 
+
 def test_rejected_and_failed_calls_collapse_a_multiline_display_to_one_line(tmp_path):
     # A tool's display is whatever its short_args produced, and Note's is the whole rendered note so
     # a successful call can print it. A rejection is meant to be a quiet one-liner and a failure
@@ -34,7 +37,7 @@ def test_rejected_and_failed_calls_collapse_a_multiline_display_to_one_line(tmp_
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     note = call("Note", [{"replace_plan": [f"Task {index}" for index in range(1, 11)]}])
     display = ToolDisplay()
-    display.display = runner.short_call(note)
+    display.display = tooloutput.short_call(runner.session, note)
     assert len(display.display.splitlines()) > 1, "precondition: Note renders a multi-line display"
 
     rejected = list(runner.reject_display(note, "ToolError: Note fields is only valid for view", d=display).walk())
@@ -48,6 +51,7 @@ def test_rejected_and_failed_calls_collapse_a_multiline_display_to_one_line(tmp_
     # A successful Note is the one case that should keep every line: printing the note is the point.
     assert len(runner.finish_display(note, "", "ok", failed=False, d=display).splitlines()) > 1
 
+
 def test_tool_runner_refuses_without_reason_on_n(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "n", output_fn=lambda text: None)
@@ -55,6 +59,7 @@ def test_tool_runner_refuses_without_reason_on_n(tmp_path):
     runner.run([call("Bash", [":"])])
 
     assert s.tool_errors[0].error == "Cancelled: user refused tool call"
+
 
 def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
     s = session(tmp_path)
@@ -65,6 +70,7 @@ def test_tool_runner_refuses_with_direct_reason_input(tmp_path):
     assert s.tool_records == []
     assert len(s.tool_errors) == 1
     assert "not now" in s.tool_errors[0].error
+
 
 def test_recall_tool_runner_does_not_create_new_result_keys(tmp_path):
     s = session(tmp_path)

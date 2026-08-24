@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
+from minacode import tooloutput
 from minacode.base import LogEdge, LogRole, ToolCall, ToolError
 from minacode.config import Config
 from minacode.context import ContextManager
@@ -480,8 +481,8 @@ class TestNestedBuiltinCalls:
         assert "ToolScript ok" in content
         assert "calls: 1 [tr.1]" in content
         assert "hello" in content
-        assert "<Read path=\"f.txt\">" in content
-        assert "<Read path=\"f.txt\">" in s.tool_results["tr.1"]
+        assert '<Read path="f.txt">' in content
+        assert '<Read path="f.txt">' in s.tool_results["tr.1"]
         assert "<MCPDescribe" in str(messages[1]["content"])
 
     def test_nested_read_rejects_json_format(self, tmp_path):
@@ -560,7 +561,7 @@ class TestNestedBuiltinCalls:
         assert "calls: 3 [tr.1-tr.3]" in content
         assert "done" in content
         for key in ("tr.1", "tr.2", "tr.3"):
-            assert "<Read path=\"f.txt\">" in s.tool_results[key]
+            assert '<Read path="f.txt">' in s.tool_results[key]
 
     def test_nested_args_conversion_error_names_tool(self, tmp_path):
         s = _mcp_session(tmp_path)
@@ -576,7 +577,9 @@ class TestNestedEdit:
         path.write_text("a\nb\nc\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         start = ReadTool.anchor(1, "b\n")
-        code = f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{start}", "end": "{start}", "content": "B\\n"}}]}})\nprint("edited")\n'
+        code = (
+            f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{start}", "end": "{start}", "content": "B\\n"}}]}})\nprint("edited")\n'
+        )
         content = _run_script(s, code)
         assert "ToolScript ok" in content
         assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
@@ -669,14 +672,15 @@ class TestScriptLogShape:
 
     def test_result_fields_parse_the_envelope(self, tmp_path):
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
         envelope = "ToolScript ok\ncalls: 3 [tr.1-3]\nstdout:\nfirst\nsecond\nstderr:\nnoise\n"
-        assert runner.toolscript_result_fields(envelope) == ("3", "first\nsecond", "")
-        assert runner.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "", "")
-        assert runner.toolscript_result_fields("Read\njson:    no") is None
+        assert tooloutput.toolscript_result_fields(envelope) == ("3", "first\nsecond", "")
+        assert tooloutput.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "", "")
+        assert tooloutput.toolscript_result_fields("Read\njson:    no") is None
         # A failed script keeps the line that names what went wrong; the frames are in the viewer.
-        failed = 'ToolScript failed\ncalls: 1 [tr.1]\nstdout:\npartial\nerror:\nTraceback (most recent call last):\n  File "<toolscript>", line 2\nValueError: boom'
-        assert runner.toolscript_result_fields(failed) == ("1", "partial", "ValueError: boom")
+        failed = (
+            'ToolScript failed\ncalls: 1 [tr.1]\nstdout:\npartial\nerror:\nTraceback (most recent call last):\n  File "<toolscript>", line 2\nValueError: boom'
+        )
+        assert tooloutput.toolscript_result_fields(failed) == ("1", "partial", "ValueError: boom")
 
 
 class TestScriptCannotEndTheSession:
@@ -730,7 +734,9 @@ class TestNestedCallsDoNotStealTheScriptStdout:
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)  # the headless default
         terminal = io.StringIO()
         with contextlib.redirect_stdout(terminal):
-            (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 't = call("Read", {"path": "f.txt"})\nprint("script says hi")\n'}])])
+            (message,) = runner.run(
+                [ToolCall("ts1", "ToolScript", [{"action": "call", "code": 't = call("Read", {"path": "f.txt"})\nprint("script says hi")\n'}])]
+            )
 
         content = str(message["content"])
         assert "Read f.txt" in terminal.getvalue()  # the nested call was logged where the user is

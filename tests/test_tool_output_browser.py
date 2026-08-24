@@ -1,4 +1,5 @@
 """tool output browser (split from tests/test_command_ui.py)."""
+
 import os
 import shutil
 
@@ -7,10 +8,10 @@ from test_command_ui import ModalHarness
 from tui_harness import loop, session
 
 import minacode.cli.modals as modals_mod
+from minacode import tooloutput
 from minacode.cli import CommandLoop
 from minacode.cli.modals import tool_output_viewer
 from minacode.engine import Agent
-from minacode.runner import ToolRunner
 from minacode.session import Session
 from minacode.tools import Tool
 
@@ -49,6 +50,7 @@ def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_fu
     assert "stderr:" in viewer[-1] and "detail stderr" in viewer[-1]  # both streams, a scroll away
     assert modal.exclusive == [False, True]  # the list shares the screen; the viewer takes it
 
+
 def test_tool_output_browser_marks_bash_results_ok_and_fail(tmp_path, monkeypatch):
     """A Bash row's first column carries its verdict: a green ✓ for exit 0, a red ✗ for any other
     exit. The list is mostly bash, so the failures should be scannable by color; entries with no
@@ -69,6 +71,7 @@ def test_tool_output_browser_marks_bash_results_ok_and_fail(tmp_path, monkeypatc
     assert ("class:choice.output.ok", "✓ ") in pairs
     assert ("class:choice.output.fail", "✗ ") in pairs
 
+
 def test_tool_output_browser_lists_past_the_old_fifty_entry_cap(tmp_path, monkeypatch):
     """The browser's list reaches as far back as the session stores: 400 results, not a page of
     fifty. The viewport still shows one screenful with the counter saying how far there is to go."""
@@ -86,6 +89,7 @@ def test_tool_output_browser_lists_past_the_old_fifty_entry_cap(tmp_path, monkey
     assert listing.startswith("\n──── Tool output · latest 55 ")
     assert "showing 1-10 of 55" in listing
     assert "Bash printf 54" in listing  # the newest is in view
+
 
 def test_tool_output_browser_keeps_every_stored_record_with_a_running_script(tmp_path, monkeypatch):
     """A running ToolScript's live entry does not push the oldest stored record out: with a full
@@ -106,6 +110,7 @@ def test_tool_output_browser_keeps_every_stored_record_with_a_running_script(tmp
     assert listing.startswith("\n──── Tool output · latest 401 ")
     assert "showing 1-10 of 401" in listing
     assert "ToolScript" in listing  # the running script's live entry is listed too
+
 
 def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_path, monkeypatch):
     """Esc (or q) in a detail goes back to the list instead of closing the whole browser, and
@@ -141,6 +146,7 @@ def test_tool_output_viewer_escape_returns_to_the_list_with_the_cursor_kept(tmp_
     # its title row twice (initial frame plus the frame after its closing key).
     assert sum("read-only" in frame for frame in frames) == 4
 
+
 def test_tool_output_viewer_q_in_a_detail_also_returns_to_the_list(tmp_path, monkeypatch):
     """q behaves exactly like Esc inside a detail: back to the list, not out of the browser."""
     command_loop = loop(tmp_path)
@@ -162,6 +168,7 @@ def test_tool_output_viewer_q_in_a_detail_also_returns_to_the_list(tmp_path, mon
     assert modal.exclusive == [False, True, False, True]  # list, detail, list, detail
     assert len(listings) == 4  # q came back to the list: two renders per list pass
     assert sum("read-only" in frame for frame in frames) == 4  # the detail opened twice
+
 
 def test_tool_output_viewer_ctrl_c_in_a_detail_also_returns_to_the_list(tmp_path, monkeypatch):
     """Ctrl-C behaves like Esc inside a detail: back to the list, not out of the browser."""
@@ -185,6 +192,7 @@ def test_tool_output_viewer_ctrl_c_in_a_detail_also_returns_to_the_list(tmp_path
     assert len(listings) == 4  # c-c came back to the list: two renders per list pass
     assert sum("read-only" in frame for frame in frames) == 4  # the detail opened twice
 
+
 def test_tool_output_viewer_ctrl_o_in_a_detail_closes_the_browser(tmp_path, monkeypatch):
     """Ctrl-O inside a detail still closes the whole browser: only Esc/q go back to the list."""
     command_loop = loop(tmp_path)
@@ -204,6 +212,7 @@ def test_tool_output_viewer_ctrl_o_in_a_detail_closes_the_browser(tmp_path, monk
     assert modal.exclusive == [False, True]  # list, detail -- and no reopened list
     assert sum("Tool output" in frame for frame in frames) == 3  # the list rendered its three frames once
     assert sum("read-only" in frame for frame in frames) == 2  # the detail closed the browser
+
 
 def test_tool_output_viewer_keeps_the_search_filter_across_an_escape(tmp_path, monkeypatch):
     """A `/` filter survives Esc back to the list: the reopened list is still filtered."""
@@ -230,6 +239,7 @@ def test_tool_output_viewer_keeps_the_search_filter_across_an_escape(tmp_path, m
     assert "command-4" in listings[-1]
     assert "command-3" not in listings[-1] and "command-0" not in listings[-1]
     assert sum("read-only" in frame for frame in frames) == 4
+
 
 def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path, monkeypatch):
     """A row is one row. `short_call` keeps a multi-line command whole for the transcript, and a
@@ -259,6 +269,7 @@ def test_tool_output_viewer_folds_a_multiline_command_into_one_row(tmp_path, mon
     view = modals_mod.record_view(command_loop, command_loop.session.tool_records[0])
     assert view is not None and view.text.count("\n") == 2
 
+
 def test_tool_output_viewer_reopens_a_delegate_order_with_the_worker_answer(tmp_path):
     """An order is written to be read twice: at the send prompt, and again when the worker's answer
     has to be judged against what was actually asked. The transcript keeps only the `Delegate send`
@@ -283,6 +294,7 @@ def test_tool_output_viewer_reopens_a_delegate_order_with_the_worker_answer(tmp_
     assert "rename the flag" in viewer and "Verify: uv run pytest" in viewer
     assert "renamed it at config.py:118" in viewer  # the answer, below the order it is judged against
 
+
 def test_tool_output_viewer_shows_the_whole_output_not_the_transcript_preview(tmp_path):
     """The transcript keeps three lines. The point of opening an entry is the other thirty-seven."""
     command_loop = loop(tmp_path)
@@ -299,14 +311,15 @@ def test_tool_output_viewer_shows_the_whole_output_not_the_transcript_preview(tm
     assert "line 39" in viewer[-1]  # reachable by scrolling, not elided
     assert "lines omitted" not in "".join(viewer)
 
+
 def test_tool_output_viewer_bounds_a_huge_result_and_says_so(tmp_path):
     """Stored output has no cap and the wrapper is quadratic in one line's length, so the viewer
     bounds what it renders -- and says how much it is showing, because a reader who cannot tell an
     elided result from a complete one has to distrust every result."""
     command_loop = loop(tmp_path)
-    stdout = "\n".join(f"line {line}" for line in range(ToolRunner.VIEWER_LINES * 2))
+    stdout = "\n".join(f"line {line}" for line in range(tooloutput.VIEWER_LINES * 2))
     command_loop.session.store_tool_result("Bash", ["seq huge"], Tool.process_result("BashToolResult", 0, stdout, ""))
-    command_loop.session.store_tool_result("Bash", ["one long line"], Tool.process_result("BashToolResult", 0, "x" * (ToolRunner.VIEWER_LINE_CHARS * 3), ""))
+    command_loop.session.store_tool_result("Bash", ["one long line"], Tool.process_result("BashToolResult", 0, "x" * (tooloutput.VIEWER_LINE_CHARS * 3), ""))
     modal = ModalHarness(["enter"])
     command_loop.tui = modal
 
@@ -316,15 +329,16 @@ def test_tool_output_viewer_bounds_a_huge_result_and_says_so(tmp_path):
     viewer = next(frame for frame in frames if "read-only" in frame)
     # The newest entry is the one long line; the header says the clip happened rather than
     # presenting a truncated line as the whole of it.
-    assert f"long lines clipped at {ToolRunner.VIEWER_LINE_CHARS}" in viewer
+    assert f"long lines clipped at {tooloutput.VIEWER_LINE_CHARS}" in viewer
     rendered = [row for row in viewer.splitlines() if row.strip().startswith("x")]
-    assert rendered and all(len(row) <= ToolRunner.VIEWER_LINE_CHARS + 10 for row in rendered)
+    assert rendered and all(len(row) <= tooloutput.VIEWER_LINE_CHARS + 10 for row in rendered)
+
 
 def test_tool_output_viewer_bounds_a_result_with_too_many_lines(tmp_path):
     """The line bound counts against the streams, not the stored envelope, so the note it prints
     is a fact about the output rather than about the tags wrapped around it."""
     command_loop = loop(tmp_path)
-    stdout = "\n".join(f"line {line}" for line in range(ToolRunner.VIEWER_LINES * 2))
+    stdout = "\n".join(f"line {line}" for line in range(tooloutput.VIEWER_LINES * 2))
     command_loop.session.store_tool_result("Bash", ["seq huge"], Tool.process_result("BashToolResult", 0, stdout, ""))
     modal = ModalHarness(["enter"])
     command_loop.tui = modal
@@ -332,10 +346,11 @@ def test_tool_output_viewer_bounds_a_result_with_too_many_lines(tmp_path):
     tool_output_viewer(command_loop)
 
     viewer = next(frame for frame in ("".join(v for _, v in f) for f in modal.frames) if "read-only" in frame)
-    assert f"{ToolRunner.VIEWER_LINES} shown of {ToolRunner.VIEWER_LINES * 2}" in viewer
+    assert f"{tooloutput.VIEWER_LINES} shown of {tooloutput.VIEWER_LINES * 2}" in viewer
     # The elision is marked in the text too, where it happens -- the header note is derived from it.
-    bounded, note = command_loop.agent.tools.bash_viewer_output(command_loop.session.tool_records[-1].output)
-    assert "lines omitted" in bounded and note.startswith(f"{ToolRunner.VIEWER_LINES} shown of ")
+    bounded, note = tooloutput.bash_viewer_output(command_loop.session.tool_records[-1].output)
+    assert "lines omitted" in bounded and note.startswith(f"{tooloutput.VIEWER_LINES} shown of ")
+
 
 def test_tool_output_viewer_is_noop_without_stored_bash_output(tmp_path):
     command_loop = loop(tmp_path)
@@ -345,6 +360,7 @@ def test_tool_output_viewer_is_noop_without_stored_bash_output(tmp_path):
     tool_output_viewer(command_loop)
 
     assert modal.frames == []
+
 
 def test_tool_output_viewer_offers_the_script_that_is_still_running(tmp_path):
     """A long batch is exactly when the reader wants to look; the record only arrives at the end."""
@@ -372,6 +388,7 @@ def test_tool_output_viewer_offers_the_script_that_is_still_running(tmp_path):
     tool_output_viewer(command_loop)
     assert "running" not in "".join(value for _, value in modal.frames[0])
 
+
 def test_tool_output_list_rows_are_coloured_by_part(tmp_path):
     """All-grey rows read as a wall; the key, the tool name, and the arguments each get their own."""
     command_loop = loop(tmp_path)
@@ -388,6 +405,7 @@ def test_tool_output_list_rows_are_coloured_by_part(tmp_path):
     assert ("", "printf hi-0") in row
     # The selected row is left as one reverse bar rather than repainted part by part.
     assert not [style for style, _ in row if "choice.selected" in style and ("meta" in style or "tool" in style)]
+
 
 def test_tool_output_viewer_reads_resumed_history(tmp_path):
     saved = session(tmp_path)

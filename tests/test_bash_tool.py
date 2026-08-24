@@ -7,6 +7,7 @@ import time
 import pytest
 
 import minacode.render as render_module
+from minacode import tooloutput
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
 from minacode.cli import CommandLoop
 from minacode.cli.commands import ps_command
@@ -629,8 +630,8 @@ def test_job_start_uses_bash_highlighting(tmp_path):
     start = ToolCall("j1", "Job", [{"action": "start", "command": "pytest -q"}])
     wait = ToolCall("j2", "Job", [{"action": "wait", "job": "job.1"}])
 
-    start_line = runner.log_root(runner.short_call(start), call=start)
-    wait_line = runner.log_root(runner.short_call(wait), call=wait)
+    start_line = runner.log_root(tooloutput.short_call(runner.session, start), call=start)
+    wait_line = runner.log_root(tooloutput.short_call(runner.session, wait), call=wait)
 
     assert start_line.syntax == "bash"
     assert wait_line.syntax == "tool-args"
@@ -702,10 +703,9 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
 
 def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     output = Tool.process_result("BashToolResult", 0, "before </stdout> after", "before </stderr> after")
 
-    preview = runner.bash_result_preview(output, runner.BASH_TRANSCRIPT_PREVIEW_LINES)
+    preview = tooloutput.bash_result_preview(output, tooloutput.BASH_TRANSCRIPT_PREVIEW_LINES)
 
     assert "before </stdout> after" in preview
     assert "before </stderr> after" in preview
@@ -713,11 +713,10 @@ def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
 
 def test_tool_runner_bash_preview_omits_past_limit(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
     limit = 24
     lines = [f"line {index}" for index in range(limit + 1)]
 
-    preview = runner.preview_lines("\n".join(lines), limit)
+    preview = tooloutput.preview_lines("\n".join(lines), limit)
 
     assert len(preview) == limit + 1
     assert preview[0] == "line 0"
