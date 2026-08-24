@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from json_repair import repair_json
@@ -38,13 +39,9 @@ from minacode.base import (
     builtin_tool_label,
 )
 from minacode.config import ProviderConfig
-from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef
+from minacode.image import IMAGE_REFS_KEY, ImageInputs, observe_image
 from minacode.model import chat, resilience, responses
-from minacode.prompts import (
-    COMPACTION_REQUEST_EVENT,
-    VISION_OBSERVE_DEFAULT_QUESTION,
-    VISION_OBSERVE_PROMPT,
-)
+from minacode.prompts import COMPACTION_REQUEST_EVENT
 from minacode.providers.catalog import THINKING_BUDGETS
 from minacode.providers.compat import (
     ResolvedProvider,
@@ -116,6 +113,7 @@ class ModelClient:
         self.active_client: ActiveResource[OpenAI | Anthropic] = ActiveResource()
         self._request_local = threading.local()
         self.on_stream: Callable[[str, str], None] | None = None
+        self.vision_observe = partial(observe_image, self)
         # Called with (label, detail) for each provider-side tool call a response reports. Reported
         # from the parsed result rather than the stream, so a search is logged the same way when
         # streaming is off and on a frontend that shows no live status at all.
@@ -639,39 +637,6 @@ class ModelClient:
             truncated_output_error=self.truncated_output_error,
             collect_sources=self.collect_sources,
         )
-
-    def vision_observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
-        """Ask the [vision]-configured entry to observe images for an explicit ViewImage call.
-
-        Mirrors compact(): the [vision] entry is resolved per call and validated locally -- a
-        missing field would otherwise surface as a generic SDK credentials error naming nothing
-        the user can act on -- then served by one non-streaming api_request with pre-built image
-        blocks. Perception only: no tools, no coding task; the main model does the reasoning.
-
-        Like request() and compact(), the entry clears the cancel flag so a stale flag left by a
-        previous turn's Ctrl-C cannot abort a fresh observation.
-        """
-
-        self.cancel_requested.clear()
-        entry_name = self.session.config.vision_provider
-        provider = self.session.config.providers[entry_name]
-        if missing := provider.missing_fields():
-            raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
-        messages = [
-            {"role": "system", "content": VISION_OBSERVE_PROMPT},
-            {
-                "role": "user",
-                "content": self.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
-            },
-        ]
-        # The observation is billed to the session totals but is not a main-model request, so its
-        # usage must not overwrite the last-request ctx/cache snapshot the status bar reads.
-        self.session.state.vision_observe_active = True
-        try:
-            _, _, content = self.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
-        finally:
-            self.session.state.vision_observe_active = False
-        return content.strip()
 
     @classmethod
     def parse_json_object(cls, text: str) -> Json:
