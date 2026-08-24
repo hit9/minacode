@@ -26,6 +26,7 @@ from minacode.base import (
     ToolCall,
     ToolError,
     builtin_tool_label,
+    oneline,
     split_lines,
 )
 from minacode.context import ContextManager
@@ -442,7 +443,7 @@ class ToolRunner:
         payload = call.args[0] if len(call.args) == 1 else call.args
         content = json.dumps(payload, ensure_ascii=False)
         label = builtin_tool_label(call.name)
-        self.emit(LogBlock([LogLine(label, self.oneline(content, 120), LogRole.TOOL, LogEdge.BRANCH)]))
+        self.emit(LogBlock([LogLine(label, oneline(content, 120), LogRole.TOOL, LogEdge.BRANCH)]))
         return {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
 
     def skip_message(self, call: ToolCall) -> Json:
@@ -648,7 +649,7 @@ class ToolRunner:
         d = d or ToolDisplay()
         self.session.record_tool_error("-", call.name, call.args, output)
         self.emit(
-            LogBlock.hierarchy(None, [LogLine("error", self.oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
+            LogBlock.hierarchy(None, [LogLine("error", oneline(output.removeprefix("ToolError:").strip(), 220), LogRole.ERROR, LogEdge.END)])
             if d.nested_display
             else self.reject_display(call, output, d=d)
         )
@@ -663,8 +664,8 @@ class ToolRunner:
         # produced, and Note's is the whole rendered note so that a successful call can print it.
         # Left alone, a rejected Note dims its entire body and hides the reason at the end of the
         # last line -- the reason for the rejection is the only part of a rejection worth reading.
-        reason = self.oneline(output.removeprefix("ToolError:").strip(), 60)
-        display = self.oneline(d.display or self.short_call(call), 120)
+        reason = oneline(output.removeprefix("ToolError:").strip(), 60)
+        display = oneline(d.display or self.short_call(call), 120)
         return LogBlock.hierarchy(self.log_root(display + " · rejected: " + reason, LogRole.MUTED, d.batch_suffix, call), [])
 
     def finish(
@@ -940,7 +941,7 @@ class ToolRunner:
         order_row = None
         if isinstance(order, str) and order.strip():
             lines = order.strip().splitlines()
-            text = self.oneline(lines[0].strip(), 100)
+            text = oneline(lines[0].strip(), 100)
             if len(lines) > 1:
                 text += f"  (… {len(lines) - 1} more lines)"
             order_row = ("order", text)
@@ -972,7 +973,7 @@ class ToolRunner:
         # the call -- collapsed to one line, or a multi-line display (Note keeps the whole rendered
         # note there) paints its entire body red under the tag.
         label = d.display or self.short_call(call)
-        root = self.log_root(self.oneline(label, 120) if failed else label, LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
+        root = self.log_root(oneline(label, 120) if failed else label, LogRole.ERROR if failed else LogRole.TOOL, d.batch_suffix, call)
         is_reset = call.name == "Delegate" and not failed and 'action="reset"' in output
         if call.name == "Delegate" and not failed and not is_reset:
             # The delegation bracket: the start marker opens with the yellow full-width rule; the
@@ -987,7 +988,7 @@ class ToolRunner:
         children = []
         if failed:
             label = "refused" if "user refused" in output else "error"
-            children.append(LogLine(label, self.oneline(output, 220), LogRole.ERROR, LogEdge.END))
+            children.append(LogLine(label, oneline(output, 220), LogRole.ERROR, LogEdge.END))
         elif call.name == "MCP":
             summary = self.mcp_result_summary(call, output, elapsed)
             if summary:
@@ -1019,7 +1020,7 @@ class ToolRunner:
                     for line in self.preview_lines(body, self.BASH_TRANSCRIPT_PREVIEW_LINES)
                 )
         elif call.name == "Ask":
-            children.append(LogLine("answer", self.oneline(output, 220), LogRole.META, LogEdge.END))
+            children.append(LogLine("answer", oneline(output, 220), LogRole.META, LogEdge.END))
         elif call.name == "Delegate":
             if 'action="reset"' in output:
                 # Reset is a one-shot tool call, not a delegation bracket: it keeps its ordinary
@@ -1293,9 +1294,4 @@ class ToolRunner:
             except Exception:  # noqa: BLE001 - display formatting must fall back for malformed tool arguments.
                 args = [Tool.compact(arg) for arg in call.args]
         text = " ".join([call.name, *args]).strip()
-        return text if "\n" in text else self.oneline(text, 200)
-
-    @staticmethod
-    def oneline(text: str, limit: int) -> str:
-        text = " ".join(str(text).split())
-        return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+        return text if "\n" in text else oneline(text, 200)

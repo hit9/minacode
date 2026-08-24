@@ -6,7 +6,7 @@ from minacode.prompts import WORKER_PROMPT
 
 
 def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole
+    from minacode.base import LogBlock, LogRole, oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -25,9 +25,10 @@ def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     assert "[worker]" in rendered
     assert "▶" in rendered
     assert "default/worker-model-x" in rendered
-    assert ToolRunner.oneline(order, 200) in rendered
+    assert oneline(order, 200) in rendered
 
 def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
+    from minacode.base import oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -43,10 +44,11 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
 
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
-    assert ToolRunner.oneline(order, 60) in labels[0]
+    assert oneline(order, 60) in labels[0]
     assert not any("[worker]" in rendered for rendered in labels)  # the rule label replaces the [worker] ▶ line
 
 def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch):
+    from minacode.base import oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -63,10 +65,10 @@ def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch)
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
     assert "fix /status blank line" in labels[0]
-    assert ToolRunner.oneline(order, 60) not in labels[0]
+    assert oneline(order, 60) not in labels[0]
 
 def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole
+    from minacode.base import LogBlock, LogRole, oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -85,9 +87,10 @@ def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
     assert "[worker]" in rendered and "▶" in rendered
     assert "default/worker-model-x" in rendered
     assert "fix /status blank line" in rendered
-    assert ToolRunner.oneline(order, 200) not in rendered
+    assert oneline(order, 200) not in rendered
 
 def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, monkeypatch):
+    from minacode.base import oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -103,7 +106,7 @@ def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, mon
 
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
-    assert ToolRunner.oneline(order, 60) in labels[0]
+    assert oneline(order, 60) in labels[0]
 
 def test_delegate_rejects_empty_title(tmp_path):
     from minacode.base import ToolError

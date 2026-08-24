@@ -20,6 +20,7 @@ from minacode.base import (
     ModelRequestRetry,
     Text,
     ToolCall,
+    oneline,
 )
 from minacode.context import ContextManager
 from minacode.image import ImageInputs, UserInput
@@ -276,7 +277,7 @@ class Agent:
             # and it lands in permanent history, so it would ride every later request and the
             # compaction payload with it. What the marker is for is where the turn stopped, and a
             # line of that fits.
-            turn_messages.append({"role": "user", "content": FAILED_TURN_MARKER.format(error=ToolRunner.oneline(str(error), 300))})
+            turn_messages.append({"role": "user", "content": FAILED_TURN_MARKER.format(error=oneline(str(error), 300))})
             self.session.messages.extend(turn_messages)
             self.session.transcript_messages.extend(transcript_messages)
             self.session._active_turn_messages.clear()

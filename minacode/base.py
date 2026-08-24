@@ -181,6 +181,12 @@ def split_lines(text: str) -> list[str]:
     return lines
 
 
+def oneline(text: str, limit: int) -> str:
+    """Collapse whitespace and truncate to `limit` characters with an ellipsis."""
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
 class Text:
     BASE36: ClassVar[str] = "0123456789abcdefghijklmnopqrstuvwxyz"
 

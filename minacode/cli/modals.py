@@ -19,7 +19,7 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
-from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox
+from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox, oneline
 from minacode.render import UiPrinter
 from minacode.session import ToolResultRecord
 from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript
@@ -479,7 +479,7 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: Choi
         # which is right in the transcript and wrong here: a row is one row, and an embedded newline
         # spills it over several, taking the numbering and the selection bar with it. `git commit -m`
         # with a real message is the everyday case. The full command is a keypress away in the viewer.
-        detail = loop.agent.tools.oneline(entry.detail.removeprefix(entry.name).strip(), 400)
+        detail = oneline(entry.detail.removeprefix(entry.name).strip(), 400)
         detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1 - 2))
         labels[str(index)] = f"{head}{entry.name} {detail}".rstrip()
         parts[str(index)] = [
