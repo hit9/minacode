@@ -14,7 +14,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from prompt_toolkit.utils import get_cwidth
 
-__version__ = "0.31.1"
+__version__ = "0.32.0"
 
 _ResourceT = TypeVar("_ResourceT")
 
