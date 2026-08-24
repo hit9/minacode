@@ -26,6 +26,7 @@ from minacode.base import (
     Text,
     ToolArgs,
     UpdateStatus,
+    split_lines,
 )
 from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
@@ -689,13 +690,9 @@ class Session:
 
     @staticmethod
     def net_diff_for_path(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
-        from minacode.tools import ReadTool  # local import: tools is built on top of session
-
         if before == after:
             return None
-        text = "".join(
-            difflib.unified_diff(ReadTool.split_lines(before), ReadTool.split_lines(after), fromfile="/dev/null" if not before else path, tofile=path)
-        )
+        text = "".join(difflib.unified_diff(split_lines(before), split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
         return (status, path, text) if text else None
 
     @classmethod

@@ -162,6 +162,17 @@ class ModelRequestRetry(MinacodeError): ...
 class ToolError(MinacodeError): ...
 
 
+def split_lines(text: str) -> list[str]:
+    """Canonical line model shared by Read, Edit, and persisted diffs: split on "\n" only, keeping
+    the newline (like file.readlines()). str.splitlines(True) also breaks on \r, \v, \f, \x1c-\x1e,
+    \x85, \u2028, \u2029, which would number lines differently than Read and desync anchors."""
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
 class Text:
     BASE36: ClassVar[str] = "0123456789abcdefghijklmnopqrstuvwxyz"
 

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from minacode.base import Json, ModelError, Text, ToolArgs, ToolError
+from minacode.base import Json, ModelError, Text, ToolArgs, ToolError, split_lines
 from minacode.image import ImageRef
 from minacode.session import Session, TurnDiff
 from minacode.tools.base import Tool
@@ -67,17 +67,6 @@ class ReadTool(Tool):
         # line the model sees (anchor_line displays the stripped line), stays stable when only the
         # final newline changes, and is consistent with indexed_line_hash.
         return Text.base36(int(hashlib.sha1(line.rstrip("\n").encode("utf-8")).hexdigest()[:6], 16)).rjust(5, "0")
-
-    @staticmethod
-    def split_lines(text: str) -> list[str]:
-        # Canonical line model shared by Read and Edit: split on "\n" only, keeping the newline
-        # (like file.readlines()). str.splitlines(True) also breaks on \r, \v, \f, \x1c-\x1e, \x85,
-        # \u2028, \u2029, which would number lines differently than Read and desync anchors.
-        parts = text.split("\n")
-        lines = [part + "\n" for part in parts[:-1]]
-        if parts[-1]:
-            lines.append(parts[-1])
-        return lines
 
     @classmethod
     def anchor(cls, index: int, line: str) -> str:
@@ -311,8 +300,8 @@ def _duplicate_lines(before: str, after: str) -> EditWarning | None:
     """Warn when the edit introduces adjacent identical non-blank lines that were not adjacent
     in the original file. Pairs are compared by line content only: a pair that already existed
     before the edit is not reported, blank lines are never reported."""
-    after_lines = ReadTool.split_lines(after)
-    before_lines = ReadTool.split_lines(before)
+    after_lines = split_lines(after)
+    before_lines = split_lines(before)
 
     def pairs(lines: list[str]) -> set[tuple[str, str]]:
         return {(lines[i - 1], lines[i]) for i in range(1, len(lines)) if lines[i] == lines[i - 1] and lines[i].strip() != ""}
@@ -535,8 +524,8 @@ class EditTool(Tool):
         relpath = self.session.relpath(path)
         return "".join(
             difflib.unified_diff(
-                ReadTool.split_lines(original),
-                ReadTool.split_lines(new_content),
+                split_lines(original),
+                split_lines(new_content),
                 fromfile="/dev/null" if not original and not os.path.exists(path) else relpath,
                 tofile=relpath,
             )
@@ -637,8 +626,8 @@ class EditTool(Tool):
                 if edit.old and edit.old not in content:
                     raise ToolError("replace_all old text not found")
                 content = content.replace(edit.old, edit.content)
-            return EditApplyResult(content, [(0, 0, 0, len(ReadTool.split_lines(content)))], [], True)
-        lines = ReadTool.split_lines(original)
+            return EditApplyResult(content, [(0, 0, 0, len(split_lines(content)))], [], True)
+        lines = split_lines(original)
         resolve_anchor = anchor_resolver or (lambda anchor: self.resolve_anchor(lines, anchor))
         replacements = []
         for edit in edits:
@@ -708,7 +697,7 @@ class EditTool(Tool):
                 shown += ", ..."
             raise ToolError(f"replace_unique old text occurs {count} times at lines {shown}; it must occur exactly once")
 
-        lines = ReadTool.split_lines(content)
+        lines = split_lines(content)
         start = first
         end = start + len(old)
         span_start = content.count("\n", 0, start)
@@ -721,10 +710,10 @@ class EditTool(Tool):
         if replacement and not replacement.endswith("\n") and span_end < len(lines):
             replacement += lines[span_end]
             span_end += 1
-        return span_start, span_end, ReadTool.split_lines(replacement)
+        return span_start, span_end, split_lines(replacement)
 
     def no_changes_error(self, original: str, result: EditApplyResult) -> str:
-        return self.no_changes_error_from_lines(ReadTool.split_lines(original), result.replacements, result.replace_all)
+        return self.no_changes_error_from_lines(split_lines(original), result.replacements, result.replace_all)
 
     @classmethod
     def no_changes_error_from_lines(cls, lines: list[str], replacements: list[tuple[int, int, list[str]]], replace_all: bool) -> str:
@@ -764,7 +753,7 @@ class EditTool(Tool):
         return "\n".join(out)
 
     def edit_context(self, content: str, changes: list[tuple[int, int, int, int]]) -> str:
-        lines = ReadTool.split_lines(content)
+        lines = split_lines(content)
         out = []
         for clear_start, clear_end, start, end in changes:
             if start == 0 and end == len(lines):
@@ -790,7 +779,7 @@ class EditTool(Tool):
         content = self.normalize_text(content)
         if content == "":
             return []
-        lines = ReadTool.split_lines(content)
+        lines = split_lines(content)
         if followed_by_more and lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         return lines

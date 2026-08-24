@@ -2,10 +2,10 @@
 import pytest
 from test_edit_tool import anchor, session
 
-from minacode.base import ToolCall, ToolError
+from minacode.base import ToolCall, ToolError, split_lines
 from minacode.context import ContextManager
 from minacode.runner import EditBatchPlan, ToolRunner
-from minacode.tools import CodeIndex, EditTool, ReadTool
+from minacode.tools import CodeIndex, EditTool
 
 
 @pytest.mark.parametrize(
@@ -30,7 +30,7 @@ def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, ra
     tool = EditTool(session(tmp_path), ["code.txt", raw_edits])
     _, edits = tool.parse()
     single = tool.apply(original, edits)
-    original_lines = ReadTool.split_lines(original)
+    original_lines = split_lines(original)
     plan = EditBatchPlan(tool.session)
     state = plan.FileState(
         "code.txt",
@@ -70,7 +70,7 @@ def test_single_and_batch_edit_application_are_equivalent(tmp_path, original, ra
 def test_single_and_batch_edit_application_raise_the_same_error(tmp_path, original, raw_edits):
     tool = EditTool(session(tmp_path), ["code.txt", raw_edits])
     _, edits = tool.parse()
-    original_lines = ReadTool.split_lines(original)
+    original_lines = split_lines(original)
     plan = EditBatchPlan(tool.session)
     state = plan.FileState("code.txt", [plan.Line(line, index) for index, line in enumerate(original_lines)], original_lines, True)
 
@@ -84,10 +84,10 @@ def test_single_and_batch_edit_application_raise_the_same_error(tmp_path, origin
 def test_split_lines_matches_readlines_only_on_newline():
     # Edit's line model must number lines exactly like Read (file.readlines), i.e. split on "\n"
     # only. str.splitlines(True) also breaks on \x0c and friends, which would desync anchors.
-    assert ReadTool.split_lines("a\nb\x0cc\nd\n") == ["a\n", "b\x0cc\n", "d\n"]
-    assert ReadTool.split_lines("a\nb") == ["a\n", "b"]
-    assert ReadTool.split_lines("") == []
-    assert ReadTool.split_lines("a\nb\x0cc\nd\n") != "a\nb\x0cc\nd\n".splitlines(True)
+    assert split_lines("a\nb\x0cc\nd\n") == ["a\n", "b\x0cc\n", "d\n"]
+    assert split_lines("a\nb") == ["a\n", "b"]
+    assert split_lines("") == []
+    assert split_lines("a\nb\x0cc\nd\n") != "a\nb\x0cc\nd\n".splitlines(True)
 
 def test_tool_runner_batch_edit_accepts_drifted_anchor(tmp_path, monkeypatch):
     s = session(tmp_path)

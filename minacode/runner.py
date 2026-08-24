@@ -26,6 +26,7 @@ from minacode.base import (
     ToolCall,
     ToolError,
     builtin_tool_label,
+    split_lines,
 )
 from minacode.context import ContextManager
 from minacode.session import Session, TurnDiff
@@ -185,7 +186,7 @@ class EditBatchPlan:
     def apply(self, tool: EditTool, state: FileState, edits: list[Edit]) -> ApplyResult:
         result = tool.apply(state.text(), edits, lambda anchor: self.resolve_anchor(state, anchor))
         if edits[0].op == "create" or result.replace_all:
-            return self.ApplyResult(self.new_lines(ReadTool.split_lines(result.content)), result.changes, result.replacements, result.replace_all)
+            return self.ApplyResult(self.new_lines(split_lines(result.content)), result.changes, result.replacements, result.replace_all)
         lines = list(state.lines)
         for start, end, replacement in sorted(result.replacements, reverse=True):
             lines[start:end] = self.new_lines(replacement)
