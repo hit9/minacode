@@ -9,7 +9,7 @@ from minacode.base import (
     ModelError,
 )
 from minacode.context import ContextManager
-from minacode.model import ModelClient
+from minacode.model import ModelClient, responses
 
 
 def test_aliyun_chat_keeps_responses_builtin_tools_inactive(tmp_path, monkeypatch):
@@ -141,7 +141,7 @@ def test_openrouter_sends_supported_server_tools_unchanged_on_both_wires(tmp_pat
     model.request([{"role": "user", "content": "hi"}], [FUNCTION_TOOL])
 
     body = json.loads(factory.calls[0].content)
-    expected_local = FUNCTION_TOOL if api == "chat" else ModelClient.responses_tool_schemas([FUNCTION_TOOL])[0]
+    expected_local = FUNCTION_TOOL if api == "chat" else responses.responses_tool_schemas([FUNCTION_TOOL])[0]
     assert body["tools"] == [expected_local, *server_tools]
 
 @pytest.mark.parametrize(

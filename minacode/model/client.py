@@ -209,7 +209,7 @@ class ModelClient:
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
         if api == "responses":
             payload: Json = {"input": self.responses_input(Text.value(projected))}
-            if request_tools := [*self.responses_tool_schemas(tools or []), *builtin]:
+            if request_tools := [*responses.responses_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         elif api == "anthropic":
             system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
@@ -235,7 +235,7 @@ class ModelClient:
                         ]
                     estimated_messages.append(estimated)
             payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
-            if request_tools := [*self.anthropic_tool_schemas(tools or []), *builtin]:
+            if request_tools := [*anthropic_module.anthropic_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         else:
             payload = {"messages": self.chat_messages(projected)}
@@ -632,10 +632,6 @@ class ModelClient:
             text_only=text_only,
         )
 
-    @staticmethod
-    def responses_tool_schemas(tools: list[Json]) -> list[Json]:
-        return responses.responses_tool_schemas(tools)
-
     def responses_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
         return responses.responses_result(
             result,
@@ -993,21 +989,6 @@ class ModelClient:
             builtin_tools=self.builtin_tools,
             text_only=self.session.image_route.is_text_only(),
         )
-
-    @staticmethod
-    def manual_thinking_budget(effort: str, max_tokens: int) -> int:
-        """The manual thinking budget for one effort, kept inside the request's own output budget.
-
-        Every host with an integer budget rejects one that is not strictly below the output cap —
-        Anthropic on `max_tokens`, the OpenAI-compatible `enable_thinking` hosts on the
-        `max_completion_tokens` they fold that cap into — so a smaller configured
-        `provider.max_tokens` has to lower the budget with it rather than fail the request. The
-        1,024-token floor is the documented minimum; below that the budget cannot be satisfied at
-        all and the provider's own error is the honest answer.
-        Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
-                  https://docs.qwencloud.com/api-reference/chat/openai-chat"""
-        return anthropic_module.manual_thinking_budget(effort, max_tokens)
-
     def anthropic_messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
         text_only = self.session.image_route.is_text_only() if text_only is None else text_only
         return anthropic_module.anthropic_messages(
@@ -1018,11 +999,6 @@ class ModelClient:
             images=self.session.images,
             text_only=text_only,
         )
-
-    @staticmethod
-    def append_anthropic_message(messages: list[Json], role: str, content: str | list[Json]) -> None:
-        anthropic_module.append_anthropic_message(messages, role, content)
-
     def anthropic_assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
         return anthropic_module.anthropic_assistant_blocks(
             message,
@@ -1030,11 +1006,6 @@ class ModelClient:
             provider_origin=self.provider_origin,
             replayable_echo=self.replayable_echo,
         )
-
-    @staticmethod
-    def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
-        return anthropic_module.anthropic_tool_schemas(tools)
-
     def anthropic_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
         return anthropic_module.anthropic_result(
             result,
@@ -1084,7 +1055,7 @@ class ModelClient:
             if reasoning_enabled:
                 # An unset max_tokens leaves the cap to the host, which sizes its own budget under it.
                 extra["thinking_budget"] = (
-                    self.manual_thinking_budget(effort, provider.max_tokens)
+                    anthropic_module.manual_thinking_budget(effort, provider.max_tokens)
                     if provider.max_tokens > 0
                     else THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
                 )
