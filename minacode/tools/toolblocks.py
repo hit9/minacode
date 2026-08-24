@@ -341,20 +341,15 @@ def full_text_block(view: ApprovalView) -> LogBlock:
     )
 
 
-def worker_config_rows(session: Session) -> list[tuple[str, str]]:
-    """The effective worker provider/model/effort/api as (label, value) rows. Owned by
-    DelegateTool, which also builds the send brief's header rows from it, so the `c` cycle and
-    the brief can never disagree about what the worker is configured as."""
-    return DelegateTool.worker_config_rows(session.config)
-
-
 def worker_config_block(session: Session) -> LogBlock:
     """The current effective worker config as a log block: one row per knob, inherited values
-    marked `(inherit)`, matching the approval brief's four worker rows (same cyan aligned
-    labels)."""
+    marked `(inherit)`, matching the approval brief's four worker rows (same cyan aligned labels).
+
+    The rows come from DelegateTool, which also builds the send brief's header rows from them, so
+    the `c` cycle and the brief can never disagree about what the worker is configured as."""
     return LogBlock(
         [
             LogLine("worker config", "", LogRole.FIELD, LogEdge.BRANCH),
-            *(LogLine(label, value, LogRole.FIELD, LogEdge.CONTINUE) for label, value in field_pairs(worker_config_rows(session))),
+            *(LogLine(label, value, LogRole.FIELD, LogEdge.CONTINUE) for label, value in field_pairs(DelegateTool.worker_config_rows(session.config))),
         ]
     )
