@@ -334,7 +334,7 @@ def diff_command(loop: CommandLoop, args: str) -> str | None:
     lines: list[str] = []
     for title, sections in groups:
         lines.append("### " + title)
-        for _status, path, diff in sections:
+        for _, path, diff in sections:
             lines.append(f"#### {path}")
             bounded, truncated = loop.bounded_diff(diff)
             lines.append(f"```diff\n{bounded}\n```")
@@ -527,7 +527,7 @@ def session_preview(entry: SessionEntry, *, summary: list[tuple[str, str]] | Non
     # A tool-heavy session's newest turns are almost all assistant text; without a user message
     # the preview gives no hint of what the conversation was about. Anchor it with the opening
     # question when the recent window is all replies.
-    if not any(role == "user" for role, _text in messages) and entry.opening:
+    if not any(role == "user" for role, _ in messages) and entry.opening:
         messages.append(("user", entry.opening))
     parts: StyleAndTextTuples = []
     for role, text in reversed(messages):

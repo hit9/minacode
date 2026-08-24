@@ -315,7 +315,7 @@ class TuiApp:
             return []
         typing = bool(self.input_buffer.text)
         parts: StyleAndTextTuples = [("ansibrightblack", LogBlock.prefix(2, LogEdge.CONTINUE))]
-        for index, (label, _answer) in enumerate(self._approval_actions):
+        for index, (label, _) in enumerate(self._approval_actions):
             focused = index == self._approval_focus and not typing
             style = "class:approval.action.focused" if focused else "class:approval.action.dim" if typing else "class:approval.action"
             parts.append((style, f" {label} "))
@@ -1096,6 +1096,14 @@ class TuiApp:
             # input line, so a second Enter sends.
             buffer = event.current_buffer
             if self._pick_quick_hint(buffer):
+                return
+            # Enter with a completion row highlighted (Tab previews it) commits that row into the
+            # input instead of sending the message: the menu closes, the prompt stays open, and a
+            # second Enter sends. A menu opened by typing alone has no highlighted row, so Enter
+            # still sends there, exactly as it always did.
+            state = buffer.complete_state
+            if state is not None and state.current_completion is not None:
+                buffer.apply_completion(state.current_completion)
                 return
             buffer.validate_and_handle()
 

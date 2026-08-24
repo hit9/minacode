@@ -87,7 +87,7 @@ def test_request_retries_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     _patch_fast_clock(monkeypatch)
 
-    _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(factory.calls) == 2
@@ -340,7 +340,7 @@ def test_retry_backoff_sequence_within_jitter_bands(tmp_path, monkeypatch):
     monkeypatch.setattr(resilience.random, "random", lambda: 0.5)  # jitter factor exactly 1.0
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(waits()) == MODEL_REQUEST_RETRIES
@@ -418,7 +418,7 @@ def test_retry_after_absurd_value_does_not_stall(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     waits = _retry_wait_recorder(monkeypatch, factory)
 
-    _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert len(waits()) == 1
@@ -487,7 +487,7 @@ def test_retry_wait_phase_hook_pairs(tmp_path, monkeypatch):
     model.on_retry_wait = phases.append
     _retry_wait_recorder(monkeypatch, factory)
 
-    _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert phases == [True, False]
@@ -573,7 +573,7 @@ def test_streamed_httpx_error_retries_then_succeeds(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    _assistant, _tool_calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, _, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "ok"
     assert calls["n"] == 2

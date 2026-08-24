@@ -181,15 +181,15 @@ def test_sessions_picker_runs_full_screen_with_styled_rows_and_summaries(tmp_pat
     assert captured["kwargs"]["max_rows"] > 0
     label_fn = captured["kwargs"]["label_fn"]
     assert label_fn is not None
-    assert any(style == "class:choice.meta" for style, _text in label_fn(target.uid))
-    assert any(style == "class:choice.live" for style, _text in label_fn(s.uid))
-    preview = "".join(text for _style, text in captured["kwargs"]["preview_fn"](target.uid))
+    assert any(style == "class:choice.meta" for style, _ in label_fn(target.uid))
+    assert any(style == "class:choice.live" for style, _ in label_fn(s.uid))
+    preview = "".join(text for _, text in captured["kwargs"]["preview_fn"](target.uid))
     assert "the latest answer" in preview
     # The preview reads like the transcript: the user bullet takes the prompt colour and the
     # message the transcript's warm tone, newest exchange at the bottom.
     parts = captured["kwargs"]["preview_fn"](target.uid)
     assert ("class:prompt", "• ") in parts
-    assert any(style == "class:choice.user" for style, _text in parts)
+    assert any(style == "class:choice.user" for style, _ in parts)
     assert parts[-1] == ("", "  the latest answer\n")
 
 def test_session_summary_tails_the_recent_messages(tmp_path):
@@ -213,7 +213,7 @@ def test_session_summary_skips_internal_events(tmp_path):
     entry = SessionSnapshotStore.list_sessions(other.config.data_dir, other.cwd)[0]
     summary = SessionSnapshotStore.tail_summary(entry.path)
     assert summary[:2] == [("assistant", "real answer"), ("user", "real question")]
-    assert all("<session_event" not in text for _role, text in summary)
+    assert all("<session_event" not in text for _, text in summary)
 
 def test_session_summary_shows_tool_calls_when_a_turn_has_no_text(tmp_path):
     """A tool-heavy session has almost no assistant text; the preview shows the tool names of
@@ -253,7 +253,7 @@ def test_session_summary_merges_tool_calls_and_prefers_text(tmp_path):
     full_entry = SessionSnapshotStore.list_sessions(full.config.data_dir, full.cwd)[0]
     summary = SessionSnapshotStore.tail_summary(full_entry.path)
     assert len(summary) == 5
-    assert all(not text.startswith("→") for _role, text in summary)
+    assert all(not text.startswith("→") for _, text in summary)
 
 def test_session_summary_widens_the_window_to_reach_buried_text(tmp_path):
     """A tool result can bury the conversation under hundreds of kilobytes; the summary widens its
@@ -311,7 +311,7 @@ def test_session_label_fn_matches_the_text_layout(tmp_path):
     for entry in entries:
         index = entries.index(entry)
         parts = label_fn(entry.uid)
-        assert "".join(text for _style, text in parts) == text_rows[index]
+        assert "".join(text for _, text in parts) == text_rows[index]
     parts = label_fn(s.uid)
     current = next(entry for entry in entries if entry.uid == s.uid)
     index = entries.index(current)

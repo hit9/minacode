@@ -4,7 +4,7 @@ factories, and the OAuth token-store helpers."""
 from types import SimpleNamespace
 
 from minacode.mcp import MCPToolInfo
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -12,7 +12,9 @@ from minacode.session import Session
 
 
 def session(tmp_path):
-    return Session(cwd=str(tmp_path))
+    session = Session(cwd=str(tmp_path))
+    bootstrap_features(session)
+    return session
 
 
 def mcp_cfg(**overrides) -> dict:

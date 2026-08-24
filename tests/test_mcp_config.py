@@ -19,13 +19,14 @@ from minacode.config import (
 from minacode.context import ContextManager
 from minacode.mcp import MCPFileTokenStore, MCPManager, MCPResourceInfo, MCPServerConfig
 from minacode.render import StatusBar
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 def parse_one(raw: dict) -> MCPServerConfig | None:
     """Parse a config dict and return the first server config."""
     config = Config.from_dict(raw)
     s = Session(cwd="/tmp", config=config)
+    bootstrap_features(s)
     configs = s.mcp.parse_configs()
     return configs[0] if configs else None
 
@@ -81,6 +82,7 @@ class TestConfigParsing:
         }
         config = Config.from_dict(raw)
         s = Session(cwd="/tmp", config=config)
+        bootstrap_features(s)
         configs = s.mcp.parse_configs()
         assert len(configs) == 2
         assert {c.name for c in configs} == {"a", "b"}
@@ -133,8 +135,10 @@ class TestStdioConfig:
         from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
 
         s = Session(cwd="/tmp", config=Config.from_dict({"mcp": {"x": {"command": "npx", "args": ["srv"]}}}))
+        bootstrap_features(s)
         assert isinstance(s.mcp._transport(s.mcp.parse_configs()[0], {}), StdioTransport)
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         assert isinstance(s.mcp._transport(s.mcp.parse_configs()[0], {}), StreamableHttpTransport)
 
 
@@ -149,6 +153,7 @@ class TestMCPManagerHeaders:
         monkeypatch.setenv("MY_TEST_TOKEN", "secret123")
         raw = mcp_cfg(bearer_token_env_var="MY_TEST_TOKEN")
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         config = s.mcp.parse_configs()[0]
         headers = s.mcp._build_mcp_headers(config)
         assert headers == {"Authorization": "Bearer secret123"}
@@ -158,6 +163,7 @@ class TestMCPManagerHeaders:
         monkeypatch.delenv("MISSING_TOKEN", raising=False)
         raw = mcp_cfg(bearer_token_env_var="MISSING_TOKEN")
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         config = s.mcp.parse_configs()[0]
         result = s.mcp._build_mcp_headers(config)
         assert isinstance(result, str)
@@ -168,6 +174,7 @@ class TestMCPManagerHeaders:
         monkeypatch.setenv("MY_HEADER_VAL", "xyz")
         raw = mcp_cfg(env_http_headers={"X-Custom": "MY_HEADER_VAL"})
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         config = s.mcp.parse_configs()[0]
         headers = s.mcp._build_mcp_headers(config)
         assert headers == {"X-Custom": "xyz"}
@@ -177,6 +184,7 @@ class TestMCPManagerHeaders:
         monkeypatch.setenv("AUTH_VAL", "Bearer custom")
         raw = mcp_cfg(env_http_headers={"Authorization": "AUTH_VAL"})
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         config = s.mcp.parse_configs()[0]
         headers = s.mcp._build_mcp_headers(config)
         assert headers == {"Authorization": "Bearer custom"}
@@ -186,6 +194,7 @@ class TestMCPManagerHeaders:
         monkeypatch.delenv("MISSING_HEADER_VAL", raising=False)
         raw = mcp_cfg(env_http_headers={"X-Custom": "MISSING_HEADER_VAL"})
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         config = s.mcp.parse_configs()[0]
         result = s.mcp._build_mcp_headers(config)
         assert isinstance(result, str)
@@ -199,6 +208,7 @@ class TestMCPManagerHeaders:
             env_http_headers={"Authorization": "AUTH_VAL"},
         )
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         config = s.mcp.parse_configs()[0]
         result = s.mcp._build_mcp_headers(config)
         assert isinstance(result, str)
@@ -208,6 +218,7 @@ class TestMCPManagerHeaders:
         """No auth config produces empty headers dict."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         config = s.mcp.parse_configs()[0]
         headers = s.mcp._build_mcp_headers(config)
         assert headers == {}
@@ -264,6 +275,7 @@ class TestMCPManagerDiscovery:
 
         url = "https://mcp.example.com/mcp"
         s = Session(cwd=str(tmp_path), config=Config.from_dict({"mcp": {"test": {"url": url, "auth": "oauth"}}}))
+        bootstrap_features(s)
         store = MCPFileTokenStore(str(tmp_path / "tokens.json"))
         s.mcp._oauth_token_store = store
         auth = s.mcp.oauth_client(s.mcp.find_config("test"))
@@ -282,6 +294,7 @@ class TestMCPManagerDiscovery:
 
     def test_oauth_redirect_requires_explicit_interactive_connection(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         auth = s.mcp.oauth_client(s.mcp.find_config("test"), interactive=False)
 
         with pytest.raises(RuntimeError, match=r"authentication required; run /mcp connect test"):
@@ -291,6 +304,7 @@ class TestMCPManagerDiscovery:
         from fastmcp.client.auth import OAuth
 
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         notices = []
         delegated = []
 
@@ -309,6 +323,7 @@ class TestMCPManagerDiscovery:
         import fastmcp.client
 
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         config = s.mcp.find_config("test")
         marker = object()
         auth_calls = []
@@ -370,6 +385,7 @@ class TestMCPManagerDiscovery:
         """discover_auto sets status to discovering then ready."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         # Inject a fake _list_tools to avoid real HTTP
         async def fake_list(url, headers):
@@ -385,6 +401,7 @@ class TestMCPManagerDiscovery:
         """Failed discovery sets error status."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_fail(url, headers):
             raise RuntimeError("connection refused")
@@ -398,6 +415,7 @@ class TestMCPManagerDiscovery:
     def test_discover_auto_ignores_cancelled_server(self, monkeypatch):
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def cancelled(_config, _headers):
             raise asyncio.CancelledError
@@ -426,6 +444,7 @@ class TestMCPManagerDiscovery:
         monkeypatch.delenv("MISSING_TOKEN", raising=False)
         raw = mcp_cfg(bearer_token_env_var="MISSING_TOKEN")
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         s.mcp.discover_auto()
 
@@ -442,6 +461,7 @@ class TestMCPManagerDiscovery:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_list(url, headers):
             await asyncio.sleep(0.1)
@@ -464,6 +484,7 @@ class TestMCPManagerDiscovery:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         discovered = []
 
         def fake_discover(config):
@@ -482,6 +503,7 @@ class TestMCPManagerDiscovery:
         """Listed tools are cached after discovery."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "echo"
@@ -507,6 +529,7 @@ class TestMCPManagerDiscovery:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_list(url, headers):
             return []
@@ -534,6 +557,7 @@ class TestMCPDiscoverServer:
     def test_discover_nonexistent_server_sets_error(self):
         """discover_server for a server not in config sets server_errors."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.discover_server("nonexistent")
         assert "nonexistent" in s.mcp.server_errors
         assert "not found" in s.mcp.server_errors["nonexistent"]
@@ -541,6 +565,7 @@ class TestMCPDiscoverServer:
     def test_discover_nonexistent_server_removes_tools(self):
         """discover_server for a server not in config clears its stale tools."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["gone"] = [mcp_tool_info("gone", "old_tool")]
         s.mcp.discover_server("gone")
         assert "gone" not in s.mcp.tools
@@ -556,6 +581,7 @@ class TestMCPPruning:
     def test_prune_keeps_describe_record_referenced_in_messages(self):
         """A describe record is retained when its tr.N is referenced in history (normal path)."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho back.</description>\n</MCPDescribe>'
         s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], desc)
@@ -570,6 +596,7 @@ class TestMCPPruning:
     def test_prune_drops_unreferenced_describe_record(self):
         """With the tail digest gone, an unreferenced describe record prunes like any other."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho.</description>\n</MCPDescribe>'
         s.store_tool_result("MCP", [{"action": "describe", "server": "test", "tool": "echo"}], desc)
@@ -582,6 +609,7 @@ class TestMCPPruning:
     def test_prune_drops_non_mcp_records(self):
         """prune_tool_records drops records not referenced in messages."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         s.store_tool_result("Find", [], "results from find")
         s.store_tool_result("Read", [], "read output")
         ctx = ContextManager(s)
@@ -607,6 +635,7 @@ class TestServerStatusRendering:
         """Connected server shows mode and tool count."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "echo"
@@ -633,6 +662,7 @@ class TestServerStatusRendering:
         """Legacy enabled=false is ignored and the server remains manual."""
         raw = {"mcp": {"test": {"url": "http://x/mcp", "enabled": False}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         status = s.mcp.render_server_status()
         assert "test" in status
         assert "manual" in status
@@ -646,6 +676,7 @@ class TestServerStatusRendering:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.tools["a"] = []
         s.mcp.resources["a"] = []
 
@@ -659,6 +690,7 @@ class TestServerStatusRendering:
         """render_tool_listing shows connected servers."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "echo"
@@ -681,6 +713,7 @@ class TestServerStatusRendering:
         """render_tool_listing('test') filters to one server."""
         raw = {"mcp": {"a": {"url": "http://a/mcp", "auto_connect": True}, "b": {"url": "http://b/mcp", "auto_connect": True}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_list(url, headers):
             return []
@@ -701,6 +734,7 @@ class TestServerStatusRendering:
     def test_render_tool_listing_omits_disconnected_servers(self):
         raw = {"mcp": {"connected": {"url": "http://a/mcp"}, "offline": {"url": "http://b/mcp"}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.tools["connected"] = []
         s.mcp.resources["connected"] = []
 
@@ -711,11 +745,13 @@ class TestServerStatusRendering:
 
     def test_render_tool_listing_disconnected_server_has_connect_hint(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
 
         assert s.mcp.render_tool_listing("test") == "MCP server 'test' is not connected; run /mcp connect test"
 
     def test_render_tool_listing_includes_resources(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = []
         s.mcp.resources["test"] = [MCPResourceInfo("test", "docs://guide", "guide", "Usage guide", "text/plain")]
 
@@ -735,12 +771,14 @@ class TestStatusBarMCPStatus:
     def test_stale_shows_nothing(self):
         """Stale status → empty string."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         bar = StatusBar(s)
         assert bar.mcp_status() == ""
 
     def test_discovering_shows_spinner(self, monkeypatch):
         """Discovering status → loaded/total + spinner."""
         s = Session(cwd="/tmp", config=Config.from_dict({"mcp": {"test": {"url": "http://x/mcp"}}}))
+        bootstrap_features(s)
         s.mcp.discovery_status = "discovering"
         bar = StatusBar(s)
         monkeypatch.setattr(time, "monotonic", lambda: 0.0)
@@ -757,6 +795,7 @@ class TestStatusBarMCPStatus:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.discovery_status = "discovering"
         s.mcp.tools["a"] = [mcp_tool_info("a", "echo")]
         bar = StatusBar(s)
@@ -766,6 +805,7 @@ class TestStatusBarMCPStatus:
     def test_ready_shows_server_count(self, monkeypatch):
         """Ready status → 'MCP N' where N is server count."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.discovery_status = "ready"
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         bar = StatusBar(s)
@@ -774,6 +814,7 @@ class TestStatusBarMCPStatus:
     def test_ready_zero_servers(self):
         """Ready with no servers → 'mcp 0'."""
         s = Session(cwd="/tmp", config=Config.from_dict({"mcp": {"test": {"url": "http://x/mcp"}}}))
+        bootstrap_features(s)
         s.mcp.discovery_status = "ready"
         bar = StatusBar(s)
         assert bar.mcp_status() == "mcp 0"
@@ -781,6 +822,7 @@ class TestStatusBarMCPStatus:
     def test_error_shows_error(self):
         """Error status → 'mcp err'."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.discovery_status = "error"
         bar = StatusBar(s)
         assert bar.mcp_status() == "mcp err"
@@ -788,6 +830,7 @@ class TestStatusBarMCPStatus:
     def test_discovering_statusbar_spinner_animates(self, monkeypatch):
         """Discovering spinner changes over time."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.discovery_status = "discovering"
         bar = StatusBar(s)
 
@@ -808,7 +851,7 @@ class TestStatusBarMCPStatus:
 # ---------------------------------------------------------------------------
 # Library logging — MCP client transport tracebacks must not reach the TUI
 # ---------------------------------------------------------------------------
-# minacode.base configures the noisy MCP client transport loggers so that
+# minacode's configure_logging quiets the noisy MCP client transport loggers so that
 # expected-and-already-surfaced failures (httpx ReadTimeout on a slow server,
 # dropped SSE/stdio frames, JSON-RPC parse errors) don't dump full tracebacks
 # onto stderr mid-render via logging.lastResort.
@@ -816,10 +859,12 @@ class TestStatusBarMCPStatus:
 
 class TestTransportLoggingSuppressed:
     def test_transport_loggers_at_critical(self):
-        """Importing minacode.base raises the transport loggers out of the ERROR band."""
+        """configure_logging raises the transport loggers out of the ERROR band."""
         import logging
 
-        import minacode.base  # noqa: F401 — side effect: module-level logging config
+        from minacode.base import configure_logging
+
+        configure_logging()
 
         for name in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
             logger = logging.getLogger(name)
@@ -829,8 +874,9 @@ class TestTransportLoggingSuppressed:
         """logger.exception on the streamable_http transport produces no stderr output."""
         import logging
 
-        import minacode.base  # noqa: F401
+        from minacode.base import configure_logging
 
+        configure_logging()
         log = logging.getLogger("mcp.client.streamable_http")
         try:
             raise ZeroDivisionError("simulated transport failure")

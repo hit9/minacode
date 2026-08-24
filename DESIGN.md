@@ -41,9 +41,24 @@ Modules (dependencies point downward only):
             providers/catalog.py           evidence-backed compatibility data
 ```
 
-`session/__init__.py` and `session/store.py` reach upward features/state types only via deferred
-imports (commented at each call site), so features sit above `session/` without a module-scope
-cycle.
+Three import rings stay runtime-only so the module graph above stays a DAG. Every upward edge is a
+deferred import commented at its call site; lifting one to module scope makes the cycle part of
+startup.
+
+- **Orchestration ring (`tools/` ↔ engine).** `Delegate` spawns a worker by constructing
+  `engine.Agent` (`tools/delegate.py`). The downward direction — engine/runner/model importing
+  `tools` — is module scope. `ToolScript` needs no edge of its own: it uses the `ToolRunner` it was
+  handed (`TYPE_CHECKING` only) and gets edit planning from `tools/editplan.py`. Separately, inside
+  `tools/` a submodule that needs `TOOL_REGISTRY` or `tool_payload` imports it locally, because the
+  registry in `__init__.py` is built on top of every tool module.
+- **Session features (`session/` ↔ mcp/skill/mentions).** `Session` itself is feature-free:
+  `__post_init__` never reaches upward. `bootstrap_features()` (deferred imports inside) attaches
+  `MCPManager`/`SkillLibrary`/`FileMentions` when needed, called by `Session.from_config_file` and
+  `Session.load_snapshot`; the delegate worker handoff injects the parent's `skills`/`mcp` fields
+  explicitly instead, and `session/store.py` still imports its parent package at load time.
+- **Assets (`image.py` ↔ session/).** `session/` imports the image value types at module scope;
+  `ImageInputs.assets_dir` reaches back for `SessionSnapshotStore.session_path`, the one place the
+  asset directory's layout is owned (`image.py`).
 
 A turn, and its three endings:
 
@@ -148,6 +163,18 @@ Tests protect observable contracts and reproduced regressions, not implementatio
   layout, modals; `render.py` owns presentation.
 - `tools/`, `image.py`, `mcp/`, `skill.py` are vertical features that never leak storage or UI
   details; `tools/` splits built-ins by capability, with the registry in `__init__.py`.
+- How a call *reads* is a tool concern, not a runner one: `tools/tooloutput.py` bounds and parses
+  result text, `tools/toolblocks.py` assembles the approval/rejection/finish `LogBlock` trees. Both
+  are pure over the call, the tool, and the session — `render.py` still owns turning a block into
+  styled terminal output, so this is the log-line vocabulary from `base.py`, not UI leaking down.
+  Keeping them out of `ToolRunner` is what lets transcript replay render a saved call without
+  standing up a live runner.
+- Inside `toolblocks`, `finish_display`/`approval_display` branch on `call.name` for the handful of
+  tools with a shaped result (Note, Bash, MCP, ToolScript, Ask, Delegate, ViewImage). That switch
+  stays deliberately: a rendering hook on the `Tool` base would put six special cases into the
+  interface every tool implements, and one chain that reads top to bottom is easier to keep
+  consistent than seven overrides. Push the branches down onto the tool classes when a tool outside
+  the built-in set needs its own finish block, not merely because the chain is long.
 
 State changes belong to the module owning their meaning. Dependencies point toward stable
 concepts: configuration and value types do not know the runtime; feature and session modules do not

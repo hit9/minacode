@@ -15,7 +15,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from minacode.base import MEMORY_PREFIXES, ApprovalView, Json, LogBlock, LogLine, LogRole, ToolError
+from minacode.base import MEMORY_PREFIXES, ApprovalView, Json, LogBlock, LogLine, LogRole, ToolError, oneline
 from minacode.prompts import WORKER_PROMPT
 from minacode.session import Session, SessionSnapshotStore
 from minacode.tools.base import Tool
@@ -214,18 +214,16 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         configuration it runs under. The order itself is excluded, because the viewer shows it in
         full below these rows; the approval brief passes its one-line excerpt as `order_row` and
         this decides where it sits, so callers never have to splice a row into this list."""
-        from minacode.runner import ToolRunner  # local: runner imports minacode.tools at module level
-
         payload = self.payload_dict()
         rows: list[tuple[str, str]] = []
         title = payload.get("title")
         if isinstance(title, str) and title.strip():
-            rows.append(("title", ToolRunner.oneline(title.strip(), 120)))
+            rows.append(("title", oneline(title.strip(), 120)))
         if order_row is not None:
             rows.append(order_row)
         language = payload.get("language")
         if isinstance(language, str) and language.strip():
-            rows.append(("language", ToolRunner.oneline(language.strip(), 60)))
+            rows.append(("language", oneline(language.strip(), 60)))
         if payload.get("max_steps") is not None:
             rows.append(("max_steps", str(payload["max_steps"])))
         rows.extend(self.worker_config_rows(self.session.config))
@@ -336,18 +334,16 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
         # the scrollback that says who is talking, and the worker's own streamed lines do not. A
         # full-width rule whose yellow label reads the worker's live config and a one-line order
         # summary; without a wired worker_rule, the yellow [worker] line below stands in.
-        from minacode.runner import ToolRunner  # local: runner imports minacode.tools at module level, same cycle as Agent above
-
         config = worker.config
         if runner.worker_rule is not None:
-            runner.worker_rule(f"worker start · {config.active_provider}/{config.provider.model or '(no model)'} · {title or ToolRunner.oneline(order, 60)}")
+            runner.worker_rule(f"worker start · {config.active_provider}/{config.provider.model or '(no model)'} · {title or oneline(order, 60)}")
         else:
             runner.output_fn(
                 LogBlock(
                     [
                         LogLine(
                             "[worker]",
-                            f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {title or ToolRunner.oneline(order, 200)}",
+                            f"▶ {config.active_provider}/{config.provider.model or '(no model)'} · {title or oneline(order, 200)}",
                             LogRole.WORKER,
                         )
                     ]
@@ -370,7 +366,7 @@ Reset the worker when switching tasks, when the spec changed, or after it failed
             # error routinely carries both a quote and a newline -- an unescaped one closes the
             # attribute early and the rest of the tag reads as garbage. The full text is in the
             # failure report the parent got when it happened; this is the reminder, not the record.
-            worker.state.last_error = ToolRunner.oneline(str(failure).replace('"', "'"), 200)
+            worker.state.last_error = oneline(str(failure).replace('"', "'"), 200)
             worker.state.last_error_round = worker.state.round_count
             raise ToolError(self._failure_report(worker, failure, started, before_diffs)) from failure
         worker.state.last_error, worker.state.last_error_round = "", 0

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 
-from minacode.base import ConfigError, MinacodeError, UpdateStatus, __version__
+from minacode.base import ConfigError, MinacodeError, UpdateStatus, __version__, configure_logging
 from minacode.cli import CommandLoop
 from minacode.cli.update import UpdateChecker
 from minacode.config import (
@@ -83,6 +83,7 @@ def warm_provider_sdks() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     if sys.platform == "win32":
         print("Error: minacode does not support native Windows; use WSL instead.", file=sys.stderr)
         return 1

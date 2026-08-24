@@ -5,6 +5,7 @@ import shutil
 import code_symbol_index as csi
 import pytest
 
+from minacode.tools import tooloutput
 from minacode.base import (
     LogBlock,
     LogEdge,
@@ -17,7 +18,6 @@ from minacode.config import (
     Config,
 )
 from minacode.context import ContextManager
-from minacode.model import ModelClient
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import HistorySegment, Session
@@ -37,6 +37,8 @@ from minacode.tools import (
     SkillTool,
     Tool,
     ViewImageTool,
+    toolblocks,
+    tool_payload,
 )
 
 
@@ -219,114 +221,6 @@ def test_code_index_failure_helpers_keep_session_state_consistent(tmp_path, monk
     assert s.state.code_index_notice == ""
     assert s.state.code_index_error == ""
     assert s.state.code_index_status == "synced"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_read_and_search_success_paths(tmp_path):
@@ -585,20 +479,19 @@ def test_search_ignores_hidden_and_gitignored_paths(tmp_path, monkeypatch):
 
 
 def test_single_and_batch_payload_shapes_are_supported():
-    assert ModelClient.tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[1, 0]]}]
-    assert ModelClient.tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
-    assert ModelClient.tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
+    assert tool_payload("Read", {"path": "a.py"}) == [{"path": "a.py", "ranges": [[1, 0]]}]
+    assert tool_payload("Read", {"path": "a.py", "ranges": [0, 2]}) == [{"path": "a.py", "ranges": [[0, 2]]}]
+    assert tool_payload("Read", {"files": [{"path": "a.py", "ranges": [[0, 1]]}]}) == [{"path": "a.py", "ranges": [[0, 1]]}]
     assert ReadTool(Session(cwd="."), [{"path": "minacode.py"}]).targets()[0][1] == [(1, 0)]
-    assert ModelClient.tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
-    assert ModelClient.tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
-    assert ModelClient.tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
+    assert tool_payload("Search", {"pattern": "TODO"}) == [{"pattern": "TODO"}]
+    assert tool_payload("Search", {"queries": [{"pattern": "TODO"}]}) == [{"pattern": "TODO"}]
+    assert tool_payload("Note", {"set_goal": "ship"}) == [{"set_goal": "ship"}]
 
 
 def test_tool_runner_finish_display_keeps_ask_answer(tmp_path):
     s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    display = str(runner.finish_display(ToolCall("ask", "Ask", _q({"question": "Which?"})), "tr.1", "typed answer", failed=False))
+    display = str(toolblocks.finish_display(s, ToolCall("ask", "Ask", _q({"question": "Which?"})), "tr.1", "typed answer", failed=False))
 
     assert display.startswith("  Ask  Which? → tr.1\n")
     assert display.endswith("    └ answer typed answer")
@@ -657,7 +550,8 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
     s = session(tmp_path)
     runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
 
-    search = runner.short_call(
+    search = tooloutput.short_call(
+        runner.session,
         ToolCall(
             "s",
             "Search",
@@ -665,15 +559,16 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
                 {"pattern": "done in", "glob": "*.py"},
                 {"pattern": "elapsed.*s]", "path": "tests", "context": 2},
             ],
-        )
+        ),
     )
     assert search == 'Search "done in" glob=*.py; "elapsed.*s]" path=tests C=2'
 
-    recall = runner.short_call(ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
+    recall = tooloutput.short_call(runner.session, ToolCall("r", "Recall", [{"keys": ["tr.4", "tr.5"], "ranges": [[0, 80]]}]))
     assert recall == "Recall tr.4 0:80; tr.5 0:80"
 
     s.state.known = ["existing"]
-    note = runner.short_call(
+    note = tooloutput.short_call(
+        runner.session,
         ToolCall(
             "m",
             "Note",
@@ -684,7 +579,7 @@ def test_tool_runner_short_call_formats_search_and_recall(tmp_path):
                     "append_known": ["existing", "new fact"],
                 }
             ],
-        )
+        ),
     )
     assert note == "Note goal: ship\nplan:\n  - [~] inspect\n  - [ ] patch\nknown:\n  + new fact"
 
@@ -755,9 +650,8 @@ def test_tool_validation_rejects_bad_shapes_without_side_effects(tmp_path):
 
 
 def test_uiprinter_highlights_generic_tool_arguments(tmp_path):
-    s = session(tmp_path)
-    runner = ToolRunner(s, ContextManager(s))
-    line = runner.log_root('Search "done in" glob=*.py C=2')
+    session(tmp_path)
+    line = toolblocks.log_root('Search "done in" glob=*.py C=2')
 
     assert line.syntax == "tool-args"
     segments = UiPrinter(output_fn=lambda text: None).log_segments(LogBlock([line]))
@@ -802,7 +696,7 @@ def test_uiprinter_renders_stored_result_dim():
 def test_uiprinter_renders_tool_root_without_generic_prefix():
     block = LogBlock([LogLine("Read", "minacode.py 0:100 → tr.6 [auto]", LogRole.TOOL)])
     segments = UiPrinter(output_fn=lambda text: None).log_segments(block)
-    text = "".join(value for _style, value in segments)
+    text = "".join(value for _, value in segments)
 
     assert text == "  Read  minacode.py 0:100 → tr.6 [auto]\n"
     assert any(style == "fg:default" and "minacode.py 0:100 → tr.6 [auto]" in value for style, value in segments)

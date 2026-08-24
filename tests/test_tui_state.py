@@ -191,12 +191,12 @@ def test_choice_view_state_window_counter_and_numbering_stay_stable():
     state = ChoiceViewState(choices=tuple(f"r{index}" for index in range(50)), labels={}, disabled=set(), max_rows=10)
     state.selected = 49
     parts = state.fragments("list")
-    text = "".join(value for _style, value in parts)
+    text = "".join(value for _, value in parts)
     assert "showing 41-50 of 50" in text
     assert "41. r40" in text and "50. r49" in text
 
     state.selected = 0
-    text = "".join(value for _style, value in state.fragments("list"))
+    text = "".join(value for _, value in state.fragments("list"))
     assert "showing 1-10 of 50" in text
     assert "1. r0" in text and "10. r9" in text
 
@@ -208,7 +208,7 @@ def test_bash_live_preview_frame_rows():
     preview.started_at = time.monotonic() - 1.5
 
     rows = preview.frame_rows()
-    lines = ["".join(text for _style, text in row) for row in rows]
+    lines = ["".join(text for _, text in row) for row in rows]
     assert any("line1" in line for line in lines)
     assert any("line2" in line for line in lines)
     assert any("output" in line.lower() or "running" in line.lower() for line in lines)
@@ -324,7 +324,7 @@ def test_model_stream_preview_draws_the_same_tree_as_the_log(tmp_path):
     loop = CommandLoop(Agent(Session(cwd=str(tmp_path), config=config)), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
     loop.model_stream_output("reasoning", "weighing the two paths\nthe second option is cleaner")
-    lines = "".join(text for _style, text in loop.view.model_stream_fragments()).splitlines()
+    lines = "".join(text for _, text in loop.view.model_stream_fragments()).splitlines()
 
     rail = LogBlock.prefix(TurnBox.CONTENT_LEVEL + 1, LogEdge.CONTINUE)
     assert any(
@@ -349,27 +349,27 @@ def test_model_stream_preview_switches_phase_and_clears(tmp_path):
     # The phase word rides beside the spark and follows the stream: `thinking` while the model
     # reasons, `responding` once it answers; the preview carries only the text besides that.
     loop.model_stream_output("reasoning", "checking the request")
-    reasoning = "".join(text for _style, text in loop.view.model_stream_fragments())
+    reasoning = "".join(text for _, text in loop.view.model_stream_fragments())
     assert "checking the request" in reasoning
     assert "thinking" in reasoning
-    assert "thinking" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "thinking" in "".join(text for _, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("output", "answering now")
-    output = "".join(text for _style, text in loop.view.model_stream_fragments())
+    output = "".join(text for _, text in loop.view.model_stream_fragments())
     assert "answering now" in output
     assert "thinking" not in output  # the word follows the phase instead of staying stale
     assert "responding" in output
     assert "checking the request" not in output
-    assert "responding" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "responding" in "".join(text for _, text in loop.view.queue_divider_fragments())
 
     loop.model_stream_output("correcting malformed tool call 1/5 · Bash", "")
     assert loop.view.model_stream_fragments() == []
-    divider = "".join(text for _style, text in loop.view.queue_divider_fragments())
+    divider = "".join(text for _, text in loop.view.queue_divider_fragments())
     assert "correcting malformed tool call 1/5 · Bash" in divider  # the phase stays whole
 
     loop.model_stream_output("", "")
     assert loop.view.model_stream_fragments() == []
-    assert "working" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "working" in "".join(text for _, text in loop.view.queue_divider_fragments())
 
 
 def test_model_stream_preview_styles_inline_markdown(tmp_path, monkeypatch):
@@ -420,13 +420,13 @@ def test_sweep_divider_widens_for_long_labels_and_keeps_the_track(tmp_path, monk
 
     long_label = "[worker] thinking (5m07s · ↓ 75 tok/s) [ 1 queued ]"
     fragments = view.sweep_divider_fragments(long_label)
-    dashes = sum(1 for _style, text in fragments if text == "-")
+    dashes = sum(1 for _, text in fragments if text == "-")
     assert dashes >= 3 + 12  # lead + the minimum trail
-    assert any(text == long_label for _style, text in fragments)  # never clipped
+    assert any(text == long_label for _, text in fragments)  # never clipped
 
     short_label = "working"
     plain = view.sweep_divider_fragments(short_label)
-    assert any(text == short_label for _style, text in plain)  # a short label is never clipped
+    assert any(text == short_label for _, text in plain)  # a short label is never clipped
 
 
 def test_queue_divider_resuming_status_is_a_quiet_gray_line(tmp_path):
@@ -448,15 +448,15 @@ def test_divider_shows_output_rate_while_a_response_streams(tmp_path):
     loop = CommandLoop(Agent(session), input_fn=lambda _prompt: "", output_fn=lambda _text: None)
 
     loop.model_stream_output("output", "answering now")
-    assert "tok/s" not in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "tok/s" not in "".join(text for _, text in loop.view.queue_divider_fragments())
 
     loop.status_bar.started_at = time.monotonic() - 4.0
     session.state.stream_started_at = time.monotonic() - 4.0
     session.state.stream_chars = 800
-    assert "responding (4s · ↓ 50 tok/s)" in "".join(text for _style, text in loop.view.queue_divider_fragments())
+    assert "responding (4s · ↓ 50 tok/s)" in "".join(text for _, text in loop.view.queue_divider_fragments())
 
     session.state.stream_started_at = 0.0
-    label = "".join(text for _style, text in loop.view.queue_divider_fragments())
+    label = "".join(text for _, text in loop.view.queue_divider_fragments())
     assert "responding (" in label and "tok/s" not in label
 
 
@@ -469,7 +469,7 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
     claimed = session.claim_user_inputs()
     loop.model_stream_output("reasoning", "checking the formatter")
 
-    activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
+    activity = "".join(text for _, text in loop.view.tui_activity_fragments())
     assert activity.count("use black instead") == 1
     # Either star may lead the preview row; the text after it is what the order checks.
     assert activity.index("• use black instead") < activity.index("checking the formatter") < activity.rindex("thinking")
@@ -477,14 +477,14 @@ def test_sent_followup_moves_above_activity_and_failed_request_requeues_it(tmp_p
     assert "queued" not in activity and "sent" not in activity
 
     session.release_user_inputs()
-    requeued = "".join(text for _style, text in loop.view.tui_activity_fragments())
+    requeued = "".join(text for _, text in loop.view.tui_activity_fragments())
     assert "• use black instead" not in requeued
     assert "[ 1 queued ]" in requeued
     assert requeued.rindex("thinking") < requeued.index("+ use black instead")
 
     session.claim_user_inputs()
     session.acknowledge_user_inputs(claimed)
-    committed = "".join(text for _style, text in loop.view.tui_activity_fragments())
+    committed = "".join(text for _, text in loop.view.tui_activity_fragments())
     assert "use black instead" not in committed
 
 
@@ -499,7 +499,7 @@ def test_activity_echo_gets_a_blank_row_before_the_divider(tmp_path):
     session.enqueue_user_input("\u770b\u770b shot.png")
     session.claim_user_inputs()  # in-flight: the echo renders above the divider
 
-    activity = "".join(text for _style, text in loop.view.tui_activity_fragments())
+    activity = "".join(text for _, text in loop.view.tui_activity_fragments())
     lines = activity.splitlines()
     echo = next(index for index, line in enumerate(lines) if line.startswith("\u2022 \u770b\u770b shot.png"))
     divider = next(index for index, line in enumerate(lines) if "working" in line)
@@ -514,7 +514,7 @@ def test_model_stream_preview_keeps_only_the_latest_six_lines(tmp_path, monkeypa
 
     loop.model_stream_output("output", "\n".join(f"line {index} with a deliberately long suffix" for index in range(8)))
 
-    preview = "".join(text for _style, text in loop.view.model_stream_fragments())
+    preview = "".join(text for _, text in loop.view.model_stream_fragments())
     assert "line 0" not in preview
     assert "line 1" not in preview
     assert "line 2" in preview

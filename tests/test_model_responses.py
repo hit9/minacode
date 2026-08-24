@@ -1,12 +1,15 @@
 """Responses API requests: output items, streaming, replay, and reasoning parameters."""
 
 import json
+import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from model_harness import _MockClientFactory, _session, _StreamClientFactory
+from openai import OpenAI
 
-from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
+from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ModelStreamIncomplete, ToolCall
 from minacode.model import ModelClient, resilience
 from minacode.tools import BashTool
 
@@ -173,6 +176,97 @@ def test_responses_stream_reports_deltas_and_uses_terminal_response(tmp_path, mo
     assert s.usage.cached_prompt_tokens == 7
 
 
+class _SequenceStreamFactory:
+    """Streams the nth event list on the nth call, so a test can drop the terminal event once."""
+
+    def __init__(self, streams: list[list[dict]]):
+        self.streams = streams
+        self.calls: list[httpx.Request] = []
+
+    def __call__(self, **kwargs) -> OpenAI:
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.calls.append(request)
+            events = self.streams[min(len(self.calls) - 1, len(self.streams) - 1)]
+            body = "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+        http_client = httpx.Client(transport=httpx.MockTransport(respond))
+        return OpenAI(api_key="sk-test", base_url="http://test", http_client=http_client, max_retries=0)
+
+
+def _patch_fast_clock(monkeypatch):
+    """Advance the clock by each requested sleep so backoff waits complete instantly."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+
+
+def test_responses_stream_incomplete_is_retryable():
+    """A stream without a terminal event is a transient server-side drop, not a deterministic
+    failure: it must retry, and the status bar labels it "stream" (matching the "connection"
+    label for httpx transport errors)."""
+    error = ModelStreamIncomplete("Responses stream ended without a terminal response")
+    assert resilience.retryable_error(error) is True
+    assert resilience.retry_reason(error) == "stream"
+
+
+def test_responses_stream_without_terminal_event_retries_then_succeeds(tmp_path, monkeypatch):
+    """A stream that ends with deltas but no terminal event is a server-side drop detected after
+    the fact by reassemble_stream: the request retries instead of ending the turn. Regression for
+    "Responses stream ended without a terminal response"."""
+    s = _session(tmp_path, api="responses", model="gpt-5")
+    model = ModelClient(s)
+    _patch_fast_clock(monkeypatch)
+
+    terminal = {
+        "id": "resp_stream",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "gpt-5",
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "output": [
+            {
+                "id": "msg_stream",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hello", "annotations": []}],
+            }
+        ],
+        "usage": {
+            "input_tokens": 10,
+            "input_tokens_details": {"cached_tokens": 7},
+            "output_tokens": 5,
+            "total_tokens": 15,
+        },
+    }
+    delta = {
+        "type": "response.output_text.delta",
+        "item_id": "msg_stream",
+        "output_index": 1,
+        "content_index": 0,
+        "delta": "hel",
+        "logprobs": [],
+        "sequence_number": 2,
+    }
+    factory = _SequenceStreamFactory([[delta], [delta, {"type": "response.completed", "response": terminal, "sequence_number": 4}]])
+    streamed = []
+    model.on_stream = lambda kind, delta: streamed.append((kind, delta))
+    monkeypatch.setattr(model, "client", factory)
+
+    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], [])
+
+    assert len(factory.calls) == 2
+    assert streamed == [("output", "hel"), ("", ""), ("output", "hel"), ("", "")]
+    assert content == "hello"
+    assert calls == []
+    assert assistant["content"] == "hello"
+    assert s.state.model_retry_count == 1
+
+
 @pytest.mark.parametrize("event_type", ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"])
 def test_responses_stream_previews_reasoning_in_either_spelling(tmp_path, monkeypatch, event_type):
     """Hosts that summarize reasoning stream the summary; hosts that expose the raw chain stream the
@@ -230,7 +324,7 @@ def test_responses_stream_promotes_completed_text_before_tool_arguments_finish(t
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    _assistant, calls, content = model.request([{"role": "user", "content": "make the change"}], None)
+    _, calls, content = model.request([{"role": "user", "content": "make the change"}], None)
 
     promoted = ("output_done", "I am editing the files.")
     assert timeline.index(promoted) < timeline.index(("wire", "tool arguments"))
@@ -272,7 +366,7 @@ def test_responses_stream_promotes_completed_text_across_provider_call(tmp_path,
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
 
-    _assistant, calls, content = model.request([{"role": "user", "content": "weather?"}], None)
+    _, calls, content = model.request([{"role": "user", "content": "weather?"}], None)
 
     promoted = ("output_done", "The answer is sunny.")
     clear = ("", "")
@@ -313,7 +407,7 @@ def test_responses_stream_promotes_when_output_item_added_is_missing(tmp_path, m
     monkeypatch.setattr(model, "client", lambda **kwargs: SimpleNamespace(responses=responses))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    _assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
+    _, calls, content = model.request([{"role": "user", "content": "hi"}], None)
 
     promoted = ("output_done", "searched")
     assert timeline.count(promoted) == 1
@@ -412,7 +506,7 @@ def test_responses_incomplete_for_another_reason_still_returns_its_output(tmp_pa
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "partial"}]}],
     }
 
-    _assistant, calls, content = model.responses_result(result)
+    _, calls, content = model.responses_result(result)
 
     assert content == "partial"
     assert calls == []
@@ -816,7 +910,7 @@ def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkey
     tools = [BashTool.schema(False)]
 
     # First request: non-empty tools, provider returns a valid call
-    assistant, calls, _content = model.request([{"role": "user", "content": "run it"}], tools)
+    assistant, calls, _ = model.request([{"role": "user", "content": "run it"}], tools)
     assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert assistant["tool_calls"][0]["id"] == "call_1"
     assert any(item.get("type") == "function_call" for item in assistant["_responses_output"])
@@ -827,7 +921,7 @@ def test_responses_normal_tool_path_preserves_calls_and_replays(tmp_path, monkey
         assistant,
         {"role": "tool", "tool_call_id": "call_1", "content": "hi"},
     ]
-    _final, final_calls, final_content = model.request(history, tools)
+    _, final_calls, final_content = model.request(history, tools)
     assert final_content == "done"
     assert final_calls == []
 
@@ -932,6 +1026,7 @@ def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monke
 def test_provider_origin_separates_issuers_a_hostname_cannot(tmp_path):
     """Whoever can verify the ciphertext is decided by the whole endpoint and the credential, not
     by the domain: same-host entries on different ports, paths, or organization keys are distinct."""
+
     def origin(**kwargs) -> str:
         base = {"url": "http://localhost:8000/v1", "model": "gpt-oss", "key": "sk-a"}
         return ModelClient(_session(tmp_path, **(base | kwargs))).provider_origin()

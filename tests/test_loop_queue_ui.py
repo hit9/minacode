@@ -89,7 +89,7 @@ def test_divider_comet_advances_one_cell_per_animation_frame(tmp_path):
 
 def test_divider_glow_fades_between_cells_and_every_step_has_a_style(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda text: None), input_fn=lambda prompt: "", output_fn=lambda text: None)
-    styled = {rule for rule, _style in loop.view.style().style_rules}
+    styled = {rule for rule, _ in loop.view.style().style_rules}
 
     with pytest.MonkeyPatch.context() as mp:
         seen = set()
@@ -130,7 +130,7 @@ def test_queue_flush_moves_messages_into_log(tmp_path, monkeypatch):
     assert loop.agent.on_queue_flush == loop.flush_queued_to_log
 
     echoed = []
-    monkeypatch.setattr(loop_module, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _style, text in value)))
+    monkeypatch.setattr(loop_module, "print_formatted_text", lambda value, **_kwargs: echoed.append("".join(text for _, text in value)))
 
     loop.flush_queued_to_log(["do a thing", "then verify", "  "])
 
@@ -166,7 +166,7 @@ def test_hints_command_is_removed(tmp_path):
 
     # Every /hints spelling follows the normal unknown-command path; there is no toggle left.
     for variant in ("/hints", "/hints on", "/hints off"):
-        handled, _exit = loop.command(variant)
+        handled, _ = loop.command(variant)
         assert handled is True
         assert out[-1].endswith("Unknown command: /hints")
     assert "/hints" not in loop_module.COMMAND_LOOKUP

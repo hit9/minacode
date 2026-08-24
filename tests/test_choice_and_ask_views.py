@@ -108,7 +108,7 @@ def test_choice_view_state_fragments_preserve_headers_and_preview():
     )
 
     fragments = state.fragments("Model", lambda _choice: "first\\nsecond")
-    rendered = "".join(text for _style, text in fragments)
+    rendered = "".join(text for _, text in fragments)
 
     assert "  ---- Models ----" in rendered
     assert ">  1. Alpha" in rendered
@@ -134,7 +134,7 @@ def _ask_state():
     )
 
 def _rows(fragments):
-    return "".join(text for _style, text in fragments).splitlines()
+    return "".join(text for _, text in fragments).splitlines()
 
 def test_ask_view_side_by_side_joins_option_and_preview_rows():
     state = _ask_state()

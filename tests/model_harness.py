@@ -19,7 +19,7 @@ from minacode.config import (
     Config,
     ProviderConfig,
 )
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 class _MockClientFactory:
@@ -114,4 +114,6 @@ def _session(tmp_path, **provider_kwargs):
     provider_kwargs.setdefault("url", "http://test")
     provider_kwargs.setdefault("key", "sk-test")
     config.providers = {"default": ProviderConfig(**provider_kwargs)}
-    return Session(cwd=str(tmp_path), config=config)
+    session = Session(cwd=str(tmp_path), config=config)
+    bootstrap_features(session)
+    return session

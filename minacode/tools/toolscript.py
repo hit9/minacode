@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from minacode.base import ApprovalView, Json, ToolCall, ToolError
 from minacode.tools.base import Tool
+from minacode.tools.editplan import EditBatchPlan
 
 if TYPE_CHECKING:
     from minacode.runner import ToolRunner
@@ -364,10 +365,10 @@ class ToolScript(Tool):
                 raise ToolError(f'{name} does not support format="json"; use format="text"')
             if not isinstance(args, dict):
                 raise ToolError(f'call("{name}", ...) requires named arguments')
-            from minacode.model import ModelClient  # local import: model.py imports the tool registry
+            from minacode.tools import tool_payload  # local import: the registry is built on top of every tool
 
             try:
-                call = ToolCall(f"toolscript.{len(keys) + 1}", name, ModelClient.tool_payload(name, args))
+                call = ToolCall(f"toolscript.{len(keys) + 1}", name, tool_payload(name, args))
             except ToolError as error:
                 raise ToolError(f"{name}: {error}") from error
         # The capture steps aside for the same reason the clock pauses: what the nested call logs
@@ -378,7 +379,7 @@ class ToolScript(Tool):
         budget.pause()
         try:
             with capture.paused():
-                status, message, _observation = self._run_nested(runner, call)
+                status, message, _ = self._run_nested(runner, call)
         finally:
             budget.resume()
         if status == "refused":
@@ -406,8 +407,6 @@ class ToolScript(Tool):
         Edit behaves exactly like a top-level single Edit (anchor planning, stale checks, write-time
         verification) instead of a plan-less EditTool.call()."""
         if call.name == "Edit":
-            from minacode.runner import EditBatchPlan  # local import: runner.py imports the tool registry
-
             plan = EditBatchPlan(self.session).build([call])
             return runner.run_one(call, planned_edit=plan.planned.get(call.id), plan_error=plan.errors.get(call.id, ""))
         return runner.run_one(call)

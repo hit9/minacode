@@ -1,12 +1,14 @@
 """delegate send (split from tests/test_worker_handoff.py)."""
+
 import pytest
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
+from minacode.tools import tooloutput
 from minacode.prompts import WORKER_PROMPT
 
 
 def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole
+    from minacode.base import LogBlock, LogRole, oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -25,9 +27,11 @@ def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
     assert "[worker]" in rendered
     assert "▶" in rendered
     assert "default/worker-model-x" in rendered
-    assert ToolRunner.oneline(order, 200) in rendered
+    assert oneline(order, 200) in rendered
+
 
 def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
+    from minacode.base import oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -43,10 +47,12 @@ def test_delegate_send_worker_rule_start_label(tmp_path, monkeypatch):
 
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
-    assert ToolRunner.oneline(order, 60) in labels[0]
+    assert oneline(order, 60) in labels[0]
     assert not any("[worker]" in rendered for rendered in labels)  # the rule label replaces the [worker] ▶ line
 
+
 def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch):
+    from minacode.base import oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -63,10 +69,11 @@ def test_delegate_send_worker_rule_start_label_with_title(tmp_path, monkeypatch)
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
     assert "fix /status blank line" in labels[0]
-    assert ToolRunner.oneline(order, 60) not in labels[0]
+    assert oneline(order, 60) not in labels[0]
+
 
 def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
-    from minacode.base import LogBlock, LogRole
+    from minacode.base import LogBlock, LogRole, oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -85,9 +92,11 @@ def test_delegate_send_worker_start_marker_with_title(tmp_path, monkeypatch):
     assert "[worker]" in rendered and "▶" in rendered
     assert "default/worker-model-x" in rendered
     assert "fix /status blank line" in rendered
-    assert ToolRunner.oneline(order, 200) not in rendered
+    assert oneline(order, 200) not in rendered
+
 
 def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, monkeypatch):
+    from minacode.base import oneline
     from minacode.context import ContextManager
     from minacode.runner import ToolRunner
 
@@ -103,7 +112,8 @@ def test_delegate_send_worker_rule_start_label_falls_back_to_order(tmp_path, mon
 
     assert labels, "the worker_rule callback never fired"
     assert labels[0].startswith("worker start · default/worker-model-x · ")
-    assert ToolRunner.oneline(order, 60) in labels[0]
+    assert oneline(order, 60) in labels[0]
+
 
 def test_delegate_rejects_empty_title(tmp_path):
     from minacode.base import ToolError
@@ -112,6 +122,7 @@ def test_delegate_rejects_empty_title(tmp_path):
     parent = _delegate_session(tmp_path)
     with pytest.raises(ToolError, match="non-empty string"):
         DelegateTool(parent, [{"action": "send", "order": "work", "title": "   "}]).call()
+
 
 def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, monkeypatch):
     parent = _delegate_session(tmp_path)
@@ -124,6 +135,7 @@ def test_delegate_send_language_directive_is_injected_into_the_order(tmp_path, m
     assert worker_order.startswith("fix the parser")
     assert "Reply language: Chinese" in worker_order and "live stream" in worker_order
 
+
 def test_delegate_send_rejects_a_blank_language(tmp_path):
     from minacode.base import ToolError
 
@@ -131,6 +143,7 @@ def test_delegate_send_rejects_a_blank_language(tmp_path):
     runner = _delegate_runner(parent)
     with pytest.raises(ToolError, match="language"):
         _delegate_call(parent, runner, action="send", order="o", language="   ")
+
 
 def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch):
     from minacode.context import ContextManager
@@ -149,6 +162,7 @@ def test_worker_inherits_forced_reply_language_from_parent(tmp_path, monkeypatch
     assert "LANGUAGE OVERRIDE:" in system and "Chinese" in system
     # the projection the worker uses matches the request the fake model received
     assert ContextManager(worker).model_messages(worker.system_prompt)[0]["content"] == system
+
 
 def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeypatch):
     from minacode.engine import Agent
@@ -172,6 +186,7 @@ def test_delegate_envelope_reports_max_steps_from_runtime_fact(tmp_path, monkeyp
     result = _delegate_call(parent, runner, action="send", order="o")
     assert 'stopped_at_max_steps="false"' in result  # the words are irrelevant; the fact is not set
 
+
 def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, monkeypatch):
     from minacode.engine import Agent
 
@@ -190,36 +205,34 @@ def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, mon
     parent.worker.state.context_percent = 42  # the envelope reports the live fill, not a delta
     result = _delegate_call(parent, runner, action="send", order="o")
     assert 'context_percent="42"' in result
-    summary = runner.delegate_result_summary(result)
+    summary = tooloutput.delegate_result_summary(result)
     assert " in / " in summary and " out" in summary
     assert "0 in / 0 out" in summary
 
+
 def test_delegate_summary_formats_tokens_and_tolerates_old_envelopes(tmp_path):
     parent = _delegate_session(tmp_path)
-    runner = _delegate_runner(parent)
-
-    summary = runner.delegate_result_summary(
+    summary = tooloutput.delegate_result_summary(
         '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false" tokens="8200/1300">'
     )
     assert "8.2K in / 1.3K out" in summary
 
-    legacy = runner.delegate_result_summary('<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false">')
+    legacy = tooloutput.delegate_result_summary('<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false">')
     assert "steps 3" in legacy
     assert "2.5s" in legacy
     assert "a.txt, b.txt" in legacy
     assert " in / " not in legacy
     assert "round " not in legacy and "ctx " not in legacy  # neither attribute existed back then
 
+
 def test_delegate_summary_shows_rounds_and_context_fill(tmp_path):
     parent = _delegate_session(tmp_path)
-    runner = _delegate_runner(parent)
-
     envelope = '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt" stopped_at_max_steps="false" tokens="10/20" rounds="4" context_percent="73">'
-    fields = runner.delegate_result_fields(envelope)
+    fields = tooloutput.delegate_result_fields(envelope)
     assert fields is not None
     assert (fields.rounds, fields.context_percent) == ("4", "73")
 
-    summary = runner.delegate_result_summary(envelope)
+    summary = tooloutput.delegate_result_summary(envelope)
     assert "round 4" in summary
     assert "ctx 73%" in summary
 
@@ -242,7 +255,11 @@ def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
 
     model = FakeModelClient(
         [
-            ({"role": "assistant", "content": ""}, [ToolCall("a1", "Ask", [{"questions": [{"question": "hi?"}]}]), ToolCall("n1", "NextHints", [{"inputs": ["x"]}])], ""),
+            (
+                {"role": "assistant", "content": ""},
+                [ToolCall("a1", "Ask", [{"questions": [{"question": "hi?"}]}]), ToolCall("n1", "NextHints", [{"inputs": ["x"]}])],
+                "",
+            ),
             ({"role": "assistant", "content": ""}, [ToolCall("v1", "ViewImage", ["missing.png"])], ""),
             ({"role": "assistant", "content": "done"}, [], "done"),
         ]
@@ -251,11 +268,7 @@ def test_send_rejects_worker_calls_to_excluded_tools(tmp_path, monkeypatch):
     runner = ToolRunner(parent, ContextManager(parent), input_fn=fail_on_user, output_fn=lambda text: None)
     result = _delegate_call(parent, runner, action="send", order="do the thing")
 
-    names = {
-        (schema.get("function") or schema).get("name")
-        for schema in model.received_tools[0] or []
-        if isinstance(schema, dict)
-    }
+    names = {(schema.get("function") or schema).get("name") for schema in model.received_tools[0] or [] if isinstance(schema, dict)}
     assert {"ViewImage", "ToolScript"} <= names
     assert not {"Ask", "NextHints", "Delegate"} & names
 

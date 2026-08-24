@@ -233,7 +233,7 @@ class ImageInputs:
     def tool_observation(self, images: tuple[ImageRef, ...], question: str = "") -> Json:
         """Build a durable multimodal user-role observation produced by a tool batch."""
 
-        markers = " ".join(IMAGE_MARKER for _image in images)
+        markers = " ".join(IMAGE_MARKER for _ in images)
         message = self.message(UserInput(TOOL_IMAGE_OBSERVATION_PREFIX + "\n" + markers, images))
         message[TOOL_IMAGE_OBSERVATION_KEY] = True
         if question:
@@ -404,7 +404,7 @@ class ImageInputs:
 
     def assets_dir(self) -> str:
         session = self._session()
-        from minacode.session import SessionSnapshotStore
+        from minacode.session import SessionSnapshotStore  # local import: session is built on top of image
 
         path = SessionSnapshotStore.session_path(session.config.data_dir, session.cwd, session.uid)
         return path[: -len(".jsonl")] + ".assets"

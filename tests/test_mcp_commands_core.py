@@ -19,7 +19,7 @@ from minacode.config import (
 from minacode.engine import Agent
 from minacode.mcp import MCPManager
 from minacode.render import UiPrinter
-from minacode.session import Session, SessionSnapshotStore
+from minacode.session import Session, SessionSnapshotStore, bootstrap_features
 from minacode.tools import CodeIndex
 from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
 
@@ -27,6 +27,7 @@ from minacode.tui import TUI_MODAL_PENDING, ChoiceViewState
 class TestMCPCommands:
     def test_start_session_discovers_auto_servers(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         calls = []
         monkeypatch.setattr(s.mcp, "discover_auto", lambda: calls.append("auto"))
         monkeypatch.setattr(UpdateChecker, "start", lambda _checker: None)
@@ -41,6 +42,7 @@ class TestMCPCommands:
         """/mcp returns server status."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "echo"
@@ -63,6 +65,7 @@ class TestMCPCommands:
         """/mcp tools returns tool listing."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "echo"
@@ -83,6 +86,7 @@ class TestMCPCommands:
 
     def test_mcp_tools_without_name_does_not_discover(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         calls = []
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
 
@@ -96,6 +100,7 @@ class TestMCPCommands:
         """Interactive connect shows a fallback URL when OAuth does not provide one."""
         raw = mcp_cfg(auth="oauth")
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_login(config, headers, operation, *, long_timeout=False, interactive=False, notify=None):
             raise RuntimeError("Unexpected content type: text/html")
@@ -108,6 +113,7 @@ class TestMCPCommands:
 
     def test_mcp_connect_authenticates_then_loads_capabilities(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         authenticated = False
         calls = []
         cleared = []
@@ -138,6 +144,7 @@ class TestMCPCommands:
 
     def test_mcp_connect_reauthorizes_rejected_cached_oauth_session(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         authorized = False
         attempts = []
         cleared = []
@@ -168,6 +175,7 @@ class TestMCPCommands:
 
     def test_mcp_connect_keeps_valid_cached_oauth_session(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
         monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("valid credentials were cleared"))
         monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("valid credentials triggered login"))
@@ -187,6 +195,7 @@ class TestMCPCommands:
 
     def test_mcp_connect_does_not_reauthorize_on_non_auth_failure(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
         monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: pytest.fail("credentials were cleared"))
         monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("connection error triggered login"))
@@ -204,6 +213,7 @@ class TestMCPCommands:
     @pytest.mark.parametrize("rejection", ["invalid_request", "invalid client", "invalid_token", "HTTP 403 forbidden"])
     def test_mcp_connect_recognizes_cached_oauth_rejection_variants(self, rejection, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         authorized = False
         logins = []
         monkeypatch.setattr(s.mcp._oauth_token_store, "has_server_tokens", lambda _url: True)
@@ -233,6 +243,7 @@ class TestMCPCommands:
 
     def test_mcp_connect_oauth_requires_interactive_session(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
 
         result = s.mcp.connect_server("test")
 
@@ -244,6 +255,7 @@ class TestMCPCommands:
         calls = []
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
 
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
@@ -260,6 +272,7 @@ class TestMCPCommands:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         barrier = threading.Barrier(2)
         started = []
 
@@ -284,6 +297,7 @@ class TestMCPCommands:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         authenticated: set[str] = set()
         active = 0
         maximum = 0
@@ -319,6 +333,7 @@ class TestMCPCommands:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         monkeypatch.setattr(s.mcp._oauth_token_store, "clear_server", lambda _url: None)
         monkeypatch.setattr(
             s.mcp,
@@ -361,6 +376,7 @@ class TestMCPCommands:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         monkeypatch.setattr(s.mcp, "_authenticate_oauth", lambda *_args, **_kwargs: pytest.fail("batch opened OAuth"))
 
         async def tools(_config, _headers):
@@ -381,6 +397,7 @@ class TestMCPCommands:
 
     def test_mcp_batch_connect_formats_failures_as_separate_list_items(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         monkeypatch.setattr(s.mcp, "_discover_one", lambda config: s.mcp.set_server_error(config.name, "offline"))
 
         result = s.mcp.connect_servers(["test", "missing"])
@@ -389,6 +406,7 @@ class TestMCPCommands:
 
     def test_mcp_connect_command_accepts_multiple_servers(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         calls = []
         monkeypatch.setattr(
             s.mcp,
@@ -404,12 +422,14 @@ class TestMCPCommands:
 
     def test_mcp_connect_rejects_missing_server(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
         assert mcp_command(loop, "connect missing") == "MCP server not found: missing"
 
     def test_mcp_disconnect_removes_connected_server(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
@@ -419,6 +439,7 @@ class TestMCPCommands:
 
     def test_mcp_disconnect_oauth_also_clears_authentication(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
         cleared = []
@@ -432,6 +453,7 @@ class TestMCPCommands:
 
     def test_bare_mcp_opens_manager_in_tui(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         loop.tui = SimpleNamespace(input_mode="idle")
         calls = []
@@ -442,6 +464,7 @@ class TestMCPCommands:
 
     def test_mcp_manager_connects_selected_server(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         connected = threading.Event()
         release = threading.Event()
@@ -455,10 +478,10 @@ class TestMCPCommands:
 
         def show_modal(fragments, handle_key):
             assert handle_key("enter") is TUI_MODAL_PENDING
-            assert "● connecting" in "".join(text for _style, text in fragments())
+            assert "● connecting" in "".join(text for _, text in fragments())
             release.set()
             assert repainted.wait(1)
-            assert "● connected" in "".join(text for _style, text in fragments())
+            assert "● connected" in "".join(text for _, text in fragments())
             connected.set()
             return SELECTION_BACK
 
@@ -472,6 +495,7 @@ class TestMCPCommands:
 
     def test_mcp_manager_disconnects_selected_server(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = []
         s.mcp.resources["test"] = []
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
@@ -484,10 +508,10 @@ class TestMCPCommands:
 
         def show_modal(fragments, handle_key):
             assert handle_key("enter") is TUI_MODAL_PENDING
-            assert "● disconnecting" in "".join(text for _style, text in fragments())
+            assert "● disconnecting" in "".join(text for _, text in fragments())
             release.set()
             assert repainted.wait(1)
-            assert "● disconnected" in "".join(text for _style, text in fragments())
+            assert "● disconnected" in "".join(text for _, text in fragments())
             return SELECTION_BACK
 
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=repainted.set)
@@ -500,6 +524,7 @@ class TestMCPCommands:
     def test_mcp_manager_starts_multiple_connections_concurrently(self, monkeypatch):
         raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         started = {name: threading.Event() for name in ("a", "b")}
         release = threading.Event()
@@ -528,6 +553,7 @@ class TestMCPCommands:
 
     def test_mcp_manager_emits_late_result_without_repainting_closed_modal(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auto_connect=False)))
+        bootstrap_features(s)
         release = threading.Event()
         emitted = threading.Event()
         outputs = []
@@ -569,13 +595,14 @@ class TestMCPCommands:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.tools["a"] = []
         s.mcp.resources["a"] = []
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         captured = {}
 
         def show_modal(fragments, _handle_key):
-            captured["text"] = "".join(text for _style, text in fragments())
+            captured["text"] = "".join(text for _, text in fragments())
             return SELECTION_BACK
 
         loop.tui = SimpleNamespace(show_modal=show_modal, invalidate=lambda: None)
@@ -618,6 +645,7 @@ class TestMCPCommands:
     def test_unknown_mcp_subcommand(self):
         """Bad /mcp subcommand returns error."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = mcp_command(loop, "bad_subcommand")
         assert "Unknown" in result
@@ -625,6 +653,7 @@ class TestMCPCommands:
     def test_mcp_subcommands_reject_extra_args(self):
         """MCP subcommands do not silently ignore extra args."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
 
         assert mcp_command(loop, "tools a b") == "Usage: /mcp tools [server]"
@@ -637,6 +666,7 @@ class TestMCPCommands:
     def test_no_mcp_config(self):
         """No MCP config returns message."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         s.mcp = None
         loop = CommandLoop(Agent(s), input_fn=lambda _: "", output_fn=lambda _: None)
         result = mcp_command(loop, "")
@@ -647,6 +677,7 @@ class TestMCPCommandsByName:
         """/mcp tools NAME points disconnected servers to connect."""
         raw = {"mcp": {"a": {"url": "http://a/mcp"}, "b": {"url": "http://b/mcp"}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         discovered = []
 
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: discovered.append(name))

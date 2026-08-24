@@ -7,7 +7,7 @@ from mcp_harness import mcp_cfg, mcp_tool_info, session
 from minacode.config import (
     Config,
 )
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 class TestNormalizeResult:
@@ -118,6 +118,7 @@ class TestCallToolSuccess:
         """call_tool returns wrapped output on success."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_call(url, headers, name, arguments):
             return {"type": "text", "text": f"called {name} with {arguments}"}
@@ -135,6 +136,7 @@ class TestCallToolSuccess:
         """call_tool with multi-item content list."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_call(url, headers, name, arguments):
             return {
@@ -155,6 +157,7 @@ class TestCallToolSuccess:
         """Synchronous call_tool still works when the caller already has an event loop."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def fake_call(config, headers, name, arguments):
             return {"type": "text", "text": "ok"}

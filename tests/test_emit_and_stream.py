@@ -38,7 +38,7 @@ def test_emit_turn_end_renders_a_left_aligned_rule_under_a_blank_line(monkeypatc
     assert ui.color
     ui.emit_turn_end(time.monotonic() - 65)
 
-    text = "".join(fragment for _style, fragment in emitted)
+    text = "".join(fragment for _, fragment in emitted)
     # A blank line lifts the rule off the answer; the label sits just past a short lead (left-biased,
     # not centered, not flush) with a long trail of dashes running to the full width.
     assert "\n── done in 1m05s " in text
@@ -63,7 +63,7 @@ def test_activity_blank_line_separates_flushed_followup_from_the_stream(tmp_path
     command_loop.model_stream_kind = "output"
     command_loop.model_stream_text = "streamed reply line"
 
-    text = "".join(fragment for _style, fragment in command_loop.view.tui_activity_fragments())
+    text = "".join(fragment for _, fragment in command_loop.view.tui_activity_fragments())
     lines = text.splitlines()
     echo = next(index for index, line in enumerate(lines) if "queued message" in line)
     # Exactly one blank row separates the echoed follow-up from the stream's first row, so the
@@ -77,7 +77,7 @@ def test_activity_leaves_no_hanging_blank_row_when_nothing_streams(tmp_path):
     command_loop.session.enqueue_user_input("queued message")
     command_loop.session.claim_user_inputs()
 
-    text = "".join(fragment for _style, fragment in command_loop.view.tui_activity_fragments())
+    text = "".join(fragment for _, fragment in command_loop.view.tui_activity_fragments())
     lines = text.splitlines()
     echo = next(index for index, line in enumerate(lines) if "queued message" in line)
     # The blank row between the echo and the divider is separation, not a hanging row: the
@@ -93,9 +93,9 @@ def test_styled_wrapping_respects_terminal_width_for_unicode(width):
     content_text = "路径/非常长/🙂/é/模块/filename.py:123"
     rows = Text.wrap_styled(prefix, continuation, [("fg:default", content_text)], width)
 
-    assert "".join(text for _style, text in rows[0]).startswith("  Read  ")
-    assert all(sum(get_cwidth(text) for _style, text in row) <= width for row in rows)
-    assert "".join(text for row in rows for _style, text in row).replace("  Read  ", "", 1).replace("        ", "") == content_text
+    assert "".join(text for _, text in rows[0]).startswith("  Read  ")
+    assert all(sum(get_cwidth(text) for _, text in row) <= width for row in rows)
+    assert "".join(text for row in rows for _, text in row).replace("  Read  ", "", 1).replace("        ", "") == content_text
 
 @pytest.mark.parametrize("mode", ["dark", "light"])
 def test_every_lexer_token_maps_to_a_style_in_both_themes(mode):
@@ -114,7 +114,7 @@ def test_every_lexer_token_maps_to_a_style_in_both_themes(mode):
         Theme.set_mode(mode)
         for name, text in HIGHLIGHT_SAMPLES.items():
             lexer = lexers.get_lexer_for_filename(name, stripnl=False)
-            for token_type, _value in lexer.get_tokens(text):
+            for token_type, _ in lexer.get_tokens(text):
                 style = UiPrinter.pygments_style(token_type)  # must not raise for any of them
                 assert isinstance(style, str) and style
     finally:
@@ -137,7 +137,7 @@ def test_highlighting_inherits_from_the_token_hierarchy_rather_than_giving_up():
             "-        run: uv run pytest\n"
             "+        run: uv run pytest -q\n"
         )
-        assert "uv run pytest -q" in "".join(text for _style, text in ui.diff_segments(diff))
+        assert "uv run pytest -q" in "".join(text for _, text in ui.diff_segments(diff))
 
         literal = UiPrinter.pygments_style(pygments_token.Token.Literal.Scalar.Plain)
         assert literal == UiPrinter.pygments_style(pygments_token.Token.Literal.String)  # inherited
@@ -163,7 +163,7 @@ def test_bash_live_preview_clips_wide_output_to_terminal_width(monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((20, 24)))
-        assert all(get_cwidth("".join(text for _style, text in row)) < 20 for row in preview.frame_rows())
+        assert all(get_cwidth("".join(text for _, text in row)) < 20 for row in preview.frame_rows())
 
 def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, monkeypatch, recording_output):
     now = [100.0]
@@ -181,7 +181,7 @@ def test_bash_live_preview_rewrites_previous_frame_without_appending(tmp_path, m
     preview.render()
 
     assert recording_output.events[0] == ("write", f"\x1b[{first_rows}A")
-    assert sum(event == "erase" for event, _text in recording_output.events) == preview.rendered_lines
+    assert sum(event == "erase" for event, _ in recording_output.events) == preview.rendered_lines
     assert recording_output.events[-1] == ("flush", "")
 
 def test_bash_live_preview_render_skips_identical_frames(monkeypatch, recording_output):

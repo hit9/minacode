@@ -10,6 +10,7 @@ from minacode.base import (
     ModelError,
     ModelUsage,
     ToolCall,
+    drop_nulls,
 )
 from minacode.config import (
     ProviderConfig,
@@ -186,7 +187,7 @@ def test_strict_tools_skips_free_form_object_schemas():
     assert Tool._strictifiable(TOOL_REGISTRY["Read"].params_schema()) is True
 
 def test_drop_nulls_strips_omitted_strict_arguments():
-    assert ModelClient.drop_nulls({"a": 1, "b": None, "c": {"d": None, "e": 2}, "f": [{"g": None, "h": 3}]}) == {"a": 1, "c": {"e": 2}, "f": [{"h": 3}]}
+    assert drop_nulls({"a": 1, "b": None, "c": {"d": None, "e": 2}, "f": [{"g": None, "h": 3}]}) == {"a": 1, "c": {"e": 2}, "f": [{"h": 3}]}
 
 def test_chat_tool_call_parsing_handles_valid_invalid_and_non_object_payloads(tmp_path):
     client = ModelClient(session(tmp_path))

@@ -210,7 +210,7 @@ class FileMentions:
                 score = 0 if basename.startswith(lowered) else 1 if lowered in basename else 2
                 yield score, len(lower), lower, path
 
-        return tuple(path for _score, _length, _lower, path in heapq.nsmallest(50, ranked()))
+        return tuple(path for _, _, _, path in heapq.nsmallest(50, ranked()))
 
     def refresh_async(self, callback: Callable[[], None] | None = None) -> None:
         """Refresh once on a worker and notify all waiters; never block the caller."""
@@ -524,7 +524,7 @@ class FzfPicker:
                     # below. Refresh it for the next picker without delaying this one's first row.
                     self.mentions.refresh_async()
                 candidates.append(snapshot)
-                for _lower, path in snapshot:
+                for _, path in snapshot:
                     process.stdin.write(os.fsencode(path) + b"\0")
             except (BrokenPipeError, OSError):
                 pass
@@ -557,7 +557,7 @@ class FzfPicker:
             return FilePick(unavailable=True)
         selected = os.fsdecode(output.split(b"\0", 1)[0]) if output else ""
         snapshot = candidates[0] if candidates else ()
-        if not selected or not any(path == selected for _lower, path in snapshot) or _has_git_component(selected):
+        if not selected or not any(path == selected for _, path in snapshot) or _has_git_component(selected):
             return FilePick()
         path = self.mentions.session.resolve_path(selected)
         if not self.mentions.session.in_cwd(path) or not os.path.isfile(path):

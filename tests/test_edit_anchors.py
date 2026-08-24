@@ -1,12 +1,14 @@
 """edit anchors (split from tests/test_edit_tool.py)."""
+
 import pytest
 from test_edit_tool import anchor, session
 
 from minacode.base import ToolCall, ToolError
 from minacode.context import ContextManager
 from minacode.model import ModelClient
-from minacode.runner import EditBatchPlan, ToolRunner
+from minacode.runner import ToolRunner
 from minacode.tools import CodeIndex, EditTool, ReadTool
+from minacode.tools.editplan import EditBatchPlan
 
 
 def test_edit_accepts_inspect_code_anchor(tmp_path):
@@ -20,6 +22,7 @@ def test_edit_accepts_inspect_code_anchor(tmp_path):
     assert '<Edit path="note.txt">' in result
     assert path.read_text(encoding="utf-8") == "new\n"
 
+
 def test_edit_anchor_consistent_with_read_on_exotic_line_boundary(tmp_path):
     # Regression: Edit split lines with str.splitlines(True) while Read uses readlines, so a file
     # containing a form-feed numbered lines differently and a valid Read anchor went stale in Edit.
@@ -30,6 +33,7 @@ def test_edit_anchor_consistent_with_read_on_exotic_line_boundary(tmp_path):
     assert f"anchor=3:{ReadTool.line_hash('d')} | d" in read  # Read numbers "d" as line 3
     EditTool(s, ["ff.txt", [{"op": "replace", "start": anchor(2, "d\n"), "end": anchor(2, "d\n"), "content": "D\n"}]]).call()
     assert path.read_text(encoding="utf-8") == "a\nb\x0cc\nD\n"
+
 
 def test_edit_anchor_survives_trailing_newline_change(tmp_path):
     # Regression: line_hash used to fold the trailing newline into the hash, so an anchor captured
@@ -43,6 +47,7 @@ def test_edit_anchor_survives_trailing_newline_change(tmp_path):
     anc = anchor(1, "b")
     EditTool(s, ["note.txt", [{"op": "replace", "start": anc, "end": anc, "content": "B\n"}]]).call()
     assert path.read_text(encoding="utf-8") == "a\nB\n"
+
 
 def test_edit_preserves_literal_escape_sequences_in_content(tmp_path):
     s = session(tmp_path)
@@ -65,6 +70,7 @@ def test_edit_preserves_literal_escape_sequences_in_content(tmp_path):
     EditTool(s, ["unique.py", [{"op": "replace_unique", "old": "OLD", "content": r'"\n"'}]]).call()
     assert path.read_text(encoding="utf-8") == 'value = "\\n"\n'
 
+
 def test_edit_accepts_redundant_matching_path_in_model_operation(tmp_path):
     payload = {
         "path": "script.py",
@@ -77,6 +83,7 @@ def test_edit_accepts_redundant_matching_path_in_model_operation(tmp_path):
     assert call.error == ""
     assert (tmp_path / "script.py").read_text(encoding="utf-8") == "print(1)\n"
     assert payload["edits"][0]["path"] == "script.py"
+
 
 def test_edit_rejects_different_nested_path_in_model_operation(tmp_path):
     call = ModelClient.tool_call(
@@ -93,6 +100,7 @@ def test_edit_rejects_different_nested_path_in_model_operation(tmp_path):
 
     assert not (tmp_path / "script.py").exists()
     assert not (tmp_path / "other.py").exists()
+
 
 def test_edit_creates_and_patches_file(tmp_path):
     s = session(tmp_path)
@@ -131,6 +139,7 @@ def test_edit_creates_and_patches_file(tmp_path):
     with pytest.raises(ToolError):
         EditTool(s, ["nested/note.txt", [{"op": "replace", "start": anchor(0, "one\n"), "end": anchor(0, "one\n"), "content": "bad\n"}]]).call()
 
+
 def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_path, monkeypatch):
     s = session(tmp_path)
     updated = []
@@ -143,6 +152,7 @@ def test_edit_index_update_uses_call_path_when_output_path_is_unparseable(tmp_pa
 
     assert updated == ["made.py"]
 
+
 def test_edit_inserts_before_existing_line_with_needed_newline(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "code.txt"
@@ -150,6 +160,7 @@ def test_edit_inserts_before_existing_line_with_needed_newline(tmp_path):
 
     EditTool(s, ["code.txt", [{"op": "insert_before", "start": anchor(1, "b\n"), "content": "inserted"}]]).call()
     assert path.read_text(encoding="utf-8") == "a\ninserted\nb\n"
+
 
 def test_edit_allows_repeated_structural_boundary_lines(tmp_path):
     path = tmp_path / "code.txt"
@@ -178,6 +189,7 @@ def test_edit_allows_repeated_structural_boundary_lines(tmp_path):
     ).call()
     assert path.read_text(encoding="utf-8") == "#if A\nnew\n#endif\n#endif\n#endif\n"
 
+
 def test_edit_no_change_replace_all_reports_identical_file(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "note.txt"
@@ -187,6 +199,7 @@ def test_edit_no_change_replace_all_reports_identical_file(tmp_path):
         EditTool(s, ["note.txt", [{"op": "replace_all", "old": "old", "content": "old"}]]).call()
 
     assert str(error.value) == "edit produced no changes; replace_all result is identical to current file"
+
 
 def test_edit_no_change_reports_current_target_range(tmp_path):
     s = session(tmp_path)
@@ -201,12 +214,14 @@ def test_edit_no_change_reports_current_target_range(tmp_path):
     assert "<current-target-ranges hashline-numbered>" in message
     assert "anchor=1:" + ReadTool.line_hash("old\n") + " | old" in message
 
+
 def test_edit_rejects_directory_target(tmp_path):
     s = session(tmp_path)
     (tmp_path / "pkg").mkdir()
 
     with pytest.raises(ToolError, match="path is a directory"):
         EditTool(s, ["pkg", [{"op": "replace_all", "old": "", "content": "x\n"}]]).call()
+
 
 def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
     s = session(tmp_path)
@@ -239,6 +254,7 @@ def test_edit_rejects_overlaps_and_mixed_modes(tmp_path):
         ).call()
     assert path.read_text(encoding="utf-8") == "a\nb\nc\n"
 
+
 def test_edit_stale_anchor_reports_current_line(tmp_path):
     s = session(tmp_path)
     path = tmp_path / "note.txt"
@@ -251,6 +267,7 @@ def test_edit_stale_anchor_reports_current_line(tmp_path):
     assert "current is anchor=1:" + ReadTool.line_hash("old\n") + " | old" in str(error.value)
     assert "<current-file-context hashline-numbered>" in str(error.value)
     assert "prefer replace_unique" in str(error.value)
+
 
 @pytest.mark.parametrize(
     ("stale", "current", "expected"),
@@ -267,6 +284,7 @@ def test_edit_relocates_unique_nearby_anchor(tmp_path, stale, current, expected)
 
     assert path.read_text(encoding="utf-8") == expected
 
+
 def test_edit_relocates_both_range_anchors(tmp_path):
     path = tmp_path / "note.txt"
     path.write_text("x\na\nb\nc\nd\n", encoding="utf-8")
@@ -277,6 +295,7 @@ def test_edit_relocates_both_range_anchors(tmp_path):
     ).call()
 
     assert path.read_text(encoding="utf-8") == "x\na\nupdated\nd\n"
+
 
 @pytest.mark.parametrize(
     "current",
@@ -299,6 +318,7 @@ def test_edit_does_not_guess_unsafe_anchor_relocation(tmp_path, current):
 
     assert path.read_text(encoding="utf-8") == current
 
+
 def test_line_hash_ignores_trailing_newline():
     # An anchor must depend only on the visible content, so a line's anchor stays stable when only
     # the trailing newline changes (e.g. the last line gaining/losing the final "\n"). It must also
@@ -307,11 +327,13 @@ def test_line_hash_ignores_trailing_newline():
     assert ReadTool.anchor_matches("code\n", ReadTool.line_hash("code"))
     assert ReadTool.anchor_matches("code", ReadTool.line_hash("code\n"))
 
+
 def test_line_hash_is_short_lowercase_base36(tmp_path):
     line_hash = ReadTool.line_hash("alpha\n")
     assert len(line_hash) == 5
     assert line_hash == line_hash.lower()
     assert set(line_hash) <= set("0123456789abcdefghijklmnopqrstuvwxyz")
+
 
 def test_planned_edit_refuses_to_overwrite_external_change(tmp_path):
     s = session(tmp_path)

@@ -7,14 +7,16 @@ from minacode.base import (
 from minacode.config import (
     Config,
 )
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 def session(tmp_path):
     # Isolate the data dir so tests never read the developer's real ~/.minacode (sessions, skills).
     config = Config()
     config.data_dir = str(tmp_path / "data")
-    return Session(cwd=str(tmp_path), config=config)
+    session = Session(cwd=str(tmp_path), config=config)
+    bootstrap_features(session)
+    return session
 
 
 def call(name, args):

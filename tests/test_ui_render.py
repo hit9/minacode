@@ -144,7 +144,7 @@ class TestCodeLogLines:
         return LogBlock([LogLine("", line, LogRole.CODE, syntax=lexer) for line in code.splitlines()])
 
     def rendered(self, code: str, lexer: str = "python") -> str:
-        return "".join(text for _style, text in UiPrinter().log_segments(self.block(code, lexer)))
+        return "".join(text for _, text in UiPrinter().log_segments(self.block(code, lexer)))
 
     def test_lines_are_numbered_from_one(self):
         text = self.rendered("a = 1\nb = 2\n")
@@ -185,7 +185,7 @@ def test_ui_batched_collects_into_one_print_formatted_text_call(monkeypatch):
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert kwargs["sep"] == "" and kwargs["flush"] is True
-    text = "".join(fragment for part in args for _style, fragment in to_formatted_text(part))
+    text = "".join(fragment for part in args for _, fragment in to_formatted_text(part))
     assert "first" in text and "second" in text and "bold" in text
 
 

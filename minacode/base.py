@@ -7,19 +7,12 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, ClassVar, Generic, TypeVar
 
 from prompt_toolkit.utils import get_cwidth
-
-try:
-    import pygments
-    from pygments.token import Token
-except ImportError:  # pragma: no cover - optional highlighting dependency
-    pygments = None
-    Token = None  # keep the name defined so class-body/token lookups don't NameError
 
 __version__ = "0.31.1"
 
@@ -30,18 +23,26 @@ ToolArgs = list[Any]
 
 
 HTTP_USER_AGENT = "minacode/" + __version__
-logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
-# Refresh failures / re-auth fall back to minacode's own handling, which surfaces an
-# actionable "authentication required" message; suppress this logger's ERROR-level
-# traceback spam (incl. the RuntimeError minacode raises as control flow).
-logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
-# MCP client transports log expected-and-already-surfaced failures (httpx ReadTimeout on a
-# slow server, dropped SSE/stdio frames, JSON-RPC parse errors) at ERROR with full
-# tracebacks via logging.lastResort, which dumps them onto the TUI mid-render.
-# MCPManager captures these same failures into server_errors and the status bar, so the
-# library's own transport traceback is pure noise. Raise it out of the ERROR band.
-for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
-    logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
+
+
+def configure_logging() -> None:
+    """Quiet third-party loggers whose expected failures minacode already surfaces itself.
+
+    Refresh failures / re-auth fall back to minacode's own handling, which surfaces an
+    actionable "authentication required" message; suppress this logger's ERROR-level
+    traceback spam (incl. the RuntimeError minacode raises as control flow).
+    """
+    logging.getLogger("fastmcp.client.auth.oauth").setLevel(logging.WARNING)
+    logging.getLogger("mcp.client.auth.oauth2").setLevel(logging.CRITICAL)
+    # MCP client transports log expected-and-already-surfaced failures (httpx ReadTimeout on a
+    # slow server, dropped SSE/stdio frames, JSON-RPC parse errors) at ERROR with full
+    # tracebacks via logging.lastResort, which dumps them onto the TUI mid-render.
+    # MCPManager captures these same failures into server_errors and the status bar, so the
+    # library's own transport traceback is pure noise. Raise it out of the ERROR band.
+    for _transport_logger in ("mcp.client.streamable_http", "mcp.client.sse", "mcp.client.stdio"):
+        logging.getLogger(_transport_logger).setLevel(logging.CRITICAL)
+
+
 MAX_TOOL_OUTPUT_TOKENS = 6_000
 # Extension of the file a truncated tool result is materialized to, named after the result's key.
 # ContextManager.materialize_output writes it; the session store's asset collector retains it.
@@ -160,10 +161,40 @@ class ModelOutputTruncated(ModelError): ...
 class MalformedToolCallError(ModelError): ...
 
 
+class ModelStreamIncomplete(ModelError): ...
+
+
 class ModelRequestRetry(MinacodeError): ...
 
 
 class ToolError(MinacodeError): ...
+
+
+def split_lines(text: str) -> list[str]:
+    """Canonical line model shared by Read, Edit, and persisted diffs: split on "\n" only, keeping
+    the newline (like file.readlines()). str.splitlines(True) also breaks on \r, \v, \f, \x1c-\x1e,
+    \x85, \u2028, \u2029, which would number lines differently than Read and desync anchors."""
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def oneline(text: str, limit: int) -> str:
+    """Collapse whitespace and truncate to `limit` characters with an ellipsis."""
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def drop_nulls(value: object) -> object:
+    """Recursively drop null values. Strict schemas express optional params as nullable, so callers
+    may send explicit null for an omitted argument; in minacode null means "absent"."""
+    if isinstance(value, dict):
+        return {key: drop_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [drop_nulls(item) for item in value]
+    return value
 
 
 class Text:
@@ -252,7 +283,7 @@ class Text:
 
         def row_segments(row_prefix: list[tuple[str, str]], cells: list[tuple[str, str, int]]) -> list[tuple[str, str]]:
             row = list(row_prefix)
-            for style, char, _char_width in cells:
+            for style, char, _ in cells:
                 if row and row[-1][0] == style:
                     row[-1] = (style, row[-1][1] + char)
                 else:
@@ -264,9 +295,9 @@ class Text:
         for logical in logical_lines:
             remaining = logical
             while True:
-                prefix_width = sum(get_cwidth(text) for _style, text in row_prefix)
+                prefix_width = sum(get_cwidth(text) for _, text in row_prefix)
                 available = max(1, width - prefix_width) if width else None
-                if available is None or sum(cell_width for _style, _char, cell_width in remaining) <= available:
+                if available is None or sum(cell_width for _, _, cell_width in remaining) <= available:
                     rows.append(row_segments(row_prefix, remaining))
                     break
                 used = 0
@@ -486,7 +517,7 @@ class LogBlock:
         return [(index in rails, cls.RAIL if index in rails else cls.INDENT) for index in range(level)]
 
     def walk(self, parent_level: int = 0):
-        for line, level, _rails in self.walk_rows(parent_level):
+        for line, level, _ in self.walk_rows(parent_level):
             yield line, level
 
     def walk_rows(self, parent_level: int = 0, rails: tuple[int, ...] = ()):
@@ -507,11 +538,11 @@ class LogBlock:
     def __str__(self) -> str:
         rows = []
         for line, level, rails in self.walk_rows():
-            margin = "".join(text for _rail, text in self.margin_units(level, rails))
+            margin = "".join(text for _, text in self.margin_units(level, rails))
             prefix = margin + line.text_prefix()
             continuation = margin + " " * get_cwidth(line.text_prefix())
             rows.extend(Text.wrap_styled([("", prefix)], [("", continuation)], [("", line.text + line.meta)]))
-        return "\n".join("".join(text for _style, text in row) for row in rows)
+        return "\n".join("".join(text for _, text in row) for row in rows)
 
 
 @dataclass
@@ -543,7 +574,7 @@ class ActiveResource(Generic[_ResourceT]):
         self.value: _ResourceT | None = None
 
     @contextlib.contextmanager
-    def track(self, value: _ResourceT) -> Iterator[None]:
+    def track(self, value: _ResourceT) -> Generator[None, None, None]:
         with self.lock:
             self.value = value
         try:

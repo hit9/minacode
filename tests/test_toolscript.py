@@ -5,13 +5,14 @@ from types import SimpleNamespace
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
+from minacode.tools import tooloutput
 from minacode.base import LogEdge, LogRole, ToolCall, ToolError
 from minacode.config import Config
 from minacode.context import ContextManager
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
-from minacode.session import Session
-from minacode.tools import MCPTool, ReadTool, Tool, ToolScript
+from minacode.session import Session, bootstrap_features
+from minacode.tools import MCPTool, ReadTool, Tool, ToolScript, toolblocks
 
 OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
@@ -19,6 +20,7 @@ OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 def _mcp_session(tmp_path):
     """A session with one configured MCP server 'test', populated in memory (no network)."""
     s = Session(cwd=str(tmp_path), config=Config.from_dict(mcp_cfg()))
+    bootstrap_features(s)
     s.mcp.tools["test"] = []
     s.mcp.resources["test"] = []
     return s
@@ -139,6 +141,7 @@ class TestActionValidation:
 
     def test_no_mcp_describe_reports_mcp_entries_only(self, tmp_path):
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         s.mcp = None
         out = ToolScript(s, [{"action": "describe", "tools": ["Read", "test.echo"]}]).call()
         assert "Read\n" in out and "json:    no" in out
@@ -161,6 +164,7 @@ class TestRegistration:
 
     def test_toolscript_always_in_schemas(self, tmp_path):
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         names = {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
         assert "ToolScript" in names
         assert "MCP" not in names
@@ -402,11 +406,10 @@ class TestConfirmationBlockShowsScript:
     def test_confirm_block_contains_script_excerpt(self, tmp_path):
         """The confirmation block shows the script body: the user approves code, not a label."""
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
         code = 'for i in range(3):\n    print(call("MCP", {"server": "test", "tool": "echo", "arguments": {"i": i}}))\n'
         args = [{"action": "call", "code": code}]
         tool = ToolScript(s, args)
-        block = runner.approval_display(ToolCall("ts-1", "ToolScript", args), tool, "confirm")
+        block = toolblocks.approval_display(s, ToolCall("ts-1", "ToolScript", args), tool, "confirm")
         assert block.has_children
         lines = [line for line, _ in block.walk()]
         assert any(line.label == "script" for line in lines)
@@ -420,13 +423,12 @@ class TestConfirmationBlockShowsScript:
     def test_confirm_block_clips_long_script_and_says_how_much_is_hidden(self, tmp_path):
         """A long script is clipped in the transcript; the whole body stays one keypress away."""
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
         code = "\n".join(f"x{index} = {index}" for index in range(30))
         args = [{"action": "call", "code": code}]
-        block = runner.approval_display(ToolCall("ts-1", "ToolScript", args), ToolScript(s, args), "confirm")
+        block = toolblocks.approval_display(s, ToolCall("ts-1", "ToolScript", args), ToolScript(s, args), "confirm")
         lines = [line for line, _ in block.walk()]
         code_lines = [line for line in lines if line.role is LogRole.CODE]
-        assert len(code_lines) == ToolRunner.VIEW_EXCERPT_LINES
+        assert len(code_lines) == toolblocks.VIEW_EXCERPT_LINES
         assert code_lines[0].text == "x0 = 0"
         assert lines[-1].text.startswith("… +20 more lines · ")
 
@@ -436,12 +438,12 @@ class TestConfirmationBlockShowsScript:
         runner = _runner(s)
         code = "\n".join(f"x{index} = {index}" for index in range(30))
         tool = ToolScript(s, [{"action": "call", "code": code}])
-        assert ("View script", "v") in runner.approval_actions(tool, False)
+        assert ("View script", "v") in toolblocks.approval_actions(tool, False)
         views = []
         runner.text_viewer = views.append
         replies = iter(["v", "y"])
         runner.input_fn = lambda _prompt: next(replies)
-        confirmed, _reason = runner.confirm(ToolCall("ts-1", "ToolScript", tool.args), tool)
+        confirmed, _ = runner.confirm(ToolCall("ts-1", "ToolScript", tool.args), tool)
         assert confirmed
         assert [view.label for view in views] == ["script"]
         assert views[0].text == code and views[0].lexer == "python"
@@ -451,7 +453,7 @@ class TestConfirmationBlockShowsScript:
         s = _mcp_session(tmp_path)
         tool = ToolScript(s, [{"action": "describe", "tools": ["Read"]}])
         assert tool.approval_view() is None
-        assert ("View script", "v") not in _runner(s).approval_actions(tool, False)
+        assert ("View script", "v") not in toolblocks.approval_actions(tool, False)
 
 
 # ---------------------------------------------------------------------------
@@ -477,8 +479,8 @@ class TestNestedBuiltinCalls:
         assert "ToolScript ok" in content
         assert "calls: 1 [tr.1]" in content
         assert "hello" in content
-        assert "<Read path=\"f.txt\">" in content
-        assert "<Read path=\"f.txt\">" in s.tool_results["tr.1"]
+        assert '<Read path="f.txt">' in content
+        assert '<Read path="f.txt">' in s.tool_results["tr.1"]
         assert "<MCPDescribe" in str(messages[1]["content"])
 
     def test_nested_read_rejects_json_format(self, tmp_path):
@@ -492,6 +494,7 @@ class TestNestedBuiltinCalls:
     def test_nested_read_without_mcp(self, tmp_path):
         (tmp_path / "f.txt").write_text("hi\n", encoding="utf-8")
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         code = 'print(call("Read", {"path": "f.txt"}))\n'
         content = _run_script(s, code)
         assert "ToolScript ok" in content
@@ -499,6 +502,7 @@ class TestNestedBuiltinCalls:
 
     def test_nested_mcp_without_config_fails(self, tmp_path):
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         s.mcp = None
         code = 'call("MCP", {"server": "test", "tool": "echo", "arguments": {}})\n'
         content = _run_script(s, code)
@@ -555,7 +559,7 @@ class TestNestedBuiltinCalls:
         assert "calls: 3 [tr.1-tr.3]" in content
         assert "done" in content
         for key in ("tr.1", "tr.2", "tr.3"):
-            assert "<Read path=\"f.txt\">" in s.tool_results[key]
+            assert '<Read path="f.txt">' in s.tool_results[key]
 
     def test_nested_args_conversion_error_names_tool(self, tmp_path):
         s = _mcp_session(tmp_path)
@@ -571,7 +575,9 @@ class TestNestedEdit:
         path.write_text("a\nb\nc\n", encoding="utf-8")
         s = _mcp_session(tmp_path)
         start = ReadTool.anchor(1, "b\n")
-        code = f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{start}", "end": "{start}", "content": "B\\n"}}]}})\nprint("edited")\n'
+        code = (
+            f'call("Edit", {{"path": "code.txt", "edits": [{{"op": "replace", "start": "{start}", "end": "{start}", "content": "B\\n"}}]}})\nprint("edited")\n'
+        )
         content = _run_script(s, code)
         assert "ToolScript ok" in content
         assert path.read_text(encoding="utf-8") == "a\nB\nc\n"
@@ -631,7 +637,7 @@ class TestScriptLogShape:
         tallest. Every rendered row of the nested region carries it now, in one column."""
         s = _mcp_session(tmp_path)
         blocks = self._blocks(s, 'print(call("Bash", {"command": "printf one; printf two"}))\n')
-        rows = [row for block in blocks for row in "".join(text for _style, text in UiPrinter(output_fn=lambda _text: None).log_segments(block)).splitlines()]
+        rows = [row for block in blocks for row in "".join(text for _, text in UiPrinter(output_fn=lambda _text: None).log_segments(block)).splitlines()]
         start = next(index for index, row in enumerate(rows) if row.endswith("Bash printf one; printf two"))
         end = next(index for index, row in enumerate(rows) if "calls 1" in row)  # the script's own result line closes the region
         nested = rows[start:end]
@@ -658,20 +664,20 @@ class TestScriptLogShape:
     def test_describe_has_no_script_summary(self, tmp_path):
         """A describe returns tool shapes, not a script envelope, so there is nothing to count."""
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
-        block = runner.finish_display(ToolCall("ts1", "ToolScript", [{"action": "describe", "tools": ["Read"]}]), "tr.1", "Read\njson:    no", failed=False)
+        block = toolblocks.finish_display(s, ToolCall("ts1", "ToolScript", [{"action": "describe", "tools": ["Read"]}]), "tr.1", "Read\njson:    no", failed=False)
         assert not any(line.label.startswith("calls") for line, _ in block.walk())
 
     def test_result_fields_parse_the_envelope(self, tmp_path):
         s = _mcp_session(tmp_path)
-        runner = _runner(s)
         envelope = "ToolScript ok\ncalls: 3 [tr.1-3]\nstdout:\nfirst\nsecond\nstderr:\nnoise\n"
-        assert runner.toolscript_result_fields(envelope) == ("3", "first\nsecond", "")
-        assert runner.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "", "")
-        assert runner.toolscript_result_fields("Read\njson:    no") is None
+        assert tooloutput.toolscript_result_fields(envelope) == ("3", "first\nsecond", "")
+        assert tooloutput.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "", "")
+        assert tooloutput.toolscript_result_fields("Read\njson:    no") is None
         # A failed script keeps the line that names what went wrong; the frames are in the viewer.
-        failed = 'ToolScript failed\ncalls: 1 [tr.1]\nstdout:\npartial\nerror:\nTraceback (most recent call last):\n  File "<toolscript>", line 2\nValueError: boom'
-        assert runner.toolscript_result_fields(failed) == ("1", "partial", "ValueError: boom")
+        failed = (
+            'ToolScript failed\ncalls: 1 [tr.1]\nstdout:\npartial\nerror:\nTraceback (most recent call last):\n  File "<toolscript>", line 2\nValueError: boom'
+        )
+        assert tooloutput.toolscript_result_fields(failed) == ("1", "partial", "ValueError: boom")
 
 
 class TestScriptCannotEndTheSession:
@@ -725,7 +731,9 @@ class TestNestedCallsDoNotStealTheScriptStdout:
         runner = ToolRunner(s, ContextManager(s), input_fn=lambda prompt: "y", output_fn=print)  # the headless default
         terminal = io.StringIO()
         with contextlib.redirect_stdout(terminal):
-            (message,) = runner.run([ToolCall("ts1", "ToolScript", [{"action": "call", "code": 't = call("Read", {"path": "f.txt"})\nprint("script says hi")\n'}])])
+            (message,) = runner.run(
+                [ToolCall("ts1", "ToolScript", [{"action": "call", "code": 't = call("Read", {"path": "f.txt"})\nprint("script says hi")\n'}])]
+            )
 
         content = str(message["content"])
         assert "Read f.txt" in terminal.getvalue()  # the nested call was logged where the user is

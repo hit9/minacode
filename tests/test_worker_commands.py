@@ -264,7 +264,7 @@ def test_delegate_send_finish_display_summary_and_preview(tmp_path, monkeypatch)
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
@@ -293,7 +293,7 @@ def test_delegate_send_finish_worker_rule_label_and_preview(tmp_path, monkeypatc
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     runner.worker_rule = lambda label: labels.append(label)
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     done = [label for label in labels if label.startswith("worker done · ")]
@@ -320,7 +320,7 @@ def test_delegate_send_finish_worker_rule_label_carries_title(tmp_path, monkeypa
     labels = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=lambda text: None)
     runner.worker_rule = lambda label: labels.append(label)
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o", "title": "fix /status blank line"}]))
     assert status == "ok"
 
     done = [label for label in labels if label.startswith("worker done · ")]
@@ -338,7 +338,7 @@ def test_delegate_send_finish_display_prints_full_answer_and_folded_preview(tmp_
     monkeypatch.setattr("minacode.engine.ModelClient", lambda session: model)
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
@@ -367,7 +367,7 @@ def test_delegate_send_routes_the_final_report_through_worker_answer(tmp_path, m
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     runner.worker_answer = answers.append
-    status, _message, _observation = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-1", "Delegate", [{"action": "send", "order": "o"}]))
     assert status == "ok"
 
     assert answers == ["the report"]  # the report went through the markdown hook, exactly once
@@ -387,7 +387,7 @@ def test_delegate_reset_finish_display_worker_root_and_cleared_notice(tmp_path):
     outputs = []
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
 
-    status, _message, _observation = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
     assert status == "ok"
 
     blocks = [item for item in outputs if isinstance(item, LogBlock)]
@@ -411,7 +411,7 @@ def test_delegate_reset_finish_worker_rule_label(tmp_path):
     runner = ToolRunner(parent, ContextManager(parent), input_fn=lambda *a: "y", output_fn=outputs.append)
     runner.worker_rule = lambda label: labels.append(label)
 
-    status, _message, _observation = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
+    status, _, _ = runner.run_one(ToolCall("delegate-r", "Delegate", [{"action": "reset"}]))
     assert status == "ok"
 
     # Reset is a one-shot tool call, not a delegation bracket: no full-width worker_rule rule

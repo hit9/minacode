@@ -37,6 +37,7 @@ MINACODE = REPO / "minacode"
 # targets whose layer is >= its own.
 LAYERS = {
     "minacode.__init__": 0,
+    "minacode": 100,
     "minacode.__main__": 0,
     "minacode.cli": 1,
     "minacode.tui": 2,

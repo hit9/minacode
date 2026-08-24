@@ -15,7 +15,7 @@ from minacode.config import (
 )
 from minacode.engine import Agent
 from minacode.render import StatusBar
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 class TestMCPUserScenarios:
@@ -66,6 +66,7 @@ class TestMCPUserScenarios:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         tools = {
             "search": [self.tool("find", "Search source code")],
             "docs": [self.tool("lookup", "Look up documentation")],
@@ -104,6 +105,7 @@ class TestMCPUserScenarios:
     def test_resource_only_mention_connects_server_and_reaches_model(self, monkeypatch):
         raw = {"mcp": {"handbook": {"url": "https://handbook.example/mcp"}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def no_tools(_config, _headers):
             return []
@@ -127,6 +129,7 @@ class TestMCPUserScenarios:
         url = "https://metabase.example/mcp"
         raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
         s = Session(cwd=str(tmp_path), config=Config.from_dict(raw))
+        bootstrap_features(s)
         store = oauth_store(tmp_path, {url: "stale"})
         s.mcp._oauth_token_store = store
         authorized = False
@@ -162,6 +165,7 @@ class TestMCPUserScenarios:
         url = "https://metabase.example/mcp"
         raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
         s = Session(cwd=str(tmp_path), config=Config.from_dict(raw))
+        bootstrap_features(s)
         store = oauth_store(tmp_path, {url: "cached"})
         s.mcp._oauth_token_store = store
 
@@ -183,6 +187,7 @@ class TestMCPUserScenarios:
         url = "https://metabase.example/mcp"
         raw = {"mcp": {"metabase": {"url": url, "auth": "oauth"}}}
         s = Session(cwd=str(tmp_path), config=Config.from_dict(raw))
+        bootstrap_features(s)
         store = oauth_store(tmp_path, {url: "cached"})
         s.mcp._oauth_token_store = store
 
@@ -212,6 +217,7 @@ class TestMCPUserScenarios:
             }
         }
         s = Session(cwd=str(tmp_path), config=Config.from_dict(raw))
+        bootstrap_features(s)
         store = oauth_store(tmp_path, {valid_url: "valid", stale_url: "stale"})
         s.mcp._oauth_token_store = store
         refreshed: set[str] = set()
@@ -255,6 +261,7 @@ class TestMCPUserScenarios:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         async def list_tools(config, _headers):
             if config.name == "offline":
@@ -287,6 +294,7 @@ class TestMCPUserScenarios:
             }
         }
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         started = {name: threading.Event() for name in ("alpha", "beta")}
         release = {name: threading.Event() for name in ("alpha", "beta")}
 

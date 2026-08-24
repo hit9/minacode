@@ -10,6 +10,13 @@
   projection: a hallucinated or scripted call to an excluded tool is rejected with "not
   available in this session" instead of running.
 
+### Changed
+
+- Enter with a Tab-highlighted completion row now commits that row into the input instead of
+  sending the message; a second Enter sends.
+- A streamed response that ends without a terminal event no longer fails the turn: it is a
+  transient provider-side drop, retried automatically like a dropped connection.
+
 ## 0.31.1 - 2026-08-23
 
 ### Changed

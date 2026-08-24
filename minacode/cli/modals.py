@@ -19,10 +19,10 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
-from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox
+from minacode.base import DISMISSED, SELECTION_BACK, ApprovalView, Text, ToolCall, ToolError, TurnBox, oneline
 from minacode.render import UiPrinter
 from minacode.session import ToolResultRecord
-from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript
+from minacode.tools import AskSpec, BashTool, DelegateTool, ToolScript, tooloutput
 from minacode.tui import (
     ASK_DONE,
     ASK_FREE_TEXT,
@@ -150,8 +150,8 @@ def mcp_manager(loop: CommandLoop) -> None:
             mode = "auto" if config.auto_connect else "manual"
             count = len(mcp.tools.get(config.name, []))
             server_rows.append((config.name, status, mode, count))
-        name_width = max(len(name) for name, *_rest in server_rows)
-        status_width = max(len(mcp.STATUS_MARKER + " disconnecting"), *(len(status) for _name, status, _mode, _count in server_rows))
+        name_width = max(len(name) for name, *_ in server_rows)
+        status_width = max(len(mcp.STATUS_MARKER + " disconnecting"), *(len(status) for _, status, _, _ in server_rows))
         return {name: f"{name:<{name_width}}  {status:<{status_width}}  {mode:<6}  {count:>3} tools" for name, status, mode, count in server_rows}
 
     def preview(name: str) -> str:
@@ -307,14 +307,14 @@ def script_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | N
     if not code.strip():
         return None
     rows = [("key", record.key), ("lines", str(len(code.splitlines())))]
-    fields = loop.agent.tools.toolscript_result_fields(record.output)
+    fields = tooloutput.toolscript_result_fields(record.output)
     if fields is not None:
         rows.append(("calls", fields[0]))
     # The envelope rides along: a script is a question and its printed output is the answer, and
     # the transcript only kept the first lines of it. A failed script keeps its whole traceback
     # here too, which is the one place the clipped error line in the log can be resolved against
     # the numbered source right above it.
-    result, note = loop.agent.tools.viewer_text(record.output)
+    result, note = tooloutput.viewer_text(record.output)
     if note:
         rows.append(("shown", note))
     return ApprovalView(f"script · {record.key}", code, "python", rows, result)
@@ -327,7 +327,7 @@ def bash_command(loop: CommandLoop, record: ToolResultRecord) -> str:
     try:
         return BashTool(loop.session, record.args).command()
     except ToolError:
-        return loop.agent.tools.short_call(ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
+        return tooloutput.short_call(loop.session, ToolCall("", "Bash", record.args)).removeprefix("Bash").strip()
 
 
 def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | None:
@@ -338,13 +338,13 @@ def bash_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView | Non
     has no cap, and a viewer that hangs on the one command that printed a megabyte is worse than
     one that says how much it is showing."""
     command = bash_command(loop, record)
-    streams, note = loop.agent.tools.bash_viewer_output(record.output)
+    streams, note = tooloutput.bash_viewer_output(record.output)
     if not streams:
         # A command that printed nothing has nothing here the transcript does not already show. A
         # script is different: its source is worth reading whether or not it printed anything.
         return None
     rows = [("key", record.key)]
-    if code := loop.agent.tools.bash_exit_code(record.output):
+    if code := tooloutput.bash_exit_code(record.output):
         rows.append(("exit", code))
     if note:
         rows.append(("shown", note))
@@ -404,9 +404,11 @@ def tool_output_viewer(loop: CommandLoop) -> None:
         if view is not None:
             status = ""
             if record.name == "Bash":
-                code = loop.agent.tools.bash_exit_code(record.output)
+                code = tooloutput.bash_exit_code(record.output)
                 status = "ok" if code == "0" else ("fail" if code else "")
-            entries.append(OutputEntry(record.key, record.name, loop.agent.tools.short_call(ToolCall("", record.name, record.args)), view, status=status))
+            entries.append(
+                OutputEntry(record.key, record.name, tooloutput.short_call(loop.session, ToolCall("", record.name, record.args)), view, status=status)
+            )
     if not entries:
         return
     # One list state for the whole browser: reopening the list after a detail's Esc keeps the
@@ -443,7 +445,7 @@ def delegate_view(loop: CommandLoop, record: ToolResultRecord) -> ApprovalView |
     view = DelegateTool(loop.session, record.args).approval_view()
     if view is None:
         return None
-    result, note = loop.agent.tools.viewer_text(record.output)
+    result, note = tooloutput.viewer_text(record.output)
     rows = [("key", record.key), *view.rows]
     if note:
         rows.append(("shown", note))
@@ -479,7 +481,7 @@ def _tool_output_list(loop: CommandLoop, entries: list[OutputEntry], state: Choi
         # which is right in the transcript and wrong here: a row is one row, and an embedded newline
         # spills it over several, taking the numbering and the selection bar with it. `git commit -m`
         # with a real message is the everyday case. The full command is a keypress away in the viewer.
-        detail = loop.agent.tools.oneline(entry.detail.removeprefix(entry.name).strip(), 400)
+        detail = oneline(entry.detail.removeprefix(entry.name).strip(), 400)
         detail = Text.clip_width(detail, max(8, width - get_cwidth(head + entry.name) - 1 - 2))
         labels[str(index)] = f"{head}{entry.name} {detail}".rstrip()
         parts[str(index)] = [
@@ -587,7 +589,7 @@ def approval_text_viewer(loop: CommandLoop, view: ApprovalView, *, back_on_escap
         if width in wrapped:
             return wrapped[width]
         lines: list[StyleAndTextTuples] = []
-        label_width = max((get_cwidth(label) for label, _value in header_rows), default=0)
+        label_width = max((get_cwidth(label) for label, _ in header_rows), default=0)
         for label, value in header_rows:
             padded = label + " " * max(0, label_width - get_cwidth(label))
             lines.extend(
@@ -690,10 +692,10 @@ def diff_viewer(loop: CommandLoop) -> None:
 
     def list_fragments(parts: StyleAndTextTuples, sections: list[tuple[str, str, str]]) -> None:
         parts.append(("", "\n"))
-        counts = [loop.diff_counts(diff) for _status, _path, diff in sections]
-        added_width = max(len(str(added)) for added, _removed in counts)
-        removed_width = max(len(str(removed)) for _added, removed in counts)
-        for index, ((_status, path, _diff), (added, removed)) in enumerate(zip(sections, counts)):
+        counts = [loop.diff_counts(diff) for _, _, diff in sections]
+        added_width = max(len(str(added)) for added, _ in counts)
+        removed_width = max(len(str(removed)) for _, removed in counts)
+        for index, ((_, path, _), (added, removed)) in enumerate(zip(sections, counts)):
             selected = index == state.file
             marker = "> " if selected else "  "
             style = "ansicyan" if selected else "class:choice.disabled"
@@ -783,9 +785,9 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
     def list_rows(width: int) -> list[StyleAndTextTuples]:
         columns = [segment_columns(segment) for segment in segments]
         key_width = max((get_cwidth(segment.key) for segment in segments), default=0)
-        when_width = max((get_cwidth(when) for when, _kind, _messages in columns), default=0)
-        kind_width = max((get_cwidth(kind) for _when, kind, _messages in columns), default=0)
-        messages_width = max((get_cwidth(messages) for _when, _kind, messages in columns), default=0)
+        when_width = max((get_cwidth(when) for when, _, _ in columns), default=0)
+        kind_width = max((get_cwidth(kind) for _, kind, _ in columns), default=0)
+        messages_width = max((get_cwidth(messages) for _, _, messages in columns), default=0)
         rows: list[StyleAndTextTuples] = []
         for index, (segment, (when, kind, messages)) in enumerate(zip(segments, columns)):
             selected = index == state.selected
@@ -800,7 +802,7 @@ def compaction_log_viewer(loop: CommandLoop) -> None:
         """What the compaction was, then what it kept. The stored excerpt stays in the segment for
         the model's RecallContext, but it is the raw conversation the summary already stands for —
         showing it here buried the one thing worth reading."""
-        when, _kind, _messages = segment_columns(segment)
+        when, _, _ = segment_columns(segment)
         headline, caveat = segment_story(segment)
         rows: list[StyleAndTextTuples] = [
             [("ansicyan", f"  {segment.key}"), ("class:choice.disabled", f"  {when}")],

@@ -84,7 +84,7 @@ def test_chat_output_cap_reached_after_text_keeps_the_partial_answer(tmp_path, m
     model = ModelClient(_session(tmp_path, stream=False))
     monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("half a sen", "length")]))
 
-    _assistant, calls, content = model.chat_request([{"role": "user", "content": "hi"}], None)
+    _, calls, content = model.chat_request([{"role": "user", "content": "hi"}], None)
 
     assert content == "half a sen"
     assert calls == []
@@ -371,7 +371,7 @@ def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    message, _usage, _finish_reason = model._chat_stream(client, {})
+    message, _, _ = model._chat_stream(client, {})
 
     assert timeline == [
         ("output", "hello"),
@@ -576,7 +576,7 @@ def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_pa
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, _content = model.chat_request([{"role": "user", "content": "read"}], [])
+    assistant, calls, _ = model.chat_request([{"role": "user", "content": "read"}], [])
 
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_1", "call_2"]
     assert [call.id for call in calls] == ["call_1", "call_2"]
@@ -657,7 +657,7 @@ def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "client", factory)
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
-    _assistant, _calls, content = model.request([{"role": "user", "content": "hi"}], [])
+    _, _, content = model.request([{"role": "user", "content": "hi"}], [])
 
     assert content == "ok"
     assert len(factory.calls) == 2
