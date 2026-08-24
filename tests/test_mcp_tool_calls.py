@@ -10,7 +10,7 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 from minacode.tools import MCPTool
 
 
@@ -25,6 +25,7 @@ class TestMCPToolConfirmation:
         """MCP(action='call') on an undiscovered tool → confirmation needed by default."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         payload = {"action": "call", "server": "test", "tool": "echo", "arguments": {"text": "hi"}}
         tool = MCPTool(s, [payload])
         # No info yet (not discovered) → confirm by default
@@ -34,6 +35,7 @@ class TestMCPToolConfirmation:
         """A discovered tool with no annotations → confirmation needed by default."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={})]
         payload = {"action": "call", "server": "test", "tool": "echo", "arguments": {"text": "hi"}}
         tool = MCPTool(s, [payload])
@@ -43,6 +45,7 @@ class TestMCPToolConfirmation:
         """destructiveHint=false → no confirmation needed."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", annotations={"destructiveHint": False})]
         payload = {"action": "call", "server": "test", "tool": "echo", "arguments": {"text": "hi"}}
         tool = MCPTool(s, [payload])
@@ -52,6 +55,7 @@ class TestMCPToolConfirmation:
         """readOnlyHint=true → no confirmation needed."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         # Pre-populate tools with readOnlyHint
         info = mcp_tool_info("test", "echo", annotations={"readOnlyHint": True})
         s.mcp.tools["test"] = [info]
@@ -64,6 +68,7 @@ class TestMCPToolConfirmation:
         """destructiveHint=true → confirmation needed."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         info = mcp_tool_info("test", "delete", annotations={"destructiveHint": True})
         s.mcp.tools["test"] = [info]
 
@@ -102,6 +107,7 @@ class TestMCPContextBlocks:
     def test_mcp_tools_context_empty(self):
         """No MCP tools → empty string."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         ctx = ContextManager(s)
         assert ctx.mcp_tools_context() == ""
 
@@ -109,6 +115,7 @@ class TestMCPContextBlocks:
         """MCP tools present in index."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "echo"
@@ -130,6 +137,7 @@ class TestMCPContextBlocks:
     def test_mcp_describe_result_inline_in_history(self):
         """A describe result renders inline like any tool output, not a tail pointer."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         runner = ToolRunner(s, ContextManager(s), output_fn=lambda text: None)
         call = ToolCall("c", "MCP", [{"action": "describe", "server": "test", "tool": "echo"}])
         desc = '<MCPDescribe server="test" tool="echo">\n<description>\nEcho input back.</description>\n</MCPDescribe>'
@@ -142,6 +150,7 @@ class TestMCPContextBlocks:
     def test_mcp_in_context_order(self):
         """MCP TOOLS appears after Environment; no repeated Memory/details block."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
 
         ctx = ContextManager(s)
@@ -163,6 +172,7 @@ class TestMCPContextBlocks:
     def test_dedup_collapses_repeated_describe(self):
         """A second describe of the same tool collapses to a pointer at the first; the first stays full."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         ctx = ContextManager(s)
         m1 = self._describe_msg("a", "tr.1", "echo", "schema")
         m2 = self._describe_msg("b", "tr.2", "echo", "schema")
@@ -179,6 +189,7 @@ class TestMCPContextBlocks:
     def test_dedup_keeps_distinct_tools(self):
         """Different tools each keep their full schema."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         ctx = ContextManager(s)
         out = ctx.dedup_mcp_describes([self._describe_msg("a", "tr.1", "echo", "s1"), self._describe_msg("b", "tr.2", "ping", "s2")])
 
@@ -187,6 +198,7 @@ class TestMCPContextBlocks:
     def test_model_messages_dedups_describe(self):
         """model_messages applies the dedup to sent context without touching stored history."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         s.messages = [self._describe_msg("a", "tr.1", "echo", "schema"), self._describe_msg("b", "tr.2", "echo", "schema")]
         ctx = ContextManager(s)
 
@@ -200,6 +212,7 @@ class TestDescribeTool:
         """describe returns rendered metadata from cache."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         info = mcp_tool_info("test", "echo")
         s.mcp.tools["test"] = [info]
 
@@ -211,6 +224,7 @@ class TestDescribeTool:
         """Without this the only way to learn what a tool returns is to call it, so every
         unfamiliar tool costs an exploratory call before it can be used for real."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [
             mcp_tool_info(
                 "test",
@@ -233,6 +247,7 @@ class TestDescribeTool:
     def test_describe_omits_returns_when_the_server_declares_none(self):
         """Most servers declare no outputSchema; they must read exactly as they did before."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
 
         result = s.mcp.describe_tool("test", "echo")
@@ -244,6 +259,7 @@ class TestDescribeTool:
         """A bare array or scalar has no properties to list, and an empty block would read as
         'returns nothing' rather than 'see the schema'."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", output_schema={"type": "array", "items": {"type": "string"}})]
 
         result = s.mcp.describe_tool("test", "echo")
@@ -253,6 +269,7 @@ class TestDescribeTool:
     def test_describe_bounds_a_large_result_shape(self, monkeypatch):
         """Result shapes can be far larger than argument lists; the same cap applies."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         monkeypatch.setattr(s.mcp, "DESCRIBE_ARGUMENT_LIMIT", 3)
         props = {f"f{i}": {"type": "string"} for i in range(10)}
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo", output_schema={"type": "object", "properties": props})]
@@ -266,6 +283,7 @@ class TestDescribeTool:
     def test_describe_unknown_tool_raises_error(self):
         """Unknown tool raises ToolError."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         with pytest.raises(ToolError, match="not found"):
             s.mcp.describe_tool("test", "missing_tool")
@@ -273,12 +291,14 @@ class TestDescribeTool:
     def test_describe_unknown_server_raises_error(self):
         """Unknown server raises ToolError."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         with pytest.raises(ToolError, match="not found"):
             s.mcp.describe_tool("unknown", "echo")
 
     def test_describe_requires_connected_server(self, monkeypatch):
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         calls = []
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
 
@@ -290,11 +310,13 @@ class TestCallTool:
     def test_call_unknown_server_raises_error(self):
         """Unknown server raises ToolError."""
         s = Session(cwd="/tmp")
+        bootstrap_features(s)
         with pytest.raises(ToolError, match="not found"):
             s.mcp.call_tool("unknown", "echo", {})
 
     def test_call_disconnected_server_does_not_rediscover(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         calls = []
         monkeypatch.setattr(s.mcp, "discover_server", lambda name: calls.append(name))
 
@@ -307,6 +329,7 @@ class TestCallTool:
         """Server with prior error raises ToolError."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.server_errors["test"] = "connection failed"
 
         with pytest.raises(ToolError, match="error"):
@@ -316,6 +339,7 @@ class TestCallTool:
         """Server without URL raises ToolError."""
         raw = {"mcp": {"test": {"url": "", "auto_connect": True}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         with pytest.raises(ToolError, match="url"):
             s.mcp.call_tool("test", "echo", {})
 
@@ -323,6 +347,7 @@ class TestCallTool:
         """call_tool and the resource path both reject an OAuth server with no stored authentication
         (both route through the shared _resolve_server)."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg(auth="oauth")))
+        bootstrap_features(s)
         with pytest.raises(ToolError, match="requires authentication"):
             s.mcp.call_tool("test", "echo", {})
         with pytest.raises(ToolError, match="requires authentication"):

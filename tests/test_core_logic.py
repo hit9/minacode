@@ -3,15 +3,19 @@
 from minacode.config import (
     Config,
 )
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 def session(tmp_path):
-    return Session(cwd=str(tmp_path))
+    session = Session(cwd=str(tmp_path))
+    bootstrap_features(session)
+    return session
 
 
 def data_session(tmp_path):
-    return Session(cwd=str(tmp_path), config=Config(data_dir=str(tmp_path / ".data")))
+    session = Session(cwd=str(tmp_path), config=Config(data_dir=str(tmp_path / ".data")))
+    bootstrap_features(session)
+    return session
 
 
 

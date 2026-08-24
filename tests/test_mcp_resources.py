@@ -10,13 +10,14 @@ from minacode.config import (
     Config,
 )
 from minacode.mcp import MCPManager, MCPResourceInfo
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 from minacode.tools import MCPTool
 
 
 class TestMCPResources:
     def _server_with_resources(self, monkeypatch, resources):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "query"
@@ -53,6 +54,7 @@ class TestMCPResources:
 
     def test_resources_best_effort_on_failure(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "t"
@@ -131,6 +133,7 @@ class TestMCPResources:
 
     def test_index_surfaces_description_uris(self, monkeypatch):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "query"
@@ -159,6 +162,7 @@ class TestMCPResources:
 
     def test_mention_block_lists_resources_without_tools(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = []
         s.mcp.resources["test"] = [MCPResourceInfo("test", "docs://guide.md", "guide", "Usage guide", "text/markdown")]
 
@@ -170,6 +174,7 @@ class TestMCPResources:
     def test_resource_only_server_renders_in_index(self):
         """A connected server with resources but zero tools is listed (not dumped into pending)."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = []
         s.mcp.resources["test"] = [MCPResourceInfo("test", "docs://guide.md", "guide", "Usage guide", "text/markdown")]
         s.mcp.discovery_status = "ready"
@@ -181,12 +186,14 @@ class TestMCPResources:
     def test_pending_status_connected_but_empty(self):
         """A ready server with neither tools nor resources is reported as connected, not 'not connected'."""
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = []
         s.mcp.discovery_status = "ready"
         assert s.mcp._pending_status("test") == "connected; no tools or resources advertised"
 
     def _server_with_doc_tool(self, monkeypatch, description, read_calls):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "query"

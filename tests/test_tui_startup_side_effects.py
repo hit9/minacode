@@ -14,7 +14,7 @@ from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.session import Session, SessionSnapshotStore
+from minacode.session import Session, SessionSnapshotStore, bootstrap_features
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp
 
@@ -59,6 +59,7 @@ def test_start_session_discovers_mcp_off_the_main_thread(tmp_path, monkeypatch):
         }
     )
     s = Session(cwd=str(tmp_path), config=config)
+    bootstrap_features(s)
     command_loop = CommandLoop(
         Agent(s, output_fn=lambda text: None),
         input_fn=lambda prompt="": "",

@@ -15,13 +15,15 @@ from minacode.config import (
     Config,
 )
 from minacode.engine import Agent
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 def session(tmp_path):
     config = Config()
     config.data_dir = str(tmp_path / "data")
-    return Session(cwd=str(tmp_path), config=config)
+    session = Session(cwd=str(tmp_path), config=config)
+    bootstrap_features(session)
+    return session
 
 
 def loop(tmp_path):

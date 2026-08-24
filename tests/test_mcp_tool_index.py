@@ -8,7 +8,7 @@ from minacode.config import (
     Config,
 )
 from minacode.mcp import MCPManager, MCPToolInfo
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 from minacode.tools import Tool
 
 
@@ -75,6 +75,7 @@ class TestToolIndexRendering:
         """render_tools_index includes the MCP TOOLS header."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         class FakeTool:
             name = "echo"
@@ -95,6 +96,7 @@ class TestToolIndexRendering:
     def test_legacy_enabled_does_not_connect_server(self, monkeypatch):
         raw = {"mcp": {"test": {"url": "http://x/mcp", "enabled": False}}}
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
         s.mcp.discover_auto()
         idx = s.mcp.render_tools_index()
         assert idx == ""
@@ -188,6 +190,7 @@ class TestToolIndexBudget:
                 }
             ),
         )
+        bootstrap_features(s)
         s.mcp.tools["github"] = [
             MCPToolInfo(
                 server="github",
@@ -206,6 +209,7 @@ class TestToolIndexBudget:
 
     def test_mcp_context_and_tool_schema_require_activation(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
 
         assert s.mcp.render_tools_index() == ""
         assert "MCP" not in {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
@@ -218,6 +222,7 @@ class TestToolIndexBudget:
 
     def test_disconnect_removes_server_from_model_context(self):
         s = Session(cwd="/tmp", config=Config.from_dict(mcp_cfg()))
+        bootstrap_features(s)
         s.mcp.tools["test"] = [mcp_tool_info("test", "echo")]
         s.mcp.resources["test"] = []
 
@@ -232,6 +237,7 @@ class TestToolIndexTruncation:
         """Long index block is bounded by INDEX_TOTAL_LIMIT."""
         raw = mcp_cfg()
         s = Session(cwd="/tmp", config=Config.from_dict(raw))
+        bootstrap_features(s)
 
         # Create many tools to exceed budget
         class FakeTool:

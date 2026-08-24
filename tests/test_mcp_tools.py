@@ -11,12 +11,13 @@ from minacode.config import (
     Config,
 )
 from minacode.mcp import MCPToolInfo
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 
 
 def _index_session(servers):
     """Build a session with the given {server: [(tool_name, n_schema_fields), ...]}."""
     s = Session(cwd="/tmp", config=Config.from_dict({"mcp": {name: {"url": f"https://{name}/mcp", "auto_connect": True} for name in servers}}))
+    bootstrap_features(s)
     for name, tools in servers.items():
         s.mcp.tools[name] = [
             MCPToolInfo(

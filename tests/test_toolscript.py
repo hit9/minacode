@@ -10,7 +10,7 @@ from minacode.config import Config
 from minacode.context import ContextManager
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
-from minacode.session import Session
+from minacode.session import Session, bootstrap_features
 from minacode.tools import MCPTool, ReadTool, Tool, ToolScript
 
 OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
@@ -19,6 +19,7 @@ OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 def _mcp_session(tmp_path):
     """A session with one configured MCP server 'test', populated in memory (no network)."""
     s = Session(cwd=str(tmp_path), config=Config.from_dict(mcp_cfg()))
+    bootstrap_features(s)
     s.mcp.tools["test"] = []
     s.mcp.resources["test"] = []
     return s
@@ -139,6 +140,7 @@ class TestActionValidation:
 
     def test_no_mcp_describe_reports_mcp_entries_only(self, tmp_path):
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         s.mcp = None
         out = ToolScript(s, [{"action": "describe", "tools": ["Read", "test.echo"]}]).call()
         assert "Read\n" in out and "json:    no" in out
@@ -161,6 +163,7 @@ class TestRegistration:
 
     def test_toolscript_always_in_schemas(self, tmp_path):
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         names = {schema["function"]["name"] for schema in Tool.resolved_schemas(s)}
         assert "ToolScript" in names
         assert "MCP" not in names
@@ -492,6 +495,7 @@ class TestNestedBuiltinCalls:
     def test_nested_read_without_mcp(self, tmp_path):
         (tmp_path / "f.txt").write_text("hi\n", encoding="utf-8")
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         code = 'print(call("Read", {"path": "f.txt"}))\n'
         content = _run_script(s, code)
         assert "ToolScript ok" in content
@@ -499,6 +503,7 @@ class TestNestedBuiltinCalls:
 
     def test_nested_mcp_without_config_fails(self, tmp_path):
         s = Session(cwd=str(tmp_path))
+        bootstrap_features(s)
         s.mcp = None
         code = 'call("MCP", {"server": "test", "tool": "echo", "arguments": {}})\n'
         content = _run_script(s, code)

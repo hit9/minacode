@@ -512,18 +512,6 @@ class Session:
             self.uid = datetime.now().strftime("%Y%m%d%H%M%S") + "-" + str(uuid.uuid4())[:12]  # noqa: DTZ005 - IDs intentionally use local wall time.
         if self.system_info is None:
             self.system_info = SystemInfo.detect(self.cwd)
-        if self.mcp is None:
-            from minacode.mcp import MCPManager  # local import: mcp is built on top of session
-
-            self.mcp = MCPManager(self)
-        if self.skills is None:
-            from minacode.skill import SkillLibrary  # local import: skill is built on top of session
-
-            self.skills = SkillLibrary.load(self)
-        if self.mentions is None:
-            from minacode.mentions import FileMentions  # local import: mentions is built on top of session
-
-            self.mentions = FileMentions(self)
         # The Delegate registration gate is frozen per session: computed once from the config this
         # session was constructed with, so a runtime /worker provider switch tunes an already-
         # enabled delegation and prepares the next session without flipping the tool block (and
@@ -577,7 +565,9 @@ class Session:
     @classmethod
     def from_config_file(cls, *, path: str | None = None, yolo: bool = False, theme: str = "") -> Session:
         data = ConfigFile.load(path)
-        return cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, theme=theme))
+        session = cls(config=Config.from_dict(data), settings=RuntimeSettings.from_dict(data, yolo=yolo, theme=theme))
+        bootstrap_features(session)
+        return session
 
     def resolve_path(self, path: str) -> str:
         path = os.path.expanduser(path)
@@ -963,4 +953,27 @@ class Session:
 
     @classmethod
     def load_snapshot(cls, uid: str, config: Config | None = None, settings: RuntimeSettings | None = None, cwd: str = "") -> Session:
-        return SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=cwd)
+        session = SessionSnapshotStore.load(uid, config=config, settings=settings, cwd=cwd)
+        bootstrap_features(session)
+        return session
+
+
+def bootstrap_features(session: Session) -> None:
+    """Attach the session's feature objects (MCP, skills, file mentions) when not already injected.
+
+    Session itself stays feature-free: the dataclass constructor never reaches upward. Callers that
+    need the features -- the runtime entry points and the worker handoff -- opt in explicitly after
+    construction, so the feature packages sit above session/ without a module-scope cycle.
+    """
+    if session.mcp is None:
+        from minacode.mcp import MCPManager  # local import: mcp is built on top of session
+
+        session.mcp = MCPManager(session)
+    if session.skills is None:
+        from minacode.skill import SkillLibrary  # local import: skill is built on top of session
+
+        session.skills = SkillLibrary.load(session)
+    if session.mentions is None:
+        from minacode.mentions import FileMentions  # local import: mentions is built on top of session
+
+        session.mentions = FileMentions(session)
