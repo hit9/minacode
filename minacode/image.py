@@ -404,7 +404,7 @@ class ImageInputs:
 
     def assets_dir(self) -> str:
         session = self._session()
-        from minacode.session import SessionSnapshotStore
+        from minacode.session import SessionSnapshotStore  # local import: session is built on top of image
 
         path = SessionSnapshotStore.session_path(session.config.data_dir, session.cwd, session.uid)
         return path[: -len(".jsonl")] + ".assets"

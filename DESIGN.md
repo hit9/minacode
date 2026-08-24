@@ -41,19 +41,24 @@ Modules (dependencies point downward only):
             providers/catalog.py           evidence-backed compatibility data
 ```
 
-Two import rings stay runtime-only so the module graph above stays a DAG:
+Three import rings stay runtime-only so the module graph above stays a DAG. Every upward edge is a
+deferred import commented at its call site; lifting one to module scope makes the cycle part of
+startup.
 
-- **Orchestration ring (`tools/` ↔ engine/runner/model).** `Delegate` spawns a worker by constructing
-  `engine.Agent`, and `ToolScript` runs nested calls through `runner.ToolRunner` and
-  `runner.EditBatchPlan`; `runner` builds the vision `ModelClient` on the first image. The downward
-  direction (engine/runner/model importing `tools`) is module scope; the upward edges are deferred
-  imports, commented at each call site (`tools/delegate.py`, `tools/toolscript.py`, `runner.py`).
-  Lifting one to module scope makes the cycle part of startup.
+- **Orchestration ring (`tools/` ↔ engine).** `Delegate` spawns a worker by constructing
+  `engine.Agent` (`tools/delegate.py`). The downward direction — engine/runner/model importing
+  `tools` — is module scope. `ToolScript` needs no edge of its own: it uses the `ToolRunner` it was
+  handed (`TYPE_CHECKING` only) and gets edit planning from `tools/editplan.py`. Separately, inside
+  `tools/` a submodule that needs `TOOL_REGISTRY` or `tool_payload` imports it locally, because the
+  registry in `__init__.py` is built on top of every tool module.
 - **Session features (`session/` ↔ mcp/skill/mentions).** `Session` itself is feature-free:
   `__post_init__` never reaches upward. `bootstrap_features()` (deferred imports inside) attaches
   `MCPManager`/`SkillLibrary`/`FileMentions` when needed, called by `Session.from_config_file` and
   `Session.load_snapshot`; the delegate worker handoff injects the parent's `skills`/`mcp` fields
   explicitly instead, and `session/store.py` still imports its parent package at load time.
+- **Assets (`image.py` ↔ session/).** `session/` imports the image value types at module scope;
+  `ImageInputs.assets_dir` reaches back for `SessionSnapshotStore.session_path`, the one place the
+  asset directory's layout is owned (`image.py`).
 
 A turn, and its three endings:
 

@@ -26,6 +26,7 @@ from minacode.base import (
     oneline,
 )
 from minacode.context import ContextManager
+from minacode.model import ModelClient
 from minacode.session import Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -45,7 +46,6 @@ from minacode.tools.editplan import EditBatchPlan
 
 if TYPE_CHECKING:
     from minacode.engine import Agent
-    from minacode.model import ModelClient
 
 
 @dataclass
@@ -181,8 +181,6 @@ class ToolRunner:
         reach, leaving Ctrl-C dead until the provider timeout. Created lazily because most
         sessions never bridge an image tool call."""
         if self._vision_client is None:
-            from minacode.model import ModelClient  # local import: model.py imports the tool registry
-
             self._vision_client = ModelClient(self.session)
         return self._vision_client
 
