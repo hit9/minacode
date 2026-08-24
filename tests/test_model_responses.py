@@ -1026,6 +1026,7 @@ def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monke
 def test_provider_origin_separates_issuers_a_hostname_cannot(tmp_path):
     """Whoever can verify the ciphertext is decided by the whole endpoint and the credential, not
     by the domain: same-host entries on different ports, paths, or organization keys are distinct."""
+
     def origin(**kwargs) -> str:
         base = {"url": "http://localhost:8000/v1", "model": "gpt-oss", "key": "sk-a"}
         return ModelClient(_session(tmp_path, **(base | kwargs))).provider_origin()
