@@ -25,6 +25,7 @@ from minacode.base import (
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
     ActiveResource,
+    Billing,
     Json,
     ModelError,
     ModelOutputTruncated,
@@ -421,16 +422,18 @@ class ModelClient:
             f"the input exceeded the model's context window. Check provider.max_tokens and runtime.max_context_tokens."
         )
 
-    def _record_usage(self, usage: Any) -> None:
+    def _record_usage(self, usage: Any, billing: Billing = Billing.MAIN) -> None:
         """Add a completed request to session usage, keeping the budget it was prepared against so the
         status fill uses the request-time denominator instead of today's configuration.
 
-        A summary request goes to its own counter, told apart by the label compact() publishes for
-        the length of that request: it can be billed to a different account at a different price,
-        and its prefix reuse is worth reading on its own -- it now rides the conversation's cached
-        prefix deliberately, and blending the two would hide whether that worked."""
-        counter = self.session.compaction_usage if self.session.state.compaction_entry else self.session.usage
-        counter.add(usage, self.session.request_token_budget(), touch_last=not self.session.state.vision_observe_active)
+        `billing` routes a secondary-request cost onto its own counter and its own last-request
+        snapshot. A summary request goes to its own counter and account: it can be billed at a
+        different price, and its prefix reuse is worth reading on its own -- it rides the cached
+        prefix deliberately, and blending the two would hide whether that worked. A vision
+        observation joins the main totals but must not overwrite the main counter's last-request
+        ctx/cache snapshot the status bar reads."""
+        counter = self.session.compaction_usage if billing == Billing.COMPACTION else self.session.usage
+        counter.add(usage, self.session.request_token_budget(), touch_last=billing != Billing.VISION)
 
     def wire(self, provider: ProviderConfig) -> WireProtocol:
         """The adapter for a provider's wire api, selected once per request."""
@@ -445,6 +448,7 @@ class ModelClient:
         response_timeout: float | None = None,
         provider: ProviderConfig | None = None,
         json_object: bool = False,
+        billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
         return self.wire(provider).request(
@@ -454,6 +458,7 @@ class ModelClient:
             allow_stream=allow_stream,
             response_timeout=response_timeout,
             json_object=json_object,
+            billing=billing,
         )
 
     def _emit_stream(self, kind: str, delta: str) -> None:

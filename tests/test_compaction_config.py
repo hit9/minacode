@@ -341,6 +341,10 @@ def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkey
 
     assert (s.usage.calls, s.usage.total_tokens) == (1, 120_900)  # the conversation's row is untouched
     assert (s.compaction_usage.calls, s.compaction_usage.total_tokens) == (1, 95_700)
+    # The summary request also refreshes its own counter's last-request snapshot, which the status
+    # bar's compaction row reads; the conversation row's snapshot is not overwritten.
+    assert s.compaction_usage.last_prompt_tokens == 95_000
+    assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (120_000, 200_000)
 
 
 def test_compaction_usage_survives_a_resume(tmp_path):

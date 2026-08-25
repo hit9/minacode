@@ -6,6 +6,7 @@ import threading
 
 from agent_harness import session, session_with_provider
 
+from minacode.base import Billing
 from minacode.context import ContextManager
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
@@ -35,7 +36,7 @@ class _CountingModel:
         self.cancel_requested = threading.Event()
         self.last_compaction_model = ""
 
-    def api_request(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object):
+    def api_request(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
         self.calls += 1
         return None, [], '{"summary": "new summary"}'
 

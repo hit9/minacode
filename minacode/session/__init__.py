@@ -114,14 +114,9 @@ class AgentState:
     model_retry_until: float = 0.0  # monotonic deadline of the current retry wait; 0 when idle
     compaction_count: int = 0
     # `entry/model` of the provider entry a summary request is running on right now, "" when none
-    # is. Live display state, like the retry and index fields above: set around the request in
-    # ModelClient.compact and never persisted.
+    # is. Display state only: billing now rides api_request's billing=Billing.COMPACTION parameter.
+    # Set around the request in Compactor.run and never persisted.
     compaction_entry: str = ""
-    # True while an explicit ViewImage vision request is in flight. Its usage joins the session
-    # totals but it is not a main-model request, so `_record_usage` must not let it overwrite the
-    # last-request ctx/cache snapshot the status bar reads. Live request state, like
-    # compaction_entry: never persisted.
-    vision_observe_active: bool = False
     # The last delegation that failed on this worker, for `Delegate status` to tell the parent
     # (which cannot see the worker) why it stopped, instead of the parent having to remember.
     # Live display state, like compaction_entry: never persisted.

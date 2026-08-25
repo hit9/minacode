@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import minacode.model.anthropic as anthropic_module
 import minacode.model.chat as chat_module
 import minacode.model.responses as responses_module
-from minacode.base import PROVIDER_ORIGIN_KEY, Json, ModelError, Text, ToolCall
+from minacode.base import PROVIDER_ORIGIN_KEY, Billing, Json, ModelError, Text, ToolCall
 from minacode.config import ProviderConfig
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ class WireProtocol(Protocol):
         allow_stream: bool = True,
         response_timeout: float | None = None,
         json_object: bool = False,
+        billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]: ...
 
     def messages(self, messages: list[Json], *, text_only: bool | None = None) -> list[Json]: ...
@@ -57,6 +58,7 @@ class ChatWire:
         allow_stream: bool = True,
         response_timeout: float | None = None,
         json_object: bool = False,
+        billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         messages = self.messages(messages, provider=provider)
@@ -81,7 +83,7 @@ class ChatWire:
             usage = getattr(response, "usage", None)
             message = response.choices[0].message
             finish_reason = str(self._client.message_field(response.choices[0], "finish_reason") or "")
-        self._client._record_usage(usage)
+        self._client._record_usage(usage, billing=billing)
         assistant = self._client.assistant_message(message)
         calls = self._client.tool_calls(message)
         content = str(self._client.message_field(message, "content") or "")
@@ -143,6 +145,7 @@ class ResponsesWire:
         allow_stream: bool = True,
         response_timeout: float | None = None,
         json_object: bool = False,
+        billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         resolved = provider.resolve()
@@ -179,7 +182,7 @@ class ResponsesWire:
         else:
             result = self._client.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
             streamed = False
-        self._client._record_usage(self._client.message_field(result, "usage"))
+        self._client._record_usage(self._client.message_field(result, "usage"), billing=billing)
         assistant, calls, text = self.result(result, streamed)
         assistant[PROVIDER_ORIGIN_KEY] = self._client.provider_origin(provider)
         return assistant, calls, text
@@ -234,6 +237,7 @@ class AnthropicWire:
         allow_stream: bool = True,
         response_timeout: float | None = None,
         json_object: bool = False,
+        billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self._client.session.config.provider
         messages = Text.value(messages)
@@ -246,7 +250,7 @@ class AnthropicWire:
         else:
             result = self._client.call_client(client, lambda: client.messages.create(**params), response_timeout=response_timeout)
             streamed = False
-        self._client._record_usage(self._client.message_field(result, "usage"))
+        self._client._record_usage(self._client.message_field(result, "usage"), billing=billing)
         assistant, calls, content = self.result(result, streamed)
         assistant[PROVIDER_ORIGIN_KEY] = self._client.provider_origin(provider)
         return assistant, calls, content

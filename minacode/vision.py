@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from minacode.base import ModelError
+from minacode.base import Billing, ModelError
 from minacode.image import ImageRef
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
 
@@ -41,11 +41,7 @@ class VisionObserver:
                 "content": self.model.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
             },
         ]
-        # The observation is billed to the session totals but is not a main-model request, so its
-        # usage must not overwrite the last-request ctx/cache snapshot the status bar reads.
-        self.model.session.state.vision_observe_active = True
-        try:
-            _, _, content = self.model.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
-        finally:
-            self.model.session.state.vision_observe_active = False
+        _, _, content = self.model.api_request(
+            messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
+        )
         return content.strip()

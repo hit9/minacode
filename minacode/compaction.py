@@ -15,7 +15,7 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, ClassVar
 
-from minacode.base import SESSION_EVENT_KEY, Json, ModelError, ModelResponseTimeout, Text
+from minacode.base import SESSION_EVENT_KEY, Billing, Json, ModelError, ModelResponseTimeout, Text
 from minacode.config import ProviderConfig, compaction_provider_config
 from minacode.model import ModelClient
 from minacode.prompts import (
@@ -189,7 +189,13 @@ class Compactor:
                 # instruction not to call tools lives in the appended message instead, and a model
                 # that calls one anyway returns no text, which the retry below already handles.
                 _, _, content = model.api_request(
-                    attempt_messages, tools, allow_stream=False, response_timeout=response_timeout, provider=provider, json_object=True
+                    attempt_messages,
+                    tools,
+                    allow_stream=False,
+                    response_timeout=response_timeout,
+                    provider=provider,
+                    json_object=True,
+                    billing=Billing.COMPACTION,
                 )
             except ModelResponseTimeout:
                 raise ModelResponseTimeout(

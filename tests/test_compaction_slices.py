@@ -12,6 +12,7 @@ import pytest
 from agent_harness import session, session_with_provider
 
 from minacode.base import (
+    Billing,
     SESSION_EVENT_KEY,
 )
 from minacode.context import ContextManager
@@ -311,7 +312,7 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
             self.cancel_requested = threading.Event()
             self.last_compaction_model = ""
 
-        def api_request(self, messages, _tools, *, allow_stream, response_timeout, provider, json_object):
+        def api_request(self, messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
             captured["messages"] = messages
             return None, [], '{"summary": "done"}'
 
@@ -346,7 +347,7 @@ def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkey
             self.cancel_requested = threading.Event()
             self.last_compaction_model = ""
 
-        def api_request(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object):
+        def api_request(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
             return None, [], '{"summary": "done"}'
 
         @staticmethod
