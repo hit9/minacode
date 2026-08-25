@@ -5,12 +5,11 @@ import json
 import pytest
 from PIL import Image
 
-from minacode.base import ConfigError, ModelError, ToolError
+from minacode.base import Billing, ConfigError, ModelError, ToolError
 from minacode.config import Config, ProviderConfig
 from minacode.context import ContextManager
 from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_PREFIX, ImageInputs
 from minacode.model import ModelClient
-from minacode.vision import VisionObserver
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import Session
@@ -104,12 +103,17 @@ def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monkeypatc
         return {}, [], OBSERVATION
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
-    observation = VisionObserver(ModelClient(s)).observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
+    model = ModelClient(s)
+    request = lambda messages, provider: model.api_request(
+        messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
+    )[2]
+    observation = s.images.observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?", request)
 
     assert observation == OBSERVATION
     assert captured["tools"] is None
     assert captured["kwargs"]["allow_stream"] is False
     assert captured["kwargs"]["provider"] is s.config.providers["v"]
+    assert captured["kwargs"]["billing"] is Billing.VISION
     assert captured["messages"][0]["content"] == VISION_OBSERVE_PROMPT
     content = captured["messages"][1]["content"]
     assert [part["type"] for part in content] == [image_type, text_type]
@@ -165,7 +169,10 @@ def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path, monk
             ]
         ),
     )
-    VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),))
+    request = lambda messages, provider: model.api_request(
+        messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
+    )[2]
+    s.images.observe((s.images.load(str(tmp_path / "shot.png")),), "", request)
     assert (s.usage.calls, s.usage.total_tokens) == (2, 10_820)
     assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (10_000, 200_000)
 

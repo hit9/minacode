@@ -17,8 +17,10 @@ from typing import TYPE_CHECKING, ClassVar, Self
 from PIL import Image, UnidentifiedImageError
 
 from minacode.base import Json, ModelError
+from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
 
 if TYPE_CHECKING:
+    from minacode.config import ProviderConfig
     from minacode.session import Session
 
 
@@ -300,6 +302,26 @@ class ImageInputs:
         if text:
             parts.append({"type": text_type, "text": text})
         return parts
+
+    def observe(self, images: tuple[ImageRef, ...], question: str, request: Callable[[list[Json], ProviderConfig], str]) -> str:
+        """Ask the [vision]-configured entry to observe images and return its text.
+
+        `request` is the sending hook supplied by the caller that owns a model: it receives the
+        pre-built messages and the resolved entry and returns the reply text (billing it as a
+        vision observation). The entry is resolved per call and validated locally -- a missing field
+        would otherwise surface as a generic SDK credentials error naming nothing the user can act
+        on. Perception only: no tools, no coding task; the main model does the reasoning.
+        """
+        session = self._session()
+        entry_name = session.config.vision_provider
+        provider = session.config.providers[entry_name]
+        if missing := provider.missing_fields():
+            raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
+        messages = [
+            {"role": "system", "content": VISION_OBSERVE_PROMPT},
+            {"role": "user", "content": self.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION)},
+        ]
+        return request(messages, provider).strip()
 
     def text_observation(self, images: tuple[ImageRef, ...], observation: str, question: str = "") -> Json:
         """Build a durable text-only observation produced by the [vision] provider.

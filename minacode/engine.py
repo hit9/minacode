@@ -13,6 +13,7 @@ from minacode.base import (
     PAUSED_TURN_KEY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
+    Billing,
     ImageRouteNotice,
     Json,
     MalformedToolCallError,
@@ -22,6 +23,7 @@ from minacode.base import (
     ToolCall,
     oneline,
 )
+from minacode.config import ProviderConfig
 from minacode.context import ContextManager
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient, PreparedRequest, resilience
@@ -36,7 +38,6 @@ from minacode.session import QueuedInput, Session, SessionSnapshotCodec
 from minacode.tools import (
     Tool,
 )
-from minacode.vision import VisionObserver
 
 _TEXTUAL_INVOKE_RE = re.compile(
     r"<invoke\s+name\s*=\s*(?P<quote>[\"'])(?P<name>[A-Za-z0-9_.:-]{1,128})(?P=quote)\s*>"
@@ -67,7 +68,7 @@ class Agent:
         self.session = session
         self.model = ModelClient(session)
         self.context = ContextManager(session, self.model)
-        self.vision_observe = VisionObserver(self.model).observe
+        self.vision_observe = lambda images, question: self.session.images.observe(images, question, self._vision_request)
         self.tools = ToolRunner(session, self.context, input_fn=input_fn, output_fn=output_fn)
         self.output_fn = output_fn
         # How a turn's final answer is published, when it should look different from interim
@@ -97,6 +98,14 @@ class Agent:
         self.cancel_requested.set()
         self.tools.cancel()
         self.model.cancel()
+
+    def _vision_request(self, messages: list[Json], provider: ProviderConfig) -> str:
+        """Send one non-streaming observation request and return its text, billed as vision."""
+        self.model.cancel_requested.clear()
+        _, _, content = self.model.api_request(
+            messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
+        )
+        return content
 
     def raise_if_cancelled(self) -> None:
         if self.cancel_requested.is_set():
