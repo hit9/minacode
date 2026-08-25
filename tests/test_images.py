@@ -9,7 +9,7 @@ from PIL import Image
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 
-import minacode.cli as loop_module
+import minacode.cli.loop as loop_module
 import minacode.tui as tui_module
 from minacode.base import ModelError, ToolCall, ToolError
 from minacode.cli import CommandLoop

@@ -5,7 +5,7 @@ import time
 import pytest
 from agent_harness import call, queue, session
 
-import minacode.cli as loop_module
+import minacode.cli.loop as loop_module
 from minacode.cli import CommandLoop
 from minacode.context import ContextManager
 from minacode.engine import Agent

@@ -5,7 +5,7 @@ import os
 import pytest
 from agent_harness import session
 
-import minacode.cli as loop_module
+import minacode.cli.loop as loop_module
 from minacode.base import (
     SESSION_EVENT_KEY,
     MinacodeError,
