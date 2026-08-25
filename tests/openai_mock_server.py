@@ -3,6 +3,15 @@
 This is deliberately not a tokenizer or a complete API emulator. It models the observable contract
 the tests need: Chat Completions and Responses request shapes, implicit breakpoints at user/tool
 boundaries, longest exact-prefix reads, and cache-write accounting.
+
+The breakpoint rule modelled here is GPT-5.6's and later: one implicit breakpoint at the end of
+the latest eligible user or tool message. Older families place them at model-dependent intervals
+instead, which this does not model -- a partial-coverage contract would weaken every assertion
+built on it, and the layout rules the tests exist to protect are the same either way.
+
+Out of scope on purpose, per DESIGN.md "Cache test boundary": the 1,024-token cacheable minimum
+and the 30-minute retention window. Both are provider thresholds, not contract shape; asserting
+them here would claim evidence a mock cannot give.
 """
 
 from __future__ import annotations

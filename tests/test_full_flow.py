@@ -153,8 +153,16 @@ def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, m
 
     assert session.state.compaction_count == 1
     assert len(server.cache_events) == 5
-    assert server.cache_events[0][2] > 0
-    assert server.cache_events[1][1] > 0
+    assert server.cache_events[0][2] > 0  # cold: the first turn writes
+    assert server.cache_events[1][1] > 0  # an appending turn reads what the last one wrote
+    # [2] is the summary request, and it reads the cache: Compactor.request slices the very
+    # projection the turn just sent and appends one instruction, so the conversation is a warm
+    # prefix and only the tail is paid for. Rebuilding a lookalike out of `compacted` instead --
+    # the regression this guards -- diverges at the first message and reads nothing back.
+    assert server.cache_events[2][1] >= server.cache_events[1][1]
+    # [3] is the first request after the rebuild, and it reads nothing: apply_compaction replaced
+    # the head of the conversation, so one new epoch begins whatever the checkpoint says. [4] shows
+    # the checkpoint is stable history rather than a per-turn rebuild -- the next turn warms from it.
     assert server.cache_events[3][1] == 0
     assert server.cache_events[3][2] > 0
     assert server.cache_events[4][1] > 0
