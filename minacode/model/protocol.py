@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 import minacode.model.anthropic as anthropic_module
 import minacode.model.chat as chat_module
 import minacode.model.responses as responses_module
-from minacode.base import PROVIDER_ORIGIN_KEY, Billing, Json, ModelError, Text, ToolCall
+from minacode.base import ANTHROPIC_CONTENT_KEY, PROVIDER_ORIGIN_KEY, Billing, Json, ModelError, Text, ToolCall
 from minacode.config import ProviderConfig
+from minacode.image import ImageInputs
+from minacode.providers.compat import anthropic_keeps_prior_thinking
 
 if TYPE_CHECKING:
     from minacode.model.client import ModelClient
@@ -41,6 +43,8 @@ class WireProtocol(Protocol):
     ) -> tuple[Json, list[ToolCall], str]: ...
 
     def messages(self, messages: list[Json], *, text_only: bool | None = None) -> list[Json]: ...
+
+    def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json: ...
 
 
 class ChatWire:
@@ -105,6 +109,13 @@ class ChatWire:
         return chat_module.chat_messages(
             messages, provider, provider.resolve(), self._client.session.images, self._client.latest_user_position, text_only=text_only
         )
+
+    def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json:
+        """The wire-shaped payload for one token estimate, matching what request() would send."""
+        payload: Json = {"messages": self.messages(messages)}
+        if request_tools := [*(tools or []), *builtin]:
+            payload["tools"] = request_tools
+        return payload
 
     def _stream(self, client: Any, params: Json) -> tuple[Json, Any, str]:
         """Reassemble a streamed chat completion into one assistant message and its finish reason.
@@ -209,6 +220,13 @@ class ResponsesWire:
             text_only=text_only,
         )
 
+    def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json:
+        """The wire-shaped payload for one token estimate, matching what request() would send."""
+        payload: Json = {"input": self.messages(Text.value(messages))}
+        if request_tools := [*responses_module.responses_tool_schemas(tools or []), *builtin]:
+            payload["tools"] = request_tools
+        return payload
+
     def result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
         return responses_module.responses_result(
             result,
@@ -290,6 +308,35 @@ class AnthropicWire:
             images=self._client.session.images,
             text_only=text_only,
         )
+
+    def estimation_payload(self, messages: list[Json], tools: list[Json] | None, builtin: list[Json]) -> Json:
+        """The wire-shaped payload for one token estimate, matching what request() would send."""
+        system = "\n\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "system").strip()
+        estimated_messages = messages
+        if not anthropic_keeps_prior_thinking(self._client.session.config.provider.model):
+            latest_user = max(
+                (index for index, message in enumerate(messages) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
+                default=-1,
+            )
+            active_assistants = [index for index, message in enumerate(messages) if index > latest_user and message.get("role") == "assistant"]
+            keep_from = (
+                latest_user
+                if active_assistants
+                else max((index for index, message in enumerate(messages) if message.get("role") == "assistant"), default=len(messages))
+            )
+            estimated_messages = []
+            for index, message in enumerate(messages):
+                estimated = dict(message)
+                saved = estimated.get(ANTHROPIC_CONTENT_KEY)
+                if index < keep_from and isinstance(saved, list):
+                    estimated[ANTHROPIC_CONTENT_KEY] = [
+                        block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
+                    ]
+                estimated_messages.append(estimated)
+        payload: Json = {"system": system, "messages": self.messages(Text.value(estimated_messages))}
+        if request_tools := [*anthropic_module.anthropic_tool_schemas(tools or []), *builtin]:
+            payload["tools"] = request_tools
+        return payload
 
     def assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
         return anthropic_module.anthropic_assistant_blocks(

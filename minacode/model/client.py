@@ -18,7 +18,6 @@ from json_repair import repair_json
 # name imported inside function bodies.
 import minacode.model.anthropic as anthropic_module
 from minacode.base import (
-    ANTHROPIC_CONTENT_KEY,
     HTTP_USER_AGENT,
     MODEL_REQUEST_RETRIES,
     PROVIDER_ORIGIN_KEY,
@@ -46,7 +45,6 @@ from minacode.prompts import COMPACTION_REQUEST_EVENT
 from minacode.providers.catalog import THINKING_BUDGETS
 from minacode.providers.compat import (
     ResolvedProvider,
-    anthropic_keeps_prior_thinking,
     builtin_tools_issue,
 )
 
@@ -67,6 +65,32 @@ _ResultT = TypeVar("_ResultT")
 # Retry-wait granularity: sleeping in ~0.1s slices lets the wait observe the UI-thread cancel flag
 # instead of relying on a signal interrupting one long sleep.
 _RETRY_SLEEP_SLICE = 0.1
+
+
+def prompt_value(value: object) -> object:
+    """Strip secrets and inline image bytes from a payload tree before measuring its size.
+
+    Encrypted reasoning, signatures, and base64 image data would otherwise dominate the byte count
+    they are meant to inflate, so they are dropped (or blanked for inline data) before the estimate.
+    api-agnostic, so it lives here rather than in any wire.
+    """
+
+    if isinstance(value, list):
+        return [prompt_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    kind = value.get("type")
+    clean: Json = {}
+    for key, item in value.items():
+        if key in ("encrypted_content", "signature"):
+            continue
+        if key == "data" and kind in ("reasoning.encrypted", "redacted_thinking"):
+            continue
+        if (key == "data" and kind == "base64") or (key in ("image_url", "url") and isinstance(item, str) and item.startswith("data:")):
+            clean[key] = ""
+        else:
+            clean[key] = prompt_value(item)
+    return clean
 
 
 @dataclass(frozen=True)
@@ -187,66 +211,13 @@ class ModelClient:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
 
         resolved = self.session.config.provider.resolve()
-        api = resolved.api
         # Measuring a payload must never fail on it: an entry this wire rejects is the request's
         # error to raise, not something that should break the status bar, /status, or resume.
         builtin = self.builtin_tools(resolved, strict=False)
         # Payload builders would otherwise expand every local image to base64 merely to throw the
         # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
-        if api == "responses":
-            payload: Json = {"input": self.wire(self.session.config.provider).messages(Text.value(projected))}
-            if request_tools := [*responses.responses_tool_schemas(tools or []), *builtin]:
-                payload["tools"] = request_tools
-        elif api == "anthropic":
-            system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
-            estimated_messages = projected
-            if not anthropic_keeps_prior_thinking(self.session.config.provider.model):
-                latest_user = max(
-                    (index for index, message in enumerate(projected) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
-                    default=-1,
-                )
-                active_assistants = [index for index, message in enumerate(projected) if index > latest_user and message.get("role") == "assistant"]
-                keep_from = (
-                    latest_user
-                    if active_assistants
-                    else max((index for index, message in enumerate(projected) if message.get("role") == "assistant"), default=len(projected))
-                )
-                estimated_messages = []
-                for index, message in enumerate(projected):
-                    estimated = dict(message)
-                    saved = estimated.get(ANTHROPIC_CONTENT_KEY)
-                    if index < keep_from and isinstance(saved, list):
-                        estimated[ANTHROPIC_CONTENT_KEY] = [
-                            block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
-                        ]
-                    estimated_messages.append(estimated)
-            payload = {"system": system, "messages": self.wire(self.session.config.provider).messages(Text.value(estimated_messages))}
-            if request_tools := [*anthropic_module.anthropic_tool_schemas(tools or []), *builtin]:
-                payload["tools"] = request_tools
-        else:
-            payload = {"messages": self.wire(self.session.config.provider).messages(projected)}
-            if request_tools := [*(tools or []), *builtin]:
-                payload["tools"] = request_tools
-
-        def prompt_value(value: object) -> object:
-            if isinstance(value, list):
-                return [prompt_value(item) for item in value]
-            if not isinstance(value, dict):
-                return value
-            kind = value.get("type")
-            clean: Json = {}
-            for key, item in value.items():
-                if key in ("encrypted_content", "signature"):
-                    continue
-                if key == "data" and kind in ("reasoning.encrypted", "redacted_thinking"):
-                    continue
-                if (key == "data" and kind == "base64") or (key in ("image_url", "url") and isinstance(item, str) and item.startswith("data:")):
-                    clean[key] = ""
-                else:
-                    clean[key] = prompt_value(item)
-            return clean
-
+        payload = self.wire(self.session.config.provider).estimation_payload(projected, tools, builtin)
         chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         # A text-only route never projects raw image blocks, so its tiles must not count against
         # the budget either; labels and the asset-context line are already inside `chars`.
