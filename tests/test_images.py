@@ -297,7 +297,7 @@ def test_protocol_payloads_use_each_standard_image_shape(tmp_path):
     ]
 
     model = ModelClient(s)
-    assert model.responses_input([message]) == [{"role": "user", "content": s.images.responses_content(message)}]
+    assert model.wire(ProviderConfig(api="responses", model="gpt-5")).messages([message]) == [{"role": "user", "content": s.images.responses_content(message)}]
     assert model.wire(ProviderConfig(api="anthropic", model="claude")).messages([message]) == [{"role": "user", "content": s.images.anthropic_content(message)}]
 
 
@@ -378,7 +378,7 @@ def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
     assert [part["type"] for part in chat[-1]["content"]] == ["image_url", "text"]
     assert TOOL_IMAGE_OBSERVATION_KEY not in chat[-1]
 
-    responses = model.responses_input(active)
+    responses = model.wire(ProviderConfig(api="responses", model="gpt-5")).messages(active)
     assert [item.get("type", item.get("role")) for item in responses] == ["function_call", "function_call_output", "user"]
     assert [part["type"] for part in responses[-1]["content"]] == ["input_image", "input_text"]
 

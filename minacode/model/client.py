@@ -206,7 +206,7 @@ class ModelClient:
         # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
         if api == "responses":
-            payload: Json = {"input": self.responses_input(Text.value(projected))}
+            payload: Json = {"input": cast(ResponsesWire, self.wire(self.session.config.provider)).messages(Text.value(projected))}
             if request_tools := [*responses.responses_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         elif api == "anthropic":
@@ -533,80 +533,6 @@ class ModelClient:
             json_object=json_object,
         )
 
-    def responses_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None,
-        *,
-        allow_stream: bool = True,
-        response_timeout: float | None = None,
-        provider: ProviderConfig | None = None,
-    ) -> tuple[Json, list[ToolCall], str]:
-        provider = provider if provider is not None else self.session.config.provider
-        resolved = provider.resolve()
-        stream = allow_stream and provider.stream and self.on_stream is not None
-        params: Json = {
-            "model": provider.model,
-            "input": responses.responses_input(
-                Text.value(messages),
-                self.provider_origin(provider),
-                provider_origin=self.provider_origin,
-                replayable_echo=self.replayable_echo,
-                images=self.session.images,
-                text_only=self.session.image_route.is_text_only(),
-            ),
-            "stream": stream,
-            "store": False,
-        }
-        if provider.max_tokens > 0:
-            params["max_output_tokens"] = provider.max_tokens
-        if request_tools := [*responses.responses_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
-            params["tools"] = request_tools
-            params["tool_choice"] = "auto"
-            params["parallel_tool_calls"] = True
-        if prompt_cache_key := self.prompt_cache_key(provider, tools):
-            params["prompt_cache_key"] = prompt_cache_key
-        # Stateless requests return encrypted reasoning items by default, so the replay below
-        # needs no `include`; effort goes through the compatibility fold like the chat path, and
-        # a host that defines an explicit "off" spelling still gets it when reasoning is off.
-        if resolved.responses_reasoning:
-            if effort := resolved.reasoning_effort:
-                params["reasoning"] = {"effort": effort}
-            elif provider.reasoning == "off":
-                raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
-        if provider.temperature is not None and not resolved.suppress_temperature:
-            params["temperature"] = provider.temperature
-        if provider.extra_body and (extra_body := responses.responses_extra_body(provider.extra_body, params)):
-            params["extra_body"] = extra_body
-        client = self.client(provider=provider)
-        if stream:
-            result = self.call_client(client, lambda: self._responses_stream(client, params), response_timeout=response_timeout)
-            streamed = True
-        else:
-            result = self.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
-            streamed = False
-        self._record_usage(self.message_field(result, "usage"))
-        assistant, calls, text = self.responses_result(result, streamed)
-        assistant[PROVIDER_ORIGIN_KEY] = self.provider_origin(provider)
-        return assistant, calls, text
-
-    def _responses_stream(self, client: OpenAI, params: Json) -> Any:
-        """Consume a Responses stream, promoting completed text before tool arguments finish.
-
-        Text completion and function-call discovery are independent events and either can arrive
-        first. Promotion is therefore a two-condition state transition, not an ordering assumption;
-        the terminal response is still consumed normally for history, tool calls, and usage.
-        """
-
-        return responses.reassemble_stream(
-            client,
-            params,
-            message_field=self.message_field,
-            raise_if_inactive=self._raise_if_request_inactive,
-            emit=self._emit_stream,
-            report_builtin_call=self.report_builtin_call,
-        )
-
     def _emit_stream(self, kind: str, delta: str) -> None:
         # Counted here rather than at each protocol's stream reader: this is the one funnel every
         # API shape passes through, and reasoning deltas are part of what the wait is made of.
@@ -616,29 +542,6 @@ class ModelClient:
         state.stream_chars += len(delta)
         if self.on_stream is not None:
             self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
-
-    def responses_input(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
-        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
-        return responses.responses_input(
-            messages,
-            origin,
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-            images=self.session.images,
-            text_only=text_only,
-        )
-
-    def responses_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
-        return responses.responses_result(
-            result,
-            streamed,
-            message_field=self.message_field,
-            dump_message_item=responses.dump_message_item,
-            tool_call=self.tool_call,
-            report_builtin_call=self.report_builtin_call,
-            truncated_output_error=self.truncated_output_error,
-            collect_sources=self.collect_sources,
-        )
 
     @classmethod
     def parse_json_object(cls, text: str) -> Json:

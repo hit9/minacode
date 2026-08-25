@@ -11,9 +11,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 import minacode.model.anthropic as anthropic_module
-from minacode.base import PROVIDER_ORIGIN_KEY, Json, Text, ToolCall
+import minacode.model.responses as responses_module
+from minacode.base import PROVIDER_ORIGIN_KEY, Json, ModelError, Text, ToolCall
 from minacode.config import ProviderConfig
-from minacode.model.responses import dump_message_item
 
 if TYPE_CHECKING:
     from minacode.model.client import ModelClient
@@ -81,12 +81,78 @@ class ResponsesWire:
         response_timeout: float | None = None,
         json_object: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
-        return self._client.responses_request(
+        provider = provider if provider is not None else self._client.session.config.provider
+        resolved = provider.resolve()
+        stream = allow_stream and provider.stream and self._client.on_stream is not None
+        params: Json = {
+            "model": provider.model,
+            "input": self.messages(Text.value(messages), self._client.provider_origin(provider)),
+            "stream": stream,
+            "store": False,
+        }
+        if provider.max_tokens > 0:
+            params["max_output_tokens"] = provider.max_tokens
+        if request_tools := [*responses_module.responses_tool_schemas(tools or []), *self._client.builtin_tools(resolved)]:
+            params["tools"] = request_tools
+            params["tool_choice"] = "auto"
+            params["parallel_tool_calls"] = True
+        if prompt_cache_key := self._client.prompt_cache_key(provider, tools):
+            params["prompt_cache_key"] = prompt_cache_key
+        # Stateless requests return encrypted reasoning items by default, so the replay below needs
+        # no `include`; effort goes through the compatibility fold like the chat path.
+        if resolved.responses_reasoning:
+            if effort := resolved.reasoning_effort:
+                params["reasoning"] = {"effort": effort}
+            elif provider.reasoning == "off":
+                raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
+        if provider.temperature is not None and not resolved.suppress_temperature:
+            params["temperature"] = provider.temperature
+        if provider.extra_body and (extra_body := responses_module.responses_extra_body(provider.extra_body, params)):
+            params["extra_body"] = extra_body
+        client = self._client.client(provider=provider)
+        if stream:
+            result = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
+            streamed = True
+        else:
+            result = self._client.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
+            streamed = False
+        self._client._record_usage(self._client.message_field(result, "usage"))
+        assistant, calls, text = self.result(result, streamed)
+        assistant[PROVIDER_ORIGIN_KEY] = self._client.provider_origin(provider)
+        return assistant, calls, text
+
+    def _stream(self, client: Any, params: Json) -> Any:
+        """Consume a Responses stream, promoting completed text before tool arguments finish."""
+        return responses_module.reassemble_stream(
+            client,
+            params,
+            message_field=self._client.message_field,
+            raise_if_inactive=self._client._raise_if_request_inactive,
+            emit=self._client._emit_stream,
+            report_builtin_call=self._client.report_builtin_call,
+        )
+
+    def messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
+        text_only = self._client.session.image_route.is_text_only() if text_only is None else text_only
+        return responses_module.responses_input(
             messages,
-            tools,
-            allow_stream=allow_stream,
-            response_timeout=response_timeout,
-            provider=provider,
+            origin,
+            provider_origin=self._client.provider_origin,
+            replayable_echo=self._client.replayable_echo,
+            images=self._client.session.images,
+            text_only=text_only,
+        )
+
+    def result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
+        return responses_module.responses_result(
+            result,
+            streamed,
+            message_field=self._client.message_field,
+            dump_message_item=responses_module.dump_message_item,
+            tool_call=self._client.tool_call,
+            report_builtin_call=self._client.report_builtin_call,
+            truncated_output_error=self._client.truncated_output_error,
+            collect_sources=self._client.collect_sources,
         )
 
 
@@ -171,7 +237,7 @@ class AnthropicWire:
             result,
             streamed,
             message_field=self._client.message_field,
-            dump_message_item=dump_message_item,
+            dump_message_item=responses_module.dump_message_item,
             tool_call=self._client.tool_call,
             report_builtin_call=self._client.report_builtin_call,
             truncated_output_error=self._client.truncated_output_error,

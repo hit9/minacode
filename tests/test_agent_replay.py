@@ -341,7 +341,7 @@ def test_agent_followup_turn_snapshot_resume_invariant(tmp_path, monkeypatch):
 
     # Every function_call replayed into the next Responses request has its output beside it
     client = ModelClient(restored)
-    replayed = client.responses_input(restored.messages)
+    replayed = client.wire(ProviderConfig(api="responses", model="gpt-5")).messages(restored.messages)
     outputs = {item.get("call_id") for item in replayed if item.get("type") == "function_call_output"}
     assert [item.get("call_id") for item in replayed if item.get("type") == "function_call"] == ["Read-id"]
     assert outputs == {"Read-id"}

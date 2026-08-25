@@ -97,7 +97,7 @@ def test_responses_request_preserves_output_items_and_uses_responses_shape(tmp_p
 def test_responses_input_strips_session_event_metadata(tmp_path):
     s = _session(tmp_path, api="responses", model="gpt-5", stream=False)
 
-    converted = ModelClient(s).responses_input([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
+    converted = ModelClient(s).wire(s.config.provider).messages([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
 
     assert converted == [{"role": "user", "content": "<session_event />"}]
 
@@ -473,7 +473,7 @@ def test_responses_failed_result_raises_for_streaming_and_non_streaming_paths(tm
     model = ModelClient(_session(tmp_path, api="responses"))
 
     with pytest.raises(ModelError, match="Responses request failed"):
-        model.responses_result({"status": "failed", "error": {"message": "bad request"}, "output": []})
+        model.wire(model.session.config.provider).result({"status": "failed", "error": {"message": "bad request"}, "output": []})
 
 
 def test_responses_incomplete_output_reports_the_cap_instead_of_an_empty_answer(tmp_path):
@@ -490,7 +490,7 @@ def test_responses_incomplete_output_reports_the_cap_instead_of_an_empty_answer(
     }
 
     with pytest.raises(ModelOutputTruncated) as error:
-        model.responses_result(truncated)
+        model.wire(model.session.config.provider).result(truncated)
 
     assert "provider.max_tokens" in str(error.value)
     assert "16384" in str(error.value)
@@ -507,7 +507,7 @@ def test_responses_incomplete_for_another_reason_still_returns_its_output(tmp_pa
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "partial"}]}],
     }
 
-    _, calls, content = model.responses_result(result)
+    _, calls, content = model.wire(model.session.config.provider).result(result)
 
     assert content == "partial"
     assert calls == []
@@ -568,12 +568,12 @@ def test_responses_tool_items_are_converted_and_replayed(tmp_path):
         ]
     }
 
-    assistant, calls, content = model.responses_result(result)
+    assistant, calls, content = model.wire(model.session.config.provider).result(result)
 
     assert content == ""
     assert calls == [ToolCall("call_1", "Bash", ["echo hi"])]
     assert assistant["tool_calls"][0]["id"] == "call_1"
-    converted = model.responses_input(
+    converted = model.wire(model.session.config.provider).messages(
         [
             {"role": "user", "content": "run it"},
             assistant,
@@ -602,7 +602,7 @@ def test_responses_replay_repairs_duplicated_terminal_tool_reply(tmp_path):
         {"id": "msg_1", "type": "message", "content": [{"type": "output_text", "text": "done"}]},
         {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "NextHints", "arguments": "{}"},
     ]
-    converted = model.responses_input(
+    converted = model.wire(model.session.config.provider).messages(
         [
             {"role": "user", "content": "finish"},
             {"role": "assistant", "content": None, "tool_calls": [{}], "_responses_output": saved_output},
@@ -783,14 +783,14 @@ def test_responses_reports_unsupported_reasoning_off_instead_of_guessing(tmp_pat
         s.config.provider.url = "https://api.openai.com/v1"
 
     with pytest.raises(ModelError, match="reasoning off is not defined"):
-        ModelClient(s).responses_request([{"role": "user", "content": "hi"}], None)
+        ModelClient(s).wire(s.config.provider).request([{"role": "user", "content": "hi"}], None)
 
 
 def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
     """Stateless reasoning travels in the encrypted payload; an id alone cannot stand in for it
     once the response was never stored, so an empty shell is dropped rather than replayed."""
     model = ModelClient(_session(tmp_path, api="responses"))
-    assistant, _, _ = model.responses_result(
+    assistant, _, _ = model.wire(model.session.config.provider).result(
         {
             "output": [
                 {"id": "rs_bare", "type": "reasoning", "summary": []},
@@ -801,7 +801,7 @@ def test_responses_replay_drops_reasoning_items_that_carry_no_payload(tmp_path):
         }
     )
 
-    replayed = model.responses_input([assistant])
+    replayed = model.wire(model.session.config.provider).messages([assistant])
 
     assert [item["id"] for item in replayed] == ["rs_kept", "rs_text", "fc_1"]
 
@@ -828,7 +828,7 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
         {"type": "thinking", "thinking": "", "signature": "sig"},
     ]
 
-    responses_input = model.responses_input(history)
+    responses_input = model.wire(ProviderConfig(api="responses", model="gpt-5")).messages(history)
     assert responses_input == [
         {"role": "user", "content": "hi"},
         {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"},
@@ -953,7 +953,7 @@ def test_another_hosts_encrypted_reasoning_is_not_replayed(tmp_path):
         {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
     ]
 
-    replayed = model.responses_input(history)
+    replayed = model.wire(model.session.config.provider).messages(history)
 
     assert not any(item.get("type") == "reasoning" for item in replayed)
     assert [item.get("type", "message") for item in replayed] == ["message", "message", "function_call", "function_call_output"]
@@ -961,7 +961,7 @@ def test_another_hosts_encrypted_reasoning_is_not_replayed(tmp_path):
     assert [item["call_id"] for item in replayed if item.get("type") in ("function_call", "function_call_output")] == ["call_1", "call_1"]
 
     # The same history on the host that issued it replays untouched.
-    assert any(item.get("encrypted_content") == "opaque" for item in issuer.responses_input(history))
+    assert any(item.get("encrypted_content") == "opaque" for item in issuer.wire(issuer.session.config.provider).messages(history))
 
 
 def test_unmarked_history_stays_replayable(tmp_path):
@@ -973,7 +973,7 @@ def test_unmarked_history_stays_replayable(tmp_path):
         {"role": "assistant", "content": "old", "_responses_output": [{"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque"}]},
     ]
 
-    assert any(item.get("encrypted_content") == "opaque" for item in ModelClient(s).responses_input(history))
+    assert any(item.get("encrypted_content") == "opaque" for item in ModelClient(s).wire(s.config.provider).messages(history))
 
 
 def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, monkeypatch):
@@ -995,7 +995,7 @@ def test_configured_reasoning_fields_merge_into_the_managed_object(tmp_path, mon
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.responses_request([{"role": "user", "content": "hi"}], None)
+    model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     body = json.loads(factory.calls[0].content)
     assert body["reasoning"] == {"effort": "high", "context": "current_turn"}
@@ -1019,7 +1019,7 @@ def test_configured_reasoning_survives_a_model_that_manages_none(tmp_path, monke
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.responses_request([{"role": "user", "content": "hi"}], None)
+    model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     assert json.loads(factory.calls[0].content)["reasoning"] == {"context": "all_turns"}
 

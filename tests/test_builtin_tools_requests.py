@@ -312,4 +312,4 @@ def test_stored_sources_never_replay_to_the_provider(tmp_path, monkeypatch):
 
     sent = json.loads(factory.calls[0].content)["messages"]
     assert sent == [{"role": "assistant", "content": "hi"}]
-    assert ModelClient(s).responses_input(history) == [{"role": "assistant", "content": "hi"}]
+    assert ModelClient(s).wire(ProviderConfig(api="responses", model="gpt-5")).messages(history) == [{"role": "assistant", "content": "hi"}]

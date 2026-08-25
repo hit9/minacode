@@ -42,7 +42,7 @@ def test_finish_with_next_hints_runs_tool_and_finishes_without_dup_answer(tmp_pa
     assert s.messages[-3].get("content") is None
     assert [c["function"]["name"] for c in s.messages[-3]["tool_calls"]] == ["NextHints"]
     assert [m.get("content") for m in s.messages if m.get("role") == "assistant" and m.get("content")] == ["the answer"]
-    replayed = ModelClient(s).responses_input(s.messages)
+    replayed = ModelClient(s).wire(ProviderConfig(api="responses", model="gpt-5")).messages(s.messages)
     assert [item.get("id") for item in replayed if item.get("id")] == ["rs_1", "fc_1"]
 
 def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_path):
@@ -130,7 +130,7 @@ def test_tool_only_history_replays_across_all_protocols(tmp_path):
     assert {message["tool_call_id"] for message in tool_results} == chat_call_ids == call_ids
     assert chat[-1]["content"] == "next turn"
 
-    responses = client.responses_input(history)
+    responses = client.wire(ProviderConfig(api="responses", model="gpt-5")).messages(history)
     outputs = {item["call_id"] for item in responses if item.get("type") == "function_call_output"}
     inputs = {item["call_id"] for item in responses if item.get("type") == "function_call"}
     assert len(outputs) == 2
