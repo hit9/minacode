@@ -5,6 +5,7 @@ from minacode.base import (
     LogBlock,
     ToolCall,
 )
+from minacode.config import ProviderConfig
 from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.skill import SkillLibrary
@@ -135,7 +136,7 @@ def test_tool_only_history_replays_across_all_protocols(tmp_path):
     assert len(outputs) == 2
     assert outputs == inputs == call_ids
 
-    anthropic = client.anthropic_messages(history)
+    anthropic = client.wire(ProviderConfig(api="anthropic", model="claude")).messages(history)
     tool_use_ids = {
         block["id"] for message in anthropic if message.get("role") == "assistant" for block in message.get("content") or [] if block.get("type") == "tool_use"
     }

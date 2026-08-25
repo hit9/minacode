@@ -86,7 +86,7 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
         {"role": "tool", "tool_call_id": "tc.1", "content": "tool output"},
     ]
 
-    params = client.anthropic_params(messages, [ReadTool.schema()])
+    params = client.wire(client.session.config.provider).params(messages, [ReadTool.schema()])
     # system is a cache_control-marked block so the tools+system prefix is cached across turns.
     assert params["system"] == [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     assert "temperature" not in params
@@ -108,11 +108,11 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
     assert params["tools"][0]["input_schema"]["additionalProperties"] is False
 
     provider.max_tokens = 2_048
-    assert client.anthropic_params(messages, None)["max_tokens"] == 2_048
+    assert client.wire(client.session.config.provider).params(messages, None)["max_tokens"] == 2_048
     provider.temperature = None
     provider.reasoning = "minimal"
     provider.model = "claude-sonnet-4-5"
-    assert client.anthropic_params(messages, None)["thinking"] == {"type": "enabled", "budget_tokens": 1_024}
+    assert client.wire(client.session.config.provider).params(messages, None)["thinking"] == {"type": "enabled", "budget_tokens": 1_024}
 
     result = SimpleNamespace(
         content=[
@@ -121,7 +121,7 @@ def test_anthropic_message_conversion_and_tool_result_parsing(tmp_path):
         ],
         usage={},
     )
-    assistant, calls, text = client.anthropic_result(result)
+    assistant, calls, text = client.wire(client.session.config.provider).result(result)
     assert text == "answer"
     assert assistant["tool_calls"][0]["function"]["name"] == "Bash"
     assert calls == [ToolCall(id="tc.2", name="Bash", args=["pwd"])]
@@ -146,7 +146,7 @@ def test_malformed_tool_args_defer_to_execution_anthropic(tmp_path):
         content=[SimpleNamespace(type="tool_use", id="a1", name="Bash", input={"command": ""})],
         usage={},
     )
-    _, calls, _ = client.anthropic_result(result)  # must not raise ToolError
+    _, calls, _ = client.wire(ProviderConfig(api="anthropic", model="claude")).result(result)  # must not raise ToolError
     assert len(calls) == 1
     assert calls[0].error
 

@@ -232,7 +232,7 @@ class ModelClient:
                             block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
                         ]
                     estimated_messages.append(estimated)
-            payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
+            payload = {"system": system, "messages": cast(AnthropicWire, self.wire(self.session.config.provider)).messages(Text.value(estimated_messages))}
             if request_tools := [*anthropic_module.anthropic_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         else:
@@ -775,100 +775,6 @@ class ModelClient:
         }
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "minacode-" + digest[:24]
-
-    def anthropic_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None,
-        *,
-        allow_stream: bool = True,
-        response_timeout: float | None = None,
-        provider: ProviderConfig | None = None,
-    ) -> tuple[Json, list[ToolCall], str]:
-        provider = provider if provider is not None else self.session.config.provider
-        messages = Text.value(messages)
-        params = self.anthropic_params(messages, tools, provider=provider)
-        client = self.anthropic_client(provider=provider)
-        stream = allow_stream and provider.stream and self.on_stream is not None
-        if stream:
-            result = self.call_client(client, lambda: self._anthropic_stream(client, params), response_timeout=response_timeout)
-            streamed = True
-        else:
-            result = self.call_client(client, lambda: client.messages.create(**params), response_timeout=response_timeout)
-            streamed = False
-        self._record_usage(self.message_field(result, "usage"))
-        assistant, calls, content = self.anthropic_result(result, streamed)
-        assistant[PROVIDER_ORIGIN_KEY] = self.provider_origin(provider)
-        return assistant, calls, content
-
-    def _anthropic_stream(self, client: Anthropic, params: Json) -> Any:
-        """Consume Messages blocks and promote text once both text and tool blocks are known.
-
-        Content blocks need not put text before `tool_use`, so block start/stop events feed the same
-        order-independent transition as Responses. Input JSON may continue after promotion when the
-        completed text block came first.
-        """
-        return anthropic_module.reassemble_stream(
-            client,
-            params,
-            message_field=self.message_field,
-            raise_if_inactive=self._raise_if_request_inactive,
-            emit=self._emit_stream,
-            report_builtin_call=self.report_builtin_call,
-        )
-
-    def anthropic_params(self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None) -> Json:
-        provider = provider if provider is not None else self.session.config.provider
-        return anthropic_module.anthropic_params(
-            messages,
-            tools,
-            provider,
-            provider.resolve(),
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-            images=self.session.images,
-            builtin_tools=self.builtin_tools,
-            text_only=self.session.image_route.is_text_only(),
-        )
-
-    def anthropic_messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
-        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
-        return anthropic_module.anthropic_messages(
-            messages,
-            origin,
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-            images=self.session.images,
-            text_only=text_only,
-        )
-
-    def anthropic_assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
-        return anthropic_module.anthropic_assistant_blocks(
-            message,
-            origin,
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-        )
-
-    def anthropic_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
-        return anthropic_module.anthropic_result(
-            result,
-            streamed,
-            message_field=self.message_field,
-            dump_message_item=responses.dump_message_item,
-            tool_call=self.tool_call,
-            report_builtin_call=self.report_builtin_call,
-            truncated_output_error=self.truncated_output_error,
-            collect_sources=self.collect_sources,
-        )
-
-    @classmethod
-    def anthropic_sources(cls, saved_content: list[Json]) -> list[Json]:
-        """Sources from a Messages response: cited text first, then the raw search results.
-
-        A `web_search_tool_result` carries an error object rather than a result list when the
-        search itself failed, which `collect_sources` skips as having no URL."""
-        return anthropic_module.anthropic_sources(saved_content, cls.collect_sources)
 
     def apply_provider_params(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider | None = None) -> None:
         resolved = resolved or provider.resolve()

@@ -298,7 +298,7 @@ def test_protocol_payloads_use_each_standard_image_shape(tmp_path):
 
     model = ModelClient(s)
     assert model.responses_input([message]) == [{"role": "user", "content": s.images.responses_content(message)}]
-    assert model.anthropic_messages([message]) == [{"role": "user", "content": s.images.anthropic_content(message)}]
+    assert model.wire(ProviderConfig(api="anthropic", model="claude")).messages([message]) == [{"role": "user", "content": s.images.anthropic_content(message)}]
 
 
 def test_view_image_tool_validates_stores_and_builds_model_observation(tmp_path):
@@ -382,7 +382,7 @@ def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
     assert [item.get("type", item.get("role")) for item in responses] == ["function_call", "function_call_output", "user"]
     assert [part["type"] for part in responses[-1]["content"]] == ["input_image", "input_text"]
 
-    anthropic = model.anthropic_messages(active)
+    anthropic = model.wire(ProviderConfig(api="anthropic", model="claude")).messages(active)
     assert [message["role"] for message in anthropic] == ["assistant", "user"]
     assert [part["type"] for part in anthropic[-1]["content"]] == ["tool_result", "image", "text"]
 
@@ -445,7 +445,7 @@ def test_anthropic_merges_text_mention_after_image_user_message(tmp_path):
     image_file(tmp_path / "pixel.png", size=(1, 1))
     message = s.images.message(s.images.recognize("pixel.png"))
 
-    converted = ModelClient(s).anthropic_messages([message, {"role": "user", "content": "mention context"}])
+    converted = ModelClient(s).wire(ProviderConfig(api="anthropic", model="claude")).messages([message, {"role": "user", "content": "mention context"}])
 
     assert len(converted) == 1
     assert converted[0]["role"] == "user"

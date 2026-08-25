@@ -10,6 +10,7 @@ from model_harness import _MockClientFactory, _session, _StreamClientFactory
 from openai import OpenAI
 
 from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ModelStreamIncomplete, ToolCall
+from minacode.config import ProviderConfig
 from minacode.model import ModelClient, resilience
 from minacode.tools import BashTool
 
@@ -819,7 +820,7 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
 
     # Consecutive assistant turns merge into one message, as the Messages API requires roles to
     # alternate. The responses-only turn is rebuilt as text; only the Anthropic turn is echoed.
-    anthropic_params = model.anthropic_params(history, None)
+    anthropic_params = model.wire(ProviderConfig(api="anthropic", model="claude")).params(history, None)
     # The cache breakpoint skips the thinking block -- the API checks those against the signature
     # it issued -- and lands on the last block that may carry it.
     assert anthropic_params["messages"][1]["content"] == [
