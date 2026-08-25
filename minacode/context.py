@@ -349,6 +349,7 @@ class ContextManager:
         compacted: list[Json] | None = None,
         trigger: str = "auto",
         model: str = "",
+        title: str = "",
     ) -> None:
         self.session.state.compaction_count += 1
         # What this compaction was: the turn scope is the only caller that rewrites `turn_messages`,
@@ -373,9 +374,10 @@ class ContextManager:
             # After apply(): the summary worth keeping is the one this compaction just produced,
             # not the one it replaced. The compactor's own name for the span replaces the
             # deterministic one, which was only ever the first user message of the window and says
-            # little once a span starts mid-work.
+            # little once a span starts mid-work. The compactor computes the name (flattened and
+            # bounded) and passes it in; empty falls back to the deterministic name.
             segment.summary = self.session.state.summary
-            segment.title = compaction.Compactor.title(data) or segment.title
+            segment.title = title or segment.title
         summary_block = self._summary_block(segment)
         if turn_messages is None:
             self.session.messages = summary_block + keep

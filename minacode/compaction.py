@@ -108,6 +108,7 @@ class Compactor:
                 fallback_note=fallback_note if data is None else "",
                 compacted=compacted,
                 model=getattr(self.model, "last_compaction_model", ""),
+                title=self.title(data),
             )
         finally:
             if on_compaction is not None:

@@ -59,7 +59,8 @@ def test_segment_takes_the_name_the_compactor_gave_it(tmp_path):
         {"role": "assistant", "content": "Extracted tokenize() and updated the imports."},
     ]
 
-    context.apply_compaction({"title": "Tokenizer extraction", "summary": "s"}, [], compacted=compacted)
+    data = {"title": "Tokenizer extraction", "summary": "s"}
+    context.apply_compaction(data, [], compacted=compacted, title=compaction.Compactor.title(data))
 
     assert s.history[0].title == "Tokenizer extraction"
 
@@ -69,10 +70,12 @@ def test_segment_title_is_flattened_and_bounded(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)
 
+    data = {"title": '  "Parser refactor\n  and its tests"  ', "summary": "s"}
     context.apply_compaction(
-        {"title": '  "Parser refactor\n  and its tests"  ', "summary": "s"},
+        data,
         [],
         compacted=[{"role": "user", "content": "x"}],
+        title=compaction.Compactor.title(data),
     )
 
     assert s.history[0].title == "Parser refactor and its tests"
@@ -85,7 +88,7 @@ def test_segment_title_falls_back_when_the_compactor_names_nothing(tmp_path):
 
     for data in ({"summary": "s"}, {"title": "", "summary": "s"}, {"title": ["nope"], "summary": "s"}):
         s.history.clear()
-        context.apply_compaction(data, [], compacted=compacted)
+        context.apply_compaction(data, [], compacted=compacted, title=compaction.Compactor.title(data))
         assert s.history[0].title == "find the parser bug", data
 
 
