@@ -240,6 +240,10 @@ class Compactor:
         """The compaction request as the agent's own request truncated, plus one instruction, or
         None to use the flattened payload instead.
 
+        This is the half of compaction that reads the cache; the rebuild that follows it does not
+        (see ContextManager._summary_block and DESIGN.md, "Compaction reads the cache; the rebuild
+        does not").
+
         A cache hit needs a byte-identical prefix, so this slices `model_messages` -- the very list
         the turn just sent -- rather than assembling a lookalike from `compacted`. They are not the
         same thing: `compacted` has had `without_compaction_summaries` applied and has not had the

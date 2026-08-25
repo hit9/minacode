@@ -325,7 +325,19 @@ class ContextManager:
         return segment
 
     def _summary_block(self, segment: HistorySegment | None) -> list[Json]:
-        """One durable checkpoint containing everything needed after the compacted prefix."""
+        """One durable checkpoint containing everything needed after the compacted prefix.
+
+        This is the rebuild half of compaction, and it does not read the cache: it replaces the
+        head of the conversation, so the next request misses on everything past the header
+        whatever this block says. Two consequences, both load-bearing (DESIGN.md, "Compaction
+        reads the cache; the rebuild does not"):
+
+        Adding to this block is close to free -- the write it joins is a miss either way, and
+        every later turn reads it back warm. Changing it afterwards is not free at all: a
+        checkpoint that has to be corrected rewrites the head and starts another cache epoch, the
+        whole body at full price for one line. So nothing mutable belongs here. The working state
+        below is a snapshot that says it is one; the live values reach the model through `Note`
+        calls, which append instead of rewriting."""
         rows = [
             COMPACTION_SUMMARY_TITLE,
             "Summary:",
