@@ -1,5 +1,10 @@
 """compaction slices (split from tests/test_context.py)."""
 
+
+class _StubModel:
+    """Compactor requires a model; planning-only tests never touch it."""
+
+
 import json
 import threading
 
@@ -72,10 +77,10 @@ def test_compaction_reuses_the_agent_prefix_and_keeps_real_messages(tmp_path):
     live.messages.append({"role": "user", "content": "继续 Part B"})
     live.messages.append({"role": "assistant", "content": "ok"})
     context = ContextManager(live)
-    compacted, _keep = compaction.Compactor(context).parts()
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
     assert compacted  # there is a head to summarize
 
-    built = compaction.Compactor(context).request(compacted)
+    built = compaction.Compactor(context, _StubModel()).request(compacted)
     assert built is not None
     messages, tools = built
 
@@ -110,8 +115,8 @@ def test_compaction_prefix_survives_an_earlier_summary_and_repeated_schemas(tmp_
         {"role": "assistant", "content": "ok"},
     ]
     context = ContextManager(live)
-    compacted, _keep = compaction.Compactor(context).parts()
-    messages, _ = compaction.Compactor(context).request(compacted)
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted)
 
     sent = context.model_messages(live.system_prompt)
     assert messages[:-1] == sent[: len(messages) - 1]
@@ -126,10 +131,10 @@ def test_turn_scope_compaction_slices_the_same_projection(tmp_path):
     live.messages = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "starting"}]
     turn = [{"role": "assistant", "content": f"step {index}"} for index in range(24)]
     context = ContextManager(live)
-    compacted, _keep = compaction.Compactor(context).turn_parts(turn)
+    compacted, _keep = compaction.Compactor(context, _StubModel()).turn_parts(turn)
     assert compacted
 
-    messages, _ = compaction.Compactor(context).request(compacted, turn)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, turn)
 
     sent = context.model_messages(live.system_prompt, turn)
     assert messages[:-1] == sent[: len(messages) - 1]
@@ -143,7 +148,7 @@ def test_compaction_falls_back_to_the_flat_payload_on_a_separate_provider(tmp_pa
     live = session(tmp_path)
     live.messages = [{"role": "user", "content": "hello"}]
     live.config.compaction_provider = "cheap"
-    assert compaction.Compactor(ContextManager(live)).request(list(live.messages)) is None
+    assert compaction.Compactor(ContextManager(live), _StubModel()).request(list(live.messages)) is None
 
 
 def test_compaction_leaves_tool_choice_exactly_as_an_ordinary_request_sets_it(tmp_path):
@@ -153,7 +158,7 @@ def test_compaction_leaves_tool_choice_exactly_as_an_ordinary_request_sets_it(tm
     live.messages = [{"role": "user", "content": "hello"}, *({"role": "assistant", "content": f"step {index}"} for index in range(12))]
     for api in ("chat", "responses", "anthropic"):
         live.config.provider.api = api
-        built = compaction.Compactor(ContextManager(live)).request(list(live.messages))
+        built = compaction.Compactor(ContextManager(live), _StubModel()).request(list(live.messages))
         assert built is not None, api  # no wire is excluded any more
 
 
@@ -182,10 +187,10 @@ def test_turn_scope_prefix_stops_where_the_turn_keeps(tmp_path):
     live.messages = [{"role": "user", "content": "task"}]
     turn = [{"role": "assistant", "content": f"step {index}"} for index in range(14)]
     context = ContextManager(live)
-    compacted, keep = compaction.Compactor(context).turn_parts(turn)
+    compacted, keep = compaction.Compactor(context, _StubModel()).turn_parts(turn)
     assert compacted and keep  # the split is real, not a degenerate all-or-nothing
 
-    messages, _ = compaction.Compactor(context).request(compacted, turn)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, turn)
 
     head = len(context.model_header(live.system_prompt)) + len(live.messages)
     assert len(messages) - 1 - head == len(compacted)
@@ -200,14 +205,14 @@ def test_echo_source_covers_the_message_the_slice_adds(tmp_path):
     order = "继续 Part B 收尾：检查 _run_workflow 的所有调用点。"
     live.messages = [{"role": "user", "content": order}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
     context = ContextManager(live)
-    compacted, keep = compaction.Compactor(context).parts()
+    compacted, keep = compaction.Compactor(context, _StubModel()).parts()
     assert order not in [message["content"] for message in compacted]
     assert order in [message["content"] for message in keep]
 
-    messages, _ = compaction.Compactor(context).request(compacted)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted)
 
-    assert order not in compaction.Compactor(context).echo_source(compacted)  # what it used to be checked against
-    assert order in compaction.Compactor(context).echo_source(messages[:-1])  # what the model is actually handed
+    assert order not in compaction.Compactor(context, _StubModel()).echo_source(compacted)  # what it used to be checked against
+    assert order in compaction.Compactor(context, _StubModel()).echo_source(messages[:-1])  # what the model is actually handed
 
 
 def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
@@ -227,10 +232,10 @@ def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
         *({"role": "assistant", "content": f"a{i}"} for i in range(5)),
     ]
     context = ContextManager(live)
-    assert not compaction.Compactor(context).parts()[0]  # the ordinary window yields nothing, forcing the fallback
-    compacted, _keep = compaction.Compactor(context).parts(compaction.Compactor.COMPACT_MINIMUM_RECENT)
+    assert not compaction.Compactor(context, _StubModel()).parts()[0]  # the ordinary window yields nothing, forcing the fallback
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts(compaction.Compactor.COMPACT_MINIMUM_RECENT)
 
-    messages, _ = compaction.Compactor(context).request(compacted, recent=compaction.Compactor.COMPACT_MINIMUM_RECENT)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, recent=compaction.Compactor.COMPACT_MINIMUM_RECENT)
 
     carried = messages[len(context.model_header(live.system_prompt)) : -1]
     assert len(carried) >= len(compacted)
@@ -276,17 +281,17 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     outside.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(10))
     outside.messages.extend([{"role": "user", "content": "latest"}, {"role": "assistant", "content": "answer"}])
     context = ContextManager(outside)
-    compacted, _keep = compaction.Compactor(context).parts()
-    at, body = diverges_at(outside, compaction.Compactor(context).request(compacted)[0])
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
+    at, body = diverges_at(outside, compaction.Compactor(context, _StubModel()).request(compacted)[0])
     assert at == body, "the slice must match the live request; only the appended instruction may differ"
 
     # The non-contiguous shape: the boundary falls before the window, so it is inside the slice.
     inside = reasoning_history(tmp_path / "inside")
     inside.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(20))
     context = ContextManager(inside)
-    compacted, _keep = compaction.Compactor(context).parts()
-    assert compaction.Compactor(context).keep_start(inside.messages, None) > context.latest_user_index(inside.messages)
-    at, body = diverges_at(inside, compaction.Compactor(context).request(compacted)[0])
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
+    assert compaction.Compactor(context, _StubModel()).keep_start(inside.messages, None) > context.latest_user_index(inside.messages)
+    at, body = diverges_at(inside, compaction.Compactor(context, _StubModel()).request(compacted)[0])
     assert at == body
 
     # History-scope compaction during a turn: the boundary lives in the turn, outside the slice.
@@ -294,7 +299,7 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     midturn.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(12))
     turn = [{"role": "user", "content": "this turn"}, {"role": "assistant", "content": "working"}]
     context = ContextManager(midturn)
-    compacted, _keep = compaction.Compactor(context).parts()
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
     # Through the real call chain, so the turn actually reaches the projection: history-scope
     # compaction receives it as `tool_messages`, and reading the boundary without it marked the
     # instruction in a shape where the live request had already stripped everything.
@@ -348,7 +353,7 @@ def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkey
         def parse_json_object(text):
             return json.loads(text)
 
-    compacted, keep = compaction.Compactor(context).parts()
+    compacted, keep = compaction.Compactor(context, _StubModel()).parts()
     assert compaction.Compactor(context, FakeModel(live)).run(compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
 
 
@@ -361,14 +366,14 @@ def test_recent_window_is_a_floor_for_small_messages_and_a_ceiling_for_large_one
     for index in range(58):
         small.messages.extend([{"role": "user", "content": f"q{index}"}, {"role": "assistant", "content": f"a{index}"}])
     small.messages.extend([{"role": "user", "content": "latest"}, {"role": "assistant", "content": "answer"}])
-    _, keep = compaction.Compactor(ContextManager(small)).parts()
+    _, keep = compaction.Compactor(ContextManager(small), _StubModel()).parts()
     assert len(keep) == compaction.Compactor.COMPACT_RECENT_MESSAGES  # was 2
 
     large = session(tmp_path / "large")
     large.messages = [{"role": "user", "content": "go"}]
     for index in range(10):
         large.messages.append({"role": "assistant", "content": f"step {index} " + "x" * 400_000})
-    compacted, keep = compaction.Compactor(ContextManager(large)).parts()
+    compacted, keep = compaction.Compactor(ContextManager(large), _StubModel()).parts()
     assert compacted  # the tail collapses by size, so there is still something to evict
     assert len(keep) < compaction.Compactor.COMPACT_RECENT_MESSAGES
 
@@ -384,10 +389,10 @@ def test_the_slice_and_the_split_agree_on_where_the_cut_is(tmp_path):
     context = ContextManager(live)
 
     for recent in (None, compaction.Compactor.COMPACT_MINIMUM_RECENT):
-        compacted, _keep = compaction.Compactor(context).parts(recent)
+        compacted, _keep = compaction.Compactor(context, _StubModel()).parts(recent)
         if not compacted:
             continue
-        messages, _ = compaction.Compactor(context).request(compacted, recent=recent)
+        messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, recent=recent)
         carried = messages[len(context.model_header(live.system_prompt)) : -1]
         for message in compacted:
             assert message in carried, f"recent={recent} evicted a message the summary never saw"
@@ -423,8 +428,8 @@ def test_the_slice_follows_the_request_being_built_not_the_one_already_sent(tmp_
     context, model = ContextManager(live), ModelClient(live)
     sent = model.chat_messages(context.model_messages(live.system_prompt, sent_turn))
     outgoing = model.chat_messages(context.model_messages(live.system_prompt, queued_turn))
-    compacted, _keep = compaction.Compactor(context).turn_parts(queued_turn)
-    summary = model.chat_messages(compaction.Compactor(context).request(compacted, queued_turn)[0])
+    compacted, _keep = compaction.Compactor(context, _StubModel()).turn_parts(queued_turn)
+    summary = model.chat_messages(compaction.Compactor(context, _StubModel()).request(compacted, queued_turn)[0])
 
     def diverges_at(left, right):
         return next((index for index, (a, b) in enumerate(zip(left, right)) if a != b), None)

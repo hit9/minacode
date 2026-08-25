@@ -52,6 +52,7 @@ class FakeModelClient:
         self.script = list(script)
         self.requests = []
         self.received_tools = []
+        self.last_compaction_model = ""
 
     def request(self, messages, request_tools=None):
         self.requests.append(messages)

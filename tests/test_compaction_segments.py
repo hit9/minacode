@@ -1,5 +1,10 @@
 """compaction segments (split from tests/test_context.py)."""
 
+
+class _StubModel:
+    """Compactor requires a model; planning-only tests never touch it."""
+
+
 import json
 import os
 import threading
@@ -146,6 +151,7 @@ def test_prepare_messages_captures_history_and_turn_segments_in_one_pass(tmp_pat
     turn = [{"role": "user", "content": "current request"}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
 
     class FakeModel:
+        last_compaction_model = ""
         def __init__(self, session):
             self.session = session
             self.calls = 0
@@ -207,6 +213,7 @@ def test_compaction_fallback_trims_when_model_compact_fails(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FailingModel:
+        last_compaction_model = ""
         def compact(self, text, *_args, **_kwargs):
             raise ModelError("failed")
 
@@ -240,6 +247,7 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     loop.tui = SimpleNamespace(set_running=transitions.append, set_dispatching=lambda: transitions.append("dispatch"))
 
     class FakeModel:
+        last_compaction_model = ""
         def __init__(self, session):
             self.session = session
             self.cancel_requested = threading.Event()
@@ -309,6 +317,7 @@ def test_cjk_payload_compacts_where_character_estimate_would_not(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
+        last_compaction_model = ""
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
@@ -341,6 +350,7 @@ def test_overdue_usage_triggers_compaction_even_when_estimate_fits(tmp_path):
     context.on_compaction = lambda active, _error: compaction_phases.append(active)
 
     class FakeModel:
+        last_compaction_model = ""
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "compact summary", "plan": ["next"], "known": ["fact"]}
 
@@ -392,7 +402,7 @@ def test_apply_compaction_clears_last_usage_but_keeps_cumulative(tmp_path):
         {"role": "user", "content": "latest"},
     ]
     context = ContextManager(s)
-    compacted, keep = compaction.Compactor(context).parts()
+    compacted, keep = compaction.Compactor(context, _StubModel()).parts()
     context.apply_compaction({"summary": "compact summary", "plan": ["next"], "known": ["fact"]}, keep, compacted=compacted)
 
     assert s.usage.last_prompt_tokens == 0
@@ -437,6 +447,7 @@ def test_turn_compaction_keeps_the_request_a_runtime_message_follows(tmp_path, e
     ]
 
     class FakeModel:
+        last_compaction_model = ""
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
@@ -460,7 +471,7 @@ def test_history_compaction_keeps_the_request_a_runtime_message_follows(tmp_path
         {"role": "assistant", "content": "working"},
     ]
 
-    compacted, keep = compaction.Compactor(ContextManager(s)).parts()
+    compacted, keep = compaction.Compactor(ContextManager(s), _StubModel()).parts()
 
     assert compacted  # older history is summarized away
     assert "the whole order" not in [message["content"] for message in compacted]
@@ -483,6 +494,7 @@ def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
     ]
 
     class FakeModel:
+        last_compaction_model = ""
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
@@ -513,6 +525,7 @@ def test_engine_marks_its_own_user_messages_as_session_events(tmp_path):
     agent = Agent(s, output_fn=lambda text: None)
 
     class FakeModel:
+        last_compaction_model = ""
         def request(self, messages, tools=None):
             return {"role": "assistant", "content": "done"}, [], "done"
 
@@ -545,6 +558,7 @@ def test_repeated_compaction_keeps_one_request_and_one_checkpoint(tmp_path):
         return messages
 
     class FakeModel:
+        last_compaction_model = ""
         def __init__(self, session):
             self.session = session
             self.calls = 0

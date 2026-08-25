@@ -1,5 +1,10 @@
 """compaction parts (split from tests/test_context.py)."""
 
+
+class _StubModel:
+    """Compactor requires a model; planning-only tests never touch it."""
+
+
 import threading
 
 import pytest
@@ -31,7 +36,7 @@ def test_compaction_parts_keep_latest_user_turn_after_prior_summary(tmp_path):
         {"role": "tool", "content": "tool tr.1"},
     ]
 
-    compacted, keep = compaction.Compactor(ContextManager(s)).parts()
+    compacted, keep = compaction.Compactor(ContextManager(s), _StubModel()).parts()
 
     assert [message["content"] for message in compacted][:3] == ["before", "old request", "old answer"]
     # The latest request and everything after it stay together; the prior summary is dropped from
@@ -48,7 +53,7 @@ def test_compaction_parts_compact_all_without_plain_user_message(tmp_path):
         {"role": "tool", "content": "tool tr.1"},
     ]
 
-    compacted, keep = compaction.Compactor(ContextManager(s)).parts()
+    compacted, keep = compaction.Compactor(ContextManager(s), _StubModel()).parts()
 
     assert compacted == s.messages[1:]
     assert keep == []
@@ -62,7 +67,7 @@ def test_compaction_selection_keeps_assistant_text_that_quotes_summary_marker(tm
         {"role": "assistant", "content": quoted},
     ]
 
-    compacted, keep = compaction.Compactor(ContextManager(s)).parts()
+    compacted, keep = compaction.Compactor(ContextManager(s), _StubModel()).parts()
 
     assert compacted == [{"role": "assistant", "content": quoted}]
     assert keep == []
@@ -95,7 +100,7 @@ def test_turn_compaction_does_not_recompact_a_prior_summary(tmp_path):
         *({"role": "assistant", "content": f"step {index}"} for index in range(10)),
     ]
 
-    compacted, keep = compaction.Compactor(context).turn_parts(messages)
+    compacted, keep = compaction.Compactor(context, _StubModel()).turn_parts(messages)
 
     assert [message["content"] for message in compacted] == ["step 0", "step 1"]
     assert keep[0]["content"] == "current request"
@@ -111,7 +116,7 @@ def test_turn_compaction_evicts_the_prefix_before_a_late_followup(tmp_path):
         *({"role": "assistant", "content": f"new step {index}"} for index in range(10)),
     ]
 
-    compacted, keep = compaction.Compactor(context).turn_parts(messages)
+    compacted, keep = compaction.Compactor(context, _StubModel()).turn_parts(messages)
 
     assert compacted[0]["content"] == "original request"
     assert "old step 19" in [message["content"] for message in compacted]
@@ -206,7 +211,7 @@ def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
         )
         s.messages.append({"role": "tool", "content": f"tool tr.{i}"})
 
-    compacted, keep = compaction.Compactor(ContextManager(s)).parts()
+    compacted, keep = compaction.Compactor(ContextManager(s), _StubModel()).parts()
 
     # The request that started the work is kept, plus a bounded window of what followed.
     assert keep[0] == {"role": "user", "content": "do the big thing"}
@@ -220,7 +225,7 @@ def test_compaction_parts_bounds_the_work_after_the_last_request(tmp_path):
 def test_compaction_parts_for_uses_last_fixed_window(tmp_path):
     messages = [{"role": "assistant", "content": f"m{index}"} for index in range(10)]
 
-    older, recent = compaction.Compactor(ContextManager(session(tmp_path))).parts_for(messages)
+    older, recent = compaction.Compactor(ContextManager(session(tmp_path)), _StubModel()).parts_for(messages)
 
     assert [message["content"] for message in older] == ["m0", "m1"]
     assert [message["content"] for message in recent] == [f"m{index}" for index in range(2, 10)]

@@ -13,6 +13,7 @@ from minacode.config import (
     Config,
     ProviderConfig,
 )
+from minacode.context import ContextManager
 from minacode import compaction
 from minacode.model import ModelClient
 from minacode.render import StatusBar
@@ -263,7 +264,7 @@ def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatc
     monkeypatch.setattr(model, "api_request", explode)
 
     with pytest.raises(ModelError):
-        compaction.Compactor(model=model).compact("context")
+        compaction.Compactor(ContextManager(s), model).compact("context")
     assert s.state.compaction_entry == ""
 
 
@@ -286,7 +287,7 @@ def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
 
     assert s.missing_config() == []  # the active entry is complete; only the compaction one is not
     with pytest.raises(ModelError, match=r"compaction provider `cheap` is missing key, model"):
-        compaction.Compactor(model=ModelClient(s)).compact("context")
+        compaction.Compactor(ContextManager(s), ModelClient(s)).compact("context")
     assert s.state.compaction_entry == ""  # refused before the request, so no stale status row
 
 
@@ -336,7 +337,7 @@ def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkey
         ),
     )
 
-    compaction.Compactor(model=model).compact("long context")
+    compaction.Compactor(ContextManager(s), model).compact("long context")
 
     assert (s.usage.calls, s.usage.total_tokens) == (1, 120_900)  # the conversation's row is untouched
     assert (s.compaction_usage.calls, s.compaction_usage.total_tokens) == (1, 95_700)

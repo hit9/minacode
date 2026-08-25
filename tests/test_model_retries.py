@@ -26,6 +26,7 @@ from minacode.base import (
 from minacode.config import (
     Config,
 )
+from minacode.context import ContextManager
 from minacode import compaction
 from minacode.model import ModelClient, resilience
 
@@ -57,7 +58,7 @@ def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    result = compaction.Compactor(model=model).compact("long context")
+    result = compaction.Compactor(ContextManager(s), model).compact("long context")
 
     body = json.loads(factory.calls[0].content)
     assert body["stream"] is False
@@ -271,7 +272,7 @@ def test_compaction_follows_the_configured_response_deadline(tmp_path, monkeypat
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert compaction.Compactor(model=model).compact("long context") == {"summary": "short"}
+    assert compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
     assert len(seen) == 1
     assert seen[0]["allow_stream"] is False
     assert seen[0]["response_timeout"] == expected
@@ -291,7 +292,7 @@ def test_compaction_timeout_error_names_the_summary(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "api_request", api_request)
 
     with pytest.raises(ModelResponseTimeout, match=r"compaction summary on `default/gpt-4` exceeded provider.response_timeout=600s"):
-        compaction.Compactor(model=model).compact("long context")
+        compaction.Compactor(ContextManager(s), model).compact("long context")
 
 
 def _retry_wait_recorder(monkeypatch, factory):
@@ -719,7 +720,7 @@ def test_compaction_uses_effective_provider(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert compaction.Compactor(model=model).compact("long context") == {"summary": "short"}
+    assert compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
     provider = calls[0]
     assert provider.model == "compactor-1"
     assert provider.reasoning == "off"
@@ -752,7 +753,7 @@ def test_compaction_response_timeout_follows_base_entry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    compaction.Compactor(model=model).compact("long context")
+    compaction.Compactor(ContextManager(s), model).compact("long context")
     assert seen[0]["response_timeout"] == 30
     assert seen[0]["provider"].model == "base-1"
 
@@ -784,7 +785,7 @@ def test_compaction_override_reaches_wire_params(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assert compaction.Compactor(model=model).compact("long context") == {"summary": "short"}
+    assert compaction.Compactor(ContextManager(s), model).compact("long context") == {"summary": "short"}
     body = json.loads(factory.calls[0].content)
     assert body["model"] == "compactor-2"
     assert model.last_compaction_model == "compactor-2"
@@ -805,7 +806,7 @@ def test_compaction_retries_once_when_the_model_replies_in_prose(tmp_path, monke
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    assert compaction.Compactor(model=model).compact("long context")["title"] == "Part B wrap-up"
+    assert compaction.Compactor(ContextManager(s), model).compact("long context")["title"] == "Part B wrap-up"
     assert len(sent) == 2
     # The second attempt shows the model what it did and what to do instead.
     assert sent[1][-1]["role"] == "user" and "not a JSON object" in sent[1][-1]["content"]
@@ -820,7 +821,7 @@ def test_compaction_failure_names_the_provider_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(model, "api_request", lambda *_a, **_k: (None, None, "user:\nnot json at all"))
 
     with pytest.raises(ModelError, match=r"compaction provider `default/gpt-4`"):
-        compaction.Compactor(model=model).compact("long context")
+        compaction.Compactor(ContextManager(s), model).compact("long context")
 
 
 def test_compaction_input_restates_the_contract_after_the_payload(tmp_path):
@@ -849,7 +850,7 @@ def test_compaction_sends_json_response_format_only_where_the_provider_supports_
 
         monkeypatch.setattr(model, "client", lambda **_k: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
         with contextlib.suppress(Exception):
-            compaction.Compactor(model=model).compact("long context")
+            compaction.Compactor(ContextManager(s), model).compact("long context")
 
     run("api.deepseek.com")
     run("api.moonshot.cn")
@@ -874,7 +875,7 @@ def test_compaction_rejects_a_summary_that_copies_the_conversation(tmp_path, mon
 
     monkeypatch.setattr(model, "api_request", api_request)
 
-    data = compaction.Compactor(model=model).compact("long context", echo_source=f"user:\n{echo}")
+    data = compaction.Compactor(ContextManager(s), model).compact("long context", echo_source=f"user:\n{echo}")
     assert data["summary"].startswith("Wrapped up Part B")
     assert len(sent) == 2
     assert "copied the conversation" in sent[1][-1]["content"]

@@ -13,7 +13,7 @@ need the model; `run` drives both.
 from __future__ import annotations
 
 from difflib import SequenceMatcher
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from minacode.base import SESSION_EVENT_KEY, Json, ModelError, ModelResponseTimeout, Text
 from minacode.config import ProviderConfig, compaction_provider_config
@@ -51,19 +51,19 @@ class Compactor:
     # of English and 68 of Chinese. It is set for the denser script, because a floor tuned to
     # English would have excluded from this check every summary written in the language the failure
     # was first seen in.
-    ECHO_MIN_CHARS: int = 40
-    ECHO_RATIO: float = 0.8
-    ECHO_COMPARE_CHARS: int = 4000
+    ECHO_MIN_CHARS: ClassVar[int] = 40
+    ECHO_RATIO: ClassVar[float] = 0.8
+    ECHO_COMPARE_CHARS: ClassVar[int] = 4000
 
     # Recent-window sizes for the split. The fallback is for when the ordinary window leaves
     # nothing to compact: the recent window is a message count, not a size, so a handful of very
     # large messages after the latest user message can blow the budget while all of them sit inside
     # the kept tail -- and then every request is over budget with an empty compactable head. Never
     # zero: the latest exchange has to survive.
-    COMPACT_RECENT_MESSAGES: int = 8
-    COMPACT_MINIMUM_RECENT: int = 2
+    COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
+    COMPACT_MINIMUM_RECENT: ClassVar[int] = 2
 
-    def __init__(self, ctx: ContextManager | None = None, model: ModelClient | None = None):
+    def __init__(self, ctx: ContextManager, model: ModelClient):
         self.ctx = ctx
         self.model = model
 
@@ -79,7 +79,6 @@ class Compactor:
     ) -> bool:
         if not compacted:
             return False
-        assert self.ctx is not None
         on_compaction = self.ctx.on_compaction
         if on_compaction is not None:
             on_compaction(True, "")
@@ -107,7 +106,7 @@ class Compactor:
                 turn_messages=turn_messages,
                 fallback_note=fallback_note if data is None else "",
                 compacted=compacted,
-                model=getattr(self.model, "last_compaction_model", ""),
+                model=self.model.last_compaction_model,
                 title=self.title(data),
             )
         finally:
@@ -125,7 +124,6 @@ class Compactor:
         echo_source: str = "",
     ) -> Json:
         model = self.model
-        assert model is not None
         model.cancel_requested.clear()
         # The summary request runs on the [compaction]-resolved provider entry (empty [compaction]
         # = the active provider), resolved per call so a runtime /provider switch applies next
@@ -181,7 +179,6 @@ class Compactor:
         exactly the one that fails this way, so the message has to say which model to look at.
         """
         model = self.model
-        assert model is not None
         attempt_messages = list(messages)
         for attempt in (1, 2):
             try:
@@ -295,7 +292,6 @@ class Compactor:
         return [*live[:cut], instruction], Tool.resolved_schemas(ctx.session)
 
     def input(self, messages: list[Json]) -> str:
-        assert self.ctx is not None
         older, recent = self.parts_for(messages)
         return format_compaction_input(
             state=self.ctx.session.state.format(),
@@ -373,7 +369,6 @@ class Compactor:
         with nothing left to compact -- which is the failure COMPACT_MINIMUM_RECENT was added for.
         Bounding by both means small messages give the full window and large ones collapse it to
         the last exchange, which is what the old anchor achieved by accident."""
-        assert self.ctx is not None
         limit = self.COMPACT_RECENT_MESSAGES if recent is None else recent
         share = max(1, self.ctx.request_token_budget() // 4)
         start = len(messages)
@@ -396,7 +391,6 @@ class Compactor:
 
     def turn_parts(self, messages: list[Json], recent: int | None = None) -> tuple[list[Json], list[Json]]:
         ctx = self.ctx
-        assert ctx is not None
         index = ctx.latest_user_index(messages)
         if index is None:
             start = self.keep_start(messages, recent)
@@ -405,7 +399,6 @@ class Compactor:
         return self.without_summaries(compacted), self.without_summaries(keep)
 
     def without_summaries(self, messages: list[Json]) -> list[Json]:
-        assert self.ctx is not None
         return [message for message in messages if not self.ctx.is_compaction_summary(message)]
 
     def parts_for(self, messages: list[Json], recent: int | None = None) -> tuple[list[Json], list[Json]]:
@@ -420,15 +413,15 @@ class Compactor:
         cut = self.safe_cut(messages, max(0, len(messages) - (self.COMPACT_RECENT_MESSAGES if recent is None else recent)))
         return messages[:cut], messages[cut:]
 
-    @staticmethod
-    def echoes_source(summary: str, source: str) -> bool:
+    @classmethod
+    def echoes_source(cls, summary: str, source: str) -> bool:
         """True when `summary` reproduces `source` rather than describing it."""
-        summary = " ".join(str(summary).split())[: Compactor.ECHO_COMPARE_CHARS]
-        source = " ".join(str(source).split())[-Compactor.ECHO_COMPARE_CHARS :]
-        if len(summary) < Compactor.ECHO_MIN_CHARS or not source:
+        summary = " ".join(str(summary).split())[: cls.ECHO_COMPARE_CHARS]
+        source = " ".join(str(source).split())[-cls.ECHO_COMPARE_CHARS :]
+        if len(summary) < cls.ECHO_MIN_CHARS or not source:
             return False
         match = SequenceMatcher(None, summary, source, autojunk=False).find_longest_match(0, len(summary), 0, len(source))
-        return match.size >= len(summary) * Compactor.ECHO_RATIO
+        return match.size >= len(summary) * cls.ECHO_RATIO
 
     @staticmethod
     def title(data: Json | None) -> str:

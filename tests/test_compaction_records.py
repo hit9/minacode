@@ -1,5 +1,10 @@
 """compaction records (split from tests/test_context.py)."""
 
+
+class _StubModel:
+    """Compactor requires a model; planning-only tests never touch it."""
+
+
 from agent_harness import session
 
 from minacode.context import ContextManager
@@ -24,7 +29,7 @@ def test_compaction_keeps_assistant_with_tool_results(tmp_path):
         *({"role": "user", "content": f"recent {index}"} for index in range(6)),
     ]
 
-    compacted, keep = compaction.Compactor(context).parts_for(messages)
+    compacted, keep = compaction.Compactor(context, _StubModel()).parts_for(messages)
 
     assert compacted == messages[:3]
     assert keep == messages[3:]
@@ -70,6 +75,7 @@ def test_compaction_keeps_current_turn_tool_records(tmp_path):
     current_key = s.store_tool_result("Bash", ["current"], "current output")
 
     class FakeModel:
+        last_compaction_model = ""
         def compact(self, text, *_args, **_kwargs):
             return {"summary": "summary"}
 
