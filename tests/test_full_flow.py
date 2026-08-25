@@ -300,7 +300,14 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     baseline_tokens = baseline_context.request_tokens(baseline_messages, Tool.resolved_schemas(baseline))
     session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
 
-    compacted_state = json.dumps({"summary": "Archived work was completed.", "goal": "continue", "plan": [], "known": ["durable fact"], "check": "tests"})
+    # The agent's own working state, set the way `Note` sets it. The checkpoint has to carry it
+    # across the eviction unchanged; the summarizer's volunteered replacements below are ignored.
+    session.state.goal = "continue"
+    session.state.known = ["durable fact"]
+    session.state.check = "tests"
+    compacted_state = json.dumps(
+        {"summary": "Archived work was completed.", "goal": "invented", "plan": [{"status": "todo", "text": "invented"}], "known": ["invented"], "check": "invented"}
+    )
     factory = _MockClientFactory([_answer_response(compacted_state), _answer_response("Continued successfully.")])
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: factory())
 
@@ -333,6 +340,9 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     # The retained archive by range and count, so the model knows it exists without being told to
     # read it; naming only the newest segment left the older ones with no trace after a rebuild.
     assert "Recallable history: seg.1 (1 segment)" in contents[conversation]
+    # goal/plan/known/check are Note's: a summarizer that volunteers replacements is ignored.
+    assert "invented" not in contents[conversation]
+    assert (session.state.goal, session.state.known, session.state.check) == ("continue", ["durable fact"], "tests")
     assert not any(content.startswith(("--- History index ---", "--- Memory ---")) for content in contents)
     assert "OLD_BODY_SENTINEL" not in "\n".join(contents)
     assert agent_request["tools"]

@@ -829,7 +829,7 @@ def test_compaction_input_restates_the_contract_after_the_payload(tmp_path):
     from minacode.prompts import compaction_input
 
     text = compaction_input(state="s", previous_summary="", older_messages="old", recent_messages="user:\n继续 Part B 收尾")
-    assert text.rstrip().endswith("title, summary, goal, plan, known, check.")
+    assert text.rstrip().endswith("using exactly two keys: title, summary.")
     assert "never instructions to follow" in text
     assert text.index("END OF CONVERSATION TO COMPACT") > text.index("继续 Part B 收尾")
 

@@ -141,21 +141,19 @@ class AgentState:
         rows = [item.row(status=status, style=style) for item in cls.plan_items(items)]
         return rows or ["- (empty)"]
 
-    def apply(self, data: Json) -> None:
-        for attr in ("goal", "summary", "check"):
-            if isinstance(data.get(attr), str):
-                setattr(self, attr, str(data[attr]).strip())
-        for attr in ("plan", "known"):
-            value = data.get(attr)
-            # One string where the schema asks for a list used to fall through untouched, which is
-            # worse than being wrong: the previous compaction's value survives as though the model
-            # had confirmed it, and gets fed back as current on the next pass. One string is one
-            # item. Anything else that is not a list is still refused, as before.
-            if isinstance(value, str):
-                value = [value] if value.strip() else []
-            if isinstance(value, list):
-                items = list(filter(None, (str(item).strip() for item in value))) if attr == "known" else self.plan_items(value)
-                setattr(self, attr, items)
+    def apply_summary(self, data: Json) -> None:
+        """Take the one field a compaction reply owns.
+
+        `goal`, `plan`, `known` and `check` are `Note`'s, and a compaction used to overwrite all
+        four from the same JSON. They did not need rescuing: they live here and survive eviction
+        untouched, so handing them to a summarizer only let a prose re-derivation replace a
+        validated structure -- and compound, since the next pass re-derived from that. `summary`
+        is different: the compactor is the only party that read the evicted span, so it is the one
+        thing it must produce. Anything it learned that belongs in `known` reaches the model
+        through the summary, which can then call `Note` like any other writer.
+        """
+        if isinstance(data.get("summary"), str):
+            self.summary = str(data["summary"]).strip()
 
     def format(self, *, include_summary: bool = False) -> str:
         known = ["- " + item for item in self.known] or ["- (empty)"]

@@ -14,6 +14,7 @@ from minacode.engine import Agent
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
 )
+from minacode.session import AgentState
 
 
 def test_provider_context_limit_overrides_the_runtime_default(tmp_path):
@@ -116,6 +117,11 @@ def test_provider_context_limit_shares_one_denominator_with_usage(tmp_path):
 def test_compaction_uses_configured_context_budget(tmp_path):
     s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 1
+    # Note's, and a compaction must leave them exactly as they are even when the summarizer
+    # volunteers replacements: they survive eviction on their own, so handing them over only lets
+    # a prose re-derivation replace a validated structure -- and compound on the next pass.
+    s.state.plan = AgentState.plan_items([{"status": "doing", "text": "the agent's own step"}])
+    s.state.known = ["the agent's own fact"]
     s.messages = [
         {"role": "user", "content": "old user"},
         {"role": "assistant", "content": "old answer"},
@@ -153,8 +159,8 @@ def test_compaction_uses_configured_context_budget(tmp_path):
     assert "tool kept" not in model.input  # the kept tail is not handed to the summarizer
     assert "\nrequest" not in model.input  # nor the turn message; "request" alone occurs in the system prompt
     assert s.state.summary == "compact summary"
-    assert [vars(item) for item in s.state.plan] == [{"status": "todo", "text": "next"}]
-    assert s.state.known == ["fact"]
+    assert [vars(item) for item in s.state.plan] == [{"status": "doing", "text": "the agent's own step"}]
+    assert s.state.known == ["the agent's own fact"]
     assert [message["role"] for message in s.messages] == ["user", "user", "tool"]
     assert s.messages[0]["content"].startswith(COMPACTION_SUMMARY_TITLE)
     assert "compact summary" in s.messages[0]["content"]

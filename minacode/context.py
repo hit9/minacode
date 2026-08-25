@@ -386,7 +386,7 @@ class ContextManager:
             else None
         )
         if data is not None:
-            self.session.state.apply(data)
+            self.session.state.apply_summary(data)
         if fallback_note:
             self.session.state.summary = (self.session.state.summary + "\n" + fallback_note).strip()
         if segment is not None:

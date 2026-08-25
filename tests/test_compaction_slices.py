@@ -23,7 +23,7 @@ from minacode.prompts import (
     LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
 )
-from minacode.session import Session
+from minacode.session import AgentState, Session
 
 
 def test_history_segments_keep_only_the_newest_window(tmp_path):
@@ -163,22 +163,28 @@ def test_compaction_leaves_tool_choice_exactly_as_an_ordinary_request_sets_it(tm
         assert built is not None, api  # no wire is excluded any more
 
 
-def test_state_apply_takes_a_bare_string_where_a_list_was_asked_for(tmp_path):
-    """Ignoring the wrong type is worse than accepting it: the previous compaction's value survives
-    as though this one had confirmed it, and is fed back as current on the next pass."""
+def test_state_apply_summary_takes_only_the_field_a_compaction_owns(tmp_path):
+    """A compaction reply owns the summary and nothing else.
+
+    goal/plan/known/check are Note's and survive eviction on their own, so a summarizer that
+    volunteers them is ignored rather than trusted. This also retires a whole failure class: there
+    is no longer a wrong-typed plan or known to coerce, because neither is read from the reply.
+    """
     live = session(tmp_path)
-    live.state.apply({"known": ["stale fact"], "plan": [{"status": "done", "text": "old step"}]})
+    live.state.known = ["the agent's own fact"]
+    live.state.plan = AgentState.plan_items([{"status": "doing", "text": "the agent's own step"}])
+    live.state.goal = "the agent's own goal"
+    live.state.check = "the agent's own check"
 
-    live.state.apply({"known": "the API is rate limited", "plan": "finish Part B"})
-    assert live.state.known == ["the API is rate limited"]
-    assert [item.text for item in live.state.plan] == ["finish Part B"]
+    live.state.apply_summary({"summary": " what the span settled ", "known": ["invented"], "plan": "finish Part B", "goal": "invented", "check": "invented"})
 
-    # An empty string clears rather than silently keeping the old value.
-    live.state.apply({"known": "   "})
-    assert live.state.known == []
-    # A type that is neither is still refused, as before.
-    live.state.apply({"known": 17})
-    assert live.state.known == []
+    assert live.state.summary == "what the span settled"  # stripped
+    assert live.state.known == ["the agent's own fact"]
+    assert [item.text for item in live.state.plan] == ["the agent's own step"]
+    assert (live.state.goal, live.state.check) == ("the agent's own goal", "the agent's own check")
+
+    live.state.apply_summary({"summary": 17})  # a non-string summary leaves the previous one alone
+    assert live.state.summary == "what the span settled"
 
 
 def test_turn_scope_prefix_stops_where_the_turn_keeps(tmp_path):
