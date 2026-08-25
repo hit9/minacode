@@ -17,6 +17,7 @@ from minacode.engine import Agent
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session, SessionSnapshotStore, TurnDiff
+from minacode.session.diffs import _find_unambiguous_move, net_diff_for_path, net_diff_sections
 from minacode.tui import DiffViewState, TabbedViewState
 
 
@@ -504,7 +505,7 @@ def test_net_diff_emits_one_description_per_path_when_snapshots_stop(tmp_path):
     kept = _diff("tr.1", 1, "x.py", "a\n", "b\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-a\n+b\n")
     dropped = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
 
-    sections = Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
+    sections = net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
 
     assert len(sections) == 1
     text = sections[0][2]
@@ -519,7 +520,7 @@ def test_net_diff_prefers_snapshots_when_the_last_edit_has_them(tmp_path):
     dropped = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
     last = _diff("tr.3", 3, "x.py", "b\n", "c\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
 
-    sections = Session.net_diff_sections([first, dropped, last], "overall", cwd=str(tmp_path))
+    sections = net_diff_sections([first, dropped, last], "overall", cwd=str(tmp_path))
 
     # The on-disk content is ignored here: the recorded snapshots already cover the whole history.
     assert len(sections) == 1
@@ -537,7 +538,7 @@ def test_net_diff_recovers_legacy_prefix_when_the_file_shrinks(tmp_path):
     shrink = _diff("tr.2", 2, "x.py", "", "", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-b\n+c\n")
     last = _diff("tr.3", 3, "x.py", "c\n", "d\n", "--- x.py\n+++ x.py\n@@ -1 +1 @@\n-c\n+d\n")
 
-    sections = Session.net_diff_sections([prefix, shrink, last], "overall", cwd=str(tmp_path))
+    sections = net_diff_sections([prefix, shrink, last], "overall", cwd=str(tmp_path))
 
     assert len(sections) == 1
     text = sections[0][2]
@@ -551,7 +552,7 @@ def test_net_diff_recovers_snapshot_history_when_the_file_is_gone(tmp_path):
     kept = _diff("tr.1", 1, "gone.py", "a\n", "b\n", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-a\n+b\n")
     dropped = _diff("tr.2", 2, "gone.py", "", "", "--- gone.py\n+++ gone.py\n@@ -1 +1 @@\n-b\n+c\n")
 
-    sections = Session.net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
+    sections = net_diff_sections([kept, dropped], "overall", cwd=str(tmp_path))
 
     assert len(sections) == 1
     text = sections[0][2]
@@ -629,11 +630,11 @@ def test_diff_view_state_switch_tab_calls_reset():
 
 
 def test_net_diff_for_path_returns_none_when_unchanged():
-    assert Session.net_diff_for_path("edit", "a.py", "same\n", "same\n") is None
+    assert net_diff_for_path("edit", "a.py", "same\n", "same\n") is None
 
 
 def test_net_diff_for_path_returns_unified_diff():
-    result = Session.net_diff_for_path("edit", "a.py", "old\n", "new\n")
+    result = net_diff_for_path("edit", "a.py", "old\n", "new\n")
     assert result is not None
     status, path, diff = result
     assert status == "edit"
@@ -642,32 +643,32 @@ def test_net_diff_for_path_returns_unified_diff():
 
 
 def test_net_diff_for_path_uses_dev_null_for_created_files():
-    result = Session.net_diff_for_path("edit", "new.py", "", "new content\n")
+    result = net_diff_for_path("edit", "new.py", "", "new content\n")
     assert result is not None
     _, _, diff = result
     assert "/dev/null" in diff
 
 
 def test_find_unambiguous_move_returns_none_without_states():
-    assert Session._find_unambiguous_move({}, {}) is None
+    assert _find_unambiguous_move({}, {}) is None
 
 
 def test_find_unambiguous_move_detects_single_match():
     states = {"old.py": ("content", "moved_content"), "new.py": ("moved_content", "final")}
-    assert Session._find_unambiguous_move(states, {}) == ("old.py", "new.py")
+    assert _find_unambiguous_move(states, {}) == ("old.py", "new.py")
 
 
 def test_find_unambiguous_move_ignores_ambiguous():
     states = {"a.py": ("c", "x"), "b.py": ("c", "x")}
-    assert Session._find_unambiguous_move(states, {}) is None
+    assert _find_unambiguous_move(states, {}) is None
 
 
 def test_find_unambiguous_move_skips_self_loop():
     states = {"a.py": ("c", "c")}
-    assert Session._find_unambiguous_move(states, {}) is None
+    assert _find_unambiguous_move(states, {}) is None
 
 
 def test_find_unambiguous_move_skips_legacy_paths():
     states = {"old.py": ("c", "x"), "new.py": ("x", "c")}
     legacy = {"old.py": ["-- a\n++ b"]}
-    assert Session._find_unambiguous_move(states, legacy) is None
+    assert _find_unambiguous_move(states, legacy) is None
