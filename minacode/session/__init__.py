@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import difflib
 import os
 import re
 import signal
@@ -26,16 +25,15 @@ from minacode.base import (
     Text,
     ToolArgs,
     UpdateStatus,
-    split_lines,
 )
 from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
+from minacode.session.codec import TRANSCRIPT_SYNC_VERSION, SessionSnapshotCodec
+from minacode.session.diffs import net_diff_sections
 from minacode.session.store import (
     CONTEXT_LAYOUT_VERSION,
-    TRANSCRIPT_SYNC_VERSION,
     SessionEntry,
-    SessionSnapshotCodec,
     SessionSnapshotStore,
     local_timestamp,
 )
@@ -114,14 +112,9 @@ class AgentState:
     model_retry_until: float = 0.0  # monotonic deadline of the current retry wait; 0 when idle
     compaction_count: int = 0
     # `entry/model` of the provider entry a summary request is running on right now, "" when none
-    # is. Live display state, like the retry and index fields above: set around the request in
-    # ModelClient.compact and never persisted.
+    # is. Display state only: billing now rides api_request's billing=Billing.COMPACTION parameter.
+    # Set around the request in Compactor.run and never persisted.
     compaction_entry: str = ""
-    # True while an explicit ViewImage vision request is in flight. Its usage joins the session
-    # totals but it is not a main-model request, so `_record_usage` must not let it overwrite the
-    # last-request ctx/cache snapshot the status bar reads. Live request state, like
-    # compaction_entry: never persisted.
-    vision_observe_active: bool = False
     # The last delegation that failed on this worker, for `Delegate status` to tell the parent
     # (which cannot see the worker) why it stopped, instead of the parent having to remember.
     # Live display state, like compaction_entry: never persisted.
@@ -146,21 +139,19 @@ class AgentState:
         rows = [item.row(status=status, style=style) for item in cls.plan_items(items)]
         return rows or ["- (empty)"]
 
-    def apply(self, data: Json) -> None:
-        for attr in ("goal", "summary", "check"):
-            if isinstance(data.get(attr), str):
-                setattr(self, attr, str(data[attr]).strip())
-        for attr in ("plan", "known"):
-            value = data.get(attr)
-            # One string where the schema asks for a list used to fall through untouched, which is
-            # worse than being wrong: the previous compaction's value survives as though the model
-            # had confirmed it, and gets fed back as current on the next pass. One string is one
-            # item. Anything else that is not a list is still refused, as before.
-            if isinstance(value, str):
-                value = [value] if value.strip() else []
-            if isinstance(value, list):
-                items = list(filter(None, (str(item).strip() for item in value))) if attr == "known" else self.plan_items(value)
-                setattr(self, attr, items)
+    def apply_summary(self, data: Json) -> None:
+        """Take the one field a compaction reply owns.
+
+        `goal`, `plan`, `known` and `check` are `Note`'s, and a compaction used to overwrite all
+        four from the same JSON. They did not need rescuing: they live here and survive eviction
+        untouched, so handing them to a summarizer only let a prose re-derivation replace a
+        validated structure -- and compound, since the next pass re-derived from that. `summary`
+        is different: the compactor is the only party that read the evicted span, so it is the one
+        thing it must produce. Anything it learned that belongs in `known` reaches the model
+        through the summary, which can then call `Note` like any other writer.
+        """
+        if isinstance(data.get("summary"), str):
+            self.summary = str(data["summary"]).strip()
 
     def format(self, *, include_summary: bool = False) -> str:
         known = ["- " + item for item in self.known] or ["- (empty)"]
@@ -678,218 +669,18 @@ class Session:
         with self._queue_lock:
             self.quick_hints = ()
 
-    @staticmethod
-    def net_diff_for_path(status: str, path: str, before: str, after: str) -> tuple[str, str, str] | None:
-        if before == after:
-            return None
-        text = "".join(difflib.unified_diff(split_lines(before), split_lines(after), fromfile="/dev/null" if not before else path, tofile=path))
-        return (status, path, text) if text else None
-
-    @classmethod
-    def net_diff_sections(cls, diffs: list[TurnDiff], status: str, *, cwd: str = "") -> list[tuple[str, str, str]]:
-        states: dict[str, tuple[str, str]] = {}
-        legacy: dict[str, list[str]] = {}
-        # Whether the most recent edit to each path carried snapshots. A path can hold both kinds
-        # when a file grows past the snapshot size limit partway through a session, and the two
-        # descriptions overlap — emitting both would repeat the file's changes.
-        snapshot_tail: dict[str, bool] = {}
-        paths: list[str] = []
-        for diff in diffs:
-            if diff.path not in paths:
-                paths.append(diff.path)
-            snapshot_tail[diff.path] = bool(diff.before or diff.after)
-            if not diff.before and not diff.after:
-                legacy.setdefault(diff.path, []).append(diff.diff)
-                continue
-            before, _ = states.get(diff.path, (diff.before, diff.after))
-            states[diff.path] = (before, diff.after)
-
-        # Bash can move a file between Edit calls. When one path's `.after` matches another path's
-        # `.before` uniquely on both sides, that's the boundary of a move: merge into the target so
-        # the logical history follows the file to its final path.
-        while (move := cls._find_unambiguous_move(states, legacy)) is not None:
-            source, target = move
-            states[target] = (states[source][0], states[target][1])
-            del states[source]
-
-        sections = []
-        for path in paths:
-            chunk = cls.net_diff_chunk(path, status, states, legacy, snapshot_tail, cwd)
-            if chunk:
-                sections.append((status, path, chunk.rstrip("\n") + "\n"))
-        return sections
-
-    @classmethod
-    def net_diff_chunk(
-        cls,
-        path: str,
-        status: str,
-        states: dict[str, tuple[str, str]],
-        legacy: dict[str, list[str]],
-        snapshot_tail: dict[str, bool],
-        cwd: str,
-    ) -> str:
-        """One diff per path, from exactly one description of its history."""
-        if path in states and snapshot_tail.get(path):
-            # The last edit carried snapshots, so the recorded `after` is the file's final content.
-            before, after = states[path]
-            if legacy_chunks := legacy.get(path, []):
-                # Snapshots cover only a suffix: snapshot-less edits ran before the first snapshot
-                # (the file shrank past the limit mid-session), and their starting content isn't in
-                # `states`. Walk their hunks back from the first snapshot's `before` to recover it so
-                # the net diff spans the whole path. If they don't apply cleanly — they were
-                # interleaved between snapshots, so the snapshot span already reflects them, or the
-                # file was mutated outside Edit — the snapshot span stands as-is.
-                original = cls._reverse_apply(before, legacy_chunks)
-                if original is not None:
-                    before = original
-            section = cls.net_diff_for_path(status, path, before, after)
-            return section[2] if section else ""
-        if path in states and not snapshot_tail.get(path):
-            # Snapshots stop partway through the path's history (the file grew past the limit); the
-            # starting content is still known exactly. The end state is the file's current on-disk
-            # content; if the file is gone, forward-apply the trailing snapshot-less hunks onto the
-            # last snapshot's `after` to recover it, so the exactly-known snapshot history isn't
-            # discarded. If neither is available, fall through to the raw-hunks fallback below.
-            final = cls._current_content(cwd, path)
-            if final is None:
-                final = cls._forward_apply(states[path][1], legacy.get(path, []))
-            if final is not None:
-                section = cls.net_diff_for_path(status, path, states[path][0], final)
-                return section[2] if section else ""
-        legacy_chunks = legacy.get(path, [])
-        if not legacy_chunks:
-            return ""
-        # No usable snapshots for this file. Best effort: reconstruct the pre-edit content by
-        # reverse-applying the recorded per-Edit hunks to the file's current on-disk state, then emit
-        # one clean synthesized diff. Falls back to the raw per-Edit hunks concatenated when
-        # reconstruction can't uniquely locate a hunk (e.g. the file was mutated outside Edit).
-        reconstructed = cls._reconstruct_legacy_diff(cwd, path, legacy_chunks, status) if cwd else None
-        if reconstructed is not None:
-            return reconstructed
-        return "\n".join(chunk.rstrip("\n") for chunk in legacy_chunks)
-
-    @staticmethod
-    def _current_content(cwd: str, path: str) -> str | None:
-        if not cwd:
-            return None
-        abspath = path if os.path.isabs(path) else os.path.join(cwd, path)
-        try:
-            with open(abspath, encoding="utf-8") as file:
-                return file.read()
-        except (OSError, UnicodeDecodeError):
-            return None
-
-    _HUNK_RE: ClassVar[re.Pattern[str]] = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
-
-    @classmethod
-    def _reverse_apply(cls, current: str, chunks: list[str]) -> str | None:
-        """Walk `current` back to the state before the given per-Edit hunks by reverse-applying them
-        in reverse chronological order. Each hunk's after-text must occur uniquely in the buffer; if
-        not (external mutation, ambiguous context, or hunks that don't belong to this buffer's
-        history), return None so the caller can fall back."""
-        hunk_pairs: list[tuple[str, str]] = []
-        for chunk in chunks:
-            pairs = cls._split_hunks(chunk)
-            if pairs is None:
-                return None
-            hunk_pairs.extend(pairs)
-        for after_text, before_text in reversed(hunk_pairs):
-            if not after_text or not before_text:
-                return None
-            if current.count(after_text) != 1:
-                return None
-            current = current.replace(after_text, before_text, 1)
-        return current
-
-    @classmethod
-    def _forward_apply(cls, current: str, chunks: list[str]) -> str | None:
-        """Apply the given per-Edit hunks forward to `current` in chronological order, deriving the
-        content they produce. Each hunk's before-text must occur uniquely in the buffer; if not
-        (external mutation or ambiguous context), return None so the caller can fall back. The mirror
-        of `_reverse_apply`: used to recover a file's final content from its last snapshot when the
-        file is no longer on disk."""
-        hunk_pairs: list[tuple[str, str]] = []
-        for chunk in chunks:
-            pairs = cls._split_hunks(chunk)
-            if pairs is None:
-                return None
-            hunk_pairs.extend(pairs)
-        for after_text, before_text in hunk_pairs:
-            if not after_text or not before_text:
-                return None
-            if current.count(before_text) != 1:
-                return None
-            current = current.replace(before_text, after_text, 1)
-        return current
-
-    @classmethod
-    def _reconstruct_legacy_diff(cls, cwd: str, path: str, chunks: list[str], status: str) -> str | None:
-        final = cls._current_content(cwd, path)
-        if final is None:
-            return None
-        original = cls._reverse_apply(final, chunks)
-        if original is None:
-            return None
-        section = cls.net_diff_for_path(status, path, original, final)
-        return section[2] if section else ""
-
-    @classmethod
-    def _split_hunks(cls, chunk: str) -> list[tuple[str, str]] | None:
-        pairs: list[tuple[str, str]] = []
-        before_lines: list[str] | None = None
-        after_lines: list[str] | None = None
-        for line in chunk.splitlines():
-            if line.startswith(("--- ", "+++ ")):
-                continue
-            if cls._HUNK_RE.match(line):
-                if before_lines is not None and after_lines is not None:
-                    pairs.append(("\n".join(after_lines), "\n".join(before_lines)))
-                before_lines, after_lines = [], []
-                continue
-            if before_lines is None or after_lines is None:
-                return None
-            if line.startswith("+"):
-                after_lines.append(line[1:])
-            elif line.startswith("-"):
-                before_lines.append(line[1:])
-            elif line.startswith(" "):
-                before_lines.append(line[1:])
-                after_lines.append(line[1:])
-            elif line == "\\ No newline at end of file":
-                continue
-            else:
-                return None
-        if before_lines is not None and after_lines is not None:
-            pairs.append(("\n".join(after_lines), "\n".join(before_lines)))
-        return pairs
-
-    @staticmethod
-    def _find_unambiguous_move(states: dict[str, tuple[str, str]], legacy: dict[str, list[str]]) -> tuple[str, str] | None:
-        sources_by_after: dict[str, list[str]] = {}
-        targets_by_before: dict[str, list[str]] = {}
-        for path, (before, after) in states.items():
-            if path in legacy:
-                continue
-            if after:
-                sources_by_after.setdefault(after, []).append(path)
-            if before:
-                targets_by_before.setdefault(before, []).append(path)
-        for content, sources in sources_by_after.items():
-            targets = targets_by_before.get(content, [])
-            if len(sources) == 1 and len(targets) == 1 and sources[0] != targets[0]:
-                return sources[0], targets[0]
-        return None
-
+    # The session owns the edit records; `diffs` owns what they mean. Both entry points pass the
+    # records and the working directory and read nothing else off the session, which is what let
+    # the reconstruction move out whole.
     def latest_round_diff_sections(self) -> tuple[int, list[tuple[str, str, str]]] | None:
         if not self.turn_diffs:
             return None
         round = max(diff.round or diff.turn for diff in self.turn_diffs)
         diffs = [diff for diff in self.turn_diffs if (diff.round or diff.turn) == round]
-        return round, self.net_diff_sections(diffs, "edit", cwd=self.cwd)
+        return round, net_diff_sections(diffs, "edit", cwd=self.cwd)
 
     def session_diff_sections(self) -> list[tuple[str, str, str]]:
-        return self.net_diff_sections(self.turn_diffs, "overall", cwd=self.cwd)
+        return net_diff_sections(self.turn_diffs, "overall", cwd=self.cwd)
 
     def record_tool_error(self, key: str, name: str, args: ToolArgs, error: str) -> None:
         self.tool_errors.append(ToolErrorRecord(key, name, Text.value(list(args)), " ".join(Text.clean(error).split())))

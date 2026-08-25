@@ -153,8 +153,16 @@ def test_compaction_starts_one_cache_epoch_then_the_checkpoint_warms(tmp_path, m
 
     assert session.state.compaction_count == 1
     assert len(server.cache_events) == 5
-    assert server.cache_events[0][2] > 0
-    assert server.cache_events[1][1] > 0
+    assert server.cache_events[0][2] > 0  # cold: the first turn writes
+    assert server.cache_events[1][1] > 0  # an appending turn reads what the last one wrote
+    # [2] is the summary request, and it reads the cache: Compactor.request slices the very
+    # projection the turn just sent and appends one instruction, so the conversation is a warm
+    # prefix and only the tail is paid for. Rebuilding a lookalike out of `compacted` instead --
+    # the regression this guards -- diverges at the first message and reads nothing back.
+    assert server.cache_events[2][1] >= server.cache_events[1][1]
+    # [3] is the first request after the rebuild, and it reads nothing: apply_compaction replaced
+    # the head of the conversation, so one new epoch begins whatever the checkpoint says. [4] shows
+    # the checkpoint is stable history rather than a per-turn rebuild -- the next turn warms from it.
     assert server.cache_events[3][1] == 0
     assert server.cache_events[3][2] > 0
     assert server.cache_events[4][1] > 0
@@ -300,7 +308,14 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     baseline_tokens = baseline_context.request_tokens(baseline_messages, Tool.resolved_schemas(baseline))
     session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
 
-    compacted_state = json.dumps({"summary": "Archived work was completed.", "goal": "continue", "plan": [], "known": ["durable fact"], "check": "tests"})
+    # The agent's own working state, set the way `Note` sets it. The checkpoint has to carry it
+    # across the eviction unchanged; the summarizer's volunteered replacements below are ignored.
+    session.state.goal = "continue"
+    session.state.known = ["durable fact"]
+    session.state.check = "tests"
+    compacted_state = json.dumps(
+        {"summary": "Archived work was completed.", "goal": "invented", "plan": [{"status": "todo", "text": "invented"}], "known": ["invented"], "check": "invented"}
+    )
     factory = _MockClientFactory([_answer_response(compacted_state), _answer_response("Continued successfully.")])
     monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: factory())
 
@@ -327,8 +342,15 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     conversation = next(index for index, content in enumerate(contents) if content.startswith(COMPACTION_SUMMARY_TITLE))
     current_turn = max(index for index, content in enumerate(contents) if content == "continue")
     assert conversation < current_turn
-    assert "Working state:\nGoal: continue" in contents[conversation]
-    assert "Stored history segment: seg.1:" in contents[conversation]
+    # The working state is labelled a snapshot rather than kept current: correcting the checkpoint
+    # later would rewrite the head of the conversation and start another cache epoch.
+    assert "Working state (at this compaction; a later Note call supersedes it):\nGoal: continue" in contents[conversation]
+    # The retained archive by range and count, so the model knows it exists without being told to
+    # read it; naming only the newest segment left the older ones with no trace after a rebuild.
+    assert "Recallable history: seg.1 (1 segment)" in contents[conversation]
+    # goal/plan/known/check are Note's: a summarizer that volunteers replacements is ignored.
+    assert "invented" not in contents[conversation]
+    assert (session.state.goal, session.state.known, session.state.check) == ("continue", ["durable fact"], "tests")
     assert not any(content.startswith(("--- History index ---", "--- Memory ---")) for content in contents)
     assert "OLD_BODY_SENTINEL" not in "\n".join(contents)
     assert agent_request["tools"]

@@ -4,6 +4,7 @@ from typing import ClassVar
 from test_session_persistence import _resumed_transcript, log_path, read_jsonl, session_with_data_dir
 
 from minacode.base import SESSION_EVENT_KEY
+from minacode.config import ProviderConfig
 from minacode.cli import CommandLoop
 from minacode.cli.commands import compact
 from minacode.engine import Agent
@@ -53,6 +54,7 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
     """/compact rewrites the history in place; without a save, leaving the session would resume
     from the pre-compaction log."""
     s = session_with_data_dir(tmp_path)
+    s.config.providers["default"] = ProviderConfig(model="gpt-4", url="http://test", key="sk-test")
     s.messages.append({"role": "user", "content": "older request"})
     for i in range(12):
         s.messages.append({"role": "assistant", "content": f"step {i}"})
@@ -62,7 +64,7 @@ def test_compact_command_persists_the_compacted_history(tmp_path):
     before = len(s.messages)
 
     loop = CommandLoop(Agent(s, output_fn=lambda _text: None), output_fn=lambda _text: None)
-    loop.agent.model.compact = lambda _context, *_args, **_kwargs: {"summary": "a compacted summary"}
+    loop.agent.model.api_request = lambda _messages, _tools, **_kwargs: ("", "", '{"summary": "a compacted summary"}')
     result = compact(loop, "")
 
     assert "Compacted context" in result

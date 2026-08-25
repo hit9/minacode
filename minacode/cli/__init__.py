@@ -133,6 +133,10 @@ class CommandLoop:
 Read, ViewImage, InspectCode, Search, Edit, Bash, Job, Recall, Note, Ask, MCP, Skill.
 
 `Skill(name)` loads a skill's full instructions on demand (see the SKILLS section / `$skill`).
+
+### Documentation
+
+Full documentation: https://minacode.readthedocs.io
 """
 
     DIFF_MAX_BYTES: ClassVar[int] = 50_000

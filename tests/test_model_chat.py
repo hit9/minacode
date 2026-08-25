@@ -9,6 +9,7 @@ from model_harness import _MockClientFactory, _session, _StreamClientFactory
 
 from minacode.base import SESSION_EVENT_KEY, ModelError, ModelOutputTruncated, ToolCall
 from minacode.model import ModelClient, resilience
+from minacode.model.protocol import ChatWire
 
 
 def _chat_completion(content, finish_reason, completion_tokens=16384):
@@ -37,7 +38,7 @@ def test_chat_output_cap_reached_with_nothing_generated_names_the_cap(tmp_path, 
     monkeypatch.setattr(model, "client", factory)
 
     with pytest.raises(ModelOutputTruncated) as error:
-        model.chat_request([{"role": "user", "content": "hi"}], None)
+        model.request([{"role": "user", "content": "hi"}], None)
 
     assert "provider.max_tokens" in str(error.value)
     assert "16384" in str(error.value)
@@ -57,7 +58,7 @@ def test_chat_length_with_output_below_the_cap_names_both_settings(tmp_path, mon
     monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("", "length", completion_tokens=4_096)]))
 
     with pytest.raises(ModelError) as error:
-        model.chat_request([{"role": "user", "content": "hi"}], None)
+        model.request([{"role": "user", "content": "hi"}], None)
 
     assert "provider.max_tokens" in str(error.value)
     assert "runtime.max_context_tokens" in str(error.value)
@@ -74,7 +75,7 @@ def test_chat_length_without_a_configured_cap_names_both_settings(tmp_path, monk
     monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("", "length", completion_tokens=16_384)]))
 
     with pytest.raises(ModelError, match="context window"):
-        model.chat_request([{"role": "user", "content": "hi"}], None)
+        model.request([{"role": "user", "content": "hi"}], None)
 
     assert s.usage.completion_tokens == 16_384
 
@@ -84,7 +85,7 @@ def test_chat_output_cap_reached_after_text_keeps_the_partial_answer(tmp_path, m
     model = ModelClient(_session(tmp_path, stream=False))
     monkeypatch.setattr(model, "client", _MockClientFactory([_chat_completion("half a sen", "length")]))
 
-    _, calls, content = model.chat_request([{"role": "user", "content": "hi"}], None)
+    _, calls, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "half a sen"
     assert calls == []
@@ -102,7 +103,7 @@ def test_chat_stream_reports_the_cap_when_the_stream_produced_nothing(tmp_path, 
     monkeypatch.setattr(model, "client", _StreamClientFactory(chunks))
 
     with pytest.raises(ModelOutputTruncated, match="provider.max_tokens"):
-        model.chat_request([{"role": "user", "content": "hi"}], None)
+        model.request([{"role": "user", "content": "hi"}], None)
 
     assert s.usage.completion_tokens == 16384
 
@@ -129,7 +130,7 @@ def test_chat_request_success(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.chat_request([{"role": "user", "content": "hi"}], None)
+    assistant, calls, content = model.request([{"role": "user", "content": "hi"}], None)
 
     assert content == "hello"
     assert assistant == {"role": "assistant", "content": "hello"}
@@ -165,7 +166,7 @@ def test_chat_request_strips_session_event_metadata(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.chat_request([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
+    model.request([{"role": "user", "content": "<session_event />", SESSION_EVENT_KEY: "resumed"}])
 
     assert json.loads(factory.calls[0].content)["messages"] == [{"role": "user", "content": "<session_event />"}]
 
@@ -206,7 +207,7 @@ def test_chat_request_with_tool_calls(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.chat_request([{"role": "user", "content": "run"}], [])
+    assistant, calls, content = model.request([{"role": "user", "content": "run"}], [])
 
     assert content == ""
     assert assistant["role"] == "assistant"
@@ -329,7 +330,7 @@ def test_chat_stream_reports_reasoning_text_and_complete_tool_calls(tmp_path, mo
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.chat_request([{"role": "user", "content": "run"}], [])
+    assistant, calls, content = model.request([{"role": "user", "content": "run"}], [])
 
     body = json.loads(factory.calls[0].content)
     assert factory.calls[0].url.path.endswith("/chat/completions")
@@ -371,7 +372,7 @@ def test_chat_stream_waits_for_tool_finish_before_promoting_text(tmp_path):
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     model.on_stream = lambda kind, delta: timeline.append((kind, delta))
 
-    message, _, _ = model._chat_stream(client, {})
+    message, _, _ = ChatWire(model)._stream(client, {})
 
     assert timeline == [
         ("output", "hello"),
@@ -427,7 +428,7 @@ def test_chat_stream_preserves_openrouter_reasoning_alias_and_details(tmp_path, 
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, content = model.chat_request([{"role": "user", "content": "go"}], None)
+    assistant, calls, content = model.request([{"role": "user", "content": "go"}], None)
 
     assert calls == []
     assert content == "done"
@@ -481,7 +482,7 @@ def test_chat_reasoning_history_follows_provider_contract(tmp_path, url, model, 
         },
     ]
 
-    converted = client.chat_messages(history)
+    converted = client.wire(client.session.config.provider).messages(history)
 
     assert ("reasoning_content" in converted[1]) is keeps_final
     assert ("reasoning" in converted[1]) is keeps_final
@@ -508,8 +509,8 @@ def test_only_deepseek_keeps_completed_tool_reasoning_across_user_turns(tmp_path
     deepseek = ModelClient(_session(tmp_path / "deepseek", url="https://api.deepseek.com/v1", model="deepseek-chat"))
     qwen = ModelClient(_session(tmp_path / "qwen", url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3.8-max-preview"))
 
-    assert deepseek.chat_messages(history)[1]["reasoning_content"] == "reasoning"
-    assert "reasoning_content" not in qwen.chat_messages(history)[1]
+    assert deepseek.wire(deepseek.session.config.provider).messages(history)[1]["reasoning_content"] == "reasoning"
+    assert "reasoning_content" not in qwen.wire(qwen.session.config.provider).messages(history)[1]
 
 
 @pytest.mark.parametrize(
@@ -524,7 +525,7 @@ def test_explicit_preserved_thinking_keeps_final_reasoning(tmp_path, extra_body)
     s = _session(tmp_path, url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3.8-max-preview", extra_body=extra_body)
     message = {"role": "assistant", "content": "answer", "reasoning_content": "reasoning"}
 
-    assert ModelClient(s).chat_messages([message]) == [message]
+    assert ModelClient(s).wire(s.config.provider).messages([message]) == [message]
 
 
 def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_path, monkeypatch):
@@ -576,7 +577,7 @@ def test_chat_stream_keeps_sequential_tool_calls_without_indexes_distinct(tmp_pa
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "client", factory)
 
-    assistant, calls, _ = model.chat_request([{"role": "user", "content": "read"}], [])
+    assistant, calls, _ = model.request([{"role": "user", "content": "read"}], [])
 
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_1", "call_2"]
     assert [call.id for call in calls] == ["call_1", "call_2"]
@@ -626,7 +627,7 @@ def test_chat_stream_rejects_ambiguous_tool_fragments_without_indexes_or_ids(tmp
     monkeypatch.setattr(model, "client", factory)
 
     with pytest.raises(ModelError, match="cannot associate it safely"):
-        model.chat_request([{"role": "user", "content": "run"}], [])
+        model.request([{"role": "user", "content": "run"}], [])
 
 
 def test_chat_stream_clears_failed_attempt_before_retry(tmp_path, monkeypatch):
@@ -685,7 +686,7 @@ def test_chat_request_drops_responses_only_metadata(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "client", factory)
 
-    model.chat_request(
+    model.request(
         [{"role": "assistant", "content": "old", "_responses_output": [{"type": "reasoning", "id": "rs_1", "summary": []}]}],
         None,
     )

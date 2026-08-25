@@ -5,7 +5,7 @@ import json
 import pytest
 from PIL import Image
 
-from minacode.base import ConfigError, ModelError, ToolError
+from minacode.base import Billing, ConfigError, ModelError, ToolError
 from minacode.config import Config, ProviderConfig
 from minacode.context import ContextManager
 from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_PREFIX, ImageInputs
@@ -14,6 +14,8 @@ from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PRO
 from minacode.runner import ToolRunner
 from minacode.session import Session
 from minacode.tools import Tool, ViewImageTool
+from minacode.vision import VisionObserver
+from model_harness import _MockClientFactory
 
 OBSERVATION = "The screenshot shows a terminal error."
 
@@ -102,12 +104,14 @@ def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monkeypatc
         return {}, [], OBSERVATION
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
-    observation = ModelClient(s).vision_observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
+    model = ModelClient(s)
+    observation = VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
 
     assert observation == OBSERVATION
     assert captured["tools"] is None
     assert captured["kwargs"]["allow_stream"] is False
     assert captured["kwargs"]["provider"] is s.config.providers["v"]
+    assert captured["kwargs"]["billing"] is Billing.VISION
     assert captured["messages"][0]["content"] == VISION_OBSERVE_PROMPT
     content = captured["messages"][1]["content"]
     assert [part["type"] for part in content] == [image_type, text_type]
@@ -135,6 +139,37 @@ def test_static_text_only_view_image_bridges_with_default_question(tmp_path, mon
     assert observation[IMAGE_TEXT_ONLY_KEY] is True
     assert observation["content"] == f"{TOOL_IMAGE_OBSERVATION_PREFIX}\n{OBSERVATION}"
     assert not ImageInputs.input_refs(observation)
+
+
+def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path, monkeypatch):
+    """Vision usage joins the session totals but must not overwrite the last-request ctx/cache
+    snapshot the status bar reads."""
+    s = session(tmp_path, model="main-model", vision=True, vision_api="chat")
+    s.usage.add({"prompt_tokens": 10_000, "completion_tokens": 500, "total_tokens": 10_500}, 200_000)
+    image_file(tmp_path / "shot.png")
+    model = ModelClient(s)
+    monkeypatch.setattr(
+        model,
+        "client",
+        _MockClientFactory(
+            [
+                (
+                    200,
+                    {
+                        "id": "c",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "vision-model",
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": "the screen shows an error"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 300, "completion_tokens": 20, "total_tokens": 320},
+                    },
+                )
+            ]
+        ),
+    )
+    VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "")
+    assert (s.usage.calls, s.usage.total_tokens) == (2, 10_820)
+    assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (10_000, 200_000)
 
 
 def test_vision_bridge_requires_runner_and_reports_errors(tmp_path, monkeypatch):

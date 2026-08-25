@@ -123,23 +123,23 @@ def test_anthropic_omits_temperature_while_thinking_is_enabled(tmp_path):
     provider.url, provider.model, provider.api = "https://api.anthropic.com", "claude-sonnet-4-5", "anthropic"
     provider.temperature, provider.reasoning = 0.3, "medium"
 
-    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
     assert params["thinking"]["type"] == "enabled"
     assert "temperature" not in params
 
     provider.reasoning = "off"
-    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
     assert "thinking" not in params
     assert "temperature" not in params
     assert params["extra_body"]["temperature"] == 0.3
 
     provider.model = "claude-fable-5"
-    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
     assert "thinking" not in params
     assert "temperature" not in params
 
     provider.model, provider.reasoning = "claude-sonnet", "medium"
-    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
     assert "thinking" not in params
     assert "temperature" not in params
     assert params["extra_body"]["temperature"] == 0.3
@@ -174,7 +174,7 @@ def test_anthropic_thinking_matches_the_generation_of_the_model(tmp_path, model,
     provider.url, provider.api, provider.reasoning = "https://api.anthropic.com", "anthropic", "high"
     provider.model = model
 
-    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
 
     assert {key: params[key] for key in ("thinking", "output_config") if key in params} == expected
 
@@ -187,7 +187,7 @@ def test_anthropic_reasoning_off_respects_models_that_cannot_stop_thinking(tmp_p
 
     def thinking(model):
         provider.model = model
-        params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+        params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
         return params.get("thinking")
 
     assert thinking("claude-sonnet-5") == {"type": "disabled"}
@@ -205,7 +205,7 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
 
     def effort(model):
         provider.model = model
-        return client.anthropic_params([{"role": "user", "content": "hi"}], None)["output_config"]["effort"]
+        return client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)["output_config"]["effort"]
 
     assert effort("claude-sonnet-4-6") == "max"
     assert effort("claude-opus-4-7") == "xhigh"
@@ -222,7 +222,7 @@ def test_anthropic_effort_uses_the_highest_level_each_generation_accepts(tmp_pat
     # Opus 4.5 is the one manual-thinking generation that also accepts output_config.effort.
     provider.reasoning = "medium"
     provider.model = "claude-opus-4-5"
-    params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+    params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
     assert params["thinking"] == {"type": "enabled", "budget_tokens": 4096}
     assert params["output_config"] == {"effort": "medium"}
 
@@ -237,13 +237,13 @@ def test_anthropic_thinking_budget_stays_under_the_requested_output_budget(tmp_p
 
     for max_tokens, reasoning in ((8_192, "high"), (4_096, "max"), (2_048, "xhigh"), (0, "max")):
         provider.max_tokens, provider.reasoning = max_tokens, reasoning
-        params = client.anthropic_params([{"role": "user", "content": "hi"}], None)
+        params = client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)
         budget = params["thinking"]["budget_tokens"]
         assert 1_024 <= budget < params["max_tokens"], (max_tokens, reasoning, budget)
 
     # A budget that already fits is left alone.
     provider.max_tokens, provider.reasoning = 32_000, "medium"
-    assert client.anthropic_params([{"role": "user", "content": "hi"}], None)["thinking"]["budget_tokens"] == 4_096
+    assert client.wire(client.session.config.provider).params([{"role": "user", "content": "hi"}], None)["thinking"]["budget_tokens"] == 4_096
 
 def test_openrouter_reasoning_effort_uses_the_resolved_level(tmp_path):
     """Every other control sends the resolved effort; the top-level reasoning object must too, or a
@@ -265,10 +265,10 @@ def test_anthropic_assistant_turns_are_echoed_back_verbatim(tmp_path):
         {"type": "text", "text": "checking"},
         {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}},
     ]
-    assistant, calls, _ = client.anthropic_result({"content": blocks})
+    assistant, calls, _ = client.wire(ProviderConfig(api="anthropic", model="claude")).result({"content": blocks})
     assert [call.name for call in calls] == ["Bash"]
 
-    params = client.anthropic_params(
+    params = client.wire(ProviderConfig(api="anthropic", model="claude")).params(
         [{"role": "user", "content": "go"}, assistant, {"role": "tool", "tool_call_id": "tu_1", "content": "out"}],
         None,
     )
@@ -312,7 +312,7 @@ def test_anthropic_replays_thinking_according_to_model_generation(tmp_path, mode
         {"role": "user", "content": "second"},
     ]
 
-    blocks = client.anthropic_messages(history)[1]["content"]
+    blocks = client.wire(client.session.config.provider).messages(history)[1]["content"]
     tokens = client.estimated_request_tokens(history)
     without_old_thinking = [
         history[0],
@@ -337,7 +337,7 @@ def test_anthropic_always_replays_current_tool_loop_thinking(tmp_path):
         {"role": "tool", "tool_call_id": "tu", "content": "done"},
     ]
 
-    assert ModelClient(s).anthropic_messages(history)[1]["content"] == blocks
+    assert ModelClient(s).wire(ProviderConfig(api="anthropic", model="claude")).messages(history)[1]["content"] == blocks
 
 def test_context_estimate_ignores_opaque_echo_bytes_but_counts_readable_reasoning(tmp_path):
     """Serialized ciphertext/signatures are not prompt text, but readable reasoning replayed by

@@ -1,4 +1,5 @@
 """compaction config (split from tests/test_core_logic.py)."""
+
 import time
 
 import pytest
@@ -12,6 +13,8 @@ from minacode.config import (
     Config,
     ProviderConfig,
 )
+from minacode.context import ContextManager
+from minacode import compaction
 from minacode.model import ModelClient
 from minacode.render import StatusBar
 from minacode.session import Session, SessionSnapshotCodec
@@ -36,6 +39,7 @@ def test_compaction_config_fields_parse_and_default_empty():
     assert plain.compaction_reasoning == ""
     assert plain.compaction_api == ""
 
+
 def test_compaction_config_rejects_invalid_values():
     with pytest.raises(ConfigError, match="compaction.provider"):
         Config.from_dict({"compaction": {"provider": "nope"}, "provider": {"default": {}}})
@@ -43,6 +47,7 @@ def test_compaction_config_rejects_invalid_values():
         Config.from_dict({"compaction": {"reasoning": "turbo"}, "provider": {"default": {}}})
     with pytest.raises(ConfigError, match="compaction.api"):
         Config.from_dict({"compaction": {"api": "oai"}, "provider": {"default": {}}})
+
 
 def test_compaction_provider_config_folds_overrides_without_sharing():
     from minacode.config import compaction_provider_config
@@ -69,6 +74,7 @@ def test_compaction_provider_config_folds_overrides_without_sharing():
     assert entry.model == "d"  # empty provider = the active entry
     assert entry is not config.provider
 
+
 def test_provider_compaction_fields_parse_and_default_empty():
     config = Config.from_dict(
         {
@@ -88,11 +94,13 @@ def test_provider_compaction_fields_parse_and_default_empty():
     assert config.providers["default"].compaction_reasoning == ""
     assert config.providers["default"].compaction_api == ""
 
+
 def test_provider_compaction_rejects_invalid_values():
     with pytest.raises(ConfigError, match="provider.compaction.reasoning"):
         Config.from_dict({"provider": {"default": {"compaction": {"reasoning": "turbo"}}}})
     with pytest.raises(ConfigError, match="provider.compaction.api"):
         Config.from_dict({"provider": {"default": {"compaction": {"api": "oai"}}}})
+
 
 def test_compaction_provider_config_per_provider_wins_over_global():
     from minacode.config import compaction_provider_config
@@ -121,6 +129,7 @@ def test_compaction_provider_config_per_provider_wins_over_global():
     assert entry.reasoning == "high"
     assert entry.api == "responses"
 
+
 def test_compaction_provider_config_per_provider_follows_base_entry():
     from minacode.config import compaction_provider_config
 
@@ -141,6 +150,7 @@ def test_compaction_provider_config_per_provider_follows_base_entry():
     assert config.providers["default"].compaction_model == "active-per"  # untouched
     assert entry is not config.providers["fast"]
 
+
 def _compaction_bar_session(tmp_path, **compaction):
     config = Config.from_dict(
         {
@@ -155,6 +165,7 @@ def _compaction_bar_session(tmp_path, **compaction):
     s = Session(cwd=str(tmp_path), config=config)
     s.config.data_dir = str(tmp_path / "data")
     return s
+
 
 def test_status_bar_names_the_entry_a_summary_runs_on(tmp_path):
     """A summary on its own provider entry is the same situation as an in-flight worker: the
@@ -172,6 +183,7 @@ def test_status_bar_names_the_entry_a_summary_runs_on(tmp_path):
     s.state.compaction_entry = ""
     assert bar.entries(show_elapsed=False)[0] == ("default/big-model", "provider")
 
+
 def test_status_bar_marks_a_compaction_running_on_the_row_own_entry(tmp_path):
     """With no [compaction] overrides the resolved entry is the active one, and the row keeps its
     own provider segments -- but it still says a summary is what the wait is for. Naming the phase
@@ -184,6 +196,7 @@ def test_status_bar_marks_a_compaction_running_on_the_row_own_entry(tmp_path):
 
     s.state.compaction_entry = ""
     assert bar.entries(show_elapsed=False)[0] == ("default/big-model", "provider")
+
 
 def test_status_bar_output_rate_reads_the_stream_that_is_running(tmp_path):
     """The rate belongs to the response being watched: no stream, no number. It is an estimate from
@@ -205,6 +218,7 @@ def test_status_bar_output_rate_reads_the_stream_that_is_running(tmp_path):
     s.state.stream_started_at = 0.0
     assert bar.output_rate() == ""
 
+
 def test_status_bar_output_rate_follows_an_in_flight_worker(tmp_path):
     """Same in-flight predicate as every other value on the row: while a delegation runs, the speed
     shown is the worker's, and it goes back to the parent's the moment the worker answers."""
@@ -219,6 +233,7 @@ def test_status_bar_output_rate_follows_an_in_flight_worker(tmp_path):
 
     worker._active_turn_messages = [{"role": "user", "content": "order"}]
     assert bar.output_rate() == "↓ 100 tok/s"
+
 
 def test_model_client_counts_streamed_output_per_request(tmp_path):
     """One funnel for every API shape, reasoning deltas included: the wait is made of both."""
@@ -235,6 +250,7 @@ def test_model_client_counts_streamed_output_per_request(tmp_path):
     model._emit_stream("output", "ij")
     assert s.state.stream_chars == 2
 
+
 def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatch):
     """The label is live display state: a timeout, a cancel, or a provider error must not leave a
     stale row naming a request that is no longer running."""
@@ -248,8 +264,9 @@ def test_compaction_entry_is_cleared_when_the_summary_fails(tmp_path, monkeypatc
     monkeypatch.setattr(model, "api_request", explode)
 
     with pytest.raises(ModelError):
-        model.compact("context")
+        compaction.Compactor(ContextManager(s), model).compact("context")
     assert s.state.compaction_entry == ""
+
 
 def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
     """The client's own gate checks the active provider, which is the wrong entry when a summary
@@ -270,8 +287,9 @@ def test_compaction_refuses_an_incomplete_entry_by_name(tmp_path):
 
     assert s.missing_config() == []  # the active entry is complete; only the compaction one is not
     with pytest.raises(ModelError, match=r"compaction provider `cheap` is missing key, model"):
-        ModelClient(s).compact("context")
+        compaction.Compactor(ContextManager(s), ModelClient(s)).compact("context")
     assert s.state.compaction_entry == ""  # refused before the request, so no stale status row
+
 
 def test_provider_entry_reports_its_own_missing_fields(tmp_path):
     """One definition of a usable entry, shared by the active-provider gate and compaction."""
@@ -280,6 +298,7 @@ def test_provider_entry_reports_its_own_missing_fields(tmp_path):
 
     assert config.providers["p"].missing_fields() == ["url", "model"]
     assert s.missing_config() == ["provider.url", "provider.model"]
+
 
 def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkeypatch):
     """A summary can be billed to another account at another price, and is a fresh prefix that
@@ -318,10 +337,15 @@ def test_summary_tokens_are_counted_apart_from_the_conversation(tmp_path, monkey
         ),
     )
 
-    model.compact("long context")
+    compaction.Compactor(ContextManager(s), model).compact("long context")
 
     assert (s.usage.calls, s.usage.total_tokens) == (1, 120_900)  # the conversation's row is untouched
     assert (s.compaction_usage.calls, s.compaction_usage.total_tokens) == (1, 95_700)
+    # The summary request also refreshes its own counter's last-request snapshot, which the status
+    # bar's compaction row reads; the conversation row's snapshot is not overwritten.
+    assert s.compaction_usage.last_prompt_tokens == 95_000
+    assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (120_000, 200_000)
+
 
 def test_compaction_usage_survives_a_resume(tmp_path):
     config = Config.from_dict({"provider": {"active": "p", "p": {"url": "http://test", "key": "k", "model": "m"}}})
@@ -337,6 +361,7 @@ def test_compaction_usage_survives_a_resume(tmp_path):
     assert restored.compaction_usage.calls == 1
     # A snapshot written before the field existed decodes to zeros, not an error.
     assert SessionSnapshotCodec.model_usage({}).total_tokens == 0
+
 
 def test_deepseek_tool_call_replay_travels_with_the_model_not_the_endpoint():
     """DeepSeek returns 400 when a tool-call turn comes back without its reasoning, and ignores it

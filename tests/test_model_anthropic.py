@@ -32,7 +32,7 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, calls, content = model.anthropic_request([{"role": "user", "content": "hi"}], None)
+    assistant, calls, content = model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     assert content == "hello from claude"
     assert assistant == {
@@ -52,7 +52,7 @@ def test_anthropic_request_success(tmp_path, monkeypatch):
 
 def test_anthropic_terminal_tool_split_replays_text_once(tmp_path):
     model = ModelClient(_session(tmp_path, model="claude-3", api="anthropic"))
-    converted = model.anthropic_messages(
+    converted = model.wire(model.session.config.provider).messages(
         [
             {"role": "user", "content": "finish"},
             {
@@ -154,7 +154,7 @@ def test_anthropic_stream_reports_thinking_and_text(tmp_path, monkeypatch):
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     monkeypatch.setattr(model, "anthropic_client", factory)
 
-    assistant, calls, content = model.anthropic_request([{"role": "user", "content": "hi"}], None)
+    assistant, calls, content = model.wire(model.session.config.provider).request([{"role": "user", "content": "hi"}], None)
 
     body = json.loads(factory.calls[0].content)
     assert factory.calls[0].url.path.endswith("/messages")
@@ -199,7 +199,7 @@ def test_anthropic_stream_promotes_when_tool_precedes_completed_text(tmp_path):
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
 
-    model._anthropic_stream(client, {})
+    model.wire(model.session.config.provider)._stream(client, {})
 
     assert streamed == [("output", "hello"), ("output_done", "hello"), ("", "")]
 
@@ -235,7 +235,7 @@ def test_anthropic_stream_promotes_completed_text_before_server_tool(tmp_path):
     model.on_builtin_call = lambda label, detail: timeline.append(("builtin", label, detail))
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
 
-    model._anthropic_stream(client, {})
+    model.wire(model.session.config.provider)._stream(client, {})
 
     promoted = ("output_done", "the answer")
     builtin = ("builtin", "Web Search", "q")
@@ -272,7 +272,7 @@ def test_anthropic_stream_promotes_server_tool_first_text_at_block_completion(tm
     model.on_stream = lambda kind, delta: streamed.append((kind, delta))
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **_params: Stream()))
 
-    model._anthropic_stream(client, {})
+    model.wire(model.session.config.provider)._stream(client, {})
 
     assert streamed == [("Web Search", ""), ("output", "hello"), ("output_done", "hello"), ("", "")]
     assert streamed.count(("output_done", "hello")) == 1
@@ -284,13 +284,13 @@ def test_anthropic_max_tokens_stop_reason_names_the_cap_only_when_nothing_was_ge
     empty = {"stop_reason": "max_tokens", "content": [], "usage": {"output_tokens": 16384}}
 
     with pytest.raises(ModelOutputTruncated) as error:
-        model.anthropic_result(empty)
+        model.wire(model.session.config.provider).result(empty)
 
     assert "provider.max_tokens" in str(error.value)
     assert resilience.retryable_error(error.value) is False
 
     partial = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "half a sen"}]}
-    _, calls, content = model.anthropic_result(partial)
+    _, calls, content = model.wire(model.session.config.provider).result(partial)
 
     assert content == "half a sen"
     assert calls == []
@@ -311,11 +311,11 @@ def test_another_hosts_thinking_signature_is_not_replayed(tmp_path):
         },
     ]
 
-    rebuilt = model.anthropic_messages(history)
+    rebuilt = model.wire(model.session.config.provider).messages(history)
 
     assert rebuilt[1]["content"] == [{"type": "text", "text": "answer"}]
 
-    echoed = issuer.anthropic_messages(history)
+    echoed = issuer.wire(issuer.session.config.provider).messages(history)
     assert echoed[1]["content"][0] == {"type": "thinking", "thinking": "why", "signature": "sig"}
 
 
@@ -332,7 +332,7 @@ def test_prompt_cache_breakpoint_rolls_with_the_conversation(tmp_path):
         {"role": "tool", "tool_call_id": "tc.1", "content": "output"},
     ]
 
-    messages = model.anthropic_params(history, None)["messages"]
+    messages = model.wire(model.session.config.provider).params(history, None)["messages"]
 
     # Only the tail is marked, and the earlier turns keep the exact bytes they were cached with.
     assert messages[0] == {"role": "user", "content": [{"type": "text", "text": "hi"}]}
@@ -343,7 +343,7 @@ def test_prompt_cache_breakpoint_rolls_with_the_conversation(tmp_path):
 
     # A turn ending in thinking marks the last block that may carry it -- a signed thinking block
     # is verified byte-for-byte, so it is echoed untouched.
-    trailing = model.anthropic_params(
+    trailing = model.wire(model.session.config.provider).params(
         [
             {"role": "user", "content": "hi"},
             {

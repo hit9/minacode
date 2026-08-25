@@ -45,7 +45,7 @@ def test_paused_turn_is_reported_and_replays_unchanged(tmp_path, monkeypatch):
     assert assistant[PAUSED_TURN_KEY] is True
     assert calls == []
     # Replaying the paused message must preserve encrypted_content; the API rejects it otherwise.
-    replayed = model.anthropic_messages([{"role": "user", "content": "hi"}, assistant])
+    replayed = model.wire(model.session.config.provider).messages([{"role": "user", "content": "hi"}, assistant])
     assert replayed[-1]["content"] == blocks
 
 def test_an_unpaused_response_carries_no_pause_marker(tmp_path, monkeypatch):

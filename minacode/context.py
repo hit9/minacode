@@ -6,8 +6,9 @@ import json
 import os
 import re
 from collections.abc import Callable, Hashable
-from typing import ClassVar, TypeVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar
 
+from minacode import compaction
 from minacode.base import (
     ANTHROPIC_CONTENT_KEY,
     MAX_AGENTS_MD_TOKENS,
@@ -20,22 +21,17 @@ from minacode.base import (
     Text,
 )
 from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
-from minacode.model import ModelClient
 from minacode.prompts import (
-    COMPACTION_REQUEST_EVENT,
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
     PREVIOUS_CONTEXT_TRIMMED,
-    compaction_tail,
     language_directive,
 )
-from minacode.prompts import (
-    compaction_input as format_compaction_input,
-)
 from minacode.session import HistorySegment, Session, local_timestamp
-from minacode.tools import (
-    Tool,
-)
+from minacode.tools import Tool
+
+if TYPE_CHECKING:
+    from minacode.model import ModelClient
 
 _IdentityT = TypeVar("_IdentityT", bound=Hashable)
 
@@ -59,12 +55,6 @@ class ContextManager:
     the current turn only if still over.
     """
 
-    COMPACT_RECENT_MESSAGES: ClassVar[int] = 8
-    # Fallback window when the ordinary one leaves nothing to compact. The recent window is a message
-    # count, not a size, so a handful of very large messages after the latest user message can blow
-    # the budget while all of them sit inside the kept tail -- and then every request is over budget
-    # with an empty compactable head. Never zero: the latest exchange has to survive.
-    COMPACT_MINIMUM_RECENT: ClassVar[int] = 2
     # How many evicted spans stay recallable. Every compaction adds one and nothing removed them, so
     # a long session carried every span it ever evicted -- each holding a bounded excerpt -- in
     # memory and in the segment list rewritten into later snapshot deltas. The newest spans are what
@@ -190,6 +180,7 @@ class ContextManager:
 
     def prepare_messages(self, model: ModelClient, base_system: str, turn_messages: list[Json] | None = None, tools: list[Json] | None = None) -> list[Json]:
         messages = self.model_messages(base_system, turn_messages)
+        compactor = compaction.Compactor(self, model)
         budget = self.request_token_budget()
         raw = self.request_tokens(messages, tools)
         if raw < budget and not self._overdue_by_usage():
@@ -198,22 +189,22 @@ class ContextManager:
         if self._auto_compaction_allowed("history", self.session.messages):
             attempted = True
             recent = None
-            compacted, keep = self.compaction_parts()
+            compacted, keep = compactor.parts()
             if not compacted:
-                recent = self.COMPACT_MINIMUM_RECENT
-                compacted, keep = self.compaction_parts(recent)
-            if self._compact_messages(model, compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages, recent=recent):
+                recent = compactor.COMPACT_MINIMUM_RECENT
+                compacted, keep = compactor.parts(recent)
+            if compactor.run(compacted, keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn_messages, recent=recent):
                 compacted_any = True
                 messages = self.model_messages(base_system, turn_messages)
             self._auto_compacted_at["history"] = len(self.session.messages)
         if turn_messages is not None and self.request_tokens(messages, tools) >= budget and self._auto_compaction_allowed("turn", turn_messages):
             attempted = True
             recent = None
-            compacted, keep = self.turn_compaction_parts(turn_messages)
+            compacted, keep = compactor.turn_parts(turn_messages)
             if not compacted:
-                recent = self.COMPACT_MINIMUM_RECENT
-                compacted, keep = self.turn_compaction_parts(turn_messages, recent)
-            if self._compact_messages(model, compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages, recent=recent):
+                recent = compactor.COMPACT_MINIMUM_RECENT
+                compacted, keep = compactor.turn_parts(turn_messages, recent)
+            if compactor.run(compacted, keep, CURRENT_TURN_CONTEXT_TRIMMED, turn_messages=turn_messages, recent=recent):
                 compacted_any = True
                 messages = self.model_messages(base_system, turn_messages)
             self._auto_compacted_at["turn"] = len(turn_messages)
@@ -252,147 +243,6 @@ class ContextManager:
         usage = self.session.usage
         return usage.last_prompt_budget > 0 and usage.last_prompt_tokens * 100 >= usage.last_prompt_budget * 99
 
-    def compaction_request(
-        self, compacted: list[Json], turn_messages: list[Json] | None = None, recent: int | None = None, live_turn: list[Json] | None = None
-    ) -> tuple[list[Json], list[Json]] | None:
-        """The compaction request as the agent's own request truncated, plus one instruction, or
-        None to use the flattened payload instead.
-
-        A cache hit needs a byte-identical prefix, so this slices `model_messages` -- the very list
-        the turn just sent -- rather than assembling a lookalike from `compacted`. They are not the
-        same thing: `compacted` has had `without_compaction_summaries` applied and has not had the
-        describe/skill dedup applied, so a request built from it diverges at the first earlier
-        summary and at every repeated schema, which cost the whole conversation and left only the
-        header cached.
-
-        The slice therefore ends one message later than `compacted` does, taking in the latest user
-        message that `compacted` deliberately excludes. That message is kept either way -- what is
-        evicted is decided by `keep`, not by this request -- so the only effect is that the
-        compactor sees what is being worked on right now, which helps it.
-
-        Eligible only when the summary runs on the entry that served the turn: a `[compaction]`
-        entry elsewhere is a different cache namespace, so rebuilding the prefix would cost the
-        whole history at full rate to save nothing.
-
-        One case builds the slice and gets no cache for it: a turn-scope pass that follows a
-        history-scope pass in the same projection, where session.messages has just been rewritten
-        and no request with that prefix has ever been sent. It is not a regression -- the flattened
-        payload never hit either, and the real messages are still worth more to the summarizer than
-        a rendering that drops tool calls -- but the reuse this method is named for does not apply
-        there."""
-        if self.session.config.compaction_provider or self.session.system_info is None:
-            return None
-        base_system = self.session.system_prompt
-        if not base_system or not compacted:
-            return None
-        # Projected with the turn attached whichever scope this is: the request being ridden
-        # carries it, and its reasoning boundary is read off the whole projection below even when
-        # only the stored half is being sliced.
-        live = self.model_messages(base_system, turn_messages if turn_messages is not None else live_turn)
-        header = len(self.model_header(base_system))
-        # A turn-scope span sits after the stored conversation rather than at the head of it, so
-        # its slice starts there. Both scopes are ordinary prefixes of the same projection; only
-        # the offset differs.
-        cut = header + (
-            len(self.session.messages) + self.compaction_prefix_count(turn_messages, recent)
-            if turn_messages is not None
-            else self.compaction_prefix_count(recent=recent)
-        )
-        if cut <= header:
-            return None
-        tail = compaction_tail(
-            state=self.session.state.format(),
-            previous_summary=self.session.state.summary,
-            recent_count=min(self.COMPACT_RECENT_MESSAGES, len(compacted)),
-        )
-        # Where the appended instruction sits relative to the reasoning boundary decides whether
-        # this request replays the same reasoning the live one did, and the answer differs by shape.
-        # When the boundary is inside the slice, the instruction must not become it -- marked. When
-        # it is beyond the slice (the recent window kept it, or it lives in the current turn), the
-        # live request strips reasoning from everything here, so the instruction is left unmarked
-        # and becomes the boundary itself, which strips exactly the same set. Marking in that shape
-        # kept reasoning the live request had dropped and diverged four messages in.
-        instruction: Json = {"role": "user", "content": tail}
-        if -1 < ModelClient.latest_user_position(live) < cut:
-            instruction[SESSION_EVENT_KEY] = COMPACTION_REQUEST_EVENT
-        return [*live[:cut], instruction], Tool.resolved_schemas(self.session)
-
-    def compaction_prefix_count(self, turn_messages: list[Json] | None = None, recent: int | None = None) -> int:
-        """How many messages of the scope's own list the summary request carries.
-
-        One expression of the cut, shared with the split that produces `compacted`. Deriving it
-        separately is what put the request out of step with what was being evicted twice already:
-        once when the MINIMUM_RECENT fallback re-split with a different window, and again when the
-        split grew a size bound this did not have."""
-        messages = self.session.messages if turn_messages is None else turn_messages
-        if turn_messages is None and self.latest_user_index(messages) is None:
-            # compaction_parts hands the whole list over when there is no request to keep.
-            return len(messages)
-        return self.compaction_keep_start(messages, recent)
-
-    def compaction_echo_source(self, sent: list[Json]) -> str:
-        """What a copied summary would have been copied from.
-
-        Takes what the request actually carries, never `compacted`. The inline slice deliberately
-        reaches one message further than `compacted` does, and that extra message is the latest user
-        message -- precisely the text the failure this guard exists for reproduced. Checking against
-        `compacted` left the guard blind to exactly the case it was written for.
-
-        The tail, not the whole span: recency is what the failure follows, and this feeds a
-        substring search over a span with no size limit."""
-        index = self.latest_user_index(sent)
-        tail = sent if index is None else sent[index:]
-        return self.messages_text(tail)[-4000:]
-
-    def _compact_messages(
-        self,
-        model: ModelClient,
-        compacted: list[Json],
-        keep: list[Json],
-        fallback_note: str,
-        *,
-        tool_messages: list[Json] | None = None,
-        turn_messages: list[Json] | None = None,
-        recent: int | None = None,
-    ) -> bool:
-        if not compacted:
-            return False
-        on_compaction = self.on_compaction
-        if on_compaction is not None:
-            on_compaction(True, "")
-        error_detail = ""
-        interrupted = False
-        try:
-            try:
-                request = self.compaction_request(compacted, turn_messages, recent, live_turn=tool_messages)
-                # Checked against what the model is handed, which is not `compacted`: the inline
-                # slice carries one message more, and the flattened payload carries `compacted`.
-                sent = request[0][:-1] if request else compacted
-                flat = self.compaction_input(compacted) if request is None else ""
-                data = model.compact(flat, *(request or ()), echo_source=self.compaction_echo_source(sent))
-            except KeyboardInterrupt:
-                error_detail = "cancelled by user"
-                interrupted = True
-                data = None
-            except Exception as error:  # noqa: BLE001 - compaction degrades to deterministic trimming on any model failure.
-                error_detail = Text.clip_width(" ".join(str(error).split()) or type(error).__name__, 220)
-                data = None
-            self.apply_compaction(
-                data,
-                keep,
-                tool_messages,
-                turn_messages=turn_messages,
-                fallback_note=fallback_note if data is None else "",
-                compacted=compacted,
-                model=getattr(model, "last_compaction_model", ""),
-            )
-        finally:
-            if on_compaction is not None:
-                on_compaction(False, error_detail)
-        if interrupted:
-            raise KeyboardInterrupt
-        return True
-
     def environment(self) -> str:
         info = self.session.system_info
         assert info is not None
@@ -430,108 +280,8 @@ class ContextManager:
             rows.append(content)
         return "\n".join(rows)
 
-    def compaction_input(self, messages: list[Json]) -> str:
-        older, recent = self.compaction_parts_for(messages)
-        return format_compaction_input(
-            state=self.session.state.format(),
-            previous_summary=self.session.state.summary,
-            older_messages=self.messages_text(older),
-            recent_messages=self.messages_text(recent),
-        )
-
-    def compaction_parts(self, recent: int | None = None) -> tuple[list[Json], list[Json]]:
-        """Split history for manual compaction and the first automatic pass."""
-        messages = self.session.messages
-        index = self.latest_user_index(messages)
-        if index is None:
-            return self.without_compaction_summaries(messages), []
-        compacted, keep = self.compaction_split(messages, index, recent)
-        return self.without_compaction_summaries(compacted), self.without_compaction_summaries(keep)
-
-    def compaction_split(self, messages: list[Json], index: int, recent: int | None) -> tuple[list[Json], list[Json]]:
-        """Split around a kept tail counted over the whole list, with the latest user message always
-        in it.
-
-        The window used to be measured only over what follows that message, which made it a cap
-        rather than a floor: `/compact` run just after a turn answered has one message there, so a
-        118-message session kept two and a checkpoint. Continuity wants the concrete recent work --
-        the last tool results and file contents -- and the checkpoint is only prose.
-
-        The kept tail stays non-contiguous in the one case that needs it. When the latest user
-        message falls before the window (a worker given one order that then ran twenty steps),
-        keeping everything from it onward would compact nothing at all, so it is carried on its own
-        and the span between it and the window is compacted."""
-        start = self.compaction_keep_start(messages, recent)
-        if start <= index:
-            return messages[:start], messages[start:]
-        return messages[:index] + messages[index + 1 : start], [messages[index], *messages[start:]]
-
-    def compaction_keep_start(self, messages: list[Json], recent: int | None) -> int:
-        """Where the kept tail begins: at most `recent` messages, and at most a quarter of the
-        request budget.
-
-        The size bound is the reason the window could not simply be widened. A count is not a size,
-        and a handful of very large messages inside the kept tail leaves the request over budget
-        with nothing left to compact -- which is the failure COMPACT_MINIMUM_RECENT was added for.
-        Bounding by both means small messages give the full window and large ones collapse it to
-        the last exchange, which is what the old anchor achieved by accident."""
-        limit = self.COMPACT_RECENT_MESSAGES if recent is None else recent
-        share = max(1, self.request_token_budget() // 4)
-        start = len(messages)
-        while start > 0 and len(messages) - start < limit:
-            # One message is always kept whatever its size; the bound only stops the tail growing.
-            if start < len(messages) and self.request_tokens(messages[start - 1 :]) > share:
-                break
-            start -= 1
-        return self.safe_cut(messages, start)
-
-    def turn_compaction_parts(self, messages: list[Json], recent: int | None = None) -> tuple[list[Json], list[Json]]:
-        index = self.latest_user_index(messages)
-        if index is None:
-            start = self.compaction_keep_start(messages, recent)
-            return self.without_compaction_summaries(messages[:start]), self.without_compaction_summaries(messages[start:])
-        compacted, keep = self.compaction_split(messages, index, recent)
-        return self.without_compaction_summaries(compacted), self.without_compaction_summaries(keep)
-
-    def without_compaction_summaries(self, messages: list[Json]) -> list[Json]:
-        return [message for message in messages if not self.is_compaction_summary(message)]
-
-    def compaction_parts_for(self, messages: list[Json], recent: int | None = None) -> tuple[list[Json], list[Json]]:
-        """Split messages into a compactable head and a recent tail, never inside a tool exchange.
-
-        The cut walks back past a run of tool results and the assistant message that called them, since
-        a history with tool calls whose results were summarized away — or results whose call is gone —
-        is rejected by every provider. Giving a few extra messages to the summary is the cheaper loss.
-        That walk can reach zero, which is why a smaller `recent` does not always produce a head: a
-        latest user message followed by one enormous tool result cannot be split here at all, and
-        has to be bounded on the way in instead.
-        """
-        cut = self.safe_cut(messages, max(0, len(messages) - (self.COMPACT_RECENT_MESSAGES if recent is None else recent)))
-        return messages[:cut], messages[cut:]
-
-    @staticmethod
-    def safe_cut(messages: list[Json], cut: int) -> int:
-        """Move a cut back off the middle of a tool exchange. See compaction_parts_for."""
-        if cut < len(messages) and messages[cut].get("role") == "tool":
-            while cut > 0 and messages[cut - 1].get("role") == "tool":
-                cut -= 1
-            if cut > 0 and messages[cut - 1].get("role") == "assistant" and messages[cut - 1].get("tool_calls"):
-                cut -= 1
-        return cut
-
     def messages_text(self, messages: list[Json]) -> str:
         return "\n\n".join(f"{message.get('role', 'message')}:\n{ImageInputs.label_text(message)}" for message in messages) or "(empty)"
-
-    def compaction_title(self, data: Json | None) -> str:
-        """The name the compactor gave this span, or "" when it gave none.
-
-        The compaction request already returns a JSON object describing the span, so naming it
-        costs a key rather than a call — and the model is the only party that read the whole span.
-        Bounded and flattened here: the key is free-form text from a model, and it lands in a
-        segment listing, a checkpoint line, and a viewer column."""
-        if not isinstance(data, dict) or not isinstance(data.get("title"), str):
-            return ""
-        return Tool.compact(" ".join(str(data["title"]).split()).strip("\"'"), 80)
 
     def history_title(self, messages: list[Json]) -> str:
         """Deterministic fallback name: the first plain user message of the span. Used when the
@@ -574,18 +324,37 @@ class ContextManager:
         del self.session.history[: -self.MAX_HISTORY_SEGMENTS]  # newest kept; a shorter list is left alone
         return segment
 
-    def _summary_block(self, segment: HistorySegment | None) -> list[Json]:
-        """One durable checkpoint containing everything needed after the compacted prefix."""
+    def _summary_block(self) -> list[Json]:
+        """One durable checkpoint containing everything needed after the compacted prefix.
+
+        This is the rebuild half of compaction, and it does not read the cache: it replaces the
+        head of the conversation, so the next request misses on everything past the header
+        whatever this block says. Two consequences, both load-bearing (DESIGN.md, "Compaction
+        reads the cache; the rebuild does not"):
+
+        Adding to this block is close to free -- the write it joins is a miss either way, and
+        every later turn reads it back warm. Changing it afterwards is not free at all: a
+        checkpoint that has to be corrected rewrites the head and starts another cache epoch, the
+        whole body at full price for one line. So nothing mutable belongs here. The working state
+        below is a snapshot that says it is one; the live values reach the model through `Note`
+        calls, which append instead of rewriting."""
         rows = [
             COMPACTION_SUMMARY_TITLE,
             "Summary:",
             self.session.state.summary or "(empty)",
             "",
-            "Working state:",
+            # Says it is a snapshot, because it is: it freezes here and every later Note call
+            # makes it older. Rewriting it to stay current is the one thing this block may not do.
+            "Working state (at this compaction; a later Note call supersedes it):",
             self.session.state.format(),
         ]
-        if segment is not None:
-            rows.extend(("", f"Stored history segment: {segment.key}: {segment.title}"))
+        # The whole retained archive, not just the span this compaction stored: each rebuild
+        # discards the previous checkpoint, so a line naming only the newest segment leaves the
+        # older ones with no trace in context at all. Range and count only -- what to fetch, or
+        # whether to fetch anything, is the model's call through RecallContext.
+        if history := self.session.history:
+            span = history[0].key if len(history) == 1 else f"{history[0].key}..{history[-1].key}"
+            rows.extend(("", f"Recallable history: {span} ({len(history)} segment{'' if len(history) == 1 else 's'})"))
         return [{"role": "user", "content": "\n".join(rows), SESSION_EVENT_KEY: "compaction_checkpoint"}]
 
     def apply_compaction(
@@ -599,6 +368,7 @@ class ContextManager:
         compacted: list[Json] | None = None,
         trigger: str = "auto",
         model: str = "",
+        title: str = "",
     ) -> None:
         self.session.state.compaction_count += 1
         # What this compaction was: the turn scope is the only caller that rewrites `turn_messages`,
@@ -616,17 +386,18 @@ class ContextManager:
             else None
         )
         if data is not None:
-            self.session.state.apply(data)
+            self.session.state.apply_summary(data)
         if fallback_note:
             self.session.state.summary = (self.session.state.summary + "\n" + fallback_note).strip()
         if segment is not None:
             # After apply(): the summary worth keeping is the one this compaction just produced,
             # not the one it replaced. The compactor's own name for the span replaces the
             # deterministic one, which was only ever the first user message of the window and says
-            # little once a span starts mid-work.
+            # little once a span starts mid-work. The compactor computes the name (flattened and
+            # bounded) and passes it in; empty falls back to the deterministic name.
             segment.summary = self.session.state.summary
-            segment.title = self.compaction_title(data) or segment.title
-        summary_block = self._summary_block(segment)
+            segment.title = title or segment.title
+        summary_block = self._summary_block()
         if turn_messages is None:
             self.session.messages = summary_block + keep
             prune_context = (self.session.messages if data is not None else [*keep]) + (tool_messages or [])

@@ -22,6 +22,20 @@ Json = dict[str, Any]
 ToolArgs = list[Any]
 
 
+class Billing(str, Enum):
+    """Where a request's usage lands: which session counter it is added to and whether it may
+    overwrite that counter's last-request ctx/cache snapshot.
+
+    Named values rather than two orthogonal booleans, because the three rows differ on both axes
+    (see ModelClient._record_usage): MAIN on the main counter, COMPACTION on its own counter, and
+    VISION on the main totals without touching the main last-request snapshot.
+    """
+
+    MAIN = "main"
+    COMPACTION = "compaction"
+    VISION = "vision"
+
+
 HTTP_USER_AGENT = "minacode/" + __version__
 
 

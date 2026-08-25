@@ -221,7 +221,7 @@ def test_model_request_retries_retryable_errors_and_reports_attempts(tmp_path, m
         calls.append(1)
         raise ModelError("Error code: 500 - provider failed")
 
-    monkeypatch.setattr(client, "chat_request", fail)
+    monkeypatch.setattr(client.wire(s.config.provider), "request", fail)
     clock = {"now": 0.0}
     seen: dict[int, str] = {}
 

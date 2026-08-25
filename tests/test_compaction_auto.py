@@ -1,5 +1,6 @@
 """compaction auto (split from tests/test_context.py)."""
-from agent_harness import session
+
+from agent_harness import session, session_with_provider
 from test_context import _CountingModel, _huge_history
 
 from minacode.context import ContextManager
@@ -11,7 +12,7 @@ def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
     # runaway compaction this has regressed into before. One automatic pass per scope, until the
     # message list actually changes.
     s, context = _huge_history(tmp_path, steps=30)
-    model = _CountingModel()
+    model = _CountingModel(s)
 
     for _ in range(5):
         context.prepare_messages(model, "system")
@@ -28,16 +29,17 @@ def test_automatic_compaction_runs_once_until_new_messages_arrive(tmp_path):
 
     assert model.calls == 2
 
+
 def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
     # The recent window is a message count, not a size. Once a session has been compacted, the only
     # compactable head is what sits before the latest user message -- and that is just the previous
     # summary, which is filtered out. So a handful of large messages after that user message left an
     # empty head, and every following request went out over budget without compacting anything.
     for steps in (2, 6, 8):
-        _, context = _huge_history(tmp_path, steps=steps)
+        s, context = _huge_history(tmp_path, steps=steps)
         budget = context.request_token_budget()
         before = context.request_tokens(context.model_messages("system"), None)
-        model = _CountingModel()
+        model = _CountingModel(s)
 
         context.prepare_messages(model, "system")
 
@@ -48,11 +50,12 @@ def test_a_short_tail_of_large_messages_is_still_compactable(tmp_path):
             assert model.calls == 1, f"{steps} large messages after the user message were left uncompacted"
             assert after < budget, f"{steps} steps: still over budget after compacting"
 
+
 def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     # The irreducible case: the latest user message and one enormous tool result. The cut may not
     # land between a tool result and the call that produced it, so there is nothing to compact at
     # any window. Say so once rather than silently sending a request the provider will reject.
-    s = session(tmp_path)
+    s = session_with_provider(tmp_path)
     s.settings.max_context_tokens = 200_000
     s.messages = [
         {"role": "user", "content": "read the file"},
@@ -62,7 +65,7 @@ def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     context = ContextManager(s)
     reports = []
     context.on_compaction = lambda active, error: reports.append((active, error))
-    model = _CountingModel()
+    model = _CountingModel(s)
 
     for _ in range(4):
         context.prepare_messages(model, "system")
@@ -90,12 +93,13 @@ def test_over_budget_with_nothing_compactable_is_reported_once(tmp_path):
     assert context.request_tokens(context.model_messages("system")) < context.request_token_budget()
     assert reports[-2:] == [(True, ""), (False, "")]
 
+
 def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path):
     # Same guard for the current-turn pass, and it must not carry across turns: a fresh turn is a
     # different (shorter) list, and blocking it because the previous turn was longer would leave the
     # new one uncompactable.
-    _, context = _huge_history(tmp_path, steps=2)
-    model = _CountingModel()
+    s, context = _huge_history(tmp_path, steps=2)
+    model = _CountingModel(s)
     turn = [{"role": "user", "content": "request"}, *({"role": "assistant", "content": "t " + "y" * 160_000} for _ in range(30))]
 
     for _ in range(5):
@@ -110,6 +114,7 @@ def test_automatic_turn_compaction_runs_once_until_the_turn_grows(tmp_path):
     next_turn = [{"role": "user", "content": "next"}, *({"role": "assistant", "content": "n " + "y" * 160_000} for _ in range(30))]
     context.prepare_messages(model, "system", next_turn)
     assert model.calls > first  # a new turn is not blocked by the previous turn's mark
+
 
 def test_prepare_messages_builds_under_budget_context_once(tmp_path, monkeypatch):
     context = ContextManager(session(tmp_path))

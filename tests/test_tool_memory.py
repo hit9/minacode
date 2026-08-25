@@ -175,6 +175,21 @@ def test_recall_context_distinguishes_a_dropped_segment_from_an_unknown_one(tmp_
     assert '<Segment key="seg.8" title="span 8">' in result
 
 
+def test_recall_context_returns_the_summary_as_it_stood_at_that_compaction(tmp_path):
+    """The checkpoint carries only the newest summary, and every compaction folds the previous one
+    into the next — so the live summary has been through one pass per compaction while this copy
+    has been through exactly one. It was already stored; returning it is what makes it reachable.
+    """
+    s = session(tmp_path)
+    s.history.append(HistorySegment(key="seg.1", title="span", text="body", summary="what that span settled"))
+    s.history.append(HistorySegment(key="seg.2", title="trimmed", text="body"))  # summarizer failed: no summary
+
+    result = RecallContextTool(s, [{"action": "get", "keys": ["seg.1", "seg.2"]}]).call()
+
+    assert "<SummaryAtCompaction>\nwhat that span settled\n</SummaryAtCompaction>" in result
+    assert result.count("<SummaryAtCompaction>") == 1  # a segment with no summary carries no empty block
+
+
 def test_memory_tools_ignore_schema_valid_empty_and_default_fillers(tmp_path):
     s = session(tmp_path)
     s.history.append(HistorySegment(key="seg.1", title="cache", text="needle"))

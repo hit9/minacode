@@ -1,18 +1,29 @@
 """compaction slices (split from tests/test_context.py)."""
+
+
+class _StubModel:
+    """Compactor requires a model; planning-only tests never touch it."""
+
+
+import json
+import threading
+
 import pytest
-from agent_harness import session
+from agent_harness import session, session_with_provider
 
 from minacode.base import (
+    Billing,
     SESSION_EVENT_KEY,
 )
 from minacode.context import ContextManager
+from minacode import compaction
 from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
     LIVE_FOLLOWUP_PREFIX,
     PREVIOUS_CONTEXT_TRIMMED,
 )
-from minacode.session import Session
+from minacode.session import AgentState, Session
 
 
 def test_history_segments_keep_only_the_newest_window(tmp_path):
@@ -31,6 +42,7 @@ def test_history_segments_keep_only_the_newest_window(tmp_path):
     # The sixth span is the oldest one still retained; the five before it are gone with their text.
     assert [segment.text for segment in s.history] == [f"user:\nspan {index}" for index in range(5, limit + 5)]
 
+
 def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
     """The snapshot writes segments as an append-only delta while the list only grows; pruning
     shortens it, and the digest guard has to notice and rewrite the whole list instead."""
@@ -45,6 +57,7 @@ def test_pruned_history_survives_a_snapshot_round_trip(tmp_path):
     assert [segment.key for segment in restored.history] == [segment.key for segment in s.history]
     assert [segment.text for segment in restored.history] == [segment.text for segment in s.history]
 
+
 def test_compaction_reuses_the_agent_prefix_and_keeps_real_messages(tmp_path):
     """The summary request is the agent's own request truncated, with an instruction appended, so
     the provider cache already covers it -- and the compactor sees tool calls, which the flattened
@@ -54,17 +67,21 @@ def test_compaction_reuses_the_agent_prefix_and_keeps_real_messages(tmp_path):
     for index in range(6):
         live.messages.extend(
             [
-                {"role": "assistant", "content": "Looking.", "tool_calls": [{"id": f"c{index}", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+                {
+                    "role": "assistant",
+                    "content": "Looking.",
+                    "tool_calls": [{"id": f"c{index}", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}],
+                },
                 {"role": "tool", "tool_call_id": f"c{index}", "content": f"tool tr.{index} Bash rg -n _run_workflow"},
             ]
         )
     live.messages.append({"role": "user", "content": "继续 Part B"})
     live.messages.append({"role": "assistant", "content": "ok"})
     context = ContextManager(live)
-    compacted, _keep = context.compaction_parts()
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
     assert compacted  # there is a head to summarize
 
-    built = context.compaction_request(compacted)
+    built = compaction.Compactor(context, _StubModel()).request(compacted)
     assert built is not None
     messages, tools = built
 
@@ -77,6 +94,7 @@ def test_compaction_reuses_the_agent_prefix_and_keeps_real_messages(tmp_path):
     assert any(message.get("tool_calls") for message in messages)
     assert "Compact the minacode working context." in messages[-1]["content"]
     assert "END OF CONVERSATION TO COMPACT" in messages[-1]["content"]
+
 
 def test_compaction_prefix_survives_an_earlier_summary_and_repeated_schemas(tmp_path):
     """The prefix has to be a slice of the list the turn actually sent. Rebuilding a lookalike from
@@ -98,13 +116,14 @@ def test_compaction_prefix_survives_an_earlier_summary_and_repeated_schemas(tmp_
         {"role": "assistant", "content": "ok"},
     ]
     context = ContextManager(live)
-    compacted, _keep = context.compaction_parts()
-    messages, _ = context.compaction_request(compacted)
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted)
 
     sent = context.model_messages(live.system_prompt)
     assert messages[:-1] == sent[: len(messages) - 1]
     # Not just the header: the conversation is in the shared prefix too.
     assert len(messages) - 1 > len(context.model_header(live.system_prompt))
+
 
 def test_turn_scope_compaction_slices_the_same_projection(tmp_path):
     """A turn-scope span sits after the stored conversation rather than at the head of it, but it is
@@ -113,15 +132,16 @@ def test_turn_scope_compaction_slices_the_same_projection(tmp_path):
     live.messages = [{"role": "user", "content": "task"}, {"role": "assistant", "content": "starting"}]
     turn = [{"role": "assistant", "content": f"step {index}"} for index in range(24)]
     context = ContextManager(live)
-    compacted, _keep = context.turn_compaction_parts(turn)
+    compacted, _keep = compaction.Compactor(context, _StubModel()).turn_parts(turn)
     assert compacted
 
-    messages, _ = context.compaction_request(compacted, turn)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, turn)
 
     sent = context.model_messages(live.system_prompt, turn)
     assert messages[:-1] == sent[: len(messages) - 1]
     # The slice reaches into the turn, not merely up to the end of stored history.
     assert len(messages) - 1 > len(context.model_header(live.system_prompt)) + len(live.messages)
+
 
 def test_compaction_falls_back_to_the_flat_payload_on_a_separate_provider(tmp_path):
     """A [compaction] entry elsewhere is a different cache namespace, so rebuilding the prefix for
@@ -129,7 +149,8 @@ def test_compaction_falls_back_to_the_flat_payload_on_a_separate_provider(tmp_pa
     live = session(tmp_path)
     live.messages = [{"role": "user", "content": "hello"}]
     live.config.compaction_provider = "cheap"
-    assert ContextManager(live).compaction_request(list(live.messages)) is None
+    assert compaction.Compactor(ContextManager(live), _StubModel()).request(list(live.messages)) is None
+
 
 def test_compaction_leaves_tool_choice_exactly_as_an_ordinary_request_sets_it(tmp_path):
     """Forcing tool_choice would look safer and cost the prize: it invalidates the messages cache,
@@ -138,25 +159,33 @@ def test_compaction_leaves_tool_choice_exactly_as_an_ordinary_request_sets_it(tm
     live.messages = [{"role": "user", "content": "hello"}, *({"role": "assistant", "content": f"step {index}"} for index in range(12))]
     for api in ("chat", "responses", "anthropic"):
         live.config.provider.api = api
-        built = ContextManager(live).compaction_request(list(live.messages))
+        built = compaction.Compactor(ContextManager(live), _StubModel()).request(list(live.messages))
         assert built is not None, api  # no wire is excluded any more
 
-def test_state_apply_takes_a_bare_string_where_a_list_was_asked_for(tmp_path):
-    """Ignoring the wrong type is worse than accepting it: the previous compaction's value survives
-    as though this one had confirmed it, and is fed back as current on the next pass."""
+
+def test_state_apply_summary_takes_only_the_field_a_compaction_owns(tmp_path):
+    """A compaction reply owns the summary and nothing else.
+
+    goal/plan/known/check are Note's and survive eviction on their own, so a summarizer that
+    volunteers them is ignored rather than trusted. This also retires a whole failure class: there
+    is no longer a wrong-typed plan or known to coerce, because neither is read from the reply.
+    """
     live = session(tmp_path)
-    live.state.apply({"known": ["stale fact"], "plan": [{"status": "done", "text": "old step"}]})
+    live.state.known = ["the agent's own fact"]
+    live.state.plan = AgentState.plan_items([{"status": "doing", "text": "the agent's own step"}])
+    live.state.goal = "the agent's own goal"
+    live.state.check = "the agent's own check"
 
-    live.state.apply({"known": "the API is rate limited", "plan": "finish Part B"})
-    assert live.state.known == ["the API is rate limited"]
-    assert [item.text for item in live.state.plan] == ["finish Part B"]
+    live.state.apply_summary({"summary": " what the span settled ", "known": ["invented"], "plan": "finish Part B", "goal": "invented", "check": "invented"})
 
-    # An empty string clears rather than silently keeping the old value.
-    live.state.apply({"known": "   "})
-    assert live.state.known == []
-    # A type that is neither is still refused, as before.
-    live.state.apply({"known": 17})
-    assert live.state.known == []
+    assert live.state.summary == "what the span settled"  # stripped
+    assert live.state.known == ["the agent's own fact"]
+    assert [item.text for item in live.state.plan] == ["the agent's own step"]
+    assert (live.state.goal, live.state.check) == ("the agent's own goal", "the agent's own check")
+
+    live.state.apply_summary({"summary": 17})  # a non-string summary leaves the previous one alone
+    assert live.state.summary == "what the span settled"
+
 
 def test_turn_scope_prefix_stops_where_the_turn_keeps(tmp_path):
     """The scopes split differently when the list holds no user message -- the ordinary shape of a
@@ -165,13 +194,14 @@ def test_turn_scope_prefix_stops_where_the_turn_keeps(tmp_path):
     live.messages = [{"role": "user", "content": "task"}]
     turn = [{"role": "assistant", "content": f"step {index}"} for index in range(14)]
     context = ContextManager(live)
-    compacted, keep = context.turn_compaction_parts(turn)
+    compacted, keep = compaction.Compactor(context, _StubModel()).turn_parts(turn)
     assert compacted and keep  # the split is real, not a degenerate all-or-nothing
 
-    messages, _ = context.compaction_request(compacted, turn)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, turn)
 
     head = len(context.model_header(live.system_prompt)) + len(live.messages)
     assert len(messages) - 1 - head == len(compacted)
+
 
 def test_echo_source_covers_the_message_the_slice_adds(tmp_path):
     """In the non-contiguous case -- the latest user message falling before the recent window, a
@@ -182,14 +212,15 @@ def test_echo_source_covers_the_message_the_slice_adds(tmp_path):
     order = "继续 Part B 收尾：检查 _run_workflow 的所有调用点。"
     live.messages = [{"role": "user", "content": order}, *({"role": "assistant", "content": f"step {index}"} for index in range(20))]
     context = ContextManager(live)
-    compacted, keep = context.compaction_parts()
+    compacted, keep = compaction.Compactor(context, _StubModel()).parts()
     assert order not in [message["content"] for message in compacted]
     assert order in [message["content"] for message in keep]
 
-    messages, _ = context.compaction_request(compacted)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted)
 
-    assert order not in context.compaction_echo_source(compacted)  # what it used to be checked against
-    assert order in context.compaction_echo_source(messages[:-1])  # what the model is actually handed
+    assert order not in compaction.Compactor(context, _StubModel()).echo_source(compacted)  # what it used to be checked against
+    assert order in compaction.Compactor(context, _StubModel()).echo_source(messages[:-1])  # what the model is actually handed
+
 
 def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
     """Both scopes re-split with COMPACT_MINIMUM_RECENT when the ordinary window leaves nothing to
@@ -199,20 +230,25 @@ def test_minimum_recent_fallback_carries_everything_it_evicts(tmp_path):
     live = session(tmp_path)
     live.messages = [
         {"role": "user", "content": "go"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "Bash", "arguments": "{}"}} for i in range(5)]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "Bash", "arguments": "{}"}} for i in range(5)],
+        },
         *({"role": "tool", "tool_call_id": f"c{i}", "content": f"t{i}"} for i in range(5)),
         *({"role": "assistant", "content": f"a{i}"} for i in range(5)),
     ]
     context = ContextManager(live)
-    assert not context.compaction_parts()[0]  # the ordinary window yields nothing, forcing the fallback
-    compacted, _keep = context.compaction_parts(ContextManager.COMPACT_MINIMUM_RECENT)
+    assert not compaction.Compactor(context, _StubModel()).parts()[0]  # the ordinary window yields nothing, forcing the fallback
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts(compaction.Compactor.COMPACT_MINIMUM_RECENT)
 
-    messages, _ = context.compaction_request(compacted, recent=ContextManager.COMPACT_MINIMUM_RECENT)
+    messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, recent=compaction.Compactor.COMPACT_MINIMUM_RECENT)
 
     carried = messages[len(context.model_header(live.system_prompt)) : -1]
     assert len(carried) >= len(compacted)
     for message in compacted:  # nothing evicted may go unseen by the summarizer
         assert message in carried
+
 
 def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_path):
     """Providers with chat_reasoning_history="current_turn" replay reasoning only after the last
@@ -226,18 +262,23 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
 
     def diverges_at(live_session, request, turn=None):
         context, model = ContextManager(live_session), ModelClient(live_session)
-        live = model.chat_messages(context.model_messages(live_session.system_prompt, turn))
-        summary = model.chat_messages(request)
+        live = model.wire(model.session.config.provider).messages(context.model_messages(live_session.system_prompt, turn))
+        summary = model.wire(model.session.config.provider).messages(request)
         pairs = zip(live, summary)
         return next((index for index, (a, b) in enumerate(pairs) if a != b), None), len(summary) - 1
 
     def reasoning_history(path):
-        live_session = session(path)
+        live_session = session_with_provider(path)
         live_session.config.provider.url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         assert live_session.config.provider.resolve().chat_reasoning_history == "current_turn"
         live_session.messages = [
             {"role": "user", "content": "earlier task"},
-            {"role": "assistant", "content": "", "reasoning_content": "thought", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "thought",
+                "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}],
+            },
             {"role": "tool", "tool_call_id": "c1", "content": "out"},
         ]
         return live_session
@@ -247,17 +288,17 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     outside.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(10))
     outside.messages.extend([{"role": "user", "content": "latest"}, {"role": "assistant", "content": "answer"}])
     context = ContextManager(outside)
-    compacted, _keep = context.compaction_parts()
-    at, body = diverges_at(outside, context.compaction_request(compacted)[0])
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
+    at, body = diverges_at(outside, compaction.Compactor(context, _StubModel()).request(compacted)[0])
     assert at == body, "the slice must match the live request; only the appended instruction may differ"
 
     # The non-contiguous shape: the boundary falls before the window, so it is inside the slice.
     inside = reasoning_history(tmp_path / "inside")
     inside.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(20))
     context = ContextManager(inside)
-    compacted, _keep = context.compaction_parts()
-    assert context.compaction_keep_start(inside.messages, None) > context.latest_user_index(inside.messages)
-    at, body = diverges_at(inside, context.compaction_request(compacted)[0])
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
+    assert compaction.Compactor(context, _StubModel()).keep_start(inside.messages, None) > context.latest_user_index(inside.messages)
+    at, body = diverges_at(inside, compaction.Compactor(context, _StubModel()).request(compacted)[0])
     assert at == body
 
     # History-scope compaction during a turn: the boundary lives in the turn, outside the slice.
@@ -265,28 +306,36 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
     midturn.messages.extend({"role": "assistant", "content": f"step {index}"} for index in range(12))
     turn = [{"role": "user", "content": "this turn"}, {"role": "assistant", "content": "working"}]
     context = ContextManager(midturn)
-    compacted, _keep = context.compaction_parts()
+    compacted, _keep = compaction.Compactor(context, _StubModel()).parts()
     # Through the real call chain, so the turn actually reaches the projection: history-scope
     # compaction receives it as `tool_messages`, and reading the boundary without it marked the
     # instruction in a shape where the live request had already stripped everything.
     captured = {}
 
     class CapturingModel:
-        last_compaction_model = ""
+        def __init__(self, session):
+            self.session = session
+            self.cancel_requested = threading.Event()
+            self.last_compaction_model = ""
 
-        def compact(self, _text, inline_messages=None, *_args, **_kwargs):
-            captured["messages"] = inline_messages
-            return {"summary": "done"}
+        def api_request(self, messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
+            captured["messages"] = messages
+            return None, [], '{"summary": "done"}'
+
+        @staticmethod
+        def parse_json_object(text):
+            return json.loads(text)
 
     # Snapshot the live projection first: _compact_messages rewrites session.messages, and the
     # prefix being ridden is the one that existed before it did.
-    before = ModelClient(midturn).chat_messages(context.model_messages(midturn.system_prompt, turn))
-    assert context._compact_messages(CapturingModel(), compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
+    before = ModelClient(midturn).wire(midturn.config.provider).messages(context.model_messages(midturn.system_prompt, turn))
+    assert compaction.Compactor(context, CapturingModel(midturn)).run(compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
     request = captured["messages"]
-    summary = ModelClient(midturn).chat_messages(request)
+    summary = ModelClient(midturn).wire(midturn.config.provider).messages(request)
     at = next((index for index, (a, b) in enumerate(zip(before, summary)) if a != b), None)
     assert at == len(summary) - 1
-    assert SESSION_EVENT_KEY not in ModelClient(midturn).chat_messages(request)[-1]  # never on the wire
+    assert SESSION_EVENT_KEY not in ModelClient(midturn).wire(midturn.config.provider).messages(request)[-1]  # never on the wire
+
 
 def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkeypatch):
     """compact() ignores `context` whenever inline messages are given, and flattening the span is
@@ -296,15 +345,24 @@ def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkey
     for index in range(12):
         live.messages.append({"role": "assistant", "content": f"step {index}"})
     context = ContextManager(live)
-    monkeypatch.setattr(context, "compaction_input", lambda _compacted: pytest.fail("flattened the span despite the inline form"))
+    monkeypatch.setattr(compaction.Compactor, "input", lambda _self, _messages: pytest.fail("flattened the span despite the inline form"))
 
     class FakeModel:
-        def compact(self, text, inline_messages=None, *_args, **_kwargs):
-            assert text == "" and inline_messages
-            return {"summary": "done"}
+        def __init__(self, session):
+            self.session = session
+            self.cancel_requested = threading.Event()
+            self.last_compaction_model = ""
 
-    compacted, keep = context.compaction_parts()
-    assert context._compact_messages(FakeModel(), compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
+        def api_request(self, _messages, _tools, *, allow_stream, response_timeout, provider, json_object, billing=Billing.MAIN):
+            return None, [], '{"summary": "done"}'
+
+        @staticmethod
+        def parse_json_object(text):
+            return json.loads(text)
+
+    compacted, keep = compaction.Compactor(context, _StubModel()).parts()
+    assert compaction.Compactor(context, FakeModel(live)).run(compacted, keep, PREVIOUS_CONTEXT_TRIMMED)
+
 
 def test_recent_window_is_a_floor_for_small_messages_and_a_ceiling_for_large_ones(tmp_path):
     """The window used to be measured only after the latest user message, which made it a cap: a
@@ -315,16 +373,17 @@ def test_recent_window_is_a_floor_for_small_messages_and_a_ceiling_for_large_one
     for index in range(58):
         small.messages.extend([{"role": "user", "content": f"q{index}"}, {"role": "assistant", "content": f"a{index}"}])
     small.messages.extend([{"role": "user", "content": "latest"}, {"role": "assistant", "content": "answer"}])
-    _, keep = ContextManager(small).compaction_parts()
-    assert len(keep) == ContextManager.COMPACT_RECENT_MESSAGES  # was 2
+    _, keep = compaction.Compactor(ContextManager(small), _StubModel()).parts()
+    assert len(keep) == compaction.Compactor.COMPACT_RECENT_MESSAGES  # was 2
 
     large = session(tmp_path / "large")
     large.messages = [{"role": "user", "content": "go"}]
     for index in range(10):
         large.messages.append({"role": "assistant", "content": f"step {index} " + "x" * 400_000})
-    compacted, keep = ContextManager(large).compaction_parts()
+    compacted, keep = compaction.Compactor(ContextManager(large), _StubModel()).parts()
     assert compacted  # the tail collapses by size, so there is still something to evict
-    assert len(keep) < ContextManager.COMPACT_RECENT_MESSAGES
+    assert len(keep) < compaction.Compactor.COMPACT_RECENT_MESSAGES
+
 
 def test_the_slice_and_the_split_agree_on_where_the_cut_is(tmp_path):
     """Two expressions of the cut drifted apart twice: once when the MINIMUM_RECENT fallback
@@ -336,14 +395,15 @@ def test_the_slice_and_the_split_agree_on_where_the_cut_is(tmp_path):
         live.messages.append({"role": "assistant", "content": f"step {index} " + "y" * 20_000})
     context = ContextManager(live)
 
-    for recent in (None, ContextManager.COMPACT_MINIMUM_RECENT):
-        compacted, _keep = context.compaction_parts(recent)
+    for recent in (None, compaction.Compactor.COMPACT_MINIMUM_RECENT):
+        compacted, _keep = compaction.Compactor(context, _StubModel()).parts(recent)
         if not compacted:
             continue
-        messages, _ = context.compaction_request(compacted, recent=recent)
+        messages, _ = compaction.Compactor(context, _StubModel()).request(compacted, recent=recent)
         carried = messages[len(context.model_header(live.system_prompt)) : -1]
         for message in compacted:
             assert message in carried, f"recent={recent} evicted a message the summary never saw"
+
 
 def test_the_slice_follows_the_request_being_built_not_the_one_already_sent(tmp_path):
     """A follow-up queued mid-turn joins the request before compaction runs, so the projection the
@@ -361,17 +421,22 @@ def test_the_slice_follows_the_request_being_built_not_the_one_already_sent(tmp_
     live.messages = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "earlier answer"}]
     sent_turn = [
         {"role": "user", "content": "do X"},
-        {"role": "assistant", "content": "", "reasoning_content": "thought", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "thought",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}],
+        },
         {"role": "tool", "tool_call_id": "c1", "content": "out"},
         *({"role": "assistant", "content": f"step {index}"} for index in range(16)),
     ]
     queued_turn = [*sent_turn, {"role": "user", "content": LIVE_FOLLOWUP_PREFIX + "also do Y"}]
 
     context, model = ContextManager(live), ModelClient(live)
-    sent = model.chat_messages(context.model_messages(live.system_prompt, sent_turn))
-    outgoing = model.chat_messages(context.model_messages(live.system_prompt, queued_turn))
-    compacted, _keep = context.turn_compaction_parts(queued_turn)
-    summary = model.chat_messages(context.compaction_request(compacted, queued_turn)[0])
+    sent = model.wire(model.session.config.provider).messages(context.model_messages(live.system_prompt, sent_turn))
+    outgoing = model.wire(model.session.config.provider).messages(context.model_messages(live.system_prompt, queued_turn))
+    compacted, _keep = compaction.Compactor(context, _StubModel()).turn_parts(queued_turn)
+    summary = model.wire(model.session.config.provider).messages(compaction.Compactor(context, _StubModel()).request(compacted, queued_turn)[0])
 
     def diverges_at(left, right):
         return next((index for index, (a, b) in enumerate(zip(left, right)) if a != b), None)

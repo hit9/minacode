@@ -10,7 +10,6 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from json_repair import repair_json
@@ -19,13 +18,13 @@ from json_repair import repair_json
 # name imported inside function bodies.
 import minacode.model.anthropic as anthropic_module
 from minacode.base import (
-    ANTHROPIC_CONTENT_KEY,
     HTTP_USER_AGENT,
     MODEL_REQUEST_RETRIES,
     PROVIDER_ORIGIN_KEY,
     SEARCH_SOURCES_KEY,
     SESSION_EVENT_KEY,
     ActiveResource,
+    Billing,
     Json,
     ModelError,
     ModelOutputTruncated,
@@ -38,21 +37,14 @@ from minacode.base import (
     ToolError,
     builtin_tool_label,
 )
-from minacode.config import ProviderConfig, compaction_provider_config
-from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef
-from minacode.model import chat, resilience, responses
-from minacode.prompts import (
-    COMPACTION_ECHO_RETRY,
-    COMPACTION_PROMPT,
-    COMPACTION_REQUEST_EVENT,
-    COMPACTION_RETRY,
-    VISION_OBSERVE_DEFAULT_QUESTION,
-    VISION_OBSERVE_PROMPT,
-)
+from minacode.config import ProviderConfig
+from minacode.image import IMAGE_REFS_KEY, ImageInputs
+from minacode.model import resilience, responses
+from minacode.model.protocol import AnthropicWire, ChatWire, ResponsesWire, WireProtocol
+from minacode.prompts import COMPACTION_REQUEST_EVENT
 from minacode.providers.catalog import THINKING_BUDGETS
 from minacode.providers.compat import (
     ResolvedProvider,
-    anthropic_keeps_prior_thinking,
     builtin_tools_issue,
 )
 
@@ -73,6 +65,32 @@ _ResultT = TypeVar("_ResultT")
 # Retry-wait granularity: sleeping in ~0.1s slices lets the wait observe the UI-thread cancel flag
 # instead of relying on a signal interrupting one long sleep.
 _RETRY_SLEEP_SLICE = 0.1
+
+
+def prompt_value(value: object) -> object:
+    """Strip secrets and inline image bytes from a payload tree before measuring its size.
+
+    Encrypted reasoning, signatures, and base64 image data would otherwise dominate the byte count
+    they are meant to inflate, so they are dropped (or blanked for inline data) before the estimate.
+    api-agnostic, so it lives here rather than in any wire.
+    """
+
+    if isinstance(value, list):
+        return [prompt_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    kind = value.get("type")
+    clean: Json = {}
+    for key, item in value.items():
+        if key in ("encrypted_content", "signature"):
+            continue
+        if key == "data" and kind in ("reasoning.encrypted", "redacted_thinking"):
+            continue
+        if (key == "data" and kind == "base64") or (key in ("image_url", "url") and isinstance(item, str) and item.startswith("data:")):
+            clean[key] = ""
+        else:
+            clean[key] = prompt_value(item)
+    return clean
 
 
 @dataclass(frozen=True)
@@ -131,6 +149,11 @@ class ModelClient:
         # The effective model the last compaction summary ran on; "" when the last compaction fell
         # back to deterministic trimming or never ran. Recorded on the HistorySegment by callers.
         self.last_compaction_model = ""
+        self._wires: dict[str, WireProtocol] = {
+            "chat": ChatWire(self),
+            "responses": ResponsesWire(self),
+            "anthropic": AnthropicWire(self),
+        }
 
     def cancel(self) -> None:
         self.cancel_requested.set()
@@ -172,9 +195,9 @@ class ModelClient:
         summary request strips the same reasoning the live request did, and a second expression of
         the rule is how that came apart twice.
 
-        A message carrying COMPACTION_REQUEST_EVENT is excluded -- see
-        ContextManager.compaction_request, which marks its instruction only when the live
-        projection's own boundary already falls inside the slice it is appending to."""
+        A message carrying COMPACTION_REQUEST_EVENT is excluded -- see Compactor.request, which
+        marks its instruction only when the live projection's own boundary already falls inside
+        the slice it is appending to."""
         return max(
             (
                 index
@@ -184,82 +207,17 @@ class ModelClient:
             default=-1,
         )
 
-    def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None, *, text_only: bool | None = None) -> list[Json]:
-        """Build Chat Completions history using the provider's documented replay contract.
-
-        `text_only` defaults to the session's current main-route image verdict; pass an explicit
-        value to override it (the main request path recomputes it per call).
-        """
-
-        provider = provider if provider is not None else self.session.config.provider
-        if text_only is None:
-            text_only = self.session.image_route.is_text_only()
-        return chat.chat_messages(messages, provider, provider.resolve(), self.session.images, self.latest_user_position, text_only=text_only)
-
     def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
 
         resolved = self.session.config.provider.resolve()
-        api = resolved.api
         # Measuring a payload must never fail on it: an entry this wire rejects is the request's
         # error to raise, not something that should break the status bar, /status, or resume.
         builtin = self.builtin_tools(resolved, strict=False)
         # Payload builders would otherwise expand every local image to base64 merely to throw the
         # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
-        if api == "responses":
-            payload: Json = {"input": self.responses_input(Text.value(projected))}
-            if request_tools := [*self.responses_tool_schemas(tools or []), *builtin]:
-                payload["tools"] = request_tools
-        elif api == "anthropic":
-            system = "\n\n".join(str(message.get("content") or "") for message in projected if message.get("role") == "system").strip()
-            estimated_messages = projected
-            if not anthropic_keeps_prior_thinking(self.session.config.provider.model):
-                latest_user = max(
-                    (index for index, message in enumerate(projected) if message.get("role") == "user" and not ImageInputs.is_tool_observation(message)),
-                    default=-1,
-                )
-                active_assistants = [index for index, message in enumerate(projected) if index > latest_user and message.get("role") == "assistant"]
-                keep_from = (
-                    latest_user
-                    if active_assistants
-                    else max((index for index, message in enumerate(projected) if message.get("role") == "assistant"), default=len(projected))
-                )
-                estimated_messages = []
-                for index, message in enumerate(projected):
-                    estimated = dict(message)
-                    saved = estimated.get(ANTHROPIC_CONTENT_KEY)
-                    if index < keep_from and isinstance(saved, list):
-                        estimated[ANTHROPIC_CONTENT_KEY] = [
-                            block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
-                        ]
-                    estimated_messages.append(estimated)
-            payload = {"system": system, "messages": self.anthropic_messages(Text.value(estimated_messages))}
-            if request_tools := [*self.anthropic_tool_schemas(tools or []), *builtin]:
-                payload["tools"] = request_tools
-        else:
-            payload = {"messages": self.chat_messages(projected)}
-            if request_tools := [*(tools or []), *builtin]:
-                payload["tools"] = request_tools
-
-        def prompt_value(value: object) -> object:
-            if isinstance(value, list):
-                return [prompt_value(item) for item in value]
-            if not isinstance(value, dict):
-                return value
-            kind = value.get("type")
-            clean: Json = {}
-            for key, item in value.items():
-                if key in ("encrypted_content", "signature"):
-                    continue
-                if key == "data" and kind in ("reasoning.encrypted", "redacted_thinking"):
-                    continue
-                if (key == "data" and kind == "base64") or (key in ("image_url", "url") and isinstance(item, str) and item.startswith("data:")):
-                    clean[key] = ""
-                else:
-                    clean[key] = prompt_value(item)
-            return clean
-
+        payload = self.wire(self.session.config.provider).estimation_payload(projected, tools, builtin)
         chars = len(json.dumps(prompt_value(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         # A text-only route never projects raw image blocks, so its tiles must not count against
         # the budget either; labels and the asset-context line are already inside `chars`.
@@ -435,81 +393,28 @@ class ModelClient:
             f"the input exceeded the model's context window. Check provider.max_tokens and runtime.max_context_tokens."
         )
 
-    def _record_usage(self, usage: Any) -> None:
+    def _record_usage(self, usage: Any, billing: Billing = Billing.MAIN) -> None:
         """Add a completed request to session usage, keeping the budget it was prepared against so the
         status fill uses the request-time denominator instead of today's configuration.
 
-        A summary request goes to its own counter, told apart by the label compact() publishes for
-        the length of that request: it can be billed to a different account at a different price,
-        and its prefix reuse is worth reading on its own -- it now rides the conversation's cached
-        prefix deliberately, and blending the two would hide whether that worked."""
-        counter = self.session.compaction_usage if self.session.state.compaction_entry else self.session.usage
-        counter.add(usage, self.session.request_token_budget(), touch_last=not self.session.state.vision_observe_active)
+        `billing` routes a secondary-request cost onto its own counter and its own last-request
+        snapshot. A summary request goes to its own counter and account: it can be billed at a
+        different price, and its prefix reuse is worth reading on its own -- it rides the cached
+        prefix deliberately, and blending the two would hide whether that worked. A vision
+        observation joins the main totals but must not overwrite the main counter's last-request
+        ctx/cache snapshot the status bar reads."""
+        counter = self.session.compaction_usage if billing == Billing.COMPACTION else self.session.usage
+        counter.add(usage, self.session.request_token_budget(), touch_last=billing != Billing.VISION)
 
-    def chat_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None = None,
-        *,
-        allow_stream: bool = True,
-        response_timeout: float | None = None,
-        provider: ProviderConfig | None = None,
-        json_object: bool = False,
-    ) -> tuple[Json, list[ToolCall], str]:
-        provider = provider if provider is not None else self.session.config.provider
-        messages = self.chat_messages(messages, provider=provider)
-        resolved = provider.resolve()
-        stream = allow_stream and provider.stream and self.on_stream is not None
-        params = chat.chat_params(
-            messages,
-            tools,
-            provider,
-            resolved,
-            stream=stream,
-            json_object=json_object,
-            builtin_tools=self.builtin_tools,
-            derive_cache_key=self.prompt_cache_key,
-            apply_provider_params=self.apply_provider_params,
-        )
-        client = self.client(provider=provider)
-        if stream:
-            message, usage, finish_reason = self.call_client(client, lambda: self._chat_stream(client, params), response_timeout=response_timeout)
-        else:
-            response = self.call_client(client, lambda: client.chat.completions.create(**params), response_timeout=response_timeout)
-            usage = getattr(response, "usage", None)
-            message = response.choices[0].message
-            finish_reason = str(self.message_field(response.choices[0], "finish_reason") or "")
-        self._record_usage(usage)
-        assistant = self.assistant_message(message)
-        calls = self.tool_calls(message)
-        content = str(self.message_field(message, "content") or "")
-        # Raised outside call_client, which flattens every exception into a plain ModelError.
-        if finish_reason == "length" and not calls and not content.strip():
-            raise self.empty_length_error(usage)
-        return assistant, calls, content
+    def wire(self, provider: ProviderConfig) -> WireProtocol:
+        """The adapter for a provider's wire api, selected once per request.
 
-    def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any, str]:
-        """Reassemble a streamed chat completion into one assistant message and its finish reason.
-
-        Tool calls are the hard part. The spec streams them as deltas keyed by `index`, but providers
-        variously omit it, restart it, or send only `id`. `resolve_tool_call_index` recovers the
-        association from whatever a chunk carries, in decreasing order of reliability, and raises
-        instead of guessing when nothing identifies the call: a wrong association concatenates two
-        calls' argument fragments into one call with corrupt JSON, which the model cannot correct
-        because it looks like something it wrote.
-
-        Unlike Responses, Chat has no separate text-done event. Do not promote on the first tool
-        delta: compatible providers can vary their delta order. `finish_reason=tool_calls` is the
-        first protocol boundary that proves this assistant message is complete.
-        """
-        return chat.reassemble_stream(
-            client,
-            params,
-            message_field=self.message_field,
-            dump_message_item=responses.dump_message_item,
-            raise_if_inactive=self._raise_if_request_inactive,
-            emit=self._emit_stream,
-        )
+        A direct lookup rather than a chat fallback: `resolve()` only ever yields one of the three
+        wire names -- `provider.api` is checked against PROVIDER_API_CHOICES wherever it is set
+        (config load, /api, the [worker] and [compaction] overrides) and `auto` resolves through
+        the catalog to one of them. An unknown key here would be a bug worth raising, not a
+        request quietly sent on the wrong wire."""
+        return self._wires[provider.resolve().api]
 
     def api_request(
         self,
@@ -520,95 +425,17 @@ class ModelClient:
         response_timeout: float | None = None,
         provider: ProviderConfig | None = None,
         json_object: bool = False,
+        billing: Billing = Billing.MAIN,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
-        api = provider.resolve().api
-        if api == "anthropic":
-            request = self.anthropic_request
-        elif api == "responses":
-            request = self.responses_request
-        else:
-            request = self.chat_request
-        # json_object reaches the Chat wire only. Responses spells the same thing differently and
-        # Anthropic spells it differently again (output_format); neither is wired yet, and passing
-        # an unknown keyword to them would be an error rather than a no-op.
-        extra: Json = {"json_object": True} if json_object and api not in ("anthropic", "responses") else {}
-        if allow_stream and response_timeout is None:
-            return request(messages, tools, provider=provider, **extra)
-        return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout, provider=provider, **extra)
-
-    def responses_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None,
-        *,
-        allow_stream: bool = True,
-        response_timeout: float | None = None,
-        provider: ProviderConfig | None = None,
-    ) -> tuple[Json, list[ToolCall], str]:
-        provider = provider if provider is not None else self.session.config.provider
-        resolved = provider.resolve()
-        stream = allow_stream and provider.stream and self.on_stream is not None
-        params: Json = {
-            "model": provider.model,
-            "input": responses.responses_input(
-                Text.value(messages),
-                self.provider_origin(provider),
-                provider_origin=self.provider_origin,
-                replayable_echo=self.replayable_echo,
-                images=self.session.images,
-                text_only=self.session.image_route.is_text_only(),
-            ),
-            "stream": stream,
-            "store": False,
-        }
-        if provider.max_tokens > 0:
-            params["max_output_tokens"] = provider.max_tokens
-        if request_tools := [*responses.responses_tool_schemas(tools or []), *self.builtin_tools(resolved)]:
-            params["tools"] = request_tools
-            params["tool_choice"] = "auto"
-            params["parallel_tool_calls"] = True
-        if prompt_cache_key := self.prompt_cache_key(provider, tools):
-            params["prompt_cache_key"] = prompt_cache_key
-        # Stateless requests return encrypted reasoning items by default, so the replay below
-        # needs no `include`; effort goes through the compatibility fold like the chat path, and
-        # a host that defines an explicit "off" spelling still gets it when reasoning is off.
-        if resolved.responses_reasoning:
-            if effort := resolved.reasoning_effort:
-                params["reasoning"] = {"effort": effort}
-            elif provider.reasoning == "off":
-                raise ModelError("reasoning off is not defined for this Responses model; use a supported effort or configure a documented provider endpoint")
-        if provider.temperature is not None and not resolved.suppress_temperature:
-            params["temperature"] = provider.temperature
-        if provider.extra_body and (extra_body := responses.responses_extra_body(provider.extra_body, params)):
-            params["extra_body"] = extra_body
-        client = self.client(provider=provider)
-        if stream:
-            result = self.call_client(client, lambda: self._responses_stream(client, params), response_timeout=response_timeout)
-            streamed = True
-        else:
-            result = self.call_client(client, lambda: client.responses.create(**params), response_timeout=response_timeout)
-            streamed = False
-        self._record_usage(self.message_field(result, "usage"))
-        assistant, calls, text = self.responses_result(result, streamed)
-        assistant[PROVIDER_ORIGIN_KEY] = self.provider_origin(provider)
-        return assistant, calls, text
-
-    def _responses_stream(self, client: OpenAI, params: Json) -> Any:
-        """Consume a Responses stream, promoting completed text before tool arguments finish.
-
-        Text completion and function-call discovery are independent events and either can arrive
-        first. Promotion is therefore a two-condition state transition, not an ordering assumption;
-        the terminal response is still consumed normally for history, tool calls, and usage.
-        """
-
-        return responses.reassemble_stream(
-            client,
-            params,
-            message_field=self.message_field,
-            raise_if_inactive=self._raise_if_request_inactive,
-            emit=self._emit_stream,
-            report_builtin_call=self.report_builtin_call,
+        return self.wire(provider).request(
+            messages,
+            tools,
+            provider=provider,
+            allow_stream=allow_stream,
+            response_timeout=response_timeout,
+            json_object=json_object,
+            billing=billing,
         )
 
     def _emit_stream(self, kind: str, delta: str) -> None:
@@ -620,188 +447,6 @@ class ModelClient:
         state.stream_chars += len(delta)
         if self.on_stream is not None:
             self._request_callback(lambda: self.on_stream(kind, delta) if self.on_stream is not None else None)
-
-    def responses_input(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
-        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
-        return responses.responses_input(
-            messages,
-            origin,
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-            images=self.session.images,
-            text_only=text_only,
-        )
-
-    @staticmethod
-    def responses_tool_schemas(tools: list[Json]) -> list[Json]:
-        return responses.responses_tool_schemas(tools)
-
-    def responses_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
-        return responses.responses_result(
-            result,
-            streamed,
-            message_field=self.message_field,
-            dump_message_item=responses.dump_message_item,
-            tool_call=self.tool_call,
-            report_builtin_call=self.report_builtin_call,
-            truncated_output_error=self.truncated_output_error,
-            collect_sources=self.collect_sources,
-        )
-
-    def vision_observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
-        """Ask the [vision]-configured entry to observe images for an explicit ViewImage call.
-
-        Mirrors compact(): the [vision] entry is resolved per call and validated locally -- a
-        missing field would otherwise surface as a generic SDK credentials error naming nothing
-        the user can act on -- then served by one non-streaming api_request with pre-built image
-        blocks. Perception only: no tools, no coding task; the main model does the reasoning.
-
-        Like request() and compact(), the entry clears the cancel flag so a stale flag left by a
-        previous turn's Ctrl-C cannot abort a fresh observation.
-        """
-
-        self.cancel_requested.clear()
-        entry_name = self.session.config.vision_provider
-        provider = self.session.config.providers[entry_name]
-        if missing := provider.missing_fields():
-            raise ModelError(f"vision provider `{entry_name}` is missing {', '.join(missing)}; check [vision] and [provider.{entry_name}]")
-        messages = [
-            {"role": "system", "content": VISION_OBSERVE_PROMPT},
-            {
-                "role": "user",
-                "content": self.session.images.vision_content(images, provider.resolve().api, question.strip() or VISION_OBSERVE_DEFAULT_QUESTION),
-            },
-        ]
-        # The observation is billed to the session totals but is not a main-model request, so its
-        # usage must not overwrite the last-request ctx/cache snapshot the status bar reads.
-        self.session.state.vision_observe_active = True
-        try:
-            _, _, content = self.api_request(messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider)
-        finally:
-            self.session.state.vision_observe_active = False
-        return content.strip()
-
-    def compact(self, context: str, inline_messages: list[Json] | None = None, tools: list[Json] | None = None, echo_source: str = "") -> Json:
-        self.cancel_requested.clear()
-        # The summary request runs on the [compaction]-resolved provider entry (empty [compaction]
-        # = the active provider), resolved per call so a runtime /provider switch applies next
-        # time. The context budget is untouched: compaction still measures against the main
-        # provider's window, only the summary request itself uses this entry.
-        provider = compaction_provider_config(self.session.config)
-        entry_name = self.session.config.compaction_provider or self.session.config.active_provider
-        # The client's own gate checks the active provider, which is the wrong entry when a
-        # summary runs elsewhere: an incomplete [compaction] entry would otherwise reach the SDK
-        # and come back as "Missing credentials", naming nothing the user can act on. Compaction
-        # still degrades to deterministic trimming -- this only makes the fallback say why.
-        if missing := provider.missing_fields():
-            raise ModelError(f"compaction provider `{entry_name}` is missing {', '.join(missing)}; check [compaction] and [provider.{entry_name}]")
-        self.last_compaction_model = ""
-        # Two shapes. The inline form is the agent's own request with a compaction instruction
-        # appended: same tools, same system, same conversation, so the provider's prefix cache --
-        # already warm from the turn that just ran -- covers everything but the tail, and the
-        # compactor sees real messages instead of a flattened re-rendering that drops tool calls.
-        # The flattened form stays for every case the inline one cannot serve.
-        inline = inline_messages is not None
-        messages = inline_messages if inline else [{"role": "system", "content": COMPACTION_PROMPT}, {"role": "user", "content": Text.clean(context)}]
-        # Compaction honors the configured total-generation limit instead of a hidden cap: a
-        # summary is worth the user's configured wait, and the deterministic trim fallback still
-        # catches whatever the provider rejects.
-        response_timeout = provider.response_timeout
-        # The status bar reads this to name the entry actually serving the summary; cleared in the
-        # finally so a timeout, a cancel, or a provider error leaves no stale row behind.
-        entry_label = f"{entry_name}/{provider.model}"
-        self.session.state.compaction_entry = entry_label
-        try:
-            data = self.compact_attempts(messages, provider, response_timeout, entry_label, tools=tools if inline else None, echo_source=echo_source)
-        finally:
-            self.session.state.compaction_entry = ""
-        self.last_compaction_model = provider.model
-        return data
-
-    def compact_attempts(
-        self,
-        messages: list[Json],
-        provider: ProviderConfig,
-        response_timeout: float,
-        entry_label: str,
-        tools: list[Json] | None = None,
-        echo_source: str = "",
-    ) -> Json:
-        """Ask for the summary, and ask once more if what came back was not a JSON object.
-
-        The failure this retries is a model ignoring the format and replying in prose -- usually by
-        continuing the conversation it was handed instead of summarizing it. A bare resend would
-        likely reproduce it, so the second attempt carries the previous reply and a correction,
-        which is the same shape a person would use. Every error names the entry that served the
-        request: compaction can run on its own `[compaction]` provider, and a cheaper model there is
-        exactly the one that fails this way, so the message has to say which model to look at."""
-        attempt_messages = list(messages)
-        for attempt in (1, 2):
-            try:
-                # Tools ride along, and tool_choice is deliberately left exactly as an ordinary
-                # request sets it. Forcing "none" here looks safer and is not: changing tool_choice
-                # invalidates the messages cache, which is the whole 100k-token conversation this
-                # request exists to reuse -- it would spend the prize to buy the guarantee. The
-                # instruction not to call tools lives in the appended message instead, and a model
-                # that calls one anyway returns no text, which the retry below already handles.
-                _, _, content = self.api_request(
-                    attempt_messages, tools, allow_stream=False, response_timeout=response_timeout, provider=provider, json_object=True
-                )
-            except ModelResponseTimeout:
-                raise ModelResponseTimeout(
-                    f"compaction summary on `{entry_label}` exceeded provider.response_timeout={response_timeout:g}s; "
-                    "set it to 0 to disable the total-generation limit"
-                ) from None
-            try:
-                data = self.parse_json_object(content)
-            except ModelError as error:
-                if attempt == 2:
-                    raise ModelError(f"{error} (compaction provider `{entry_label}`)") from None
-                attempt_messages = [
-                    *attempt_messages,
-                    {"role": "assistant", "content": Tool.compact(content, 400)},
-                    {"role": "user", "content": COMPACTION_RETRY},
-                ]
-                continue
-            if not isinstance(data, dict):
-                raise ModelError(f"compactor returned non-object JSON (compaction provider `{entry_label}`)")
-            # Checked after parsing, not instead of it: this is the same failure the retry above
-            # exists for, only it arrived shaped like a valid answer. Left unchecked it applies
-            # cleanly into session.state and is fed back into every later compaction.
-            if self.echoes_source(data.get("summary") or "", echo_source):
-                if attempt == 2:
-                    raise ModelError(f"compactor echoed the conversation instead of summarizing it (compaction provider `{entry_label}`)")
-                attempt_messages = [
-                    *attempt_messages,
-                    {"role": "assistant", "content": Tool.compact(content, 400)},
-                    {"role": "user", "content": COMPACTION_ECHO_RETRY},
-                ]
-                continue
-            return data
-        raise ModelError(f"compactor returned no usable JSON (compaction provider `{entry_label}`)")
-
-    # A summary that is mostly one verbatim run copied out of the conversation is the echo failure
-    # wearing valid JSON: constrained decoding forces the shape, never the task. Deliberately blunt
-    # thresholds -- a real summary paraphrases, so 80% of it being a single unbroken copy is not a
-    # close call, and quoting a path or an identifier is far below that.
-    #
-    # The floor is counted in characters, which are not equal: the same sentence is 138 characters
-    # of English and 68 of Chinese. It is set for the denser script, because a floor tuned to
-    # English would have excluded from this check every summary written in the language the failure
-    # was first seen in.
-    ECHO_MIN_CHARS: ClassVar[int] = 40
-    ECHO_RATIO: ClassVar[float] = 0.8
-    ECHO_COMPARE_CHARS: ClassVar[int] = 4000
-
-    @classmethod
-    def echoes_source(cls, summary: str, source: str) -> bool:
-        """True when `summary` reproduces `source` rather than describing it."""
-        summary = " ".join(str(summary).split())[: cls.ECHO_COMPARE_CHARS]
-        source = " ".join(str(source).split())[-cls.ECHO_COMPARE_CHARS :]
-        if len(summary) < cls.ECHO_MIN_CHARS or not source:
-            return False
-        match = SequenceMatcher(None, summary, source, autojunk=False).find_longest_match(0, len(summary), 0, len(source))
-        return match.size >= len(summary) * cls.ECHO_RATIO
 
     @classmethod
     def parse_json_object(cls, text: str) -> Json:
@@ -913,6 +558,12 @@ class ModelClient:
         return [dict(entry) for entry in entries]
 
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
+        """The routing hint for prefix caching, or "" when the entry does not define one.
+
+        It steers which machine serves a request so that requests sharing a prefix land together;
+        it does not pin routing and never substitutes for a byte-identical prefix. Everything that
+        changes the rendered prefix therefore belongs in the key -- notably the tool set below.
+        See DESIGN.md "Cache epochs and breakpoints"."""
         configured = provider.prompt_cache_key
         if configured == "off":
             return ""
@@ -938,122 +589,6 @@ class ModelClient:
         }
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return "minacode-" + digest[:24]
-
-    def anthropic_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None,
-        *,
-        allow_stream: bool = True,
-        response_timeout: float | None = None,
-        provider: ProviderConfig | None = None,
-    ) -> tuple[Json, list[ToolCall], str]:
-        provider = provider if provider is not None else self.session.config.provider
-        messages = Text.value(messages)
-        params = self.anthropic_params(messages, tools, provider=provider)
-        client = self.anthropic_client(provider=provider)
-        stream = allow_stream and provider.stream and self.on_stream is not None
-        if stream:
-            result = self.call_client(client, lambda: self._anthropic_stream(client, params), response_timeout=response_timeout)
-            streamed = True
-        else:
-            result = self.call_client(client, lambda: client.messages.create(**params), response_timeout=response_timeout)
-            streamed = False
-        self._record_usage(self.message_field(result, "usage"))
-        assistant, calls, content = self.anthropic_result(result, streamed)
-        assistant[PROVIDER_ORIGIN_KEY] = self.provider_origin(provider)
-        return assistant, calls, content
-
-    def _anthropic_stream(self, client: Anthropic, params: Json) -> Any:
-        """Consume Messages blocks and promote text once both text and tool blocks are known.
-
-        Content blocks need not put text before `tool_use`, so block start/stop events feed the same
-        order-independent transition as Responses. Input JSON may continue after promotion when the
-        completed text block came first.
-        """
-        return anthropic_module.reassemble_stream(
-            client,
-            params,
-            message_field=self.message_field,
-            raise_if_inactive=self._raise_if_request_inactive,
-            emit=self._emit_stream,
-            report_builtin_call=self.report_builtin_call,
-        )
-
-    def anthropic_params(self, messages: list[Json], tools: list[Json] | None, provider: ProviderConfig | None = None) -> Json:
-        provider = provider if provider is not None else self.session.config.provider
-        return anthropic_module.anthropic_params(
-            messages,
-            tools,
-            provider,
-            provider.resolve(),
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-            images=self.session.images,
-            builtin_tools=self.builtin_tools,
-            text_only=self.session.image_route.is_text_only(),
-        )
-
-    @staticmethod
-    def manual_thinking_budget(effort: str, max_tokens: int) -> int:
-        """The manual thinking budget for one effort, kept inside the request's own output budget.
-
-        Every host with an integer budget rejects one that is not strictly below the output cap —
-        Anthropic on `max_tokens`, the OpenAI-compatible `enable_thinking` hosts on the
-        `max_completion_tokens` they fold that cap into — so a smaller configured
-        `provider.max_tokens` has to lower the budget with it rather than fail the request. The
-        1,024-token floor is the documented minimum; below that the budget cannot be satisfied at
-        all and the provider's own error is the honest answer.
-        Evidence: https://platform.claude.com/docs/en/build-with-claude/extended-thinking
-                  https://docs.qwencloud.com/api-reference/chat/openai-chat"""
-        return anthropic_module.manual_thinking_budget(effort, max_tokens)
-
-    def anthropic_messages(self, messages: list[Json], origin: str = "", *, text_only: bool | None = None) -> list[Json]:
-        text_only = self.session.image_route.is_text_only() if text_only is None else text_only
-        return anthropic_module.anthropic_messages(
-            messages,
-            origin,
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-            images=self.session.images,
-            text_only=text_only,
-        )
-
-    @staticmethod
-    def append_anthropic_message(messages: list[Json], role: str, content: str | list[Json]) -> None:
-        anthropic_module.append_anthropic_message(messages, role, content)
-
-    def anthropic_assistant_blocks(self, message: Json, origin: str = "") -> list[Json]:
-        return anthropic_module.anthropic_assistant_blocks(
-            message,
-            origin,
-            provider_origin=self.provider_origin,
-            replayable_echo=self.replayable_echo,
-        )
-
-    @staticmethod
-    def anthropic_tool_schemas(tools: list[Json]) -> list[Json]:
-        return anthropic_module.anthropic_tool_schemas(tools)
-
-    def anthropic_result(self, result: Any, streamed: bool = False) -> tuple[Json, list[ToolCall], str]:
-        return anthropic_module.anthropic_result(
-            result,
-            streamed,
-            message_field=self.message_field,
-            dump_message_item=responses.dump_message_item,
-            tool_call=self.tool_call,
-            report_builtin_call=self.report_builtin_call,
-            truncated_output_error=self.truncated_output_error,
-            collect_sources=self.collect_sources,
-        )
-
-    @classmethod
-    def anthropic_sources(cls, saved_content: list[Json]) -> list[Json]:
-        """Sources from a Messages response: cited text first, then the raw search results.
-
-        A `web_search_tool_result` carries an error object rather than a result list when the
-        search itself failed, which `collect_sources` skips as having no URL."""
-        return anthropic_module.anthropic_sources(saved_content, cls.collect_sources)
 
     def apply_provider_params(self, params: Json, provider: ProviderConfig, resolved: ResolvedProvider | None = None) -> None:
         resolved = resolved or provider.resolve()
@@ -1084,7 +619,7 @@ class ModelClient:
             if reasoning_enabled:
                 # An unset max_tokens leaves the cap to the host, which sizes its own budget under it.
                 extra["thinking_budget"] = (
-                    self.manual_thinking_budget(effort, provider.max_tokens)
+                    anthropic_module.manual_thinking_budget(effort, provider.max_tokens)
                     if provider.max_tokens > 0
                     else THINKING_BUDGETS.get(effort, THINKING_BUDGETS["medium"])
                 )

@@ -1,4 +1,9 @@
-"""minacode model client: provider request protocols, streaming, and retry policy."""
+"""minacode model layer: the provider client and its wire protocols.
+
+The client owns request lifecycle, retries, and usage accounting; chat.py, responses.py and
+anthropic.py build and parse each provider's wire payloads. Higher-layer consumers of the client
+(compaction, vision) live in the minacode package proper.
+"""
 
 from minacode.model.client import ModelClient, PreparedRequest
 

@@ -291,11 +291,78 @@ and `Note` updates and resume events are conversation, not context inserted ahea
   shorten reuse or begin a new scope.
 - Compaction replaces an old prefix and begins one new cache epoch; its checkpoint is stable
   history, so the next turn warms from it — compaction must not break every later turn.
+  See "Compaction reads the cache; the rebuild does not" below before changing what a checkpoint
+  carries.
 - Anthropic's system breakpoint is a `ModelClient` protocol policy, not a change to the
   protocol-neutral history model.
 - The tool block is part of the prefix: a per-session constant, never a per-request lever.
   Reshaping it discards the cached prefix and reads to the model as a broken tool set; steer with a
   message, never with the schema.
+
+#### Three mechanisms, one rule
+
+Providers differ in *where a prefix may be saved*, never in *what matches*. Every mechanism below
+still requires the entire rendered prefix to be byte-identical, so the layout rule above is the
+only one the context design has to obey.
+
+1. **Implicit breakpoints** (OpenAI-shaped wires). The service picks where to write. Older
+   families place them at model-dependent intervals, so coverage of a long conversation is
+   partial. GPT-5.6 and later place one breakpoint at the end of the latest eligible user or tool
+   message — which in an agent loop is exactly the tail of the previous step, so the whole
+   conversation body is covered without minacode asking for anything.
+2. **Explicit breakpoints.** Anthropic caches only at a marked block, which is why
+   `mark_prompt_cache_tail` exists: the system breakpoint alone would leave the conversation body
+   uncached. GPT-5.6 also accepts explicit markers
+   (`prompt_cache_options.mode: "explicit"` plus `prompt_cache_breakpoint` on a content block),
+   and minacode deliberately does not use them — the implicit breakpoint already lands where the
+   explicit one would, so marking would add a wire-only field for no reuse.
+3. **Server-side conversation state.** The Responses wire can retain the conversation and let a
+   later request reference it by id. minacode sends `store: false` and replays the full history
+   every time. This is not a caching trade-off, it is the projection rule: session messages are
+   the source of truth, a sent message is irrevocable, and a resumed session must reconstruct
+   from the snapshot alone. Server-held state moves the truth off the machine that owns it.
+
+#### Compaction reads the cache; the rebuild does not
+
+Compaction touches the cache twice, in opposite directions. Confusing the two is how a change
+that looks free turns out to cost the whole conversation.
+
+- **The summary request reads it.** `Compactor.request` slices the very projection the turn just
+  sent and appends one instruction, so the conversation is a warm prefix and only the tail is
+  paid for. This is why the slice comes from `model_messages` and not from a lookalike rebuilt
+  out of `compacted`: the lookalike diverges at the first earlier summary and costs the full
+  history. Eligible only when the summary runs on the entry that served the turn.
+- **The rebuild writes a prefix nobody has sent.** `apply_compaction` replaces the head of the
+  conversation with a fresh checkpoint, so the first request after it is a guaranteed miss for
+  everything past the header, and one new cache epoch begins.
+
+Two rules the checkpoint therefore obeys:
+
+- **Write once, at the moment already paying full price.** Everything the session still needs
+  after eviction goes into the checkpoint at rebuild time. Adding to it is close to free: that
+  write is a miss either way, and every later turn reads the result back warm.
+- **Nothing in it may be mutable.** A checkpoint that has to be corrected later rewrites the head
+  of the conversation and starts another epoch — the entire body at full price to edit one line.
+  State that changes belongs in `Note` calls, which append. A snapshot that can go stale must say
+  so in the text rather than be rewritten.
+
+Corollary: compaction is worth doing rarely and thoroughly rather than often and slightly. Each
+pass costs one full re-read of everything that survives it, so a wider recent window that
+compacts less often beats a narrow one that fires every few turns.
+
+GPT-5.6 specifics worth knowing when reading usage numbers
+([prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)):
+
+- The cacheable minimum is 1,024 visible input tokens, a strict floor (older families: 2,048, and
+  some may cache shorter). Short sessions simply do not cache; that is not a bug to chase.
+- Retention is 30 minutes from the last write or reuse, and `prompt_cache_options.ttl` accepts no
+  other value. Older families default to 24h (`prompt_cache_retention`), or `in_memory` under Zero
+  Data Retention. A session left idle over lunch comes back cold on GPT-5.6 and warm on GPT-5.5 —
+  worth remembering before reading a cache-miss as a layout regression.
+- `prompt_cache_key` influences which machine serves a request; it does not pin routing or
+  guarantee a read hit. It scopes, it never substitutes for an identical prefix.
+- Usage reports `input_tokens_details.cached_tokens` and `.cache_write_tokens`; `ModelUsage.add`
+  already reads both spellings, so no per-family accounting branch is needed.
 
 ### A sent message is irrevocable
 

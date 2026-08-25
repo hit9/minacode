@@ -11,6 +11,7 @@ from minacode.base import (
     ToolCall,
     TurnBox,
 )
+from minacode.config import ProviderConfig
 from minacode.cli import CommandLoop, TuiRuntime
 from minacode.engine import Agent
 from minacode.tools import CodeIndex
@@ -104,6 +105,7 @@ def test_search_sources_footer_is_indented_like_the_answer_above_it(tmp_path, mo
 
 def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     command_loop = loop(tmp_path)
+    command_loop.session.config.providers["default"] = ProviderConfig(model="gpt-4", url="http://test", key="sk-test")
     command_loop.session.settings.max_context_tokens = 1
     command_loop.session.messages = [
         {"role": "user", "content": "old request"},
@@ -114,11 +116,11 @@ def test_automatic_compaction_replaces_working_divider_status(tmp_path):
     command_loop.tui = TuiApp()
     divider_during_compaction = []
 
-    def compact(_context, *_args, **_kwargs):
+    def compact(_messages, _tools, **_kwargs):
         divider_during_compaction.append(fragment_list_to_text(command_loop.view.queue_divider_fragments()))
-        return {"summary": "compact summary"}
+        return "", "", '{"summary": "compact summary"}'
 
-    command_loop.agent.model.compact = compact
+    command_loop.agent.model.api_request = compact
 
     command_loop.agent.context.prepare_messages(command_loop.agent.model, "system")
 

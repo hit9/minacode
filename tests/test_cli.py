@@ -7,6 +7,7 @@ import pytest
 
 import minacode
 import minacode.__main__ as cli
+from minacode.cli import CommandLoop
 
 
 def test_package_root_exposes_only_version():
@@ -24,6 +25,16 @@ def test_cli_rejects_native_windows(monkeypatch, capsys):
 def test_cli_prints_version(capsys):
     assert cli.main(["--version"]) == 0
     assert capsys.readouterr().out.strip() == cli.__version__
+
+
+def test_cli_help_links_docs(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "https://minacode.readthedocs.io" in capsys.readouterr().out
+
+
+def test_loop_help_links_docs():
+    assert "https://minacode.readthedocs.io" in CommandLoop.HELP
 
 
 @pytest.mark.parametrize(("created", "prefix"), [(True, "Created"), (False, "Exists")])

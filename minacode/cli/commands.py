@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from prompt_toolkit.utils import get_cwidth
 
+from minacode import compaction
 from minacode.base import (
     HTTP_USER_AGENT,
     SELECTION_BACK,
@@ -632,7 +633,8 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
     if args.strip():
         return "Usage: /compact [log [seg.N]]"
     before = len(loop.session.messages)
-    compacted, keep = loop.agent.context.compaction_parts()
+    compactor = compaction.Compactor(loop.agent.context, loop.agent.model)
+    compacted, keep = compactor.parts()
     if not compacted:
         return "No prior conversation to compact"
     fallback = False
@@ -644,13 +646,11 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
     else:
         loop.status_bar.start(reset=False)
     try:
-        request = loop.agent.context.compaction_request(compacted)
+        request = compactor.request(compacted)
         # Same pairing as the automatic path: the echo guard checks what the model is handed, and
         # the inline slice carries one message more than `compacted` does.
         sent = request[0][:-1] if request else compacted
-        data = loop.agent.model.compact(
-            loop.agent.context.compaction_input(compacted), *(request or ()), echo_source=loop.agent.context.compaction_echo_source(sent)
-        )
+        data = compactor.compact(compactor.input(compacted), *(request or ()), echo_source=compactor.echo_source(sent))
     except KeyboardInterrupt:
         return "Cancelled"
     except Exception as error:  # noqa: BLE001 - manual compaction uses the same deterministic fallback as automatic compaction.
@@ -665,7 +665,14 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
         else:
             loop.status_bar.stop()
     if data is not None:
-        loop.agent.context.apply_compaction(data, keep, compacted=compacted, trigger="manual", model=loop.agent.model.last_compaction_model)
+        loop.agent.context.apply_compaction(
+            data,
+            keep,
+            compacted=compacted,
+            trigger="manual",
+            model=loop.agent.model.last_compaction_model,
+            title=compactor.title(data),
+        )
     loop.agent.context.update_current_tokens(loop.agent.session.system_prompt)
     # Compaction rewrites the history in place. Persist it now: leaving the session without
     # running another turn would otherwise resume from the log's pre-compaction state.
