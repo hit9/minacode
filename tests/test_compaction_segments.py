@@ -273,6 +273,41 @@ def test_manual_compact_inserts_summary_before_latest_user(tmp_path):
     assert "prior summary inserted" in result
 
 
+def test_manual_compact_names_the_segment_with_the_compactor_title(tmp_path):
+    """`/compact` must name the span the way the automatic pass does.
+
+    apply_compaction takes the title as a parameter rather than reading it off `data`, so every
+    caller has to pass it; the manual path is the one that is easy to forget, and a miss is silent
+    -- the segment quietly falls back to the deterministic first-user-message name.
+    """
+    s = session_with_provider(tmp_path)
+    s.messages = [
+        *({"role": "assistant", "content": f"old {index}"} for index in range(10)),
+        {"role": "user", "content": "latest"},
+        {"role": "tool", "content": "tool kept"},
+    ]
+    loop = CommandLoop(Agent(s, output_fn=lambda text: None), output_fn=lambda text: None)
+
+    class FakeModel:
+        last_compaction_model = ""
+
+        def __init__(self, session):
+            self.session = session
+            self.cancel_requested = threading.Event()
+
+        def api_request(self, _messages, _tools, **_kwargs):
+            return "", "", json.dumps({"title": "Tokenizer extraction", "summary": "summary"})
+
+        @staticmethod
+        def parse_json_object(content):
+            return json.loads(content)
+
+    loop.agent.model = FakeModel(s)
+    compact(loop, "")
+
+    assert s.history[0].title == "Tokenizer extraction"
+
+
 def test_agent_state_format_is_available_for_explicit_checkpoints(tmp_path):
     s = session(tmp_path)
     s.state.goal = "test goal"

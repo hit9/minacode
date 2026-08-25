@@ -665,7 +665,14 @@ def compact(loop: CommandLoop, args: str) -> str | LogBlock | None:
         else:
             loop.status_bar.stop()
     if data is not None:
-        loop.agent.context.apply_compaction(data, keep, compacted=compacted, trigger="manual", model=loop.agent.model.last_compaction_model)
+        loop.agent.context.apply_compaction(
+            data,
+            keep,
+            compacted=compacted,
+            trigger="manual",
+            model=loop.agent.model.last_compaction_model,
+            title=compactor.title(data),
+        )
     loop.agent.context.update_current_tokens(loop.agent.session.system_prompt)
     # Compaction rewrites the history in place. Persist it now: leaving the session without
     # running another turn would otherwise resume from the log's pre-compaction state.
