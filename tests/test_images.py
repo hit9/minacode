@@ -373,7 +373,7 @@ def test_view_image_observation_round_trips_all_provider_protocols(tmp_path):
     active = [assistant, *runner.run([call])]
     model = ModelClient(s)
 
-    chat = model.chat_messages(active)
+    chat = model.wire(model.session.config.provider).messages(active)
     assert [message["role"] for message in chat] == ["assistant", "tool", "user"]
     assert [part["type"] for part in chat[-1]["content"]] == ["image_url", "text"]
     assert TOOL_IMAGE_OBSERVATION_KEY not in chat[-1]
@@ -468,7 +468,7 @@ def test_chat_request_does_not_leak_internal_image_metadata(tmp_path, monkeypatc
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)), close=lambda: None)
     monkeypatch.setattr(ModelClient, "client", lambda _self, **kwargs: client)
 
-    ModelClient(s).chat_request([message], None)
+    ModelClient(s).request([message], None)
 
     assert IMAGE_REFS_KEY not in json.dumps(captured)
     assert captured["messages"][0]["content"] == s.images.chat_content(message)

@@ -850,7 +850,7 @@ def test_no_protocol_sends_another_protocols_saved_reply(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(model, "client", factory)
-    model.chat_request(history, None)
+    model.wire(ProviderConfig(api="chat", model="gpt-4o")).request(history, None)
     body = factory.calls[0].content.decode()
     assert "_responses_output" not in body
     assert "_anthropic_content" not in body

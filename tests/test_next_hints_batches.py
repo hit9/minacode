@@ -123,7 +123,7 @@ def test_tool_only_history_replays_across_all_protocols(tmp_path):
     assert len(call_ids) == 2
     client = ModelClient(s)
 
-    chat = client.chat_messages(history)
+    chat = client.wire(client.session.config.provider).messages(history)
     tool_results = [message for message in chat if message.get("role") == "tool"]
     chat_call_ids = {call["id"] for message in chat if message.get("role") == "assistant" for call in message.get("tool_calls") or []}
     assert len(tool_results) == 2

@@ -255,8 +255,8 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
 
     def diverges_at(live_session, request, turn=None):
         context, model = ContextManager(live_session), ModelClient(live_session)
-        live = model.chat_messages(context.model_messages(live_session.system_prompt, turn))
-        summary = model.chat_messages(request)
+        live = model.wire(model.session.config.provider).messages(context.model_messages(live_session.system_prompt, turn))
+        summary = model.wire(model.session.config.provider).messages(request)
         pairs = zip(live, summary)
         return next((index for index, (a, b) in enumerate(pairs) if a != b), None), len(summary) - 1
 
@@ -321,13 +321,13 @@ def test_reasoning_boundary_matches_the_live_request_in_every_slice_shape(tmp_pa
 
     # Snapshot the live projection first: _compact_messages rewrites session.messages, and the
     # prefix being ridden is the one that existed before it did.
-    before = ModelClient(midturn).chat_messages(context.model_messages(midturn.system_prompt, turn))
+    before = ModelClient(midturn).wire(midturn.config.provider).messages(context.model_messages(midturn.system_prompt, turn))
     assert compaction.Compactor(context, CapturingModel(midturn)).run(compacted, _keep, PREVIOUS_CONTEXT_TRIMMED, tool_messages=turn)
     request = captured["messages"]
-    summary = ModelClient(midturn).chat_messages(request)
+    summary = ModelClient(midturn).wire(midturn.config.provider).messages(request)
     at = next((index for index, (a, b) in enumerate(zip(before, summary)) if a != b), None)
     assert at == len(summary) - 1
-    assert SESSION_EVENT_KEY not in ModelClient(midturn).chat_messages(request)[-1]  # never on the wire
+    assert SESSION_EVENT_KEY not in ModelClient(midturn).wire(midturn.config.provider).messages(request)[-1]  # never on the wire
 
 
 def test_flat_payload_is_not_built_when_the_inline_form_is_used(tmp_path, monkeypatch):
@@ -426,10 +426,10 @@ def test_the_slice_follows_the_request_being_built_not_the_one_already_sent(tmp_
     queued_turn = [*sent_turn, {"role": "user", "content": LIVE_FOLLOWUP_PREFIX + "also do Y"}]
 
     context, model = ContextManager(live), ModelClient(live)
-    sent = model.chat_messages(context.model_messages(live.system_prompt, sent_turn))
-    outgoing = model.chat_messages(context.model_messages(live.system_prompt, queued_turn))
+    sent = model.wire(model.session.config.provider).messages(context.model_messages(live.system_prompt, sent_turn))
+    outgoing = model.wire(model.session.config.provider).messages(context.model_messages(live.system_prompt, queued_turn))
     compacted, _keep = compaction.Compactor(context, _StubModel()).turn_parts(queued_turn)
-    summary = model.chat_messages(compaction.Compactor(context, _StubModel()).request(compacted, queued_turn)[0])
+    summary = model.wire(model.session.config.provider).messages(compaction.Compactor(context, _StubModel()).request(compacted, queued_turn)[0])
 
     def diverges_at(left, right):
         return next((index for index, (a, b) in enumerate(zip(left, right)) if a != b), None)

@@ -39,7 +39,7 @@ from minacode.base import (
 )
 from minacode.config import ProviderConfig
 from minacode.image import IMAGE_REFS_KEY, ImageInputs
-from minacode.model import chat, resilience, responses
+from minacode.model import resilience, responses
 from minacode.model.protocol import AnthropicWire, ChatWire, ResponsesWire, WireProtocol
 from minacode.prompts import COMPACTION_REQUEST_EVENT
 from minacode.providers.catalog import THINKING_BUDGETS
@@ -182,18 +182,6 @@ class ModelClient:
             default=-1,
         )
 
-    def chat_messages(self, messages: list[Json], provider: ProviderConfig | None = None, *, text_only: bool | None = None) -> list[Json]:
-        """Build Chat Completions history using the provider's documented replay contract.
-
-        `text_only` defaults to the session's current main-route image verdict; pass an explicit
-        value to override it (the main request path recomputes it per call).
-        """
-
-        provider = provider if provider is not None else self.session.config.provider
-        if text_only is None:
-            text_only = self.session.image_route.is_text_only()
-        return chat.chat_messages(messages, provider, provider.resolve(), self.session.images, self.latest_user_position, text_only=text_only)
-
     def estimated_request_tokens(self, messages: list[Json], tools: list[Json] | None = None) -> int:
         """Estimate the actual protocol payload instead of minacode's normalized history."""
 
@@ -236,7 +224,7 @@ class ModelClient:
             if request_tools := [*anthropic_module.anthropic_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         else:
-            payload = {"messages": self.chat_messages(projected)}
+            payload = {"messages": cast(ChatWire, self.wire(self.session.config.provider)).messages(projected)}
             if request_tools := [*(tools or []), *builtin]:
                 payload["tools"] = request_tools
 
@@ -443,71 +431,6 @@ class ModelClient:
         prefix deliberately, and blending the two would hide whether that worked."""
         counter = self.session.compaction_usage if self.session.state.compaction_entry else self.session.usage
         counter.add(usage, self.session.request_token_budget(), touch_last=not self.session.state.vision_observe_active)
-
-    def chat_request(
-        self,
-        messages: list[Json],
-        tools: list[Json] | None = None,
-        *,
-        allow_stream: bool = True,
-        response_timeout: float | None = None,
-        provider: ProviderConfig | None = None,
-        json_object: bool = False,
-    ) -> tuple[Json, list[ToolCall], str]:
-        provider = provider if provider is not None else self.session.config.provider
-        messages = self.chat_messages(messages, provider=provider)
-        resolved = provider.resolve()
-        stream = allow_stream and provider.stream and self.on_stream is not None
-        params = chat.chat_params(
-            messages,
-            tools,
-            provider,
-            resolved,
-            stream=stream,
-            json_object=json_object,
-            builtin_tools=self.builtin_tools,
-            derive_cache_key=self.prompt_cache_key,
-            apply_provider_params=self.apply_provider_params,
-        )
-        client = self.client(provider=provider)
-        if stream:
-            message, usage, finish_reason = self.call_client(client, lambda: self._chat_stream(client, params), response_timeout=response_timeout)
-        else:
-            response = self.call_client(client, lambda: client.chat.completions.create(**params), response_timeout=response_timeout)
-            usage = getattr(response, "usage", None)
-            message = response.choices[0].message
-            finish_reason = str(self.message_field(response.choices[0], "finish_reason") or "")
-        self._record_usage(usage)
-        assistant = self.assistant_message(message)
-        calls = self.tool_calls(message)
-        content = str(self.message_field(message, "content") or "")
-        # Raised outside call_client, which flattens every exception into a plain ModelError.
-        if finish_reason == "length" and not calls and not content.strip():
-            raise self.empty_length_error(usage)
-        return assistant, calls, content
-
-    def _chat_stream(self, client: OpenAI, params: Json) -> tuple[Json, Any, str]:
-        """Reassemble a streamed chat completion into one assistant message and its finish reason.
-
-        Tool calls are the hard part. The spec streams them as deltas keyed by `index`, but providers
-        variously omit it, restart it, or send only `id`. `resolve_tool_call_index` recovers the
-        association from whatever a chunk carries, in decreasing order of reliability, and raises
-        instead of guessing when nothing identifies the call: a wrong association concatenates two
-        calls' argument fragments into one call with corrupt JSON, which the model cannot correct
-        because it looks like something it wrote.
-
-        Unlike Responses, Chat has no separate text-done event. Do not promote on the first tool
-        delta: compatible providers can vary their delta order. `finish_reason=tool_calls` is the
-        first protocol boundary that proves this assistant message is complete.
-        """
-        return chat.reassemble_stream(
-            client,
-            params,
-            message_field=self.message_field,
-            dump_message_item=responses.dump_message_item,
-            raise_if_inactive=self._raise_if_request_inactive,
-            emit=self._emit_stream,
-        )
 
     def wire(self, provider: ProviderConfig) -> WireProtocol:
         """The adapter for a provider's wire api, selected once per request."""

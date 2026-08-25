@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 import minacode.model.anthropic as anthropic_module
+import minacode.model.chat as chat_module
 import minacode.model.responses as responses_module
 from minacode.base import PROVIDER_ORIGIN_KEY, Json, ModelError, Text, ToolCall
 from minacode.config import ProviderConfig
@@ -55,13 +56,73 @@ class ChatWire:
         response_timeout: float | None = None,
         json_object: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
-        return self._client.chat_request(
+        provider = provider if provider is not None else self._client.session.config.provider
+        messages = self.messages(messages, provider=provider)
+        resolved = provider.resolve()
+        stream = allow_stream and provider.stream and self._client.on_stream is not None
+        params = chat_module.chat_params(
             messages,
             tools,
-            allow_stream=allow_stream,
-            response_timeout=response_timeout,
-            provider=provider,
+            provider,
+            resolved,
+            stream=stream,
             json_object=json_object,
+            builtin_tools=self._client.builtin_tools,
+            derive_cache_key=self._client.prompt_cache_key,
+            apply_provider_params=self._client.apply_provider_params,
+        )
+        client = self._client.client(provider=provider)
+        if stream:
+            message, usage, finish_reason = self._client.call_client(client, lambda: self._stream(client, params), response_timeout=response_timeout)
+        else:
+            response = self._client.call_client(client, lambda: client.chat.completions.create(**params), response_timeout=response_timeout)
+            usage = getattr(response, "usage", None)
+            message = response.choices[0].message
+            finish_reason = str(self._client.message_field(response.choices[0], "finish_reason") or "")
+        self._client._record_usage(usage)
+        assistant = self._client.assistant_message(message)
+        calls = self._client.tool_calls(message)
+        content = str(self._client.message_field(message, "content") or "")
+        # Raised outside call_client, which flattens every exception into a plain ModelError.
+        if finish_reason == "length" and not calls and not content.strip():
+            raise self._client.empty_length_error(usage)
+        return assistant, calls, content
+
+    def messages(self, messages: list[Json], *, text_only: bool | None = None, provider: ProviderConfig | None = None) -> list[Json]:
+        """Build Chat Completions history using the provider's documented replay contract.
+
+        `text_only` defaults to the session's current main-route image verdict; pass an explicit
+        value to override it (the main request path recomputes it per call).
+        """
+
+        provider = provider if provider is not None else self._client.session.config.provider
+        if text_only is None:
+            text_only = self._client.session.image_route.is_text_only()
+        return chat_module.chat_messages(
+            messages, provider, provider.resolve(), self._client.session.images, self._client.latest_user_position, text_only=text_only
+        )
+
+    def _stream(self, client: Any, params: Json) -> tuple[Json, Any, str]:
+        """Reassemble a streamed chat completion into one assistant message and its finish reason.
+
+        Tool calls are the hard part. The spec streams them as deltas keyed by `index`, but providers
+        variously omit it, restart it, or send only `id`. `resolve_tool_call_index` recovers the
+        association from whatever a chunk carries, in decreasing order of reliability, and raises
+        instead of guessing when nothing identifies the call: a wrong association concatenates two
+        calls' argument fragments into one call with corrupt JSON, which the model cannot correct
+        because it looks like something it wrote.
+
+        Unlike Responses, Chat has no separate text-done event. Do not promote on the first tool
+        delta: compatible providers can vary their delta order. `finish_reason=tool_calls` is the
+        first protocol boundary that proves this assistant message is complete.
+        """
+        return chat_module.reassemble_stream(
+            client,
+            params,
+            message_field=self._client.message_field,
+            dump_message_item=responses_module.dump_message_item,
+            raise_if_inactive=self._client._raise_if_request_inactive,
+            emit=self._client._emit_stream,
         )
 
 

@@ -499,8 +499,8 @@ def test_turn_compaction_leaves_the_request_inside_the_cached_prefix(tmp_path):
             return {"summary": "summary"}
 
     client = ModelClient(s)
-    before = client.chat_messages(context.model_messages("system", turn))
-    after = client.chat_messages(context.prepare_messages(FakeModel(), "system", turn))
+    before = client.wire(client.session.config.provider).messages(context.model_messages("system", turn))
+    after = client.wire(client.session.config.provider).messages(context.prepare_messages(FakeModel(), "system", turn))
     shared = 0
     for old, new in zip(before, after):
         if old != new:
