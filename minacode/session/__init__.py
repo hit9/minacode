@@ -31,11 +31,10 @@ from minacode.base import (
 from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
 from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
+from minacode.session.codec import TRANSCRIPT_SYNC_VERSION, SessionSnapshotCodec
 from minacode.session.store import (
     CONTEXT_LAYOUT_VERSION,
-    TRANSCRIPT_SYNC_VERSION,
     SessionEntry,
-    SessionSnapshotCodec,
     SessionSnapshotStore,
     local_timestamp,
 )
