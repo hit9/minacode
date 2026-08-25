@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
-import signal
-import subprocess
 import threading
-import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -16,9 +12,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from minacode.base import (
-    IMAGE_ROUTE_TEXT_ONLY_LEARNED,
-    IMAGE_ROUTE_TEXT_ONLY_STATIC,
-    IMAGE_ROUTE_UNKNOWN,
     SESSION_EVENT_KEY,
     Json,
     ModelUsage,
@@ -27,10 +20,13 @@ from minacode.base import (
     UpdateStatus,
 )
 from minacode.config import PROVIDER_API_CHOICES, REASONING_CHOICES, Config, ConfigFile, RuntimeSettings, SystemInfo, request_budget_for
-from minacode.image import IMAGE_REFS_KEY, ImageInputs, ImageRef, UserInput
+from minacode.image import ImageInputs, UserInput
 from minacode.prompts import COMPACTION_SUMMARY_TITLE, LIVE_FOLLOWUP_PREFIX, SYSTEM_PROMPT, WORKING_STATE_CHECKPOINT_TITLE
 from minacode.session.codec import TRANSCRIPT_SYNC_VERSION, SessionSnapshotCodec
 from minacode.session.diffs import net_diff_sections
+from minacode.session.images import ImageRoute
+from minacode.session.jobs import BackgroundJob
+from minacode.session.queue import QueuedInput
 from minacode.session.store import (
     CONTEXT_LAYOUT_VERSION,
     SessionEntry,
@@ -237,184 +233,6 @@ class HistorySegment:
     messages: int = 0  # evicted message count
     summary: str = ""
     model: str = ""  # effective model the summary ran on; empty = fell back to trimming
-
-
-@dataclass
-class BackgroundJob:
-    """A non-blocking shell process tracked by the session. Output is either redirected to a log
-    file on disk (jobs started via `Job(start)`) or accumulated in an in-memory tail buffer by a
-    drainer thread (jobs promoted from a running BashTool call after bash_wait_timeout). Both
-    variants expose the same tail/status/wait/kill surface."""
-
-    id: str
-    command: str
-    process: subprocess.Popen[bytes]
-    log_path: str
-    started_at: float
-    status: str = "running"
-    exit_code: int | None = None
-    # Memory-backed tail, populated by BashTool.promote_to_job's drainer thread. When set, tail()
-    # reads from here instead of log_path. Bounded at BUFFER_LIMIT chars by the drainer.
-    stream_buffer: list[str] | None = None
-    stream_lock: threading.Lock | None = None
-
-    BUFFER_LIMIT: ClassVar[int] = 32 * 1024  # per-stream tail cap in chars
-
-    def update_status(self) -> None:
-        if self.status != "running":
-            return
-        code = self.process.poll()
-        if code is not None:
-            self.status = "done"
-            self.exit_code = code
-
-    def elapsed(self) -> float:
-        return time.monotonic() - self.started_at
-
-    def kill(self, grace: float = 3.0) -> None:
-        """SIGTERM, wait grace seconds, then SIGKILL if still running. Removes the log file."""
-        if self.status == "running":
-            try:
-                os.killpg(self.process.pid, signal.SIGTERM)
-            except OSError:
-                self.process.terminate()
-            try:
-                self.process.wait(timeout=grace)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
-                except OSError:
-                    self.process.kill()
-                self.process.wait()
-            self.update_status()
-            if self.status == "running":
-                self.status = "killed"
-                self.exit_code = -1
-        if self.log_path:
-            with contextlib.suppress(OSError):
-                os.unlink(self.log_path)
-
-    def tail(self, limit: int) -> str:
-        """Return the last `limit` chars from the merged stdout+stderr log."""
-        limit = max(0, limit)
-        if self.stream_buffer is not None:
-            with self.stream_lock or contextlib.nullcontext():
-                text = "".join(self.stream_buffer)
-        else:
-            try:
-                with open(self.log_path, "rb") as file:
-                    file.seek(0, 2)
-                    size = file.tell()
-                    # UTF-8 is up to 4 bytes/char; read a little extra so decoding produces at least `limit` chars.
-                    file.seek(max(0, size - limit * 4), 0)
-                    text = file.read().decode("utf-8", errors="replace")
-            except OSError:
-                return ""
-        if len(text) <= limit:
-            return text
-        if limit <= 3:
-            return "." * limit
-        return "..." + text[-(limit - 3) :]
-
-
-class ImageRoute:
-    """Unified image-delivery decision for the active main route; session-local.
-
-    Static text-only evidence is folded by `ProviderConfig.resolve()` from the provider
-    compatibility catalog. Learned evidence is created only when an eligible main request
-    returns HTTP 400 for a request carrying a current-turn raw image, and is keyed by the full
-    route identity (provider entry, resolved API, resolved base URL, model). It lives in memory
-    for the live session only: snapshots never carry it and a resumed session starts unknown
-    unless the catalog supplies static evidence.
-
-    Attachments and ViewImage must ask this one decision which delivery is required instead of
-    duplicating model matching or 400 learning; presentation only observes routing events.
-    """
-
-    def __init__(self, session: Session) -> None:
-        self.session = session
-
-    def identity(self) -> tuple[str, str, str, str]:
-        """The full identity of the effective active provider entry, used as the learned-evidence key."""
-
-        provider = self.session.config.provider
-        resolved = provider.resolve()
-        return (self.session.config.active_provider, resolved.api, resolved.base_url, provider.model.lower())
-
-    def static_text_only(self) -> bool:
-        return self.session.config.provider.resolve().text_only
-
-    def learned_text_only(self) -> bool:
-        return self.identity() in self.session.learned_text_only_routes
-
-    def is_text_only(self) -> bool:
-        return self.static_text_only() or self.learned_text_only()
-
-    def state(self) -> str:
-        if self.static_text_only():
-            return IMAGE_ROUTE_TEXT_ONLY_STATIC
-        if self.learned_text_only():
-            return IMAGE_ROUTE_TEXT_ONLY_LEARNED
-        return IMAGE_ROUTE_UNKNOWN
-
-    def learn_text_only(self) -> None:
-        """Record session-local evidence for the exact current main route."""
-
-        self.session.learned_text_only_routes.add(self.identity())
-
-    def delivery(self) -> str:
-        """How a current image occurrence is delivered: `vision` when the route is text-only
-        (static or learned) and a vision entry exists, else a raw attempt on the main model.
-
-        A text-only route without `[vision]` deliberately keeps the raw attempt so the
-        provider's real failure stays visible; no local image-disable error is invented.
-        """
-
-        if self.is_text_only() and self.session.config.vision_provider:
-            return "vision"
-        return "raw"
-
-
-@dataclass(eq=False)
-class QueuedInput:
-    text: str
-    images: tuple[ImageRef, ...] = ()
-    draft: str = ""
-    inflight: bool = False
-
-    def to_json(self) -> str | Json:
-        if not self.images:
-            return self.text
-        return {
-            "text": self.text,
-            "draft": self.draft,
-            IMAGE_REFS_KEY: [image.to_json() for image in self.images],
-        }
-
-    @classmethod
-    def from_json(cls, value: object) -> QueuedInput | None:
-        if isinstance(value, str):
-            return cls(value) if value.strip() else None
-        if not isinstance(value, dict):
-            return None
-        text = str(value.get("text") or "")
-        raw_images = value.get(IMAGE_REFS_KEY)
-        images = tuple(image for raw in raw_images if (image := ImageRef.from_json(raw)) is not None) if isinstance(raw_images, list) else ()
-        draft = str(value.get("draft") or text)
-        if not text.strip():
-            return None
-        if draft.count("\ufffc") != len(images):
-            return cls(text)
-        return cls(text, images, draft)
-
-    def user_input(self) -> UserInput:
-        return UserInput(self.draft or self.text, self.images)
-
-    def message(self, prefix: str = "") -> Json:
-        message: Json = {"role": "user", "content": prefix + self.text}
-        if self.images:
-            message[IMAGE_REFS_KEY] = [image.to_json() for image in self.images]
-        return message
 
 
 @dataclass
