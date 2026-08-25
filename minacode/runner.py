@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 from minacode.base import (
     ActiveResource,
     ApprovalView,
-    Billing,
     Json,
     LogBlock,
     LogEdge,
@@ -24,7 +23,6 @@ from minacode.base import (
     builtin_tool_label,
     oneline,
 )
-from minacode.config import ProviderConfig
 from minacode.context import ContextManager
 from minacode.model import ModelClient
 from minacode.session import Session, TurnDiff
@@ -45,6 +43,7 @@ from minacode.tools import (
 )
 from minacode.tools.editplan import EditBatchPlan
 from minacode.tools.toolblocks import ToolDisplay
+from minacode.vision import VisionObserver
 
 if TYPE_CHECKING:
     from minacode.engine import Agent
@@ -171,14 +170,6 @@ class ToolRunner:
             self._vision_client = ModelClient(self.session)
         return self._vision_client
 
-    def _vision_request(self, client: ModelClient, messages: list[Json], provider: ProviderConfig) -> str:
-        """Send one non-streaming observation request through `client`, billed as vision."""
-        client.cancel_requested.clear()
-        _, _, content = client.api_request(
-            messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
-        )
-        return content
-
     def cancel(self) -> None:
         self._active_bash.apply(lambda tool: tool.cancel())
         self._active_job.apply(lambda tool: tool.cancel())
@@ -196,10 +187,7 @@ class ToolRunner:
         if isinstance(tool, ViewImageTool):
             # The runner owns the vision client, so Agent.cancel() reaches an in-flight
             # observation instead of leaving it to wait out the provider timeout.
-            client = self.vision_client()
-            tool.vision_observe = lambda images, question: self.session.images.observe(
-                images, question, lambda messages, provider: self._vision_request(client, messages, provider)
-            )
+            tool.vision_observe = VisionObserver(self.vision_client()).observe
             return tool.call()
         if isinstance(tool, BashTool):
             with self._active_bash.track(tool):

@@ -50,6 +50,7 @@ LAYERS = {
     "minacode.context": 4,
     "minacode.runner": 4,
     "minacode.compaction": 4,
+    "minacode.vision": 4,
     "minacode.model": 5,
     "minacode.model.chat": 5,
     "minacode.model.responses": 5,

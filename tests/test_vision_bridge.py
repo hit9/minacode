@@ -14,6 +14,7 @@ from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PRO
 from minacode.runner import ToolRunner
 from minacode.session import Session
 from minacode.tools import Tool, ViewImageTool
+from minacode.vision import VisionObserver
 from model_harness import _MockClientFactory
 
 OBSERVATION = "The screenshot shows a terminal error."
@@ -104,10 +105,7 @@ def test_vision_observe_wire_protocol_uses_configured_entry(tmp_path, monkeypatc
 
     monkeypatch.setattr(ModelClient, "api_request", fake_api_request)
     model = ModelClient(s)
-    request = lambda messages, provider: model.api_request(
-        messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
-    )[2]
-    observation = s.images.observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?", request)
+    observation = VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "exact error?")
 
     assert observation == OBSERVATION
     assert captured["tools"] is None
@@ -169,10 +167,7 @@ def test_vision_observe_joins_totals_but_keeps_main_last_snapshot(tmp_path, monk
             ]
         ),
     )
-    request = lambda messages, provider: model.api_request(
-        messages, tools=None, allow_stream=False, response_timeout=provider.response_timeout, provider=provider, billing=Billing.VISION
-    )[2]
-    s.images.observe((s.images.load(str(tmp_path / "shot.png")),), "", request)
+    VisionObserver(model).observe((s.images.load(str(tmp_path / "shot.png")),), "")
     assert (s.usage.calls, s.usage.total_tokens) == (2, 10_820)
     assert (s.usage.last_prompt_tokens, s.usage.last_prompt_budget) == (10_000, 200_000)
 
