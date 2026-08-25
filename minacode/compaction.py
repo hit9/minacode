@@ -37,9 +37,9 @@ if TYPE_CHECKING:
 class Compactor:
     """Turn one conversation span into a summary checkpoint.
 
-    Construct with the ContextManager (and, when running a summary request, the ModelClient)
-    the turn is using. The planning methods read projection and budget through `ctx`; the
-    execution methods drive the summary request through `model`.
+    Construct with the ContextManager and the ModelClient the turn is using; both are required.
+    The planning methods read projection and budget through `ctx`; the execution methods drive
+    the summary request through `model`.
     """
 
     # A summary that is mostly one verbatim run copied out of the conversation is the echo failure

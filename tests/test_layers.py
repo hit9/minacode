@@ -6,7 +6,7 @@ Layers, from highest to lowest:
                    |
                engine.py
                    |
-         context.py / runner.py
+    context.py / runner.py / compaction.py / vision.py
                    |
                 model/
                    |

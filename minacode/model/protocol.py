@@ -28,6 +28,10 @@ class WireProtocol(Protocol):
     `request` is what api_request hands every request to; `messages` builds the wire's history
     payload and is shared by all three adapters (the token estimator uses it). Per-wire
     construction/parsing the other adapters do not share stays off the interface.
+
+    `json_object` reaches the Chat wire only. Responses spells the same thing differently and
+    Anthropic spells it differently again (output_format); neither is wired yet, so both accept
+    the flag and ignore it rather than passing an unknown keyword to their SDK.
     """
 
     def request(
@@ -176,7 +180,8 @@ class ResponsesWire:
         if prompt_cache_key := self._client.prompt_cache_key(provider, tools):
             params["prompt_cache_key"] = prompt_cache_key
         # Stateless requests return encrypted reasoning items by default, so the replay below needs
-        # no `include`; effort goes through the compatibility fold like the chat path.
+        # no `include`; effort goes through the compatibility fold like the chat path, and a host
+        # that defines an explicit "off" spelling still gets it when reasoning is off.
         if resolved.responses_reasoning:
             if effort := resolved.reasoning_effort:
                 params["reasoning"] = {"effort": effort}

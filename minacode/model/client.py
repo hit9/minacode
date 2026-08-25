@@ -195,9 +195,9 @@ class ModelClient:
         summary request strips the same reasoning the live request did, and a second expression of
         the rule is how that came apart twice.
 
-        A message carrying COMPACTION_REQUEST_EVENT is excluded -- see
-        ContextManager.compaction_request, which marks its instruction only when the live
-        projection's own boundary already falls inside the slice it is appending to."""
+        A message carrying COMPACTION_REQUEST_EVENT is excluded -- see Compactor.request, which
+        marks its instruction only when the live projection's own boundary already falls inside
+        the slice it is appending to."""
         return max(
             (
                 index
@@ -407,7 +407,13 @@ class ModelClient:
         counter.add(usage, self.session.request_token_budget(), touch_last=billing != Billing.VISION)
 
     def wire(self, provider: ProviderConfig) -> WireProtocol:
-        """The adapter for a provider's wire api, selected once per request."""
+        """The adapter for a provider's wire api, selected once per request.
+
+        A direct lookup rather than a chat fallback: `resolve()` only ever yields one of the three
+        wire names -- `provider.api` is checked against PROVIDER_API_CHOICES wherever it is set
+        (config load, /api, the [worker] and [compaction] overrides) and `auto` resolves through
+        the catalog to one of them. An unknown key here would be a bug worth raising, not a
+        request quietly sent on the wrong wire."""
         return self._wires[provider.resolve().api]
 
     def api_request(

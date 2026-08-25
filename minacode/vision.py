@@ -33,6 +33,8 @@ class VisionObserver:
         self.model = model
 
     def observe(self, images: tuple[ImageRef, ...], question: str = "") -> str:
+        # Like ModelClient.request() and Compactor.compact(), the entry clears the cancel flag so a
+        # stale flag left by a previous turn's Ctrl-C cannot abort a fresh observation.
         self.model.cancel_requested.clear()
         entry_name = self.model.session.config.vision_provider
         provider = self.model.session.config.providers[entry_name]
