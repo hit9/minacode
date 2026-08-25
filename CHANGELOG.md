@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `--help` and `/help` now point to the full documentation at https://minacode.readthedocs.io.
+
 ## 0.32.0 - 2026-08-24
 
 ### Added

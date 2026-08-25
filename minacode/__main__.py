@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Error: minacode does not support native Windows; use WSL instead.", file=sys.stderr)
         return 1
 
-    parser = argparse.ArgumentParser(prog="minacode")
+    parser = argparse.ArgumentParser(prog="minacode", epilog="Documentation: https://minacode.readthedocs.io")
     parser.add_argument("--config", default=None, help="Path to config TOML")
     parser.add_argument("--init-config", action="store_true", help="Create a default config file")
     parser.add_argument("--yolo", action="store_true", help="Skip confirmations for mutating tools")
