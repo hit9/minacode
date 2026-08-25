@@ -359,3 +359,59 @@ def test_full_flow_compacts_before_answering(tmp_path, monkeypatch):
     assert session.state.compaction_count == 1
     assert [segment.key for segment in session.history] == ["seg.1"]
     assert "OLD_BODY_SENTINEL" in session.history[0].text
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_a_note_update_after_compaction_never_rewrites_the_checkpoint(tmp_path, monkeypatch, api):
+    """The checkpoint is a snapshot, and keeping it a snapshot is what keeps the prefix cached.
+
+    It bakes `state.format()` into message text at compaction time and holds no reference to the
+    state it came from, so a later `Note` call changes `session.state` and leaves those bytes
+    alone. Making the checkpoint stay current instead would rewrite the head of the conversation
+    on every plan edit and start a fresh cache epoch each time -- the whole body at full price for
+    one line. Nothing else in the suite would notice: the content assertions would still pass on
+    fresher text, and no unit test can see a cache bill.
+    """
+    session = _session(tmp_path, api=api)
+    server = OpenAIMockServer(
+        [
+            "archived answer",
+            "warm answer",
+            json.dumps({"title": "archived span", "summary": "archived"}),
+            "continued",
+            {"tool": "Note", "arguments": {"set_goal": "changed after the checkpoint was written"}},
+            "noted",
+        ]
+    )
+    monkeypatch.setattr(ModelClient, "client", lambda self, **kwargs: server.client())
+    agent = Agent(session, output_fn=lambda _text: None)
+    session.state.goal = "set before compaction"
+
+    assert agent.run("archive request " + "x" * 8_000) == "archived answer"
+    assert agent.run("keep working") == "warm answer"
+    baseline = _session(tmp_path / "baseline", api=api)
+    baseline_context = ContextManager(baseline)
+    baseline_messages = baseline_context.model_messages(SYSTEM_PROMPT, [{"role": "user", "content": "continue"}])
+    baseline_tokens = baseline_context.request_tokens(baseline_messages, Tool.resolved_schemas(baseline))
+    original_limit = session.settings.max_context_tokens
+    session.settings.max_context_tokens = baseline_tokens + 500 + session.config.provider.output_token_budget() + MIN_CONTEXT_SAFETY_TOKENS
+    assert agent.run("continue") == "continued"
+    session.settings.max_context_tokens = original_limit
+
+    assert session.state.compaction_count == 1
+    checkpoint = session.messages[0]["content"]
+    assert checkpoint.startswith(COMPACTION_SUMMARY_TITLE)
+    assert "Goal: set before compaction" in checkpoint
+    key = "input" if api == "responses" else "messages"
+    before_items = server.requests[-1][key]
+
+    assert agent.run("update the goal") == "noted"
+
+    # The Note landed, and the checkpoint did not move with it.
+    assert session.state.goal == "changed after the checkpoint was written"
+    assert session.messages[0]["content"] == checkpoint
+    assert "Goal: set before compaction" in session.messages[0]["content"]
+    # And the wire says the same thing: the prefix that request carried is still a prefix, so the
+    # epoch the compaction opened is still being read back rather than replaced.
+    assert server.requests[-1][key][: len(before_items)] == before_items
+    assert server.cache_events[-1][1] > 0
