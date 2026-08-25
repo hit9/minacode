@@ -324,7 +324,7 @@ class ContextManager:
         del self.session.history[: -self.MAX_HISTORY_SEGMENTS]  # newest kept; a shorter list is left alone
         return segment
 
-    def _summary_block(self, segment: HistorySegment | None) -> list[Json]:
+    def _summary_block(self) -> list[Json]:
         """One durable checkpoint containing everything needed after the compacted prefix.
 
         This is the rebuild half of compaction, and it does not read the cache: it replaces the
@@ -343,11 +343,18 @@ class ContextManager:
             "Summary:",
             self.session.state.summary or "(empty)",
             "",
-            "Working state:",
+            # Says it is a snapshot, because it is: it freezes here and every later Note call
+            # makes it older. Rewriting it to stay current is the one thing this block may not do.
+            "Working state (at this compaction; a later Note call supersedes it):",
             self.session.state.format(),
         ]
-        if segment is not None:
-            rows.extend(("", f"Stored history segment: {segment.key}: {segment.title}"))
+        # The whole retained archive, not just the span this compaction stored: each rebuild
+        # discards the previous checkpoint, so a line naming only the newest segment leaves the
+        # older ones with no trace in context at all. Range and count only -- what to fetch, or
+        # whether to fetch anything, is the model's call through RecallContext.
+        if history := self.session.history:
+            span = history[0].key if len(history) == 1 else f"{history[0].key}..{history[-1].key}"
+            rows.extend(("", f"Recallable history: {span} ({len(history)} segment{'' if len(history) == 1 else 's'})"))
         return [{"role": "user", "content": "\n".join(rows), SESSION_EVENT_KEY: "compaction_checkpoint"}]
 
     def apply_compaction(
@@ -390,7 +397,7 @@ class ContextManager:
             # bounded) and passes it in; empty falls back to the deterministic name.
             segment.summary = self.session.state.summary
             segment.title = title or segment.title
-        summary_block = self._summary_block(segment)
+        summary_block = self._summary_block()
         if turn_messages is None:
             self.session.messages = summary_block + keep
             prune_context = (self.session.messages if data is not None else [*keep]) + (tool_messages or [])

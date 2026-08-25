@@ -128,6 +128,23 @@ def test_compaction_history_keys_increment(tmp_path):
     assert [segment.key for segment in s.history] == ["seg.1", "seg.2"]
 
 
+def test_checkpoint_names_the_whole_retained_archive_not_just_the_newest_span(tmp_path):
+    """Each rebuild discards the previous checkpoint, so a line naming only the span this
+    compaction stored leaves every older segment with no trace in context — and a model does not
+    go looking for what it cannot see exists. Range and count only: whether to fetch, and what,
+    stays the model's decision through RecallContext."""
+    s = session(tmp_path)
+    context = ContextManager(s)
+
+    context.apply_compaction({"summary": "s"}, [], compacted=[{"role": "user", "content": "first task"}])
+    assert "Recallable history: seg.1 (1 segment)" in s.messages[0]["content"]
+
+    context.apply_compaction({"summary": "s"}, [], compacted=[{"role": "user", "content": "second task"}])
+    context.apply_compaction({"summary": "s"}, [], compacted=[{"role": "user", "content": "third task"}])
+
+    assert "Recallable history: seg.1..seg.3 (3 segments)" in s.messages[0]["content"]
+
+
 def test_compaction_without_compacted_messages_captures_nothing(tmp_path):
     s = session(tmp_path)
     context = ContextManager(s)

@@ -134,6 +134,12 @@ class RecallContextTool(Tool):
                 chunks.append(f"* {key}: {self.missing_reason(key)}")
                 continue
             chunks.append(f"<Segment key={json.dumps(key)} title={json.dumps(segment.title)}>")
+            # The checkpoint summary as it stood at this compaction, which is not the one in
+            # context: each compaction folds the previous summary into the next, so the live one
+            # has been through a pass per compaction, while this copy has been through exactly
+            # one. Empty for a segment trimmed without a model reply.
+            if segment.summary:
+                chunks.append(f"<SummaryAtCompaction>\n{segment.summary.rstrip()}\n</SummaryAtCompaction>")
             chunks.append(segment.text.rstrip())
             chunks.append("</Segment>")
         chunks.append("</RecallContextResult>")
