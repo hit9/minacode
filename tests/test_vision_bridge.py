@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from model_harness import _MockClientFactory
 from PIL import Image
 
 from minacode.base import Billing, ConfigError, ModelError, ToolError
@@ -15,7 +16,6 @@ from minacode.runner import ToolRunner
 from minacode.session import Session
 from minacode.tools import Tool, ViewImageTool
 from minacode.vision import VisionObserver
-from model_harness import _MockClientFactory
 
 OBSERVATION = "The screenshot shows a terminal error."
 

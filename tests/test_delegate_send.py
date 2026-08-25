@@ -3,8 +3,8 @@
 import pytest
 from test_worker_handoff import FakeModelClient, _delegate_call, _delegate_runner, _delegate_session
 
-from minacode.tools import tooloutput
 from minacode.prompts import WORKER_PROMPT
+from minacode.tools import tooloutput
 
 
 def test_delegate_send_logs_a_worker_start_marker(tmp_path, monkeypatch):
@@ -211,7 +211,6 @@ def test_delegate_envelope_reports_token_spend_and_summary_renders(tmp_path, mon
 
 
 def test_delegate_summary_formats_tokens_and_tolerates_old_envelopes(tmp_path):
-    parent = _delegate_session(tmp_path)
     summary = tooloutput.delegate_result_summary(
         '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt, b.txt" stopped_at_max_steps="false" tokens="8200/1300">'
     )
@@ -226,7 +225,6 @@ def test_delegate_summary_formats_tokens_and_tolerates_old_envelopes(tmp_path):
 
 
 def test_delegate_summary_shows_rounds_and_context_fill(tmp_path):
-    parent = _delegate_session(tmp_path)
     envelope = '<Delegate action="send" steps="3" elapsed="2.5s" files="a.txt" stopped_at_max_steps="false" tokens="10/20" rounds="4" context_percent="73">'
     fields = tooloutput.delegate_result_fields(envelope)
     assert fields is not None

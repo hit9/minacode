@@ -5,6 +5,7 @@ import time
 import pytest
 from model_harness import _MockClientFactory
 
+from minacode import compaction
 from minacode.base import (
     ConfigError,
     ModelError,
@@ -14,7 +15,6 @@ from minacode.config import (
     ProviderConfig,
 )
 from minacode.context import ContextManager
-from minacode import compaction
 from minacode.model import ModelClient
 from minacode.render import StatusBar
 from minacode.session import Session, SessionSnapshotCodec

@@ -5,7 +5,6 @@ import json
 import pytest
 from test_tools import session
 
-from minacode.tools import tooloutput
 from minacode.base import (
     ToolCall,
     ToolError,
@@ -22,6 +21,7 @@ from minacode.tools import (
     NoteTool,
     RecallContextTool,
     Tool,
+    tooloutput,
 )
 
 

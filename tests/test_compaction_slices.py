@@ -11,12 +11,12 @@ import threading
 import pytest
 from agent_harness import session, session_with_provider
 
+from minacode import compaction
 from minacode.base import (
-    Billing,
     SESSION_EVENT_KEY,
+    Billing,
 )
 from minacode.context import ContextManager
-from minacode import compaction
 from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,

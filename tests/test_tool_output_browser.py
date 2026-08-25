@@ -8,12 +8,11 @@ from test_command_ui import ModalHarness
 from tui_harness import loop, session
 
 import minacode.cli.modals as modals_mod
-from minacode.tools import tooloutput
 from minacode.cli import CommandLoop
 from minacode.cli.modals import tool_output_viewer
 from minacode.engine import Agent
 from minacode.session import Session
-from minacode.tools import Tool
+from minacode.tools import Tool, tooloutput
 
 
 def test_tool_output_viewer_browses_recent_calls_through_a_viewport_and_opens_full_output(tmp_path, monkeypatch):

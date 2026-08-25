@@ -7,8 +7,8 @@ class _StubModel:
 
 from agent_harness import session
 
-from minacode.context import ContextManager
 from minacode import compaction
+from minacode.context import ContextManager
 from minacode.tools import EditTool, ReadTool
 
 

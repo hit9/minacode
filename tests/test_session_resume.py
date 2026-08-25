@@ -4,9 +4,9 @@ from typing import ClassVar
 from test_session_persistence import _resumed_transcript, log_path, read_jsonl, session_with_data_dir
 
 from minacode.base import SESSION_EVENT_KEY
-from minacode.config import ProviderConfig
 from minacode.cli import CommandLoop
 from minacode.cli.commands import compact
+from minacode.config import ProviderConfig
 from minacode.engine import Agent
 from minacode.model import ModelClient
 from minacode.prompts import LIVE_FOLLOWUP_PREFIX

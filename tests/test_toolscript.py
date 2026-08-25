@@ -5,14 +5,13 @@ from types import SimpleNamespace
 import pytest
 from mcp_harness import mcp_cfg, mcp_tool_info
 
-from minacode.tools import tooloutput
 from minacode.base import LogEdge, LogRole, ToolCall, ToolError
 from minacode.config import Config
 from minacode.context import ContextManager
 from minacode.render import UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session, bootstrap_features
-from minacode.tools import MCPTool, ReadTool, Tool, ToolScript, toolblocks
+from minacode.tools import MCPTool, ReadTool, Tool, ToolScript, toolblocks, tooloutput
 
 OUTPUT_SHAPE = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
@@ -668,7 +667,6 @@ class TestScriptLogShape:
         assert not any(line.label.startswith("calls") for line, _ in block.walk())
 
     def test_result_fields_parse_the_envelope(self, tmp_path):
-        s = _mcp_session(tmp_path)
         envelope = "ToolScript ok\ncalls: 3 [tr.1-3]\nstdout:\nfirst\nsecond\nstderr:\nnoise\n"
         assert tooloutput.toolscript_result_fields(envelope) == ("3", "first\nsecond", "")
         assert tooloutput.toolscript_result_fields("ToolScript ok\ncalls: ... +120 keys\n") == ("120", "", "")

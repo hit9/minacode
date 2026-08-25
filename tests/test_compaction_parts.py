@@ -10,9 +10,9 @@ import threading
 import pytest
 from agent_harness import session, session_with_provider
 
+from minacode import compaction
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode import compaction
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,

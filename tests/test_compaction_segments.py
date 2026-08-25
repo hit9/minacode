@@ -15,6 +15,7 @@ from agent_harness import session, session_with_provider
 from test_context import RUNTIME_GENERATED_EVENTS
 
 import minacode.context as context_module
+from minacode import compaction
 from minacode.base import (
     SESSION_EVENT_KEY,
     ModelError,
@@ -26,7 +27,6 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode import compaction
 from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,

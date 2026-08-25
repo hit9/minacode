@@ -5,7 +5,6 @@ import shutil
 import code_symbol_index as csi
 import pytest
 
-from minacode.tools import tooloutput
 from minacode.base import (
     LogBlock,
     LogEdge,
@@ -37,8 +36,9 @@ from minacode.tools import (
     SkillTool,
     Tool,
     ViewImageTool,
-    toolblocks,
     tool_payload,
+    toolblocks,
+    tooloutput,
 )
 
 

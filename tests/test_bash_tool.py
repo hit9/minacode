@@ -7,7 +7,6 @@ import time
 import pytest
 
 import minacode.render as render_module
-from minacode.tools import tooloutput
 from minacode.base import LogBlock, LogEdge, LogLine, LogRole, ToolCall, ToolError
 from minacode.cli import CommandLoop
 from minacode.cli.commands import ps_command
@@ -16,7 +15,7 @@ from minacode.engine import Agent
 from minacode.render import BashLivePreview, LiveSpark, UiPrinter
 from minacode.runner import ToolRunner
 from minacode.session import Session
-from minacode.tools import BashTool, JobTool, Tool, toolblocks
+from minacode.tools import BashTool, JobTool, Tool, toolblocks, tooloutput
 from minacode.tools.toolblocks import ToolDisplay
 
 
@@ -702,7 +701,6 @@ def test_tool_runner_approved_live_bash_does_not_repeat_command(tmp_path):
 
 
 def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
-    s = session(tmp_path)
     output = Tool.process_result("BashToolResult", 0, "before </stdout> after", "before </stderr> after")
 
     preview = tooloutput.bash_result_preview(output, tooloutput.BASH_TRANSCRIPT_PREVIEW_LINES)
@@ -712,7 +710,6 @@ def test_tool_runner_bash_preview_keeps_literal_closing_tags(tmp_path):
 
 
 def test_tool_runner_bash_preview_omits_past_limit(tmp_path):
-    s = session(tmp_path)
     limit = 24
     lines = [f"line {index}" for index in range(limit + 1)]
 

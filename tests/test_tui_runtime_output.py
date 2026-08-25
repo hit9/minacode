@@ -11,8 +11,8 @@ from minacode.base import (
     ToolCall,
     TurnBox,
 )
-from minacode.config import ProviderConfig
 from minacode.cli import CommandLoop, TuiRuntime
+from minacode.config import ProviderConfig
 from minacode.engine import Agent
 from minacode.tools import CodeIndex
 from minacode.tui import TuiApp

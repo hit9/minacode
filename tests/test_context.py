@@ -4,7 +4,7 @@ history index it leaves behind."""
 import json
 import threading
 
-from agent_harness import session, session_with_provider
+from agent_harness import session_with_provider
 
 from minacode.base import Billing
 from minacode.context import ContextManager

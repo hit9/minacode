@@ -2,9 +2,9 @@
 
 from agent_harness import call, session
 
-from minacode.tools import toolblocks, tooloutput
 from minacode.context import ContextManager
 from minacode.runner import ToolRunner
+from minacode.tools import toolblocks, tooloutput
 
 
 def test_tool_runner_refusal_stops_batch_and_invalid_args_are_not_stored(tmp_path):

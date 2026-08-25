@@ -14,6 +14,7 @@ import openai
 import pytest
 from model_harness import _MockClientFactory, _session
 
+from minacode import compaction
 from minacode.base import (
     MODEL_REQUEST_RETRIES,
     RETRY_BASE_DELAY,
@@ -27,7 +28,6 @@ from minacode.config import (
     Config,
 )
 from minacode.context import ContextManager
-from minacode import compaction
 from minacode.model import ModelClient, resilience
 
 
