@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 class WireProtocol(Protocol):
     """One provider wire's complete adapter: construction, sending, and parsing.
 
-    Only `request` is required of every wire so far; the per-wire construction/parsing methods are
-    added to the interface step by step as each adapter's logic moves out of ModelClient and the
-    other adapters grow the same method (Parts C4c-C4e and B).
+    `request` is what api_request hands every request to; `messages` builds the wire's history
+    payload and is shared by all three adapters (the token estimator uses it). Per-wire
+    construction/parsing the other adapters do not share stays off the interface.
     """
 
     def request(
@@ -38,6 +38,8 @@ class WireProtocol(Protocol):
         response_timeout: float | None = None,
         json_object: bool = False,
     ) -> tuple[Json, list[ToolCall], str]: ...
+
+    def messages(self, messages: list[Json], *, text_only: bool | None = None) -> list[Json]: ...
 
 
 class ChatWire:

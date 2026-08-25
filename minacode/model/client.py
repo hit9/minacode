@@ -194,7 +194,7 @@ class ModelClient:
         # bytes away below. Labels preserve the surrounding wire shape; image tiles are added once.
         projected = [{key: value for key, value in message.items() if key != IMAGE_REFS_KEY} for message in messages]
         if api == "responses":
-            payload: Json = {"input": cast(ResponsesWire, self.wire(self.session.config.provider)).messages(Text.value(projected))}
+            payload: Json = {"input": self.wire(self.session.config.provider).messages(Text.value(projected))}
             if request_tools := [*responses.responses_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         elif api == "anthropic":
@@ -220,11 +220,11 @@ class ModelClient:
                             block for block in saved if not isinstance(block, dict) or block.get("type") not in ("thinking", "redacted_thinking")
                         ]
                     estimated_messages.append(estimated)
-            payload = {"system": system, "messages": cast(AnthropicWire, self.wire(self.session.config.provider)).messages(Text.value(estimated_messages))}
+            payload = {"system": system, "messages": self.wire(self.session.config.provider).messages(Text.value(estimated_messages))}
             if request_tools := [*anthropic_module.anthropic_tool_schemas(tools or []), *builtin]:
                 payload["tools"] = request_tools
         else:
-            payload = {"messages": cast(ChatWire, self.wire(self.session.config.provider)).messages(projected)}
+            payload = {"messages": self.wire(self.session.config.provider).messages(projected)}
             if request_tools := [*(tools or []), *builtin]:
                 payload["tools"] = request_tools
 
