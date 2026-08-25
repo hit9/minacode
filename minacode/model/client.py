@@ -40,6 +40,7 @@ from minacode.base import (
 from minacode.config import ProviderConfig
 from minacode.image import IMAGE_REFS_KEY, ImageInputs
 from minacode.model import chat, resilience, responses
+from minacode.model.protocol import AnthropicWire, ChatWire, ResponsesWire, WireProtocol
 from minacode.prompts import COMPACTION_REQUEST_EVENT
 from minacode.providers.catalog import THINKING_BUDGETS
 from minacode.providers.compat import (
@@ -123,6 +124,11 @@ class ModelClient:
         # The effective model the last compaction summary ran on; "" when the last compaction fell
         # back to deterministic trimming or never ran. Recorded on the HistorySegment by callers.
         self.last_compaction_model = ""
+        self._wires: dict[str, WireProtocol] = {
+            "chat": ChatWire(self),
+            "responses": ResponsesWire(self),
+            "anthropic": AnthropicWire(self),
+        }
 
     def cancel(self) -> None:
         self.cancel_requested.set()
@@ -503,6 +509,10 @@ class ModelClient:
             emit=self._emit_stream,
         )
 
+    def wire(self, provider: ProviderConfig) -> WireProtocol:
+        """The adapter for a provider's wire api, selected once per request."""
+        return self._wires[provider.resolve().api]
+
     def api_request(
         self,
         messages: list[Json],
@@ -514,20 +524,14 @@ class ModelClient:
         json_object: bool = False,
     ) -> tuple[Json, list[ToolCall], str]:
         provider = provider if provider is not None else self.session.config.provider
-        api = provider.resolve().api
-        if api == "anthropic":
-            request = self.anthropic_request
-        elif api == "responses":
-            request = self.responses_request
-        else:
-            request = self.chat_request
-        # json_object reaches the Chat wire only. Responses spells the same thing differently and
-        # Anthropic spells it differently again (output_format); neither is wired yet, and passing
-        # an unknown keyword to them would be an error rather than a no-op.
-        extra: Json = {"json_object": True} if json_object and api not in ("anthropic", "responses") else {}
-        if allow_stream and response_timeout is None:
-            return request(messages, tools, provider=provider, **extra)
-        return request(messages, tools, allow_stream=allow_stream, response_timeout=response_timeout, provider=provider, **extra)
+        return self.wire(provider).request(
+            messages,
+            tools,
+            provider=provider,
+            allow_stream=allow_stream,
+            response_timeout=response_timeout,
+            json_object=json_object,
+        )
 
     def responses_request(
         self,
