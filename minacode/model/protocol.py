@@ -169,6 +169,12 @@ class ResponsesWire:
             "model": provider.model,
             "input": self.messages(Text.value(messages), self._client.provider_origin(provider)),
             "stream": stream,
+            # Stateless by design, not to save anything: the wire can retain the conversation and
+            # let a later request name it by id, but session messages are the source of truth, a
+            # sent message is irrevocable, and a resume must rebuild from the snapshot alone.
+            # Server-held state moves the truth off the machine that owns it. Prefix caching is
+            # unaffected -- it keys on the rendered prefix, not on stored conversations. See
+            # DESIGN.md "Cache epochs and breakpoints".
             "store": False,
         }
         if provider.max_tokens > 0:

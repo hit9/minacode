@@ -558,6 +558,12 @@ class ModelClient:
         return [dict(entry) for entry in entries]
 
     def prompt_cache_key(self, provider: ProviderConfig, tools: list[Json] | None) -> str:
+        """The routing hint for prefix caching, or "" when the entry does not define one.
+
+        It steers which machine serves a request so that requests sharing a prefix land together;
+        it does not pin routing and never substitutes for a byte-identical prefix. Everything that
+        changes the rendered prefix therefore belongs in the key -- notably the tool set below.
+        See DESIGN.md "Cache epochs and breakpoints"."""
         configured = provider.prompt_cache_key
         if configured == "off":
             return ""

@@ -144,7 +144,8 @@ def mark_prompt_cache_tail(messages: list[Json]) -> list[Json]:
     and leaves the conversation body -- the part that grows to a hundred thousand tokens -- paid
     for in full on every single turn. This marker writes the history through this turn; the next
     turn's marker reads it back as its prefix, which is what the OpenAI-shaped providers give
-    implicitly. The block is copied rather than annotated in place because assistant blocks are
+    implicitly -- GPT-5.6 and later put their implicit breakpoint at the end of the latest user or
+    tool message, i.e. exactly where this marker goes, which is why only this wire needs it. The block is copied rather than annotated in place because assistant blocks are
     replayed from session state and must not pick up wire-only fields.
     """
     content = messages[-1].get("content") if messages else None

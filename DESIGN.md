@@ -297,6 +297,43 @@ and `Note` updates and resume events are conversation, not context inserted ahea
   Reshaping it discards the cached prefix and reads to the model as a broken tool set; steer with a
   message, never with the schema.
 
+#### Three mechanisms, one rule
+
+Providers differ in *where a prefix may be saved*, never in *what matches*. Every mechanism below
+still requires the entire rendered prefix to be byte-identical, so the layout rule above is the
+only one the context design has to obey.
+
+1. **Implicit breakpoints** (OpenAI-shaped wires). The service picks where to write. Older
+   families place them at model-dependent intervals, so coverage of a long conversation is
+   partial. GPT-5.6 and later place one breakpoint at the end of the latest eligible user or tool
+   message — which in an agent loop is exactly the tail of the previous step, so the whole
+   conversation body is covered without minacode asking for anything.
+2. **Explicit breakpoints.** Anthropic caches only at a marked block, which is why
+   `mark_prompt_cache_tail` exists: the system breakpoint alone would leave the conversation body
+   uncached. GPT-5.6 also accepts explicit markers
+   (`prompt_cache_options.mode: "explicit"` plus `prompt_cache_breakpoint` on a content block),
+   and minacode deliberately does not use them — the implicit breakpoint already lands where the
+   explicit one would, so marking would add a wire-only field for no reuse.
+3. **Server-side conversation state.** The Responses wire can retain the conversation and let a
+   later request reference it by id. minacode sends `store: false` and replays the full history
+   every time. This is not a caching trade-off, it is the projection rule: session messages are
+   the source of truth, a sent message is irrevocable, and a resumed session must reconstruct
+   from the snapshot alone. Server-held state moves the truth off the machine that owns it.
+
+GPT-5.6 specifics worth knowing when reading usage numbers
+([prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)):
+
+- The cacheable minimum is 1,024 visible input tokens, a strict floor (older families: 2,048, and
+  some may cache shorter). Short sessions simply do not cache; that is not a bug to chase.
+- Retention is 30 minutes from the last write or reuse, and `prompt_cache_options.ttl` accepts no
+  other value. Older families default to 24h (`prompt_cache_retention`), or `in_memory` under Zero
+  Data Retention. A session left idle over lunch comes back cold on GPT-5.6 and warm on GPT-5.5 —
+  worth remembering before reading a cache-miss as a layout regression.
+- `prompt_cache_key` influences which machine serves a request; it does not pin routing or
+  guarantee a read hit. It scopes, it never substitutes for an identical prefix.
+- Usage reports `input_tokens_details.cached_tokens` and `.cache_write_tokens`; `ModelUsage.add`
+  already reads both spellings, so no per-family accounting branch is needed.
+
 ### A sent message is irrevocable
 
 Every message that reaches the provider is committed to history in order; there is no
