@@ -13,7 +13,8 @@ from minacode.config import (
     Config,
     ProviderConfig,
 )
-from minacode.model import ModelClient, compaction
+from minacode import compaction
+from minacode.model import ModelClient
 from minacode.render import StatusBar
 from minacode.session import Session, SessionSnapshotCodec
 

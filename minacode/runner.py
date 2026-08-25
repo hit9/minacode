@@ -25,7 +25,6 @@ from minacode.base import (
 )
 from minacode.context import ContextManager
 from minacode.model import ModelClient
-from minacode.model.vision import VisionObserver
 from minacode.session import Session, TurnDiff
 from minacode.tools import (
     TOOL_REGISTRY,
@@ -44,6 +43,7 @@ from minacode.tools import (
 )
 from minacode.tools.editplan import EditBatchPlan
 from minacode.tools.toolblocks import ToolDisplay
+from minacode.vision import VisionObserver
 
 if TYPE_CHECKING:
     from minacode.engine import Agent

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from minacode.base import SESSION_EVENT_KEY, Json, ModelError, ModelResponseTimeout, Text
 from minacode.config import ProviderConfig, compaction_provider_config
-from minacode.model.client import ModelClient
+from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_ECHO_RETRY,
     COMPACTION_PROMPT,

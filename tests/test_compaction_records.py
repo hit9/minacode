@@ -3,7 +3,7 @@
 from agent_harness import session
 
 from minacode.context import ContextManager
-from minacode.model import compaction
+from minacode import compaction
 from minacode.tools import EditTool, ReadTool
 
 

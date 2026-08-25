@@ -25,7 +25,6 @@ from minacode.base import (
 from minacode.context import ContextManager
 from minacode.image import ImageInputs, UserInput
 from minacode.model import ModelClient, PreparedRequest, resilience
-from minacode.model.vision import VisionObserver
 from minacode.prompts import (
     FAILED_TOOL_CALL_RESULT,
     FAILED_TURN_MARKER,
@@ -37,6 +36,7 @@ from minacode.session import QueuedInput, Session, SessionSnapshotCodec
 from minacode.tools import (
     Tool,
 )
+from minacode.vision import VisionObserver
 
 _TEXTUAL_INVOKE_RE = re.compile(
     r"<invoke\s+name\s*=\s*(?P<quote>[\"'])(?P<name>[A-Za-z0-9_.:-]{1,128})(?P=quote)\s*>"

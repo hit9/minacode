@@ -10,7 +10,8 @@ from minacode.base import (
     SESSION_EVENT_KEY,
 )
 from minacode.context import ContextManager
-from minacode.model import ModelClient, compaction
+from minacode import compaction
+from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
     LIVE_FOLLOWUP_PREFIX,

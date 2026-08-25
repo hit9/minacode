@@ -21,7 +21,8 @@ from minacode.config import (
 )
 from minacode.context import ContextManager
 from minacode.engine import Agent
-from minacode.model import ModelClient, compaction
+from minacode import compaction
+from minacode.model import ModelClient
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
 )

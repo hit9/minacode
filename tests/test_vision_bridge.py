@@ -10,7 +10,7 @@ from minacode.config import Config, ProviderConfig
 from minacode.context import ContextManager
 from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_PREFIX, ImageInputs
 from minacode.model import ModelClient
-from minacode.model.vision import VisionObserver
+from minacode.vision import VisionObserver
 from minacode.prompts import VISION_OBSERVE_DEFAULT_QUESTION, VISION_OBSERVE_PROMPT
 from minacode.runner import ToolRunner
 from minacode.session import Session

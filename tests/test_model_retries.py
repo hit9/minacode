@@ -26,7 +26,8 @@ from minacode.base import (
 from minacode.config import (
     Config,
 )
-from minacode.model import ModelClient, compaction, resilience
+from minacode import compaction
+from minacode.model import ModelClient, resilience
 
 
 def test_compaction_does_not_publish_internal_model_output(tmp_path, monkeypatch):

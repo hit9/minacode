@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from prompt_toolkit.utils import get_cwidth
 
+from minacode import compaction
 from minacode.base import (
     HTTP_USER_AGENT,
     SELECTION_BACK,
@@ -48,7 +49,6 @@ from minacode.config import (
     RuntimeSettings,
     compaction_provider_config,
 )
-from minacode.model import compaction
 from minacode.prompts import PREVIOUS_CONTEXT_TRIMMED
 from minacode.providers.compat import builtin_tools_issue
 from minacode.render import markdown_table, progress_bar

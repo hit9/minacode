@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable, Hashable
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
+from minacode import compaction
 from minacode.base import (
     ANTHROPIC_CONTENT_KEY,
     MAX_AGENTS_MD_TOKENS,
@@ -20,7 +21,6 @@ from minacode.base import (
     Text,
 )
 from minacode.image import IMAGE_REFS_KEY, IMAGE_TEXT_ONLY_KEY, TOOL_IMAGE_OBSERVATION_KEY, ImageInputs
-from minacode.model import compaction
 from minacode.prompts import (
     COMPACTION_SUMMARY_TITLE,
     CURRENT_TURN_CONTEXT_TRIMMED,
