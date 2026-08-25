@@ -263,7 +263,6 @@ class Compactor:
         a rendering that drops tool calls -- but the reuse this method is named for does not apply
         there."""
         ctx = self.ctx
-        assert ctx is not None
         if ctx.session.config.compaction_provider or ctx.session.system_info is None:
             return None
         base_system = ctx.session.system_prompt
@@ -314,7 +313,6 @@ class Compactor:
         once when the MINIMUM_RECENT fallback re-split with a different window, and again when the
         split grew a size bound this did not have."""
         ctx = self.ctx
-        assert ctx is not None
         messages = ctx.session.messages if turn_messages is None else turn_messages
         if turn_messages is None and ctx.latest_user_index(messages) is None:
             # parts hands the whole list over when there is no request to keep.
@@ -332,7 +330,6 @@ class Compactor:
         The tail, not the whole span: recency is what the failure follows, and this feeds a
         substring search over a span with no size limit."""
         ctx = self.ctx
-        assert ctx is not None
         index = ctx.latest_user_index(sent)
         tail = sent if index is None else sent[index:]
         return ctx.messages_text(tail)[-4000:]
@@ -340,7 +337,6 @@ class Compactor:
     def parts(self, recent: int | None = None) -> tuple[list[Json], list[Json]]:
         """Split history for manual compaction and the first automatic pass."""
         ctx = self.ctx
-        assert ctx is not None
         messages = ctx.session.messages
         index = ctx.latest_user_index(messages)
         if index is None:
