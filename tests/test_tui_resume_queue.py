@@ -9,7 +9,7 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from tui_harness import loop, session, wait_until
 
-import minacode.cli as loop_module
+import minacode.cli.loop as loop_module
 import minacode.render as render_module
 import minacode.tui.app as tui_module
 from minacode.cli import QUEUE_SAFE_COMMANDS, CommandLoop, TuiRuntime
