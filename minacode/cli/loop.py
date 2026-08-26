@@ -231,12 +231,14 @@ Full documentation: https://minacode.readthedocs.io
             file_matches=self.session.mentions.cached_matches if self.session.mentions else None,
         )
         self.agent.output_fn = self.agent_output
+        self.agent.final_output_fn = self.agent_answer_output
         self.agent.model.on_stream = self.model_stream_output
         self.agent.model.on_builtin_call = self.builtin_call_output
         self.agent.on_queue_flush = self.flush_queued_to_log
         self.agent.context.on_compaction = self.automatic_compaction_status
         self.agent.model.on_retry_wait = self.model_retry_wait_status
         self.agent.on_image_route_notice = self.image_route_notice
+        self.agent.on_tool_batch = self.tool_batch_output
         self.agent.tools.output_fn = self.tool_output
         self.agent.tools.input_fn = self.tool_input
         self.agent.tools.live_start = self.tool_live_start
@@ -752,7 +754,12 @@ Full documentation: https://minacode.readthedocs.io
             return answer[len(promoted) :].strip()
         return answer
 
-    def agent_output(self, text: str = "") -> None:
+    def agent_output(self, text: str = "", *, interim: bool = True) -> None:
+        """A turn's interim narration or its final answer, whichever the engine is publishing:
+        `output_fn` feeds interim text here, and `final_output_fn` routes the answer through the
+        same promotion handling with the flag flipped. Only the flag differs; the answer takes no
+        phase rule below it, because the turn-end rule already closes the turn and two rules in a
+        row would read as a box."""
         # An early promotion is presentation-only: Agent still publishes the same semantic text
         # after ModelClient returns. Consume the one-shot marker instead of printing it twice.
         with self.model_stream_lock:
@@ -763,7 +770,13 @@ Full documentation: https://minacode.readthedocs.io
             if not remaining:
                 return
             text = remaining
-        self.with_status_paused(lambda: self.emit_agent_output(text))
+        emit = self.emit_agent_output if interim else self.emit_agent_answer
+        self.with_status_paused(lambda: emit(text))
+
+    def agent_answer_output(self, text: str = "") -> None:
+        """The turn's final answer: the same markdown rendering as interim narration, but no phase
+        rule below it -- the turn-end rule is already there to close the turn."""
+        self.agent_output(text, interim=False)
 
     def model_stream_output(self, kind: str, text: str) -> None:
         """Update the dim preview or permanently promote a protocol-complete response.
@@ -812,10 +825,48 @@ Full documentation: https://minacode.readthedocs.io
 
         return self.with_status_paused(lambda: self.input_fn(prompt))
 
+    # How close a phase rule may come to the one above it, in rendered rows. Under this the rule
+    # is skipped: two rules a few rows apart part nothing, they just add lines to what is already
+    # a short stretch. The agent saying two things in quick succession is one phase, not two.
+    MIN_ROWS_BETWEEN_RULES: ClassVar[int] = 6
+    # A stretch of tool calls this long, in rendered rows, closes with a phase rule even though
+    # the agent never said anything: while it works in silence, the calls run together into one
+    # column, and the seam is what lets the eye keep its place.
+    TOOL_RUN_RULE_ROWS: ClassVar[int] = 12
+
     def emit_agent_output(self, text: str) -> None:
+        """A turn's interim narration, closed by the same full-width rule the turn ends with minus
+        the label: the narration's own text is the label, so the rule carries none. A rule that
+        would land within MIN_ROWS_BETWEEN_RULES of the one above it is skipped -- two rules a few
+        rows apart part nothing, they just add lines to an already short stretch. The agent saying
+        two things in quick succession is one phase, not two."""
         if self.ui.color and text.strip():
             self.emit()
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
+        # The first narration of a turn has no rule above it to be too close to, so it always
+        # closes with one; later ones are skipped when they would land within
+        # MIN_ROWS_BETWEEN_RULES of the rule above them.
+        if self.ui.color and (not self.ui.turn_rule_drawn or self.ui.rows_since_rule >= self.MIN_ROWS_BETWEEN_RULES):
+            self.ui.emit_phase_rule()
+
+    def emit_agent_answer(self, text: str) -> None:
+        """The turn's final answer: the one block of model text the turn-end rule closes, so it
+        takes no phase rule of its own."""
+        if self.ui.color and text.strip():
+            self.emit()
+        self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
+
+    def tool_batch_output(self) -> None:
+        """Close a run of tool calls that has gone on long enough without the agent saying
+        anything -- the model not recovering is exactly when the transcript needs the seam most,
+        because nothing else is about to provide one. Fires once per batch, after the batch's
+        output is out, so it can never cut a batch in half."""
+
+        def output() -> None:
+            if self.ui.color and self.ui.rows_since_rule >= self.TOOL_RUN_RULE_ROWS:
+                self.ui.emit_phase_rule()
+
+        self.with_status_paused(output)
 
     def worker_answer_output(self, text: str) -> None:
         """The worker's interim and final model text, rendered like an agent answer (markdown) rather than the
