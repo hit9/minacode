@@ -164,6 +164,7 @@ class TuiRuntime:
     def run_agent_turn(self, user_input: str | UserInput) -> None:
         user_input = user_input if isinstance(user_input, UserInput) else UserInput(user_input)
         self.loop.emit("")
+        self.loop.user_turn_rule()
         self.loop.status_bar.begin()
         self.tui.set_running("working")
         started = time.monotonic()

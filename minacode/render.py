@@ -276,6 +276,9 @@ class UiPrinter:
         # Parts/scheduling state are touched from the app loop and the agent thread (enqueue and
         # drain on direct prints/shutdown), so all access goes through this lock.
         self._scrollback_lock = threading.Lock()
+        # Rendered rows since the last full-width rule was drawn. Read by the loop to decide
+        # whether a new rule would land too close to the one above it to be worth drawing.
+        self.rows_since_rule = 0
 
     def drain_scrollback(self) -> None:
         """Synchronously print anything still queued in the batching window.
@@ -387,6 +390,10 @@ class UiPrinter:
         segments = self.log_segments(text) if isinstance(text, LogBlock) else self.segments(text)
         if indent:
             segments = self.indent_segments(segments, LogBlock.margin(indent))
+        # Counted in rendered rows, not in blocks or calls: what decides whether two rules sit too
+        # close is how far apart they are on screen, and one Bash call with its output goes further
+        # than four Reads. A block that wrapped counts the rows it actually took.
+        self.rows_since_rule += sum(fragment.count("\n") for _, fragment in segments)
         if self._batch_parts is not None:
             self._batch_parts.append(FormattedText(segments))
             return
@@ -492,6 +499,7 @@ class UiPrinter:
             # every line that carries no visible characters.
             lines = [line for line in cleaned.split("\n") if self.SGR_RE.sub("", line).strip()]
             cleaned = "\n".join(lines) + "\n"
+        self.rows_since_rule += cleaned.count("\n")
         if self._batch_parts is not None:
             self._batch_parts.append(ANSI(cleaned))
             return
@@ -502,6 +510,32 @@ class UiPrinter:
     # centered: a long trail of dashes runs to the full width, so the rule still closes the turn
     # edge to edge.
     TURN_END_LEAD: ClassVar[int] = 2
+
+    def emit_phase_rule(self) -> None:
+        """Close a stretch of the turn with the same quiet full-width rule the turn ends with,
+        minus the label: the agent's own words -- or, in a long run of silent calls, their
+        absence -- are the label, so the rule carries none. It is drawn below an interim
+        narration the way the turn-end rule is drawn below the answer, and again at a batch
+        boundary when the agent has been working in silence long enough.
+
+        The caller decides whether it would land too close to the rule above it (rule_due);
+        this method only draws what it is told to.
+        """
+        if not self.color:
+            return
+        self.rows_since_rule = 0
+        width = shutil.get_terminal_size((80, 20)).columns
+        fragments = FormattedText([("ansibrightblack", "─" * width + "\n")])
+        if self._batch_parts is not None:
+            self._batch_parts.append(fragments)
+            return
+        self._scrollback_print(fragments)
+
+    def rule_due(self, min_rows: int) -> bool:
+        """Whether a phase rule would land at least `min_rows` rendered rows below the last one
+        drawn, so it is far enough to be worth drawing. Color is part of the answer: without it
+        there are no rules to be close to."""
+        return self.color and self.rows_since_rule >= min_rows
 
     def emit_turn_end(self, started_at: float) -> None:
         """Close the turn with a quiet full-width gray rule carrying its total duration.
@@ -518,6 +552,7 @@ class UiPrinter:
             self.output_fn(label)
             return
         self.emit()
+        self.rows_since_rule = 0
         width = shutil.get_terminal_size((80, 20)).columns
         lead = "─" * self.TURN_END_LEAD + " "
         trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)

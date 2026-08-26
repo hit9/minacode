@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The transcript now parts where the agent actually speaks: an interim reply opens with a
+  full-width rule, the same line the turn's `done in` rule draws but without the label, and the
+  rule lands above the text so it announces the new phase rather than closing the old one. The
+  user's message opens its turn the same way, and a resumed session replays all of them. Two
+  rules closer than about six rendered rows are collapsed to one, and a stretch of about four
+  tool batches with nothing said gets a rule of its own.
+- A call whose arguments span many lines (e.g. a heredoc script) now shows only its first
+  three lines on the call row, followed by `… +N more lines`; the full text is still in the
+  viewer.
+
 ## 0.34.0 - 2026-08-24
 
 ## 0.33.0 - 2026-08-24

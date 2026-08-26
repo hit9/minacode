@@ -83,6 +83,11 @@ class Agent:
         # decision: a reason root line plus an optional described-by child). Wired by the CLI;
         # never enters model context.
         self.on_image_route_notice: Callable[[ImageRouteNotice], None] | None = None
+        # Presentation hook fired once after each tool batch's calls have run and their output is
+        # out, reporting whether the batch spoke (carried text) so silent runs can be told from
+        # voiced ones. A fact, not a decision: whether that boundary is worth drawing anything is
+        # the view's to judge. Wired by the CLI; never enters model context.
+        self.on_tool_batch: Callable[[bool], None] | None = None
         # Sources the provider's own search reported during the last turn, in the order they appeared.
         # The UI renders them under the answer; the turn's stored messages are left untouched.
         self.turn_sources: list[Json] = []
@@ -237,6 +242,8 @@ class Agent:
                     self.output_fn(content.strip())
                 tool_batches += 1
                 tool_messages = self.tools.run(tool_calls, batch_suffix=f"·{tool_batches}" if tool_batches > 1 else "")
+                if self.on_tool_batch is not None:
+                    self.on_tool_batch(not content.strip())
                 turn_messages.extend(tool_messages)
                 # ViewImage observations produced by this batch are current image occurrences for
                 # the next main-model request; their refs feed the 400-eligibility check and the
@@ -389,6 +396,8 @@ class Agent:
         transcript_messages.append(self.transcript_message(assistant_message))
         batches = tool_batches + 1
         result_messages = self.tools.run(tool_calls, batch_suffix=f"\u00b7{batches}" if batches > 1 else "")
+        if self.on_tool_batch is not None:
+            self.on_tool_batch(not answer)
         turn_messages.extend(result_messages)
         transcript_messages.extend(SessionSnapshotCodec.transcript_messages(result_messages))
         self.raise_if_cancelled()

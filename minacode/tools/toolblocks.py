@@ -29,6 +29,15 @@ VIEW_EXCERPT_LINES = 10
 # Slack before clipping is worth it: the `… +N more lines` line costs a row of its own, so
 # hiding one or two lines buys nothing and merely sends the reader to the viewer for them.
 VIEW_EXCERPT_SLACK = 2
+# How many lines of arguments a call's own line shows. A single-line call has always been bounded
+# (short_call clips it to 200 characters); a multi-line one was not, so a forty-line heredoc script
+# went into the transcript whole and buried everything the turn did around it. Three lines keep
+# what identifies the call -- the command, the redirect, the first thing it does -- and the rest is
+# one keypress away in the viewer, which is where the full text has always lived.
+CALL_LINE_MAX_LINES = 3
+# Clipping one line buys nothing: the marker costs a row of its own, so it would trade a line of
+# the command for a line saying a line was hidden.
+CALL_LINE_SLACK = 1
 # The typed protocol, spelled out for runs with no action row to show it: headless, piped stdin.
 # Keyed by the action's answer so the legend can be built from the offered actions and cannot
 # advertise one the call has no use for; ordered here rather than by the row, which leads with
@@ -56,10 +65,24 @@ class ToolDisplay:
     vision_entry: str = ""
 
 
+def clip_call_lines(args: str) -> str:
+    """Bound a call line's arguments to CALL_LINE_MAX_LINES, noting what was left out.
+
+    The transcript is a scarce surface shared by everything else the turn did; one call's script
+    cannot be allowed to take all of it. Nothing is lost: the full text is what the viewer opens.
+    """
+    lines = args.split("\n")
+    if len(lines) <= CALL_LINE_MAX_LINES + CALL_LINE_SLACK:
+        return args
+    hidden = len(lines) - CALL_LINE_MAX_LINES
+    return "\n".join([*lines[:CALL_LINE_MAX_LINES], f"… +{hidden} more lines"])
+
+
 def log_root(display: str, role: LogRole = LogRole.TOOL, batch_suffix: str = "", call: ToolCall | None = None) -> LogLine:
     from minacode.tools import TOOL_REGISTRY  # local import: the registry is built on top of every tool
 
     name, _, args = display.partition(" ")
+    args = clip_call_lines(args)
     tool_class = TOOL_REGISTRY.get(name)
     syntax = ""
     if tool_class is not None:
