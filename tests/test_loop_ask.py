@@ -189,7 +189,8 @@ def test_command_loop_indents_intermediate_and_final_messages(tmp_path):
 def test_colored_assistant_and_tool_blocks_each_start_with_one_blank_line(tmp_path):
     loop = CommandLoop(Agent(session(tmp_path), output_fn=lambda _text: None), output_fn=lambda _text: None)
     loop.ui.color = True
-    loop.ui.emit_phase_rule = lambda: None  # the narration's closing rule is this test's noise
+    loop.ui.emit_phase_rule = lambda: None  # the narration's opening rule is this test's noise
+    loop.ui.rows_since_rule = 1  # not sitting directly under a rule: the blocks need their blank line
     events = []
     loop.emit = lambda text="", indent=0: events.append(text)
     loop.ui.emit_answer = lambda text, **_kwargs: events.append(text)
@@ -246,12 +247,10 @@ def test_user_turn_opens_with_a_phase_rule(tmp_path):
 def test_user_turn_rule_restarts_the_silent_batch_count(tmp_path):
     loop = _colored_loop(tmp_path)
     loop._silent_batches = 3
-    loop._batch_voiced = True
 
     loop.user_turn_rule()
 
     assert loop._silent_batches == 0
-    assert loop._batch_voiced is False
 
 
 def test_interim_narration_skips_the_rule_when_too_close_to_the_last_one(tmp_path):
@@ -290,7 +289,7 @@ def test_tool_batch_closes_a_long_silent_run_with_a_phase_rule(tmp_path):
     loop.ui.emit_phase_rule = lambda: rules.append(1)
     loop._silent_batches = loop.TOOL_RUN_RULE_BATCHES - 1
 
-    loop.tool_batch_output()
+    loop.tool_batch_output(True)
 
     assert rules == [1]
 
@@ -301,24 +300,23 @@ def test_tool_batch_keeps_a_short_silent_run_together(tmp_path):
     loop.ui.emit_phase_rule = lambda: rules.append(1)
     loop._silent_batches = loop.TOOL_RUN_RULE_BATCHES - 2
 
-    loop.tool_batch_output()
+    loop.tool_batch_output(True)
 
     assert rules == []
 
 
 def test_a_voiced_batch_is_not_silent(tmp_path):
-    """A batch whose narration already ran reports through the same hook but does not count
+    """A batch that carried narration reports through the same hook but does not count
     toward the silent run: the agent said something, so the seam is not needed yet."""
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
     loop._silent_batches = loop.TOOL_RUN_RULE_BATCHES - 1
 
-    loop.emit_agent_output("Working on it.")
-    loop.tool_batch_output()
+    loop.tool_batch_output(False)
 
     assert rules == []
-    assert loop._silent_batches == 0
+    assert loop._silent_batches == loop.TOOL_RUN_RULE_BATCHES - 1
 
 
 def test_engine_routes_the_answer_and_batch_end_to_the_loop(tmp_path):
@@ -400,9 +398,9 @@ def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(loop.ui.rows_since_rule)
-    batch_ends = []
+    silences = []
     on_batch = loop.agent.on_tool_batch
-    loop.agent.on_tool_batch = lambda: (on_batch(), batch_ends.append(1))
+    loop.agent.on_tool_batch = lambda silent: (on_batch(silent), silences.append(silent))
 
     class FakeModel:
         on_stream = None
@@ -432,7 +430,7 @@ def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
     assert rules[0] == 0  # the user's rule always draws; the first narration lands too close to it and is skipped
     assert rules[1] >= loop.MIN_ROWS_BETWEEN_RULES  # the second narration's rule
     assert rules[2] >= loop.MIN_ROWS_BETWEEN_RULES  # the silent run's rule
-    assert batch_ends == [1, 1, 1, 1, 1, 1]
+    assert silences == [False, False, True, True, True, True]  # narration batches voiced, the rest silent
 
 
 def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_path):

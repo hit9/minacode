@@ -195,10 +195,9 @@ Full documentation: https://minacode.readthedocs.io
         self.live_status_paused = False
         self.compaction_active = False
         self.script_active = False
-        # Tool batches since the agent last said anything, and whether the batch now ending spoke.
-        # A long run of silent batches closes with a phase rule; one narration resets the count.
+        # Tool batches the agent worked through in silence since it last said anything. A long run
+        # of silent batches closes with a phase rule; one narration resets the count.
         self._silent_batches = 0
-        self._batch_voiced = False
         # The source of the ToolScript body running right now, so Ctrl-O can offer it before it
         # finishes and becomes a stored record. Empty whenever no script is running.
         self.script_running_code = ""
@@ -575,7 +574,7 @@ Full documentation: https://minacode.readthedocs.io
             # Every assistant message sits in the content column, final answer included, so a
             # resumed session reads exactly like the live one. The turn's own text all shares that
             # column with the user's message, whose `• ` bullet hangs in the same two-space margin.
-            if self.ui.color:
+            if self.ui.color and self.ui.rows_since_rule > 0:
                 self.emit()  # the blank line the live narration and answer open with
             # An assistant message that carries tool calls is interim narration, not the answer:
             # the resumed session draws the same phase rule above it the live turn did (the rule
@@ -594,6 +593,8 @@ Full documentation: https://minacode.readthedocs.io
                 else:
                     self._silent_batches += 1
                     if self._silent_batches >= self.TOOL_RUN_RULE_BATCHES:
+                        if self.ui.color:
+                            self.emit("")
                         self.ui.emit_phase_rule()
                         self._silent_batches = 0
             return tool_record_index
@@ -756,7 +757,10 @@ Full documentation: https://minacode.readthedocs.io
 
     def tool_output(self, text: str | LogBlock = "") -> None:
         def output() -> None:
-            if self.ui.color and (isinstance(text, str) or (text.items and isinstance(text.items[0], LogLine))):
+            # The blank line parts each block from the one above; it is skipped when the block
+            # sits directly under a rule just drawn (the turn's opening rule, or a batch rule),
+            # which already provides the seam.
+            if self.ui.color and self.ui.rows_since_rule > 0 and (isinstance(text, str) or (text.items and isinstance(text.items[0], LogLine))):
                 self.emit()
             self.emit(text)
 
@@ -872,10 +876,13 @@ Full documentation: https://minacode.readthedocs.io
         that would land within MIN_ROWS_BETWEEN_RULES of the one above it is skipped -- two rules a
         few rows apart part nothing, they just add lines to an already short stretch. The agent
         saying two things in quick succession is one phase, not two."""
-        if self.ui.color and text.strip():
+        # The narration breaks a run of silent tool batches: the agent spoke, so the count starts
+        # over (the batch itself is reported voiced through on_tool_batch, not by this flag). The
+        # blank line above parts it from the previous block unless it sits directly under a rule
+        # just drawn, which already provides the seam.
+        if self.ui.color and text.strip() and self.ui.rows_since_rule > 0:
             self.emit()
         self._silent_batches = 0
-        self._batch_voiced = True
         # The rule opens the text, so the distance check runs before it is drawn; the blank line
         # above already counts, the text's own rows count toward the next rule.
         if self.ui.rule_due(self.MIN_ROWS_BETWEEN_RULES):
@@ -885,7 +892,7 @@ Full documentation: https://minacode.readthedocs.io
     def emit_agent_answer(self, text: str) -> None:
         """The turn's final answer: the one block of model text the turn-end rule closes, so it
         takes no phase rule of its own."""
-        if self.ui.color and text.strip():
+        if self.ui.color and text.strip() and self.ui.rows_since_rule > 0:
             self.emit()
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
@@ -893,24 +900,25 @@ Full documentation: https://minacode.readthedocs.io
         """Open the turn with the same full-width rule under the user's message: the seam between
         what the user said and everything the agent does in reply. It always draws -- the user's
         message is the top boundary of the turn, so every later rule measures its distance from
-        it -- and it restarts the silent-batch count for the turn."""
+        it -- and it restarts the silent-batch count for the turn. The blank line above it is the
+        turn-opening line the loop emits first."""
         self._silent_batches = 0
-        self._batch_voiced = False
         self.ui.emit_phase_rule()
 
-    def tool_batch_output(self) -> None:
+    def tool_batch_output(self, silent: bool) -> None:
         """Close a run of tool calls that has gone on long enough without the agent saying
         anything -- the model not recovering is exactly when the transcript needs the seam most,
         because nothing else is about to provide one. Fires once per batch, after the batch's
-        output is out, so it can never cut a batch in half."""
+        output is out, so it can never cut a batch in half. `silent` is whether the batch carried
+        no narration; a batch that spoke restarts nothing and counts nothing."""
 
         def output() -> None:
-            if self._batch_voiced:
-                # This batch's narration already ran; the batch spoke, so it is not silent.
-                self._batch_voiced = False
+            if not silent:
                 return
             self._silent_batches += 1
             if self._silent_batches >= self.TOOL_RUN_RULE_BATCHES:
+                if self.ui.color:
+                    self.emit("")
                 self.ui.emit_phase_rule()
                 self._silent_batches = 0
 

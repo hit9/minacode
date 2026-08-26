@@ -59,11 +59,11 @@ def test_all_next_hints_batch_with_answer_ends_turn_in_single_model_call(tmp_pat
             return {"role": "assistant", "content": "all done"}, [call("NextHints", [{"inputs": ["run tests"]}])], "all done"
 
     agent.model = FakeModel()
-    batch_ends = []
-    agent.on_tool_batch = lambda: batch_ends.append(1)
+    silences = []
+    agent.on_tool_batch = lambda silent: silences.append(silent)
     assert agent.run("do it") == "all done"
     assert len(agent.model.messages) == 1  # finished on the first call, no extra round trip
-    assert batch_ends == [1]  # the NextHints batch still reports its end through the hook
+    assert silences == [False]  # the batch carried the answer, so it is not a silent batch
     assert s.quick_hints == ("run tests",)
     assert [m["role"] for m in s.messages] == ["user", "assistant", "tool", "assistant"]
     assert s.messages[-1]["content"] == "all done"
