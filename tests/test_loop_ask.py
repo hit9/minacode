@@ -464,18 +464,24 @@ def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_path):
     )
     assert len(rules) == 1
 
-    # Interim narration closes with a rule once it is far enough from the user's rule; a list
+    # Interim narration opens with a rule once it is far enough from the rule above: the first
+    # narration lands too close to the user's rule to draw, the second one clears it. A list
     # keeps its per-item lines instead of being folded into one paragraph by markdown.
     rules = rules_for(
         [
             {"role": "user", "content": "q1"},
-            {"role": "assistant", "content": "- " + "\n- ".join(f"point {i}" for i in range(7)), "tool_calls": [tool_call(1)]},
+            {
+                "role": "assistant",
+                "content": "- " + "\n- ".join(f"point {i}" for i in range(5)),
+                "tool_calls": [tool_call(1)],
+            },
+            {"role": "assistant", "content": "later narration", "tool_calls": [tool_call(2)]},
             {"role": "assistant", "content": "answer"},
         ],
-        [record()],
+        [record(), record()],
     )
     assert len(rules) == 2
-    assert rules[1] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the narration's rule is far enough
+    assert rules[1] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the second narration's rule is far enough
 
     # A silent run of four tool batches closes with the batch rule.
     rules = rules_for(

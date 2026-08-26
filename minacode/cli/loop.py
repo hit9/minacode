@@ -439,8 +439,8 @@ Full documentation: https://minacode.readthedocs.io
                 return 0
             if handled:
                 continue
-            self.user_turn_rule()
             self.emit("")
+            self.user_turn_rule()
             started = time.monotonic()
             malformed_tool_call = False
             answered = False
@@ -575,12 +575,14 @@ Full documentation: https://minacode.readthedocs.io
             # Every assistant message sits in the content column, final answer included, so a
             # resumed session reads exactly like the live one. The turn's own text all shares that
             # column with the user's message, whose `• ` bullet hangs in the same two-space margin.
-            self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL)
+            if self.ui.color:
+                self.emit()  # the blank line the live narration and answer open with
             # An assistant message that carries tool calls is interim narration, not the answer:
-            # the resumed session draws the same phase rule under it the live turn did, skipping
-            # it only when it would land too close to the rule above it.
+            # the resumed session draws the same phase rule above it the live turn did (the rule
+            # opens the text), skipping it only when it would land too close to the rule above.
             if message.get("tool_calls") and self.ui.rule_due(self.MIN_ROWS_BETWEEN_RULES):
                 self.ui.emit_phase_rule()
+            self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL)
         if role == "assistant":
             tool_record_index = self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {}, dry_run=dry_run)
             if not dry_run and message.get("tool_calls"):
@@ -599,9 +601,11 @@ Full documentation: https://minacode.readthedocs.io
             # The follow-up marker is model-facing context, part of history because it was sent.
             # The scrollback shows what the user typed, exactly as it looked when they typed it.
             self.ui.emit_answer(content.removeprefix(LIVE_FOLLOWUP_PREFIX.strip()).lstrip(), role=role, rule=False)
-            # The user's message opens its turn with the same rule the live turn opened with; the
-            # silent-batch count starts over with the turn.
+            # The user's message opens its turn with the same rule the live turn opened with: a
+            # blank line, then the rule under the message, and the silent-batch count restarts.
             self._silent_batches = 0
+            if self.ui.color:
+                self.emit("")
             self.ui.emit_phase_rule()
         return tool_record_index
 
@@ -862,22 +866,21 @@ Full documentation: https://minacode.readthedocs.io
     TOOL_RUN_RULE_BATCHES: ClassVar[int] = 4
 
     def emit_agent_output(self, text: str) -> None:
-        """A turn's interim narration, closed by the same full-width rule the turn ends with minus
-        the label: the narration's own text is the label, so the rule carries none. A rule that
-        would land within MIN_ROWS_BETWEEN_RULES of the one above it is skipped -- two rules a few
-        rows apart part nothing, they just add lines to an already short stretch. The agent saying
-        two things in quick succession is one phase, not two."""
+        """A turn's interim narration, opened by the same full-width rule the turn ends with minus
+        the label: the rule lands above the text, so it announces the new phase instead of closing
+        the old one, and the narration's own text is the label, so the rule carries none. A rule
+        that would land within MIN_ROWS_BETWEEN_RULES of the one above it is skipped -- two rules a
+        few rows apart part nothing, they just add lines to an already short stretch. The agent
+        saying two things in quick succession is one phase, not two."""
         if self.ui.color and text.strip():
             self.emit()
-        self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
-        # The narration breaks a run of silent tool batches: the agent spoke, so the silent-batch
-        # count starts over, and the batch now ending is voiced rather than silent. The rule is
-        # skipped when it would land within MIN_ROWS_BETWEEN_RULES of the one above it (the turn's
-        # opening rule under the user's message included).
         self._silent_batches = 0
         self._batch_voiced = True
+        # The rule opens the text, so the distance check runs before it is drawn; the blank line
+        # above already counts, the text's own rows count toward the next rule.
         if self.ui.rule_due(self.MIN_ROWS_BETWEEN_RULES):
             self.ui.emit_phase_rule()
+        self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
     def emit_agent_answer(self, text: str) -> None:
         """The turn's final answer: the one block of model text the turn-end rule closes, so it
