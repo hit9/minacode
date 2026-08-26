@@ -846,7 +846,7 @@ Full documentation: https://minacode.readthedocs.io
         # The first narration of a turn has no rule above it to be too close to, so it always
         # closes with one; later ones are skipped when they would land within
         # MIN_ROWS_BETWEEN_RULES of the rule above them.
-        if self.ui.color and (not self.ui.turn_rule_drawn or self.ui.rows_since_rule >= self.MIN_ROWS_BETWEEN_RULES):
+        if not self.ui.turn_rule_drawn or self.ui.rule_due(self.MIN_ROWS_BETWEEN_RULES):
             self.ui.emit_phase_rule()
 
     def emit_agent_answer(self, text: str) -> None:
@@ -863,7 +863,7 @@ Full documentation: https://minacode.readthedocs.io
         output is out, so it can never cut a batch in half."""
 
         def output() -> None:
-            if self.ui.color and self.ui.rows_since_rule >= self.TOOL_RUN_RULE_ROWS:
+            if self.ui.rule_due(self.TOOL_RUN_RULE_ROWS):
                 self.ui.emit_phase_rule()
 
         self.with_status_paused(output)

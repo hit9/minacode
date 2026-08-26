@@ -331,6 +331,17 @@ def test_emit_counts_rendered_rows_toward_rule_distance(tmp_path):
     assert loop.ui.rows_since_rule == 3
 
 
+def test_rule_due_reports_whether_a_rule_would_land_far_enough(tmp_path):
+    """The distance query is the one place a phase rule's spacing is judged: color off never
+    draws (there are no rules to be close to), and the threshold is inclusive."""
+    loop = _colored_loop(tmp_path)
+    assert not loop.ui.rule_due(loop.MIN_ROWS_BETWEEN_RULES)
+    loop.ui.rows_since_rule = loop.MIN_ROWS_BETWEEN_RULES
+    assert loop.ui.rule_due(loop.MIN_ROWS_BETWEEN_RULES)
+    loop.ui.color = False
+    assert not loop.ui.rule_due(loop.MIN_ROWS_BETWEEN_RULES)
+
+
 def test_turn_end_rule_resets_rule_distance(tmp_path):
     """The turn-end rule is a solid rule like any other, so the distance counter starts over at
     the close of a turn rather than carrying the whole turn's length into the next one."""

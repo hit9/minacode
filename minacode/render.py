@@ -522,8 +522,8 @@ class UiPrinter:
         narration the way the turn-end rule is drawn below the answer, and again at a batch
         boundary when the agent has been working in silence long enough.
 
-        The caller decides whether it would land too close to the rule above it; this method
-        only draws what it is told to.
+        The caller decides whether it would land too close to the rule above it (rule_due);
+        this method only draws what it is told to.
         """
         if not self.color:
             return
@@ -535,6 +535,12 @@ class UiPrinter:
             self._batch_parts.append(fragments)
             return
         self._scrollback_print(fragments)
+
+    def rule_due(self, min_rows: int) -> bool:
+        """Whether a phase rule would land at least `min_rows` rendered rows below the last one
+        drawn, so it is far enough to be worth drawing. Color is part of the answer: without it
+        there are no rules to be close to."""
+        return self.color and self.rows_since_rule >= min_rows
 
     def emit_turn_end(self, started_at: float) -> None:
         """Close the turn with a quiet full-width gray rule carrying its total duration.
@@ -579,8 +585,6 @@ class UiPrinter:
             self.output_fn(label)
             return
         self.emit()
-        self.rows_since_rule = 0
-        self.turn_rule_drawn = True
         width = shutil.get_terminal_size((80, 20)).columns
         limit = max(1, width - 6)
         if get_cwidth(label) > limit:
