@@ -279,10 +279,6 @@ class UiPrinter:
         # Rendered rows since the last full-width rule was drawn. Read by the loop to decide
         # whether a new rule would land too close to the one above it to be worth drawing.
         self.rows_since_rule = 0
-        # Whether any full-width rule has been drawn since the turn began. The first narration
-        # of a turn has no rule above it to be too close to, so it always closes with one; the
-        # distance check applies from the second rule on.
-        self.turn_rule_drawn = False
 
     def drain_scrollback(self) -> None:
         """Synchronously print anything still queued in the batching window.
@@ -528,7 +524,6 @@ class UiPrinter:
         if not self.color:
             return
         self.rows_since_rule = 0
-        self.turn_rule_drawn = True
         width = shutil.get_terminal_size((80, 20)).columns
         fragments = FormattedText([("ansibrightblack", "─" * width + "\n")])
         if self._batch_parts is not None:
@@ -558,7 +553,6 @@ class UiPrinter:
             return
         self.emit()
         self.rows_since_rule = 0
-        self.turn_rule_drawn = False
         width = shutil.get_terminal_size((80, 20)).columns
         lead = "─" * self.TURN_END_LEAD + " "
         trail = max(0, width - get_cwidth(lead) - get_cwidth(label) - 1)

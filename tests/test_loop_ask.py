@@ -1,4 +1,5 @@
 """loop ask (split from tests/test_loop_commands.py)."""
+import json
 import time
 from types import SimpleNamespace
 
@@ -221,7 +222,6 @@ def test_interim_narration_closes_with_a_phase_rule_when_far_from_last_rule(tmp_
     loop.ui.emit_phase_rule = lambda: rules.append(1)
     # A rule has already been drawn this turn, so distance applies; one row short of the
     # threshold before the blank line and the narration itself count.
-    loop.ui.turn_rule_drawn = True
     loop.ui.rows_since_rule = loop.MIN_ROWS_BETWEEN_RULES - 1
 
     loop.emit_agent_output("Working on it.")
@@ -229,17 +229,29 @@ def test_interim_narration_closes_with_a_phase_rule_when_far_from_last_rule(tmp_
     assert rules == [1]
 
 
-def test_first_narration_of_a_turn_closes_even_when_short(tmp_path):
-    """The turn's first narration has no rule above it to be too close to, so it always closes
-    with one -- the distance rule governs the second rule on, not the first."""
+def test_user_turn_opens_with_a_phase_rule(tmp_path):
+    """The turn's opening rule sits under the user's message and always draws: the user's
+    message is the top boundary of the turn, so every later rule measures its distance from it
+    rather than the first narration being special-cased."""
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
-    loop.ui.rows_since_rule = 0
+    loop.ui.rows_since_rule = 100
 
-    loop.emit_agent_output("Working on it.")
+    loop.user_turn_rule()
 
     assert rules == [1]
+
+
+def test_user_turn_rule_restarts_the_silent_batch_count(tmp_path):
+    loop = _colored_loop(tmp_path)
+    loop._silent_batches = 3
+    loop._batch_voiced = True
+
+    loop.user_turn_rule()
+
+    assert loop._silent_batches == 0
+    assert loop._batch_voiced is False
 
 
 def test_interim_narration_skips_the_rule_when_too_close_to_the_last_one(tmp_path):
@@ -249,7 +261,6 @@ def test_interim_narration_skips_the_rule_when_too_close_to_the_last_one(tmp_pat
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
-    loop.ui.turn_rule_drawn = True
     loop.ui.rows_since_rule = 0
 
     loop.emit_agent_output("Working on it.")
@@ -271,28 +282,43 @@ def test_final_answer_takes_no_phase_rule(tmp_path):
 
 
 def test_tool_batch_closes_a_long_silent_run_with_a_phase_rule(tmp_path):
-    """While the agent works in silence its calls run together; a stretch of tool output past
-    TOOL_RUN_RULE_ROWS gets the same seam, fired after the batch's output is out so a batch is
-    never cut in half."""
+    """While the agent works in silence its calls run together; a stretch of silent tool
+    batches -- the model never saying anything back -- closes with the same seam, fired after
+    the batch's output is out so a batch is never cut in half."""
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
-    loop.ui.rows_since_rule = loop.TOOL_RUN_RULE_ROWS
+    loop._silent_batches = loop.TOOL_RUN_RULE_BATCHES - 1
 
     loop.tool_batch_output()
 
     assert rules == [1]
 
 
-def test_tool_batch_keeps_a_short_run_together(tmp_path):
+def test_tool_batch_keeps_a_short_silent_run_together(tmp_path):
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
-    loop.ui.rows_since_rule = loop.TOOL_RUN_RULE_ROWS - 1
+    loop._silent_batches = loop.TOOL_RUN_RULE_BATCHES - 2
 
     loop.tool_batch_output()
 
     assert rules == []
+
+
+def test_a_voiced_batch_is_not_silent(tmp_path):
+    """A batch whose narration already ran reports through the same hook but does not count
+    toward the silent run: the agent said something, so the seam is not needed yet."""
+    loop = _colored_loop(tmp_path)
+    rules = []
+    loop.ui.emit_phase_rule = lambda: rules.append(1)
+    loop._silent_batches = loop.TOOL_RUN_RULE_BATCHES - 1
+
+    loop.emit_agent_output("Working on it.")
+    loop.tool_batch_output()
+
+    assert rules == []
+    assert loop._silent_batches == 0
 
 
 def test_engine_routes_the_answer_and_batch_end_to_the_loop(tmp_path):
@@ -359,7 +385,6 @@ def test_worker_interim_output_gets_the_same_phase_rule(tmp_path):
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(1)
-    loop.ui.turn_rule_drawn = True
     loop.ui.rows_since_rule = loop.MIN_ROWS_BETWEEN_RULES - 1
 
     loop.worker_answer_output("working")
@@ -367,11 +392,11 @@ def test_worker_interim_output_gets_the_same_phase_rule(tmp_path):
     assert rules == [1]
 
 
-def test_full_turn_parts_at_narration_and_after_long_silent_tool_runs(tmp_path):
-    """End to end through the engine: every interim narration closes with a phase rule -- the
-    first of the turn unconditionally, later ones once they are far enough from the rule above --
-    a run of tool calls long enough closes with one too, and the final answer takes none. Every
-    tool batch reports its end through the engine hook."""
+def test_full_turn_parts_at_user_rule_narration_and_silent_batches(tmp_path):
+    """End to end through the engine: the turn opens with the user's rule, every interim
+    narration closes with one once it is far enough from the rule above, a run of silent tool
+    batches closes with one too, and the final answer takes none. Every tool batch reports its
+    end through the engine hook."""
     loop = _colored_loop(tmp_path)
     rules = []
     loop.ui.emit_phase_rule = lambda: rules.append(loop.ui.rows_since_rule)
@@ -390,7 +415,9 @@ def test_full_turn_parts_at_narration_and_after_long_silent_tool_runs(tmp_path):
             if self.calls == 1:
                 return {}, [ToolCall("c1", "Bash", ["printf nar1"])], "先看入口。"
             if self.calls == 2:
-                return {}, [ToolCall("c2", "Bash", ["printf nar2"]), ToolCall("c3", "Bash", ["printf nar3"])], "这里接着读。"
+                return {}, [ToolCall("c2", "Bash", ["printf nar2"])], "这里接着读。"
+            if self.calls <= 6:
+                return {}, [ToolCall(f"c{self.calls}", "Bash", ["printf silent"])], ""
             return {"role": "assistant", "content": "改完了。"}, [], "改完了。"
 
         def estimated_request_tokens(self, messages, tools=None):
@@ -398,10 +425,66 @@ def test_full_turn_parts_at_narration_and_after_long_silent_tool_runs(tmp_path):
 
     loop.agent.model = FakeModel()
 
+    loop.user_turn_rule()  # the turn's opening rule, drawn under the user's message
     assert loop.agent.run("x") == "改完了。"
 
-    assert len(rules) == 3
-    assert rules[0] < loop.MIN_ROWS_BETWEEN_RULES  # the turn's first narration, drawn unconditionally
+    assert len(rules) == 3  # user rule, the second narration's rule, the silent run's rule
+    assert rules[0] == 0  # the user's rule always draws; the first narration lands too close to it and is skipped
     assert rules[1] >= loop.MIN_ROWS_BETWEEN_RULES  # the second narration's rule
-    assert rules[2] >= loop.TOOL_RUN_RULE_ROWS  # the long silent batch's rule
-    assert batch_ends == [1, 1]
+    assert rules[2] >= loop.MIN_ROWS_BETWEEN_RULES  # the silent run's rule
+    assert batch_ends == [1, 1, 1, 1, 1, 1]
+
+
+def test_resumed_session_draws_user_narration_and_silent_batch_rules(tmp_path):
+    """A resumed session replays its turns with the same phase rules the live run drew: the
+    user's message opens each turn with a rule, interim narration closes with one once it is
+    far enough from the rule above, and a silent run of tool batches closes with the batch
+    rule -- even though the engine never runs again."""
+    from minacode.session import ToolResultRecord
+
+    def rules_for(messages, records):
+        loop = _colored_loop(tmp_path)
+        s = loop.session
+        s.resumed = True
+        s.transcript_messages = messages
+        s.tool_records = records
+        rules = []
+        real_rule = loop.ui.emit_phase_rule
+        loop.ui.emit_phase_rule = lambda: (rules.append(loop.ui.rows_since_rule), real_rule())
+        loop.render_resumed_session()
+        return rules
+
+    tool_call = lambda i: {"id": f"c{i}", "type": "function", "function": {"name": "Bash", "arguments": json.dumps([f"printf {i}"])}}
+    record = lambda: ToolResultRecord(key="tr.1", name="Bash", args=[["printf x"]], output="x")
+
+    # The user's message opens the turn with a rule even when nothing else draws.
+    rules = rules_for(
+        [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "answer"}],
+        [],
+    )
+    assert len(rules) == 1
+
+    # Interim narration closes with a rule once it is far enough from the user's rule; a list
+    # keeps its per-item lines instead of being folded into one paragraph by markdown.
+    rules = rules_for(
+        [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "- " + "\n- ".join(f"point {i}" for i in range(7)), "tool_calls": [tool_call(1)]},
+            {"role": "assistant", "content": "answer"},
+        ],
+        [record()],
+    )
+    assert len(rules) == 2
+    assert rules[1] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the narration's rule is far enough
+
+    # A silent run of four tool batches closes with the batch rule.
+    rules = rules_for(
+        [
+            {"role": "user", "content": "q1"},
+            *[{"role": "assistant", "content": "", "tool_calls": [tool_call(i)]} for i in range(1, 5)],
+            {"role": "assistant", "content": "answer"},
+        ],
+        [record()] * 4,
+    )
+    assert len(rules) == 2
+    assert rules[1] >= CommandLoop.MIN_ROWS_BETWEEN_RULES  # the silent run's rule is far enough

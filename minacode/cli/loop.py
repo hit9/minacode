@@ -195,6 +195,10 @@ Full documentation: https://minacode.readthedocs.io
         self.live_status_paused = False
         self.compaction_active = False
         self.script_active = False
+        # Tool batches since the agent last said anything, and whether the batch now ending spoke.
+        # A long run of silent batches closes with a phase rule; one narration resets the count.
+        self._silent_batches = 0
+        self._batch_voiced = False
         # The source of the ToolScript body running right now, so Ctrl-O can offer it before it
         # finishes and becomes a stored record. Empty whenever no script is running.
         self.script_running_code = ""
@@ -435,6 +439,7 @@ Full documentation: https://minacode.readthedocs.io
                 return 0
             if handled:
                 continue
+            self.user_turn_rule()
             self.emit("")
             started = time.monotonic()
             malformed_tool_call = False
@@ -571,12 +576,33 @@ Full documentation: https://minacode.readthedocs.io
             # resumed session reads exactly like the live one. The turn's own text all shares that
             # column with the user's message, whose `• ` bullet hangs in the same two-space margin.
             self.ui.emit_answer(content, role=role, rule=False, indent=TurnBox.CONTENT_LEVEL)
+            # An assistant message that carries tool calls is interim narration, not the answer:
+            # the resumed session draws the same phase rule under it the live turn did, skipping
+            # it only when it would land too close to the rule above it.
+            if message.get("tool_calls") and self.ui.rule_due(self.MIN_ROWS_BETWEEN_RULES):
+                self.ui.emit_phase_rule()
         if role == "assistant":
-            return self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {}, dry_run=dry_run)
+            tool_record_index = self.render_transcript_tool_calls(message, tool_record_index, diffs or {}, tool_results or {}, dry_run=dry_run)
+            if not dry_run and message.get("tool_calls"):
+                # Each tool-bearing assistant message is one batch in the replay: a voiced one
+                # (it carried narration) restarts the silent count, a silent run of four closes
+                # with the same batch rule the live turn drew.
+                if content:
+                    self._silent_batches = 0
+                else:
+                    self._silent_batches += 1
+                    if self._silent_batches >= self.TOOL_RUN_RULE_BATCHES:
+                        self.ui.emit_phase_rule()
+                        self._silent_batches = 0
+            return tool_record_index
         if role == "user" and content and not ImageInputs.is_tool_observation(message) and not dry_run:
             # The follow-up marker is model-facing context, part of history because it was sent.
             # The scrollback shows what the user typed, exactly as it looked when they typed it.
             self.ui.emit_answer(content.removeprefix(LIVE_FOLLOWUP_PREFIX.strip()).lstrip(), role=role, rule=False)
+            # The user's message opens its turn with the same rule the live turn opened with; the
+            # silent-batch count starts over with the turn.
+            self._silent_batches = 0
+            self.ui.emit_phase_rule()
         return tool_record_index
 
     def render_transcript_tool_calls(
@@ -829,10 +855,11 @@ Full documentation: https://minacode.readthedocs.io
     # is skipped: two rules a few rows apart part nothing, they just add lines to what is already
     # a short stretch. The agent saying two things in quick succession is one phase, not two.
     MIN_ROWS_BETWEEN_RULES: ClassVar[int] = 6
-    # A stretch of tool calls this long, in rendered rows, closes with a phase rule even though
-    # the agent never said anything: while it works in silence, the calls run together into one
-    # column, and the seam is what lets the eye keep its place.
-    TOOL_RUN_RULE_ROWS: ClassVar[int] = 12
+    # How many tool batches in a row the agent can work in silence before a phase rule closes the
+    # stretch. Rendered rows would punish one big output and reward many small ones; what matters
+    # is that the model keeps calling tools without ever saying anything back, so the count is of
+    # batches, not lines. Fired after the batch's output is out, so a batch is never cut in half.
+    TOOL_RUN_RULE_BATCHES: ClassVar[int] = 4
 
     def emit_agent_output(self, text: str) -> None:
         """A turn's interim narration, closed by the same full-width rule the turn ends with minus
@@ -843,10 +870,13 @@ Full documentation: https://minacode.readthedocs.io
         if self.ui.color and text.strip():
             self.emit()
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
-        # The first narration of a turn has no rule above it to be too close to, so it always
-        # closes with one; later ones are skipped when they would land within
-        # MIN_ROWS_BETWEEN_RULES of the rule above them.
-        if not self.ui.turn_rule_drawn or self.ui.rule_due(self.MIN_ROWS_BETWEEN_RULES):
+        # The narration breaks a run of silent tool batches: the agent spoke, so the silent-batch
+        # count starts over, and the batch now ending is voiced rather than silent. The rule is
+        # skipped when it would land within MIN_ROWS_BETWEEN_RULES of the one above it (the turn's
+        # opening rule under the user's message included).
+        self._silent_batches = 0
+        self._batch_voiced = True
+        if self.ui.rule_due(self.MIN_ROWS_BETWEEN_RULES):
             self.ui.emit_phase_rule()
 
     def emit_agent_answer(self, text: str) -> None:
@@ -856,6 +886,15 @@ Full documentation: https://minacode.readthedocs.io
             self.emit()
         self.ui.emit_answer(text, rule=False, indent=TurnBox.CONTENT_LEVEL)
 
+    def user_turn_rule(self) -> None:
+        """Open the turn with the same full-width rule under the user's message: the seam between
+        what the user said and everything the agent does in reply. It always draws -- the user's
+        message is the top boundary of the turn, so every later rule measures its distance from
+        it -- and it restarts the silent-batch count for the turn."""
+        self._silent_batches = 0
+        self._batch_voiced = False
+        self.ui.emit_phase_rule()
+
     def tool_batch_output(self) -> None:
         """Close a run of tool calls that has gone on long enough without the agent saying
         anything -- the model not recovering is exactly when the transcript needs the seam most,
@@ -863,8 +902,14 @@ Full documentation: https://minacode.readthedocs.io
         output is out, so it can never cut a batch in half."""
 
         def output() -> None:
-            if self.ui.rule_due(self.TOOL_RUN_RULE_ROWS):
+            if self._batch_voiced:
+                # This batch's narration already ran; the batch spoke, so it is not silent.
+                self._batch_voiced = False
+                return
+            self._silent_batches += 1
+            if self._silent_batches >= self.TOOL_RUN_RULE_BATCHES:
                 self.ui.emit_phase_rule()
+                self._silent_batches = 0
 
         self.with_status_paused(output)
 
