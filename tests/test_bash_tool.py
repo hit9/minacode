@@ -882,3 +882,32 @@ def test_uiprinter_syntax_highlights_bash_arguments(tmp_path):
     assert ("fg:#79c0ff", "printf") in segments
     assert ("fg:#a5d6ff", "'%s\\n'") in segments
     assert not any("bg:" in style for style, _ in segments)
+
+
+def test_a_multi_line_command_is_clipped_on_its_call_line(tmp_path):
+    """A heredoc script used to go into the transcript whole, burying everything the turn did
+    around it: a single-line call was bounded to 200 characters, a multi-line one to nothing. The
+    call line keeps what identifies the call; the full text is what the viewer opens."""
+    s = session(tmp_path)
+    command = "python3 - <<'PYEOF'\n" + "\n".join(f"line_{index} = {index}" for index in range(40)) + "\nPYEOF"
+    output = Tool.process_result("BashToolResult", 0, "", "")
+
+    display = str(toolblocks.finish_display(s, ToolCall("bash", "Bash", [command]), "tr.1", output, failed=False))
+
+    rows = display.split("\n")
+    assert rows[0] == "  Bash  python3 - <<'PYEOF'"
+    assert [row.strip() for row in rows[1:3]] == ["line_0 = 0", "line_1 = 1"]
+    assert rows[3].strip().startswith("… +39 more lines")
+    assert len(rows) == 5  # the clipped call, then the stored row closing the tree
+
+
+def test_a_command_just_over_the_line_budget_is_left_whole(tmp_path):
+    """Clipping one line would trade a line of the command for a line saying a line was hidden."""
+    s = session(tmp_path)
+    command = "\n".join(f"line_{index}" for index in range(4))
+    output = Tool.process_result("BashToolResult", 0, "", "")
+
+    display = str(toolblocks.finish_display(s, ToolCall("bash", "Bash", [command]), "tr.1", output, failed=False))
+
+    assert "more lines" not in display
+    assert "line_3" in display
