@@ -250,6 +250,31 @@ class TestMCPManagerDiscovery:
 
         assert s.mcp.run_async(loop_id()) == s.mcp.run_async(loop_id())
 
+    def test_timed_out_call_swallows_its_late_failure(self):
+        """A call abandoned at the timeout stays quiet when its teardown then fails — nobody is
+        left to retrieve that exception, so asyncio would otherwise print it at collection."""
+        import gc
+
+        from minacode.base import ToolError
+
+        s = session("/tmp")
+        loop = s.mcp._async_loop()
+        unretrieved: list[dict] = []
+        loop.call_soon_threadsafe(loop.set_exception_handler, lambda _loop, context: unretrieved.append(context))
+
+        async def fails_while_cancelled():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("client teardown timed out") from None
+
+        with pytest.raises(ToolError, match="timed out after 1s"):
+            s.mcp.run_async(fails_while_cancelled(), timeout=1)
+
+        time.sleep(0.2)  # let the loop finish cancelling before the task is collected
+        gc.collect()
+        assert unretrieved == []
+
     def test_oauth_token_store_lock_is_shared_by_path(self, tmp_path):
         """Token storage keeps one store and one lock per token file path."""
         s = session(tmp_path)

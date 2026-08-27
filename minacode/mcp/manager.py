@@ -470,13 +470,30 @@ class MCPManager:
         if timeout is None:
             timeout = self.call_timeout()
         loop = self._async_loop()
-        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        abandoned = threading.Event()
+
+        async def guarded() -> Any:
+            # Once we stop waiting below, cancelling the concurrent future stops it copying the
+            # task's outcome back, so nothing ever retrieves a late failure -- and a client whose
+            # teardown raises its own error (an HTTP read timeout on the abandoned request, say)
+            # would surface as asyncio's "Task exception was never retrieved" during collection.
+            # Swallow it instead: by then the caller already has its timeout error.
+            try:
+                return await coroutine
+            except BaseException:
+                if abandoned.is_set():
+                    return None
+                raise
+
+        future = asyncio.run_coroutine_threadsafe(guarded(), loop)
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError as error:
+            abandoned.set()
             future.cancel()
             raise ToolError(f"MCP call timed out after {timeout}s") from error
         except concurrent.futures.CancelledError as error:
+            abandoned.set()
             raise ToolError("MCP call was cancelled") from error
 
     def close(self) -> None:
