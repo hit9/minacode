@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.34.2 - 2026-08-26
+
+### Fixed
+
+- An MCP call that times out no longer prints an asyncio `Task exception was never retrieved`
+  traceback over the session. The abandoned call's client can raise its own error while tearing
+  the connection down (an HTTP read timeout on the dropped request); that late failure is now
+  swallowed, since the caller already has its timeout error.
+
 ## 0.34.1 - 2026-08-26
 
 ### Changed
