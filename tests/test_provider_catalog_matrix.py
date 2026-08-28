@@ -144,6 +144,25 @@ def test_catalogued_models_resolve_to_their_recorded_wire_settings(case):
     assert (resolved.api, resolved.chat_reasoning, resolved.chat_reasoning_history) == (api, chat_reasoning, history)
     assert tuple(replace(provider, reasoning=effort).resolve().reasoning_effort for effort in EFFORTS) == sent
 
+def test_anything_that_narrows_a_menu_cites_a_page_for_it():
+    """`/reason` shows this text under a shortened list, so it is the user's only account of why
+    their model has three levels instead of six. A rule that narrows without one leaves that
+    question unanswered on screen — and an entry nobody can source is one nobody can check."""
+    from minacode.providers.catalog import MODEL_TRAITS, PROVIDER_CATALOG
+
+    narrowing: list[dict] = [dict(trait) for trait in MODEL_TRAITS if trait.get("reasoning_effort_levels") or trait.get("mandatory_reasoning")]
+    for data in PROVIDER_CATALOG.values():
+        narrowing.extend(dict(rule) for rule in data.get("reasoning_effort_level_rules", ()))
+
+    assert narrowing
+    for entry in narrowing:
+        selector = entry.get("pattern") or "/".join(entry.get("prefixes", ()))
+        why = entry.get("why", "")
+        assert why, selector
+        assert entry.get("evidence", "").startswith("https://"), selector
+        # One line, and short enough to sit under a modal list on an ordinary terminal.
+        assert "\n" not in why and len(why) <= 80, selector
+
 def test_every_catalogued_host_appears_in_the_matrix():
     """A new host must state what its models resolve to, or the net has a hole the size of it."""
     covered = {url.split("/")[2] for url, *_ in MATRIX}

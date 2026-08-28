@@ -230,7 +230,7 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
     provider.api = "chat"
     shown = {}
 
-    def choose(_loop, title, choices, labels, current, _disabled):
+    def choose(_loop, title, choices, labels, current, _disabled, preview_fn=None):
         shown.update(title=title, choices=choices, labels=labels, current=current)
         return "auto"
 
@@ -254,8 +254,8 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     provider.model = "gpt-5.5"
     shown = {}
 
-    def choose(_loop, title, choices, labels, current, _disabled):
-        shown.update(choices=choices, labels=labels)
+    def choose(_loop, title, choices, labels, current, _disabled, preview_fn=None):
+        shown.update(choices=choices, labels=labels, footer=preview_fn and preview_fn(choices[0]))
         return "high"
 
     monkeypatch.setattr(modals_mod, "choice_application", choose)
@@ -265,6 +265,8 @@ def test_reasoning_picker_offers_only_what_the_model_takes(tmp_path, monkeypatch
     # can be picked that the request would then have to rewrite.
     assert shown["choices"] == ("off", "low", "medium", "high", "xhigh")
     assert shown["labels"]["off"] == "off - disable reasoning"
+    # A shortened list has to account for itself where it is shown, or it just looks broken.
+    assert shown["footer"] == "this generation documents low through xhigh\nhttps://developers.openai.com/api/docs/models/gpt-5.5"
 
 def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
     import minacode.cli.modals as modals_mod
@@ -276,14 +278,16 @@ def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeyp
     )
     shown = {}
 
-    def choose(_loop, title, choices, labels, current, _disabled):
-        shown.update(choices=choices, labels=labels)
+    def choose(_loop, title, choices, labels, current, _disabled, preview_fn=None):
+        shown.update(choices=choices, labels=labels, footer=preview_fn and preview_fn(choices[0]))
         return "ultra"
 
     monkeypatch.setattr(modals_mod, "choice_application", choose)
 
     assert reason(command_loop, "") == "Set provider.reasoning = ultra"
     assert shown["choices"] == ("off", "low", "high", "ultra")
+    # A config declaration is its own account of itself; there is no page to cite for it.
+    assert shown["footer"] == "declared for this model in your config"
 
 def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     from prompt_toolkit.document import Document
@@ -513,7 +517,7 @@ def test_provider_auto_selects_sole_provider_and_model(tmp_path, monkeypatch):
     provider_config.key = ""
     titles = []
 
-    def choose(_loop, title, _choices, _labels, current, _disabled):
+    def choose(_loop, title, _choices, _labels, current, _disabled, preview_fn=None):
         titles.append(title)
         return current
 

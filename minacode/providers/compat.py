@@ -58,6 +58,8 @@ class ModelEffortRule(ModelMatch):
     """Supported normalized efforts selected by model family."""
 
     levels: tuple[str, ...] = ()
+    why: str = ""
+    evidence: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,8 @@ class ModelTrait(ModelMatch):
     reasoning_effort_levels: tuple[str, ...] = ()
     reasoning_effort_off: str = ""
     mandatory_reasoning: bool = False
+    why: str = ""
+    evidence: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,18 @@ class CompatibilityProfile:
 
     def trait(self, model: str) -> ModelTrait | None:
         return next((trait for trait in self.model_traits if trait.matches(model)), None)
+
+    def effort_source(self, model: str) -> tuple[str, str]:
+        """Why this model's scale is what it is, and the page it came from.
+
+        Empty when nothing narrowed the scale — there is then nothing to explain. The source is
+        whichever statement won: a host rule outranks the model's trait, the same order the scale
+        itself resolves in, so the citation always belongs to the rule the user is looking at."""
+
+        if rule := next((rule for rule in self.reasoning_effort_level_rules if rule.matches(model)), None):
+            return rule.why, rule.evidence
+        trait = self.trait(model)
+        return (trait.why, trait.evidence) if trait else ("", "")
 
     def reasoning_is_mandatory(self, model: str) -> bool:
         trait = self.trait(model)
@@ -285,7 +301,11 @@ TEXT_ONLY_RULES = _model_rules(TEXT_ONLY_MODEL_RULES)
 
 
 def _effort_rules(*groups: tuple[ModelEffortRuleData, ...]) -> tuple[ModelEffortRule, ...]:
-    return tuple(ModelEffortRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["levels"]) for group in groups for rule in group)
+    return tuple(
+        ModelEffortRule(rule.get("prefixes", ()), rule.get("pattern", ""), rule["levels"], rule.get("why", ""), rule.get("evidence", ""))
+        for group in groups
+        for rule in group
+    )
 
 
 def _model_traits(data: ProviderData, traits: tuple[ModelTraitData, ...] = MODEL_TRAITS) -> tuple[ModelTrait, ...]:
@@ -302,6 +322,8 @@ def _model_traits(data: ProviderData, traits: tuple[ModelTraitData, ...] = MODEL
             reasoning_effort_levels=trait.get("reasoning_effort_levels", ()),
             reasoning_effort_off=trait.get("reasoning_effort_off", ""),
             mandatory_reasoning=trait.get("mandatory_reasoning", False),
+            why=trait.get("why", ""),
+            evidence=trait.get("evidence", ""),
         )
         for trait in traits
     )

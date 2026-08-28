@@ -282,6 +282,15 @@ class ProviderConfig:
         mandatory = not self.declared_levels(model) and compatibility_for_host(host, self.COMPATIBILITY).reasoning_is_mandatory(model)
         return self.supported_efforts(model) if mandatory else ("off", *self.supported_efforts(model))
 
+    def effort_scale_source(self, model: str = "") -> tuple[str, str]:
+        """Why `/reason` offers what it offers, as (one line, page) — empty when it offers the
+        default scale and there is nothing to account for."""
+        model = (model or self.model).lower()
+        if self.declared_levels(model):
+            return "declared for this model in your config", ""
+        host = (urlparse(self.url.rstrip("/")).hostname or "").lower()
+        return compatibility_for_host(host, self.COMPATIBILITY).effort_source(model)
+
     def normalized_reasoning(self, model: str = "") -> str:
         """This entry's effort, moved onto `model`'s choices if it is not already among them.
 

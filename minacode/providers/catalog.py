@@ -38,6 +38,8 @@ class ModelEffortRuleData(TypedDict):
     levels: tuple[str, ...]
     prefixes: NotRequired[tuple[str, ...]]
     pattern: NotRequired[str]
+    why: NotRequired[str]
+    evidence: NotRequired[str]
 
 
 BuiltinToolRuleData = dict[str, object]
@@ -59,6 +61,12 @@ class ModelTraitData(TypedDict, total=False):
     # The wire spelling of "do not think" for this family. Chat and Responses have never needed
     # different spellings for the same model, so one field serves both.
     reasoning_effort_off: str
+    # Why this family's menu is not minacode's own scale, in one line, and the page it comes from.
+    # Shown under `/reason` whenever the offered levels are narrower than the default, so the
+    # answer to "why only these three?" is where the question is asked rather than in this file.
+    # Required of anything that narrows a menu -- see tests/test_provider_catalog_matrix.py.
+    why: str
+    evidence: str
     # This family always reasons. `off` is then not a choice and is left out of what `/reason`
     # offers, for the same reason an effort the model has no level for is: a menu that lists what
     # cannot happen is the thing that made a fold necessary. A family that also documents a
@@ -149,40 +157,64 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high", "xhigh", "max"),
         "reasoning_effort_off": "none",
+        "why": "gpt-5.6 documents low through max, without minimal",
+        "evidence": "https://developers.openai.com/api/docs/models/gpt-5.5",
     },
     {
         "pattern": r"gpt-5\.(?:2|4|5)-pro(?:-|$)",
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("medium", "high", "xhigh"),
         "reasoning_effort_off": "medium",
+        "why": "the Pro models start at medium and stop at xhigh",
+        "evidence": "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
     },
     {
         "pattern": r"gpt-5\.(?:2|3)-codex(?:-|$)",
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
         "reasoning_effort_off": "low",
+        "why": "the Codex models document low through xhigh",
+        "evidence": "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
     },
     {
         "pattern": r"gpt-5\.(?:2|4|5)(?:-|$)",
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
         "reasoning_effort_off": "none",
+        "why": "this generation documents low through xhigh",
+        "evidence": "https://developers.openai.com/api/docs/models/gpt-5.5",
     },
     {
         "pattern": r"gpt-5\.1(?:-|$)",
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high"),
         "reasoning_effort_off": "none",
+        "why": "gpt-5.1 documents low, medium and high only",
+        "evidence": "https://developers.openai.com/api/docs/models/gpt-5.1",
     },
     {
         "pattern": r"gpt-5-pro(?:-|$)",
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("high",),
         "reasoning_effort_off": "high",
+        "why": "gpt-5-pro runs at high and takes no other level",
+        "evidence": "https://developers.openai.com/api/docs/models/gpt-5",
     },
     # Bare gpt-5 has no documented "off" spelling; only the 5.x generations define one.
-    {"pattern": r"gpt-5(?:-|$)", "chat_reasoning": "reasoning_effort", "reasoning_effort_levels": ("minimal", "low", "medium", "high")},
-    {"pattern": r"o[1-4](?:-|$)", "chat_reasoning": "reasoning_effort", "reasoning_effort_levels": ("low", "medium", "high")},
+    {
+        "pattern": r"gpt-5(?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("minimal", "low", "medium", "high"),
+        "why": "gpt-5 documents minimal through high",
+        "evidence": "https://developers.openai.com/api/docs/models/gpt-5",
+    },
+    {
+        "pattern": r"o[1-4](?:-|$)",
+        "chat_reasoning": "reasoning_effort",
+        "reasoning_effort_levels": ("low", "medium", "high"),
+        "why": "the o-series documents low, medium and high",
+        "evidence": "https://developers.openai.com/api/docs/guides/reasoning",
+    },
     # DeepSeek V4 uses thinking.type and documents low/high/max. `medium` and `xhigh` are accepted
     # for backward compatibility and both resolve to high server-side, so they are not levels: a
     # list is what `/reason` offers, and offering a level that behaves exactly like its neighbour
@@ -193,6 +225,8 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "thinking",
         "chat_reasoning_history": "tool_calls",
         "reasoning_effort_levels": ("low", "high", "max"),
+        "why": "DeepSeek documents low/high/max; medium and xhigh are served as high",
+        "evidence": "https://api-docs.deepseek.com/guides/thinking_mode/",
     },
     # K3 uses normalized effort, K2.5/K2.6 use thinking.type, and K2.7 is always-thinking. K3 and
     # K2.7 preserve thinking across turns; K3 cannot disable thinking on the open platform, so it
@@ -206,6 +240,8 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "reasoning_effort_levels": ("low", "high", "max"),
         "reasoning_effort_off": "low",
         "mandatory_reasoning": True,
+        "why": "K3 documents low/high/max and always thinks",
+        "evidence": "https://platform.kimi.com/docs/guide/use-thinking-models",
     },
     {"prefixes": ("kimi-k2.5", "kimi-k2.6"), "chat_reasoning": "thinking_toggle"},
     {"prefixes": ("kimi-k2.7-code",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
@@ -218,6 +254,8 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning_history": "all",
         "reasoning_effort_levels": ("low", "high", "max"),
         "reasoning_effort_off": "none",
+        "why": "Kimi Code documents low/high/max for K3",
+        "evidence": "https://www.kimi.com/code/docs/kimi-code/models.html",
     },
     {"prefixes": ("kimi-for-coding",), "chat_reasoning": "mandatory_thinking", "chat_reasoning_history": "all"},
     # GLM-5.3 and GLM-5.3-Flash reason under all conditions -- the thinking-mode guide lists them
@@ -234,6 +272,8 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "thinking_effort",
         "reasoning_effort_levels": ("low", "high", "max"),
         "mandatory_reasoning": True,
+        "why": "GLM-5.3 takes low/high/max and cannot stop thinking",
+        "evidence": "https://docs.z.ai/guides/overview/migrate-to-glm-new",
     },
     # GLM uses thinking.type for 4.5+ and reasoning_effort for 5.2+. GLM-5.2 documents two effort
     # levels and resolves anything other than "high" to max, so an unfolded "low" buys the most
@@ -241,7 +281,13 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
     # Evidence: https://docs.z.ai/guides/capabilities/thinking-mode
     #           https://docs.z.ai/guides/overview/migrate-to-glm-new
     #           https://opencode.ai/docs/zen
-    {"prefixes": ("glm-5.2",), "chat_reasoning": "thinking_effort", "reasoning_effort_levels": ("high", "max")},
+    {
+        "prefixes": ("glm-5.2",),
+        "chat_reasoning": "thinking_effort",
+        "reasoning_effort_levels": ("high", "max"),
+        "why": "GLM-5.2 documents two levels; anything but high is served as max",
+        "evidence": "https://docs.z.ai/guides/capabilities/thinking-mode",
+    },
     {"prefixes": ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5"), "chat_reasoning": "thinking_toggle"},
     # Grok takes OpenAI's top-level reasoning_effort and cannot be told not to reason. 4.6 adds
     # xhigh; 4.5 documents that an xhigh request is served as high, which makes it a spelling
@@ -254,12 +300,16 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high", "xhigh"),
         "mandatory_reasoning": True,
+        "why": "Grok 4.6 adds xhigh and cannot stop reasoning",
+        "evidence": "https://docs.x.ai/developers/model-capabilities/text/reasoning",
     },
     {
         "prefixes": ("grok-4.5",),
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high"),
         "mandatory_reasoning": True,
+        "why": "Grok 4.5 serves an xhigh request as high, and cannot stop reasoning",
+        "evidence": "https://docs.x.ai/developers/model-capabilities/text/reasoning",
     },
     # Gemini's OpenAI-compatible layer maps reasoning_effort onto thinking levels and documents the
     # table per family: minimal/low/medium/high/none are accepted and xhigh is not. A value that
@@ -274,24 +324,32 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high"),
         "mandatory_reasoning": True,
+        "why": "3.1 Pro maps minimal to low, rejects xhigh, and cannot stop reasoning",
+        "evidence": "https://ai.google.dev/gemini-api/docs/openai",
     },
     {
         "prefixes": ("gemini-3-flash", "gemini-3.1-flash", "gemini-3.5-flash"),
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("minimal", "low", "medium", "high"),
         "mandatory_reasoning": True,
+        "why": "Gemini Flash takes minimal through high, rejects xhigh, and always thinks",
+        "evidence": "https://ai.google.dev/gemini-api/docs/openai",
     },
     {
         "prefixes": ("gemini-2.5-pro",),
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high"),
         "mandatory_reasoning": True,
+        "why": "2.5 gives minimal and low the same budget; Pro cannot stop reasoning",
+        "evidence": "https://ai.google.dev/gemini-api/docs/openai",
     },
     {
         "prefixes": ("gemini-2.5",),
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "high"),
         "reasoning_effort_off": "none",
+        "why": "2.5 gives minimal and low the same 1,024-token budget, and disables with none",
+        "evidence": "https://ai.google.dev/gemini-api/docs/openai",
     },
     # Qwen3.8 Chat uses top-level reasoning_effort, including none to disable thinking. Its Max
     # models document low/medium/xhigh only: high and max are not accepted spellings there.
@@ -301,6 +359,8 @@ MODEL_TRAITS: tuple[ModelTraitData, ...] = (
         "chat_reasoning": "reasoning_effort",
         "reasoning_effort_levels": ("low", "medium", "xhigh"),
         "reasoning_effort_off": "none",
+        "why": "Qwen3.8-Max documents low/medium/xhigh; high and max are not spellings there",
+        "evidence": "https://docs.qwencloud.com/api-reference/chat/openai-chat",
     },
 )
 
@@ -485,8 +545,18 @@ PROVIDER_CATALOG: dict[str, ProviderData] = {
         # same page records, keeping low/high/max, and is matched first.
         # Evidence: https://docs.qwencloud.com/api-reference/chat/openai-chat
         "reasoning_effort_level_rules": (
-            {"levels": ("low", "high", "max"), "prefixes": ("glm-5.3",)},
-            {"levels": ("high", "max"), "prefixes": ("deepseek-v4-", "glm-")},
+            {
+                "levels": ("low", "high", "max"),
+                "prefixes": ("glm-5.3",),
+                "why": "GLM-5.3 keeps low/high/max on Alibaba",
+                "evidence": "https://docs.qwencloud.com/api-reference/chat/openai-chat",
+            },
+            {
+                "levels": ("high", "max"),
+                "prefixes": ("deepseek-v4-", "glm-"),
+                "why": "Alibaba serves low and medium as high for these models",
+                "evidence": "https://docs.qwencloud.com/api-reference/chat/openai-chat",
+            },
         ),
         # Why: Qwen Responses documents web_search/web_extractor as provider-side tools, while
         # Qwen Chat Completions configures search in the request body. The remaining Responses

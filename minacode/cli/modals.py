@@ -214,6 +214,7 @@ def select_choice(
     labels: dict[str, str] | None = None,
     current: str = "",
     disabled: set[str] | frozenset[str] = frozenset(),
+    preview_fn: Callable[[str], StyleAndTextTuples | str] | None = None,
 ) -> str | object | None:
     labels = labels or {}
     if not choices or not loop.interactive_input:
@@ -222,7 +223,7 @@ def select_choice(
     if len(enabled) == 1:
         return enabled[0]
     try:
-        return choice_application(loop, title, choices, labels, current, set(disabled))
+        return choice_application(loop, title, choices, labels, current, set(disabled), preview_fn=preview_fn)
     except (EOFError, KeyboardInterrupt):
         loop.emit_turn("Cancelled")
         return None

@@ -42,6 +42,11 @@
   one and says so once (`Reasoning medium is not offered by deepseek-v4-flash, using high`).
   `/config` lists the levels as `provider.supported_reasoning`.
 
+- `/reason` explains a shortened list where it shows it: under the levels, one line saying why the
+  model offers only those, and the vendor page it was read from. Nothing appears when the full
+  scale is on offer, since there is nothing to account for. A `[provider.X.models]` declaration
+  says so instead of citing a page.
+
 - Grok and Gemini now resolve like every other known family, on any endpoint that serves them:
   `grok-4.6` offers low/medium/high/xhigh and `grok-4.5` low/medium/high (an `xhigh` request is
   served as `high` there, so it is not a level); Gemini's OpenAI-compatible layer takes
