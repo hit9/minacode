@@ -143,6 +143,26 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     assert stream_values == ["on", "off"]
     assert set_value(command_loop, "provider.image_input off") == "Unknown config key: provider.image_input"
 
+def test_reason_reports_the_effort_the_provider_will_actually_receive(tmp_path):
+    """A fold is invisible otherwise: the user picks max, the provider is sent xhigh, and nothing
+    in the session says so."""
+    command_loop = loop(tmp_path)
+    provider = command_loop.session.config.provider
+    provider.url = "https://api.openai.com/v1"
+    provider.model = "gpt-5.5"
+
+    assert reason(command_loop, "max") == "Set provider.reasoning = max (sent as xhigh)"
+    assert reason(command_loop, "high") == "Set provider.reasoning = high"
+
+def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
+    command_loop = loop(tmp_path)
+    command_loop.session.config.providers["default"] = ProviderConfig.from_dict(
+        {"url": "https://gw.example/v1", "model": "custom-1", "models": {"custom-*": {"reasoning": ["low", "high", "ultra"]}}}
+    )
+
+    assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra"
+    assert reason(command_loop, "elsewhere").startswith("Usage: /reason ")
+
 def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider

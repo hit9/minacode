@@ -162,10 +162,14 @@ def mcp_command(loop: CommandLoop, args: str) -> str | None:
 
 
 def select_reasoning(loop: CommandLoop) -> str | object | None:
-    current = loop.session.config.provider.reasoning
-    labels = {"off": "off - disable reasoning"}
+    provider = loop.session.config.provider
+    current = provider.reasoning
+    # A level this model declares belongs in the list: it is offered nowhere else, and the point of
+    # declaring it was to be able to pick it.
+    declared = tuple(level for level in provider.declared_levels() if level not in REASONING_CHOICES)
+    labels = {"off": "off - disable reasoning", **{level: f"{level} - declared for {provider.model}" for level in declared}}
     labels[current] = labels.get(current, current) + " (current)"
-    return select_choice(loop, "Reasoning effort", REASONING_CHOICES, labels=labels, current=current)
+    return select_choice(loop, "Reasoning effort", (*REASONING_CHOICES, *declared), labels=labels, current=current)
 
 
 def select_api(loop: CommandLoop, model: str) -> str | object | None:
@@ -372,6 +376,7 @@ def config(loop: CommandLoop, args: str) -> str:
             f"provider.available_models: {', '.join(provider.available_models) or '(empty)'}",
             f"provider.reasoning: {provider.reasoning}",
             f"provider.resolved_reasoning_effort: {resolved.reasoning_effort or '(off)'}",
+            f"provider.declared_reasoning: {', '.join(provider.declared_levels()) or '(none)'}",
             f"provider.resolved_chat_reasoning: {resolved.chat_reasoning}",
             f"provider.chat_reasoning: {provider.chat_reasoning}",
             f"provider.resolved_chat_reasoning_history: {resolved.chat_reasoning_history}",
@@ -821,20 +826,30 @@ def set_model(loop: CommandLoop, model: str, *, back_to_model: bool = False) -> 
     return "\n".join(lines)
 
 
+def set_reasoning(loop: CommandLoop, value: str) -> str:
+    """Apply an effort and report what the provider will actually receive.
+
+    The sent value can differ from the chosen one — a model documented without this level, or a
+    scale the entry declares — and a silent fold leaves the user unable to tell why a request
+    behaved as it did."""
+    provider = loop.session.config.provider
+    provider.reasoning = value
+    record_provider_override(loop.session, "reasoning", value)
+    sent = provider.resolve().reasoning_effort
+    suffix = f" (sent as {sent})" if sent and sent != value else ""
+    return f"Set provider.reasoning = {value}{suffix}"
+
+
 def reason(loop: CommandLoop, args: str) -> str:
     value = args.strip()
     if value:
-        if value not in REASONING_CHOICES:
+        # A level declared by `[provider.X.models]` is as valid as a built-in one; anything else
+        # is a typo rather than a value worth forwarding.
+        if value not in REASONING_CHOICES and value not in loop.session.config.provider.declared_levels():
             return "Usage: /reason " + "|".join(REASONING_CHOICES)
-        loop.session.config.provider.reasoning = value
-        record_provider_override(loop.session, "reasoning", value)
-        return "Set provider.reasoning = " + value
+        return set_reasoning(loop, value)
     choice = select_reasoning(loop)
-    if isinstance(choice, str):
-        loop.session.config.provider.reasoning = choice
-        record_provider_override(loop.session, "reasoning", choice)
-        return "Set provider.reasoning = " + choice
-    return "No change"
+    return set_reasoning(loop, choice) if isinstance(choice, str) else "No change"
 
 
 def api(loop: CommandLoop, args: str) -> str:

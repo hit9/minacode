@@ -4,12 +4,25 @@
 
 ### Added
 
+- A provider entry can state what a model accepts, for when the built-in guess is wrong:
+  `[provider.X.models]` maps a model name or glob to an ordered `reasoning` list, weakest first.
+  Effort support belongs to the model rather than the endpoint, so this is where it is declared;
+  the levels replace the catalog's for matching models and follow the entry into worker and
+  compaction requests. A declared level may be one minacode has never heard of — declaration order
+  places it, so `["low", "medium", "high", "ultra"]` sends `ultra` for `max`, and `/reason ultra`
+  picks it directly. `/config` lists the declared levels.
+
 - A provider entry can send extra HTTP headers with `headers = { x-cmd-zdr = "1" }`. `extra_body`
   reaches the request body only, so a provider feature documented as a header had no expression at
   all — Command Code's zero-retention routing, a gateway's tenant or routing key. The entry's
   headers are merged over minacode's own on both the OpenAI-compatible and Anthropic wires, follow
   the entry into worker and compaction requests, and are listed by `/config`. Values are strings or
   plain integers; `key` still supplies authentication.
+
+### Changed
+
+- `/reason` now names the effort the provider will actually receive when it differs from the one
+  picked — `Set provider.reasoning = max (sent as xhigh)` — instead of folding silently.
 
 ## 0.34.2 - 2026-08-26
 

@@ -98,6 +98,23 @@ the generic path rather than an allowlist; set `api` and `chat_reasoning` explic
 selection is wrong. `/config` shows the resolved reasoning effort, while `/status` shows the active
 model and cache usage reported by the provider.
 
+### Effort levels a model accepts
+
+When that mapping is wrong for your model, say what the model accepts. Write the levels weakest
+first, under a model name or a glob:
+
+```toml
+[provider.gw.models]
+"gpt-5.6*" = { reasoning = ["low", "medium", "high", "ultra"] }
+```
+
+Your levels replace minacode's guess for models the glob matches. They can include names minacode
+does not know — `ultra` above — and the order is what places them, so `/reason max` sends `ultra`.
+Pick one directly with `/reason ultra`.
+
+`/reason` shows the effort the provider receives whenever it differs from the one you picked
+(`Set provider.reasoning = max (sent as ultra)`).
+
 ## Provider-side tools
 
 Some providers can run web search themselves; see

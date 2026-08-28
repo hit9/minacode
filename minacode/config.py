@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import platform
 import shutil
@@ -18,6 +19,7 @@ from minacode.providers.compat import (
     CompatibilityProfile,
     ResolvedProvider,
     compatibility_for_host,
+    fold_declared_effort,
     is_text_only_model,
 )
 
@@ -101,6 +103,21 @@ class SystemInfo:
         )
 
 
+@dataclass(frozen=True)
+class ModelOverride:
+    """One `[provider.X.models]` entry: a model glob and what it declares about those models.
+
+    Effort support is a property of the model, not of the endpoint, so it cannot be settled by a
+    field on the entry -- `/model` switches models under one entry. A glob keeps the declaration
+    where the fact lives, and carries to the next model of the same family."""
+
+    match: str
+    reasoning_levels: tuple[str, ...] = ()
+
+    def matches(self, model: str) -> bool:
+        return fnmatch.fnmatchcase(model.lower(), self.match)
+
+
 @dataclass
 class ProviderConfig:
     COMPATIBILITY: ClassVar[dict[str, CompatibilityProfile]] = COMPATIBILITY_PROFILES
@@ -129,6 +146,9 @@ class ProviderConfig:
     # tenant or routing key -- had no expression at all. Merged over minacode's own defaults, so an
     # entry can also replace the User-Agent; the SDK still derives auth from `key`.
     headers: dict[str, str] = field(default_factory=dict)
+    # `[provider.X.models]` declarations in declaration order; the first matching glob wins, the
+    # way catalog rules resolve. A declaration overrides the catalog for those models.
+    model_overrides: tuple[ModelOverride, ...] = ()
     builtin_tools: tuple[Json, ...] = ()
     # Per-provider compaction overrides ([provider.X.compaction] model/reasoning/api), folded on
     # top of the global [compaction] section by compaction_provider_config: the per-provider value
@@ -143,9 +163,14 @@ class ProviderConfig:
         prompt_cache_key = cls.clean_prompt_cache_key(Config.str(data, "prompt_cache_key", "auto"))
         reasoning = Config.str(data, "reasoning", "medium")
         chat_reasoning = Config.str(data, "chat_reasoning", "auto")
+        model_overrides = cls.model_overrides_from(data)
+        # A level a model declares is a valid effort for this entry: declaring `ultra` is what
+        # makes `reasoning = "ultra"` mean something. Everything else stays a typo, not a value
+        # forwarded to the provider.
+        declared = {level for override in model_overrides for level in override.reasoning_levels}
         for key, value, choices in (
             ("api", api, PROVIDER_API_CHOICES),
-            ("reasoning", reasoning, REASONING_CHOICES),
+            ("reasoning", reasoning, (*REASONING_CHOICES, *sorted(declared))),
             ("chat_reasoning", chat_reasoning, CHAT_REASONING_CHOICES),
         ):
             if value not in choices:
@@ -175,11 +200,33 @@ class ProviderConfig:
             response_timeout=max(0, Config.int(data, "response_timeout", 600)),
             extra_body=Config.table(data, "extra_body"),
             headers=Config.header_table(data, "headers"),
+            model_overrides=model_overrides,
             builtin_tools=Config.table_tuple(data, "builtin_tools"),
             compaction_model=Config.str(compaction_root, "model", ""),
             compaction_reasoning=compaction_reasoning,
             compaction_api=compaction_api,
         )
+
+    @staticmethod
+    def model_overrides_from(data: Json) -> tuple[ModelOverride, ...]:
+        """Parse `[provider.X.models]`: a model glob mapped to what it declares.
+
+        `reasoning` is an ordered list, weakest first — the order is what gives a level minacode
+        does not recognize its place on the scale, so an unordered set would not do."""
+        overrides: list[ModelOverride] = []
+        for pattern, declared in Config.table(data, "models").items():
+            if not isinstance(declared, dict):
+                raise ConfigError(f"provider.models.{pattern} must be a table")
+            levels = Config.str_tuple(declared, "reasoning")
+            if any(not level.strip() for level in levels):
+                raise ConfigError(f"provider.models.{pattern}.reasoning must not contain empty levels")
+            overrides.append(ModelOverride(match=pattern.lower(), reasoning_levels=levels))
+        return tuple(overrides)
+
+    def declared_levels(self, model: str = "") -> tuple[str, ...]:
+        """The effort scale declared for this model, or none when no glob matches it."""
+        model = model or self.model
+        return next((override.reasoning_levels for override in self.model_overrides if override.matches(model)), ())
 
     def missing_fields(self) -> list[str]:
         """The required fields this entry leaves empty. An entry missing any of them cannot serve a
@@ -219,7 +266,10 @@ class ProviderConfig:
                 reasoning_effort = profile.rule_value(profile.responses_reasoning_effort_off_rules, model) or reasoning_effort
         else:
             effort = self.reasoning_effort()
-            reasoning_effort = profile.reasoning_effort_value(model, effort)
+            # A declaration is the user telling minacode what this model actually accepts, so it
+            # replaces the catalog's guess rather than being folded on top of it.
+            declared = self.declared_levels(model)
+            reasoning_effort = fold_declared_effort(effort, declared) if declared else profile.reasoning_effort_value(model, effort)
 
         suppress_temperature = profile.suppress_temperature or any(model.startswith(prefix) for prefix in profile.suppress_temperature_models)
         if not suppress_temperature:
@@ -247,7 +297,7 @@ class ProviderConfig:
         )
 
     def reasoning_effort(self) -> str:
-        return self.reasoning if self.reasoning in REASONING_LEVELS else "medium"
+        return self.reasoning if self.reasoning in REASONING_LEVELS or self.reasoning in self.declared_levels() else "medium"
 
     def output_token_budget(self) -> int:
         return self.max_tokens or DEFAULT_OUTPUT_RESERVE_TOKENS
@@ -543,6 +593,9 @@ model = ""
 # response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
 # headers = { x-cmd-zdr = "1" }  # extra HTTP headers for this entry; the key above still sets auth
+
+# [provider.default.models]    # what a model accepts, when the built-in guess is wrong
+# "gpt-5.6*" = { reasoning = ["low", "medium", "high", "ultra"] }   # weakest first
 
 # builtin_tools = [{ type = "web_search" }]   # provider-side tools, passed through verbatim
                                               # OpenAI/Qwen: { type = "web_search" }
