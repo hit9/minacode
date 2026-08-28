@@ -482,7 +482,8 @@ def test_interactive_provider_chain_uses_one_inline_tui_and_real_navigation(monk
         modal = app.modal
         if modal is None:
             return ""
-        return "".join(text for _, text in modal.fragments_fn()).splitlines()[0]
+        # The modal opens with a blank spacer line, so the title is the first non-empty one.
+        return next((line for line in "".join(text for _, text in modal.fragments_fn()).splitlines() if line), "")
 
     def drive(pipe_input):
         wait_until(lambda: app.app is not None and app.app.is_running)

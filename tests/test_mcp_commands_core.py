@@ -615,7 +615,8 @@ class TestMCPCommands:
         assert connected.index("●") == disconnected.index("●")
         assert connected.index("manual") == disconnected.index("auto")
         assert connected.rindex("tools") == disconnected.rindex("tools")
-        assert lines[0] == "MCP servers · Enter toggles connection"
+        # The modal opens with a blank spacer line before its title.
+        assert lines[:2] == ["", "MCP servers · Enter toggles connection"]
 
     def test_mcp_status_dots_use_semantic_terminal_colors(self):
         text = "● connected  ● connecting  ● disconnected  ● disconnecting  ● error  ● skipped"

@@ -256,8 +256,14 @@ class ChoiceViewState:
         if self.query and not self.searching:
             suffix += " (filtered)"
         parts: StyleAndTextTuples = [
+            # The modal opens inline under whatever was printed last, and a title butted straight
+            # against it reads as another line of that output rather than as a new thing asking.
+            # The second break separates the header from the rows, so the title reads as a title
+            # instead of as the first item of the list under it.
+            ("", "\n"),
             ("class:choice.title", title + suffix + "\n"),
             ("class:choice.disabled", "  j/k move, / search, Esc/q back/cancel\n"),
+            ("", "\n"),
         ]
         if self.query and not options:
             return [*parts, ("class:choice.disabled", "  no matches\n")]
