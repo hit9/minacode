@@ -61,9 +61,27 @@ Most users can leave these unset.
 | `response_timeout` | `600` | Total generation limit in seconds; `0` disables it |
 | `prompt_cache_key` | `auto` | Stable prompt-cache key; set `off` to omit it |
 | `strict_tools` | `false` | Request strict function schemas where supported; toggle with `/strict` |
+| `headers` | `{}` | Extra HTTP headers sent with every request to this entry; see below |
 | `extra_body` | `{}` | Extra fields for an OpenAI-compatible request body. Fields inside an object minacode also manages are merged rather than replacing it, so `extra_body.reasoning.context` reaches a Responses host without dropping the resolved effort |
 | `builtin_tools` | `[]` | Tools the provider runs itself, passed through verbatim; see below |
 | `chat_reasoning` | `auto` | Provider-specific Chat reasoning format; normally leave on `auto` |
+
+### Extra HTTP headers
+
+Some features live in the header rather than the request body, where `extra_body` cannot reach
+them. `headers` sends whatever the provider documents alongside every request from that entry:
+
+```toml
+[provider.cmd]
+url = "https://api.commandcode.ai/provider/v1"
+key = "..."
+model = "deepseek/deepseek-v4-flash"
+headers = { x-cmd-zdr = "1" }   # Command Code: route only to zero-retention upstreams
+```
+
+Values are strings or plain integers. `key` still supplies authentication, so a header is only
+needed for what the provider documents separately — zero-retention routing, a gateway's tenant or
+routing key. `/config` lists the headers in effect.
 
 Streaming is enabled by default for all three protocols. If a compatible endpoint does not
 support it, set `stream = false` in that provider block, or use `/set provider.stream off` for

@@ -124,6 +124,11 @@ class ProviderConfig:
     timeout: int = 120
     response_timeout: int = 600
     extra_body: Json = field(default_factory=dict)
+    # Extra HTTP headers sent with every request to this entry. `extra_body` reaches the request
+    # body only, so features a provider puts in the header -- CommandCode's `x-cmd-zdr`, a gateway's
+    # tenant or routing key -- had no expression at all. Merged over minacode's own defaults, so an
+    # entry can also replace the User-Agent; the SDK still derives auth from `key`.
+    headers: dict[str, str] = field(default_factory=dict)
     builtin_tools: tuple[Json, ...] = ()
     # Per-provider compaction overrides ([provider.X.compaction] model/reasoning/api), folded on
     # top of the global [compaction] section by compaction_provider_config: the per-provider value
@@ -169,6 +174,7 @@ class ProviderConfig:
             timeout=Config.int(data, "timeout", 120),
             response_timeout=max(0, Config.int(data, "response_timeout", 600)),
             extra_body=Config.table(data, "extra_body"),
+            headers=Config.header_table(data, "headers"),
             builtin_tools=Config.table_tuple(data, "builtin_tools"),
             compaction_model=Config.str(compaction_root, "model", ""),
             compaction_reasoning=compaction_reasoning,
@@ -443,6 +449,25 @@ class Config:
         return tuple(entries)
 
     @staticmethod
+    def header_table(data: Json, key: str) -> dict[str, str]:
+        """HTTP headers as a flat name/value table, checked for what a transport can actually send.
+
+        Integers are accepted and stringified because providers document flag headers as bare `1`
+        (`x-cmd-zdr: 1`), and a TOML author writes that unquoted. Booleans are not: `true` has no
+        agreed-upon wire spelling. Control characters are rejected here rather than reaching httpx
+        as an opaque encoding error at request time."""
+        table = Config.table(data, key)
+        headers: dict[str, str] = {}
+        for name, value in table.items():
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                raise ConfigError(f"config value `{key}.{name}` must be a string or integer")
+            text = str(value)
+            if not name.strip() or any(ord(char) < 32 or ord(char) == 127 for char in name + text):
+                raise ConfigError(f"config value `{key}.{name}` must be a single-line header name and value")
+            headers[name] = text
+        return headers
+
+    @staticmethod
     def str(data: Json, key: str, default: str = "") -> str:
         return default if (value := data.get(key)) is None else str(value)
 
@@ -517,6 +542,7 @@ model = ""
 # timeout = 120                # transport inactivity
 # response_timeout = 600       # total generation time; 0 disables
 # available_models = ["gpt-5", "gpt-5-mini"]
+# headers = { x-cmd-zdr = "1" }  # extra HTTP headers for this entry; the key above still sets auth
 
 # builtin_tools = [{ type = "web_search" }]   # provider-side tools, passed through verbatim
                                               # OpenAI/Qwen: { type = "web_search" }

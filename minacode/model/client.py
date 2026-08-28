@@ -466,6 +466,14 @@ class ModelClient:
         match = ModelClient._JSON_FENCE_RE.match(text)
         return (match.group(1) if match else text).strip()
 
+    @staticmethod
+    def request_headers(provider: ProviderConfig) -> dict[str, str]:
+        """Default headers for one entry: minacode's own, then the entry's `headers` over them.
+
+        Both wires share this so a header configured for an entry follows it across a `/provider`
+        switch and into the worker and compaction entries, which are copies of it."""
+        return {"User-Agent": HTTP_USER_AGENT, **provider.headers}
+
     def client(self, provider: ProviderConfig | None = None) -> OpenAI:
         provider = provider if provider is not None else self.session.config.provider
         if missing := self.session.missing_config():
@@ -474,7 +482,11 @@ class ModelClient:
         from openai import OpenAI
 
         return OpenAI(
-            api_key=provider.key, base_url=provider.resolve().base_url, timeout=provider.timeout, max_retries=0, default_headers={"User-Agent": HTTP_USER_AGENT}
+            api_key=provider.key,
+            base_url=provider.resolve().base_url,
+            timeout=provider.timeout,
+            max_retries=0,
+            default_headers=self.request_headers(provider),
         )
 
     def anthropic_client(self, provider: ProviderConfig | None = None) -> Anthropic:
@@ -490,7 +502,7 @@ class ModelClient:
             base_url=url.removesuffix("/v1"),
             timeout=provider.timeout,
             max_retries=0,
-            default_headers={"User-Agent": HTTP_USER_AGENT},
+            default_headers=self.request_headers(provider),
         )
 
     def report_builtin_call(self, name: str, detail: object) -> None:

@@ -312,3 +312,39 @@ def test_context_cleans_surrogate_text(tmp_path):
 
     json.dumps(messages, ensure_ascii=False).encode("utf-8")
     assert "\udce5" not in str(messages)
+
+def _session_for(tmp_path, provider):
+    """A session whose active entry is the one under test: the client builders check the session's
+    own config for completeness before honouring the entry they are handed."""
+    built = session(tmp_path)
+    built.config.providers[built.config.active_provider] = provider
+    return built
+
+def test_configured_headers_reach_both_wire_clients(tmp_path):
+    """`extra_body` cannot express a header, so a provider feature documented as one -- Command
+    Code's zero-retention `x-cmd-zdr` -- has to ride on the client's default headers instead."""
+    from minacode.base import HTTP_USER_AGENT
+
+    provider = ProviderConfig.from_dict(
+        {"url": "https://api.commandcode.ai/provider/v1", "key": "k", "model": "deepseek/deepseek-v4-flash", "headers": {"x-cmd-zdr": 1, "x-tenant": "team"}}
+    )
+    assert provider.headers == {"x-cmd-zdr": "1", "x-tenant": "team"}
+
+    client = ModelClient(_session_for(tmp_path, provider))
+    for built in (client.client(provider), client.anthropic_client(provider)):
+        assert built.default_headers["x-cmd-zdr"] == "1"
+        assert built.default_headers["x-tenant"] == "team"
+        assert built.default_headers["User-Agent"] == HTTP_USER_AGENT
+
+def test_configured_headers_may_replace_minacode_defaults(tmp_path):
+    provider = ProviderConfig.from_dict({"url": "https://gateway.example/v1", "key": "k", "model": "m", "headers": {"User-Agent": "fleet/1"}})
+
+    assert ModelClient(_session_for(tmp_path, provider)).client(provider).default_headers["User-Agent"] == "fleet/1"
+
+def test_unsendable_headers_are_a_config_error_not_a_request_failure():
+    for headers in ({"x-flag": True}, {"x-flag": 1.5}, {"x-flag": ["a"]}, {"x-flag": "two\nlines"}, {"bad\theader": "1"}):
+        with pytest.raises(Exception) as error:
+            ProviderConfig.from_dict({"headers": headers})
+        assert "headers" in str(error.value)
+
+    assert ProviderConfig.from_dict({}).headers == {}

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A provider entry can send extra HTTP headers with `headers = { x-cmd-zdr = "1" }`. `extra_body`
+  reaches the request body only, so a provider feature documented as a header had no expression at
+  all — Command Code's zero-retention routing, a gateway's tenant or routing key. The entry's
+  headers are merged over minacode's own on both the OpenAI-compatible and Anthropic wires, follow
+  the entry into worker and compaction requests, and are listed by `/config`. Values are strings or
+  plain integers; `key` still supplies authentication.
+
 ## 0.34.2 - 2026-08-26
 
 ### Fixed
