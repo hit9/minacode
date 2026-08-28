@@ -125,8 +125,8 @@ Your levels replace minacode's guess for models the glob matches. They can inclu
 does not know — `ultra` above — and the order is what places them, so `/reason max` sends `ultra`.
 Pick one directly with `/reason ultra`.
 
-`/reason` shows the effort the provider receives whenever it differs from the one you picked
-(`Set provider.reasoning = max (sent as ultra)`).
+`/reason` always shows both values — the level you picked and the one the provider receives
+(`Set provider.reasoning = max → ultra`). Its picker labels each level the same way.
 
 ## Provider-side tools
 

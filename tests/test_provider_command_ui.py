@@ -83,7 +83,7 @@ def test_runtime_provider_switches_are_recorded_for_resume(tmp_path):
     assert set_model(command_loop, "model-b") == "Set provider.model = model-b"
     assert session.provider_overrides["providers"]["other"]["model"] == "model-b"
 
-    assert reason(command_loop, "high") == "Set provider.reasoning = high"
+    assert reason(command_loop, "high") == "Set provider.reasoning = high → high"
     assert session.provider_overrides["providers"]["other"]["reasoning"] == "high"
 
     assert api(command_loop, "responses") == "Set provider.api = responses (wire: responses)"
@@ -126,7 +126,7 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
     command_loop = loop(tmp_path)
 
     assert reason(command_loop, "invalid").startswith("Usage: /reason ")
-    assert reason(command_loop, "max") == "Set provider.reasoning = max"
+    assert reason(command_loop, "max") == "Set provider.reasoning = max → max"
     assert command_loop.session.config.provider.reasoning == "max"
     assert strict(command_loop, "on") == "Usage: /strict"
     assert set_value(command_loop, "") == "Usage: /set KEY VALUE"
@@ -145,14 +145,26 @@ def test_reason_strict_and_set_commands_validate_values(tmp_path):
 
 def test_reason_reports_the_effort_the_provider_will_actually_receive(tmp_path):
     """A fold is invisible otherwise: the user picks max, the provider is sent xhigh, and nothing
-    in the session says so."""
+    in the session says so. Both values show even when they match — an unmarked line would leave
+    the reader unable to tell an unfolded effort from an unreported one."""
     command_loop = loop(tmp_path)
     provider = command_loop.session.config.provider
     provider.url = "https://api.openai.com/v1"
     provider.model = "gpt-5.5"
 
-    assert reason(command_loop, "max") == "Set provider.reasoning = max (sent as xhigh)"
-    assert reason(command_loop, "high") == "Set provider.reasoning = high"
+    assert reason(command_loop, "max") == "Set provider.reasoning = max → xhigh"
+    assert reason(command_loop, "high") == "Set provider.reasoning = high → high"
+
+def test_reason_leaves_the_entry_it_reports_on_unchanged(tmp_path):
+    """The preview resolves copies: a chosen effort must not leak the other rows' values into the
+    live entry."""
+    command_loop = loop(tmp_path)
+    command_loop.session.config.provider.url = "https://api.openai.com/v1"
+    command_loop.session.config.provider.model = "gpt-5.5"
+
+    reason(command_loop, "max")
+
+    assert command_loop.session.config.provider.reasoning == "max"
 
 def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
     command_loop = loop(tmp_path)
@@ -160,7 +172,7 @@ def test_reason_accepts_a_level_the_active_model_declares(tmp_path):
         {"url": "https://gw.example/v1", "model": "custom-1", "models": {"custom-*": {"reasoning": ["low", "high", "ultra"]}}}
     )
 
-    assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra"
+    assert reason(command_loop, "ultra") == "Set provider.reasoning = ultra → ultra"
     assert reason(command_loop, "elsewhere").startswith("Usage: /reason ")
 
 def test_config_shows_the_reasoning_effort_resolved_for_the_active_model(tmp_path):
@@ -237,6 +249,49 @@ def test_api_command_selection_offers_every_protocol_with_the_inferred_wire(tmp_
     assert shown["current"] == "chat"
     assert shown["labels"]["auto"] == "auto - infer from the endpoint URL and model (responses)"
     assert shown["labels"]["chat"] == "chat (current)"
+
+def test_reasoning_picker_names_what_each_row_sends(tmp_path, monkeypatch):
+    """The picker is where an effort is chosen, so it is where the fold has to be readable — a
+    level whose row reads `max → xhigh` needs no second command to explain it."""
+    import minacode.cli.modals as modals_mod
+
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    provider = command_loop.session.config.provider
+    provider.url = "https://api.openai.com/v1"
+    provider.model = "gpt-5.5"
+    shown = {}
+
+    def choose(_loop, title, choices, labels, current, _disabled):
+        shown.update(choices=choices, labels=labels)
+        return "high"
+
+    monkeypatch.setattr(modals_mod, "choice_application", choose)
+
+    assert reason(command_loop, "") == "Set provider.reasoning = high → high"
+    assert shown["labels"]["max"] == "max → xhigh"
+    assert shown["labels"]["low"] == "low → low"
+    assert shown["labels"]["off"] == "off - disable reasoning"
+
+def test_reasoning_picker_offers_the_levels_the_model_declares(tmp_path, monkeypatch):
+    import minacode.cli.modals as modals_mod
+
+    command_loop = loop(tmp_path)
+    command_loop.interactive_input = True
+    command_loop.session.config.providers["default"] = ProviderConfig.from_dict(
+        {"url": "https://gw.example/v1", "model": "custom-1", "models": {"custom-*": {"reasoning": ["low", "high", "ultra"]}}}
+    )
+    shown = {}
+
+    def choose(_loop, title, choices, labels, current, _disabled):
+        shown.update(choices=choices, labels=labels)
+        return "ultra"
+
+    monkeypatch.setattr(modals_mod, "choice_application", choose)
+
+    assert reason(command_loop, "") == "Set provider.reasoning = ultra → ultra"
+    assert shown["choices"][-1] == "ultra"
+    assert shown["labels"]["max"] == "max → ultra"
 
 def test_api_is_registered_like_reason_and_completes_its_choices(tmp_path):
     from prompt_toolkit.document import Document

@@ -161,13 +161,21 @@ def mcp_command(loop: CommandLoop, args: str) -> str | None:
     raise AssertionError("unreachable MCP subcommand")
 
 
+def effort_sent_for(provider: ProviderConfig, value: str) -> str:
+    """The effort the provider would receive for one choice, catalog fold and declarations applied."""
+    return replace(provider, reasoning=value).resolve().reasoning_effort or "(none)"
+
+
 def select_reasoning(loop: CommandLoop) -> str | object | None:
     provider = loop.session.config.provider
     current = provider.reasoning
     # A level this model declares belongs in the list: it is offered nowhere else, and the point of
     # declaring it was to be able to pick it.
     declared = tuple(level for level in provider.declared_levels() if level not in REASONING_CHOICES)
-    labels = {"off": "off - disable reasoning", **{level: f"{level} - declared for {provider.model}" for level in declared}}
+    # Every row names what it sends, including the rows that send themselves. Marking only the
+    # folded ones would leave the reader deciding whether an unmarked row is unfolded or unchecked.
+    labels = {level: f"{level} → {effort_sent_for(provider, level)}" for level in (*REASONING_CHOICES[1:], *declared)}
+    labels["off"] = "off - disable reasoning"
     labels[current] = labels.get(current, current) + " (current)"
     return select_choice(loop, "Reasoning effort", (*REASONING_CHOICES, *declared), labels=labels, current=current)
 
@@ -830,15 +838,14 @@ def set_model(loop: CommandLoop, model: str, *, back_to_model: bool = False) -> 
 def set_reasoning(loop: CommandLoop, value: str) -> str:
     """Apply an effort and report what the provider will actually receive.
 
-    The sent value can differ from the chosen one — a model documented without this level, or a
-    scale the entry declares — and a silent fold leaves the user unable to tell why a request
-    behaved as it did."""
+    Always both values, even when they match. The sent one can differ — a model documented without
+    this level, or a scale the entry declares — and a fold nobody can see leaves the user unable to
+    tell why a request behaved as it did; showing the pair only on a mismatch answers that question
+    for one session and raises it for every other."""
     provider = loop.session.config.provider
     provider.reasoning = value
     record_provider_override(loop.session, "reasoning", value)
-    sent = provider.resolve().reasoning_effort
-    suffix = f" (sent as {sent})" if sent and sent != value else ""
-    return f"Set provider.reasoning = {value}{suffix}"
+    return f"Set provider.reasoning = {value} → {effort_sent_for(provider, value)}"
 
 
 def reason(loop: CommandLoop, args: str) -> str:

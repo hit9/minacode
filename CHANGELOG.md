@@ -27,8 +27,10 @@
 
 ### Changed
 
-- `/reason` now names the effort the provider will actually receive when it differs from the one
-  picked — `Set provider.reasoning = max (sent as xhigh)` — instead of folding silently.
+- `/reason` now names the effort the provider will actually receive — `Set provider.reasoning =
+  max → xhigh` — instead of folding silently, and its picker labels every level with what that
+  level sends. Both values show even when they match, so an unmarked line never leaves you
+  deciding whether the effort went out unfolded or simply unreported.
 
 ## 0.34.2 - 2026-08-26
 
